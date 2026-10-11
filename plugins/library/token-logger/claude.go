@@ -199,19 +199,16 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if session.ID == "" {
 		session = updateClaudeSession(session, claudeEnvelope{}, claudeMessage{}, sourceID)
 	}
-	if err := store.UpsertProject(Project{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName}); err != nil {
-		return result, fmt.Errorf("persist Claude project: %w", err)
-	}
-	if err := store.UpsertSession(Session{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`)}); err != nil {
-		return result, fmt.Errorf("persist Claude session: %w", err)
-	}
 	for index := range events {
 		events[index].ProjectID = session.ProjectID
 		events[index].SessionID = session.ID
 	}
-	receipt, err := store.AppendWithCursor(events, Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
+	receipt, err := store.AppendWithReferencesAndCursor(events,
+		[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName}},
+		[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`)}},
+		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
 	if err != nil {
-		return result, fmt.Errorf("persist Claude events: %w", err)
+		return result, fmt.Errorf("persist Claude project, session, events, and cursor: %w", err)
 	}
 	result.Receipt = receipt
 	return result, nil

@@ -289,6 +289,16 @@ func (s *Store) AppendWithReferences(events []UsageEvent, projects []Project, se
 	return s.append(events, nil, projects, sessions)
 }
 
+// AppendWithReferencesAndCursor persists reference metadata, events, and a
+// source cursor atomically. A failure in any part rolls back the complete
+// ingestion unit.
+func (s *Store) AppendWithReferencesAndCursor(events []UsageEvent, projects []Project, sessions []Session, cursor Cursor) (Receipt, error) {
+	if err := cursor.validate(); err != nil {
+		return Receipt{}, err
+	}
+	return s.append(events, &cursor, projects, sessions)
+}
+
 // AppendWithCursor persists events and advances the source cursor atomically.
 // A failed event insert cannot leave the cursor advanced.
 func (s *Store) AppendWithCursor(events []UsageEvent, cursor Cursor) (Receipt, error) {

@@ -182,19 +182,16 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if current.ID == "" {
 		current = updateCodexSession(current, codexPayload{}, sourceID)
 	}
-	if err := store.UpsertProject(Project{ID: current.ProjectID, Root: current.Root, DisplayName: current.ProjectName}); err != nil {
-		return result, fmt.Errorf("persist Codex project: %w", err)
-	}
-	if err := store.UpsertSession(Session{ID: current.ID, ProjectID: current.ProjectID, Client: Client{Name: "codex-cli"}, SourceMetadata: json.RawMessage(`{"adapter":"codex"}`)}); err != nil {
-		return result, fmt.Errorf("persist Codex session: %w", err)
-	}
 	for index := range events {
 		events[index].ProjectID = current.ProjectID
 		events[index].SessionID = current.ID
 	}
-	receipt, err := store.AppendWithCursor(events, Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
+	receipt, err := store.AppendWithReferencesAndCursor(events,
+		[]Project{{ID: current.ProjectID, Root: current.Root, DisplayName: current.ProjectName}},
+		[]Session{{ID: current.ID, ProjectID: current.ProjectID, Client: Client{Name: "codex-cli"}, SourceMetadata: json.RawMessage(`{"adapter":"codex"}`)}},
+		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
 	if err != nil {
-		return result, fmt.Errorf("persist Codex events: %w", err)
+		return result, fmt.Errorf("persist Codex project, session, events, and cursor: %w", err)
 	}
 	result.Receipt = receipt
 	return result, nil
