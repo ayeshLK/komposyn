@@ -67,6 +67,13 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 		return runInteractiveScanner(scanner, stdout, stderr, store, dataDir, settings, startNow)
 	}
 	switch args[0] {
+	case "version", "--version":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "usage: komposyn-lg version")
+			return 1
+		}
+		fmt.Fprintf(stdout, "komposyn-lg %s\n", tokenlogger.Version)
+		return 0
 	case "import":
 		return runImport(args[1:], stdout, stderr)
 	case "usage", "cost", "sessions":
@@ -76,7 +83,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 	case "settings":
 		return runSettings(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "usage: komposyn-lg {import|usage|cost|sessions|watch|settings} ...")
+		fmt.Fprintln(stderr, "usage: komposyn-lg {version|import|usage|cost|sessions|watch|settings} ...")
 		return 1
 	}
 }
