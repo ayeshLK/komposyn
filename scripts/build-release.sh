@@ -5,7 +5,12 @@ version="${1:?usage: build-release.sh <version> <output-dir>}"
 output_dir="${2:?usage: build-release.sh <version> <output-dir>}"
 version="${version#v}"
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -z "$output_dir" || "$output_dir" == "/" || "$output_dir" == "." ]]; then
+	echo "refusing unsafe release output directory: $output_dir" >&2
+	exit 1
+fi
 mkdir -p "$output_dir"
+find "$output_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 bash "$root_dir/scripts/generate-third-party-licenses.sh" "$output_dir"
 
 ldflags="-s -w -X github.com/ayeshLK/komposyn/plugins/library/token-logger.Version=${version}"

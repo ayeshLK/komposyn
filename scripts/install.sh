@@ -4,6 +4,9 @@ set -euo pipefail
 repo="${KOMPOSYN_REPO:-ayeshLK/komposyn}"
 version="${KOMPOSYN_VERSION:-latest}"
 install_dir="${KOMPOSYN_INSTALL_DIR:-${HOME}/.local/bin}"
+cosign_bin="${KOMPOSYN_COSIGN_BIN:-cosign}"
+cosign_identity="${KOMPOSYN_COSIGN_IDENTITY_REGEXP:-^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/tags/.*$}"
+cosign_issuer="https://token.actions.githubusercontent.com"
 base_url="https://github.com/${repo}/releases"
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -38,11 +41,20 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 curl -fsSL "$asset_url" -o "$tmp_dir/$asset"
 curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS"
+curl -fsSL "${asset_url}.sig" -o "$tmp_dir/$asset.sig"
+curl -fsSL "${asset_url}.pem" -o "$tmp_dir/$asset.pem"
+command -v "$cosign_bin" >/dev/null 2>&1 || { echo "cosign is required to verify release signatures" >&2; exit 1; }
 if command -v sha256sum >/dev/null 2>&1; then
 	(cd "$tmp_dir" && grep "  ${asset}$" SHA256SUMS | sha256sum -c -)
 else
 	(cd "$tmp_dir" && grep "  ${asset}$" SHA256SUMS | shasum -a 256 -c -)
 fi
+"$cosign_bin" verify-blob \
+	--signature "$tmp_dir/$asset.sig" \
+	--certificate "$tmp_dir/$asset.pem" \
+	--certificate-identity-regexp "$cosign_identity" \
+	--certificate-oidc-issuer "$cosign_issuer" \
+	"$tmp_dir/$asset"
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
 mkdir -p "$install_dir"
 chmod 0755 "$tmp_dir/komposyn-lg"

@@ -16,8 +16,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	protocolName    = "komposyn.token-logger"
-	protocolVersion = 1
+	protocolName            = "komposyn.token-logger"
+	protocolVersion         = 1
+	maxProtocolMessageBytes = 8 << 20
 )
 
 type protocolRequest struct {
@@ -70,14 +71,15 @@ func runProtocol(input io.Reader, stdout, stderr io.Writer) int {
 	server := &protocolServer{}
 	defer server.close()
 
-	decoder := json.NewDecoder(bufio.NewReader(input))
 	encoder := json.NewEncoder(stdout)
-	for {
-		var request protocolRequest
-		err := decoder.Decode(&request)
-		if errors.Is(err, io.EOF) {
-			return 0
+	scanner := bufio.NewScanner(input)
+	scanner.Buffer(make([]byte, 64*1024), maxProtocolMessageBytes)
+	for scanner.Scan() {
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
 		}
+		var request protocolRequest
+		err := json.Unmarshal(scanner.Bytes(), &request)
 		if err != nil {
 			writeProtocolDiagnostic(stderr, fmt.Errorf("decode protocol request: %w", err))
 			if encodeErr := encoder.Encode(errorResponse("", "invalid_json", "request is not valid JSON")); encodeErr != nil {
@@ -95,6 +97,11 @@ func runProtocol(input io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		writeProtocolDiagnostic(stderr, fmt.Errorf("read protocol request: %w", err))
+		return 2
+	}
+	return 0
 }
 
 func (s *protocolServer) handle(request protocolRequest, stderr io.Writer) (protocolResponse, bool) {
