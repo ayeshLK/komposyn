@@ -78,7 +78,16 @@ run asks whether to enable the local collector. Interactive reports support
 
 Diagnostics are sanitized and remain pending until explicitly reviewed. The
 tool only creates an issue draft after the user asks; it does not silently
-submit diagnostics.
+submit diagnostics. To export pending diagnostics for local review or support,
+use:
+
+```text
+komposyn-lg report-issue --output /path/to/report.zip --data-dir /path/to/data
+```
+
+The ZIP is local-only and contains sanitized diagnostic JSON. Existing output
+files are never overwritten; on Windows, create it in a directory whose ACLs
+restrict access to the intended users.
 
 ## Harness mode
 

@@ -75,6 +75,20 @@ komposyn-lg settings [--data-dir <path>] [--collector on|off] [--auto-start on|o
 Writes local collector preferences. Settings writes replace the file atomically
 and protect it with user-only permissions where the platform supports them.
 
+### `report-issue`
+
+```text
+komposyn-lg report-issue --output <path> [--data-dir <path>]
+```
+
+Exports pending, locally sanitized diagnostics to a ZIP archive without
+overwriting an existing output or following an output symlink. On Unix-like
+systems the archive is created with mode `0600`; on Windows it inherits the ACL
+of the destination directory, so choose a directory with appropriate access
+controls. The archive contains `diagnostics.json`; it does not include provider
+transcripts, prompts, responses, credentials, or source files. This command
+performs no network request and does not mark diagnostics as reviewed.
+
 ### `harness`
 
 ```text
