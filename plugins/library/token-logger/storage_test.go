@@ -116,6 +116,43 @@ func TestAppendWithReferencesRollsBackReferencesOnEventFailure(t *testing.T) {
 	}
 }
 
+func TestAppendWithReferencesAndCursorRollsBackAllPersistenceOnEventFailure(t *testing.T) {
+	store := openTestStore(t)
+	conflict := testEvent("existing-ingestion")
+	if _, err := store.Append([]UsageEvent{conflict}); err != nil {
+		t.Fatalf("seed conflicting event: %v", err)
+	}
+	event := testEvent("ingestion-1")
+	event.ProjectID = "project-1"
+	event.EventID = conflict.EventID
+	event.SessionID = "session-1"
+	project := Project{ID: "project-1", Root: "/redacted/project", DisplayName: "Example"}
+	session := Session{ID: event.SessionID, ProjectID: project.ID, Client: Client{Name: "codex-cli"}}
+	cursor := Cursor{SourceID: "source", FileFingerprint: "fingerprint", ByteOffset: 42}
+
+	if _, err := store.AppendWithReferencesAndCursor([]UsageEvent{event}, []Project{project}, []Session{session}, cursor); err == nil {
+		t.Fatal("append with conflicting event was accepted")
+	}
+	for _, check := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{name: "project", query: "SELECT COUNT(*) FROM projects WHERE id = ?", args: []any{project.ID}},
+		{name: "session", query: "SELECT COUNT(*) FROM sessions WHERE id = ?", args: []any{session.ID}},
+		{name: "event", query: "SELECT COUNT(*) FROM usage_events WHERE ingestion_key = ?", args: []any{event.IngestionKey}},
+		{name: "cursor", query: "SELECT COUNT(*) FROM source_cursors WHERE source_id = ?", args: []any{cursor.SourceID}},
+	} {
+		var count int
+		if err := store.db.QueryRow(check.query, check.args...).Scan(&count); err != nil {
+			t.Fatalf("query rolled-back %s: %v", check.name, err)
+		}
+		if count != 0 {
+			t.Fatalf("failed append left %d %s rows", count, check.name)
+		}
+	}
+}
+
 func TestProjectsAndSessionsCanBeUpsertedAndReferenced(t *testing.T) {
 	store := openTestStore(t)
 	if err := store.UpsertProject(Project{ID: "project-1", Root: "/redacted/project", DisplayName: "Example"}); err != nil {
