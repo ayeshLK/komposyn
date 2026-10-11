@@ -38,10 +38,11 @@ events.
 
 ## Reports show unexpected hourly buckets
 
-Hourly reports use each event's local civil hour and preserve its numeric UTC
-offset. Fractional offsets and repeated daylight-saving hours are therefore
-distinct. Confirm the source timestamp and offset before treating this as data
-loss.
+Hourly reports use the selected reporting timezone and default to UTC. Pass
+`--timezone <IANA zone>` for a different location; fractional offsets and
+repeated daylight-saving hours are then represented in that selected zone.
+Confirm the effective timezone in the report before treating a bucket
+difference as data loss.
 
 ## Upgrade or migration fails
 

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/ayeshLK/komposyn/plugins/library/token-logger"
 )
