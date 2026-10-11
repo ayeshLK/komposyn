@@ -10,7 +10,15 @@ if [[ -z "$output_dir" || "$output_dir" == "/" || "$output_dir" == "." ]]; then
 	exit 1
 fi
 mkdir -p "$output_dir"
-find "$output_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+# Preserve caller-owned files in a reusable output directory. Only remove
+# artifacts and generated metadata from the namespace owned by this builder.
+for artifact in "$output_dir"/komposyn-lg_*; do
+	if [[ -f "$artifact" || -L "$artifact" ]]; then
+		rm -f -- "$artifact"
+	fi
+done
+rm -f -- "$output_dir/SHA256SUMS" "$output_dir/THIRD_PARTY_LICENSES.md"
+rm -rf -- "$output_dir/third_party_licenses"
 bash "$root_dir/scripts/generate-third-party-licenses.sh" "$output_dir"
 
 ldflags="-s -w -X github.com/ayeshLK/komposyn/plugins/library/token-logger.Version=${version}"
