@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -80,8 +81,10 @@ func TestSaveSettingsReplacesPermissiveFilePrivately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Fatalf("settings mode = %o, want 600", mode)
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Fatalf("settings mode = %o, want 600", mode)
+		}
 	}
 	got, err := LoadSettings(path, "fallback")
 	if err != nil {
