@@ -1,17 +1,54 @@
-# Komposyn Token Logger
+# KompoSyn
 
-Komposyn Token Logger is a local-first usage observability tool for AI coding
+KompoSyn is intended to become a modular, composable harness for AI agent
+workflows. The repository starts with one independently useful component:
+KompoSyn Token Logger, a local-first usage observability tool for AI coding
 workflows. It reads provider-owned local transcripts, normalizes usage into a
 small SQLite database, and produces usage and cost reports without collecting
 prompts, responses, or provider credentials.
 
-The standalone executable is `komposyn-lg`.
+The standalone executable is `komposyn-lg`, so developers can use this first
+component with their existing agent tools without waiting for a complete
+KompoSyn harness.
 
-> **Release status:** Komposyn is currently pre-release; GitHub Releases does
+## What exists today
+
+The current repository delivers the token logger, not a general KompoSyn
+harness or plugin marketplace. Its implemented surfaces are:
+
+- `plugins/library/token-logger` — a reusable Go library for normalized usage,
+  persistence, adapters, collection, and reporting.
+- `komposyn-lg` — a standalone CLI for importing, watching, and reporting on
+  local usage data.
+- The token logger's versioned JSONL `harness` sidecar — a machine-readable
+  integration surface for the token logger itself, not a general plugin
+  runtime.
+
+## Direction and open questions
+
+The direction is to assemble useful, independently testable components into a
+composable AI agent harness. The eventual boundaries for that harness, plugin
+API, distribution model, and whether every future plugin needs its own CLI are
+not decided. Those are proposed directions, not capabilities available in this
+release. See [the project vision](docs/vision.md) and the [founding discussion](https://github.com/ayeshLK/komposyn/issues/41) for the maintained summary and
+the open design questions.
+
+## Why token-logger exists
+
+Agentic development tools make it easy to work across projects, sessions, and
+providers, but they do not necessarily provide one local view of resource
+consumption. Token Logger addresses that concrete problem by normalizing usage
+from supported provider-owned transcripts into a reportable local event model.
+
+It is deliberately useful on its own. The component can evolve through real
+usage and community feedback before the architecture of a broader harness is
+decided.
+
+> **Release status:** KompoSyn is currently pre-release; GitHub Releases does
 > not yet contain a published signed release. Building from source is the
 > supported way to try the current repository state.
 
-## Why Komposyn
+## Why KompoSyn
 
 - **Local-first:** the database, settings, and diagnostics remain on the
   machine where the tool runs.
@@ -22,8 +59,8 @@ The standalone executable is `komposyn-lg`.
 - **Inspectable:** the SQLite store, source provenance, and migration history
   are local and explicit.
 
-Komposyn does not send provider transcripts, prompts, responses, or credentials
-to a hosted Komposyn service. See [Privacy and data handling](docs/privacy.md)
+KompoSyn does not send provider transcripts, prompts, responses, or credentials
+to a hosted KompoSyn service. See [Privacy and data handling](docs/privacy.md)
 for the complete data contract.
 
 ## Quick start
@@ -77,8 +114,9 @@ The implementation is split into an independent library and CLI surface:
 * `plugins/library/token-logger` — logger domain and integration library.
 * `plugins/cli/token-logger` — the `komposyn-lg` executable.
 
-For contributor setup, see [CONTRIBUTING.md](CONTRIBUTING.md). The full
-documentation map is in [docs/README.md](docs/README.md).
+For contributor setup and future component proposals, see
+[CONTRIBUTING.md](CONTRIBUTING.md). The full documentation map is in
+[docs/README.md](docs/README.md).
 
 The project is licensed under Apache-2.0. See [LICENSE](LICENSE) and
 [NOTICE](NOTICE).
@@ -111,6 +149,7 @@ the wire contract.
 
 | Goal | Guide |
 | --- | --- |
+| Understand the project direction | [Project vision](docs/vision.md) |
 | Install and run the first import | [Getting started](docs/getting-started.md) |
 | Choose an installation method | [Installation](docs/installation.md) |
 | Learn common workflows | [Usage guide](docs/usage.md) |

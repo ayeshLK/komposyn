@@ -1,7 +1,21 @@
 # Usage guide
 
+KompoSyn currently ships the Token Logger component as a standalone tool. Use
+`komposyn-lg` with existing agent tools and provider-owned transcript files;
+the broader KompoSyn harness is a future direction, not a prerequisite for
+these workflows.
+
+The supported flow is:
+
+1. Build or install `komposyn-lg`.
+2. Import or watch supported local transcript sources.
+3. Inspect normalized usage, session, and cost reports.
+
+Token Logger does not replace or modify provider-owned source files, and it
+does not collect prompts, responses, or provider credentials by default.
+
 Commands that access stored data accept a data directory through `--data-dir`.
-If it is omitted, Komposyn uses `TOKEN_LOGGER_DATA_DIR` when set and otherwise
+If it is omitted, KompoSyn uses `TOKEN_LOGGER_DATA_DIR` when set and otherwise
 its platform default. The `harness` command selects its directory through
 `initialize.params.data_dir` or the environment/default resolution.
 
@@ -70,4 +84,7 @@ submit diagnostics.
 
 Use `komposyn-lg harness` for newline-delimited JSON integration. Keep stdout
 reserved for protocol responses and read diagnostics from stderr. The wire
-contract and metadata rules are defined in [HARNESS_PROTOCOL.md](HARNESS_PROTOCOL.md).
+contract and metadata rules are defined in
+[HARNESS_PROTOCOL.md](HARNESS_PROTOCOL.md). This is the Token Logger
+component's current sidecar integration surface; it is not a general
+KompoSyn harness or plugin protocol.

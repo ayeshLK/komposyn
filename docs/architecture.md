@@ -1,9 +1,14 @@
 # Architecture
 
-Komposyn is a local-first token usage logger. Provider-owned transcript files
-are read by adapters, normalized into the library event model, and persisted in
-SQLite. The CLI is an orchestration and presentation layer; it does not own the
-database schema or provider parsing rules.
+## Implemented today
+
+KompoSyn currently implements the Token Logger component. Provider-owned
+transcript files are read by adapters, normalized into the library event model,
+and persisted in SQLite. The CLI is an orchestration and presentation layer; it
+does not own the database schema or provider parsing rules.
+
+This architecture is implemented in this repository. It is not a description
+of a general harness runtime or a universal plugin API.
 
 ```mermaid
 flowchart LR
@@ -26,6 +31,15 @@ flowchart LR
 - `docs/HARNESS_PROTOCOL.md` is the normative contract for machine-readable
   JSONL requests and responses. Changes to that contract require a protocol
   version decision and compatibility tests.
+
+## Relationship to the future harness
+
+The intended KompoSyn direction is to compose independently useful components
+into a broader agent harness. That composition layer does not exist yet. Its
+plugin lifecycle, discovery and distribution model, trust boundary, and the
+question of whether every component needs a standalone CLI remain open design
+questions. Do not treat the Token Logger library, CLI, or sidecar as a
+completed general plugin contract.
 
 ## Import and collection flow
 
@@ -62,7 +76,7 @@ events imported from an older version of the file.
 limits the connection pool to one connection, then applies migrations before
 returning. Writes that affect related metadata and events use one transaction.
 The database is application-owned; source transcripts remain provider-owned and
-read-only from Komposyn's perspective.
+read-only from KompoSyn's perspective.
 
 ## Reporting semantics
 

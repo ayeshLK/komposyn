@@ -1,10 +1,13 @@
-# Komposyn documentation
+# KompoSyn documentation
 
 Use this page to choose the right guide. The repository README is the short
-product overview; these pages are the operational and integration reference.
+product overview; these pages are the maintained project, operational, and
+integration reference.
 
 ## Start here
 
+- [Project vision](vision.md) — KompoSyn's proposed direction, current
+  component, and open harness questions.
 - [Getting started](getting-started.md) — install or build the CLI, import a
   first source, and verify a report.
 - [Installation](installation.md) — release installers, platform paths,
@@ -16,14 +19,29 @@ product overview; these pages are the operational and integration reference.
 - [Configuration and data locations](configuration.md) — data directories,
   settings, collector roots, and ownership boundaries.
 
+## Choose by audience
+
+- **New to KompoSyn:** read the [project vision](vision.md), then follow
+  [getting started](getting-started.md) to use Token Logger today.
+- **Using Token Logger:** use the [usage guide](usage.md),
+  [CLI reference](cli-reference.md), and [privacy guide](privacy.md).
+- **Integrating the current component:** read the
+  [token logger harness protocol](HARNESS_PROTOCOL.md); it is a token-logger
+  integration contract, not a general KompoSyn plugin API.
+- **Contributing or proposing a component:** read
+  [CONTRIBUTING.md](../CONTRIBUTING.md), [AGENTS.md](../AGENTS.md), and the
+  [architecture](architecture.md).
+- **Reviewing operations and releases:** use the security, operations, backup,
+  upgrade, troubleshooting, and release guides below.
+
 ## Understand the system
 
+- [Architecture](architecture.md) — current token logger boundaries, import
+  flow, source replacement safety, and reporting semantics.
 - [Privacy and data handling](privacy.md) — what is read, stored, excluded,
   and sent externally.
 - [Security and privacy model](security-model.md) — trust boundaries, data
   inventory, disclosure review, and security-sensitive change checks.
-- [Architecture](architecture.md) — component boundaries, import flow,
-  source replacement safety, and reporting semantics.
 - [Data model](data-model.md) — tables, event identity, provenance, time, and
   transaction guarantees.
 - [Database migrations](migrations.md) — schema history, compatibility rules,

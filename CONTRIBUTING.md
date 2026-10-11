@@ -1,6 +1,6 @@
 # Contributing
 
-Contributions to Komposyn are welcome. By contributing, you agree that your
+Contributions to KompoSyn are welcome. By contributing, you agree that your
 contribution is provided under the Apache License 2.0, subject to the terms in
 the repository [LICENSE](LICENSE).
 
@@ -29,9 +29,23 @@ Keep domain behavior in the library and preserve the library/CLI boundary.
 Provider source files must remain read-only, and prompt/response content must
 not be captured by default.
 
+## Proposing future components
+
+KompoSyn follows a plugin-first direction: a proposed component should solve a
+clear problem and be useful, testable, and understandable independently before
+it is coupled to a future harness. Start a proposal with a design discussion
+that explains the problem, ownership boundary, inputs and outputs, privacy
+impact, and likely users.
+
+Do not assume that every component needs a standalone CLI, or that a general
+plugin runtime, marketplace, or universal API already exists. Those decisions
+remain open. The current Token Logger library, CLI, and JSONL sidecar are the
+implemented reference surfaces; new proposals should not silently expand their
+contracts.
+
 ## Development and validation
 
-Komposyn requires Go 1.26 or newer. The normal local gate is:
+KompoSyn requires Go 1.26 or newer. The normal local gate is:
 
 ```sh
 make check
