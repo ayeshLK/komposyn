@@ -4,11 +4,89 @@ Contributions to Komposyn are welcome. By contributing, you agree that your
 contribution is provided under the Apache License 2.0, subject to the terms in
 the repository [LICENSE](LICENSE).
 
-Before submitting a change, run:
+## Before you start
 
-```text
+Read [AGENTS.md](AGENTS.md) for repository invariants and
+[SECURITY.md](SECURITY.md) before working on security-sensitive behavior. For
+product and operational documentation, start at the [documentation
+index](docs/README.md).
+
+Inspect the worktree and branch before editing. Preserve unrelated changes and
+do not commit local databases, WAL files, release archives, generated binaries,
+credentials, provider transcripts, prompts, or responses.
+
+## Repository structure
+
+- `plugins/library/token-logger/` owns domain behavior, persistence, migrations,
+  provider adapters, collection, pricing, diagnostics, and reports.
+- `plugins/cli/token-logger/` owns command parsing, lifecycle, interactive mode,
+  output, and the harness protocol.
+- `scripts/` owns release archives, installers, uninstallers, and lifecycle
+  verification.
+- `docs/HARNESS_PROTOCOL.md` is the normative JSONL protocol contract.
+
+Keep domain behavior in the library and preserve the library/CLI boundary.
+Provider source files must remain read-only, and prompt/response content must
+not be captured by default.
+
+## Development and validation
+
+Komposyn requires Go 1.26 or newer. The normal local gate is:
+
+```sh
 make check
 ```
 
-Keep provider source files read-only, preserve the library/CLI boundary, and
-avoid capturing prompt or response content by default.
+For a complete change, also run:
+
+```sh
+go mod verify
+go test -race ./...
+```
+
+See [development](docs/contributing/development.md) for focused commands and
+[testing](docs/contributing/testing.md) for the change-area test matrix. Add or
+update regression tests alongside behavior changes.
+
+## Change-specific requirements
+
+- **Storage or migration:** add a new numbered migration; never edit an
+  applied migration. Update the runner, schema version, historical upgrade
+  coverage, and [migration documentation](docs/migrations.md).
+- **Provider adapter or collector:** test detection, normalization, malformed
+  input, immutable snapshots, repeated imports, cursor behavior, replacement
+  detection, and unchanged source files.
+- **Harness protocol:** update [the protocol contract](docs/HARNESS_PROTOCOL.md),
+  preserve protocol version 1 for compatible changes, keep stable error codes,
+  and test stdout cleanliness, message limits, lifecycle, and metadata
+  atomicity.
+- **Release or installer:** preserve checksum and Cosign verification, test
+  upgrade and uninstall data preservation, and run the release lifecycle
+  verifier.
+- **Security or privacy:** describe the threat model, disclosure boundary, and
+  data-preservation impact. Do not add telemetry or external transmission
+  without an explicit design change and user consent.
+- **Documentation:** verify commands, examples, and local links against the
+  implementation.
+
+## Pull requests
+
+Keep each pull request focused. Use the repository template and include the
+commands run and their outcomes, not only a statement that tests passed. Call
+out migration, protocol, release, security, privacy, and upgrade impact even
+when the answer is “none”.
+
+Reviewers should be able to reproduce the validation without access to private
+source data. Never include provider transcript content, credentials, prompts,
+responses, or unsanitized diagnostics in PR evidence.
+
+## Coding-agent workflow
+
+Agents should read `AGENTS.md`, this guide, and the relevant normative docs;
+inspect status and history; identify the owning package; search for existing
+contracts and tests; make the smallest scoped change; run focused checks; run
+the required full checks; review the final diff; and report changed files,
+validation, limitations, and follow-up work. Agents must not discard unrelated
+work, rewrite migration history, weaken signature verification, write
+diagnostics to protocol stdout, modify provider source files, or claim checks
+that were not run.
