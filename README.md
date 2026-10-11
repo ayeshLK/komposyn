@@ -34,10 +34,17 @@ komposyn-lg sessions --data-dir <path> --format csv
 komposyn-lg watch <file-or-directory> --data-dir <path>
 komposyn-lg settings --data-dir <path> --collector on
 komposyn-lg version
+komposyn-lg harness
 ```
 
 Reports support `--from`, `--to`, `--project`, `--session`, `--client`,
 `--provider`, `--model`, and comma-separated `--group-by` filters.
+
+The `harness` mode runs the versioned JSON-lines sidecar protocol over stdin
+and stdout. It supports `initialize`, `record`, `flush`, `health`, and
+`shutdown`; stdout is reserved for protocol responses and diagnostics are
+written to stderr. See [the harness protocol](docs/HARNESS_PROTOCOL.md) for
+the wire contract.
 
 ## Upgrades
 
