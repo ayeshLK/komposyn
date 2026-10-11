@@ -7,7 +7,9 @@ standalone executable, installers, release artifacts, SQLite data directory,
 settings, diagnostics, and the JSONL harness. Provider transcript files remain
 provider-owned inputs and should be treated as sensitive.
 
-Only the latest released version receives security fixes. Development branches
+The project is currently pre-release and has no published signed release. Until
+the first release, security fixes target the `master` branch. After release,
+only the latest released version receives security fixes. Development branches
 may contain incomplete behavior and should not be used for sensitive workloads.
 
 ## Threat model and guarantees
@@ -39,9 +41,10 @@ data-flow and disclosure review guidance.
 ## Reporting a vulnerability
 
 Please do not report security vulnerabilities in public issues, pull requests,
-or discussions. Use GitHub's private vulnerability reporting for this
-repository if it is enabled. If it is not available, contact the maintainers
-privately before disclosure.
+or discussions. Use the repository's [private vulnerability reporting
+form](https://github.com/ayeshLK/komposyn/security/advisories/new). If the form
+is unavailable, contact the maintainers privately before disclosure rather than
+using a public channel.
 
 Include the affected version or commit, operating system, reproduction steps,
 impact, attack prerequisites, and any suggested mitigation. Keep the report
