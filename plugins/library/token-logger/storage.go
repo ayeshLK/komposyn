@@ -151,7 +151,7 @@ func (s *Store) Migrate() error {
 		if err != nil {
 			return fmt.Errorf("begin migration 4: %w", err)
 		}
-		if _, err := tx.Exec(schemaMigrationFour); err != nil {
+		if err := applySourceGenerationMigration(tx); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("apply migration 4: %w", err)
 		}
@@ -164,6 +164,19 @@ func (s *Store) Migrate() error {
 		}
 	}
 	return nil
+}
+
+func applySourceGenerationMigration(tx *sql.Tx) error {
+	var present int
+	err := tx.QueryRow("SELECT 1 FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&present)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = tx.Exec(schemaMigrationFour)
+	return err
 }
 
 func normalizeStoredTimestamps(tx *sql.Tx) error {
