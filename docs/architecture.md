@@ -67,6 +67,6 @@ read-only from Komposyn's perspective.
 ## Reporting semantics
 
 Reports operate on normalized events and stored pricing rules. Hourly grouping
-uses each event's local civil hour and preserves its numeric UTC offset. This
-keeps fractional-offset zones and repeated hours during daylight-saving folds
-distinct instead of silently converting them to the machine's timezone.
+uses the caller-selected reporting timezone; when none is selected, reports use
+UTC. The selected IANA timezone is preserved in report output, so fractional-
+offset zones and repeated hours during daylight-saving folds remain distinct.
