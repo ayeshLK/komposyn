@@ -169,7 +169,7 @@ func TestHarnessRecordReferenceMetadata(t *testing.T) {
 	requests := []map[string]any{
 		{"protocol": protocolName, "version": protocolVersion, "id": "1", "method": "initialize", "params": map[string]any{"data_dir": dataDir}},
 		{"protocol": protocolName, "version": protocolVersion, "id": "2", "method": "record", "params": map[string]any{"event": projectEvent, "project": project}},
-		{"protocol": protocolName, "version": protocolVersion, "id": "3", "method": "record", "params": map[string]any{"event": sessionEvent, "session": session}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "3", "method": "record", "params": map[string]any{"event": sessionEvent, "project": project, "session": session}},
 		{"protocol": protocolName, "version": protocolVersion, "id": "4", "method": "record", "params": map[string]any{"event": bothEvent, "project": project, "session": session}},
 		{"protocol": protocolName, "version": protocolVersion, "id": "5", "method": "record", "params": map[string]any{"event": bothEvent, "project": project, "session": session}},
 		{"protocol": protocolName, "version": protocolVersion, "id": "6", "method": "record", "params": map[string]any{"event": func() tokenlogger.UsageEvent {
