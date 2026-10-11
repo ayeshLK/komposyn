@@ -14,6 +14,7 @@ if [[ -n "$(find "$output_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
 	echo "release output directory must be empty: $output_dir" >&2
 	exit 1
 fi
+output_dir="$(cd "$output_dir" && pwd)"
 bash "$root_dir/scripts/generate-third-party-licenses.sh" "$output_dir"
 
 ldflags="-s -w -X github.com/ayeshLK/komposyn/plugins/library/token-logger.Version=${version}"
