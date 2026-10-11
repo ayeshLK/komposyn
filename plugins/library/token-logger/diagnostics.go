@@ -26,12 +26,12 @@ import (
 
 // Diagnostic is a locally persisted, sanitized interactive error.
 type Diagnostic struct {
-	Fingerprint     string
-	Message         string
-	OccurrenceCount int
-	FirstSeenAt     time.Time
-	LastSeenAt      time.Time
-	Status          string
+	Fingerprint     string    `json:"fingerprint"`
+	Message         string    `json:"message"`
+	OccurrenceCount int       `json:"occurrence_count"`
+	FirstSeenAt     time.Time `json:"first_seen_at"`
+	LastSeenAt      time.Time `json:"last_seen_at"`
+	Status          string    `json:"status"`
 }
 
 var (

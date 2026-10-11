@@ -15,8 +15,10 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -89,8 +91,10 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 		return runWatch(args[1:], stdout, stderr)
 	case "settings":
 		return runSettings(args[1:], stdout, stderr)
+	case "report-issue":
+		return runReportIssue(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "usage: komposyn-lg {version|harness|import|usage|cost|sessions|watch|settings} ...")
+		fmt.Fprintln(stderr, "usage: komposyn-lg {version|harness|import|usage|cost|sessions|watch|settings|report-issue} ...")
 		return 1
 	}
 }
@@ -262,6 +266,94 @@ func printPendingDiagnostics(stdout io.Writer, store *tokenlogger.Store) {
 	for _, diagnostic := range diagnostics {
 		fmt.Fprintf(stdout, "%s (%d occurrence(s)): %s\n", diagnostic.Fingerprint, diagnostic.OccurrenceCount, diagnostic.Message)
 	}
+}
+
+type diagnosticReport struct {
+	FormatVersion int                      `json:"format_version"`
+	CreatedAt     time.Time                `json:"created_at"`
+	Diagnostics   []tokenlogger.Diagnostic `json:"diagnostics"`
+}
+
+func runReportIssue(args []string, stdout, stderr io.Writer) int {
+	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
+	if dataDir == "" {
+		dataDir = defaultDataDir()
+	}
+	var outputPath string
+	for index := 0; index < len(args); index++ {
+		if index+1 >= len(args) {
+			fmt.Fprintln(stderr, "usage: komposyn-lg report-issue --output <path> [--data-dir <path>]")
+			return 1
+		}
+		value := args[index+1]
+		switch args[index] {
+		case "--output":
+			outputPath = value
+		case "--data-dir":
+			dataDir = value
+		default:
+			fmt.Fprintf(stderr, "unknown report-issue option %q\n", args[index])
+			return 1
+		}
+		index++
+	}
+	if strings.TrimSpace(outputPath) == "" {
+		fmt.Fprintln(stderr, "report-issue requires --output <path>")
+		return 1
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		fmt.Fprintf(stderr, "open token logger database: %v\n", err)
+		return 2
+	}
+	defer store.Close()
+	diagnostics, err := store.PendingDiagnostics()
+	if err != nil {
+		fmt.Fprintf(stderr, "load diagnostics: %v\n", err)
+		return 2
+	}
+	report := diagnosticReport{FormatVersion: 1, CreatedAt: time.Now().UTC(), Diagnostics: diagnostics}
+	if err := writeDiagnosticReport(outputPath, report); err != nil {
+		fmt.Fprintf(stderr, "write diagnostic report: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "wrote %d pending diagnostic(s) to %s\n", len(diagnostics), outputPath)
+	return 0
+}
+
+func writeDiagnosticReport(outputPath string, report diagnosticReport) error {
+	outputPath = filepath.Clean(outputPath)
+	directory := filepath.Dir(outputPath)
+	temporary, err := os.CreateTemp(directory, ".komposyn-report-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	archive := zip.NewWriter(temporary)
+	entry, err := archive.Create("diagnostics.json")
+	if err == nil {
+		encoder := json.NewEncoder(entry)
+		encoder.SetIndent("", "  ")
+		err = encoder.Encode(report)
+	}
+	if closeErr := archive.Close(); err == nil {
+		err = closeErr
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, outputPath); err != nil {
+		return err
+	}
+	return nil
 }
 
 func runOnboarding(scanner *bufio.Scanner, stdout io.Writer, dataDir string, settings tokenlogger.Settings) (tokenlogger.Settings, bool) {

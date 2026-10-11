@@ -15,10 +15,12 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -367,5 +369,70 @@ func TestSettingsCommand(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "collector=true") {
 		t.Fatalf("unexpected settings output: %q", stdout.String())
+	}
+}
+
+func TestReportIssueExportsPendingSanitizedDiagnostics(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordDiagnostic("failed /home/private/project token=secret-value"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "report.zip")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"report-issue", "--data-dir", dataDir, "--output", outputPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("report-issue exit code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	archive, err := zip.OpenReader(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	if len(archive.File) != 1 || archive.File[0].Name != "diagnostics.json" {
+		t.Fatalf("archive entries = %#v, want diagnostics.json", archive.File)
+	}
+	contents, err := archive.File[0].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report diagnosticReport
+	if err := json.NewDecoder(contents).Decode(&report); err != nil {
+		contents.Close()
+		t.Fatal(err)
+	}
+	contents.Close()
+	if len(report.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %d, want 1", len(report.Diagnostics))
+	}
+	message := report.Diagnostics[0].Message
+	if strings.Contains(message, "secret-value") || strings.Contains(message, "/home/private") {
+		t.Fatalf("report leaked sensitive diagnostic content: %q", message)
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("report permissions = %o, want user-only", info.Mode().Perm())
+	}
+
+	store, err = tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	pending, err := store.PendingDiagnostics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending diagnostics after export = %d, want 1", len(pending))
 	}
 }
