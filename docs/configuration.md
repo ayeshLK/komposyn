@@ -20,8 +20,8 @@ settings.json
 ```
 
 SQLite may also create `token-logger.db-wal` and `token-logger.db-shm` while
-the database is active. Treat all database sidecars as one unit when backing up
-an active installation; see the operations documentation as it is expanded.
+the database is active. Stop Komposyn before taking a file-copy backup; see
+[Backups and recovery](backups.md).
 
 ## Settings
 

@@ -30,12 +30,20 @@ product overview; these pages are the operational and integration reference.
   release checks, and final inspection.
 - [Testing guide](contributing/testing.md) — baseline checks and change-area
   coverage expectations.
+- [Operations](operations.md) — data locations, collection health, backups,
+  recovery, upgrades, and uninstall boundaries.
+- [Backups and recovery](backups.md) — consistent backup and restore
+  procedures for local state.
+- [Troubleshooting](troubleshooting.md) — common installation, import,
+  reporting, migration, and release issues.
+- [Release verification](release-verification.md) — artifact, signature,
+  installer, and lifecycle checks.
 - [Upgrades and data preservation](upgrades.md) — installer replacement,
   migrations, and uninstall boundaries.
 - [Harness protocol](HARNESS_PROTOCOL.md) — the normative versioned JSONL wire
   contract.
 
-Operations, troubleshooting, and contributor guides will be added as the
-documentation program expands. Until then, the repository [AGENTS.md](../AGENTS.md),
-[CONTRIBUTING.md](../CONTRIBUTING.md), and [SECURITY.md](../SECURITY.md) are the
-authoritative project-maintenance references.
+Security-sensitive maintenance remains governed by the repository
+[AGENTS.md](../AGENTS.md), [CONTRIBUTING.md](../CONTRIBUTING.md), and
+[SECURITY.md](../SECURITY.md). These guides complement those authoritative
+project-maintenance references.
