@@ -4,7 +4,7 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
-## Unreleased
+## 0.0.0
 
-Development changes since the last published release will appear here until a
-release preparation pull request is merged.
+Unreleased development baseline. Changes since this baseline will be moved
+into the first generated release section by Release Please.
