@@ -9,7 +9,7 @@ permissions:
   id-token: write
 
 jobs:
-  release:
+  build-release:
     name: Build and sign release artifacts
     runs-on: ubuntu-latest
     steps:
@@ -52,14 +52,16 @@ jobs:
               "$artifact"
           done
 
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes
+      - name: Upload signed release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-artifacts
+          path: dist
+          if-no-files-found: error
 
   verify-installers:
     name: Verify installer (${{ matrix.os }})
-    needs: release
+    needs: build-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -69,10 +71,34 @@ jobs:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download signed release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-artifacts
+          path: dist
+
+      - name: Install Cosign (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Cosign (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3
+
       - name: Verify Unix installer lifecycle
         if: runner.os != 'Windows'
         env:
           KOMPOSYN_VERSION: ${{ github.ref_name }}
+          KOMPOSYN_RELEASE_DIR: ${{ github.workspace }}/dist
           KOMPOSYN_INSTALL_DIR: ${{ runner.temp }}/komposyn-bin
           TOKEN_LOGGER_DATA_DIR: ${{ runner.temp }}/komposyn-data
         run: |
@@ -93,10 +119,13 @@ jobs:
         if: runner.os == 'Windows'
         env:
           KOMPOSYN_VERSION: ${{ github.ref_name }}
+          KOMPOSYN_RELEASE_DIR: ${{ github.workspace }}/dist
         shell: pwsh
         run: |
           $env:KOMPOSYN_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'komposyn-bin'
           $env:TOKEN_LOGGER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'komposyn-data'
+          $gopath = go env GOPATH
+          $env:KOMPOSYN_COSIGN_BIN = Join-Path $gopath 'bin/cosign.exe'
           & ./scripts/install.ps1
           $binary = Join-Path $env:KOMPOSYN_INSTALL_DIR 'komposyn-lg.exe'
           & $binary version
@@ -108,3 +137,21 @@ jobs:
           if (Test-Path $binary) { throw 'uninstall left executable behind' }
           if (-not (Test-Path (Join-Path $env:TOKEN_LOGGER_DATA_DIR 'settings.json'))) { throw 'uninstall removed settings' }
           if (-not (Test-Path (Join-Path $env:TOKEN_LOGGER_DATA_DIR 'token-logger.db'))) { throw 'uninstall removed database' }
+
+  publish:
+    name: Publish GitHub release
+    needs: [build-release, verify-installers]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-artifacts
+          path: dist
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes

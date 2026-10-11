@@ -3,12 +3,17 @@ $ErrorActionPreference = 'Stop'
 $repo = if ($env:KOMPOSYN_REPO) { $env:KOMPOSYN_REPO } else { 'ayeshLK/komposyn' }
 $version = if ($env:KOMPOSYN_VERSION) { $env:KOMPOSYN_VERSION.TrimStart('v') } else { 'latest' }
 $base = "https://github.com/$repo/releases"
+$releaseDir = if ($env:KOMPOSYN_RELEASE_DIR) { $env:KOMPOSYN_RELEASE_DIR } else { $null }
 $cosign = if ($env:KOMPOSYN_COSIGN_BIN) { $env:KOMPOSYN_COSIGN_BIN } else { 'cosign' }
 $cosignIdentity = if ($env:KOMPOSYN_COSIGN_IDENTITY_REGEXP) { $env:KOMPOSYN_COSIGN_IDENTITY_REGEXP } else { '^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/tags/.*$' }
 $cosignIssuer = 'https://token.actions.githubusercontent.com'
 if ($version -eq 'latest') {
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest"
-    $version = $release.tag_name.TrimStart('v')
+    if ($releaseDir) {
+        $version = ((Get-Content (Join-Path $releaseDir 'SHA256SUMS') | Where-Object { $_ -match '^# version=' }) -replace '^# version=', '').Trim()
+    } else {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest"
+        $version = $release.tag_name.TrimStart('v')
+    }
 }
 $installDir = if ($env:KOMPOSYN_INSTALL_DIR) { $env:KOMPOSYN_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Komposyn\bin' }
 $tagPath = "download/v$version"
@@ -22,10 +27,26 @@ try {
     $checksums = Join-Path $temp 'SHA256SUMS'
     $signature = Join-Path $temp "$asset.sig"
     $certificate = Join-Path $temp "$asset.pem"
-    Invoke-WebRequest -Uri $assetUrl -OutFile $archive
-    Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksums
-    Invoke-WebRequest -Uri "$assetUrl.sig" -OutFile $signature
-    Invoke-WebRequest -Uri "$assetUrl.pem" -OutFile $certificate
+    if ($releaseDir) {
+        $localFiles = @(
+            (Join-Path $releaseDir $asset),
+            (Join-Path $releaseDir 'SHA256SUMS'),
+            (Join-Path $releaseDir "$asset.sig"),
+            (Join-Path $releaseDir "$asset.pem")
+        )
+        foreach ($localFile in $localFiles) {
+            if (-not (Test-Path -LiteralPath $localFile -PathType Leaf)) { throw "missing local release artifact: $localFile" }
+        }
+        Copy-Item -LiteralPath $localFiles[0] -Destination $archive
+        Copy-Item -LiteralPath $localFiles[1] -Destination $checksums
+        Copy-Item -LiteralPath $localFiles[2] -Destination $signature
+        Copy-Item -LiteralPath $localFiles[3] -Destination $certificate
+    } else {
+        Invoke-WebRequest -Uri $assetUrl -OutFile $archive
+        Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksums
+        Invoke-WebRequest -Uri "$assetUrl.sig" -OutFile $signature
+        Invoke-WebRequest -Uri "$assetUrl.pem" -OutFile $certificate
+    }
     $expected = ((Get-Content $checksums | Where-Object { $_ -match "  $([regex]::Escape($asset))$" }) -split '\s+')[0]
     $actual = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
     if ($expected.ToLowerInvariant() -ne $actual) { throw 'release checksum verification failed' }
