@@ -122,4 +122,3 @@ directory containing unrelated files.
   transmission without an explicit design change and user consent.
 - For security-sensitive changes, explain the threat model, add a regression
   test where practical, and run the relevant release or lifecycle checks.
-
