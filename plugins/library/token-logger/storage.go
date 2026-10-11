@@ -167,7 +167,12 @@ func (s *Store) UpsertSession(session Session) error {
 
 // Append persists events, deduplicating by stable ingestion key.
 func (s *Store) Append(events []UsageEvent) (Receipt, error) {
-	return s.append(events, nil)
+	return s.append(events, nil, nil, nil)
+}
+
+// AppendWithReferences persists reference metadata and events atomically.
+func (s *Store) AppendWithReferences(events []UsageEvent, projects []Project, sessions []Session) (Receipt, error) {
+	return s.append(events, nil, projects, sessions)
 }
 
 // AppendWithCursor persists events and advances the source cursor atomically.
@@ -176,13 +181,26 @@ func (s *Store) AppendWithCursor(events []UsageEvent, cursor Cursor) (Receipt, e
 	if err := cursor.validate(); err != nil {
 		return Receipt{}, err
 	}
-	return s.append(events, &cursor)
+	return s.append(events, &cursor, nil, nil)
 }
 
-func (s *Store) append(events []UsageEvent, cursor *Cursor) (Receipt, error) {
+func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session) (Receipt, error) {
 	for _, event := range events {
 		if err := event.Validate(); err != nil {
 			return Receipt{}, fmt.Errorf("validate event %q: %w", event.EventID, err)
+		}
+	}
+	for _, project := range projects {
+		if strings.TrimSpace(project.ID) == "" || strings.TrimSpace(project.DisplayName) == "" {
+			return Receipt{}, errors.New("project ID and display name are required")
+		}
+	}
+	for _, session := range sessions {
+		if strings.TrimSpace(session.ID) == "" || strings.TrimSpace(session.Client.Name) == "" {
+			return Receipt{}, errors.New("session ID and client name are required")
+		}
+		if session.SourceMetadata != nil && !json.Valid(session.SourceMetadata) {
+			return Receipt{}, errors.New("session source metadata must contain valid JSON")
 		}
 	}
 	tx, err := s.db.Begin()
@@ -190,6 +208,30 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor) (Receipt, error) {
 		return Receipt{}, fmt.Errorf("begin append: %w", err)
 	}
 	receipt := Receipt{}
+	for _, project := range projects {
+		if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET root = excluded.root, display_name = excluded.display_name`,
+			project.ID, project.Root, project.DisplayName, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			tx.Rollback()
+			return Receipt{}, fmt.Errorf("persist project %q: %w", project.ID, err)
+		}
+	}
+	for _, session := range sessions {
+		if _, err := tx.Exec(`INSERT INTO sessions(
+			id, project_id, client_name, client_version, client_mode, started_at, ended_at, source_metadata)
+			VALUES (?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id,
+			client_name = excluded.client_name, client_version = excluded.client_version,
+			client_mode = excluded.client_mode, started_at = excluded.started_at,
+			ended_at = excluded.ended_at, source_metadata = excluded.source_metadata`,
+			session.ID, session.ProjectID, session.Client.Name, session.Client.Version,
+			session.Client.Mode, nullableTime(session.StartedAt), nullableTime(session.EndedAt),
+			nullableJSON(session.SourceMetadata)); err != nil {
+			tx.Rollback()
+			return Receipt{}, fmt.Errorf("persist session %q: %w", session.ID, err)
+		}
+	}
 	for _, event := range events {
 		result, err := tx.Exec(eventInsertSQL,
 			event.EventID, event.SchemaVersion, event.EventType, event.OccurredAt.Format(time.RFC3339Nano),

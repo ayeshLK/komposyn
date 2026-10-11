@@ -145,6 +145,95 @@ func TestHarnessProtocolFixture(t *testing.T) {
 	}
 }
 
+func TestHarnessRecordReferenceMetadata(t *testing.T) {
+	dataDir := t.TempDir()
+	occurredAt := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	baseEvent := tokenlogger.UsageEvent{
+		SchemaVersion: 1, EventType: "model.request", OccurredAt: occurredAt,
+		Client: tokenlogger.Client{Name: "reference-harness"}, Provider: "openai", RequestedModel: "gpt-test",
+		Usage:      tokenlogger.TokenUsage{InputTokens: 10, OutputTokens: 5},
+		Provenance: tokenlogger.Provenance{Adapter: "fixture", SourceID: "reference-source"},
+	}
+	project := tokenlogger.Project{ID: "project-1", Root: "/work/project", DisplayName: "Project One"}
+	session := tokenlogger.Session{ID: "session-1", ProjectID: project.ID, Client: baseEvent.Client, StartedAt: &occurredAt}
+	projectEvent := baseEvent
+	projectEvent.EventID, projectEvent.IngestionKey = "project-event", "reference-source:project"
+	projectEvent.Provenance.SourceRecord, projectEvent.ProjectID = "project-record", project.ID
+	sessionEvent := baseEvent
+	sessionEvent.EventID, sessionEvent.IngestionKey = "session-event", "reference-source:session"
+	sessionEvent.Provenance.SourceRecord, sessionEvent.SessionID = "session-record", session.ID
+	bothEvent := baseEvent
+	bothEvent.EventID, bothEvent.IngestionKey = "both-event", "reference-source:both"
+	bothEvent.Provenance.SourceRecord, bothEvent.ProjectID, bothEvent.SessionID = "both-record", project.ID, session.ID
+
+	requests := []map[string]any{
+		{"protocol": protocolName, "version": protocolVersion, "id": "1", "method": "initialize", "params": map[string]any{"data_dir": dataDir}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "2", "method": "record", "params": map[string]any{"event": projectEvent, "project": project}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "3", "method": "record", "params": map[string]any{"event": sessionEvent, "project": project, "session": session}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "4", "method": "record", "params": map[string]any{"event": bothEvent, "project": project, "session": session}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "5", "method": "record", "params": map[string]any{"event": bothEvent, "project": project, "session": session}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "6", "method": "record", "params": map[string]any{"event": func() tokenlogger.UsageEvent {
+			event := baseEvent
+			event.EventID, event.IngestionKey, event.Provenance.SourceRecord, event.ProjectID = "missing-project", "reference-source:missing-project", "missing-project-record", "missing-project"
+			return event
+		}()}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "7", "method": "record", "params": map[string]any{"event": func() tokenlogger.UsageEvent {
+			event := baseEvent
+			event.EventID, event.IngestionKey, event.Provenance.SourceRecord, event.SessionID = "missing-session", "reference-source:missing-session", "missing-session-record", "missing-session"
+			return event
+		}()}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "8", "method": "shutdown"},
+	}
+	var input bytes.Buffer
+	for _, request := range requests {
+		if err := json.NewEncoder(&input).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithInput([]string{"harness"}, &input, &stdout, &stderr); code != 0 {
+		t.Fatalf("harness exit code = %d, stderr = %q", code, stderr.String())
+	}
+	decoder := json.NewDecoder(&stdout)
+	var responses []protocolResponse
+	for {
+		var response protocolResponse
+		if err := decoder.Decode(&response); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		responses = append(responses, response)
+	}
+	if len(responses) != len(requests) {
+		t.Fatalf("response count = %d, want %d", len(responses), len(requests))
+	}
+	for _, index := range []int{0, 1, 2, 3, 4, 7} {
+		if !responses[index].OK {
+			t.Fatalf("response %q failed: %#v", responses[index].ID, responses[index].Error)
+		}
+	}
+	if responses[4].Result.(map[string]any)["duplicates"] != float64(1) {
+		t.Fatalf("repeated record result = %#v, want one duplicate", responses[4].Result)
+	}
+	for index, code := range map[int]string{5: "missing_project_metadata", 6: "missing_session_metadata"} {
+		if responses[index].OK || responses[index].Error == nil || responses[index].Error.Code != code {
+			t.Fatalf("response %q = %#v, want error %q", responses[index].ID, responses[index], code)
+		}
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if count, err := store.EventCount(); err != nil || count != 3 {
+		t.Fatalf("durable event count = %d, err = %v; want 3", count, err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected protocol diagnostics: %q", stderr.String())
+	}
+}
+
 func TestInteractiveMode(t *testing.T) {
 	t.Setenv("TOKEN_LOGGER_DATA_DIR", t.TempDir())
 	var stdout, stderr bytes.Buffer
