@@ -16,7 +16,11 @@ Supported methods are:
 - `initialize`: accepts `params.data_dir` and returns the plugin manifest and
   selected data directory.
 - `record`: accepts `params.event`, a normalized `UsageEvent`, and returns
-  imported/duplicate counts. The append is committed before the response.
+  imported/duplicate counts. When the event has a `project_id` or `session_id`,
+  include matching `params.project` and/or `params.session` metadata in the
+  same request. The metadata is upserted before the event append, so retries
+  are safe. A referenced project or session without matching metadata returns
+  `missing_project_metadata` or `missing_session_metadata`.
 - `flush`: returns `durable: true` after prior synchronous appends have been
   committed.
 - `health`: returns status, event count, and data directory after initialize.

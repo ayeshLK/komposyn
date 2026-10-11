@@ -59,7 +59,9 @@ type initializeParams struct {
 }
 
 type recordParams struct {
-	Event tokenlogger.UsageEvent `json:"event"`
+	Event   tokenlogger.UsageEvent `json:"event"`
+	Project *tokenlogger.Project   `json:"project,omitempty"`
+	Session *tokenlogger.Session   `json:"session,omitempty"`
 }
 
 type protocolServer struct {
@@ -180,6 +182,33 @@ func (s *protocolServer) record(request protocolRequest, stderr io.Writer) proto
 	if params.Event.EventID == "" {
 		if err := json.Unmarshal(request.Params, &params.Event); err != nil {
 			return errorResponse(request.ID, "invalid_params", "record event is invalid")
+		}
+	}
+	if params.Event.ProjectID != "" {
+		if params.Project == nil {
+			return errorResponse(request.ID, "missing_project_metadata", "project metadata is required when event.project_id is set")
+		}
+		if params.Project.ID != params.Event.ProjectID {
+			return errorResponse(request.ID, "invalid_project_metadata", "project metadata ID must match event.project_id")
+		}
+		if err := s.store.UpsertProject(*params.Project); err != nil {
+			writeProtocolDiagnostic(stderr, err)
+			return errorResponse(request.ID, "project_persistence_failed", "could not persist project metadata")
+		}
+	}
+	if params.Event.SessionID != "" {
+		if params.Session == nil {
+			return errorResponse(request.ID, "missing_session_metadata", "session metadata is required when event.session_id is set")
+		}
+		if params.Session.ID != params.Event.SessionID {
+			return errorResponse(request.ID, "invalid_session_metadata", "session metadata ID must match event.session_id")
+		}
+		if params.Event.ProjectID != "" && params.Session.ProjectID != "" && params.Session.ProjectID != params.Event.ProjectID {
+			return errorResponse(request.ID, "invalid_session_metadata", "session project_id must match event.project_id")
+		}
+		if err := s.store.UpsertSession(*params.Session); err != nil {
+			writeProtocolDiagnostic(stderr, err)
+			return errorResponse(request.ID, "session_persistence_failed", "could not persist session metadata")
 		}
 	}
 	receipt, err := s.store.Append([]tokenlogger.UsageEvent{params.Event})
