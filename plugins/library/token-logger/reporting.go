@@ -131,7 +131,7 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 		requested_model, resolved_model, input_tokens, output_tokens, cache_read_tokens,
 		cache_write_tokens, reasoning_tokens, provider_cost_amount_micros,
 		provider_cost_currency FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?`
-	args := []any{filter.From.Format(time.RFC3339Nano), filter.To.Format(time.RFC3339Nano)}
+	args := []any{formatStoredTime(filter.From), formatStoredTime(filter.To)}
 	if filter.ProjectID != "" {
 		query += " AND project_id = ?"
 		args = append(args, filter.ProjectID)

@@ -61,7 +61,7 @@ func (s *Store) RecordDiagnostic(message string) (Diagnostic, error) {
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO UPDATE SET occurrence_count = occurrence_count + 1,
 		last_seen_at = excluded.last_seen_at`, fingerprint, sanitized,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		formatStoredTime(now), formatStoredTime(now))
 	if err != nil {
 		return Diagnostic{}, fmt.Errorf("persist diagnostic: %w", err)
 	}
