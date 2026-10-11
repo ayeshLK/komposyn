@@ -16,7 +16,9 @@ package tokenlogger
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -62,5 +64,52 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("settings=%+v want=%+v", got, want)
+	}
+}
+
+func TestSaveSettingsReplacesPermissiveFilePrivately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"collector_enabled":false}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := DefaultSettings("/tmp/token-logger")
+	want.CollectorEnabled = true
+	if err := SaveSettings(path, want); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Fatalf("settings mode = %o, want 600", mode)
+		}
+	}
+	got, err := LoadSettings(path, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("settings=%+v want=%+v", got, want)
+	}
+}
+
+func TestSaveSettingsPreservesPreviousFileWhenPreparationFails(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "settings.json")
+	previous := []byte("previous settings\n")
+	if err := os.WriteFile(path, previous, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSettings(filepath.Join(path, "nested.json"), DefaultSettings("/tmp/token-logger")); err == nil {
+		t.Fatal("SaveSettings succeeded with a file as its parent")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(previous) {
+		t.Fatalf("previous settings changed to %q", got)
 	}
 }
