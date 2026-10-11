@@ -32,11 +32,11 @@ const currentSchemaVersion = 2
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.
 type TokenUsage struct {
-	InputTokens      int64
-	OutputTokens     int64
-	CacheReadTokens  int64
-	CacheWriteTokens int64
-	ReasoningTokens  int64
+	InputTokens      int64 `json:"input_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	ReasoningTokens  int64 `json:"reasoning_tokens"`
 }
 
 func (u TokenUsage) validate() error {
@@ -64,12 +64,12 @@ func (u TokenUsage) validate() error {
 // Cost records the provenance of an event's cost. AmountMicros is expressed
 // in integer micro-units of Currency and is absent when Status is unknown.
 type Cost struct {
-	Status           string
-	AmountMicros     *int64
-	Currency         string
-	PricingVersion   string
-	ProviderAmount   *int64
-	ProviderCurrency string
+	Status           string `json:"status"`
+	AmountMicros     *int64 `json:"amount_micros,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	PricingVersion   string `json:"pricing_version,omitempty"`
+	ProviderAmount   *int64 `json:"provider_amount,omitempty"`
+	ProviderCurrency string `json:"provider_currency,omitempty"`
 }
 
 func (c Cost) validate() error {
@@ -90,45 +90,45 @@ func (c Cost) validate() error {
 
 // Client identifies the local agent that initiated a model request.
 type Client struct {
-	Name    string
-	Version string
-	Mode    string
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 // Provenance identifies the provider-owned record from which an event was
 // normalized. Source content is intentionally not part of this structure.
 type Provenance struct {
-	Adapter      string
-	SourceID     string
-	SourceRecord string
-	SourceOffset *int64
-	RecordHash   string
+	Adapter      string `json:"adapter"`
+	SourceID     string `json:"source_id"`
+	SourceRecord string `json:"source_record"`
+	SourceOffset *int64 `json:"source_offset,omitempty"`
+	RecordHash   string `json:"record_hash,omitempty"`
 }
 
 // UsageEvent is the provider-neutral durable unit of usage. It represents one
 // completed model request and is safe to retry when IngestionKey is stable.
 type UsageEvent struct {
-	EventID       string
-	SchemaVersion int
-	EventType     string
-	OccurredAt    time.Time
-	StartedAt     *time.Time
-	CompletedAt   *time.Time
+	EventID       string     `json:"event_id"`
+	SchemaVersion int        `json:"schema_version"`
+	EventType     string     `json:"event_type"`
+	OccurredAt    time.Time  `json:"occurred_at"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 
-	ProjectID      string
-	SessionID      string
-	RequestID      string
-	Attempt        int
-	Operation      string
-	Client         Client
-	Provider       string
-	RequestedModel string
-	ResolvedModel  string
-	Usage          TokenUsage
-	Cost           Cost
-	Provenance     Provenance
-	IngestionKey   string
-	Attributes     json.RawMessage
+	ProjectID      string          `json:"project_id,omitempty"`
+	SessionID      string          `json:"session_id,omitempty"`
+	RequestID      string          `json:"request_id,omitempty"`
+	Attempt        int             `json:"attempt,omitempty"`
+	Operation      string          `json:"operation,omitempty"`
+	Client         Client          `json:"client"`
+	Provider       string          `json:"provider"`
+	RequestedModel string          `json:"requested_model,omitempty"`
+	ResolvedModel  string          `json:"resolved_model,omitempty"`
+	Usage          TokenUsage      `json:"usage"`
+	Cost           Cost            `json:"cost,omitempty"`
+	Provenance     Provenance      `json:"provenance"`
+	IngestionKey   string          `json:"ingestion_key"`
+	Attributes     json.RawMessage `json:"attributes,omitempty"`
 }
 
 // Validate checks the normalized event contract before persistence.

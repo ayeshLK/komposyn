@@ -16,9 +16,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
 )
@@ -76,6 +80,68 @@ func TestVersionFlag(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(stdout.String()), "komposyn-lg "+tokenlogger.Version; got != want {
 		t.Fatalf("--version output = %q, want %q", got, want)
+	}
+}
+
+func TestHarnessProtocolFixture(t *testing.T) {
+	dataDir := t.TempDir()
+	event := tokenlogger.UsageEvent{
+		EventID: "event-1", SchemaVersion: 1, EventType: "model.request",
+		OccurredAt: time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC),
+		Client:     tokenlogger.Client{Name: "fixture-harness"}, Provider: "openai", RequestedModel: "gpt-test",
+		Usage:        tokenlogger.TokenUsage{InputTokens: 10, OutputTokens: 5},
+		Provenance:   tokenlogger.Provenance{Adapter: "fixture", SourceID: "fixture-source", SourceRecord: "record-1"},
+		IngestionKey: "fixture-source:record-1",
+	}
+	requests := []map[string]any{
+		{"protocol": protocolName, "version": protocolVersion, "id": "1", "method": "initialize", "params": map[string]any{"data_dir": dataDir}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "2", "method": "record", "params": map[string]any{"event": event}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "3", "method": "flush"},
+		{"protocol": protocolName, "version": protocolVersion, "id": "4", "method": "health"},
+		{"protocol": protocolName, "version": protocolVersion, "id": "5", "method": "shutdown"},
+	}
+	var input bytes.Buffer
+	for _, request := range requests {
+		if err := json.NewEncoder(&input).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithInput([]string{"harness"}, &input, &stdout, &stderr); code != 0 {
+		t.Fatalf("harness exit code = %d, stderr = %q", code, stderr.String())
+	}
+	decoder := json.NewDecoder(&stdout)
+	var responses []protocolResponse
+	for {
+		var response protocolResponse
+		if err := decoder.Decode(&response); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		responses = append(responses, response)
+	}
+	if len(responses) != 5 {
+		t.Fatalf("response count = %d, want 5", len(responses))
+	}
+	for _, response := range responses {
+		if !response.OK {
+			t.Fatalf("protocol response %q failed: %#v", response.ID, response.Error)
+		}
+		if response.Protocol != protocolName || response.Version != protocolVersion {
+			t.Fatalf("response %q has unexpected protocol metadata: %#v", response.ID, response)
+		}
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if count, err := store.EventCount(); err != nil || count != 1 {
+		t.Fatalf("durable event count = %d, err = %v; want 1", count, err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected protocol diagnostics: %q", stderr.String())
 	}
 }
 
