@@ -1,0 +1,20 @@
+# Build output
+/bin/
+
+# Local agent metadata
+.codex/
+
+# Local token logger data and configuration
+.token-logger/
+token-logger.db
+*.db-shm
+*.db-wal
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Go tooling
+coverage.out
+coverage.html
