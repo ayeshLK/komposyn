@@ -83,6 +83,99 @@ func TestVersionFlag(t *testing.T) {
 	}
 }
 
+func TestParseReportTimezone(t *testing.T) {
+	filter, _, _, err := parseReportArgs("usage", []string{"--timezone", "Asia/Kathmandu"})
+	if err != nil {
+		t.Fatalf("parse report timezone: %v", err)
+	}
+	if got, want := filter.Timezone.String(), "Asia/Kathmandu"; got != want {
+		t.Fatalf("timezone = %q, want %q", got, want)
+	}
+
+	if _, _, _, err := parseReportArgs("usage", []string{"--timezone", "not/a-zone"}); err == nil {
+		t.Fatal("invalid timezone unexpectedly accepted")
+	}
+}
+
+func TestReportTimezoneAcrossOutputFormats(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []tokenlogger.UsageEvent{
+		cliReportEvent("dst-first", time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC)),
+		cliReportEvent("dst-second", time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC)),
+	}
+	if _, err := store.Append(events); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	args := []string{"usage", "--data-dir", dataDir, "--format", "json", "--group-by", "hour", "--timezone", "America/New_York", "--from", "2026-10-31T00:00:00Z", "--to", "2026-11-02T00:00:00Z"}
+	var jsonOutput, stderr bytes.Buffer
+	if code := run(args, &jsonOutput, &stderr); code != 0 {
+		t.Fatalf("JSON report exit code = %d, stderr = %q", code, stderr.String())
+	}
+	var report tokenlogger.UsageReport
+	if err := json.Unmarshal(jsonOutput.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Timezone != "America/New_York" || len(report.Rows) != 2 {
+		t.Fatalf("unexpected JSON report timezone/rows: %+v", report)
+	}
+	if report.Rows[0].Bucket != "2026-11-01T01:00:00-04:00" || report.Rows[1].Bucket != "2026-11-01T01:00:00-05:00" {
+		t.Fatalf("unexpected DST fold buckets: %+v", report.Rows)
+	}
+
+	for _, format := range []string{"csv", "table"} {
+		args[4] = format
+		var output, formatStderr bytes.Buffer
+		if code := run(args, &output, &formatStderr); code != 0 {
+			t.Fatalf("%s report exit code = %d, stderr = %q", format, code, formatStderr.String())
+		}
+		if !strings.Contains(output.String(), "2026-11-01T01:00:00-04:00") || !strings.Contains(output.String(), "2026-11-01T01:00:00-05:00") {
+			t.Fatalf("%s report omitted DST fold buckets: %q", format, output.String())
+		}
+	}
+}
+
+func TestReportTimezoneFractionalOffset(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append([]tokenlogger.UsageEvent{cliReportEvent("fractional", time.Date(2026, 10, 11, 0, 15, 0, 0, time.UTC))}); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"usage", "--data-dir", dataDir, "--format", "json", "--group-by", "hour", "--timezone", "Asia/Kathmandu", "--from", "2026-10-10T00:00:00Z", "--to", "2026-10-12T00:00:00Z"}
+	var output, stderr bytes.Buffer
+	if code := run(args, &output, &stderr); code != 0 {
+		t.Fatalf("report exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(output.String(), "2026-10-11T06:00:00+05:45") {
+		t.Fatalf("fractional-offset bucket missing: %q", output.String())
+	}
+}
+
+func cliReportEvent(id string, occurredAt time.Time) tokenlogger.UsageEvent {
+	return tokenlogger.UsageEvent{
+		EventID: id, SchemaVersion: 1, EventType: "model.request", OccurredAt: occurredAt,
+		Client: tokenlogger.Client{Name: "test-client"}, Provider: "test-provider", RequestedModel: "test-model",
+		Usage:        tokenlogger.TokenUsage{InputTokens: 1, OutputTokens: 1},
+		Provenance:   tokenlogger.Provenance{Adapter: "test", SourceID: "test-source", SourceRecord: id},
+		IngestionKey: "test-source:" + id,
+	}
+}
+
 func TestHarnessProtocolFixture(t *testing.T) {
 	dataDir := t.TempDir()
 	event := tokenlogger.UsageEvent{

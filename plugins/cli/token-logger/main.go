@@ -566,6 +566,12 @@ func parseReportArgs(command string, args []string) (tokenlogger.UsageFilter, st
 			filter.Provider = value
 		case "--model":
 			filter.Model = value
+		case "--timezone":
+			location, err := time.LoadLocation(value)
+			if err != nil {
+				return filter, format, dataDir, fmt.Errorf("invalid --timezone %q: %w", value, err)
+			}
+			filter.Timezone = location
 		case "--from":
 			parsed, err := parseTime(value)
 			if err != nil {
