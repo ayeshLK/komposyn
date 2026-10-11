@@ -23,6 +23,8 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   installers/uninstallers, and release lifecycle verification.
 - `.github/workflows/ci.yml` — formatting, module verification, vet, tests,
   builds, and race tests on GitHub Actions.
+- `.github/workflows/codeql.yml` — scheduled and pull-request CodeQL analysis
+  with read-only repository access and narrowly scoped security-events access.
 - `.github/workflows/release.yml` — tagged release build, Cosign signing and
   verification, publication, and installer lifecycle checks.
 - `Makefile` — the preferred local entry points for development and releases.
@@ -38,8 +40,20 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
 - Event ingestion is idempotent through stable ingestion keys. Preserve
   transactional behavior: an append and its source cursor advance together, or
   neither is committed.
-- SQLite schema changes require an explicit migration in
-  `plugins/library/token-logger/migrations.go` and tests for upgrade behavior.
+- The current SQLite schema version is 4. Migrations 1 and 2 create the core
+  and diagnostics tables, migration 3 normalizes stored timestamps to fixed
+  width UTC values, and migration 4 adds source-generation tracking for
+  transcript replacement detection. SQLite schema changes require an explicit
+  numbered migration in `plugins/library/token-logger/migrations.go`, a
+  matching runner update, and an upgrade test covering the complete history.
+- Provider adapters parse one immutable source snapshot for both fingerprinting
+  and event offsets. Preserve source-cursor generation behavior when handling
+  replacements, and do not reintroduce separate file-descriptor parsing.
+- Reports group hourly data by local civil hour while retaining the event's
+  numeric UTC offset, including fractional offsets and DST folds.
+- Harness reference metadata and its event must be persisted atomically. A
+  session that names a project requires matching project metadata in the same
+  record request; preserve stable protocol error codes and protocol version 1.
 - Preserve existing database, configuration, consent, and local diagnostic
   data during upgrades and uninstall. The initial upgrade strategy is to rerun
   the latest standalone installer; in-CLI self-updating is deferred.
@@ -63,9 +77,11 @@ make check
 
 `make check` runs formatting, vet, tests, and a CLI build. The CI workflow also
 verifies `go mod verify`, Go formatting, and builds on Linux, macOS, and
-Windows. Add or update tests alongside behavior changes, especially for
-provider normalization, idempotency, migrations, reporting, protocol errors,
-and data preservation.
+Windows; the race job runs `go test -race ./...`, and CodeQL runs separately.
+Note that `make fmt` and the `fmt` phase of `make check` modify Go files;
+review the resulting diff afterward. Add or update tests alongside behavior
+changes, especially for provider normalization, immutable snapshots,
+idempotency, migrations, reporting, protocol errors, and data preservation.
 
 Useful local commands:
 
@@ -97,6 +113,11 @@ checksums and Cosign blob signatures, including the expected GitHub Actions
 certificate identity and OIDC issuer. Do not weaken those checks or introduce
 an installer path that bypasses signature verification.
 
+The release workflow keeps permissions least-privilege: the build job receives
+OIDC signing access, installer verification is read-only, and only publication
+receives `contents: write`. Keep third-party Actions pinned to immutable commit
+SHAs when changing workflows.
+
 Before changing release scripts, run shell syntax checks and the lifecycle
 verifier:
 
@@ -109,6 +130,11 @@ bash scripts/verify-release.sh /tmp/komposyn-release-test
 Use a fresh temporary or dedicated output path for each build. Do not point the
 release builder at a home directory, repository root, parent directory, or a
 directory containing unrelated files.
+
+The release verifier exercises install, upgrade-by-replacement, and
+data-preserving uninstall. The initial upgrade contract is executable
+replacement by the latest standalone installer; it must preserve the database,
+settings, and consent/data directory.
 
 ## Change and safety guidelines
 
