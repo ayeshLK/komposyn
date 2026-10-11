@@ -1,9 +1,13 @@
 # Release verification
 
-Tagged releases are built by GitHub Actions from `v*` tags. The release
-workflow tests the code, builds six platform artifacts, verifies installation
-and data preservation, signs artifacts with Cosign, and publishes only after
-the verification jobs pass.
+Release Please prepares the version and changelog in a reviewed release pull
+request. The later publication workflow will validate that prepared version,
+build six platform artifacts, verify installation and data preservation, sign
+artifacts with Cosign, and publish only after the verification jobs pass.
+
+The initial unreleased baseline is `0.0.0`; the first release is expected to be
+`v0.1.0`. Development binaries report `0.0.0-dev`, while release binaries
+report the version injected from their tag.
 
 ## Artifacts
 
