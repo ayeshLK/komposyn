@@ -31,8 +31,9 @@ komposyn-lg sessions --data-dir /path/to/data --format csv --project project-id
 
 Common filters are `--from`, `--to`, `--project`, `--session`, `--client`,
 `--provider`, and `--model`. Grouping is controlled with comma-separated
-`--group-by` values. Hourly grouping uses the event’s local civil hour and
-retains its numeric offset, including fractional offsets and DST folds.
+`--group-by` values. Use `--timezone <IANA time zone>` to choose the reporting
+location; it defaults to UTC. Hourly grouping uses that location's civil hour
+and retains its numeric offset, including fractional offsets and DST folds.
 
 If pricing is unavailable, reports preserve the usage event and mark its cost
 as unknown rather than inventing a price.

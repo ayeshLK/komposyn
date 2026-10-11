@@ -49,7 +49,13 @@ Supported options include:
 --provider <name>
 --model <name>
 --group-by <comma-separated-dimensions>
+--timezone <IANA time zone>
 ```
+
+`--timezone` selects the reporting location for time-based groups such as
+`hour`. It accepts an IANA time zone name such as `Asia/Kathmandu` or
+`America/New_York`; omitted, reports use UTC. The selected timezone is included
+in JSON output as `timezone`.
 
 ### `watch`
 
