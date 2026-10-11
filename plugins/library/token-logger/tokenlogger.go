@@ -24,8 +24,9 @@ import (
 	"time"
 )
 
-// Version is the current library version.
-const Version = "0.1.0"
+// Version is the current library version. Release builds replace this value
+// from the release tag at link time.
+var Version = "0.1.0"
 
 const currentSchemaVersion = 2
 
