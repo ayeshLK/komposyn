@@ -8,6 +8,7 @@ cosign_bin="${KOMPOSYN_COSIGN_BIN:-cosign}"
 cosign_identity="${KOMPOSYN_COSIGN_IDENTITY_REGEXP:-^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/tags/.*$}"
 cosign_issuer="https://token.actions.githubusercontent.com"
 base_url="https://github.com/${repo}/releases"
+release_dir="${KOMPOSYN_RELEASE_DIR:-}"
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
 case "$os" in
@@ -22,7 +23,11 @@ case "$arch" in
 esac
 
 if [[ "$version" == latest ]]; then
-	version="$(curl -fsSL "${base_url}/latest/download/SHA256SUMS" | sed -n 's/^# version=//p' | head -1)"
+	if [[ -n "$release_dir" ]]; then
+		version="$(sed -n 's/^# version=//p' "$release_dir/SHA256SUMS" | head -1)"
+	else
+		version="$(curl -fsSL "${base_url}/latest/download/SHA256SUMS" | sed -n 's/^# version=//p' | head -1)"
+	fi
 	if [[ -z "$version" ]]; then
 		version="latest"
 	fi
@@ -39,10 +44,20 @@ fi
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
-curl -fsSL "$asset_url" -o "$tmp_dir/$asset"
-curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS"
-curl -fsSL "${asset_url}.sig" -o "$tmp_dir/$asset.sig"
-curl -fsSL "${asset_url}.pem" -o "$tmp_dir/$asset.pem"
+if [[ -n "$release_dir" ]]; then
+	for release_file in "$release_dir/$asset" "$release_dir/SHA256SUMS" "$release_dir/$asset.sig" "$release_dir/$asset.pem"; do
+		[[ -f "$release_file" ]] || { echo "missing local release artifact: $release_file" >&2; exit 1; }
+	done
+	cp "$release_dir/$asset" "$tmp_dir/$asset"
+	cp "$release_dir/SHA256SUMS" "$tmp_dir/SHA256SUMS"
+	cp "$release_dir/$asset.sig" "$tmp_dir/$asset.sig"
+	cp "$release_dir/$asset.pem" "$tmp_dir/$asset.pem"
+else
+	curl -fsSL "$asset_url" -o "$tmp_dir/$asset"
+	curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS"
+	curl -fsSL "${asset_url}.sig" -o "$tmp_dir/$asset.sig"
+	curl -fsSL "${asset_url}.pem" -o "$tmp_dir/$asset.pem"
+fi
 command -v "$cosign_bin" >/dev/null 2>&1 || { echo "cosign is required to verify release signatures" >&2; exit 1; }
 if command -v sha256sum >/dev/null 2>&1; then
 	(cd "$tmp_dir" && grep "  ${asset}$" SHA256SUMS | sha256sum -c -)
