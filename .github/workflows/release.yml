@@ -7,6 +7,10 @@ on:
         description: Confirm issue #46 API, schema/backup, diagnostics, and version gates are complete
         required: true
         type: boolean
+      release_commit:
+        description: Optional master commit for a reviewed-release retry after a post-merge fix
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -33,6 +37,7 @@ jobs:
       - name: Resolve merged release pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT_INPUT: ${{ inputs.release_commit }}
         shell: bash
         run: |
           mapfile -t pending < <(
@@ -48,7 +53,21 @@ jobs:
             printf '%s\n' "${pending[@]}" >&2
             exit 1
           fi
-          commit="${pending[0]##* }"
+          prepared_commit="${pending[0]##* }"
+          commit="$prepared_commit"
+          if [[ -n "$RELEASE_COMMIT_INPUT" ]]; then
+            git cat-file -e "$RELEASE_COMMIT_INPUT^{commit}"
+            git merge-base --is-ancestor "$prepared_commit" "$RELEASE_COMMIT_INPUT" || {
+              echo "Recovery commit must descend from the merged release PR commit $prepared_commit" >&2
+              exit 1
+            }
+            git merge-base --is-ancestor "$RELEASE_COMMIT_INPUT" HEAD || {
+              echo "Recovery commit must be reachable from master" >&2
+              exit 1
+            }
+            commit="$RELEASE_COMMIT_INPUT"
+            echo "Using reviewed-release recovery commit $commit after $prepared_commit"
+          fi
           git cat-file -e "$commit^{commit}"
           git checkout --detach "$commit"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
