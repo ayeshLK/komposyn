@@ -16,6 +16,7 @@ package tokenlogger
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,73 @@ func mustLoadLocation(t *testing.T, name string) *time.Location {
 		t.Fatal(err)
 	}
 	return location
+}
+
+func TestQueryUsesChronologicalFixedWidthTimestamps(t *testing.T) {
+	store := openTestStore(t)
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	to := from.Add(time.Second)
+	eventIDs := []string{"timestamp-event-zero", "timestamp-event-half", "timestamp-event-end"}
+	for index, occurredAt := range []time.Time{from, from.Add(500 * time.Millisecond), to} {
+		event := testEvent("timestamp-" + eventIDs[index])
+		event.EventID = eventIDs[index]
+		event.OccurredAt = occurredAt
+		if _, err := store.Append([]UsageEvent{event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var first, second string
+	if err := store.db.QueryRow("SELECT occurred_at FROM usage_events WHERE event_id = ?", eventIDs[0]).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT occurred_at FROM usage_events WHERE event_id = ?", eventIDs[1]).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	if first != "2026-10-11T00:00:00.000000000Z" || second != "2026-10-11T00:00:00.500000000Z" {
+		t.Fatalf("stored timestamps = %q, %q; want fixed-width UTC values", first, second)
+	}
+	report, err := store.Query(UsageFilter{From: from, To: to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.RequestCount != 2 {
+		t.Fatalf("range request count = %d, want 2", report.Summary.RequestCount)
+	}
+}
+
+func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "token-logger.db")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := testEvent("legacy-timestamp")
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE usage_events SET occurred_at = ?, started_at = NULL WHERE event_id = ?", "2026-10-11T00:00:00.5Z", event.EventID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var occurredAt string
+	if err := store.db.QueryRow("SELECT occurred_at FROM usage_events WHERE event_id = ?", event.EventID).Scan(&occurredAt); err != nil {
+		t.Fatal(err)
+	}
+	if occurredAt != "2026-10-11T00:00:00.500000000Z" {
+		t.Fatalf("migrated timestamp = %q, want fixed-width value", occurredAt)
+	}
 }
 
 func TestReportFormats(t *testing.T) {

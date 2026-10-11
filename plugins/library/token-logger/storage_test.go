@@ -97,6 +97,25 @@ func TestAppendRollsBackEventAndCursorOnPersistenceFailure(t *testing.T) {
 	}
 }
 
+func TestAppendWithReferencesRollsBackReferencesOnEventFailure(t *testing.T) {
+	store := openTestStore(t)
+	event := testEvent("ingestion-1")
+	event.ProjectID = "project-1"
+	event.SessionID = "missing-session"
+	project := Project{ID: "project-1", Root: "/redacted/project", DisplayName: "Example"}
+
+	if _, err := store.AppendWithReferences([]UsageEvent{event}, []Project{project}, nil); err == nil {
+		t.Fatal("append with missing session was accepted")
+	}
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM projects WHERE id = ?", project.ID).Scan(&count); err != nil {
+		t.Fatalf("query rolled-back project: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("failed append left %d project rows", count)
+	}
+}
+
 func TestProjectsAndSessionsCanBeUpsertedAndReferenced(t *testing.T) {
 	store := openTestStore(t)
 	if err := store.UpsertProject(Project{ID: "project-1", Root: "/redacted/project", DisplayName: "Example"}); err != nil {

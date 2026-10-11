@@ -28,7 +28,7 @@ import (
 // from the release tag at link time.
 var Version = "0.1.0"
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.
@@ -187,19 +187,19 @@ func (e UsageEvent) Validate() error {
 
 // Project is a stable local project identity.
 type Project struct {
-	ID          string
-	Root        string
-	DisplayName string
+	ID          string `json:"id"`
+	Root        string `json:"root,omitempty"`
+	DisplayName string `json:"display_name"`
 }
 
 // Session associates a sequence of events with a project and client.
 type Session struct {
-	ID             string
-	ProjectID      string
-	Client         Client
-	StartedAt      *time.Time
-	EndedAt        *time.Time
-	SourceMetadata json.RawMessage
+	ID             string          `json:"id"`
+	ProjectID      string          `json:"project_id,omitempty"`
+	Client         Client          `json:"client"`
+	StartedAt      *time.Time      `json:"started_at,omitempty"`
+	EndedAt        *time.Time      `json:"ended_at,omitempty"`
+	SourceMetadata json.RawMessage `json:"source_metadata,omitempty"`
 }
 
 // Cursor records the committed read position of a provider source.
