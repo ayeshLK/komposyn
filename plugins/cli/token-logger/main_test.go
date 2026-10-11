@@ -132,6 +132,14 @@ func TestHarnessProtocolFixture(t *testing.T) {
 			t.Fatalf("response %q has unexpected protocol metadata: %#v", response.ID, response)
 		}
 	}
+	manifest, ok := responses[0].Result.(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result = %#v, want plugin manifest", responses[0].Result)
+	}
+	versions, ok := manifest["schema_versions"].([]any)
+	if !ok || len(versions) != 4 {
+		t.Fatalf("schema versions = %#v, want four supported versions", manifest["schema_versions"])
+	}
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
 		t.Fatal(err)
