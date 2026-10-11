@@ -45,7 +45,9 @@ contracts remain the source of truth for users and integrators.
 - Keep contracts explicit, versioned, and testable.
 - Prefer local control and data minimization for sensitive agent workflows.
 - Use open standards where the implementation and compatibility mapping support
-  the claim; do not imply interoperability that has not been tested.
+  the claim; do not imply interoperability that has not been tested. The current
+  [OpenTelemetry alignment audit](otel-alignment.md) records correspondences
+  and gaps without claiming an exporter or conformance.
 - Record unresolved product decisions instead of silently turning proposals
   into compatibility promises.
 
