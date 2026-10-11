@@ -9,6 +9,24 @@ The initial unreleased baseline is `0.0.0`; the first release is expected to be
 `v0.1.0`. Development binaries report `0.0.0-dev`, while release binaries
 report the version injected from their tag.
 
+## Publishing a release
+
+Release publication is a two-step, manually dispatched GitHub Actions flow:
+
+1. Run **Prepare release** from the Actions tab. Release Please opens or updates
+   the release pull request with the next version and changelog entry.
+2. Review and merge that pull request.
+3. Run **Publish release** from the Actions tab. The workflow checks out the
+   merged commit, runs the test and lifecycle verification matrix, builds and
+   signs the artifacts, then asks Release Please to create the tag and GitHub
+   Release before uploading the signed artifacts.
+
+The publish workflow must be run after the release pull request is merged. It
+does not run from a tag push, which prevents a release from recursively
+triggering another release workflow. The `release` environment should require
+the repository's release approval policy before the final publication job can
+run.
+
 ## Artifacts
 
 Each release targets:

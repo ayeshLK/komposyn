@@ -1,15 +1,71 @@
-name: Release
+name: Publish release
 
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    name: Validate prepared release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - name: Check out master
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Read and validate prepared version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(jq -er '.["."] | select(type == "string")' .release-please-manifest.json)"
+          if [[ "$VERSION" == "0.0.0" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Prepared release must be a non-zero semantic version" >&2
+            exit 1
+          fi
+          TAG="v$VERSION"
+          if git rev-parse --verify --quiet "refs/tags/$TAG"; then
+            echo "Tag $TAG already exists; prepare the next release first" >&2
+            exit 1
+          fi
+          if ! grep -Eq "^## (\\[$VERSION\\]|$VERSION)( |$)" CHANGELOG.md; then
+            echo "CHANGELOG.md has no release section for $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Record tested commit
+        id: commit
+        shell: bash
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race tests
+        run: go test -race ./...
+
   build-release:
     name: Build and sign release artifacts
+    needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -17,6 +73,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -26,10 +84,7 @@ jobs:
 
       - name: Build release artifacts
         run: |
-          go vet ./...
-          go test ./...
-          go test -race ./...
-          make release VERSION="${GITHUB_REF_NAME}" OUTPUT_DIR=dist
+          make release VERSION="${{ needs.prepare.outputs.tag }}" OUTPUT_DIR=dist
 
       - name: Verify installation, upgrade, and uninstall
         run: bash scripts/verify-release.sh dist
@@ -49,7 +104,7 @@ jobs:
             cosign verify-blob \
               --signature "${artifact}.sig" \
               --certificate "${artifact}.pem" \
-              --certificate-identity-regexp '^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/tags/.*$' \
+              --certificate-identity-regexp '^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master$' \
               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
               "$artifact"
           done
@@ -63,7 +118,7 @@ jobs:
 
   verify-installers:
     name: Verify installer (${{ matrix.os }})
-    needs: build-release
+    needs: [prepare, build-release]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -72,6 +127,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -99,7 +156,7 @@ jobs:
       - name: Verify Unix installer lifecycle
         if: runner.os != 'Windows'
         env:
-          KOMPOSYN_VERSION: ${{ github.ref_name }}
+          KOMPOSYN_VERSION: ${{ needs.prepare.outputs.tag }}
           KOMPOSYN_RELEASE_DIR: ${{ github.workspace }}/dist
           KOMPOSYN_INSTALL_DIR: ${{ runner.temp }}/komposyn-bin
           TOKEN_LOGGER_DATA_DIR: ${{ runner.temp }}/komposyn-data
@@ -120,7 +177,7 @@ jobs:
       - name: Verify Windows installer lifecycle
         if: runner.os == 'Windows'
         env:
-          KOMPOSYN_VERSION: ${{ github.ref_name }}
+          KOMPOSYN_VERSION: ${{ needs.prepare.outputs.tag }}
           KOMPOSYN_RELEASE_DIR: ${{ github.workspace }}/dist
         shell: pwsh
         run: |
@@ -142,18 +199,52 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [build-release, verify-installers]
+    needs: [prepare, build-release, verify-installers]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
+      pull-requests: write
     steps:
+      - name: Check out tested source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.commit }}
+
       - name: Download signed release artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-artifacts
           path: dist
 
-      - name: Publish GitHub release
+      - name: Create GitHub release with Release Please
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
+          target-branch: master
+
+      - name: Verify created release
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes
+          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          EXPECTED_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          [[ "$RELEASE_CREATED" == "true" ]] || {
+            echo "Release Please did not create a release" >&2
+            exit 1
+          }
+          [[ "$RELEASE_TAG" == "$EXPECTED_TAG" ]] || {
+            echo "Expected $EXPECTED_TAG but Release Please created $RELEASE_TAG" >&2
+            exit 1
+          }
+
+      - name: Upload signed release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
