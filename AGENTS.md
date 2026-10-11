@@ -1,0 +1,125 @@
+# AGENTS.md
+
+## Repository overview
+
+Komposyn Token Logger is a local-first Go application that normalizes usage
+events from AI coding clients, stores them in SQLite, and produces usage and
+cost reports. The standalone executable is named `komposyn-lg`.
+
+The module is `github.com/ayeshLK/komposyn` and requires Go 1.26 or newer.
+The repository is licensed under Apache-2.0; preserve the headers and consult
+`LICENSE`, `NOTICE`, `CONTRIBUTING.md`, and `SECURITY.md` before making changes.
+
+## Repository layout
+
+- `plugins/library/token-logger/` — domain model, validation, SQLite storage,
+  migrations, provider adapters, collector, pricing, diagnostics, and report
+  formatting. This package must remain usable independently of the CLI.
+- `plugins/cli/token-logger/` — the `komposyn-lg` command, interactive mode,
+  import/report/settings commands, and the `harness` JSONL sidecar protocol.
+- `docs/HARNESS_PROTOCOL.md` — versioned protocol contract. Keep stdout clean:
+  protocol responses only; diagnostics go to stderr.
+- `scripts/` — release archive creation, dependency-license collection,
+  installers/uninstallers, and release lifecycle verification.
+- `.github/workflows/ci.yml` — formatting, module verification, vet, tests,
+  builds, and race tests on GitHub Actions.
+- `.github/workflows/release.yml` — tagged release build, Cosign signing and
+  verification, publication, and installer lifecycle checks.
+- `Makefile` — the preferred local entry points for development and releases.
+
+## Core design invariants
+
+- Keep the library/CLI boundary intact. Domain behavior belongs in the library;
+  CLI code should adapt arguments, input/output, and process lifecycle.
+- Keep provider source files read-only by default. The logger ingests local
+  source data and must not modify provider logs.
+- Do not capture prompts, responses, credentials, or other source content by
+  default. Persist normalized usage and provenance fields only.
+- Event ingestion is idempotent through stable ingestion keys. Preserve
+  transactional behavior: an append and its source cursor advance together, or
+  neither is committed.
+- SQLite schema changes require an explicit migration in
+  `plugins/library/token-logger/migrations.go` and tests for upgrade behavior.
+- Preserve existing database, configuration, consent, and local diagnostic
+  data during upgrades and uninstall. The initial upgrade strategy is to rerun
+  the latest standalone installer; in-CLI self-updating is deferred.
+- The harness protocol is versioned. Maintain stable error codes and the
+  `initialize`, `record`, `flush`, `health`, and `shutdown` method semantics.
+  Keep the per-message input limit and never write logs to protocol stdout.
+- Diagnostics must be sanitized, deduplicated, stored locally, and explicitly
+  reviewed before an issue draft is opened. Never include sensitive source
+  content in diagnostics or issue reports.
+
+## Development workflow
+
+Run the focused checks while iterating:
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+make check
+```
+
+`make check` runs formatting, vet, tests, and a CLI build. The CI workflow also
+verifies `go mod verify`, Go formatting, and builds on Linux, macOS, and
+Windows. Add or update tests alongside behavior changes, especially for
+provider normalization, idempotency, migrations, reporting, protocol errors,
+and data preservation.
+
+Useful local commands:
+
+```sh
+make build
+go test ./plugins/library/token-logger -run TestName
+go test ./plugins/cli/token-logger -run TestName
+```
+
+Keep generated binaries under ignored `bin/`; do not commit local databases,
+WAL files, release archives, or agent metadata.
+
+## Release workflow
+
+Build a release with a dedicated empty directory:
+
+```sh
+make release VERSION=v0.1.0 OUTPUT_DIR=dist
+```
+
+`scripts/build-release.sh` creates the output directory if absent, rejects
+unsafe/symlinked paths, and refuses non-empty directories. It must never delete
+or overwrite caller-owned files. The release contains six Go targets:
+Linux/macOS amd64 and arm64, plus Windows amd64 and arm64. It also includes
+third-party license attribution and `SHA256SUMS`.
+
+Tagged releases are built and signed in GitHub Actions. Installers verify both
+checksums and Cosign blob signatures, including the expected GitHub Actions
+certificate identity and OIDC issuer. Do not weaken those checks or introduce
+an installer path that bypasses signature verification.
+
+Before changing release scripts, run shell syntax checks and the lifecycle
+verifier:
+
+```sh
+bash -n scripts/*.sh
+make release VERSION=v0.1.0 OUTPUT_DIR=/tmp/komposyn-release-test
+bash scripts/verify-release.sh /tmp/komposyn-release-test
+```
+
+Use a fresh temporary or dedicated output path for each build. Do not point the
+release builder at a home directory, repository root, parent directory, or a
+directory containing unrelated files.
+
+## Change and safety guidelines
+
+- Inspect the worktree before editing and preserve unrelated user changes.
+- Prefer `apply_patch` for tracked-file edits.
+- Avoid destructive commands. Never recursively remove broad or unresolved
+  paths. Confirm exact targets before deleting temporary artifacts.
+- Keep changes scoped to the requested behavior and update documentation when
+  contracts, commands, protocol behavior, or release assumptions change.
+- Do not add network calls, telemetry, provider credentials, or external data
+  transmission without an explicit design change and user consent.
+- For security-sensitive changes, explain the threat model, add a regression
+  test where practical, and run the relevant release or lifecycle checks.
+
