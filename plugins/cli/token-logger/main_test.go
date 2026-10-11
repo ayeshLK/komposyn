@@ -60,7 +60,7 @@ func TestCLIUsage(t *testing.T) {
 func TestInteractiveMode(t *testing.T) {
 	t.Setenv("TOKEN_LOGGER_DATA_DIR", t.TempDir())
 	var stdout, stderr bytes.Buffer
-	code := runWithInput(nil, strings.NewReader("/help\n/range 2026-10-11 2026-10-12\n/quit\n"), &stdout, &stderr)
+	code := runWithInput(nil, strings.NewReader("n\nn\n/help\n/range 2026-10-11 2026-10-12\n/quit\n"), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
@@ -68,5 +68,16 @@ func TestInteractiveMode(t *testing.T) {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("interactive output missing %q: %q", expected, stdout.String())
 		}
+	}
+}
+
+func TestSettingsCommand(t *testing.T) {
+	dataDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"settings", "--data-dir", dataDir, "--collector", "on", "--auto-start", "off"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("settings exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "collector=true") {
+		t.Fatalf("unexpected settings output: %q", stdout.String())
 	}
 }

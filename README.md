@@ -31,6 +31,8 @@ komposyn-lg import <file-or-directory> --data-dir <path>
 komposyn-lg usage --data-dir <path> --format table
 komposyn-lg cost --data-dir <path> --format json
 komposyn-lg sessions --data-dir <path> --format csv
+komposyn-lg watch <file-or-directory> --data-dir <path>
+komposyn-lg settings --data-dir <path> --collector on
 ```
 
 Reports support `--from`, `--to`, `--project`, `--session`, `--client`,

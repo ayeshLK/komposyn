@@ -16,11 +16,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ayeshLK/komposyn/plugins/library/token-logger"
@@ -46,15 +49,34 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 			return 2
 		}
 		defer store.Close()
-		return runInteractive(input, stdout, stderr, store, dataDir)
+		settingsPath := filepath.Join(dataDir, "settings.json")
+		settings, err := tokenlogger.LoadSettings(settingsPath, dataDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "load settings: %v\n", err)
+			return 2
+		}
+		scanner := bufio.NewScanner(input)
+		startNow := false
+		if !settings.OnboardingComplete {
+			settings, startNow = runOnboarding(scanner, stdout, dataDir, settings)
+			if err := tokenlogger.SaveSettings(settingsPath, settings); err != nil {
+				fmt.Fprintf(stderr, "save settings: %v\n", err)
+				return 2
+			}
+		}
+		return runInteractiveScanner(scanner, stdout, stderr, store, dataDir, settings, startNow)
 	}
 	switch args[0] {
 	case "import":
 		return runImport(args[1:], stdout, stderr)
 	case "usage", "cost", "sessions":
 		return runReport(args[0], args[1:], stdout, stderr)
+	case "watch":
+		return runWatch(args[1:], stdout, stderr)
+	case "settings":
+		return runSettings(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "usage: komposyn-lg {import|usage|cost|sessions} ...")
+		fmt.Fprintln(stderr, "usage: komposyn-lg {import|usage|cost|sessions|watch|settings} ...")
 		return 1
 	}
 }
@@ -66,14 +88,34 @@ type interactiveState struct {
 }
 
 func runInteractive(input io.Reader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string) int {
+	settings := tokenlogger.DefaultSettings(dataDir)
+	settings.OnboardingComplete = true
+	return runInteractiveScanner(bufio.NewScanner(input), stdout, stderr, store, dataDir, settings, false)
+}
+
+func runInteractiveScanner(scanner *bufio.Scanner, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool) int {
 	now := time.Now().UTC()
 	state := interactiveState{from: now.AddDate(0, 0, -7), to: now, groupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}}
+	collectorContext, stopCollector := context.WithCancel(context.Background())
+	defer stopCollector()
+	if startNow || (settings.CollectorEnabled && settings.AutoStart) {
+		collector, err := tokenlogger.NewCollector(store, defaultCollectorRoots(), time.Duration(settings.PollIntervalSeconds)*time.Second)
+		if err != nil {
+			fmt.Fprintf(stderr, "collector setup failed: %v\n", err)
+		} else {
+			go func() { _, _ = collector.PollOnce(); _ = collector.Run(collectorContext) }()
+			fmt.Fprintln(stdout, "local collector running for this session")
+		}
+	}
 	fmt.Fprintf(stdout, "komposyn-lg %s interactive\n", tokenlogger.Version)
 	fmt.Fprintln(stdout, "Type /help for commands; /quit to exit.")
 	if pending, err := store.PendingDiagnostics(); err == nil && len(pending) > 0 {
-		fmt.Fprintf(stdout, "There are %d pending local diagnostic(s). Use /settings to review them.\n", len(pending))
+		fmt.Fprintf(stdout, "There are %d pending local diagnostic(s).\n", len(pending))
+		for _, diagnostic := range pending {
+			fmt.Fprintf(stdout, "Pending diagnostic %s (%d occurrence(s)).\n", diagnostic.Fingerprint, diagnostic.OccurrenceCount)
+			offerDiagnostic(stdout, scanner, store, diagnostic)
+		}
 	}
-	scanner := bufio.NewScanner(input)
 	renderInteractive(stdout, stderr, store, state, scanner)
 	for {
 		fmt.Fprint(stdout, "> ")
@@ -130,6 +172,9 @@ func runInteractive(input io.Reader, stdout, stderr io.Writer, store *tokenlogge
 			renderInteractive(stdout, stderr, store, state, scanner)
 		case "/settings":
 			fmt.Fprintf(stdout, "data directory: %s\n", dataDir)
+			fmt.Fprintf(stdout, "collector enabled: %t\n", settings.CollectorEnabled)
+			fmt.Fprintf(stdout, "collector auto-start: %t\n", settings.AutoStart)
+			fmt.Fprintf(stdout, "collector poll interval: %ds\n", settings.PollIntervalSeconds)
 			fmt.Fprintln(stdout, "diagnostic reporting: ask before any external action")
 			fmt.Fprintf(stdout, "active range: %s to %s (UTC)\n", state.from.Format(time.RFC3339), state.to.Format(time.RFC3339))
 		case "/report-issue":
@@ -146,7 +191,7 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		fmt.Fprintf(stderr, "usage query failed: %v\n", err)
 		if diagnostic, diagnosticErr := store.RecordDiagnostic(err.Error()); diagnosticErr == nil {
 			fmt.Fprintf(stdout, "Sanitized diagnostic saved locally: %s\n", diagnostic.Fingerprint)
-			offerDiagnostic(stdout, scanner, diagnostic)
+			offerDiagnostic(stdout, scanner, store, diagnostic)
 		}
 		return
 	}
@@ -156,10 +201,11 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 	}
 }
 
-func offerDiagnostic(stdout io.Writer, scanner *bufio.Scanner, diagnostic tokenlogger.Diagnostic) {
+func offerDiagnostic(stdout io.Writer, scanner *bufio.Scanner, store *tokenlogger.Store, diagnostic tokenlogger.Diagnostic) {
 	fmt.Fprint(stdout, "Send sanitized diagnostic report? [y/N/view] ")
 	if scanner == nil || !scanner.Scan() {
 		fmt.Fprintln(stdout, "skipped")
+		_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "skipped")
 		return
 	}
 	choice := strings.ToLower(strings.TrimSpace(scanner.Text()))
@@ -168,16 +214,20 @@ func offerDiagnostic(stdout io.Writer, scanner *bufio.Scanner, diagnostic tokenl
 		fmt.Fprint(stdout, "Open a prefilled issue draft? [y/N] ")
 		if scanner.Scan() && strings.EqualFold(strings.TrimSpace(scanner.Text()), "y") {
 			fmt.Fprintf(stdout, "draft (not sent): %s\n", tokenlogger.GitHubIssueDraftURL(diagnostic))
+			_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "reviewed")
 		} else {
 			fmt.Fprintln(stdout, "skipped")
+			_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "skipped")
 		}
 		return
 	}
 	if choice == "y" {
 		fmt.Fprintf(stdout, "draft (not sent): %s\n", tokenlogger.GitHubIssueDraftURL(diagnostic))
+		_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "reviewed")
 		return
 	}
 	fmt.Fprintln(stdout, "skipped")
+	_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "skipped")
 }
 
 func printInteractiveHelp(stdout io.Writer) {
@@ -197,6 +247,172 @@ func printPendingDiagnostics(stdout io.Writer, store *tokenlogger.Store) {
 	}
 	for _, diagnostic := range diagnostics {
 		fmt.Fprintf(stdout, "%s (%d occurrence(s)): %s\n", diagnostic.Fingerprint, diagnostic.OccurrenceCount, diagnostic.Message)
+	}
+}
+
+func runOnboarding(scanner *bufio.Scanner, stdout io.Writer, dataDir string, settings tokenlogger.Settings) (tokenlogger.Settings, bool) {
+	fmt.Fprintln(stdout, "First-run setup")
+	startNow := askYesNo(scanner, stdout, "Start the local collector now?", true)
+	settings.CollectorEnabled = startNow
+	settings.AutoStart = askYesNo(scanner, stdout, "Start the collector automatically when I sign in?", false)
+	settings.OnboardingComplete = true
+	settings.DataDir = dataDir
+	return settings, startNow
+}
+
+func askYesNo(scanner *bufio.Scanner, stdout io.Writer, question string, defaultYes bool) bool {
+	defaultLabel := "y/N"
+	if defaultYes {
+		defaultLabel = "Y/n"
+	}
+	fmt.Fprintf(stdout, "%s [%s] ", question, defaultLabel)
+	if !scanner.Scan() {
+		return defaultYes
+	}
+	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+	if answer == "" {
+		return defaultYes
+	}
+	return answer == "y" || answer == "yes"
+}
+
+func defaultCollectorRoots() []string {
+	roots := []string{}
+	if configured := os.Getenv("TOKEN_LOGGER_CODEX_DIR"); configured != "" {
+		roots = append(roots, configured)
+	}
+	if configured := os.Getenv("TOKEN_LOGGER_CLAUDE_DIR"); configured != "" {
+		roots = append(roots, configured)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		roots = append(roots, filepath.Join(home, ".codex", "sessions"), filepath.Join(home, ".claude", "projects"))
+	}
+	return roots
+}
+
+func runWatch(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		fmt.Fprintln(stderr, "usage: komposyn-lg watch <file-or-directory> [--interval <duration>] [--data-dir <path>]")
+		return 1
+	}
+	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
+	if dataDir == "" {
+		dataDir = defaultDataDir()
+	}
+	interval := 5 * time.Second
+	root := args[0]
+	for index := 1; index < len(args); index++ {
+		if index+1 >= len(args) {
+			fmt.Fprintln(stderr, "missing watch option value")
+			return 1
+		}
+		switch args[index] {
+		case "--data-dir":
+			dataDir = args[index+1]
+		case "--interval":
+			parsed, err := time.ParseDuration(args[index+1])
+			if err != nil || parsed <= 0 {
+				fmt.Fprintln(stderr, "interval must be a positive duration")
+				return 1
+			}
+			interval = parsed
+		default:
+			fmt.Fprintf(stderr, "unknown watch option %q\n", args[index])
+			return 1
+		}
+		index++
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		fmt.Fprintf(stderr, "open token logger database: %v\n", err)
+		return 2
+	}
+	defer store.Close()
+	collector, err := tokenlogger.NewCollector(store, []string{root}, interval)
+	if err != nil {
+		fmt.Fprintf(stderr, "create collector: %v\n", err)
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Fprintf(stdout, "watching %s every %s; press Ctrl-C to stop\n", root, interval)
+	if result, pollErr := collector.PollOnce(); pollErr != nil {
+		fmt.Fprintf(stderr, "initial collector poll: %v\n", pollErr)
+	} else {
+		fmt.Fprintf(stdout, "poll imported=%d duplicates=%d skipped=%d\n", result.Receipt.Imported, result.Receipt.Duplicates, result.Skipped)
+	}
+	if err := collector.Run(ctx); err != nil {
+		fmt.Fprintf(stderr, "collector stopped: %v\n", err)
+		return 2
+	}
+	health := collector.Health()
+	fmt.Fprintf(stdout, "collector stopped: status=%s sources=%d imported=%d duplicates=%d\n", health.Status, health.Sources, health.Imported, health.Duplicates)
+	return 0
+}
+
+func runSettings(args []string, stdout, stderr io.Writer) int {
+	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
+	if dataDir == "" {
+		dataDir = defaultDataDir()
+	}
+	var collectorValue, autoStartValue string
+	for index := 0; index < len(args); index++ {
+		if index+1 >= len(args) {
+			fmt.Fprintln(stderr, "usage: komposyn-lg settings [--data-dir <path>] [--collector on|off] [--auto-start on|off]")
+			return 1
+		}
+		switch args[index] {
+		case "--data-dir":
+			dataDir = args[index+1]
+		case "--collector":
+			collectorValue = args[index+1]
+		case "--auto-start":
+			autoStartValue = args[index+1]
+		default:
+			fmt.Fprintf(stderr, "unknown settings option %q\n", args[index])
+			return 1
+		}
+		index++
+	}
+	path := filepath.Join(dataDir, "settings.json")
+	settings, err := tokenlogger.LoadSettings(path, dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "load settings: %v\n", err)
+		return 2
+	}
+	if collectorValue != "" {
+		value, ok := settingBool(collectorValue)
+		if !ok {
+			fmt.Fprintln(stderr, "--collector expects on or off")
+			return 1
+		}
+		settings.CollectorEnabled = value
+	}
+	if autoStartValue != "" {
+		value, ok := settingBool(autoStartValue)
+		if !ok {
+			fmt.Fprintln(stderr, "--auto-start expects on or off")
+			return 1
+		}
+		settings.AutoStart = value
+	}
+	settings.OnboardingComplete = true
+	if err := tokenlogger.SaveSettings(path, settings); err != nil {
+		fmt.Fprintf(stderr, "save settings: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "data_dir=%s collector=%t auto_start=%t interval=%ds\n", dataDir, settings.CollectorEnabled, settings.AutoStart, settings.PollIntervalSeconds)
+	return 0
+}
+
+func settingBool(value string) (bool, bool) {
+	switch strings.ToLower(value) {
+	case "on", "true", "yes", "y":
+		return true, true
+	case "off", "false", "no", "n":
+		return false, true
+	default:
+		return false, false
 	}
 }
 

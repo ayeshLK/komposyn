@@ -116,6 +116,16 @@ func (s *Store) PendingDiagnostics() ([]Diagnostic, error) {
 	return diagnostics, rows.Err()
 }
 
+// MarkDiagnosticReviewed suppresses repeated prompts after the user has
+// explicitly reviewed or skipped a diagnostic.
+func (s *Store) MarkDiagnosticReviewed(fingerprint, status string) error {
+	if status != "reviewed" && status != "skipped" {
+		return fmt.Errorf("unsupported diagnostic status %q", status)
+	}
+	_, err := s.db.Exec("UPDATE diagnostics SET status = ? WHERE fingerprint = ?", status, fingerprint)
+	return err
+}
+
 // GitHubIssueDraftURL returns a prefilled issue draft without sending a
 // request or including local paths, credentials, or source content.
 func GitHubIssueDraftURL(diagnostic Diagnostic) string {
