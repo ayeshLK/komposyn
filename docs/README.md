@@ -44,6 +44,8 @@ integration reference.
   inventory, disclosure review, and security-sensitive change checks.
 - [Data model](data-model.md) — tables, event identity, provenance, time, and
   transaction guarantees.
+- [OpenTelemetry alignment audit](otel-alignment.md) — field-level
+  correspondences, semantic gaps, and the current non-interoperability boundary.
 - [Database migrations](migrations.md) — schema history, compatibility rules,
   and the procedure for adding a migration.
 - [Development guide](contributing/development.md) — local setup, validation,
