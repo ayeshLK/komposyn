@@ -5,20 +5,15 @@ version="${1:?usage: build-release.sh <version> <output-dir>}"
 output_dir="${2:?usage: build-release.sh <version> <output-dir>}"
 version="${version#v}"
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -z "$output_dir" || "$output_dir" == "/" || "$output_dir" == "." ]]; then
+if [[ -z "$output_dir" || "$output_dir" == "/" || "$output_dir" == "." || -L "$output_dir" ]]; then
 	echo "refusing unsafe release output directory: $output_dir" >&2
 	exit 1
 fi
 mkdir -p "$output_dir"
-# Preserve caller-owned files in a reusable output directory. Only remove
-# artifacts and generated metadata from the namespace owned by this builder.
-for artifact in "$output_dir"/komposyn-lg_*; do
-	if [[ -f "$artifact" || -L "$artifact" ]]; then
-		rm -f -- "$artifact"
-	fi
-done
-rm -f -- "$output_dir/SHA256SUMS" "$output_dir/THIRD_PARTY_LICENSES.md"
-rm -rf -- "$output_dir/third_party_licenses"
+if [[ -n "$(find "$output_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+	echo "release output directory must be empty: $output_dir" >&2
+	exit 1
+fi
 bash "$root_dir/scripts/generate-third-party-licenses.sh" "$output_dir"
 
 ldflags="-s -w -X github.com/ayeshLK/komposyn/plugins/library/token-logger.Version=${version}"

@@ -30,6 +30,9 @@ Release archives are built with:
 make release VERSION=v0.1.0 OUTPUT_DIR=dist
 ```
 
+The release output directory must be dedicated and empty (or not yet exist).
+The release builder never deletes or overwrites caller-owned files.
+
 For macOS and Linux, the standalone installer is `scripts/install.sh`; on
 Windows, use `scripts/install.ps1`. Rerunning the latest installer replaces
 only the executable. The SQLite database, configuration, and consent settings
