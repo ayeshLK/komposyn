@@ -16,16 +16,19 @@ Release publication is a two-step, manually dispatched GitHub Actions flow:
 1. Run **Prepare release** from the Actions tab. Release Please opens or updates
    the release pull request with the next version and changelog entry.
 2. Review and merge that pull request.
-3. Run **Publish release** from the Actions tab. The workflow checks out the
-   merged commit, runs the test and lifecycle verification matrix, builds and
-   signs the artifacts, then asks Release Please to create the tag and GitHub
-   Release before uploading the signed artifacts.
+3. Run **Publish release** from the Actions tab, confirming that the issue #46
+   API, schema/backup, diagnostics, and version gates are complete. The workflow
+   checks out the release pull request's merge commit, runs the test and
+   lifecycle verification matrix, builds and signs the artifacts, creates a
+   draft GitHub Release at that exact commit, uploads the explicit artifact
+   file set, verifies the tag and assets, and publishes the release.
 
 The publish workflow must be run after the release pull request is merged. It
 does not run from a tag push, which prevents a release from recursively
-triggering another release workflow. The `release` environment should require
-the repository's release approval policy before the final publication job can
-run.
+triggering another release workflow. A failed upload leaves a matching draft
+release available for retry; a published or mismatched tag is rejected. The
+`release` environment should require the repository's release approval policy
+before the final publication job can run.
 
 ## Artifacts
 

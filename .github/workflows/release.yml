@@ -2,6 +2,11 @@ name: Publish release
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm_issue_46_gates:
+        description: Confirm issue #46 API, schema/backup, diagnostics, and version gates are complete
+        required: true
+        type: boolean
 
 permissions:
   contents: read
@@ -25,6 +30,35 @@ jobs:
           fetch-depth: 0
           ref: master
 
+      - name: Resolve merged release pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mapfile -t pending < <(
+            gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state merged \
+              --label "autorelease: pending" \
+              --json number,mergeCommit \
+              --jq '.[] | select(.mergeCommit.oid != null) | "\(.number) \(.mergeCommit.oid)"'
+          )
+          if [[ "${#pending[@]}" -ne 1 ]]; then
+            printf 'Expected exactly one merged Release Please PR, found %s:\n' "${#pending[@]}" >&2
+            printf '%s\n' "${pending[@]}" >&2
+            exit 1
+          fi
+          commit="${pending[0]##* }"
+          git cat-file -e "$commit^{commit}"
+          git checkout --detach "$commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Confirm issue #46 release gates
+        if: inputs.confirm_issue_46_gates != true
+        run: |
+          echo 'Issue #46 API, schema/backup, diagnostics, and version gates must be complete before publication' >&2
+          exit 1
+
       - name: Read and validate prepared version
         id: version
         shell: bash
@@ -35,11 +69,13 @@ jobs:
             exit 1
           fi
           TAG="v$VERSION"
-          if git rev-parse --verify --quiet "refs/tags/$TAG"; then
-            echo "Tag $TAG already exists; prepare the next release first" >&2
+          existing_commit="$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}" || true)"
+          if [[ -n "$existing_commit" && "$existing_commit" != "$(git rev-parse HEAD)" ]]; then
+            echo "Tag $TAG exists at $existing_commit, not the tested release commit" >&2
             exit 1
           fi
-          if ! grep -Eq "^## (\\[$VERSION\\]|$VERSION)( |$)" CHANGELOG.md; then
+          version_pattern="${VERSION//./\\.}"
+          if ! grep -Eq "^## (\\[$version_pattern\\](\\([^)]*\\))?|$version_pattern)( |$)" CHANGELOG.md; then
             echo "CHANGELOG.md has no release section for $VERSION" >&2
             exit 1
           fi
@@ -218,33 +254,95 @@ jobs:
           name: release-artifacts
           path: dist
 
-      - name: Create GitHub release with Release Please
-        id: release
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-          skip-github-pull-request: true
-          target-branch: master
-
-      - name: Verify created release
-        env:
-          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
-          EXPECTED_TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          [[ "$RELEASE_CREATED" == "true" ]] || {
-            echo "Release Please did not create a release" >&2
-            exit 1
-          }
-          [[ "$RELEASE_TAG" == "$EXPECTED_TAG" ]] || {
-            echo "Expected $EXPECTED_TAG but Release Please created $RELEASE_TAG" >&2
-            exit 1
-          }
-
-      - name: Upload signed release artifacts
+      - name: Create draft release and upload signed assets
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release upload "$RELEASE_TAG" dist/* --clobber
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        shell: bash
+        run: |
+          mapfile -t archives < <(find dist -maxdepth 1 -type f \( -name 'komposyn-lg_*.tar.gz' -o -name 'komposyn-lg_*.zip' \) -print | sort)
+          [[ "${#archives[@]}" -eq 6 ]] || {
+            echo "Expected six release archives, found ${#archives[@]}" >&2
+            exit 1
+          }
+          assets=("${archives[@]}" "dist/SHA256SUMS")
+          for checksum_signature in dist/SHA256SUMS.sig dist/SHA256SUMS.pem; do
+            [[ -f "$checksum_signature" ]] || {
+              echo "Missing signed asset: $checksum_signature" >&2
+              exit 1
+            }
+            assets+=("$checksum_signature")
+          done
+          for archive in "${archives[@]}"; do
+            for suffix in .sig .pem; do
+              signed_asset="${archive}${suffix}"
+              [[ -f "$signed_asset" ]] || {
+                echo "Missing signed asset: $signed_asset" >&2
+                exit 1
+              }
+              assets+=("$signed_asset")
+            done
+          done
+
+          existing_commit="$(git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}" || true)"
+          if [[ -n "$existing_commit" && "$existing_commit" != "$RELEASE_COMMIT" ]]; then
+            echo "Existing tag $RELEASE_TAG points to $existing_commit, expected $RELEASE_COMMIT" >&2
+            exit 1
+          fi
+          release_exists=false
+          if release_json="$(gh release view "$RELEASE_TAG" --json isDraft 2>/dev/null)"; then
+            release_exists=true
+            [[ "$(jq -r '.isDraft' <<<"$release_json")" == true ]] || {
+              echo "Release $RELEASE_TAG already exists and is published" >&2
+              exit 1
+            }
+          fi
+          if [[ "$release_exists" == false ]]; then
+            if [[ -n "$existing_commit" ]]; then
+              gh release create "$RELEASE_TAG" --draft --verify-tag --generate-notes
+            else
+              gh release create "$RELEASE_TAG" --draft --target "$RELEASE_COMMIT" --generate-notes
+            fi
+          fi
+
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          tagged_commit="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          [[ "$tagged_commit" == "$RELEASE_COMMIT" ]] || {
+            echo "Tag $RELEASE_TAG resolves to $tagged_commit, expected $RELEASE_COMMIT" >&2
+            exit 1
+          }
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          asset_names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for asset in "${assets[@]}"; do
+            name="${asset##*/}"
+            grep -Fxq "$name" <<<"$asset_names" || {
+              echo "Published draft is missing asset: $name" >&2
+              exit 1
+            }
+          done
+          gh release edit "$RELEASE_TAG" --draft=false
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+          [[ "$is_draft" == false ]] || {
+            echo "release was not published" >&2
+            exit 1
+          }
+
+      - name: Remove completed release marker
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+        run: |
+          gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state merged \
+            --label "autorelease: pending" \
+            --json number \
+            --jq '.[].number' | while read -r number; do
+              gh pr edit "$number" --remove-label "autorelease: pending"
+            done
