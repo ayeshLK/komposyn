@@ -123,6 +123,12 @@ func (c *Collector) PollOnce() (ImportResult, error) {
 // need an immediate result should call PollOnce before Run. Operational source
 // failures are recorded as health errors while polling continues.
 func (c *Collector) Run(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		c.mu.Lock()
+		c.health.Status = "stopped"
+		c.mu.Unlock()
+		return nil
+	}
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 	for {
