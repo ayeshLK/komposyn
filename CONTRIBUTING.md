@@ -62,6 +62,19 @@ See [development](docs/contributing/development.md) for focused commands and
 [testing](docs/contributing/testing.md) for the change-area test matrix. Add or
 update regression tests alongside behavior changes.
 
+## Versioning and releases
+
+Use Conventional Commit prefixes for changes that may affect release notes or
+versioning, for example `feat:`, `fix:`, `docs:`, `refactor:`, and `test:`.
+Release Please uses the merged commit history to prepare a release pull
+request, update `CHANGELOG.md`, and calculate the next semantic version. Do not
+manually edit a released version or create a release tag as part of an ordinary
+feature pull request.
+
+The repository's initial unreleased baseline is `0.0.0`; the first prepared
+release is expected to be `0.1.0`. Development binaries report `0.0.0-dev`.
+Release builds receive their exact tag version through linker flags.
+
 ## Change-specific requirements
 
 - **Storage or migration:** add a new numbered migration; never edit an

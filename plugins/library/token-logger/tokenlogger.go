@@ -24,9 +24,10 @@ import (
 	"time"
 )
 
-// Version is the current library version. Release builds replace this value
-// from the release tag at link time.
-var Version = "0.1.0"
+// Version is the current library version. Development builds use an explicit
+// pre-release marker; release builds replace this value from the release tag
+// at link time.
+var Version = "0.0.0-dev"
 
 const currentSchemaVersion = 4
 
