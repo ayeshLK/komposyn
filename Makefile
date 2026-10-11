@@ -1,4 +1,4 @@
-.PHONY: fmt lint test build check release clean
+.PHONY: fmt lint test build check release licenses clean
 
 VERSION ?= v0.1.0
 OUTPUT_DIR ?= dist
@@ -19,6 +19,9 @@ check: fmt lint test build
 
 release:
 	bash scripts/build-release.sh $(VERSION) $(OUTPUT_DIR)
+
+licenses:
+	bash scripts/generate-third-party-licenses.sh $(OUTPUT_DIR)
 
 clean:
 	rm -rf bin
