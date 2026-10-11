@@ -20,13 +20,18 @@ product overview; these pages are the operational and integration reference.
 
 - [Privacy and data handling](privacy.md) — what is read, stored, excluded,
   and sent externally.
+- [Architecture](architecture.md) — component boundaries, import flow,
+  source replacement safety, and reporting semantics.
+- [Data model](data-model.md) — tables, event identity, provenance, time, and
+  transaction guarantees.
+- [Database migrations](migrations.md) — schema history, compatibility rules,
+  and the procedure for adding a migration.
 - [Upgrades and data preservation](upgrades.md) — installer replacement,
   migrations, and uninstall boundaries.
 - [Harness protocol](HARNESS_PROTOCOL.md) — the normative versioned JSONL wire
   contract.
 
-Architecture, data-model, operations, troubleshooting, and contributor guides
-will be added as the documentation program expands. Until then, the repository
-[AGENTS.md](../AGENTS.md), [CONTRIBUTING.md](../CONTRIBUTING.md), and
-[SECURITY.md](../SECURITY.md) are the authoritative project-maintenance
-references.
+Operations, troubleshooting, and contributor guides will be added as the
+documentation program expands. Until then, the repository [AGENTS.md](../AGENTS.md),
+[CONTRIBUTING.md](../CONTRIBUTING.md), and [SECURITY.md](../SECURITY.md) are the
+authoritative project-maintenance references.
