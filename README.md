@@ -31,11 +31,11 @@ not decided. Those are proposed directions, not capabilities available in this
 release. See [the project vision](docs/vision.md) and the [founding discussion](https://github.com/ayeshLK/komposyn/issues/41) for the maintained summary and
 the open design questions.
 
-> **Release status:** Komposyn is currently pre-release; GitHub Releases does
+> **Release status:** KompoSyn is currently pre-release; GitHub Releases does
 > not yet contain a published signed release. Building from source is the
 > supported way to try the current repository state.
 
-## Why Komposyn
+## Why KompoSyn
 
 - **Local-first:** the database, settings, and diagnostics remain on the
   machine where the tool runs.
@@ -46,8 +46,8 @@ the open design questions.
 - **Inspectable:** the SQLite store, source provenance, and migration history
   are local and explicit.
 
-Komposyn does not send provider transcripts, prompts, responses, or credentials
-to a hosted Komposyn service. See [Privacy and data handling](docs/privacy.md)
+KompoSyn does not send provider transcripts, prompts, responses, or credentials
+to a hosted KompoSyn service. See [Privacy and data handling](docs/privacy.md)
 for the complete data contract.
 
 ## Quick start

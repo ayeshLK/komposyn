@@ -1,4 +1,4 @@
-# Komposyn documentation
+# KompoSyn documentation
 
 Use this page to choose the right guide. The repository README is the short
 product overview; these pages are the maintained project, operational, and
