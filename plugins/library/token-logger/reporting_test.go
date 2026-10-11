@@ -1,0 +1,94 @@
+// Copyright 2026 Ayesh Almeida
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package tokenlogger
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
+	store := openTestStore(t)
+	if err := store.UpsertProject(Project{ID: "project-1", DisplayName: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertSession(Session{ID: "session-1", ProjectID: "project-1", Client: Client{Name: "codex-cli"}}); err != nil {
+		t.Fatal(err)
+	}
+	event := testEvent("pricing-event")
+	event.EventID = "pricing-event"
+	event.ProjectID = "project-1"
+	event.SessionID = "session-1"
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	for _, rule := range []PricingRule{
+		{Provider: "openai", ModelSelector: "gpt-test", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "v1"},
+		{Provider: "openai", ModelSelector: "gpt-test", TokenCategory: TokenCategoryOutput, RateMicros: 3, Currency: "USD", EffectiveFrom: from, PricingVersion: "v1"},
+		{Provider: "openai", ModelSelector: "gpt-test", TokenCategory: TokenCategoryCacheRead, RateMicros: 1, Currency: "USD", EffectiveFrom: from, PricingVersion: "v1"},
+		{Provider: "openai", ModelSelector: "gpt-test", TokenCategory: TokenCategoryReasoning, RateMicros: 4, Currency: "USD", EffectiveFrom: from, PricingVersion: "v1"},
+	} {
+		if err := store.UpsertPricing(rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := store.Query(UsageFilter{From: from, To: from.AddDate(0, 0, 1), GroupBy: []string{GroupClient, GroupModel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.InputTokens != 100 || report.Summary.CachedInputTokens != 25 || report.Summary.TotalTokens != 120 {
+		t.Fatalf("unexpected usage summary: %+v", report.Summary)
+	}
+	if report.Summary.CalculatedCostMicros != 240 || report.Summary.CalculatedCurrency != "USD" || report.Summary.UnknownCostRequests != 0 {
+		t.Fatalf("unexpected cost summary: %+v", report.Summary)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].RequestCount != 1 {
+		t.Fatalf("unexpected grouped rows: %+v", report.Rows)
+	}
+}
+
+func TestQueryMarksMissingPricingAsUnknown(t *testing.T) {
+	store := openTestStore(t)
+	event := testEvent("unknown-price")
+	event.EventID = "unknown-price"
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	report, err := store.Query(UsageFilter{From: from, To: from.AddDate(0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.UnknownCostRequests != 1 || report.Summary.CalculatedCostMicros != 0 {
+		t.Fatalf("unexpected unknown cost summary: %+v", report.Summary)
+	}
+}
+
+func TestReportFormats(t *testing.T) {
+	report := UsageReport{Summary: UsageMeasures{RequestCount: 1, InputTokens: 3, TotalTokens: 5}}
+	var jsonOutput, csvOutput, tableOutput bytes.Buffer
+	if err := WriteJSON(&jsonOutput, report); err != nil || !strings.Contains(jsonOutput.String(), `"request_count": 1`) {
+		t.Fatalf("JSON output = %q, err = %v", jsonOutput.String(), err)
+	}
+	if err := WriteCSV(&csvOutput, report); err != nil || !strings.Contains(csvOutput.String(), "request_count") {
+		t.Fatalf("CSV output = %q, err = %v", csvOutput.String(), err)
+	}
+	if err := WriteTable(&tableOutput, report); err != nil || !strings.Contains(tableOutput.String(), "REQUESTS") {
+		t.Fatalf("table output = %q, err = %v", tableOutput.String(), err)
+	}
+}
