@@ -1,11 +1,35 @@
-# Komposyn Token Logger
+# KompoSyn
 
-Komposyn Token Logger is a local-first usage observability tool for AI coding
+KompoSyn is intended to become a modular, composable harness for AI agent
+workflows. The repository starts with one independently useful component:
+KompoSyn Token Logger, a local-first usage observability tool for AI coding
 workflows. It reads provider-owned local transcripts, normalizes usage into a
 small SQLite database, and produces usage and cost reports without collecting
 prompts, responses, or provider credentials.
 
 The standalone executable is `komposyn-lg`.
+
+## What exists today
+
+The current repository delivers the token logger, not a general KompoSyn
+harness or plugin marketplace. Its implemented surfaces are:
+
+- `plugins/library/token-logger` — a reusable Go library for normalized usage,
+  persistence, adapters, collection, and reporting.
+- `komposyn-lg` — a standalone CLI for importing, watching, and reporting on
+  local usage data.
+- The token logger's versioned JSONL `harness` sidecar — a machine-readable
+  integration surface for the token logger itself, not a general plugin
+  runtime.
+
+## Direction and open questions
+
+The direction is to assemble useful, independently testable components into a
+composable AI agent harness. The eventual boundaries for that harness, plugin
+API, distribution model, and whether every future plugin needs its own CLI are
+not decided. Those are proposed directions, not capabilities available in this
+release. See [the project vision](docs/vision.md) and the [founding discussion](https://github.com/ayeshLK/komposyn/issues/41) for the maintained summary and
+the open design questions.
 
 > **Release status:** Komposyn is currently pre-release; GitHub Releases does
 > not yet contain a published signed release. Building from source is the
@@ -111,6 +135,7 @@ the wire contract.
 
 | Goal | Guide |
 | --- | --- |
+| Understand the project direction | [Project vision](docs/vision.md) |
 | Install and run the first import | [Getting started](docs/getting-started.md) |
 | Choose an installation method | [Installation](docs/installation.md) |
 | Learn common workflows | [Usage guide](docs/usage.md) |

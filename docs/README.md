@@ -1,10 +1,13 @@
 # Komposyn documentation
 
 Use this page to choose the right guide. The repository README is the short
-product overview; these pages are the operational and integration reference.
+product overview; these pages are the maintained project, operational, and
+integration reference.
 
 ## Start here
 
+- [Project vision](vision.md) — KompoSyn's proposed direction, current
+  component, and open harness questions.
 - [Getting started](getting-started.md) — install or build the CLI, import a
   first source, and verify a report.
 - [Installation](installation.md) — release installers, platform paths,
@@ -18,12 +21,12 @@ product overview; these pages are the operational and integration reference.
 
 ## Understand the system
 
+- [Architecture](architecture.md) — current token logger boundaries, import
+  flow, source replacement safety, and reporting semantics.
 - [Privacy and data handling](privacy.md) — what is read, stored, excluded,
   and sent externally.
 - [Security and privacy model](security-model.md) — trust boundaries, data
   inventory, disclosure review, and security-sensitive change checks.
-- [Architecture](architecture.md) — component boundaries, import flow,
-  source replacement safety, and reporting semantics.
 - [Data model](data-model.md) — tables, event identity, provenance, time, and
   transaction guarantees.
 - [Database migrations](migrations.md) — schema history, compatibility rules,

@@ -1,10 +1,20 @@
 # AGENTS.md
 
-## Repository overview
+## Product direction and repository overview
 
-Komposyn Token Logger is a local-first Go application that normalizes usage
-events from AI coding clients, stores them in SQLite, and produces usage and
-cost reports. The standalone executable is named `komposyn-lg`.
+KompoSyn is intended to become a modular, composable harness for AI agent
+workflows. This repository currently implements one independently useful
+component: KompoSyn Token Logger, a local-first Go application that normalizes
+usage events from AI coding clients, stores them in SQLite, and produces usage
+and cost reports. The standalone executable is named `komposyn-lg`.
+
+Do not assume that a general harness, plugin runtime, plugin marketplace, or
+universal plugin API exists. The current token logger has three concrete
+surfaces: its reusable Go library, the `komposyn-lg` CLI, and the token
+logger's versioned JSONL `harness` sidecar. The sidecar is a token-logger
+integration contract, not a general KompoSyn plugin standard. For product
+intent and undecided questions, read [docs/vision.md](docs/vision.md); for the
+implemented component boundaries, read [docs/architecture.md](docs/architecture.md).
 
 The module is `github.com/ayeshLK/komposyn` and requires Go 1.26 or newer.
 The repository is licensed under Apache-2.0; preserve the headers and consult
@@ -28,6 +38,8 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
 - `.github/workflows/release.yml` — tagged release build, Cosign signing and
   verification, publication, and installer lifecycle checks.
 - `Makefile` — the preferred local entry points for development and releases.
+- `docs/vision.md` — maintained product direction and explicitly open harness
+  and plugin questions.
 
 ## Core design invariants
 
