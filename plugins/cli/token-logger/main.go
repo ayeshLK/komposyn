@@ -323,18 +323,17 @@ func runReportIssue(args []string, stdout, stderr io.Writer) int {
 
 func writeDiagnosticReport(outputPath string, report diagnosticReport) error {
 	outputPath = filepath.Clean(outputPath)
-	directory := filepath.Dir(outputPath)
-	temporary, err := os.CreateTemp(directory, ".komposyn-report-*")
+	archiveFile, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
-	}
-	archive := zip.NewWriter(temporary)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(outputPath)
+		}
+	}()
+	archive := zip.NewWriter(archiveFile)
 	entry, err := archive.Create("diagnostics.json")
 	if err == nil {
 		encoder := json.NewEncoder(entry)
@@ -344,15 +343,13 @@ func writeDiagnosticReport(outputPath string, report diagnosticReport) error {
 	if closeErr := archive.Close(); err == nil {
 		err = closeErr
 	}
-	if closeErr := temporary.Close(); err == nil {
+	if closeErr := archiveFile.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, outputPath); err != nil {
-		return err
-	}
+	committed = true
 	return nil
 }
 

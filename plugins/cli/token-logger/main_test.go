@@ -386,6 +386,24 @@ func TestReportIssueExportsPendingSanitizedDiagnostics(t *testing.T) {
 	}
 
 	outputPath := filepath.Join(t.TempDir(), "report.zip")
+	if err := os.WriteFile(outputPath, []byte("keep this file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var collisionStdout, collisionStderr bytes.Buffer
+	if code := run([]string{"report-issue", "--data-dir", dataDir, "--output", outputPath}, &collisionStdout, &collisionStderr); code == 0 {
+		t.Fatalf("report-issue unexpectedly overwrote an existing output: stdout=%q stderr=%q", collisionStdout.String(), collisionStderr.String())
+	}
+	existingContents, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(existingContents) != "keep this file" {
+		t.Fatalf("existing output changed after rejected export: %q", existingContents)
+	}
+	if err := os.Remove(outputPath); err != nil {
+		t.Fatal(err)
+	}
+
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"report-issue", "--data-dir", dataDir, "--output", outputPath}, &stdout, &stderr); code != 0 {
 		t.Fatalf("report-issue exit code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())

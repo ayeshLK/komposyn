@@ -85,7 +85,9 @@ use:
 komposyn-lg report-issue --output /path/to/report.zip --data-dir /path/to/data
 ```
 
-The ZIP is local-only and contains sanitized diagnostic JSON.
+The ZIP is local-only and contains sanitized diagnostic JSON. Existing output
+files are never overwritten; on Windows, create it in a directory whose ACLs
+restrict access to the intended users.
 
 ## Harness mode
 
