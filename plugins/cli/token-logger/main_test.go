@@ -97,6 +97,16 @@ func TestParseReportTimezone(t *testing.T) {
 	}
 }
 
+func TestStandaloneBinaryHasIANATimezoneData(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load embedded IANA timezone data: %v", err)
+	}
+	if location.String() != "America/New_York" {
+		t.Fatalf("timezone = %q, want America/New_York", location)
+	}
+}
+
 func TestReportTimezoneAcrossOutputFormats(t *testing.T) {
 	dataDir := t.TempDir()
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
