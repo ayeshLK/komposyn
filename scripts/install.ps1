@@ -5,7 +5,7 @@ $version = if ($env:KOMPOSYN_VERSION) { $env:KOMPOSYN_VERSION.TrimStart('v') } e
 $base = "https://github.com/$repo/releases"
 $releaseDir = if ($env:KOMPOSYN_RELEASE_DIR) { $env:KOMPOSYN_RELEASE_DIR } else { $null }
 $cosign = if ($env:KOMPOSYN_COSIGN_BIN) { $env:KOMPOSYN_COSIGN_BIN } else { 'cosign' }
-$cosignIdentity = if ($env:KOMPOSYN_COSIGN_IDENTITY_REGEXP) { $env:KOMPOSYN_COSIGN_IDENTITY_REGEXP } else { '^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/tags/.*$' }
+$cosignIdentity = if ($env:KOMPOSYN_COSIGN_IDENTITY_REGEXP) { $env:KOMPOSYN_COSIGN_IDENTITY_REGEXP } else { '^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master$' }
 $cosignIssuer = 'https://token.actions.githubusercontent.com'
 if ($version -eq 'latest') {
     if ($releaseDir) {

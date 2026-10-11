@@ -75,6 +75,14 @@ The repository's initial unreleased baseline is `0.0.0`; the first prepared
 release is expected to be `0.1.0`. Development binaries report `0.0.0-dev`.
 Release builds receive their exact tag version through linker flags.
 
+To publish a release, run **Prepare release** in GitHub Actions, review and
+merge the Release Please pull request, and then run **Publish release** after
+confirming the issue #46 release-readiness gates. The publish workflow validates
+the release PR merge commit, tests the installers, signs the artifacts, creates
+a draft release, uploads and verifies the signed assets, and publishes the
+GitHub Release. Failed uploads can be retried against the matching draft. Do
+not create release tags manually.
+
 ## Change-specific requirements
 
 - **Storage or migration:** add a new numbered migration; never edit an
