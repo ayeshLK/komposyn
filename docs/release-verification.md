@@ -31,6 +31,12 @@ release available for retry; a published or mismatched tag is rejected. The
 `release` environment should require the repository's release approval policy
 before the final publication job can run.
 
+If a release-build fix is merged after the Release Please pull request but
+before publication, rerun **Publish release** with `release_commit` set to the
+fix commit on `master`. The workflow verifies that this commit descends from
+the merged release PR and is reachable from `master`; omit the input for the
+normal path.
+
 ## Artifacts
 
 Each release targets:
