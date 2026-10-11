@@ -34,7 +34,7 @@ jobs:
 
       - name: Verify formatting
         shell: bash
-        run: test -z "$(gofmt -l .)"
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
 
       - name: Verify modules
         run: go mod verify
