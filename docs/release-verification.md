@@ -21,7 +21,8 @@ Release publication is a two-step, manually dispatched GitHub Actions flow:
    checks out the release pull request's merge commit, runs the test and
    lifecycle verification matrix, builds and signs the artifacts, creates a
    draft GitHub Release at that exact commit, uploads the explicit artifact
-   file set, verifies the tag and assets, and publishes the release.
+  file set, verifies the exact tag, reviewed release notes, and asset set, and
+  publishes the release.
 
 The publish workflow must be run after the release pull request is merged. It
 does not run from a tag push, which prevents a release from recursively

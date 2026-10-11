@@ -285,6 +285,22 @@ jobs:
             done
           done
 
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          awk -v version="${RELEASE_TAG#v}" '
+            /^## / {
+              if (found) exit
+              if ($0 == "## " version || $0 ~ "^## \\[" version "\\]") {
+                found=1
+                next
+              }
+            }
+            found { print }
+          ' CHANGELOG.md > "$notes_file"
+          [[ -s "$notes_file" ]] || {
+            echo "Reviewed changelog entry for $RELEASE_TAG is empty or missing" >&2
+            exit 1
+          }
+
           existing_commit="$(git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}" || true)"
           if [[ -n "$existing_commit" && "$existing_commit" != "$RELEASE_COMMIT" ]]; then
             echo "Existing tag $RELEASE_TAG points to $existing_commit, expected $RELEASE_COMMIT" >&2
@@ -300,10 +316,12 @@ jobs:
           fi
           if [[ "$release_exists" == false ]]; then
             if [[ -n "$existing_commit" ]]; then
-              gh release create "$RELEASE_TAG" --draft --verify-tag --generate-notes
+              gh release create "$RELEASE_TAG" --draft --verify-tag --notes-file "$notes_file"
             else
-              gh release create "$RELEASE_TAG" --draft --target "$RELEASE_COMMIT" --generate-notes
+              gh release create "$RELEASE_TAG" --draft --target "$RELEASE_COMMIT" --notes-file "$notes_file"
             fi
+          else
+            gh release edit "$RELEASE_TAG" --notes-file "$notes_file"
           fi
 
           git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
@@ -313,14 +331,13 @@ jobs:
             exit 1
           }
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-          asset_names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
-          for asset in "${assets[@]}"; do
-            name="${asset##*/}"
-            grep -Fxq "$name" <<<"$asset_names" || {
-              echo "Published draft is missing asset: $name" >&2
-              exit 1
-            }
-          done
+          expected_assets="$(for asset in "${assets[@]}"; do basename "$asset"; done | sort)"
+          actual_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
+          [[ "$actual_assets" == "$expected_assets" ]] || {
+            echo 'Draft release asset set does not exactly match the signed build output' >&2
+            diff -u <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$actual_assets") || true
+            exit 1
+          }
           gh release edit "$RELEASE_TAG" --draft=false
 
       - name: Verify published release
