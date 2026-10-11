@@ -13,8 +13,18 @@ mkdir -p "$license_dir"
   echo
 } > "$manifest"
 
+# `go list -m` can report module metadata without downloading the source tree
+# for modules that are present only in the transitive module graph. Download
+# the complete graph first so every module has a directory from which its
+# license files can be collected in clean CI environments.
+go mod download all
+
 while read -r module version dir; do
   [[ -z "$module" ]] && continue
+  [[ -n "$dir" && -d "$dir" ]] || {
+    echo "module source directory unavailable for $module@$version" >&2
+    exit 1
+  }
   mapfile -t license_files < <(find "$dir" -maxdepth 1 -type f \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' \) -exec basename {} \; | sort)
   if ((${#license_files[@]} == 0)); then
     echo "no license file found for $module@$version" >&2
