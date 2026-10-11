@@ -7,7 +7,9 @@ workflows. It reads provider-owned local transcripts, normalizes usage into a
 small SQLite database, and produces usage and cost reports without collecting
 prompts, responses, or provider credentials.
 
-The standalone executable is `komposyn-lg`.
+The standalone executable is `komposyn-lg`, so developers can use this first
+component with their existing agent tools without waiting for a complete
+KompoSyn harness.
 
 ## What exists today
 
@@ -30,6 +32,17 @@ API, distribution model, and whether every future plugin needs its own CLI are
 not decided. Those are proposed directions, not capabilities available in this
 release. See [the project vision](docs/vision.md) and the [founding discussion](https://github.com/ayeshLK/komposyn/issues/41) for the maintained summary and
 the open design questions.
+
+## Why token-logger exists
+
+Agentic development tools make it easy to work across projects, sessions, and
+providers, but they do not necessarily provide one local view of resource
+consumption. Token Logger addresses that concrete problem by normalizing usage
+from supported provider-owned transcripts into a reportable local event model.
+
+It is deliberately useful on its own. The component can evolve through real
+usage and community feedback before the architecture of a broader harness is
+decided.
 
 > **Release status:** KompoSyn is currently pre-release; GitHub Releases does
 > not yet contain a published signed release. Building from source is the
@@ -101,8 +114,9 @@ The implementation is split into an independent library and CLI surface:
 * `plugins/library/token-logger` — logger domain and integration library.
 * `plugins/cli/token-logger` — the `komposyn-lg` executable.
 
-For contributor setup, see [CONTRIBUTING.md](CONTRIBUTING.md). The full
-documentation map is in [docs/README.md](docs/README.md).
+For contributor setup and future component proposals, see
+[CONTRIBUTING.md](CONTRIBUTING.md). The full documentation map is in
+[docs/README.md](docs/README.md).
 
 The project is licensed under Apache-2.0. See [LICENSE](LICENSE) and
 [NOTICE](NOTICE).

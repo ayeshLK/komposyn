@@ -19,6 +19,21 @@ integration reference.
 - [Configuration and data locations](configuration.md) — data directories,
   settings, collector roots, and ownership boundaries.
 
+## Choose by audience
+
+- **New to KompoSyn:** read the [project vision](vision.md), then follow
+  [getting started](getting-started.md) to use Token Logger today.
+- **Using Token Logger:** use the [usage guide](usage.md),
+  [CLI reference](cli-reference.md), and [privacy guide](privacy.md).
+- **Integrating the current component:** read the
+  [token logger harness protocol](HARNESS_PROTOCOL.md); it is a token-logger
+  integration contract, not a general KompoSyn plugin API.
+- **Contributing or proposing a component:** read
+  [CONTRIBUTING.md](../CONTRIBUTING.md), [AGENTS.md](../AGENTS.md), and the
+  [architecture](architecture.md).
+- **Reviewing operations and releases:** use the security, operations, backup,
+  upgrade, troubleshooting, and release guides below.
+
 ## Understand the system
 
 - [Architecture](architecture.md) — current token logger boundaries, import
