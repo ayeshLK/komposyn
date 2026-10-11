@@ -24,14 +24,13 @@ configured interval. The collector reads source files and never modifies them.
 
 ```sh
 komposyn-lg usage --format table
-komposyn-lg watch --data-dir /path/to/data /path/to/source
+komposyn-lg watch /path/to/source --data-dir /path/to/data
 komposyn-lg settings --collector on --auto-start off
 ```
 
-For predictable collection scope, pass explicit source paths or set
-`TOKEN_LOGGER_CODEX_DIR` and `TOKEN_LOGGER_CLAUDE_DIR`. The default roots are
-provider-specific directories under the home directory; see
-[configuration](configuration.md).
+For predictable collection scope, pass an explicit source path. The
+`TOKEN_LOGGER_CODEX_DIR` and `TOKEN_LOGGER_CLAUDE_DIR` variables configure only
+the interactive auto-start collector; see [configuration](configuration.md).
 
 ## Backups and recovery
 

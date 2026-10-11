@@ -12,9 +12,10 @@ importing or reporting.
 
 ## Install from a release
 
-Use the platform installer described in [Installation](installation.md). The
-installer verifies the release checksum and Cosign signature before replacing
-the executable.
+No signed GitHub release is published yet. Once one is available, use the
+platform installer described in [Installation](installation.md); it verifies
+the release checksum and Cosign signature before replacing the executable.
+For the current pre-release repository state, use the source-build path below.
 
 ## Build from source
 

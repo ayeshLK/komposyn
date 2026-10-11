@@ -5,12 +5,17 @@ provider source directories are separate and remain provider-owned.
 
 ## Data directory selection
 
-The CLI uses this precedence order:
+For commands that accept `--data-dir`, the explicit option wins. When it is
+omitted, the CLI uses this precedence order:
 
 1. `TOKEN_LOGGER_DATA_DIR`
 2. `XDG_DATA_HOME/token-logger` when `XDG_DATA_HOME` is set
 3. `$HOME/.local/share/token-logger` on Unix-like systems
 4. `./.token-logger` if the home directory cannot be resolved
+
+The `harness` command has no CLI data-directory option; set
+`initialize.params.data_dir` in the request, or use the environment/default
+resolution when it is omitted.
 
 The database and settings files are:
 
@@ -38,21 +43,31 @@ diagnostic handling. Settings writes are atomic.
 
 ## Collector source roots
 
-The collector reads, but never modifies, provider-owned source files. Set
-explicit roots with:
+The interactive auto-start collector reads, but never modifies, provider-owned
+source files. Set its roots with:
 
 ```text
 TOKEN_LOGGER_CODEX_DIR=/path/to/codex TOKEN_LOGGER_CLAUDE_DIR=/path/to/claude \
-  komposyn-lg watch /path/to/source --data-dir /path/to/data
+  komposyn-lg
 ```
+
+These environment variables configure interactive auto-start only. The
+explicit `watch` command uses its positional source argument and does not read
+these variables as additional roots.
 
 When interactive auto-start is enabled, default roots include:
 
 - `$HOME/.codex/sessions`
 - `$HOME/.claude/projects`
 
-Use explicit `watch` paths when you need predictable scope. Directory discovery
-accepts provider JSON and JSONL files according to the adapter’s detection rules.
+Use explicit `watch` paths when you need predictable scope:
+
+```text
+komposyn-lg watch /path/to/source --data-dir /path/to/data
+```
+
+Directory discovery accepts provider JSON and JSONL files according to the
+adapter’s detection rules.
 
 ## Ownership and removal
 

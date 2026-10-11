@@ -1,8 +1,9 @@
 # Usage guide
 
-All commands accept a data directory through `--data-dir`. If it is omitted,
-Komposyn uses `TOKEN_LOGGER_DATA_DIR` when set and otherwise its platform
-default.
+Commands that access stored data accept a data directory through `--data-dir`.
+If it is omitted, Komposyn uses `TOKEN_LOGGER_DATA_DIR` when set and otherwise
+its platform default. The `harness` command selects its directory through
+`initialize.params.data_dir` or the environment/default resolution.
 
 ## Import
 

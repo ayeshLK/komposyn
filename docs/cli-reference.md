@@ -3,10 +3,12 @@
 The executable is `komposyn-lg`. Run `komposyn-lg version` to print the
 embedded release version.
 
-## Global data directory
+## Data directory
 
 Commands that access stored data use `--data-dir <path>`. The CLI also honors
-`TOKEN_LOGGER_DATA_DIR` when no flag is supplied.
+`TOKEN_LOGGER_DATA_DIR` when no flag is supplied. The `version` and `harness`
+commands do not accept this option; harness clients select a directory through
+`initialize.params.data_dir`.
 
 ## Commands
 
