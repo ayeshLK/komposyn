@@ -282,7 +282,12 @@ func groupingKey(event reportEvent, groups []string, location *time.Location) (s
 			start := local
 			switch group {
 			case GroupHour:
-				start = local.Truncate(time.Hour)
+				// Truncate operates on an absolute duration boundary, which can
+				// start fractional-offset local hours at :30 or :45. Build the
+				// bucket from local calendar components and preserve the event's
+				// offset across DST folds.
+				_, offset := local.Zone()
+				start = time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), 0, 0, 0, time.FixedZone("local", offset))
 			case GroupDay:
 				start = time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
 			case GroupWeek:

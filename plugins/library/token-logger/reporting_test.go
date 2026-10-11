@@ -79,6 +79,40 @@ func TestQueryMarksMissingPricingAsUnknown(t *testing.T) {
 	}
 }
 
+func TestHourlyBucketsUseLocalCivilHours(t *testing.T) {
+	cases := []struct {
+		name     string
+		location *time.Location
+		instant  time.Time
+		want     string
+	}{
+		{name: "UTC", location: time.UTC, instant: time.Date(2026, 10, 11, 10, 45, 0, 0, time.UTC), want: "2026-10-11T10:00:00Z"},
+		{name: "whole-hour zone", location: time.FixedZone("UTC-5", -5*60*60), instant: time.Date(2026, 10, 11, 15, 45, 0, 0, time.UTC), want: "2026-10-11T10:00:00-05:00"},
+		{name: "Colombo", location: time.FixedZone("Asia/Colombo", 5*60*60+30*60), instant: time.Date(2026, 10, 11, 5, 15, 0, 0, time.UTC), want: "2026-10-11T10:00:00+05:30"},
+		{name: "Kathmandu", location: time.FixedZone("Asia/Kathmandu", 5*60*60+45*60), instant: time.Date(2026, 10, 11, 5, 0, 0, 0, time.UTC), want: "2026-10-11T10:00:00+05:45"},
+		{name: "DST spring", location: mustLoadLocation(t, "America/New_York"), instant: time.Date(2026, 3, 8, 7, 15, 0, 0, time.UTC), want: "2026-03-08T03:00:00-04:00"},
+		{name: "DST fall first hour", location: mustLoadLocation(t, "America/New_York"), instant: time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC), want: "2026-11-01T01:00:00-04:00"},
+		{name: "DST fall second hour", location: mustLoadLocation(t, "America/New_York"), instant: time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC), want: "2026-11-01T01:00:00-05:00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, labels, bucket := groupingKey(reportEvent{OccurredAt: tc.instant}, []string{GroupHour}, tc.location)
+			if bucket != tc.want || labels["hour"] != tc.want {
+				t.Fatalf("bucket=%q labels=%v, want %q", bucket, labels, tc.want)
+			}
+		})
+	}
+}
+
+func mustLoadLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return location
+}
+
 func TestReportFormats(t *testing.T) {
 	report := UsageReport{Summary: UsageMeasures{RequestCount: 1, InputTokens: 3, TotalTokens: 5}}
 	var jsonOutput, csvOutput, tableOutput bytes.Buffer
