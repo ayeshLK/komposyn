@@ -6,6 +6,7 @@ output_dir="${2:?usage: build-release.sh <version> <output-dir>}"
 version="${version#v}"
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$output_dir"
+bash "$root_dir/scripts/generate-third-party-licenses.sh" "$output_dir"
 
 ldflags="-s -w -X github.com/ayeshLK/komposyn/plugins/library/token-logger.Version=${version}"
 for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
@@ -21,14 +22,15 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 wi
 		archive="$output_dir/${asset}.tar.gz"
 	fi
 	GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$binary" "$root_dir/plugins/cli/token-logger"
-	cp "$root_dir/LICENSE" "$root_dir/NOTICE" "$root_dir/README.md" "$stage_dir/"
+	cp "$root_dir/LICENSE" "$root_dir/NOTICE" "$root_dir/README.md" "$output_dir/THIRD_PARTY_LICENSES.md" "$stage_dir/"
+	cp -R "$output_dir/third_party_licenses" "$stage_dir/"
 	if [[ "$goos" == windows ]]; then
 		(
 			cd "$stage_dir"
-			zip -q -j "$archive" komposyn-lg.exe LICENSE NOTICE README.md
+			zip -q -r "$archive" komposyn-lg.exe LICENSE NOTICE README.md THIRD_PARTY_LICENSES.md third_party_licenses
 		)
 	else
-		tar -C "$stage_dir" -czf "$archive" "$(basename "$binary")" LICENSE NOTICE README.md
+		tar -C "$stage_dir" -czf "$archive" "$(basename "$binary")" LICENSE NOTICE README.md THIRD_PARTY_LICENSES.md third_party_licenses
 	fi
 	rm -rf "$stage_dir"
 	trap - EXIT

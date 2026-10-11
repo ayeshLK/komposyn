@@ -34,7 +34,9 @@ For macOS and Linux, the standalone installer is `scripts/install.sh`; on
 Windows, use `scripts/install.ps1`. Rerunning the latest installer replaces
 only the executable. The SQLite database, configuration, and consent settings
 remain in the existing data directory. The uninstall scripts remove the
-executable but preserve local data.
+executable but preserve local data. Release archives also contain
+`THIRD_PARTY_LICENSES.md` and the corresponding license texts for resolved
+dependencies.
 
 ## Usage
 

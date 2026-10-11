@@ -38,7 +38,11 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 curl -fsSL "$asset_url" -o "$tmp_dir/$asset"
 curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS"
-(cd "$tmp_dir" && grep "  ${asset}$" SHA256SUMS | sha256sum -c -)
+if command -v sha256sum >/dev/null 2>&1; then
+	(cd "$tmp_dir" && grep "  ${asset}$" SHA256SUMS | sha256sum -c -)
+else
+	(cd "$tmp_dir" && grep "  ${asset}$" SHA256SUMS | shasum -a 256 -c -)
+fi
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
 mkdir -p "$install_dir"
 chmod 0755 "$tmp_dir/komposyn-lg"
