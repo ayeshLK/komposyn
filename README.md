@@ -7,6 +7,10 @@ prompts, responses, or provider credentials.
 
 The standalone executable is `komposyn-lg`.
 
+> **Release status:** Komposyn is currently pre-release; GitHub Releases does
+> not yet contain a published signed release. Building from source is the
+> supported way to try the current repository state.
+
 ## Why Komposyn
 
 - **Local-first:** the database, settings, and diagnostics remain on the
@@ -21,28 +25,6 @@ The standalone executable is `komposyn-lg`.
 Komposyn does not send provider transcripts, prompts, responses, or credentials
 to a hosted Komposyn service. See [Privacy and data handling](docs/privacy.md)
 for the complete data contract.
-
-## Development
-
-Requirements: Go 1.26 or newer.
-
-```text
-make fmt
-make lint
-make test
-make build
-```
-
-The implementation is split into an independent library and CLI surface:
-
-* `plugins/library/token-logger` — logger domain and integration library.
-* `plugins/cli/token-logger` — the `komposyn-lg` executable.
-
-For a guided first run, see [Getting started](docs/getting-started.md). The
-full documentation map is in [docs/README.md](docs/README.md).
-
-The project is licensed under Apache-2.0. See [LICENSE](LICENSE) and
-[NOTICE](NOTICE).
 
 ## Quick start
 
@@ -78,6 +60,28 @@ executable but preserve local data. See [Upgrades and data preservation](docs/up
 Release archives also contain
 `THIRD_PARTY_LICENSES.md` and the corresponding license texts for resolved
 dependencies.
+
+## Development
+
+Requirements: Go 1.26 or newer.
+
+```text
+make fmt
+make lint
+make test
+make build
+```
+
+The implementation is split into an independent library and CLI surface:
+
+* `plugins/library/token-logger` — logger domain and integration library.
+* `plugins/cli/token-logger` — the `komposyn-lg` executable.
+
+For contributor setup, see [CONTRIBUTING.md](CONTRIBUTING.md). The full
+documentation map is in [docs/README.md](docs/README.md).
+
+The project is licensed under Apache-2.0. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
 
 ## Usage
 
