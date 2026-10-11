@@ -33,7 +33,7 @@ jobs:
           cache: true
 
       - name: Verify formatting
-        shell: bash
+        if: matrix.os == 'ubuntu-latest'
         run: test -z "$(gofmt -l $(git ls-files '*.go'))"
 
       - name: Verify modules
