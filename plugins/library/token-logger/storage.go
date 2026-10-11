@@ -146,7 +146,37 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("commit migration 3: %w", err)
 		}
 	}
+	if applied < 4 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 4: %w", err)
+		}
+		if err := applySourceGenerationMigration(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("apply migration 4: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 4, formatStoredTime(time.Now())); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration 4: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 4: %w", err)
+		}
+	}
 	return nil
+}
+
+func applySourceGenerationMigration(tx *sql.Tx) error {
+	var present int
+	err := tx.QueryRow("SELECT 1 FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&present)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = tx.Exec(schemaMigrationFour)
+	return err
 }
 
 func normalizeStoredTimestamps(tx *sql.Tx) error {
@@ -344,12 +374,12 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 		}
 	}
 	if cursor != nil {
-		if _, err := tx.Exec(`INSERT INTO source_cursors(source_id, file_fingerprint, byte_offset, last_provider_record_id, updated_at)
-			VALUES (?, ?, ?, ?, ?)
+		if _, err := tx.Exec(`INSERT INTO source_cursors(source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT(source_id) DO UPDATE SET file_fingerprint = excluded.file_fingerprint,
 			byte_offset = excluded.byte_offset, last_provider_record_id = excluded.last_provider_record_id,
-			updated_at = excluded.updated_at`, cursor.SourceID, cursor.FileFingerprint, cursor.ByteOffset,
-			cursor.LastProviderRecordID, formatStoredTime(time.Now())); err != nil {
+			source_generation = excluded.source_generation, updated_at = excluded.updated_at`, cursor.SourceID, cursor.FileFingerprint, cursor.ByteOffset,
+			cursor.LastProviderRecordID, cursor.SourceGeneration, formatStoredTime(time.Now())); err != nil {
 			tx.Rollback()
 			return Receipt{}, fmt.Errorf("persist source cursor: %w", err)
 		}
@@ -370,9 +400,9 @@ func (s *Store) EventCount() (int, error) {
 // Cursor returns the committed cursor for a source.
 func (s *Store) Cursor(sourceID string) (Cursor, error) {
 	var cursor Cursor
-	err := s.db.QueryRow(`SELECT source_id, file_fingerprint, byte_offset, last_provider_record_id
+	err := s.db.QueryRow(`SELECT source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation
 		FROM source_cursors WHERE source_id = ?`, sourceID).Scan(&cursor.SourceID, &cursor.FileFingerprint,
-		&cursor.ByteOffset, &cursor.LastProviderRecordID)
+		&cursor.ByteOffset, &cursor.LastProviderRecordID, &cursor.SourceGeneration)
 	if err != nil {
 		return Cursor{}, err
 	}

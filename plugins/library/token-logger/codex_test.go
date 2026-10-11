@@ -16,6 +16,7 @@ package tokenlogger
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -84,5 +85,53 @@ func TestCodexImportIsIdempotent(t *testing.T) {
 	}
 	if _, err := store.Cursor("missing"); err != sql.ErrNoRows {
 		t.Fatalf("unexpected cursor error: %v", err)
+	}
+}
+
+func TestCodexImportDetectsReplacementAndPreservesAppendIdempotency(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	session := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}` + "\n"
+	token := func(input int) string {
+		return `{"type":"token_count","timestamp":"2026-10-11T00:00:00Z","payload":{"session_id":"session-1","total_token_usage":{"input_tokens":` + string(rune('0'+input)) + `,"output_tokens":1}}}` + "\n"
+	}
+	if err := os.WriteFile(path, []byte(session+token(1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || first.Receipt.Imported != 1 {
+		t.Fatalf("initial import = %+v, err = %v", first, err)
+	}
+	if err := os.WriteFile(path, []byte(session+token(1)+token(2)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendResult, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || appendResult.Receipt.Imported != 1 || appendResult.Receipt.Duplicates != 1 {
+		t.Fatalf("append import = %+v, err = %v; want one new and one duplicate", appendResult, err)
+	}
+	if err := os.WriteFile(path, []byte(session+token(3)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || replacement.Receipt.Imported != 1 || replacement.Receipt.Duplicates != 0 {
+		t.Fatalf("replacement import = %+v, err = %v; want one new event", replacement, err)
+	}
+	repeat, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || repeat.Receipt.Imported != 0 || repeat.Receipt.Duplicates != 1 {
+		t.Fatalf("replacement re-import = %+v, err = %v; want one duplicate", repeat, err)
+	}
+	if count, err := store.EventCount(); err != nil || count != 3 {
+		t.Fatalf("event count = %d, err = %v; want 3", count, err)
+	}
+	canonicalPath, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := store.Cursor("codex-file-" + digest([]byte(canonicalPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.SourceGeneration != 1 {
+		t.Fatalf("source generation = %d, want 1", cursor.SourceGeneration)
 	}
 }

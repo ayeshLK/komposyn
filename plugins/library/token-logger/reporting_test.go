@@ -160,7 +160,7 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if _, err := store.db.Exec("UPDATE usage_events SET occurred_at = ?, started_at = NULL WHERE event_id = ?", "2026-10-11T00:00:00.5Z", event.EventID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 3"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -178,6 +178,17 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	}
 	if occurredAt != "2026-10-11T00:00:00.500000000Z" {
 		t.Fatalf("migrated timestamp = %q, want fixed-width value", occurredAt)
+	}
+	var migrationCount, latestMigration int
+	if err := store.db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
+		t.Fatal(err)
+	}
+	if migrationCount != 4 || latestMigration != 4 {
+		t.Fatalf("migration history = count %d, latest %d; want four migrations through version 4", migrationCount, latestMigration)
+	}
+	var sourceGenerationColumn string
+	if err := store.db.QueryRow("SELECT name FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&sourceGenerationColumn); err != nil {
+		t.Fatalf("source-generation migration was not applied: %v", err)
 	}
 }
 

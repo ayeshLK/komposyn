@@ -15,6 +15,7 @@
 package tokenlogger
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -52,5 +53,34 @@ func TestDetectClaudeAdapter(t *testing.T) {
 	adapter, err := DetectAdapter(path)
 	if err != nil || adapter != "claude" {
 		t.Fatalf("adapter=%q err=%v", adapter, err)
+	}
+}
+
+func TestClaudeImportDetectsReplacementWithProviderID(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	message := func(input int) string {
+		return `{"type":"assistant","uuid":"provider-record-1","sessionId":"session-1","cwd":"/tmp/project","timestamp":"2026-10-11T00:00:00Z","message":{"model":"claude-test","usage":{"input_tokens":` + string(rune('0'+input)) + `,"output_tokens":1}}}` + "\n"
+	}
+	if err := os.WriteFile(path, []byte(message(1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := (ClaudeAdapter{}).Import(path, store)
+	if err != nil || first.Receipt.Imported != 1 {
+		t.Fatalf("initial import = %+v, err = %v", first, err)
+	}
+	if err := os.WriteFile(path, []byte(message(2)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := (ClaudeAdapter{}).Import(path, store)
+	if err != nil || replacement.Receipt.Imported != 1 || replacement.Receipt.Duplicates != 0 {
+		t.Fatalf("replacement import = %+v, err = %v; want one new event", replacement, err)
+	}
+	repeat, err := (ClaudeAdapter{}).Import(path, store)
+	if err != nil || repeat.Receipt.Imported != 0 || repeat.Receipt.Duplicates != 1 {
+		t.Fatalf("replacement re-import = %+v, err = %v; want one duplicate", repeat, err)
+	}
+	if count, err := store.EventCount(); err != nil || count != 2 {
+		t.Fatalf("event count = %d, err = %v; want 2", count, err)
 	}
 }

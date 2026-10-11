@@ -16,6 +16,7 @@ package tokenlogger
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -89,18 +90,17 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("resolve Codex source: %w", err)
 	}
-	file, err := os.Open(canonicalPath)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("open Codex source: %w", err)
-	}
-	defer file.Close()
-
 	contents, err := os.ReadFile(canonicalPath)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("fingerprint Codex source: %w", err)
 	}
-	sourceID := "codex-file-" + digest([]byte(canonicalPath))
+	baseSourceID := "codex-file-" + digest([]byte(canonicalPath))
 	fingerprint := digest(contents)
+	generation, err := sourceGeneration(store, baseSourceID, contents)
+	if err != nil {
+		return ImportResult{}, fmt.Errorf("inspect Codex source cursor: %w", err)
+	}
+	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
 	var current codexSession
@@ -109,7 +109,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	var events []UsageEvent
 	var lastRecordID string
 
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
@@ -192,7 +192,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 		events[index].ProjectID = current.ProjectID
 		events[index].SessionID = current.ID
 	}
-	receipt, err := store.AppendWithCursor(events, Cursor{SourceID: sourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID})
+	receipt, err := store.AppendWithCursor(events, Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
 	if err != nil {
 		return result, fmt.Errorf("persist Codex events: %w", err)
 	}
