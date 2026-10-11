@@ -42,7 +42,7 @@ func TestCollectorPollsBothProviderShapesAndReportsHealth(t *testing.T) {
 	if err := collector.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if collector.Health().Status != "stopped" {
+	if health := collector.Health(); health.Status != "stopped" || health.Imported != 4 || health.Duplicates != 0 {
 		t.Fatalf("collector did not stop: %+v", collector.Health())
 	}
 }
