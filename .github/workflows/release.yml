@@ -5,13 +5,15 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   build-release:
     name: Build and sign release artifacts
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
