@@ -110,8 +110,5 @@ func SaveSettings(path string, settings Settings) error {
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return fmt.Errorf("replace settings: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("protect settings: %w", err)
-	}
 	return nil
 }
