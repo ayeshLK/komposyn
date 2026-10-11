@@ -32,6 +32,8 @@ product overview; these pages are the operational and integration reference.
   release checks, and final inspection.
 - [Testing guide](contributing/testing.md) — baseline checks and change-area
   coverage expectations.
+- [Pull request guide](contributing/pull-requests.md) — readable descriptions,
+  evidence, compatibility impact, and review handoff.
 - [Operations](operations.md) — data locations, collection health, backups,
   recovery, upgrades, and uninstall boundaries.
 - [Backups and recovery](backups.md) — consistent backup and restore

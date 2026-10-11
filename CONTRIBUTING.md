@@ -71,10 +71,11 @@ update regression tests alongside behavior changes.
 
 ## Pull requests
 
-Keep each pull request focused. Use the repository template and include the
-commands run and their outcomes, not only a statement that tests passed. Call
-out migration, protocol, release, security, privacy, and upgrade impact even
-when the answer is “none”.
+Keep each pull request focused. Use the repository template and follow the
+[pull request guide](docs/contributing/pull-requests.md). Include the commands
+run and their outcomes, not only a statement that tests passed. Call out
+migration, protocol, release, security, privacy, and upgrade impact even when
+the answer is “none”.
 
 Reviewers should be able to reproduce the validation without access to private
 source data. Never include provider transcript content, credentials, prompts,
