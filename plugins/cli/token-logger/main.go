@@ -74,6 +74,12 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 		}
 		fmt.Fprintf(stdout, "komposyn-lg %s\n", tokenlogger.Version)
 		return 0
+	case "harness":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "usage: komposyn-lg harness")
+			return 1
+		}
+		return runProtocol(input, stdout, stderr)
 	case "import":
 		return runImport(args[1:], stdout, stderr)
 	case "usage", "cost", "sessions":
@@ -83,7 +89,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 	case "settings":
 		return runSettings(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "usage: komposyn-lg {version|import|usage|cost|sessions|watch|settings} ...")
+		fmt.Fprintln(stderr, "usage: komposyn-lg {version|harness|import|usage|cost|sessions|watch|settings} ...")
 		return 1
 	}
 }
