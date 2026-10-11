@@ -20,6 +20,8 @@ product overview; these pages are the operational and integration reference.
 
 - [Privacy and data handling](privacy.md) — what is read, stored, excluded,
   and sent externally.
+- [Security and privacy model](security-model.md) — trust boundaries, data
+  inventory, disclosure review, and security-sensitive change checks.
 - [Architecture](architecture.md) — component boundaries, import flow,
   source replacement safety, and reporting semantics.
 - [Data model](data-model.md) — tables, event identity, provenance, time, and

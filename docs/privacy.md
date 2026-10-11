@@ -30,7 +30,9 @@ artifacts and verifies their signatures. Diagnostic issue reporting is
 interactive and produces a draft for review; it is not silently submitted.
 Opening a GitHub issue-draft URL sends the sanitized diagnostic text to
 GitHub, where it may also appear in browser history or other URL logs. The
-sanitizer is best-effort, not a guarantee of secret removal.
+sanitizer is best-effort, not a guarantee of secret removal. Review the URL
+before opening it, and use private vulnerability reporting instead of an issue
+draft for security vulnerabilities.
 
 Review [SECURITY.md](../SECURITY.md) before reporting a vulnerability. Never
 include credentials, transcripts, prompts, responses, or other sensitive source
