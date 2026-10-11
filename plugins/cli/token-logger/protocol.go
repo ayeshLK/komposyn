@@ -165,7 +165,7 @@ func (s *protocolServer) initialize(request protocolRequest) (protocolResponse, 
 		"plugin_id":       "token-logger",
 		"display_name":    "Komposyn Token Logger",
 		"plugin_version":  tokenlogger.Version,
-		"schema_versions": []int{1, 2},
+		"schema_versions": []int{1, 2, 3, 4},
 		"capabilities":    []string{"usage-events", "local-reports"},
 		"data_dir":        s.dataDir,
 	}), false
