@@ -34,6 +34,19 @@ func TestImportCommand(t *testing.T) {
 	}
 }
 
+func TestClaudeImportCommand(t *testing.T) {
+	dataDir := t.TempDir()
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"import", fixture, "--data-dir", dataDir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Claude import exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "imported=2") {
+		t.Fatalf("unexpected Claude import output: %q", stdout.String())
+	}
+}
+
 func TestCLIUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"unknown"}, &stdout, &stderr); code != 1 {

@@ -235,7 +235,19 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	}
 	total := tokenlogger.ImportResult{}
 	for _, sourcePath := range paths {
-		result, importErr := (tokenlogger.CodexAdapter{}).Import(sourcePath, store)
+		adapter, detectErr := tokenlogger.DetectAdapter(sourcePath)
+		if detectErr != nil {
+			fmt.Fprintf(stderr, "%s: detect source: %v\n", sourcePath, detectErr)
+			total.Failed++
+			continue
+		}
+		var result tokenlogger.ImportResult
+		var importErr error
+		if adapter == "claude" {
+			result, importErr = (tokenlogger.ClaudeAdapter{}).Import(sourcePath, store)
+		} else {
+			result, importErr = (tokenlogger.CodexAdapter{}).Import(sourcePath, store)
+		}
 		if importErr != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", sourcePath, importErr)
 			total.Failed++
