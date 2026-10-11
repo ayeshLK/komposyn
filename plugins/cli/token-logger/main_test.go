@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
 )
 
 func TestImportCommand(t *testing.T) {
@@ -54,6 +56,26 @@ func TestCLIUsage(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "usage:") {
 		t.Fatalf("missing usage output: %q", stderr.String())
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("version exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if got, want := strings.TrimSpace(stdout.String()), "komposyn-lg "+tokenlogger.Version; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
+func TestVersionFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("--version exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if got, want := strings.TrimSpace(stdout.String()), "komposyn-lg "+tokenlogger.Version; got != want {
+		t.Fatalf("--version output = %q, want %q", got, want)
 	}
 }
 

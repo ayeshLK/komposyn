@@ -33,7 +33,15 @@ komposyn-lg cost --data-dir <path> --format json
 komposyn-lg sessions --data-dir <path> --format csv
 komposyn-lg watch <file-or-directory> --data-dir <path>
 komposyn-lg settings --data-dir <path> --collector on
+komposyn-lg version
 ```
 
 Reports support `--from`, `--to`, `--project`, `--session`, `--client`,
 `--provider`, `--model`, and comma-separated `--group-by` filters.
+
+## Upgrades
+
+For the initial release, upgrade by rerunning the latest standalone installer.
+The installer must reuse the existing data directory so the SQLite database,
+configuration, and consent settings are preserved. In-CLI self-updating is
+deferred.
