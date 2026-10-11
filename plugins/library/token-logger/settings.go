@@ -86,8 +86,32 @@ func SaveSettings(path string, settings Settings) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create settings directory: %w", err)
 	}
-	if err := os.WriteFile(path, append(contents, '\n'), 0o600); err != nil {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".settings-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary settings file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return fmt.Errorf("protect temporary settings file: %w", err)
+	}
+	if _, err := temporary.Write(append(contents, '\n')); err != nil {
+		temporary.Close()
 		return fmt.Errorf("write settings: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("flush settings: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close temporary settings file: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("replace settings: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("protect settings: %w", err)
 	}
 	return nil
 }
