@@ -16,6 +16,7 @@ package tokenlogger
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -89,12 +90,6 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("resolve Codex source: %w", err)
 	}
-	file, err := os.Open(canonicalPath)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("open Codex source: %w", err)
-	}
-	defer file.Close()
-
 	contents, err := os.ReadFile(canonicalPath)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("fingerprint Codex source: %w", err)
@@ -114,7 +109,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	var events []UsageEvent
 	var lastRecordID string
 
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')

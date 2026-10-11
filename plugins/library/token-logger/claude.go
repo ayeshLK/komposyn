@@ -16,6 +16,7 @@ package tokenlogger
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -130,11 +131,6 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("resolve Claude source: %w", err)
 	}
-	file, err := os.Open(canonicalPath)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("open Claude source: %w", err)
-	}
-	defer file.Close()
 	contents, err := os.ReadFile(canonicalPath)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("fingerprint Claude source: %w", err)
@@ -151,7 +147,7 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	var session claudeSession
 	var events []UsageEvent
 	var lastRecordID string
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
