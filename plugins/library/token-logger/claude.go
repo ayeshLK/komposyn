@@ -139,8 +139,13 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("fingerprint Claude source: %w", err)
 	}
-	sourceID := "claude-file-" + digest([]byte(canonicalPath))
+	baseSourceID := "claude-file-" + digest([]byte(canonicalPath))
 	fingerprint := digest(contents)
+	generation, err := sourceGeneration(store, baseSourceID, contents)
+	if err != nil {
+		return ImportResult{}, fmt.Errorf("inspect Claude source cursor: %w", err)
+	}
+	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
 	var session claudeSession
@@ -208,7 +213,7 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 		events[index].ProjectID = session.ProjectID
 		events[index].SessionID = session.ID
 	}
-	receipt, err := store.AppendWithCursor(events, Cursor{SourceID: sourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID})
+	receipt, err := store.AppendWithCursor(events, Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
 	if err != nil {
 		return result, fmt.Errorf("persist Claude events: %w", err)
 	}

@@ -28,7 +28,7 @@ import (
 // from the release tag at link time.
 var Version = "0.1.0"
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.
@@ -208,6 +208,7 @@ type Cursor struct {
 	FileFingerprint      string
 	ByteOffset           int64
 	LastProviderRecordID string
+	SourceGeneration     int64
 }
 
 func (c Cursor) validate() error {

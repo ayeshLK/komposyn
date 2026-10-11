@@ -122,3 +122,7 @@ CREATE TABLE diagnostics (
 );
 CREATE INDEX diagnostics_status_idx ON diagnostics(status, last_seen_at);
 `
+
+const schemaMigrationFour = `
+ALTER TABLE source_cursors ADD COLUMN source_generation INTEGER NOT NULL DEFAULT 0;
+`
