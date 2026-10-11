@@ -26,6 +26,10 @@ product overview; these pages are the operational and integration reference.
   transaction guarantees.
 - [Database migrations](migrations.md) — schema history, compatibility rules,
   and the procedure for adding a migration.
+- [Development guide](contributing/development.md) — local setup, validation,
+  release checks, and final inspection.
+- [Testing guide](contributing/testing.md) — baseline checks and change-area
+  coverage expectations.
 - [Upgrades and data preservation](upgrades.md) — installer replacement,
   migrations, and uninstall boundaries.
 - [Harness protocol](HARNESS_PROTOCOL.md) — the normative versioned JSONL wire
