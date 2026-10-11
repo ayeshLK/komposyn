@@ -22,6 +22,20 @@ The implementation is split into an independent library and CLI surface:
 The project is licensed under Apache-2.0. See [LICENSE](LICENSE) and
 [NOTICE](NOTICE).
 
+## Installation and upgrades
+
+Release archives are built with:
+
+```text
+make release VERSION=v0.1.0 OUTPUT_DIR=dist
+```
+
+For macOS and Linux, the standalone installer is `scripts/install.sh`; on
+Windows, use `scripts/install.ps1`. Rerunning the latest installer replaces
+only the executable. The SQLite database, configuration, and consent settings
+remain in the existing data directory. The uninstall scripts remove the
+executable but preserve local data.
+
 ## Usage
 
 Import a Codex JSONL source and inspect the normalized usage report:

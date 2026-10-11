@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Build and sign release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build release artifacts
+        run: |
+          go vet ./...
+          go test ./...
+          go test -race ./...
+          make release VERSION="${GITHUB_REF_NAME}" OUTPUT_DIR=dist
+
+      - name: Install Cosign
+        run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3
+
+      - name: Sign release artifacts
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          for artifact in dist/komposyn-lg_* dist/SHA256SUMS; do
+            cosign sign-blob --yes --output-signature "${artifact}.sig" "$artifact"
+          done
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes
