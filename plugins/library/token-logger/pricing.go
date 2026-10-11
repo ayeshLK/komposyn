@@ -77,7 +77,7 @@ func (s *Store) UpsertPricing(rule PricingRule) error {
 		effective_from, effective_to, pricing_version, source, notes)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.Provider, rule.ModelSelector,
 		rule.TokenCategory, rule.RateMicros, rule.Currency,
-		rule.EffectiveFrom.Format(time.RFC3339Nano), nullableTime(rule.EffectiveTo),
+		formatStoredTime(rule.EffectiveFrom), nullableTime(rule.EffectiveTo),
 		rule.PricingVersion, rule.Source, rule.Notes)
 	return err
 }

@@ -32,6 +32,12 @@ type Store struct {
 	db *sql.DB
 }
 
+const storedTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+func formatStoredTime(value time.Time) string {
+	return value.UTC().Format(storedTimeLayout)
+}
+
 // Open opens or creates a SQLite database and applies all migrations.
 func Open(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
@@ -98,7 +104,7 @@ func (s *Store) Migrate() error {
 			tx.Rollback()
 			return fmt.Errorf("apply migration 1: %w", err)
 		}
-		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 1, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 1, formatStoredTime(time.Now())); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("record migration 1: %w", err)
 		}
@@ -115,12 +121,90 @@ func (s *Store) Migrate() error {
 			tx.Rollback()
 			return fmt.Errorf("apply migration 2: %w", err)
 		}
-		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 2, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 2, formatStoredTime(time.Now())); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("record migration 2: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration 2: %w", err)
+		}
+	}
+	if applied < 3 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 3: %w", err)
+		}
+		if err := normalizeStoredTimestamps(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("normalize timestamps: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 3, formatStoredTime(time.Now())); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration 3: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 3: %w", err)
+		}
+	}
+	return nil
+}
+
+func normalizeStoredTimestamps(tx *sql.Tx) error {
+	columns := []struct {
+		table  string
+		column string
+	}{
+		{table: "schema_migrations", column: "applied_at"},
+		{table: "projects", column: "created_at"},
+		{table: "sessions", column: "started_at"},
+		{table: "sessions", column: "ended_at"},
+		{table: "usage_events", column: "occurred_at"},
+		{table: "usage_events", column: "started_at"},
+		{table: "usage_events", column: "completed_at"},
+		{table: "source_cursors", column: "updated_at"},
+		{table: "pricing_rules", column: "effective_from"},
+		{table: "pricing_rules", column: "effective_to"},
+		{table: "diagnostics", column: "first_seen_at"},
+		{table: "diagnostics", column: "last_seen_at"},
+	}
+	for _, item := range columns {
+		rows, err := tx.Query("SELECT rowid, " + item.column + " FROM " + item.table)
+		if err != nil {
+			return err
+		}
+		updates := make([]struct {
+			rowID int64
+			value string
+		}, 0)
+		for rows.Next() {
+			var rowID int64
+			var value sql.NullString
+			if err := rows.Scan(&rowID, &value); err != nil {
+				rows.Close()
+				return err
+			}
+			if !value.Valid || value.String == "" {
+				continue
+			}
+			parsed, err := time.Parse(time.RFC3339Nano, value.String)
+			if err != nil {
+				rows.Close()
+				return fmt.Errorf("%s.%s value %q: %w", item.table, item.column, value.String, err)
+			}
+			updates = append(updates, struct {
+				rowID int64
+				value string
+			}{rowID: rowID, value: formatStoredTime(parsed)})
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, update := range updates {
+			if _, err := tx.Exec("UPDATE "+item.table+" SET "+item.column+" = ? WHERE rowid = ?", update.value, update.rowID); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -140,7 +224,7 @@ func (s *Store) UpsertProject(project Project) error {
 	_, err := s.db.Exec(`INSERT INTO projects(id, root, display_name, created_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET root = excluded.root, display_name = excluded.display_name`,
-		project.ID, project.Root, project.DisplayName, time.Now().UTC().Format(time.RFC3339Nano))
+		project.ID, project.Root, project.DisplayName, formatStoredTime(time.Now()))
 	return err
 }
 
@@ -192,7 +276,7 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor) (Receipt, error) {
 	receipt := Receipt{}
 	for _, event := range events {
 		result, err := tx.Exec(eventInsertSQL,
-			event.EventID, event.SchemaVersion, event.EventType, event.OccurredAt.Format(time.RFC3339Nano),
+			event.EventID, event.SchemaVersion, event.EventType, formatStoredTime(event.OccurredAt),
 			nullableTime(event.StartedAt), nullableTime(event.CompletedAt), event.ProjectID, event.SessionID,
 			event.RequestID, event.Attempt, event.Operation, event.Client.Name, event.Client.Version,
 			event.Client.Mode, event.Provider, event.RequestedModel, event.ResolvedModel,
@@ -223,7 +307,7 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor) (Receipt, error) {
 			ON CONFLICT(source_id) DO UPDATE SET file_fingerprint = excluded.file_fingerprint,
 			byte_offset = excluded.byte_offset, last_provider_record_id = excluded.last_provider_record_id,
 			updated_at = excluded.updated_at`, cursor.SourceID, cursor.FileFingerprint, cursor.ByteOffset,
-			cursor.LastProviderRecordID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			cursor.LastProviderRecordID, formatStoredTime(time.Now())); err != nil {
 			tx.Rollback()
 			return Receipt{}, fmt.Errorf("persist source cursor: %w", err)
 		}
@@ -257,7 +341,7 @@ func nullableTime(value *time.Time) any {
 	if value == nil {
 		return nil
 	}
-	return value.Format(time.RFC3339Nano)
+	return formatStoredTime(*value)
 }
 
 func nullableInt64(value *int64) any {

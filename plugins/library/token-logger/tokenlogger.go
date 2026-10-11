@@ -28,7 +28,7 @@ import (
 // from the release tag at link time.
 var Version = "0.1.0"
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.
