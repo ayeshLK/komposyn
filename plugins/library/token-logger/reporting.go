@@ -112,12 +112,17 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 	if filter.From.Location() != time.UTC || filter.To.Location() != time.UTC {
 		return UsageReport{}, fmt.Errorf("query range must use UTC")
 	}
+	seenGroups := make(map[string]struct{}, len(filter.GroupBy))
 	for _, group := range filter.GroupBy {
 		switch group {
 		case GroupHour, GroupDay, GroupWeek, GroupMonth, GroupProject, GroupSession, GroupClient, GroupProvider, GroupModel:
 		default:
 			return UsageReport{}, fmt.Errorf("unsupported group-by %q", group)
 		}
+		if _, exists := seenGroups[group]; exists {
+			return UsageReport{}, fmt.Errorf("duplicate group-by %q", group)
+		}
+		seenGroups[group] = struct{}{}
 	}
 	location := filter.Timezone
 	if location == nil {
@@ -358,6 +363,10 @@ func WriteCSV(w io.Writer, report UsageReport) error {
 // WriteTable writes a compact human-readable usage report.
 func WriteTable(w io.Writer, report UsageReport) error {
 	writer := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	if len(report.Rows) == 0 && report.Summary.RequestCount == 0 {
+		fmt.Fprintln(writer, "NO USAGE DATA")
+		return writer.Flush()
+	}
 	groups := report.Filters.GroupBy
 	headings := make([]string, 0, len(groups)+10)
 	if len(groups) == 0 {

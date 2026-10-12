@@ -82,6 +82,15 @@ func TestQueryMarksMissingPricingAsUnknown(t *testing.T) {
 	}
 }
 
+func TestQueryRejectsDuplicateGroups(t *testing.T) {
+	store := openTestStore(t)
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	_, err := store.Query(UsageFilter{From: from, To: from.AddDate(0, 0, 1), GroupBy: []string{GroupClient, GroupClient}})
+	if err == nil || !strings.Contains(err.Error(), `duplicate group-by "client"`) {
+		t.Fatalf("duplicate group error = %v", err)
+	}
+}
+
 func TestHourlyBucketsUseLocalCivilHours(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -274,7 +283,7 @@ func TestWriteTableUsesRequestedDimensionOrderAndSingleTimeColumn(t *testing.T) 
 	if strings.Contains(lines[0], "BUCKET") || strings.Count(lines[1], hour) != 1 {
 		t.Fatalf("time bucket was duplicated: %q", output.String())
 	}
-	for _, expected := range []string{"-05:00", "codex-cli", "1,500", "1,234", "1M", "101.4M", "123K", "37.9K", "1.1B", "unknown", "no matching price"} {
+	for _, expected := range []string{"-05:00", "codex-cli", "1,500", "1,234", "1M", "101.4M", "123K", "37.9K", "1.1B", "unknown", "pricing unavailable"} {
 		if !strings.Contains(lines[1], expected) {
 			t.Errorf("table row %q does not contain %q", lines[1], expected)
 		}
@@ -283,7 +292,7 @@ func TestWriteTableUsesRequestedDimensionOrderAndSingleTimeColumn(t *testing.T) 
 
 func TestWriteTableLabelsTotalAndEmptyDimensions(t *testing.T) {
 	var totalOutput bytes.Buffer
-	if err := WriteTable(&totalOutput, UsageReport{Summary: UsageMeasures{RequestCount: 1}}); err != nil {
+	if err := WriteTable(&totalOutput, UsageReport{Summary: UsageMeasures{RequestCount: 1, SessionCount: 1}}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(totalOutput.String(), "GROUP") || !strings.Contains(totalOutput.String(), "TOTAL") {
@@ -297,6 +306,33 @@ func TestWriteTableLabelsTotalAndEmptyDimensions(t *testing.T) {
 	}
 	if !strings.Contains(groupedOutput.String(), "(none)") {
 		t.Fatalf("empty selected dimension has no placeholder: %q", groupedOutput.String())
+	}
+}
+
+func TestWriteTableDistinguishesNoDataFromEmptyDimension(t *testing.T) {
+	for _, report := range []UsageReport{
+		{},
+		{Filters: UsageFilter{GroupBy: []string{GroupClient}}},
+	} {
+		var output bytes.Buffer
+		if err := WriteTable(&output, report); err != nil {
+			t.Fatal(err)
+		}
+		if got := output.String(); got != "NO USAGE DATA\n" {
+			t.Fatalf("no-data table = %q", got)
+		}
+	}
+
+	var emptyDimensionOutput bytes.Buffer
+	report := UsageReport{
+		Filters: UsageFilter{GroupBy: []string{GroupClient}},
+		Rows:    []UsageRow{{Dimensions: map[string]string{GroupClient: ""}, UsageMeasures: UsageMeasures{RequestCount: 1}}},
+	}
+	if err := WriteTable(&emptyDimensionOutput, report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(emptyDimensionOutput.String(), "(none)") || strings.Contains(emptyDimensionOutput.String(), "NO USAGE DATA") {
+		t.Fatalf("empty dimension was confused with no data: %q", emptyDimensionOutput.String())
 	}
 }
 
@@ -332,9 +368,10 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 	}{
 		{name: "known zero", measures: UsageMeasures{RequestCount: 1, CalculatedCurrency: "USD"}, cost: "0 USD", status: "calculated"},
 		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD"}, cost: "0.00024 USD", status: "calculated"},
-		{name: "fully unknown", measures: UsageMeasures{RequestCount: 2, UnknownCostRequests: 2}, cost: "unknown", status: "no matching price (2)"},
-		{name: "partially known", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "USD", UnknownCostRequests: 1}, cost: "12.34 USD", status: "partial; 1 unknown (no matching price)"},
+		{name: "fully unknown", measures: UsageMeasures{RequestCount: 2, UnknownCostRequests: 2}, cost: "unknown", status: "pricing unavailable (2)"},
+		{name: "partially known", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "USD", UnknownCostRequests: 1}, cost: "12.34 USD", status: "partial; 1 pricing unavailable"},
 		{name: "mixed currencies", measures: UsageMeasures{RequestCount: 2, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed"}, cost: "not comparable", status: "mixed currencies"},
+		{name: "mixed and partially unknown", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed", UnknownCostRequests: 1}, cost: "not comparable", status: "mixed currencies; 1 pricing unavailable"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

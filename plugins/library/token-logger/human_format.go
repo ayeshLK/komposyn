@@ -149,7 +149,7 @@ func humanCostDisplay(measures UsageMeasures) (string, string) {
 	if measures.CalculatedCurrency == "mixed" {
 		status := "mixed currencies"
 		if unknown > 0 {
-			status += "; " + formatExactCount(unknown) + " unknown (no matching price)"
+			status += "; " + formatExactCount(unknown) + " pricing unavailable"
 		}
 		return "not comparable", status
 	}
@@ -162,9 +162,9 @@ func humanCostDisplay(measures UsageMeasures) (string, string) {
 		return cost, "calculated"
 	}
 	if known == 0 && measures.CalculatedCostMicros == 0 && measures.CalculatedCurrency == "" {
-		return "unknown", "no matching price (" + formatExactCount(unknown) + ")"
+		return "unknown", "pricing unavailable (" + formatExactCount(unknown) + ")"
 	}
-	return cost, "partial; " + formatExactCount(unknown) + " unknown (no matching price)"
+	return cost, "partial; " + formatExactCount(unknown) + " pricing unavailable"
 }
 
 func formatCostMicros(value int64) string {

@@ -67,9 +67,12 @@ wide or untruncated table mode is not currently provided.
 
 Human cost output converts stored currency microunits to currency units. It
 keeps known zero, fully unknown, partially known, and mixed-currency states
-distinct. Missing local pricing is reported as `no matching price`; the tool
-does not guess a rate. Use JSON or CSV for exact token integers, untruncated
-dimension values, stable machine-readable fields, and detailed cost measures.
+distinct. The neutral `pricing unavailable` status is used because the
+aggregate does not yet retain a specific unknown-cost cause; the tool does not
+guess a rate. Use JSON or CSV for exact token integers, untruncated dimension
+values, stable machine-readable fields, and detailed cost measures. A report
+with no matching events displays `NO USAGE DATA` instead of fabricating an
+empty group.
 
 ## Watch
 
