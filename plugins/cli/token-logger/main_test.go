@@ -17,6 +17,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
+	_ "modernc.org/sqlite"
 )
 
 func TestImportCommand(t *testing.T) {
@@ -317,28 +319,70 @@ func queryReport(t *testing.T, dataDir string, filter tokenlogger.UsageFilter) t
 	return report
 }
 
-func eventProjections(t *testing.T, dataDir string) []tokenlogger.EventProjection {
+type testEventProjection struct {
+	EventID        string
+	IngestionKey   string
+	OccurredAt     time.Time
+	ProjectID      string
+	SessionID      string
+	ClientName     string
+	Provider       string
+	RequestedModel string
+	ResolvedModel  string
+	Usage          tokenlogger.TokenUsage
+	SourceID       string
+	SourceRecord   string
+}
+
+func eventProjections(t *testing.T, dataDir string) []testEventProjection {
 	t.Helper()
-	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	// This is intentionally test-only SQL access. The product library does not
+	// expose an unbounded event enumeration API just for this differential test.
+	database, err := sql.Open("sqlite", filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	projections, err := store.EventProjections()
+	defer database.Close()
+	rows, err := database.Query(`SELECT event_id, ingestion_key, occurred_at,
+		COALESCE(project_id, ''), COALESCE(session_id, ''), client_name, provider_name,
+		requested_model, resolved_model, input_tokens, output_tokens, cache_read_tokens,
+		cache_write_tokens, reasoning_tokens, source_id, source_record_id
+		FROM usage_events ORDER BY occurred_at, event_id`)
 	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var projections []testEventProjection
+	for rows.Next() {
+		var projection testEventProjection
+		var occurredAt string
+		if err := rows.Scan(&projection.EventID, &projection.IngestionKey, &occurredAt,
+			&projection.ProjectID, &projection.SessionID, &projection.ClientName, &projection.Provider,
+			&projection.RequestedModel, &projection.ResolvedModel, &projection.Usage.InputTokens,
+			&projection.Usage.OutputTokens, &projection.Usage.CacheReadTokens, &projection.Usage.CacheWriteTokens,
+			&projection.Usage.ReasoningTokens, &projection.SourceID, &projection.SourceRecord); err != nil {
+			t.Fatal(err)
+		}
+		projection.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		projections = append(projections, projection)
+	}
+	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
 	return projections
 }
 
-func canonicalProjection(event tokenlogger.EventProjection) tokenlogger.EventProjection {
+func canonicalProjection(event testEventProjection) testEventProjection {
 	event.EventID = ""
 	event.IngestionKey = ""
 	event.SourceID = ""
 	return event
 }
 
-func assertProjectionStable(t *testing.T, before, after []tokenlogger.EventProjection, label string) {
+func assertProjectionStable(t *testing.T, before, after []testEventProjection, label string) {
 	t.Helper()
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("%s changed persisted event projections: before=%+v after=%+v", label, before, after)

@@ -407,58 +407,6 @@ func (s *Store) EventCount() (int, error) {
 	return count, err
 }
 
-// EventProjection is the stable, content-free semantic view used when
-// comparing persisted events across ingestion surfaces. It intentionally
-// excludes prompts, responses, raw records, and attributes.
-type EventProjection struct {
-	EventID        string
-	IngestionKey   string
-	OccurredAt     time.Time
-	ProjectID      string
-	SessionID      string
-	ClientName     string
-	Provider       string
-	RequestedModel string
-	ResolvedModel  string
-	Usage          TokenUsage
-	SourceID       string
-	SourceRecord   string
-}
-
-// EventProjections returns persisted event semantics in deterministic order.
-// It is read-only and suitable for diagnostics, conformance tests, and
-// integrations that need to verify replay behavior without reading content.
-func (s *Store) EventProjections() ([]EventProjection, error) {
-	rows, err := s.db.Query(`SELECT event_id, ingestion_key, occurred_at,
-		COALESCE(project_id, ''), COALESCE(session_id, ''), client_name, provider_name,
-		requested_model, resolved_model, input_tokens, output_tokens, cache_read_tokens,
-		cache_write_tokens, reasoning_tokens, source_id, source_record_id
-		FROM usage_events ORDER BY occurred_at, event_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []EventProjection
-	for rows.Next() {
-		var event EventProjection
-		var occurredAt string
-		if err := rows.Scan(&event.EventID, &event.IngestionKey, &occurredAt,
-			&event.ProjectID, &event.SessionID, &event.ClientName, &event.Provider,
-			&event.RequestedModel, &event.ResolvedModel, &event.Usage.InputTokens,
-			&event.Usage.OutputTokens, &event.Usage.CacheReadTokens, &event.Usage.CacheWriteTokens,
-			&event.Usage.ReasoningTokens, &event.SourceID, &event.SourceRecord); err != nil {
-			return nil, err
-		}
-		parsed, err := time.Parse(time.RFC3339Nano, occurredAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse event timestamp: %w", err)
-		}
-		event.OccurredAt = parsed.UTC()
-		events = append(events, event)
-	}
-	return events, rows.Err()
-}
-
 // Cursor returns the committed cursor for a source.
 func (s *Store) Cursor(sourceID string) (Cursor, error) {
 	var cursor Cursor
