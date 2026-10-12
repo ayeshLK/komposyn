@@ -149,6 +149,25 @@ Runs the versioned JSONL sidecar protocol over stdin/stdout. See the
 Running `komposyn-lg` without a subcommand starts onboarding on first use and
 then opens the interactive report view. Type `/help` for the command list.
 
+When both stdin and stdout are terminals, the prompt provides cursor-aware
+editing with Left/Right, Backspace, Delete, Home/End, and Up/Down session
+history. The history is in-memory only, includes non-empty submitted REPL
+commands, excludes onboarding and diagnostic answers, and is discarded when
+the process exits. Ctrl-D on an empty line exits. Ctrl-C cancels the current
+input and exits. Ctrl-L has the same visible-screen clearing behavior as
+`/clear`.
+
+`/clear` clears the visible terminal and returns the cursor home without
+rerunning the report. It does not erase scrollback and does not delete or
+modify KompoSyn data, settings, consent, diagnostics, or session history. Use
+`/refresh` to redraw the report. A multiline paste is folded into one command;
+it cannot silently execute several commands.
+
+For non-TTY input or output, the CLI keeps scanner-style behavior. `/clear`
+then prints `clear is available only in an interactive terminal` and emits no
+ANSI or other terminal control sequence. No top-level `komposyn-lg clear`
+command exists.
+
 ## Exit behavior
 
 The CLI returns zero for successful commands and non-zero for invalid usage,

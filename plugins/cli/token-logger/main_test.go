@@ -560,6 +560,26 @@ func TestInteractiveReportsUseHumanReadableTable(t *testing.T) {
 	}
 }
 
+func TestInteractiveClearIsNonTTYNoOp(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := runInteractive(strings.NewReader("/clear\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "clear is available only in an interactive terminal") {
+		t.Fatalf("missing non-TTY clear message: %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "\x1b[") || strings.Contains(stderr.String(), "\x1b[") {
+		t.Fatalf("non-TTY clear emitted terminal control bytes: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestHarnessProtocolFixture(t *testing.T) {
 	dataDir := t.TempDir()
 	event := tokenlogger.UsageEvent{

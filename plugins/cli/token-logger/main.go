@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,7 +31,12 @@ import (
 	_ "time/tzdata"
 
 	"github.com/ayeshLK/komposyn/plugins/library/token-logger"
+	"github.com/chzyer/readline"
+	"github.com/mattn/go-isatty"
+	"golang.org/x/term"
 )
+
+const maxInteractiveCommandRunes = 64 * 1024
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -58,16 +64,29 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 			fmt.Fprintf(stderr, "load settings: %v\n", err)
 			return 2
 		}
-		scanner := bufio.NewScanner(input)
 		startNow := false
+		if terminalInput, ok := newTerminalLineReader(input, stdout, stderr); ok {
+			defer terminalInput.Close()
+			terminalInput.DisableHistory()
+			if !settings.OnboardingComplete {
+				settings, startNow = runOnboarding(terminalInput, dataDir, settings)
+				if err := tokenlogger.SaveSettings(settingsPath, settings); err != nil {
+					fmt.Fprintf(stderr, "save settings: %v\n", err)
+					return 2
+				}
+			}
+			terminalInput.EnableHistory()
+			return runInteractiveLoop(terminalInput, stdout, stderr, store, dataDir, settings, startNow)
+		}
+		scanner := bufio.NewScanner(input)
 		if !settings.OnboardingComplete {
-			settings, startNow = runOnboarding(scanner, stdout, dataDir, settings)
+			settings, startNow = runOnboarding(&scannerLineReader{scanner: scanner, output: stdout}, dataDir, settings)
 			if err := tokenlogger.SaveSettings(settingsPath, settings); err != nil {
 				fmt.Fprintf(stderr, "save settings: %v\n", err)
 				return 2
 			}
 		}
-		return runInteractiveScanner(scanner, stdout, stderr, store, dataDir, settings, startNow)
+		return runInteractiveLoop(&scannerLineReader{scanner: scanner, output: stdout}, stdout, stderr, store, dataDir, settings, startNow)
 	}
 	switch args[0] {
 	case "version", "--version":
@@ -112,6 +131,109 @@ func runInteractive(input io.Reader, stdout, stderr io.Writer, store *tokenlogge
 }
 
 func runInteractiveScanner(scanner *bufio.Scanner, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool) int {
+	return runInteractiveLoop(&scannerLineReader{scanner: scanner, output: stdout}, stdout, stderr, store, dataDir, settings, startNow)
+}
+
+type interactiveLineReader interface {
+	ReadLine(prompt string) (string, error)
+	DisableHistory()
+	EnableHistory()
+}
+
+type scannerLineReader struct {
+	scanner *bufio.Scanner
+	output  io.Writer
+}
+
+func (reader *scannerLineReader) ReadLine(prompt string) (string, error) {
+	fmt.Fprint(reader.output, prompt)
+	if !reader.scanner.Scan() {
+		return "", io.EOF
+	}
+	return reader.scanner.Text(), nil
+}
+
+func (reader *scannerLineReader) DisableHistory() {}
+func (reader *scannerLineReader) EnableHistory()  {}
+
+type terminalLineReader struct {
+	instance *readline.Instance
+	output   io.Writer
+}
+
+func (reader *terminalLineReader) ReadLine(prompt string) (string, error) {
+	reader.instance.SetPrompt(prompt)
+	return reader.instance.Readline()
+}
+
+func (reader *terminalLineReader) DisableHistory() { reader.instance.HistoryDisable() }
+func (reader *terminalLineReader) EnableHistory()  { reader.instance.HistoryEnable() }
+func (reader *terminalLineReader) Close() error    { return reader.instance.Close() }
+
+func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminalLineReader, bool) {
+	in, inputOK := input.(*os.File)
+	out, outputOK := stdout.(*os.File)
+	if !inputOK || !outputOK || !(isatty.IsTerminal(in.Fd()) || isatty.IsCygwinTerminal(in.Fd())) || !(isatty.IsTerminal(out.Fd()) || isatty.IsCygwinTerminal(out.Fd())) {
+		return nil, false
+	}
+	config := &readline.Config{
+		Prompt:                 "> ",
+		HistoryLimit:           500,
+		HistoryFile:            "",
+		DisableAutoSaveHistory: false,
+		UniqueEditLine:         true,
+		InterruptPrompt:        "^C\n",
+		EOFPrompt:              "^D\n",
+		Stdin:                  in,
+		Stdout:                 stdout,
+		Stderr:                 stderr,
+		ForceUseInteractive:    true,
+		FuncIsTerminal:         func() bool { return true },
+		// Fold pasted line feeds into the current command. A command is submitted
+		// only by the terminal Enter key, so a multiline paste cannot execute a
+		// batch without an explicit submission.
+		FuncFilterInputRune: func(r rune) (rune, bool) {
+			if r == '\n' {
+				return ' ', true
+			}
+			return r, true
+		},
+	}
+	var rawState *term.State
+	config.FuncMakeRaw = func() error {
+		state, err := term.MakeRaw(int(in.Fd()))
+		if err == nil {
+			rawState = state
+		}
+		return err
+	}
+	config.FuncExitRaw = func() error {
+		if rawState == nil {
+			return nil
+		}
+		err := term.Restore(int(in.Fd()), rawState)
+		rawState = nil
+		return err
+	}
+	config.SetListener(func(line []rune, pos int, key rune) ([]rune, int, bool) {
+		bounded := line
+		for len(string(bounded)) > maxInteractiveCommandRunes {
+			bounded = bounded[:len(bounded)-1]
+		}
+		if len(bounded) != len(line) && pos > len(bounded) {
+			pos = len(bounded)
+		}
+		return bounded, pos, true
+	})
+	instance, err := readline.NewEx(config)
+	if err != nil {
+		fmt.Fprintf(stderr, "interactive terminal setup failed; using line input: %v\n", err)
+		return nil, false
+	}
+	return &terminalLineReader{instance: instance, output: stdout}, true
+}
+
+func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool) int {
 	now := time.Now().UTC()
 	state := interactiveState{from: now.AddDate(0, 0, -7), to: now, groupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}}
 	collectorContext, stopCollector := context.WithCancel(context.Background())
@@ -131,16 +253,20 @@ func runInteractiveScanner(scanner *bufio.Scanner, stdout, stderr io.Writer, sto
 		fmt.Fprintf(stdout, "There are %d pending local diagnostic(s).\n", len(pending))
 		for _, diagnostic := range pending {
 			fmt.Fprintf(stdout, "Pending diagnostic %s (%d occurrence(s)).\n", diagnostic.Fingerprint, diagnostic.OccurrenceCount)
-			offerDiagnostic(stdout, scanner, store, diagnostic)
+			offerDiagnostic(reader, store, diagnostic)
 		}
 	}
-	renderInteractive(stdout, stderr, store, state, scanner)
+	renderInteractive(stdout, stderr, store, state, reader)
 	for {
-		fmt.Fprint(stdout, "> ")
-		if !scanner.Scan() {
+		line, err := reader.ReadLine("> ")
+		if errors.Is(err, readline.ErrInterrupt) || errors.Is(err, io.EOF) {
 			return 0
 		}
-		line := strings.TrimSpace(scanner.Text())
+		if err != nil {
+			fmt.Fprintf(stderr, "read command failed: %v\n", err)
+			return 2
+		}
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
@@ -151,26 +277,34 @@ func runInteractiveScanner(scanner *bufio.Scanner, stdout, stderr io.Writer, sto
 			return 0
 		case "/help":
 			printInteractiveHelp(stdout)
+		case "/clear":
+			if terminalReader, ok := reader.(*terminalLineReader); ok {
+				if err := clearTerminal(terminalReader.output); err != nil {
+					fmt.Fprintf(stderr, "clear terminal failed: %v\n", err)
+				}
+			} else {
+				fmt.Fprintln(stdout, "clear is available only in an interactive terminal")
+			}
 		case "/projects":
 			state.groupBy = []string{tokenlogger.GroupProject}
-			renderInteractive(stdout, stderr, store, state, scanner)
+			renderInteractive(stdout, stderr, store, state, reader)
 		case "/sessions":
 			state.groupBy = []string{tokenlogger.GroupSession}
-			renderInteractive(stdout, stderr, store, state, scanner)
+			renderInteractive(stdout, stderr, store, state, reader)
 		case "/total-usage":
 			state.groupBy = []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}
-			renderInteractive(stdout, stderr, store, state, scanner)
+			renderInteractive(stdout, stderr, store, state, reader)
 		case "/by-client":
 			state.groupBy = []string{tokenlogger.GroupClient}
-			renderInteractive(stdout, stderr, store, state, scanner)
+			renderInteractive(stdout, stderr, store, state, reader)
 		case "/by-model":
 			state.groupBy = []string{tokenlogger.GroupModel}
-			renderInteractive(stdout, stderr, store, state, scanner)
+			renderInteractive(stdout, stderr, store, state, reader)
 		case "/cost":
 			state.groupBy = []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}
-			renderInteractive(stdout, stderr, store, state, scanner)
+			renderInteractive(stdout, stderr, store, state, reader)
 		case "/refresh":
-			renderInteractive(stdout, stderr, store, state, scanner)
+			renderInteractive(stdout, stderr, store, state, reader)
 		case "/range":
 			if len(fields) == 1 {
 				fmt.Fprintf(stdout, "active range: %s to %s (UTC)\n", state.from.Format(time.RFC3339), state.to.Format(time.RFC3339))
@@ -187,7 +321,7 @@ func runInteractiveScanner(scanner *bufio.Scanner, stdout, stderr io.Writer, sto
 				continue
 			}
 			state.from, state.to = from, to
-			renderInteractive(stdout, stderr, store, state, scanner)
+			renderInteractive(stdout, stderr, store, state, reader)
 		case "/settings":
 			fmt.Fprintf(stdout, "data directory: %s\n", dataDir)
 			fmt.Fprintf(stdout, "collector enabled: %t\n", settings.CollectorEnabled)
@@ -203,13 +337,13 @@ func runInteractiveScanner(scanner *bufio.Scanner, stdout, stderr io.Writer, sto
 	}
 }
 
-func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state interactiveState, scanner *bufio.Scanner) {
+func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state interactiveState, reader interactiveLineReader) {
 	report, err := store.Query(tokenlogger.UsageFilter{From: state.from, To: state.to, GroupBy: state.groupBy})
 	if err != nil {
 		fmt.Fprintf(stderr, "usage query failed: %v\n", err)
 		if diagnostic, diagnosticErr := store.RecordDiagnostic(err.Error()); diagnosticErr == nil {
 			fmt.Fprintf(stdout, "Sanitized diagnostic saved locally: %s\n", diagnostic.Fingerprint)
-			offerDiagnostic(stdout, scanner, store, diagnostic)
+			offerDiagnostic(reader, store, diagnostic)
 		}
 		return
 	}
@@ -219,38 +353,51 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 	}
 }
 
-func offerDiagnostic(stdout io.Writer, scanner *bufio.Scanner, store *tokenlogger.Store, diagnostic tokenlogger.Diagnostic) {
-	fmt.Fprint(stdout, "Send sanitized diagnostic report? [y/N/view] ")
-	if scanner == nil || !scanner.Scan() {
-		fmt.Fprintln(stdout, "skipped")
+func offerDiagnostic(reader interactiveLineReader, store *tokenlogger.Store, diagnostic tokenlogger.Diagnostic) {
+	reader.DisableHistory()
+	defer reader.EnableHistory()
+	choiceLine, err := reader.ReadLine("Send sanitized diagnostic report? [y/N/view] ")
+	if err != nil {
+		fmt.Fprintln(readerOutput(reader), "skipped")
 		_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "skipped")
 		return
 	}
-	choice := strings.ToLower(strings.TrimSpace(scanner.Text()))
+	choice := strings.ToLower(strings.TrimSpace(choiceLine))
 	if choice == "view" {
-		fmt.Fprintf(stdout, "fingerprint: %s\nmessage: %s\n", diagnostic.Fingerprint, diagnostic.Message)
-		fmt.Fprint(stdout, "Open a prefilled issue draft? [y/N] ")
-		if scanner.Scan() && strings.EqualFold(strings.TrimSpace(scanner.Text()), "y") {
-			fmt.Fprintf(stdout, "draft (not sent): %s\n", tokenlogger.GitHubIssueDraftURL(diagnostic))
+		output := readerOutput(reader)
+		fmt.Fprintf(output, "fingerprint: %s\nmessage: %s\n", diagnostic.Fingerprint, diagnostic.Message)
+		answer, answerErr := reader.ReadLine("Open a prefilled issue draft? [y/N] ")
+		if answerErr == nil && strings.EqualFold(strings.TrimSpace(answer), "y") {
+			fmt.Fprintf(output, "draft (not sent): %s\n", tokenlogger.GitHubIssueDraftURL(diagnostic))
 			_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "reviewed")
 		} else {
-			fmt.Fprintln(stdout, "skipped")
+			fmt.Fprintln(output, "skipped")
 			_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "skipped")
 		}
 		return
 	}
 	if choice == "y" {
-		fmt.Fprintf(stdout, "draft (not sent): %s\n", tokenlogger.GitHubIssueDraftURL(diagnostic))
+		fmt.Fprintf(readerOutput(reader), "draft (not sent): %s\n", tokenlogger.GitHubIssueDraftURL(diagnostic))
 		_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "reviewed")
 		return
 	}
-	fmt.Fprintln(stdout, "skipped")
+	fmt.Fprintln(readerOutput(reader), "skipped")
 	_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "skipped")
+}
+
+func readerOutput(reader interactiveLineReader) io.Writer {
+	if scanner, ok := reader.(*scannerLineReader); ok {
+		return scanner.output
+	}
+	if terminal, ok := reader.(*terminalLineReader); ok {
+		return terminal.output
+	}
+	return io.Discard
 }
 
 func printInteractiveHelp(stdout io.Writer) {
 	fmt.Fprintln(stdout, "/projects /sessions /total-usage /by-client /by-model /cost")
-	fmt.Fprintln(stdout, "/range [from to] /refresh /settings /report-issue /help /quit")
+	fmt.Fprintln(stdout, "/range [from to] /refresh /clear /settings /report-issue /help /quit")
 }
 
 func printPendingDiagnostics(stdout io.Writer, store *tokenlogger.Store) {
@@ -353,26 +500,26 @@ func writeDiagnosticReport(outputPath string, report diagnosticReport) error {
 	return nil
 }
 
-func runOnboarding(scanner *bufio.Scanner, stdout io.Writer, dataDir string, settings tokenlogger.Settings) (tokenlogger.Settings, bool) {
-	fmt.Fprintln(stdout, "First-run setup")
-	startNow := askYesNo(scanner, stdout, "Start the local collector now?", true)
+func runOnboarding(reader interactiveLineReader, dataDir string, settings tokenlogger.Settings) (tokenlogger.Settings, bool) {
+	fmt.Fprintln(readerOutput(reader), "First-run setup")
+	startNow := askYesNo(reader, "Start the local collector now?", true)
 	settings.CollectorEnabled = startNow
-	settings.AutoStart = askYesNo(scanner, stdout, "Start the collector automatically when I sign in?", false)
+	settings.AutoStart = askYesNo(reader, "Start the collector automatically when I sign in?", false)
 	settings.OnboardingComplete = true
 	settings.DataDir = dataDir
 	return settings, startNow
 }
 
-func askYesNo(scanner *bufio.Scanner, stdout io.Writer, question string, defaultYes bool) bool {
+func askYesNo(reader interactiveLineReader, question string, defaultYes bool) bool {
 	defaultLabel := "y/N"
 	if defaultYes {
 		defaultLabel = "Y/n"
 	}
-	fmt.Fprintf(stdout, "%s [%s] ", question, defaultLabel)
-	if !scanner.Scan() {
+	answerLine, err := reader.ReadLine(fmt.Sprintf("%s [%s] ", question, defaultLabel))
+	if err != nil {
 		return defaultYes
 	}
-	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+	answer := strings.ToLower(strings.TrimSpace(answerLine))
 	if answer == "" {
 		return defaultYes
 	}
