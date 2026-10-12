@@ -219,6 +219,7 @@ jobs:
           bash scripts/install.sh
           "$KOMPOSYN_INSTALL_DIR/komposyn-lg" version
           "$KOMPOSYN_INSTALL_DIR/komposyn-lg" settings --collector off --auto-start off
+          "$KOMPOSYN_INSTALL_DIR/komposyn-lg" usage --format json > /dev/null
           test -f "$TOKEN_LOGGER_DATA_DIR/settings.json"
           test -f "$TOKEN_LOGGER_DATA_DIR/token-logger.db"
           bash scripts/install.sh
@@ -244,6 +245,7 @@ jobs:
           $binary = Join-Path $env:KOMPOSYN_INSTALL_DIR 'komposyn-lg.exe'
           & $binary version
           & $binary settings --collector off --auto-start off
+          & $binary usage --format json | Out-Null
           if (-not (Test-Path (Join-Path $env:TOKEN_LOGGER_DATA_DIR 'settings.json'))) { throw 'settings were not created' }
           if (-not (Test-Path (Join-Path $env:TOKEN_LOGGER_DATA_DIR 'token-logger.db'))) { throw 'database was not created' }
           & ./scripts/install.ps1
