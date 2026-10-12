@@ -57,6 +57,21 @@ Supported options include:
 `America/New_York`; omitted, reports use UTC. The selected timezone is included
 in JSON output as `timezone`.
 
+`table` output is human-oriented and is also used by interactive reports.
+Grouping dimensions are separate columns in requested order, time buckets are
+shown once, and ungrouped output is labelled `TOTAL`. Tokens use decimal `K`,
+`M`, `B`, and `T` abbreviations with at most one fractional digit; request and
+session counts remain exact with digit grouping. Empty dimensions display as
+`(none)`. Terminal controls are visibly escaped, and values longer than 32
+Unicode code points are shortened with an ellipsis and distinguishing hash.
+
+Cost status distinguishes calculated zero, fully unknown, partially known, and
+mixed-currency groups. `no matching price` means the local pricing catalog
+could not calculate every request; it is never silently treated as zero. Use
+`json` or `csv` for exact token integers, full dimension values, and stable
+machine-readable fields. An untruncated wide table mode is not currently
+available.
+
 ### `watch`
 
 ```text

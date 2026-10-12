@@ -358,34 +358,43 @@ func WriteCSV(w io.Writer, report UsageReport) error {
 // WriteTable writes a compact human-readable usage report.
 func WriteTable(w io.Writer, report UsageReport) error {
 	writer := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "GROUP\tBUCKET\tREQUESTS\tINPUT\tCACHED\tOUTPUT\tREASONING\tTOTAL\tCOST\tSTATUS")
+	groups := report.Filters.GroupBy
+	headings := make([]string, 0, len(groups)+10)
+	if len(groups) == 0 {
+		headings = append(headings, "GROUP")
+	} else {
+		for _, group := range groups {
+			headings = append(headings, strings.ToUpper(group))
+		}
+	}
+	headings = append(headings, "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "COST", "STATUS")
+	fmt.Fprintln(writer, strings.Join(headings, "\t"))
 	rows := report.Rows
 	if len(rows) == 0 {
 		rows = []UsageRow{{UsageMeasures: report.Summary}}
 	}
 	for _, row := range rows {
-		group := "total"
-		if len(row.Dimensions) > 0 {
-			keys := make([]string, 0, len(row.Dimensions))
-			for key := range row.Dimensions {
-				keys = append(keys, key)
+		values := make([]string, 0, len(groups)+10)
+		if len(groups) == 0 {
+			values = append(values, "TOTAL")
+		} else {
+			for _, group := range groups {
+				values = append(values, formatHumanDimension(row.Dimensions[group]))
 			}
-			sort.Strings(keys)
-			values := make([]string, 0, len(keys))
-			for _, key := range keys {
-				values = append(values, key+"="+row.Dimensions[key])
-			}
-			group = strings.Join(values, ",")
 		}
-		status := "calculated"
-		if row.UnknownCostRequests > 0 {
-			status = "unknown"
-		}
-		cost := strconv.FormatInt(row.CalculatedCostMicros, 10)
-		if row.CalculatedCurrency != "" {
-			cost += " " + row.CalculatedCurrency
-		}
-		fmt.Fprintf(writer, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\n", group, row.Bucket, row.RequestCount, row.InputTokens, row.CachedInputTokens, row.OutputTokens, row.ReasoningOutputTokens, row.TotalTokens, cost, status)
+		cost, status := humanCostDisplay(row.UsageMeasures)
+		values = append(values,
+			formatExactCount(row.RequestCount),
+			formatExactCount(row.SessionCount),
+			formatHumanTokens(row.InputTokens),
+			formatHumanTokens(row.CachedInputTokens),
+			formatHumanTokens(row.OutputTokens),
+			formatHumanTokens(row.ReasoningOutputTokens),
+			formatHumanTokens(row.TotalTokens),
+			cost,
+			status,
+		)
+		fmt.Fprintln(writer, strings.Join(values, "\t"))
 	}
 	return writer.Flush()
 }

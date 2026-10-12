@@ -16,10 +16,12 @@ package tokenlogger
 
 import (
 	"bytes"
+	"encoding/csv"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
@@ -203,5 +205,177 @@ func TestReportFormats(t *testing.T) {
 	}
 	if err := WriteTable(&tableOutput, report); err != nil || !strings.Contains(tableOutput.String(), "REQUESTS") {
 		t.Fatalf("table output = %q, err = %v", tableOutput.String(), err)
+	}
+}
+
+func TestHumanTokenFormatting(t *testing.T) {
+	cases := []struct {
+		value int64
+		want  string
+	}{
+		{value: 0, want: "0"},
+		{value: 999, want: "999"},
+		{value: 1_000, want: "1K"},
+		{value: 1_001, want: "1K"},
+		{value: 1_049, want: "1K"},
+		{value: 1_050, want: "1.1K"},
+		{value: 999_949, want: "999.9K"},
+		{value: 999_950, want: "1M"},
+		{value: 999_999, want: "1M"},
+		{value: 1_000_000, want: "1M"},
+		{value: 1_000_001, want: "1M"},
+		{value: 1_050_000, want: "1.1M"},
+		{value: 999_949_999, want: "999.9M"},
+		{value: 999_950_000, want: "1B"},
+		{value: 999_999_999, want: "1B"},
+		{value: 1_000_000_000, want: "1B"},
+		{value: 1_000_000_001, want: "1B"},
+		{value: 999_949_999_999, want: "999.9B"},
+		{value: 999_950_000_000, want: "1T"},
+		{value: 999_999_999_999, want: "1T"},
+		{value: 1_000_000_000_000, want: "1T"},
+		{value: 1_000_000_000_001, want: "1T"},
+		{value: 1_050_000_000_000, want: "1.1T"},
+		{value: -1_500, want: "-1.5K"},
+	}
+	for _, tc := range cases {
+		if got := formatHumanTokens(tc.value); got != tc.want {
+			t.Errorf("formatHumanTokens(%d) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+	if got := formatExactCount(1_234_567); got != "1,234,567" {
+		t.Fatalf("formatExactCount = %q, want digit-grouped integer", got)
+	}
+}
+
+func TestWriteTableUsesRequestedDimensionOrderAndSingleTimeColumn(t *testing.T) {
+	hour := "2026-11-01T01:00:00-05:00"
+	report := UsageReport{
+		Filters: UsageFilter{GroupBy: []string{GroupHour, GroupClient}},
+		Rows: []UsageRow{{
+			Dimensions: map[string]string{GroupClient: "codex-cli", GroupHour: hour, "bucket": hour},
+			Bucket:     hour,
+			UsageMeasures: UsageMeasures{
+				RequestCount: 1_500, SessionCount: 1_234, InputTokens: 999_950,
+				CachedInputTokens: 101_446_656, OutputTokens: 123_021,
+				ReasoningOutputTokens: 37_901, TotalTokens: 1_074_142_320,
+				UnknownCostRequests: 1_500,
+			},
+		}},
+	}
+	var output bytes.Buffer
+	if err := WriteTable(&output, report); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if got, want := strings.Fields(lines[0]), []string{"HOUR", "CLIENT", "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "COST", "STATUS"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("headings = %v, want %v", got, want)
+	}
+	if strings.Contains(lines[0], "BUCKET") || strings.Count(lines[1], hour) != 1 {
+		t.Fatalf("time bucket was duplicated: %q", output.String())
+	}
+	for _, expected := range []string{"-05:00", "codex-cli", "1,500", "1,234", "1M", "101.4M", "123K", "37.9K", "1.1B", "unknown", "no matching price"} {
+		if !strings.Contains(lines[1], expected) {
+			t.Errorf("table row %q does not contain %q", lines[1], expected)
+		}
+	}
+}
+
+func TestWriteTableLabelsTotalAndEmptyDimensions(t *testing.T) {
+	var totalOutput bytes.Buffer
+	if err := WriteTable(&totalOutput, UsageReport{Summary: UsageMeasures{RequestCount: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(totalOutput.String(), "GROUP") || !strings.Contains(totalOutput.String(), "TOTAL") {
+		t.Fatalf("ungrouped table is not clearly labelled: %q", totalOutput.String())
+	}
+
+	var groupedOutput bytes.Buffer
+	report := UsageReport{Filters: UsageFilter{GroupBy: []string{GroupProvider}}, Rows: []UsageRow{{UsageMeasures: UsageMeasures{RequestCount: 1}}}}
+	if err := WriteTable(&groupedOutput, report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(groupedOutput.String(), "(none)") {
+		t.Fatalf("empty selected dimension has no placeholder: %q", groupedOutput.String())
+	}
+}
+
+func TestHumanDimensionsEscapeControlsAndBoundLongValues(t *testing.T) {
+	unsafe := "client\tline\n\x1b[31m\u200b雪"
+	got := formatHumanDimension(unsafe)
+	for _, escaped := range []string{`\t`, `\n`, `\x1B`, `\u200B`, "雪"} {
+		if !strings.Contains(got, escaped) {
+			t.Errorf("escaped value %q does not contain %q", got, escaped)
+		}
+	}
+	if strings.ContainsAny(got, "\t\n\r\x1b") {
+		t.Fatalf("escaped value contains a terminal control: %q", got)
+	}
+
+	prefix := strings.Repeat("same-prefix-", 4)
+	first := formatHumanDimension(prefix + "alpha")
+	second := formatHumanDimension(prefix + "bravo")
+	if first == second || utf8.RuneCountInString(first) > maxHumanDimensionRunes || utf8.RuneCountInString(second) > maxHumanDimensionRunes {
+		t.Fatalf("bounded values are ambiguous or too long: %q, %q", first, second)
+	}
+	if !strings.Contains(first, "…#") || !strings.Contains(second, "…#") {
+		t.Fatalf("truncation is not visible: %q, %q", first, second)
+	}
+}
+
+func TestHumanCostStatesRemainDistinct(t *testing.T) {
+	cases := []struct {
+		name     string
+		measures UsageMeasures
+		cost     string
+		status   string
+	}{
+		{name: "known zero", measures: UsageMeasures{RequestCount: 1, CalculatedCurrency: "USD"}, cost: "0 USD", status: "calculated"},
+		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD"}, cost: "0.00024 USD", status: "calculated"},
+		{name: "fully unknown", measures: UsageMeasures{RequestCount: 2, UnknownCostRequests: 2}, cost: "unknown", status: "no matching price (2)"},
+		{name: "partially known", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "USD", UnknownCostRequests: 1}, cost: "12.34 USD", status: "partial; 1 unknown (no matching price)"},
+		{name: "mixed currencies", measures: UsageMeasures{RequestCount: 2, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed"}, cost: "not comparable", status: "mixed currencies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cost, status := humanCostDisplay(tc.measures)
+			if cost != tc.cost || status != tc.status {
+				t.Fatalf("cost/status = %q/%q, want %q/%q", cost, status, tc.cost, tc.status)
+			}
+		})
+	}
+}
+
+func TestMachineFormatsKeepExactValuesAndStableShape(t *testing.T) {
+	report := UsageReport{
+		Filters: UsageFilter{GroupBy: []string{GroupClient, GroupProvider}},
+		Rows: []UsageRow{{
+			Dimensions:    map[string]string{GroupClient: "codex-cli", GroupProvider: "openai"},
+			UsageMeasures: UsageMeasures{RequestCount: 1_500, InputTokens: 107_414_232, TotalTokens: 107_537_253},
+		}},
+	}
+	var jsonOutput bytes.Buffer
+	if err := WriteJSON(&jsonOutput, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, exact := range []string{`"group_by": [`, `"client"`, `"provider"`, `"request_count": 1500`, `"input_tokens": 107414232`, `"total_tokens": 107537253`} {
+		if !strings.Contains(jsonOutput.String(), exact) {
+			t.Errorf("JSON output lost exact field/value %q: %s", exact, jsonOutput.String())
+		}
+	}
+	if strings.Contains(jsonOutput.String(), "107.4M") {
+		t.Fatalf("JSON output contains a human abbreviation: %s", jsonOutput.String())
+	}
+
+	var csvOutput bytes.Buffer
+	if err := WriteCSV(&csvOutput, report); err != nil {
+		t.Fatal(err)
+	}
+	records, err := csv.NewReader(strings.NewReader(csvOutput.String())).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0][0] != "group" || records[0][4] != "input_tokens" || records[1][0] != "client=codex-cli,provider=openai" || records[1][2] != "1500" || records[1][4] != "107414232" || records[1][9] != "107537253" {
+		t.Fatalf("CSV machine contract changed: %#v", records)
 	}
 }
