@@ -43,6 +43,28 @@ while an agent is writing; it is reported as pending, exits successfully, and
 is retried when the source grows. Use `--format json` for the versioned,
 path-free machine contract described in the [CLI reference](cli-reference.md).
 
+### Codex usage records
+
+Recent Codex CLI sources can contain `token_usage_record` envelopes. KompoSyn
+uses the record's per-response `usage` object as the canonical event and maps
+its input, cached input, cache-write input, output, and reasoning fields once.
+The cumulative `turn_token_usage` and `thread_token_usage` objects are used
+only to validate ordering, resets, and reconciliation; they never create
+additional events. `total_tokens` is also a consistency check, not another
+token category.
+
+Codex may also emit legacy `event_msg`/`token_count` snapshots for the same
+responses. Before a usage-record stream starts, legacy snapshots continue to
+be imported as cumulative deltas. Once a valid response record is observed for
+a session, later mirrored legacy snapshots are deliberately ignored so the
+same usage cannot be counted twice. Ambiguous or regressing cumulative state
+is reported as unsupported rather than estimated heuristically.
+
+Response identity is based on the adapter, session/thread scope, and
+`response_id`, so retries, appends, and source rewrites remain idempotent even
+when file offsets or source generations change. A missing response ID,
+timestamp, model, or session attribution is not imported.
+
 ## Reports
 
 Usage, cost, and session reports share the same filtering model:
