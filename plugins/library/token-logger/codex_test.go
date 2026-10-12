@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -534,11 +535,22 @@ func TestCodexTokenUsageRecordPersistenceFailureRollsBackReferencesAndCursor(t *
 
 func TestCodexTokenUsageRecordMirrorsDoNotChangeEventsOrTotals(t *testing.T) {
 	withMirror := mustReadFile(t, filepath.Join("testdata", "codex", "token-usage-records.jsonl"))
-	suffix := `{"type":"event_msg","timestamp":"2026-10-11T10:00:06Z","payload":{"type":"token_count","session_id":"codex-record-session","info":{"total_token_usage":{"input_tokens":150,"output_tokens":15}}}}
-`
-	withoutMirrorText := strings.TrimSuffix(string(withMirror), suffix)
-	if withoutMirrorText == string(withMirror) || strings.Contains(withoutMirrorText, `"timestamp":"2026-10-11T10:00:06Z"`) {
-		t.Fatal("mirror fixture suffix was not removed")
+	normalized := strings.ReplaceAll(string(withMirror), "\r\n", "\n")
+	normalized = strings.TrimSuffix(normalized, "\n")
+	lines := strings.Split(normalized, "\n")
+	if len(lines) < 2 {
+		t.Fatal("mirror fixture has no removable final record")
+	}
+	var finalEnvelope codexEnvelope
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &finalEnvelope); err != nil {
+		t.Fatalf("parse final mirror record: %v", err)
+	}
+	if finalEnvelope.Type != "event_msg" || !strings.Contains(string(finalEnvelope.Payload), `"token_count"`) {
+		t.Fatalf("final fixture record is not the expected legacy mirror: %s", lines[len(lines)-1])
+	}
+	withoutMirrorText := strings.Join(lines[:len(lines)-1], "\n") + "\n"
+	if len(withoutMirrorText) >= len(normalized)+1 {
+		t.Fatal("mirror fixture final record was not removed")
 	}
 	withoutMirror := []byte(withoutMirrorText)
 	path := filepath.Join(t.TempDir(), "mirror.jsonl")
