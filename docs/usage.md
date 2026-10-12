@@ -52,6 +52,28 @@ and retains its numeric offset, including fractional offsets and DST folds.
 If pricing is unavailable, reports preserve the usage event and mark its cost
 as unknown rather than inventing a price.
 
+Table and interactive reports are optimized for terminal scanning. Selected
+grouping dimensions appear as separate columns in the order supplied to
+`--group-by`; a time group such as `hour` appears once and retains its numeric
+UTC offset. Ungrouped output uses a labelled `TOTAL` row, and an empty selected
+dimension is shown as `(none)`.
+
+Token totals below 1,000 remain exact. Larger totals use decimal `K`, `M`, `B`,
+or `T` suffixes with at most one fractional digit; rounding carries into the
+next suffix. Request and session counts remain exact and use comma separators.
+Dimension values are terminal-safe and bounded to 32 Unicode code points;
+truncated values include a visible marker and short distinguishing hash. A
+wide or untruncated table mode is not currently provided.
+
+Human cost output converts stored currency microunits to currency units. It
+keeps known zero, fully unknown, partially known, and mixed-currency states
+distinct. The neutral `pricing unavailable` status is used because the
+aggregate does not yet retain a specific unknown-cost cause; the tool does not
+guess a rate. Use JSON or CSV for exact token integers, untruncated dimension
+values, stable machine-readable fields, and detailed cost measures. A report
+with no matching events displays `NO USAGE DATA` instead of fabricating an
+empty group.
+
 ## Watch
 
 `watch` performs an initial poll and then continues at the requested interval:

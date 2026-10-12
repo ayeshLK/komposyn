@@ -189,6 +189,31 @@ func cliReportEvent(id string, occurredAt time.Time) tokenlogger.UsageEvent {
 	}
 }
 
+func TestInteractiveReportsUseHumanReadableTable(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	event := cliReportEvent("interactive-human-table", time.Now().UTC().Add(-time.Hour))
+	event.Usage.InputTokens = 1_050
+	event.Usage.OutputTokens = 0
+	if _, err := store.Append([]tokenlogger.UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runInteractive(strings.NewReader("/by-client\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
+	}
+	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "pricing unavailable"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Errorf("interactive output does not contain %q: %s", expected, stdout.String())
+		}
+	}
+}
+
 func TestHarnessProtocolFixture(t *testing.T) {
 	dataDir := t.TempDir()
 	event := tokenlogger.UsageEvent{
