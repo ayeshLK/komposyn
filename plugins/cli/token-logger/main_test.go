@@ -164,16 +164,16 @@ func TestImportFixtureMatchesHarnessCanonicalUsageProjection(t *testing.T) {
 			name:    "codex",
 			fixture: filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl"),
 			events: []tokenlogger.UsageEvent{
-				canonicalDifferentialEvent("codex-one", time.Date(2026, 10, 11, 10, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 100, OutputTokens: 30, CacheReadTokens: 20, ReasoningTokens: 10}, "project-fixture", "codex-session-fixture", "codex-cli", "openai", "gpt-5-codex"),
-				canonicalDifferentialEvent("codex-two", time.Date(2026, 10, 11, 10, 0, 3, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 50, OutputTokens: 20, CacheReadTokens: 10, ReasoningTokens: 5}, "project-fixture", "codex-session-fixture", "codex-cli", "openai", "gpt-5-codex"),
+				canonicalDifferentialEvent("token-count-1", time.Date(2026, 10, 11, 10, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 100, OutputTokens: 30, CacheReadTokens: 20, ReasoningTokens: 10}, "project-fixture", "codex-session-fixture", "codex-cli", "openai", "gpt-5-codex"),
+				canonicalDifferentialEvent("token-count-2", time.Date(2026, 10, 11, 10, 0, 3, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 50, OutputTokens: 20, CacheReadTokens: 10, ReasoningTokens: 5}, "project-fixture", "codex-session-fixture", "codex-cli", "openai", "gpt-5-codex"),
 			},
 		},
 		{
 			name:    "claude",
 			fixture: filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"),
 			events: []tokenlogger.UsageEvent{
-				canonicalDifferentialEvent("claude-one", time.Date(2026, 10, 11, 11, 0, 1, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 110, OutputTokens: 15, CacheReadTokens: 20, CacheWriteTokens: 10}, "claude-project-fixture", "claude-session-fixture", "claude-code", "anthropic", "claude-sonnet-fixture"),
-				canonicalDifferentialEvent("claude-two", time.Date(2026, 10, 11, 11, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 45, OutputTokens: 8, CacheReadTokens: 5}, "claude-project-fixture", "claude-session-fixture", "claude-code", "anthropic", "claude-sonnet-fixture"),
+				canonicalDifferentialEvent("claude-message-1", time.Date(2026, 10, 11, 11, 0, 1, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 110, OutputTokens: 15, CacheReadTokens: 20, CacheWriteTokens: 10}, "claude-project-fixture", "claude-session-fixture", "claude-code", "anthropic", "claude-sonnet-fixture"),
+				canonicalDifferentialEvent("claude-message-2", time.Date(2026, 10, 11, 11, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 45, OutputTokens: 8, CacheReadTokens: 5}, "claude-project-fixture", "claude-session-fixture", "claude-code", "anthropic", "claude-sonnet-fixture"),
 			},
 		},
 	}
@@ -215,6 +215,16 @@ func assertImportMatchesHarness(t *testing.T, fixture string, events []tokenlogg
 	if code := runProtocol(&input, &harnessOutput, &harnessErr); code != 0 {
 		t.Fatalf("harness exit=%d stderr=%q output=%q", code, harnessErr.String(), harnessOutput.String())
 	}
+	importedBefore := eventProjections(t, importDataDir)
+	harnessedBefore := eventProjections(t, harnessDataDir)
+	if len(importedBefore) != len(events) || len(harnessedBefore) != len(events) {
+		t.Fatalf("unexpected initial event projections: import=%d harness=%d", len(importedBefore), len(harnessedBefore))
+	}
+	for index := range importedBefore {
+		if !reflect.DeepEqual(canonicalProjection(importedBefore[index]), canonicalProjection(harnessedBefore[index])) {
+			t.Fatalf("event projection %d differs: import=%+v harness=%+v", index, importedBefore[index], harnessedBefore[index])
+		}
+	}
 
 	filter := tokenlogger.UsageFilter{
 		From: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC),
@@ -227,6 +237,52 @@ func assertImportMatchesHarness(t *testing.T, fixture string, events []tokenlogg
 	if !reflect.DeepEqual(imported.Summary, harnessed.Summary) || !reflect.DeepEqual(imported.Rows, harnessed.Rows) {
 		t.Fatalf("canonical usage differs: import=%+v harness=%+v", imported, harnessed)
 	}
+
+	var replayOutput, replayErr bytes.Buffer
+	if code := run([]string{"import", fixture, "--data-dir", importDataDir}, &replayOutput, &replayErr); code != 0 || !strings.Contains(replayOutput.String(), "storage duplicates: "+decimalString(len(events))) {
+		t.Fatalf("fixture replay code=%d stderr=%q output=%q", code, replayErr.String(), replayOutput.String())
+	}
+	assertProjectionStable(t, importedBefore, eventProjections(t, importDataDir), "fixture replay")
+
+	replayRequests := []map[string]any{
+		{"protocol": protocolName, "version": protocolVersion, "id": "replay-1", "method": "initialize", "params": map[string]any{"data_dir": harnessDataDir}},
+	}
+	for index, event := range events {
+		replayRequests = append(replayRequests, map[string]any{
+			"protocol": protocolName, "version": protocolVersion, "id": "replay-" + decimalString(index+2),
+			"method": "record", "params": canonicalDifferentialRecord(event),
+		})
+	}
+	replayRequests = append(replayRequests, map[string]any{
+		"protocol": protocolName, "version": protocolVersion, "id": "replay-shutdown", "method": "shutdown",
+	})
+	var replayInput, replayHarnessOutput, replayHarnessErr bytes.Buffer
+	for _, request := range replayRequests {
+		if err := json.NewEncoder(&replayInput).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := runProtocol(&replayInput, &replayHarnessOutput, &replayHarnessErr); code != 0 {
+		t.Fatalf("harness replay code=%d stderr=%q output=%q", code, replayHarnessErr.String(), replayHarnessOutput.String())
+	}
+	var responses []protocolResponse
+	decoder := json.NewDecoder(&replayHarnessOutput)
+	for {
+		var response protocolResponse
+		if err := decoder.Decode(&response); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		responses = append(responses, response)
+	}
+	for _, response := range responses[1 : 1+len(events)] {
+		result, ok := response.Result.(map[string]any)
+		if !ok || result["imported"] != float64(0) || result["duplicates"] != float64(1) {
+			t.Fatalf("unexpected harness replay response: %+v", response)
+		}
+	}
+	assertProjectionStable(t, harnessedBefore, eventProjections(t, harnessDataDir), "harness replay")
 }
 
 func canonicalDifferentialEvent(id string, occurredAt time.Time, usage tokenlogger.TokenUsage, projectID, sessionID, client, provider, model string) tokenlogger.UsageEvent {
@@ -259,6 +315,34 @@ func queryReport(t *testing.T, dataDir string, filter tokenlogger.UsageFilter) t
 		t.Fatal(err)
 	}
 	return report
+}
+
+func eventProjections(t *testing.T, dataDir string) []tokenlogger.EventProjection {
+	t.Helper()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	projections, err := store.EventProjections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return projections
+}
+
+func canonicalProjection(event tokenlogger.EventProjection) tokenlogger.EventProjection {
+	event.EventID = ""
+	event.IngestionKey = ""
+	event.SourceID = ""
+	return event
+}
+
+func assertProjectionStable(t *testing.T, before, after []tokenlogger.EventProjection, label string) {
+	t.Helper()
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("%s changed persisted event projections: before=%+v after=%+v", label, before, after)
+	}
 }
 
 func decimalString(value int) string {
