@@ -171,6 +171,15 @@ func TestImportFixtureMatchesHarnessCanonicalUsageProjection(t *testing.T) {
 			},
 		},
 		{
+			name:    "codex token usage records",
+			fixture: filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "token-usage-records.jsonl"),
+			events: []tokenlogger.UsageEvent{
+				canonicalDifferentialEvent("legacy-prefix", time.Date(2026, 10, 11, 10, 0, 1, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 100, OutputTokens: 10}, "record-project", "codex-record-session", "codex-cli", "openai", "gpt-5-codex"),
+				canonicalDifferentialEvent("record-response-1", time.Date(2026, 10, 11, 10, 0, 3, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 20, OutputTokens: 2, CacheReadTokens: 3, CacheWriteTokens: 4, ReasoningTokens: 1}, "record-project", "codex-record-session", "codex-cli", "openai", "gpt-5-codex"),
+				canonicalDifferentialEvent("record-response-2", time.Date(2026, 10, 11, 10, 0, 5, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 30, OutputTokens: 3, ReasoningTokens: 1}, "record-project", "codex-record-session", "codex-cli", "openai", "gpt-5-codex-mini"),
+			},
+		},
+		{
 			name:    "claude",
 			fixture: filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"),
 			events: []tokenlogger.UsageEvent{
