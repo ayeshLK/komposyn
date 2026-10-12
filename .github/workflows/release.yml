@@ -332,7 +332,7 @@ jobs:
             exit 1
           fi
           release_exists=false
-          if release_json="$(gh release view "$RELEASE_TAG" --json isDraft 2>/dev/null)"; then
+          if release_json="$(gh release view "$RELEASE_TAG" --json isDraft,targetCommitish 2>/dev/null)"; then
             release_exists=true
             [[ "$(jq -r '.isDraft' <<<"$release_json")" == true ]] || {
               echo "Release $RELEASE_TAG already exists and is published" >&2
@@ -346,15 +346,20 @@ jobs:
               gh release create "$RELEASE_TAG" --draft --target "$RELEASE_COMMIT" --notes-file "$notes_file"
             fi
           else
-            gh release edit "$RELEASE_TAG" --notes-file "$notes_file"
+            if [[ -n "$existing_commit" ]]; then
+              gh release edit "$RELEASE_TAG" --notes-file "$notes_file"
+            else
+              gh release edit "$RELEASE_TAG" --target "$RELEASE_COMMIT" --notes-file "$notes_file"
+            fi
           fi
 
-          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          tagged_commit="$(git rev-parse "$RELEASE_TAG^{commit}")"
-          [[ "$tagged_commit" == "$RELEASE_COMMIT" ]] || {
-            echo "Tag $RELEASE_TAG resolves to $tagged_commit, expected $RELEASE_COMMIT" >&2
-            exit 1
-          }
+          if [[ -z "$existing_commit" ]]; then
+            draft_target="$(gh release view "$RELEASE_TAG" --json targetCommitish --jq .targetCommitish)"
+            [[ "$draft_target" == "$RELEASE_COMMIT" ]] || {
+              echo "Draft release $RELEASE_TAG targets $draft_target, expected $RELEASE_COMMIT" >&2
+              exit 1
+            }
+          fi
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           expected_assets="$(for asset in "${assets[@]}"; do basename "$asset"; done | sort)"
           actual_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
@@ -369,10 +374,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
         run: |
           is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
           [[ "$is_draft" == false ]] || {
             echo "release was not published" >&2
+            exit 1
+          }
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          tagged_commit="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          [[ "$tagged_commit" == "$RELEASE_COMMIT" ]] || {
+            echo "Tag $RELEASE_TAG resolves to $tagged_commit, expected $RELEASE_COMMIT" >&2
             exit 1
           }
 
