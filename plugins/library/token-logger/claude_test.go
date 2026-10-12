@@ -27,7 +27,7 @@ func TestClaudeImportAttributesAndNormalizesUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import Claude fixture: %v", err)
 	}
-	if result.Receipt.Imported != 2 || result.Skipped != 2 {
+	if result.Receipt.Imported != 2 || result.Outcomes.IgnoredNonUsage != 2 {
 		t.Fatalf("unexpected import result: %+v", result)
 	}
 	var input, cached, cacheWrite, output int64

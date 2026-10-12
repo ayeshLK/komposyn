@@ -26,12 +26,22 @@ Import one source file or a provider source directory:
 ```text
 komposyn-lg import /path/to/source.jsonl --data-dir /path/to/data
 komposyn-lg import /path/to/transcripts --data-dir /path/to/data
+komposyn-lg import /path/to/transcripts --format json --data-dir /path/to/data
 ```
 
 The importer detects Codex and Claude Code source shapes. Imports are retry-safe:
 repeating an import deduplicates records using stable ingestion keys. Provider
 files are read-only. When a source is replaced, the adapter creates a new
 source generation so reused offsets do not collide with prior records.
+
+Import results do not use a catch-all "skipped" count. They distinguish normal
+non-usage records, unchanged cumulative snapshots, a retryable incomplete final
+line, unsupported usage-bearing records, malformed records, and failed
+sources. Unsupported, malformed, or failed-source outcomes exit with status 3
+because usage accounting may be incomplete. An incomplete final line is common
+while an agent is writing; it is reported as pending, exits successfully, and
+is retried when the source grows. Use `--format json` for the versioned,
+path-free machine contract described in the [CLI reference](cli-reference.md).
 
 ## Reports
 
@@ -84,6 +94,11 @@ komposyn-lg watch /path/to/transcripts --interval 10s --data-dir /path/to/data
 
 Use Ctrl-C or SIGTERM to stop it. The collector records health and sanitized
 diagnostics locally; it continues polling after an individual source failure.
+Normal ignores and unchanged snapshots do not degrade health. A final partial
+record is visible as pending but remains healthy. Unsupported usage, malformed
+records, and failed sources degrade health; repeated polls deduplicate their
+path-free diagnostics. Each completed poll is printed, and the stop summary
+retains cumulative warning counts and the latest pending state.
 
 ## Settings and interactive mode
 

@@ -111,7 +111,7 @@ func DetectAdapter(path string) (string, error) {
 		if raw.Type == "assistant" || len(raw.Message) > 0 {
 			return "claude", nil
 		}
-		if raw.Type == "session_meta" || raw.Type == "event_msg" || raw.Type == "token_count" {
+		if raw.Type == "session_meta" || raw.Type == "event_msg" || raw.Type == "token_count" || raw.Type == "token_usage_record" {
 			return "codex", nil
 		}
 	}
@@ -156,24 +156,45 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 		if len(strings.TrimSpace(string(line))) > 0 {
 			var envelope claudeEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
-				result.Skipped++
+				if errors.Is(readErr, io.EOF) && len(line) > 0 && isTruncatedJSON(err) {
+					result.Outcomes.Add(OutcomeDeferredIncompleteTail)
+				} else {
+					result.Outcomes.Add(OutcomeMalformedRecord)
+				}
 			} else {
 				if envelope.SessionID == "" {
 					envelope.SessionID = envelope.SessionIDAlt
 				}
 				var message claudeMessage
+				messageDecodeFailed := false
+				usageShapeSupported := true
 				if envelope.Type == "assistant" {
 					decoded, messageErr := decodeClaudeMessage(envelope.Message)
 					if messageErr != nil {
-						result.Skipped++
+						result.Outcomes.Add(OutcomeMalformedRecord)
+						messageDecodeFailed = true
 						message = claudeMessage{}
 					} else {
 						message = decoded
+						usageShapeSupported = claudeUsageShapeSupported(envelope.Message)
 					}
 				}
 				session = updateClaudeSession(session, envelope, message, sourceID)
-				if envelope.Type != "assistant" || message.Usage == nil || message.Usage.InputTokens < 0 || message.Usage.OutputTokens < 0 {
-					result.Skipped++
+				if envelope.Type != "assistant" {
+					if claudeUsageBearingType(envelope.Type) {
+						result.Outcomes.Add(OutcomeUnsupportedUsage)
+					} else {
+						result.Outcomes.Add(OutcomeIgnoredNonUsage)
+					}
+				} else if !usageShapeSupported {
+					result.Outcomes.Add(OutcomeUnsupportedUsage)
+				} else if message.Usage == nil || message.Usage.InputTokens < 0 || message.Usage.OutputTokens < 0 ||
+					message.Usage.CacheCreationInputTokens < 0 || message.Usage.CacheReadInputTokens < 0 || session.Model == "" {
+					// Avoid double counting an assistant record whose message could not
+					// be decoded; that failure was classified immediately above.
+					if !messageDecodeFailed {
+						result.Outcomes.Add(OutcomeMalformedRecord)
+					}
 				} else {
 					recordID := envelope.UUID
 					if recordID == "" {
@@ -182,7 +203,7 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 					lastRecordID = recordID
 					occurredAt, timeErr := claudeTimestamp(envelope.Timestamp)
 					if timeErr != nil {
-						result.Skipped++
+						result.Outcomes.Add(OutcomeMalformedRecord)
 					} else {
 						events = append(events, claudeEvent(sourceID, fingerprint, lineOffset, recordID, session, *message.Usage, occurredAt, line))
 					}
@@ -212,6 +233,33 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	}
 	result.Receipt = receipt
 	return result, nil
+}
+
+func claudeUsageBearingType(recordType string) bool {
+	recordType = strings.ToLower(recordType)
+	return strings.Contains(recordType, "usage") || strings.Contains(recordType, "token")
+}
+
+func claudeUsageShapeSupported(raw json.RawMessage) bool {
+	var message map[string]json.RawMessage
+	if json.Unmarshal(raw, &message) != nil {
+		return true
+	}
+	usageRaw, present := message["usage"]
+	if !present || string(usageRaw) == "null" {
+		return true
+	}
+	var usage map[string]json.RawMessage
+	if json.Unmarshal(usageRaw, &usage) != nil {
+		return true
+	}
+	if len(usage) == 0 {
+		return false
+	}
+	return jsonObjectFieldsAllowed(usageRaw, map[string]struct{}{
+		"input_tokens": {}, "cache_creation_input_tokens": {}, "cache_read_input_tokens": {},
+		"output_tokens": {}, "service_tier": {},
+	})
 }
 
 func decodeClaudeMessage(raw json.RawMessage) (claudeMessage, error) {

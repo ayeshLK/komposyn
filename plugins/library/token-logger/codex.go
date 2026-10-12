@@ -32,14 +32,6 @@ import (
 // CodexAdapter reads Codex CLI rollout JSONL files without modifying them.
 type CodexAdapter struct{}
 
-// ImportResult summarizes one source import. Skipped records are unsupported,
-// malformed, incomplete, or cumulative snapshots with no new usage delta.
-type ImportResult struct {
-	Receipt Receipt
-	Skipped int
-	Failed  int
-}
-
 type codexEnvelope struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id"`
@@ -69,7 +61,7 @@ type codexPayload struct {
 }
 
 type codexTokenInfo struct {
-	TotalTokenUsage codexUsage `json:"total_token_usage"`
+	TotalTokenUsage *codexUsage `json:"total_token_usage"`
 }
 
 type codexSession struct {
@@ -121,52 +113,76 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 			recordID := "offset-" + fmt.Sprint(lineOffset)
 			var envelope codexEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
-				result.Skipped++
+				if errors.Is(readErr, io.EOF) && len(line) > 0 && isTruncatedJSON(err) {
+					result.Outcomes.Add(OutcomeDeferredIncompleteTail)
+				} else {
+					result.Outcomes.Add(OutcomeMalformedRecord)
+				}
 			} else {
 				if envelope.ID != "" {
 					recordID = envelope.ID
 				}
 				lastRecordID = recordID
-				payload, payloadErr := decodeCodexPayload(envelope.Payload)
-				if payloadErr != nil {
-					result.Skipped++
+				if envelope.Type == "token_usage_record" {
+					result.Outcomes.Add(OutcomeUnsupportedUsage)
 				} else {
-					switch codexRecordType(envelope, payload) {
-					case "session_meta":
-						current = updateCodexSession(current, payload, sourceID)
-						if current.Model == "" {
-							current.Model = payload.Model
+					payload, payloadErr := decodeCodexPayload(envelope.Payload)
+					if payloadErr != nil {
+						if codexUsageBearingType(codexRawRecordType(envelope)) {
+							result.Outcomes.Add(OutcomeMalformedRecord)
+						} else {
+							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						}
-					case "turn_context":
-						if payload.Model != "" {
-							current.Model = payload.Model
-						}
-					case "token_count":
-						if payload.SessionID != "" || payload.ProjectID != "" || payload.CWD != "" {
+					} else {
+						switch codexRecordType(envelope, payload) {
+						case "session_meta":
 							current = updateCodexSession(current, payload, sourceID)
+							if current.Model == "" {
+								current.Model = payload.Model
+							}
+							result.Outcomes.Add(OutcomeIgnoredNonUsage)
+						case "turn_context":
+							if payload.Model != "" {
+								current.Model = payload.Model
+							}
+							result.Outcomes.Add(OutcomeIgnoredNonUsage)
+						case "token_usage_record":
+							result.Outcomes.Add(OutcomeUnsupportedUsage)
+						case "token_count":
+							if payload.SessionID != "" || payload.ProjectID != "" || payload.CWD != "" {
+								current = updateCodexSession(current, payload, sourceID)
+							}
+							if payload.Model != "" {
+								current.Model = payload.Model
+							}
+							if !codexUsageShapeSupported(envelope) {
+								result.Outcomes.Add(OutcomeUnsupportedUsage)
+								break
+							}
+							usage, ok := codexCumulativeUsage(envelope, payload)
+							if !ok || current.Model == "" {
+								result.Outcomes.Add(OutcomeMalformedRecord)
+								break
+							}
+							delta, changed := codexDelta(previous, usage, hasPrevious)
+							previous, hasPrevious = usage, true
+							if !changed {
+								result.Outcomes.Add(OutcomeUnchangedSnapshot)
+								break
+							}
+							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
+							if timeErr != nil {
+								result.Outcomes.Add(OutcomeMalformedRecord)
+								break
+							}
+							events = append(events, codexEvent(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line))
+						default:
+							if codexUsageBearingType(codexRecordType(envelope, payload)) {
+								result.Outcomes.Add(OutcomeUnsupportedUsage)
+							} else {
+								result.Outcomes.Add(OutcomeIgnoredNonUsage)
+							}
 						}
-						if payload.Model != "" {
-							current.Model = payload.Model
-						}
-						usage, ok := codexCumulativeUsage(envelope, payload)
-						if !ok || current.Model == "" {
-							result.Skipped++
-							break
-						}
-						delta, changed := codexDelta(previous, usage, hasPrevious)
-						previous, hasPrevious = usage, true
-						if !changed {
-							result.Skipped++
-							break
-						}
-						occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
-						if timeErr != nil {
-							result.Skipped++
-							break
-						}
-						events = append(events, codexEvent(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line))
-					default:
-						result.Skipped++
 					}
 				}
 			}
@@ -195,6 +211,90 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	}
 	result.Receipt = receipt
 	return result, nil
+}
+
+func codexUsageBearingType(recordType string) bool {
+	recordType = strings.ToLower(recordType)
+	return recordType == "token_count" || recordType == "token_usage_record" ||
+		strings.Contains(recordType, "token_usage")
+}
+
+func codexRawRecordType(envelope codexEnvelope) string {
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(envelope.Payload, &payload) == nil && payload.Type != "" {
+		return payload.Type
+	}
+	return envelope.Type
+}
+
+func codexUsageShapeSupported(envelope codexEnvelope) bool {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(envelope.Payload, &payload) != nil {
+		return true
+	}
+	_, hasInfo := payload["info"]
+	_, hasTotalUsage := payload["total_token_usage"]
+	if envelope.Type == "token_count" && !hasInfo && !hasTotalUsage {
+		return jsonObjectFieldsAllowed(envelope.Payload, codexDirectUsageFields)
+	}
+	if !jsonObjectFieldsAllowed(envelope.Payload, codexTokenCountPayloadFields) {
+		return false
+	}
+	if infoRaw, ok := payload["info"]; ok {
+		var info map[string]json.RawMessage
+		if json.Unmarshal(infoRaw, &info) == nil {
+			if !jsonObjectFieldsAllowed(infoRaw, codexTokenInfoFields) {
+				return false
+			}
+			for _, field := range []string{"total_token_usage", "last_token_usage"} {
+				if usageRaw, found := info[field]; found && !jsonObjectFieldsAllowed(usageRaw, codexUsageFields) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	if usageRaw, ok := payload["total_token_usage"]; ok {
+		return jsonObjectFieldsAllowed(usageRaw, codexUsageFields)
+	}
+	return true
+}
+
+var codexUsageFields = map[string]struct{}{
+	"input_tokens": {}, "cached_input_tokens": {}, "cache_read_input_tokens": {},
+	"cache_write_tokens": {}, "output_tokens": {}, "reasoning_output_tokens": {},
+	"total_tokens": {},
+}
+
+var codexTokenInfoFields = map[string]struct{}{
+	"total_token_usage": {}, "last_token_usage": {}, "model_context_window": {},
+}
+
+var codexTokenCountPayloadFields = map[string]struct{}{
+	"type": {}, "id": {}, "session_id": {}, "project_id": {}, "project_name": {},
+	"cwd": {}, "model": {}, "info": {}, "total_token_usage": {}, "rate_limits": {},
+}
+
+var codexDirectUsageFields = map[string]struct{}{
+	"type": {}, "id": {}, "session_id": {}, "project_id": {}, "project_name": {},
+	"cwd": {}, "model": {}, "input_tokens": {}, "cached_input_tokens": {},
+	"cache_read_input_tokens": {}, "cache_write_tokens": {}, "output_tokens": {},
+	"reasoning_output_tokens": {}, "total_tokens": {},
+}
+
+func jsonObjectFieldsAllowed(raw json.RawMessage, allowed map[string]struct{}) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil {
+		return true
+	}
+	for field := range object {
+		if _, ok := allowed[field]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func decodeCodexPayload(raw json.RawMessage) (codexPayload, error) {
@@ -247,8 +347,8 @@ func updateCodexSession(session codexSession, payload codexPayload, sourceID str
 }
 
 func codexCumulativeUsage(envelope codexEnvelope, payload codexPayload) (codexUsage, bool) {
-	if payload.Info != nil {
-		return payload.Info.TotalTokenUsage, true
+	if payload.Info != nil && payload.Info.TotalTokenUsage != nil {
+		return *payload.Info.TotalTokenUsage, true
 	}
 	if payload.TotalTokenUsage != nil {
 		return *payload.TotalTokenUsage, true

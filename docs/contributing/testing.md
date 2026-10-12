@@ -17,13 +17,13 @@ remains the final cross-platform check.
 | Domain model or validation | Focused library tests, full tests, and vet |
 | SQLite storage | Idempotency, rollback, cursor, and race tests |
 | Migrations | Fresh database, historical upgrade, complete migration history, and newer-schema rejection |
-| Provider adapters | Detection, normalization, malformed input, immutable snapshot, repeated import, offsets, and replacement tests |
+| Provider adapters | Shared conformance suite: initial/re-import, append, replacement/path reuse, malformed interior input, retryable tail completion, unsupported usage, missing attribution, storage failure, source immutability, and provider-specific normalization |
 | Collector | Polling, cancellation, unavailable source, and health behavior |
 | Reporting and time | Ordering, output formats, fractional offsets, DST folds, and local civil-hour buckets |
 | Settings | Round-trip, permissions, replacement failure, and platform behavior |
 | Diagnostics | Sanitization, deduplication, persistence, and disclosure boundaries |
 | Harness protocol | Lifecycle, malformed input, unknown methods, stable errors, message limits, stdout/stderr, metadata atomicity, and duplicates |
-| CLI | Focused command tests plus the full suite |
+| CLI | Focused command tests, stable import JSON/exit behavior, CLI-versus-harness canonical differential fixture, plus the full suite |
 | Release or installer | Shell syntax, release build, signature/checksum verification, lifecycle verifier, and platform-specific behavior |
 | Workflow or security | YAML review, least-privilege permissions, immutable action references, and relevant checks |
 | Documentation | Local links, command accuracy, examples, and consistency with implementation |

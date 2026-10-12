@@ -17,17 +17,21 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
+	_ "modernc.org/sqlite"
 )
 
 func TestImportCommand(t *testing.T) {
@@ -38,7 +42,7 @@ func TestImportCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("import exit code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "imported=2") {
+	if !strings.Contains(stdout.String(), "Imported events: 2") {
 		t.Fatalf("unexpected import output: %q", stdout.String())
 	}
 }
@@ -51,9 +55,342 @@ func TestClaudeImportCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Claude import exit code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "imported=2") {
+	if !strings.Contains(stdout.String(), "Imported events: 2") {
 		t.Fatalf("unexpected Claude import output: %q", stdout.String())
 	}
+}
+
+func TestImportJSONOutcomeContract(t *testing.T) {
+	dataDir := t.TempDir()
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"import", fixture, "--format", "json", "--data-dir", dataDir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("import exit code = %d, stderr = %q", code, stderr.String())
+	}
+	var result importCommandOutput
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode import JSON: %v; output=%q", err, stdout.String())
+	}
+	if result.FormatVersion != 1 || result.SourcesDiscovered != 1 || result.SourcesProcessed != 1 ||
+		result.ImportedEvents != 2 || result.DuplicateEvents != 0 || result.Outcomes.IgnoredNonUsage != 3 ||
+		result.Outcomes.UnchangedSnapshot != 1 || !result.Complete || result.Pending {
+		t.Fatalf("unexpected import JSON: %+v", result)
+	}
+	if strings.Contains(stdout.String(), fixture) {
+		t.Fatalf("machine output disclosed source path: %q", stdout.String())
+	}
+}
+
+func TestImportWarningAndPendingExitBehavior(t *testing.T) {
+	t.Run("unsupported usage warns", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "unsupported.jsonl")
+		if err := os.WriteFile(path, []byte(`{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","input_tokens":1}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"import", path, "--format", "json", "--data-dir", t.TempDir()}, &stdout, &stderr); code != 3 {
+			t.Fatalf("warning exit code = %d, stderr=%q output=%q", code, stderr.String(), stdout.String())
+		}
+		var result importCommandOutput
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcomes.UnsupportedUsage != 1 || result.Complete || result.Pending {
+			t.Fatalf("unexpected warning result: %+v", result)
+		}
+	})
+
+	t.Run("incomplete final line remains retryable", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "partial.jsonl")
+		if err := os.WriteFile(path, []byte(`{"type":"token_count","payload":`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"import", path, "--format", "json", "--data-dir", t.TempDir()}, &stdout, &stderr); code != 0 {
+			t.Fatalf("pending exit code = %d, stderr=%q", code, stderr.String())
+		}
+		var result importCommandOutput
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcomes.DeferredIncompleteTail != 1 || !result.Pending || result.Complete {
+			t.Fatalf("unexpected pending result: %+v", result)
+		}
+	})
+
+	t.Run("warning and pending remain independent in text", func(t *testing.T) {
+		sourceDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(sourceDir, "unsupported.jsonl"), []byte(`{"type":"token_usage_record","input_tokens":1}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sourceDir, "partial.jsonl"), []byte(`{"type":"token_count","payload":`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"import", sourceDir, "--data-dir", t.TempDir()}, &stdout, &stderr); code != 3 {
+			t.Fatalf("combined exit code = %d, stderr=%q output=%q", code, stderr.String(), stdout.String())
+		}
+		for _, expected := range []string{"Pending:", "Warning:", "Status: incomplete."} {
+			if !strings.Contains(stdout.String(), expected) {
+				t.Fatalf("combined output omitted %q: %q", expected, stdout.String())
+			}
+		}
+	})
+}
+
+func TestWatchOutputIncludesSubsequentWarningAndFinalOutcomes(t *testing.T) {
+	result := tokenlogger.ImportResult{Outcomes: tokenlogger.OutcomeCounts{UnsupportedUsage: 1}}
+	var output bytes.Buffer
+	writeWatchPoll(&output, result)
+	writeWatchSummary(&output, tokenlogger.CollectorHealth{
+		Status: "stopped", Sources: 1, Outcomes: result.Outcomes,
+	})
+	for _, expected := range []string{
+		"poll imported=0", "unsupported_usage=1", "complete=false",
+		"collector stopped:", "pending=false",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("watch output omitted %q: %q", expected, output.String())
+		}
+	}
+}
+
+func TestImportFixtureMatchesHarnessCanonicalUsageProjection(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+		events  []tokenlogger.UsageEvent
+	}{
+		{
+			name:    "codex",
+			fixture: filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl"),
+			events: []tokenlogger.UsageEvent{
+				canonicalDifferentialEvent("token-count-1", time.Date(2026, 10, 11, 10, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 100, OutputTokens: 30, CacheReadTokens: 20, ReasoningTokens: 10}, "project-fixture", "codex-session-fixture", "codex-cli", "openai", "gpt-5-codex"),
+				canonicalDifferentialEvent("token-count-2", time.Date(2026, 10, 11, 10, 0, 3, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 50, OutputTokens: 20, CacheReadTokens: 10, ReasoningTokens: 5}, "project-fixture", "codex-session-fixture", "codex-cli", "openai", "gpt-5-codex"),
+			},
+		},
+		{
+			name:    "claude",
+			fixture: filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"),
+			events: []tokenlogger.UsageEvent{
+				canonicalDifferentialEvent("claude-message-1", time.Date(2026, 10, 11, 11, 0, 1, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 110, OutputTokens: 15, CacheReadTokens: 20, CacheWriteTokens: 10}, "claude-project-fixture", "claude-session-fixture", "claude-code", "anthropic", "claude-sonnet-fixture"),
+				canonicalDifferentialEvent("claude-message-2", time.Date(2026, 10, 11, 11, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 45, OutputTokens: 8, CacheReadTokens: 5}, "claude-project-fixture", "claude-session-fixture", "claude-code", "anthropic", "claude-sonnet-fixture"),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertImportMatchesHarness(t, test.fixture, test.events)
+		})
+	}
+}
+
+func assertImportMatchesHarness(t *testing.T, fixture string, events []tokenlogger.UsageEvent) {
+	t.Helper()
+	importDataDir := t.TempDir()
+	var importOutput, importErr bytes.Buffer
+	if code := run([]string{"import", fixture, "--data-dir", importDataDir}, &importOutput, &importErr); code != 0 {
+		t.Fatalf("fixture import exit=%d stderr=%q", code, importErr.String())
+	}
+
+	harnessDataDir := t.TempDir()
+	requests := []map[string]any{
+		{"protocol": protocolName, "version": protocolVersion, "id": "1", "method": "initialize", "params": map[string]any{"data_dir": harnessDataDir}},
+	}
+	for index, event := range events {
+		requests = append(requests, map[string]any{
+			"protocol": protocolName, "version": protocolVersion, "id": decimalString(index + 2),
+			"method": "record", "params": canonicalDifferentialRecord(event),
+		})
+	}
+	requests = append(requests, map[string]any{
+		"protocol": protocolName, "version": protocolVersion, "id": decimalString(len(events) + 2), "method": "shutdown",
+	})
+	var input bytes.Buffer
+	for _, request := range requests {
+		if err := json.NewEncoder(&input).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var harnessOutput, harnessErr bytes.Buffer
+	if code := runProtocol(&input, &harnessOutput, &harnessErr); code != 0 {
+		t.Fatalf("harness exit=%d stderr=%q output=%q", code, harnessErr.String(), harnessOutput.String())
+	}
+	importedBefore := eventProjections(t, importDataDir)
+	harnessedBefore := eventProjections(t, harnessDataDir)
+	if len(importedBefore) != len(events) || len(harnessedBefore) != len(events) {
+		t.Fatalf("unexpected initial event projections: import=%d harness=%d", len(importedBefore), len(harnessedBefore))
+	}
+	for index := range importedBefore {
+		if !reflect.DeepEqual(canonicalProjection(importedBefore[index]), canonicalProjection(harnessedBefore[index])) {
+			t.Fatalf("event projection %d differs: import=%+v harness=%+v", index, importedBefore[index], harnessedBefore[index])
+		}
+	}
+
+	filter := tokenlogger.UsageFilter{
+		From: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
+		GroupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel,
+			tokenlogger.GroupProject, tokenlogger.GroupSession},
+	}
+	imported := queryReport(t, importDataDir, filter)
+	harnessed := queryReport(t, harnessDataDir, filter)
+	if !reflect.DeepEqual(imported.Summary, harnessed.Summary) || !reflect.DeepEqual(imported.Rows, harnessed.Rows) {
+		t.Fatalf("canonical usage differs: import=%+v harness=%+v", imported, harnessed)
+	}
+
+	var replayOutput, replayErr bytes.Buffer
+	if code := run([]string{"import", fixture, "--data-dir", importDataDir}, &replayOutput, &replayErr); code != 0 || !strings.Contains(replayOutput.String(), "storage duplicates: "+decimalString(len(events))) {
+		t.Fatalf("fixture replay code=%d stderr=%q output=%q", code, replayErr.String(), replayOutput.String())
+	}
+	assertProjectionStable(t, importedBefore, eventProjections(t, importDataDir), "fixture replay")
+
+	replayRequests := []map[string]any{
+		{"protocol": protocolName, "version": protocolVersion, "id": "replay-1", "method": "initialize", "params": map[string]any{"data_dir": harnessDataDir}},
+	}
+	for index, event := range events {
+		replayRequests = append(replayRequests, map[string]any{
+			"protocol": protocolName, "version": protocolVersion, "id": "replay-" + decimalString(index+2),
+			"method": "record", "params": canonicalDifferentialRecord(event),
+		})
+	}
+	replayRequests = append(replayRequests, map[string]any{
+		"protocol": protocolName, "version": protocolVersion, "id": "replay-shutdown", "method": "shutdown",
+	})
+	var replayInput, replayHarnessOutput, replayHarnessErr bytes.Buffer
+	for _, request := range replayRequests {
+		if err := json.NewEncoder(&replayInput).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := runProtocol(&replayInput, &replayHarnessOutput, &replayHarnessErr); code != 0 {
+		t.Fatalf("harness replay code=%d stderr=%q output=%q", code, replayHarnessErr.String(), replayHarnessOutput.String())
+	}
+	var responses []protocolResponse
+	decoder := json.NewDecoder(&replayHarnessOutput)
+	for {
+		var response protocolResponse
+		if err := decoder.Decode(&response); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		responses = append(responses, response)
+	}
+	for _, response := range responses[1 : 1+len(events)] {
+		result, ok := response.Result.(map[string]any)
+		if !ok || result["imported"] != float64(0) || result["duplicates"] != float64(1) {
+			t.Fatalf("unexpected harness replay response: %+v", response)
+		}
+	}
+	assertProjectionStable(t, harnessedBefore, eventProjections(t, harnessDataDir), "harness replay")
+}
+
+func canonicalDifferentialEvent(id string, occurredAt time.Time, usage tokenlogger.TokenUsage, projectID, sessionID, client, provider, model string) tokenlogger.UsageEvent {
+	return tokenlogger.UsageEvent{
+		EventID: "differential-" + id, SchemaVersion: 1, EventType: "model.request", OccurredAt: occurredAt,
+		ProjectID: projectID, SessionID: sessionID,
+		Client: tokenlogger.Client{Name: client}, Provider: provider, RequestedModel: model, ResolvedModel: model,
+		Usage: usage, Provenance: tokenlogger.Provenance{Adapter: "fixture", SourceID: "fixture", SourceRecord: id},
+		IngestionKey: "differential:" + id,
+	}
+}
+
+func canonicalDifferentialRecord(event tokenlogger.UsageEvent) map[string]any {
+	return map[string]any{
+		"event":   event,
+		"project": tokenlogger.Project{ID: event.ProjectID, Root: "/sanitized/project", DisplayName: "Sanitized Fixture Project"},
+		"session": tokenlogger.Session{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client},
+	}
+}
+
+func queryReport(t *testing.T, dataDir string, filter tokenlogger.UsageFilter) tokenlogger.UsageReport {
+	t.Helper()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	report, err := store.Query(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report
+}
+
+type testEventProjection struct {
+	EventID        string
+	IngestionKey   string
+	OccurredAt     time.Time
+	ProjectID      string
+	SessionID      string
+	ClientName     string
+	Provider       string
+	RequestedModel string
+	ResolvedModel  string
+	Usage          tokenlogger.TokenUsage
+	SourceID       string
+	SourceRecord   string
+}
+
+func eventProjections(t *testing.T, dataDir string) []testEventProjection {
+	t.Helper()
+	// This is intentionally test-only SQL access. The product library does not
+	// expose an unbounded event enumeration API just for this differential test.
+	database, err := sql.Open("sqlite", filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	rows, err := database.Query(`SELECT event_id, ingestion_key, occurred_at,
+		COALESCE(project_id, ''), COALESCE(session_id, ''), client_name, provider_name,
+		requested_model, resolved_model, input_tokens, output_tokens, cache_read_tokens,
+		cache_write_tokens, reasoning_tokens, source_id, source_record_id
+		FROM usage_events ORDER BY occurred_at, event_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var projections []testEventProjection
+	for rows.Next() {
+		var projection testEventProjection
+		var occurredAt string
+		if err := rows.Scan(&projection.EventID, &projection.IngestionKey, &occurredAt,
+			&projection.ProjectID, &projection.SessionID, &projection.ClientName, &projection.Provider,
+			&projection.RequestedModel, &projection.ResolvedModel, &projection.Usage.InputTokens,
+			&projection.Usage.OutputTokens, &projection.Usage.CacheReadTokens, &projection.Usage.CacheWriteTokens,
+			&projection.Usage.ReasoningTokens, &projection.SourceID, &projection.SourceRecord); err != nil {
+			t.Fatal(err)
+		}
+		projection.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		projections = append(projections, projection)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return projections
+}
+
+func canonicalProjection(event testEventProjection) testEventProjection {
+	event.EventID = ""
+	event.IngestionKey = ""
+	event.SourceID = ""
+	return event
+}
+
+func assertProjectionStable(t *testing.T, before, after []testEventProjection, label string) {
+	t.Helper()
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("%s changed persisted event projections: before=%+v after=%+v", label, before, after)
+	}
+}
+
+func decimalString(value int) string {
+	return fmt.Sprint(value)
 }
 
 func TestCLIUsage(t *testing.T) {

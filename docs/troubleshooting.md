@@ -36,6 +36,22 @@ Stable ingestion keys make imports idempotent. A changed or replaced source
 may receive a new source generation so reused offsets do not collide with older
 events.
 
+## Import reports pending or incomplete accounting
+
+`deferred_incomplete_tail=1` means the source ended with a partial JSON record,
+usually because the provider was still writing. This is healthy and retryable:
+rerun the import after the source grows, or let `watch` retry it. Do not edit the
+provider-owned file.
+
+`unsupported_usage`, `malformed_record`, or `failed_source` means accounting
+may be incomplete and causes explicit import to exit with status 3. Unsupported
+usage indicates a usage-bearing provider shape that this version deliberately
+does not normalize; upgrade before retrying. Malformed records have invalid
+JSON or required attribution such as model or timestamp. Failed sources indicate
+an access, detection, or persistence failure. Use `--format json` to inspect
+typed counts without exposing source paths, and review the locally sanitized
+diagnostics before reporting an issue.
+
 ## Reports show unexpected hourly buckets
 
 Hourly reports use the selected reporting timezone and default to UTC. Pass
