@@ -82,6 +82,14 @@ type codexUsageValue struct {
 	TotalTokens          *int64 `json:"total_tokens"`
 }
 
+type codexUsageRecordSeen struct {
+	usage       codexUsage
+	turnUsage   codexUsage
+	threadUsage codexUsage
+	hasTurn     bool
+	hasThread   bool
+}
+
 var codexUsageRecordFields = map[string]struct{}{
 	"thread_id": {}, "turn_id": {}, "session_id": {}, "root_turn_id": {},
 	"response_id": {}, "usage": {}, "turn_token_usage": {}, "thread_token_usage": {},
@@ -135,6 +143,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	newStreamSessions := map[string]bool{}
 	threadCumulative := map[string]codexUsage{}
 	turnCumulative := map[string]codexUsage{}
+	seenResponses := map[string]codexUsageRecordSeen{}
 	var events []UsageEvent
 	var lastRecordID string
 
@@ -174,8 +183,29 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							if record.SessionID == "" {
 								record.SessionID = session.ID
 							}
+							responseScope := codexLogicalScope(record.SessionID, record.ThreadID)
+							responseIdentity := responseScope + "\x00" + record.ResponseID
+							seen, repeated := seenResponses[responseIdentity]
+							if repeated {
+								hasTurn := len(record.TurnTokenUsage) > 0 && string(record.TurnTokenUsage) != "null"
+								hasThread := len(record.ThreadTokenUsage) > 0 && string(record.ThreadTokenUsage) != "null"
+								if seen.usage != usage || seen.hasTurn != hasTurn || seen.hasThread != hasThread ||
+									(hasTurn && seen.turnUsage != turnUsage) || (hasThread && seen.threadUsage != threadUsage) {
+									result.Outcomes.Add(OutcomeUnsupportedUsage)
+									continue
+								}
+								occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
+								if timeErr != nil {
+									result.Outcomes.Add(OutcomeMalformedRecord)
+								} else {
+									newStreamSessions[session.ID] = true
+									events = append(events, codexUsageEvent(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line))
+								}
+								continue
+							}
 							if !codexCumulativeValid(record, usage, turnUsage, threadUsage, turnCumulative, threadCumulative) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
+								codexResetCumulativeBaselines(record, turnUsage, threadUsage, turnCumulative, threadCumulative)
 								continue
 							}
 							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
@@ -184,12 +214,15 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							} else {
 								logicalScope := codexLogicalScope(record.SessionID, record.ThreadID)
 								newStreamSessions[session.ID] = true
-								if len(record.ThreadTokenUsage) > 0 && string(record.ThreadTokenUsage) != "null" {
+								hasThread := len(record.ThreadTokenUsage) > 0 && string(record.ThreadTokenUsage) != "null"
+								hasTurn := len(record.TurnTokenUsage) > 0 && string(record.TurnTokenUsage) != "null"
+								if hasThread {
 									threadCumulative[logicalScope] = threadUsage
 								}
-								if record.TurnID != "" && len(record.TurnTokenUsage) > 0 && string(record.TurnTokenUsage) != "null" {
+								if record.TurnID != "" && hasTurn {
 									turnCumulative[session.ID+"\x00"+record.TurnID] = turnUsage
 								}
+								seenResponses[responseIdentity] = codexUsageRecordSeen{usage: usage, turnUsage: turnUsage, threadUsage: threadUsage, hasTurn: hasTurn, hasThread: hasThread}
 								events = append(events, codexUsageEvent(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line))
 							}
 						}
@@ -392,6 +425,9 @@ func decodeCodexTokenUsage(raw json.RawMessage) (codexUsage, codexUsageRecordSta
 	if value.CacheWriteTokens != nil && value.CacheWriteInput != nil {
 		return codexUsage{}, codexUsageRecordUnsupported
 	}
+	if value.CachedInputTokens != nil && value.CacheReadInputTokens != nil {
+		return codexUsage{}, codexUsageRecordUnsupported
+	}
 	usage := codexUsage{}
 	if value.InputTokens != nil {
 		usage.InputTokens = *value.InputTokens
@@ -422,6 +458,9 @@ func decodeCodexTokenUsage(raw json.RawMessage) (codexUsage, codexUsageRecordSta
 	}
 	if usage.InputTokens < 0 || usage.CachedInputTokens < 0 || usage.CacheReadInputTokens < 0 ||
 		usage.CacheWriteTokens < 0 || usage.OutputTokens < 0 || usage.ReasoningOutputTokens < 0 {
+		return codexUsage{}, codexUsageRecordMalformed
+	}
+	if usage.CachedInputTokens > usage.InputTokens || usage.CacheReadInputTokens > usage.InputTokens {
 		return codexUsage{}, codexUsageRecordMalformed
 	}
 	if value.InputTokens == nil && value.CachedInputTokens == nil && value.CacheReadInputTokens == nil &&
@@ -492,6 +531,15 @@ func codexCumulativeDeltaMatches(previous, current, usage codexUsage) bool {
 		current.CacheReadInputTokens-previous.CacheReadInputTokens == usage.CacheReadInputTokens &&
 		current.CacheWriteTokens-previous.CacheWriteTokens == usage.CacheWriteTokens &&
 		current.ReasoningOutputTokens-previous.ReasoningOutputTokens == usage.ReasoningOutputTokens
+}
+
+func codexResetCumulativeBaselines(record codexUsageRecordPayload, turnUsage, threadUsage codexUsage, turnCumulative, threadCumulative map[string]codexUsage) {
+	if len(record.ThreadTokenUsage) > 0 && string(record.ThreadTokenUsage) != "null" {
+		threadCumulative[codexLogicalScope(record.SessionID, record.ThreadID)] = threadUsage
+	}
+	if record.TurnID != "" && len(record.TurnTokenUsage) > 0 && string(record.TurnTokenUsage) != "null" {
+		turnCumulative[record.SessionID+"\x00"+record.TurnID] = turnUsage
+	}
 }
 
 func codexUsageEvent(sourceID, fingerprint string, offset int64, record codexUsageRecordPayload, session codexSession, usage codexUsage, occurredAt time.Time, line []byte) UsageEvent {

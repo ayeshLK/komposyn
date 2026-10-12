@@ -228,3 +228,75 @@ func TestCodexTokenUsageRecordRejectsCumulativeRollback(t *testing.T) {
 		t.Fatalf("rollback result = %+v, err = %v", result, err)
 	}
 }
+
+func TestCodexTokenUsageRecordDuplicateResponseReachesStorageDeduplication(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "duplicate.jsonl")
+	contents := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":10,"output_tokens":1}}}
+{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":10,"output_tokens":1}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 1 || result.Receipt.Duplicates != 1 || result.Outcomes.UnsupportedUsage != 0 {
+		t.Fatalf("duplicate result = %+v, err = %v", result, err)
+	}
+}
+
+func TestCodexTokenUsageRecordRejectsAmbiguousCacheReadAliases(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "cache-alias.jsonl")
+	contents := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":10,"cached_input_tokens":5,"cache_read_input_tokens":5,"output_tokens":1}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 0 || result.Outcomes.UnsupportedUsage != 1 {
+		t.Fatalf("ambiguous cache result = %+v, err = %v", result, err)
+	}
+}
+
+func TestCodexTokenUsageRecordResetCanResume(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "reset-resume.jsonl")
+	contents := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":10,"output_tokens":1},"turn_token_usage":{"input_tokens":10,"output_tokens":1},"thread_token_usage":{"input_tokens":10,"output_tokens":1}}}
+{"type":"token_usage_record","timestamp":"2026-10-11T00:00:02Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-2","usage":{"input_tokens":9,"output_tokens":1},"turn_token_usage":{"input_tokens":9,"output_tokens":1},"thread_token_usage":{"input_tokens":9,"output_tokens":1}}}
+{"type":"token_usage_record","timestamp":"2026-10-11T00:00:03Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-3","usage":{"input_tokens":10,"output_tokens":1},"turn_token_usage":{"input_tokens":19,"output_tokens":2},"thread_token_usage":{"input_tokens":19,"output_tokens":2}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 2 || result.Outcomes.UnsupportedUsage != 1 {
+		t.Fatalf("reset/resume result = %+v, err = %v", result, err)
+	}
+}
+
+func TestCodexTokenUsageRecordValidationMatrix(t *testing.T) {
+	tests := map[string]string{
+		"missing response": `{"thread_id":"thread-1","session_id":"session-1","usage":{"input_tokens":1}}`,
+		"negative input":   `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":-1}}`,
+		"unknown field":    `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"future_tokens":2}}`,
+		"wrong total":      `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":9}}`,
+	}
+	for name, payload := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "invalid.jsonl")
+			contents := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+` + `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":` + payload + "}\n"
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (CodexAdapter{}).Import(path, store)
+			if err != nil || result.Receipt.Imported != 0 || !result.Outcomes.Incomplete() {
+				t.Fatalf("validation result = %+v, err = %v", result, err)
+			}
+		})
+	}
+}
