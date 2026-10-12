@@ -15,9 +15,11 @@
 package tokenlogger
 
 import (
+	"bytes"
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -299,4 +301,183 @@ func TestCodexTokenUsageRecordValidationMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCodexTokenUsageRecordAppendReportsExactReceiptAndTotals(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "append.jsonl")
+	header := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+`
+	firstRecord := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":10,"output_tokens":1},"turn_token_usage":{"input_tokens":10,"output_tokens":1},"thread_token_usage":{"input_tokens":10,"output_tokens":1}}}
+`
+	secondRecord := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:02Z","payload":{"thread_id":"thread-1","turn_id":"turn-2","session_id":"session-1","response_id":"response-2","usage":{"input_tokens":5,"output_tokens":1},"turn_token_usage":{"input_tokens":5,"output_tokens":1},"thread_token_usage":{"input_tokens":15,"output_tokens":2}}}
+`
+	mirror := `{"type":"event_msg","timestamp":"2026-10-11T00:00:03Z","payload":{"type":"token_count","session_id":"session-1","info":{"total_token_usage":{"input_tokens":15,"output_tokens":2}}}}
+`
+	if err := os.WriteFile(path, []byte(header+firstRecord), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || first.Receipt.Imported != 1 || first.Receipt.Duplicates != 0 || first.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1}) {
+		t.Fatalf("first append result = %+v, err = %v", first, err)
+	}
+	if err := os.WriteFile(path, []byte(header+firstRecord+secondRecord+mirror), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || second.Receipt.Imported != 1 || second.Receipt.Duplicates != 1 || second.Outcomes != (OutcomeCounts{IgnoredNonUsage: 2}) {
+		t.Fatalf("append result = %+v, err = %v", second, err)
+	}
+	var count, input, output int64
+	if err := store.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM usage_events`).Scan(&count, &input, &output); err != nil {
+		t.Fatal(err)
+	}
+	if [3]int64{count, input, output} != [3]int64{2, 15, 2} {
+		t.Fatalf("append totals = %v", [3]int64{count, input, output})
+	}
+}
+
+func TestCodexTokenUsageRecordAttributionFailuresHaveExactOutcomes(t *testing.T) {
+	tests := []struct {
+		name       string
+		header     string
+		record     string
+		wantResult ImportResult
+	}{
+		{
+			name:       "invalid timestamp",
+			header:     `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}` + "\n",
+			record:     `{"type":"token_usage_record","timestamp":"not-rfc3339","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n",
+			wantResult: ImportResult{Outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		},
+		{
+			name:       "missing model context",
+			header:     `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project"}}` + "\n",
+			record:     `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n",
+			wantResult: ImportResult{Outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		},
+		{
+			name:       "unknown session context",
+			header:     `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}` + "\n",
+			record:     `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"missing-session","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n",
+			wantResult: ImportResult{Outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "attribution.jsonl")
+			if err := os.WriteFile(path, []byte(test.header+test.record), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (CodexAdapter{}).Import(path, store)
+			if err != nil || result.Receipt != test.wantResult.Receipt || result.Outcomes != test.wantResult.Outcomes || result.Outcomes.Incomplete() != true || result.Outcomes.Pending() {
+				t.Fatalf("attribution result = %+v, err = %v", result, err)
+			}
+		})
+	}
+}
+
+func TestCodexTokenUsageRecordIncompleteTailCompletesWithoutChangingSource(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "incomplete.jsonl")
+	header := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+`
+	record := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":4,"output_tokens":1}}}
+`
+	partial := []byte(header + strings.TrimSuffix(record, "}\n"))
+	if err := os.WriteFile(path, partial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := append([]byte(nil), partial...)
+	pending, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || pending.Receipt.Imported != 0 || pending.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1, DeferredIncompleteTail: 1}) || !bytes.Equal(original, mustReadFile(t, path)) {
+		t.Fatalf("pending result = %+v, err = %v", pending, err)
+	}
+	if err := os.WriteFile(path, []byte(header+record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || completed.Receipt.Imported != 1 || completed.Receipt.Duplicates != 0 || completed.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1}) {
+		t.Fatalf("completed result = %+v, err = %v", completed, err)
+	}
+}
+
+func TestCodexTokenUsageRecordPersistenceFailureRollsBackReferencesAndCursor(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "rollback.jsonl")
+	contents := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":4,"output_tokens":1}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conflict := testEvent("seed")
+	conflict.EventID = "codex-response-event-" + digest([]byte("codex-response\x00session-1\x00thread-1\x00response-1"))
+	if _, err := store.Append([]UsageEvent{conflict}); err != nil {
+		t.Fatal(err)
+	}
+	original := mustReadFile(t, path)
+	if _, err := (CodexAdapter{}).Import(path, store); err == nil {
+		t.Fatal("conflicting new-format event unexpectedly imported")
+	}
+	if !bytes.Equal(original, mustReadFile(t, path)) {
+		t.Fatal("source changed after failed import")
+	}
+	for name, query := range map[string]string{
+		"project": `SELECT COUNT(*) FROM projects WHERE id = 'project-1'`,
+		"session": `SELECT COUNT(*) FROM sessions WHERE id = 'session-1'`,
+		"cursor":  `SELECT COUNT(*) FROM source_cursors WHERE source_id LIKE 'codex-file-%'`,
+	} {
+		var count int
+		if err := store.db.QueryRow(query).Scan(&count); err != nil {
+			t.Fatalf("query %s: %v", name, err)
+		}
+		if count != 0 {
+			t.Fatalf("failed import left %d %s rows", count, name)
+		}
+	}
+}
+
+func TestCodexTokenUsageRecordMirrorsDoNotChangeEventsOrTotals(t *testing.T) {
+	withMirror := mustReadFile(t, filepath.Join("testdata", "codex", "token-usage-records.jsonl"))
+	withoutMirror := []byte(strings.TrimSuffix(string(withMirror), `{"type":"event_msg","timestamp":"2026-10-11T10:00:06Z","payload":{"type":"token_count","session_id":"codex-record-session","info":{"total_token_usage":{"input_tokens":150,"output_tokens":15}}}}
+`))
+	var observations map[string][6]int64
+	for name, contents := range map[string][]byte{"with mirror": withMirror, "without mirror": withoutMirror} {
+		t.Run(name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "mirror.jsonl")
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (CodexAdapter{}).Import(path, store)
+			if err != nil || result.Receipt.Imported != 3 || result.Outcomes.UnsupportedUsage != 0 || result.Outcomes.MalformedRecord != 0 {
+				t.Fatalf("mirror result = %+v, err = %v", result, err)
+			}
+			var count, input, output, cached, writes, reasoning int64
+			if err := store.db.QueryRow(`SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens) FROM usage_events`).Scan(&count, &input, &output, &cached, &writes, &reasoning); err != nil {
+				t.Fatal(err)
+			}
+			if [6]int64{count, input, output, cached, writes, reasoning} != [6]int64{3, 150, 15, 3, 4, 2} {
+				t.Fatalf("mirror totals = %v", [6]int64{count, input, output, cached, writes, reasoning})
+			}
+			if observations == nil {
+				observations = make(map[string][6]int64)
+			}
+			observations[name] = [6]int64{count, input, output, cached, writes, reasoning}
+		})
+	}
+	if observations["with mirror"] != observations["without mirror"] {
+		t.Fatalf("mirrored and unmirrored totals differ: with=%v without=%v", observations["with mirror"], observations["without mirror"])
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contents
 }
