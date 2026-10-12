@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -38,7 +39,7 @@ func TestImportCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("import exit code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "imported=2") {
+	if !strings.Contains(stdout.String(), "Imported events: 2") {
 		t.Fatalf("unexpected import output: %q", stdout.String())
 	}
 }
@@ -51,9 +52,142 @@ func TestClaudeImportCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Claude import exit code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "imported=2") {
+	if !strings.Contains(stdout.String(), "Imported events: 2") {
 		t.Fatalf("unexpected Claude import output: %q", stdout.String())
 	}
+}
+
+func TestImportJSONOutcomeContract(t *testing.T) {
+	dataDir := t.TempDir()
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"import", fixture, "--format", "json", "--data-dir", dataDir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("import exit code = %d, stderr = %q", code, stderr.String())
+	}
+	var result importCommandOutput
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode import JSON: %v; output=%q", err, stdout.String())
+	}
+	if result.FormatVersion != 1 || result.SourcesDiscovered != 1 || result.SourcesProcessed != 1 ||
+		result.ImportedEvents != 2 || result.DuplicateEvents != 0 || result.Outcomes.IgnoredNonUsage != 3 ||
+		result.Outcomes.UnchangedSnapshot != 1 || !result.Complete || result.Pending {
+		t.Fatalf("unexpected import JSON: %+v", result)
+	}
+	if strings.Contains(stdout.String(), fixture) {
+		t.Fatalf("machine output disclosed source path: %q", stdout.String())
+	}
+}
+
+func TestImportWarningAndPendingExitBehavior(t *testing.T) {
+	t.Run("unsupported usage warns", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "unsupported.jsonl")
+		if err := os.WriteFile(path, []byte(`{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","input_tokens":1}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"import", path, "--format", "json", "--data-dir", t.TempDir()}, &stdout, &stderr); code != 3 {
+			t.Fatalf("warning exit code = %d, stderr=%q output=%q", code, stderr.String(), stdout.String())
+		}
+		var result importCommandOutput
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcomes.UnsupportedUsage != 1 || result.Complete || result.Pending {
+			t.Fatalf("unexpected warning result: %+v", result)
+		}
+	})
+
+	t.Run("incomplete final line remains retryable", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "partial.jsonl")
+		if err := os.WriteFile(path, []byte(`{"type":"token_count","payload":`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"import", path, "--format", "json", "--data-dir", t.TempDir()}, &stdout, &stderr); code != 0 {
+			t.Fatalf("pending exit code = %d, stderr=%q", code, stderr.String())
+		}
+		var result importCommandOutput
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcomes.DeferredIncompleteTail != 1 || !result.Pending || result.Complete {
+			t.Fatalf("unexpected pending result: %+v", result)
+		}
+	})
+}
+
+func TestImportFixtureMatchesHarnessCanonicalUsageProjection(t *testing.T) {
+	importDataDir := t.TempDir()
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl")
+	var importOutput, importErr bytes.Buffer
+	if code := run([]string{"import", fixture, "--data-dir", importDataDir}, &importOutput, &importErr); code != 0 {
+		t.Fatalf("fixture import exit=%d stderr=%q", code, importErr.String())
+	}
+
+	harnessDataDir := t.TempDir()
+	events := []tokenlogger.UsageEvent{
+		canonicalDifferentialEvent("one", time.Date(2026, 10, 11, 10, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 100, OutputTokens: 30, CacheReadTokens: 20, ReasoningTokens: 10}),
+		canonicalDifferentialEvent("two", time.Date(2026, 10, 11, 10, 0, 3, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 50, OutputTokens: 20, CacheReadTokens: 10, ReasoningTokens: 5}),
+	}
+	requests := []map[string]any{
+		{"protocol": protocolName, "version": protocolVersion, "id": "1", "method": "initialize", "params": map[string]any{"data_dir": harnessDataDir}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "2", "method": "record", "params": canonicalDifferentialRecord(events[0])},
+		{"protocol": protocolName, "version": protocolVersion, "id": "3", "method": "record", "params": canonicalDifferentialRecord(events[1])},
+		{"protocol": protocolName, "version": protocolVersion, "id": "4", "method": "shutdown"},
+	}
+	var input bytes.Buffer
+	for _, request := range requests {
+		if err := json.NewEncoder(&input).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var harnessOutput, harnessErr bytes.Buffer
+	if code := runProtocol(&input, &harnessOutput, &harnessErr); code != 0 {
+		t.Fatalf("harness exit=%d stderr=%q output=%q", code, harnessErr.String(), harnessOutput.String())
+	}
+
+	filter := tokenlogger.UsageFilter{
+		From: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
+	}
+	imported := querySummary(t, importDataDir, filter)
+	harnessed := querySummary(t, harnessDataDir, filter)
+	if !reflect.DeepEqual(imported, harnessed) {
+		t.Fatalf("canonical usage differs: import=%+v harness=%+v", imported, harnessed)
+	}
+}
+
+func canonicalDifferentialEvent(id string, occurredAt time.Time, usage tokenlogger.TokenUsage) tokenlogger.UsageEvent {
+	return tokenlogger.UsageEvent{
+		EventID: "differential-" + id, SchemaVersion: 1, EventType: "model.request", OccurredAt: occurredAt,
+		ProjectID: "project-fixture", SessionID: "codex-session-fixture",
+		Client: tokenlogger.Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex",
+		Usage: usage, Provenance: tokenlogger.Provenance{Adapter: "fixture", SourceID: "fixture", SourceRecord: id},
+		IngestionKey: "differential:" + id,
+	}
+}
+
+func canonicalDifferentialRecord(event tokenlogger.UsageEvent) map[string]any {
+	return map[string]any{
+		"event":   event,
+		"project": tokenlogger.Project{ID: event.ProjectID, Root: "/sanitized/project", DisplayName: "Sanitized Fixture Project"},
+		"session": tokenlogger.Session{ID: event.SessionID, ProjectID: event.ProjectID, Client: tokenlogger.Client{Name: "codex-cli"}},
+	}
+}
+
+func querySummary(t *testing.T, dataDir string, filter tokenlogger.UsageFilter) tokenlogger.UsageMeasures {
+	t.Helper()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	report, err := store.Query(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report.Summary
 }
 
 func TestCLIUsage(t *testing.T) {

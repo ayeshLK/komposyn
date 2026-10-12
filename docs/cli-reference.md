@@ -24,11 +24,28 @@ Prints `komposyn-lg <version>`.
 ### `import`
 
 ```text
-komposyn-lg import <file-or-directory> [--data-dir <path>]
+komposyn-lg import <file-or-directory> [--data-dir <path>] [--format text|json]
 ```
 
 Detects supported provider source shapes, imports normalized events, and
-reports imported, duplicate, skipped, and failed counts.
+reports imported events, storage duplicates, source counts, and typed record
+outcomes. `text` is the default. `json` emits the stable `format_version: 1`
+contract and never includes source paths:
+
+```json
+{"format_version":1,"sources_discovered":1,"sources_processed":1,"imported_events":2,"duplicate_events":0,"outcomes":{"ignored_non_usage":3,"unchanged_snapshot":1,"deferred_incomplete_tail":0,"unsupported_usage":0,"malformed_record":0,"failed_source":0},"failed_sources":0,"complete":true,"pending":false}
+```
+
+`ignored_non_usage` and `unchanged_snapshot` are normal. A
+`deferred_incomplete_tail` is retryable, sets `pending: true`, and is not a
+warning. `unsupported_usage`, `malformed_record`, and `failed_source` mean
+accounting may be incomplete. Imported events and storage duplicates are never
+reported as record outcomes.
+
+Exit status `0` means no warning outcome occurred (including when only a
+retryable tail is pending), `1` is an argument error, `2` is a command setup or
+output error, and `3` means import completed with warning outcomes or failed
+sources.
 
 ### `usage`, `cost`, and `sessions`
 
@@ -80,7 +97,10 @@ komposyn-lg watch <file-or-directory> [--interval <duration>] [--data-dir <path>
 ```
 
 Polls once immediately and continues until interrupted. The default interval is
-five seconds.
+five seconds. Poll output uses the same typed outcomes as `import`. Ignored and
+unchanged records remain healthy; a deferred tail is visible as pending without
+degrading health; unsupported, malformed, and failed-source outcomes degrade
+health and create path-free, deduplicated local diagnostics.
 
 ### `settings`
 

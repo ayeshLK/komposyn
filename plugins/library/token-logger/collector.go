@@ -33,7 +33,8 @@ type CollectorHealth struct {
 	LastError     string
 	Imported      int
 	Duplicates    int
-	Skipped       int
+	Outcomes      OutcomeCounts
+	Pending       bool
 	Sources       int
 }
 
@@ -83,8 +84,8 @@ func (c *Collector) PollOnce() (ImportResult, error) {
 	for _, path := range paths {
 		adapter, detectErr := DetectAdapter(path)
 		if detectErr != nil {
-			total.Failed++
-			c.recordFailure(fmt.Errorf("detect %s: %w", path, detectErr))
+			total.Outcomes.Add(OutcomeFailedSource)
+			c.recordFailure(fmt.Errorf("detect source: %w", detectErr))
 			continue
 		}
 		var result ImportResult
@@ -95,17 +96,16 @@ func (c *Collector) PollOnce() (ImportResult, error) {
 			result, importErr = (CodexAdapter{}).Import(path, c.store)
 		}
 		if importErr != nil {
-			total.Failed++
-			c.recordFailure(fmt.Errorf("import %s: %w", path, importErr))
+			total.Outcomes.Add(OutcomeFailedSource)
+			c.recordFailure(fmt.Errorf("import %s source: %w", adapter, importErr))
 			continue
 		}
-		total.Receipt.Imported += result.Receipt.Imported
-		total.Receipt.Duplicates += result.Receipt.Duplicates
-		total.Skipped += result.Skipped
+		total.Merge(result)
+		c.recordOutcomeDiagnostics(adapter, result.Outcomes)
 	}
 	c.mu.Lock()
 	c.health.Status = "healthy"
-	if total.Failed > 0 {
+	if total.Outcomes.Incomplete() {
 		c.health.Status = "degraded"
 	} else {
 		c.health.LastError = ""
@@ -113,10 +113,32 @@ func (c *Collector) PollOnce() (ImportResult, error) {
 	c.health.LastSuccessAt = time.Now().UTC()
 	c.health.Imported += total.Receipt.Imported
 	c.health.Duplicates += total.Receipt.Duplicates
-	c.health.Skipped += total.Skipped
+	c.health.Outcomes.Merge(total.Outcomes)
+	c.health.Pending = total.Outcomes.Pending()
 	c.health.Sources = len(paths)
 	c.mu.Unlock()
 	return total, nil
+}
+
+func (c *Collector) recordOutcomeDiagnostics(adapter string, outcomes OutcomeCounts) {
+	for _, item := range []struct {
+		outcome RecordOutcome
+		count   int
+	}{
+		{OutcomeUnsupportedUsage, outcomes.UnsupportedUsage},
+		{OutcomeMalformedRecord, outcomes.MalformedRecord},
+	} {
+		if item.count == 0 {
+			continue
+		}
+		// The stable, path-free message lets RecordDiagnostic deduplicate
+		// repeated polls without retaining transcript contents.
+		if _, err := c.store.RecordDiagnostic(fmt.Sprintf("adapter=%s reason=%s", adapter, item.outcome)); err != nil {
+			c.mu.Lock()
+			c.health.LastError = SanitizeDiagnostic(err.Error())
+			c.mu.Unlock()
+		}
+	}
 }
 
 // Run polls on the configured interval until ctx is cancelled. Callers that
@@ -149,7 +171,10 @@ func (c *Collector) recordFailure(err error) {
 	defer c.mu.Unlock()
 	c.health.Status = "degraded"
 	c.health.LastError = SanitizeDiagnostic(err.Error())
-	if _, diagnosticErr := c.store.RecordDiagnostic(err.Error()); diagnosticErr != nil && c.health.LastError == "" {
+	// Persist only a stable category. The local health view may retain the
+	// sanitized operational error, but diagnostics never retain source paths,
+	// provider record identifiers, or transcript fragments.
+	if _, diagnosticErr := c.store.RecordDiagnostic("reason=failed_source"); diagnosticErr != nil && c.health.LastError == "" {
 		c.health.LastError = diagnosticErr.Error()
 	}
 }

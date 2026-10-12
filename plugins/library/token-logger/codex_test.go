@@ -28,7 +28,8 @@ func TestCodexImportNormalizesCumulativeSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import fixture: %v", err)
 	}
-	if result.Receipt.Imported != 2 || result.Receipt.Duplicates != 0 || result.Skipped != 2 {
+	if result.Receipt.Imported != 2 || result.Receipt.Duplicates != 0 ||
+		result.Outcomes.IgnoredNonUsage != 3 || result.Outcomes.UnchangedSnapshot != 1 {
 		t.Fatalf("unexpected import result: %+v", result)
 	}
 	count, err := store.EventCount()

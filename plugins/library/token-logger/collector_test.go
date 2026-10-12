@@ -49,6 +49,56 @@ func TestCollectorPollsBothProviderShapesAndReportsHealth(t *testing.T) {
 	}
 }
 
+func TestCollectorOutcomeHealthAndDiagnosticDeduplication(t *testing.T) {
+	t.Run("warning degrades and deduplicates", func(t *testing.T) {
+		store := openTestStore(t)
+		path := filepath.Join(t.TempDir(), "unsupported.jsonl")
+		if err := os.WriteFile(path, []byte(`{"type":"token_usage_record","input_tokens":1}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		collector, err := NewCollector(store, []string{path}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			result, err := collector.PollOnce()
+			if err != nil || result.Outcomes.UnsupportedUsage != 1 {
+				t.Fatalf("poll result=%+v err=%v", result, err)
+			}
+		}
+		health := collector.Health()
+		if health.Status != "degraded" || health.Pending {
+			t.Fatalf("unexpected warning health: %+v", health)
+		}
+		diagnostics, err := store.PendingDiagnostics()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(diagnostics) != 1 || diagnostics[0].OccurrenceCount != 2 || diagnostics[0].Message != "adapter=codex reason=unsupported_usage" {
+			t.Fatalf("unexpected diagnostics: %+v", diagnostics)
+		}
+	})
+
+	t.Run("partial tail is visible but healthy", func(t *testing.T) {
+		store := openTestStore(t)
+		path := filepath.Join(t.TempDir(), "partial.jsonl")
+		if err := os.WriteFile(path, []byte(`{"type":"token_count","payload":`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		collector, err := NewCollector(store, []string{path}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := collector.PollOnce()
+		if err != nil || result.Outcomes.DeferredIncompleteTail != 1 {
+			t.Fatalf("poll result=%+v err=%v", result, err)
+		}
+		if health := collector.Health(); health.Status != "healthy" || !health.Pending {
+			t.Fatalf("unexpected pending health: %+v", health)
+		}
+	})
+}
+
 func TestSettingsRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	want := DefaultSettings("/tmp/token-logger")

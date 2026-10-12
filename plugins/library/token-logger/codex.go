@@ -32,14 +32,6 @@ import (
 // CodexAdapter reads Codex CLI rollout JSONL files without modifying them.
 type CodexAdapter struct{}
 
-// ImportResult summarizes one source import. Skipped records are unsupported,
-// malformed, incomplete, or cumulative snapshots with no new usage delta.
-type ImportResult struct {
-	Receipt Receipt
-	Skipped int
-	Failed  int
-}
-
 type codexEnvelope struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id"`
@@ -121,52 +113,72 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 			recordID := "offset-" + fmt.Sprint(lineOffset)
 			var envelope codexEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
-				result.Skipped++
+				if errors.Is(readErr, io.EOF) && len(line) > 0 {
+					result.Outcomes.Add(OutcomeDeferredIncompleteTail)
+				} else {
+					result.Outcomes.Add(OutcomeMalformedRecord)
+				}
 			} else {
 				if envelope.ID != "" {
 					recordID = envelope.ID
 				}
 				lastRecordID = recordID
-				payload, payloadErr := decodeCodexPayload(envelope.Payload)
-				if payloadErr != nil {
-					result.Skipped++
+				if envelope.Type == "token_usage_record" {
+					result.Outcomes.Add(OutcomeUnsupportedUsage)
 				} else {
-					switch codexRecordType(envelope, payload) {
-					case "session_meta":
-						current = updateCodexSession(current, payload, sourceID)
-						if current.Model == "" {
-							current.Model = payload.Model
+					payload, payloadErr := decodeCodexPayload(envelope.Payload)
+					if payloadErr != nil {
+						if codexUsageBearingType(envelope.Type) {
+							result.Outcomes.Add(OutcomeMalformedRecord)
+						} else {
+							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						}
-					case "turn_context":
-						if payload.Model != "" {
-							current.Model = payload.Model
-						}
-					case "token_count":
-						if payload.SessionID != "" || payload.ProjectID != "" || payload.CWD != "" {
+					} else {
+						switch codexRecordType(envelope, payload) {
+						case "session_meta":
 							current = updateCodexSession(current, payload, sourceID)
+							if current.Model == "" {
+								current.Model = payload.Model
+							}
+							result.Outcomes.Add(OutcomeIgnoredNonUsage)
+						case "turn_context":
+							if payload.Model != "" {
+								current.Model = payload.Model
+							}
+							result.Outcomes.Add(OutcomeIgnoredNonUsage)
+						case "token_usage_record":
+							result.Outcomes.Add(OutcomeUnsupportedUsage)
+						case "token_count":
+							if payload.SessionID != "" || payload.ProjectID != "" || payload.CWD != "" {
+								current = updateCodexSession(current, payload, sourceID)
+							}
+							if payload.Model != "" {
+								current.Model = payload.Model
+							}
+							usage, ok := codexCumulativeUsage(envelope, payload)
+							if !ok || current.Model == "" {
+								result.Outcomes.Add(OutcomeMalformedRecord)
+								break
+							}
+							delta, changed := codexDelta(previous, usage, hasPrevious)
+							previous, hasPrevious = usage, true
+							if !changed {
+								result.Outcomes.Add(OutcomeUnchangedSnapshot)
+								break
+							}
+							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
+							if timeErr != nil {
+								result.Outcomes.Add(OutcomeMalformedRecord)
+								break
+							}
+							events = append(events, codexEvent(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line))
+						default:
+							if codexUsageBearingType(codexRecordType(envelope, payload)) {
+								result.Outcomes.Add(OutcomeUnsupportedUsage)
+							} else {
+								result.Outcomes.Add(OutcomeIgnoredNonUsage)
+							}
 						}
-						if payload.Model != "" {
-							current.Model = payload.Model
-						}
-						usage, ok := codexCumulativeUsage(envelope, payload)
-						if !ok || current.Model == "" {
-							result.Skipped++
-							break
-						}
-						delta, changed := codexDelta(previous, usage, hasPrevious)
-						previous, hasPrevious = usage, true
-						if !changed {
-							result.Skipped++
-							break
-						}
-						occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
-						if timeErr != nil {
-							result.Skipped++
-							break
-						}
-						events = append(events, codexEvent(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line))
-					default:
-						result.Skipped++
 					}
 				}
 			}
@@ -195,6 +207,12 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	}
 	result.Receipt = receipt
 	return result, nil
+}
+
+func codexUsageBearingType(recordType string) bool {
+	recordType = strings.ToLower(recordType)
+	return recordType == "token_count" || recordType == "token_usage_record" ||
+		strings.Contains(recordType, "token_usage")
 }
 
 func decodeCodexPayload(raw json.RawMessage) (codexPayload, error) {

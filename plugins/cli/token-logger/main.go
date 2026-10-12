@@ -442,7 +442,11 @@ func runWatch(args []string, stdout, stderr io.Writer) int {
 	if result, pollErr := collector.PollOnce(); pollErr != nil {
 		fmt.Fprintf(stderr, "initial collector poll: %v\n", pollErr)
 	} else {
-		fmt.Fprintf(stdout, "poll imported=%d duplicates=%d skipped=%d\n", result.Receipt.Imported, result.Receipt.Duplicates, result.Skipped)
+		fmt.Fprintf(stdout, "poll imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t complete=%t\n",
+			result.Receipt.Imported, result.Receipt.Duplicates, result.Outcomes.IgnoredNonUsage,
+			result.Outcomes.UnchangedSnapshot, result.Outcomes.DeferredIncompleteTail,
+			result.Outcomes.UnsupportedUsage, result.Outcomes.MalformedRecord,
+			result.Outcomes.FailedSource, result.Outcomes.Pending(), !result.Outcomes.Incomplete() && !result.Outcomes.Pending())
 	}
 	if err := collector.Run(ctx); err != nil {
 		fmt.Fprintf(stderr, "collector stopped: %v\n", err)
@@ -521,7 +525,7 @@ func settingBool(value string) (bool, bool) {
 
 func runImport(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		fmt.Fprintln(stderr, "usage: komposyn-lg import <file-or-directory> [--data-dir <path>]")
+		fmt.Fprintln(stderr, "usage: komposyn-lg import <file-or-directory> [--data-dir <path>] [--format text|json]")
 		return 1
 	}
 	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
@@ -529,12 +533,25 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		dataDir = defaultDataDir()
 	}
 	path := args[0]
+	format := "text"
 	for index := 1; index < len(args); index++ {
-		if args[index] != "--data-dir" || index+1 >= len(args) {
-			fmt.Fprintln(stderr, "usage: komposyn-lg import <file-or-directory> [--data-dir <path>]")
+		if index+1 >= len(args) {
+			fmt.Fprintln(stderr, "usage: komposyn-lg import <file-or-directory> [--data-dir <path>] [--format text|json]")
 			return 1
 		}
-		dataDir = args[index+1]
+		switch args[index] {
+		case "--data-dir":
+			dataDir = args[index+1]
+		case "--format":
+			format = args[index+1]
+			if format != "text" && format != "json" {
+				fmt.Fprintln(stderr, "--format expects text or json")
+				return 1
+			}
+		default:
+			fmt.Fprintf(stderr, "unknown import option %q\n", args[index])
+			return 1
+		}
 		index++
 	}
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
@@ -553,11 +570,12 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	total := tokenlogger.ImportResult{}
+	processed := 0
 	for _, sourcePath := range paths {
 		adapter, detectErr := tokenlogger.DetectAdapter(sourcePath)
 		if detectErr != nil {
-			fmt.Fprintf(stderr, "%s: detect source: %v\n", sourcePath, detectErr)
-			total.Failed++
+			fmt.Fprintf(stderr, "detect source: %v\n", detectErr)
+			total.Outcomes.Add(tokenlogger.OutcomeFailedSource)
 			continue
 		}
 		var result tokenlogger.ImportResult
@@ -568,19 +586,66 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			result, importErr = (tokenlogger.CodexAdapter{}).Import(sourcePath, store)
 		}
 		if importErr != nil {
-			fmt.Fprintf(stderr, "%s: %v\n", sourcePath, importErr)
-			total.Failed++
+			fmt.Fprintf(stderr, "import %s source: %v\n", adapter, importErr)
+			total.Outcomes.Add(tokenlogger.OutcomeFailedSource)
 			continue
 		}
-		total.Receipt.Imported += result.Receipt.Imported
-		total.Receipt.Duplicates += result.Receipt.Duplicates
-		total.Skipped += result.Skipped
+		processed++
+		total.Merge(result)
 	}
-	fmt.Fprintf(stdout, "imported=%d duplicates=%d skipped=%d failed=%d\n", total.Receipt.Imported, total.Receipt.Duplicates, total.Skipped, total.Failed)
-	if total.Failed > 0 {
+	output := importCommandOutput{
+		FormatVersion: 1, SourcesDiscovered: len(paths), SourcesProcessed: processed,
+		ImportedEvents: total.Receipt.Imported, DuplicateEvents: total.Receipt.Duplicates,
+		Outcomes: total.Outcomes, FailedSources: total.Outcomes.FailedSource,
+		Complete: !total.Outcomes.Incomplete() && !total.Outcomes.Pending(), Pending: total.Outcomes.Pending(),
+	}
+	if format == "json" {
+		if err := json.NewEncoder(stdout).Encode(output); err != nil {
+			fmt.Fprintf(stderr, "write import result: %v\n", err)
+			return 2
+		}
+	} else {
+		writeImportText(stdout, output)
+	}
+	if total.Outcomes.Incomplete() {
 		return 3
 	}
 	return 0
+}
+
+type importCommandOutput struct {
+	FormatVersion     int                       `json:"format_version"`
+	SourcesDiscovered int                       `json:"sources_discovered"`
+	SourcesProcessed  int                       `json:"sources_processed"`
+	ImportedEvents    int                       `json:"imported_events"`
+	DuplicateEvents   int                       `json:"duplicate_events"`
+	Outcomes          tokenlogger.OutcomeCounts `json:"outcomes"`
+	FailedSources     int                       `json:"failed_sources"`
+	Complete          bool                      `json:"complete"`
+	Pending           bool                      `json:"pending"`
+}
+
+func writeImportText(output io.Writer, result importCommandOutput) {
+	fmt.Fprintf(output, "Imported events: %d; storage duplicates: %d; sources processed: %d/%d.\n",
+		result.ImportedEvents, result.DuplicateEvents, result.SourcesProcessed, result.SourcesDiscovered,
+	)
+	fmt.Fprintf(output, "Record outcomes: ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d.\n",
+		result.Outcomes.IgnoredNonUsage, result.Outcomes.UnchangedSnapshot,
+		result.Outcomes.DeferredIncompleteTail, result.Outcomes.UnsupportedUsage,
+		result.Outcomes.MalformedRecord, result.Outcomes.FailedSource)
+	if result.Pending {
+		fmt.Fprintln(output, "Pending: the incomplete final record will be retried after the source grows.")
+	}
+	if !result.Complete && !result.Pending {
+		fmt.Fprintln(output, "Warning: usage accounting may be incomplete; review the warning outcomes and local diagnostics.")
+	}
+	status := "incomplete"
+	if result.Complete {
+		status = "complete"
+	} else if result.Pending {
+		status = "pending"
+	}
+	fmt.Fprintf(output, "Status: %s.\n", status)
 }
 
 func runReport(command string, args []string, stdout, stderr io.Writer) int {

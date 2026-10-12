@@ -126,7 +126,7 @@ The project is licensed under Apache-2.0. See [LICENSE](LICENSE) and
 Import a Codex JSONL source and inspect the normalized usage report:
 
 ```text
-komposyn-lg import <file-or-directory> --data-dir <path>
+komposyn-lg import <file-or-directory> --data-dir <path> [--format text|json]
 komposyn-lg usage --data-dir <path> --format table
 komposyn-lg cost --data-dir <path> --format json
 komposyn-lg sessions --data-dir <path> --format csv
