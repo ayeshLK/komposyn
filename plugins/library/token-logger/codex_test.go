@@ -19,8 +19,10 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCodexImportNormalizesCumulativeSnapshots(t *testing.T) {
@@ -280,23 +282,26 @@ func TestCodexTokenUsageRecordResetCanResume(t *testing.T) {
 }
 
 func TestCodexTokenUsageRecordValidationMatrix(t *testing.T) {
-	tests := map[string]string{
-		"missing response": `{"thread_id":"thread-1","session_id":"session-1","usage":{"input_tokens":1}}`,
-		"negative input":   `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":-1}}`,
-		"unknown field":    `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"future_tokens":2}}`,
-		"wrong total":      `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":9}}`,
+	tests := map[string]struct {
+		payload  string
+		outcomes OutcomeCounts
+	}{
+		"missing response": {payload: `{"thread_id":"thread-1","session_id":"session-1","usage":{"input_tokens":1}}`, outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		"negative input":   {payload: `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":-1}}`, outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		"unknown field":    {payload: `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"future_tokens":2}}`, outcomes: OutcomeCounts{IgnoredNonUsage: 1, UnsupportedUsage: 1}},
+		"wrong total":      {payload: `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":9}}`, outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
 	}
-	for name, payload := range tests {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			store := openTestStore(t)
 			path := filepath.Join(t.TempDir(), "invalid.jsonl")
 			contents := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
-` + `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":` + payload + "}\n"
+` + `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":` + test.payload + "}\n"
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			result, err := (CodexAdapter{}).Import(path, store)
-			if err != nil || result.Receipt.Imported != 0 || !result.Outcomes.Incomplete() {
+			if err != nil || result.Receipt != (Receipt{}) || result.Outcomes != test.outcomes || !result.Outcomes.Incomplete() || result.Outcomes.Pending() {
 				t.Fatalf("validation result = %+v, err = %v", result, err)
 			}
 		})
@@ -334,6 +339,94 @@ func TestCodexTokenUsageRecordAppendReportsExactReceiptAndTotals(t *testing.T) {
 	}
 	if [3]int64{count, input, output} != [3]int64{2, 15, 2} {
 		t.Fatalf("append totals = %v", [3]int64{count, input, output})
+	}
+	assertCodexAppendRowsAndReport(t, store)
+}
+
+type codexCanonicalProjection struct {
+	EventID, IngestionKey, OccurredAt string
+	ProjectID, SessionID              string
+	Client, Provider                  string
+	RequestedModel, ResolvedModel     string
+	Input, Output, CacheRead          int64
+	CacheWrite, Reasoning             int64
+	SourceRecord                      string
+}
+
+func queryCodexCanonicalRows(t *testing.T, store *Store) []codexCanonicalProjection {
+	t.Helper()
+	rows, err := store.db.Query(`SELECT event_id, ingestion_key, occurred_at, project_id, session_id,
+		client_name, provider_name, requested_model, resolved_model, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, reasoning_tokens, source_record_id
+		FROM usage_events ORDER BY occurred_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var projections []codexCanonicalProjection
+	for rows.Next() {
+		var projection codexCanonicalProjection
+		if err := rows.Scan(&projection.EventID, &projection.IngestionKey, &projection.OccurredAt,
+			&projection.ProjectID, &projection.SessionID, &projection.Client, &projection.Provider,
+			&projection.RequestedModel, &projection.ResolvedModel, &projection.Input, &projection.Output,
+			&projection.CacheRead, &projection.CacheWrite, &projection.Reasoning, &projection.SourceRecord); err != nil {
+			t.Fatal(err)
+		}
+		projections = append(projections, projection)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return projections
+}
+
+func assertCodexAppendRowsAndReport(t *testing.T, store *Store) {
+	t.Helper()
+	rows, err := store.db.Query(`SELECT event_id, ingestion_key, occurred_at, project_id, session_id,
+		client_name, provider_name, requested_model, resolved_model, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, reasoning_tokens, source_record_id
+		FROM usage_events ORDER BY occurred_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []codexCanonicalProjection
+	for rows.Next() {
+		var projection codexCanonicalProjection
+		if err := rows.Scan(&projection.EventID, &projection.IngestionKey, &projection.OccurredAt,
+			&projection.ProjectID, &projection.SessionID, &projection.Client, &projection.Provider,
+			&projection.RequestedModel, &projection.ResolvedModel, &projection.Input, &projection.Output,
+			&projection.CacheRead, &projection.CacheWrite, &projection.Reasoning, &projection.SourceRecord); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, projection)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	identity := func(response string) string {
+		return digest([]byte("codex-response\x00session-1\x00thread-1\x00" + response))
+	}
+	want := []codexCanonicalProjection{
+		{EventID: "codex-response-event-" + identity("response-1"), IngestionKey: "codex:response:" + identity("response-1"), OccurredAt: "2026-10-11T00:00:01.000000000Z", ProjectID: "project-1", SessionID: "session-1", Client: "codex-cli", Provider: "openai", RequestedModel: "gpt-test", ResolvedModel: "gpt-test", Input: 10, Output: 1, SourceRecord: "response-1"},
+		{EventID: "codex-response-event-" + identity("response-2"), IngestionKey: "codex:response:" + identity("response-2"), OccurredAt: "2026-10-11T00:00:02.000000000Z", ProjectID: "project-1", SessionID: "session-1", Client: "codex-cli", Provider: "openai", RequestedModel: "gpt-test", ResolvedModel: "gpt-test", Input: 5, Output: 1, SourceRecord: "response-2"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("canonical rows = %+v, want %+v", got, want)
+	}
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	report, err := store.Query(UsageFilter{From: from, To: from.AddDate(0, 0, 1), GroupBy: []string{GroupProject, GroupSession, GroupClient, GroupProvider, GroupModel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.RequestCount != 2 || report.Summary.SessionCount != 1 || report.Summary.InputTokens != 15 ||
+		report.Summary.OutputTokens != 2 || report.Summary.TotalTokens != 17 || report.Summary.UnknownCostRequests != 2 {
+		t.Fatalf("report summary = %+v", report.Summary)
+	}
+	if len(report.Rows) != 1 || !reflect.DeepEqual(report.Rows[0].Dimensions, map[string]string{
+		GroupProject: "project-1", GroupSession: "session-1", GroupClient: "codex-cli", GroupProvider: "openai", GroupModel: "gpt-test",
+	}) || report.Rows[0].UsageMeasures != report.Summary {
+		t.Fatalf("report rows = %+v, summary = %+v", report.Rows, report.Summary)
 	}
 }
 
@@ -441,13 +534,23 @@ func TestCodexTokenUsageRecordPersistenceFailureRollsBackReferencesAndCursor(t *
 
 func TestCodexTokenUsageRecordMirrorsDoNotChangeEventsOrTotals(t *testing.T) {
 	withMirror := mustReadFile(t, filepath.Join("testdata", "codex", "token-usage-records.jsonl"))
-	withoutMirror := []byte(strings.TrimSuffix(string(withMirror), `{"type":"event_msg","timestamp":"2026-10-11T10:00:06Z","payload":{"type":"token_count","session_id":"codex-record-session","info":{"total_token_usage":{"input_tokens":150,"output_tokens":15}}}}
-`))
-	var observations map[string][6]int64
+	suffix := `{"type":"event_msg","timestamp":"2026-10-11T10:00:06Z","payload":{"type":"token_count","session_id":"codex-record-session","info":{"total_token_usage":{"input_tokens":150,"output_tokens":15}}}}
+`
+	withoutMirrorText := strings.TrimSuffix(string(withMirror), suffix)
+	if withoutMirrorText == string(withMirror) || strings.Contains(withoutMirrorText, `"timestamp":"2026-10-11T10:00:06Z"`) {
+		t.Fatal("mirror fixture suffix was not removed")
+	}
+	withoutMirror := []byte(withoutMirrorText)
+	path := filepath.Join(t.TempDir(), "mirror.jsonl")
+	type observation struct {
+		rows   []codexCanonicalProjection
+		report UsageReport
+		totals [6]int64
+	}
+	var observations map[string]observation
 	for name, contents := range map[string][]byte{"with mirror": withMirror, "without mirror": withoutMirror} {
 		t.Run(name, func(t *testing.T) {
 			store := openTestStore(t)
-			path := filepath.Join(t.TempDir(), "mirror.jsonl")
 			if err := os.WriteFile(path, contents, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -459,17 +562,23 @@ func TestCodexTokenUsageRecordMirrorsDoNotChangeEventsOrTotals(t *testing.T) {
 			if err := store.db.QueryRow(`SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens) FROM usage_events`).Scan(&count, &input, &output, &cached, &writes, &reasoning); err != nil {
 				t.Fatal(err)
 			}
-			if [6]int64{count, input, output, cached, writes, reasoning} != [6]int64{3, 150, 15, 3, 4, 2} {
+			totals := [6]int64{count, input, output, cached, writes, reasoning}
+			if totals != [6]int64{3, 150, 15, 3, 4, 2} {
 				t.Fatalf("mirror totals = %v", [6]int64{count, input, output, cached, writes, reasoning})
 			}
-			if observations == nil {
-				observations = make(map[string][6]int64)
+			from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+			report, err := store.Query(UsageFilter{From: from, To: from.AddDate(0, 0, 1), GroupBy: []string{GroupProject, GroupSession, GroupClient, GroupProvider, GroupModel}})
+			if err != nil {
+				t.Fatal(err)
 			}
-			observations[name] = [6]int64{count, input, output, cached, writes, reasoning}
+			if observations == nil {
+				observations = make(map[string]observation)
+			}
+			observations[name] = observation{rows: queryCodexCanonicalRows(t, store), report: report, totals: totals}
 		})
 	}
-	if observations["with mirror"] != observations["without mirror"] {
-		t.Fatalf("mirrored and unmirrored totals differ: with=%v without=%v", observations["with mirror"], observations["without mirror"])
+	if !reflect.DeepEqual(observations["with mirror"], observations["without mirror"]) {
+		t.Fatalf("mirrored and unmirrored canonical results differ: with=%+v without=%+v", observations["with mirror"], observations["without mirror"])
 	}
 }
 
