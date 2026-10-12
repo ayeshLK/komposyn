@@ -151,15 +151,16 @@ History is held in memory for this invocation only: it contains non-empty REPL
 commands, excludes onboarding and diagnostic answers, and is never written to
 disk. Ctrl-D on an empty prompt exits. Ctrl-C cancels the current input and
 exits interactive mode cleanly. Ctrl-L clears the visible terminal and keeps
-the prompt; it does not erase scrollback or application data.
+the prompt; it does not erase scrollback or application data. Commands are
+bounded to 64 KiB of UTF-8 bytes.
 
 Interactive reports support `/projects`, `/sessions`, `/total-usage`,
 `/by-client`, `/by-model`, `/cost`, `/range`, `/refresh`, `/clear`,
 `/settings`, `/report-issue`, and `/quit`. `/clear` clears the visible
 terminal, returns the cursor home, and does not rerun the report; use
 `/refresh` when a redraw is wanted. It never deletes usage, settings, consent,
-diagnostics, or history. Multiline paste is folded into one command and is not
-executed as a batch.
+diagnostics, or history. Bracketed multiline paste is folded into one command
+(including CRLF input) and is not executed as a batch.
 
 When stdin or stdout is not a terminal, the CLI uses deterministic scanner
 input for pipes, redirects, and tests. In that mode `/clear` prints

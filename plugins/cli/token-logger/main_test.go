@@ -31,6 +31,7 @@ import (
 	"time"
 
 	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
+	"github.com/chzyer/readline"
 	_ "modernc.org/sqlite"
 )
 
@@ -577,6 +578,60 @@ func TestInteractiveClearIsNonTTYNoOp(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "\x1b[") || strings.Contains(stderr.String(), "\x1b[") {
 		t.Fatalf("non-TTY clear emitted terminal control bytes: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestClearTerminalErasesVisibleScreenAndHomesCursor(t *testing.T) {
+	var output bytes.Buffer
+	if err := clearTerminal(&output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "\033[2J\033[H" {
+		t.Fatalf("clear sequence = %q", output.String())
+	}
+}
+
+func TestPasteGuardFoldsBracketedMultilinePaste(t *testing.T) {
+	input := strings.NewReader("\033[200~/help\r\n/quit\033[201~\r")
+	guard := &pasteGuardReader{source: input}
+	output, err := io.ReadAll(guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "/help /quit\r" {
+		t.Fatalf("guarded paste = %q", output)
+	}
+}
+
+func TestInteractiveCommandLimitUsesUTF8Bytes(t *testing.T) {
+	line := []rune(strings.Repeat("界", maxInteractiveCommandBytes))
+	bounded := truncateInteractiveCommand(line)
+	if len(string(bounded)) > maxInteractiveCommandBytes {
+		t.Fatalf("bounded command is %d bytes", len(string(bounded)))
+	}
+	if len(bounded) != maxInteractiveCommandBytes/len("界") {
+		t.Fatalf("bounded rune count = %d", len(bounded))
+	}
+	if ascii := truncateInteractiveCommand([]rune(strings.Repeat("a", maxInteractiveCommandBytes+1))); len(ascii) != maxInteractiveCommandBytes {
+		t.Fatalf("bounded ASCII rune count = %d", len(ascii))
+	}
+}
+
+type cancelledTerminalReader struct{}
+
+func (cancelledTerminalReader) ReadLine(string) (string, error) { return "", readline.ErrInterrupt }
+func (cancelledTerminalReader) DisableHistory()                 {}
+func (cancelledTerminalReader) EnableHistory()                  {}
+func (cancelledTerminalReader) IsTerminal() bool                { return true }
+
+func TestTerminalCancellationDoesNotCompleteOnboarding(t *testing.T) {
+	settings := tokenlogger.DefaultSettings(t.TempDir())
+	updated, startNow, err := runOnboarding(cancelledTerminalReader{}, settings.DataDir, settings)
+	if !errors.Is(err, readline.ErrInterrupt) {
+		t.Fatalf("onboarding error = %v", err)
+	}
+	if startNow || updated.OnboardingComplete || updated.CollectorEnabled != settings.CollectorEnabled {
+		t.Fatalf("cancellation changed onboarding settings: before=%+v after=%+v", settings, updated)
 	}
 }
 
