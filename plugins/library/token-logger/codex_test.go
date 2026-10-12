@@ -15,10 +15,15 @@
 package tokenlogger
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestCodexImportNormalizesCumulativeSnapshots(t *testing.T) {
@@ -278,25 +283,322 @@ func TestCodexTokenUsageRecordResetCanResume(t *testing.T) {
 }
 
 func TestCodexTokenUsageRecordValidationMatrix(t *testing.T) {
-	tests := map[string]string{
-		"missing response": `{"thread_id":"thread-1","session_id":"session-1","usage":{"input_tokens":1}}`,
-		"negative input":   `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":-1}}`,
-		"unknown field":    `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"future_tokens":2}}`,
-		"wrong total":      `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":9}}`,
+	tests := map[string]struct {
+		payload  string
+		outcomes OutcomeCounts
+	}{
+		"missing response": {payload: `{"thread_id":"thread-1","session_id":"session-1","usage":{"input_tokens":1}}`, outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		"negative input":   {payload: `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":-1}}`, outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		"unknown field":    {payload: `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"future_tokens":2}}`, outcomes: OutcomeCounts{IgnoredNonUsage: 1, UnsupportedUsage: 1}},
+		"wrong total":      {payload: `{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":9}}`, outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
 	}
-	for name, payload := range tests {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			store := openTestStore(t)
 			path := filepath.Join(t.TempDir(), "invalid.jsonl")
 			contents := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
-` + `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":` + payload + "}\n"
+` + `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":` + test.payload + "}\n"
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			result, err := (CodexAdapter{}).Import(path, store)
-			if err != nil || result.Receipt.Imported != 0 || !result.Outcomes.Incomplete() {
+			if err != nil || result.Receipt != (Receipt{}) || result.Outcomes != test.outcomes || !result.Outcomes.Incomplete() || result.Outcomes.Pending() {
 				t.Fatalf("validation result = %+v, err = %v", result, err)
 			}
 		})
 	}
+}
+
+func TestCodexTokenUsageRecordAppendReportsExactReceiptAndTotals(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "append.jsonl")
+	header := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+`
+	firstRecord := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":10,"output_tokens":1},"turn_token_usage":{"input_tokens":10,"output_tokens":1},"thread_token_usage":{"input_tokens":10,"output_tokens":1}}}
+`
+	secondRecord := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:02Z","payload":{"thread_id":"thread-1","turn_id":"turn-2","session_id":"session-1","response_id":"response-2","usage":{"input_tokens":5,"output_tokens":1},"turn_token_usage":{"input_tokens":5,"output_tokens":1},"thread_token_usage":{"input_tokens":15,"output_tokens":2}}}
+`
+	mirror := `{"type":"event_msg","timestamp":"2026-10-11T00:00:03Z","payload":{"type":"token_count","session_id":"session-1","info":{"total_token_usage":{"input_tokens":15,"output_tokens":2}}}}
+`
+	if err := os.WriteFile(path, []byte(header+firstRecord), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || first.Receipt.Imported != 1 || first.Receipt.Duplicates != 0 || first.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1}) {
+		t.Fatalf("first append result = %+v, err = %v", first, err)
+	}
+	if err := os.WriteFile(path, []byte(header+firstRecord+secondRecord+mirror), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || second.Receipt.Imported != 1 || second.Receipt.Duplicates != 1 || second.Outcomes != (OutcomeCounts{IgnoredNonUsage: 2}) {
+		t.Fatalf("append result = %+v, err = %v", second, err)
+	}
+	var count, input, output int64
+	if err := store.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM usage_events`).Scan(&count, &input, &output); err != nil {
+		t.Fatal(err)
+	}
+	if [3]int64{count, input, output} != [3]int64{2, 15, 2} {
+		t.Fatalf("append totals = %v", [3]int64{count, input, output})
+	}
+	assertCodexAppendRowsAndReport(t, store)
+}
+
+type codexCanonicalProjection struct {
+	EventID, IngestionKey, OccurredAt string
+	ProjectID, SessionID              string
+	Client, Provider                  string
+	RequestedModel, ResolvedModel     string
+	Input, Output, CacheRead          int64
+	CacheWrite, Reasoning             int64
+	SourceRecord                      string
+}
+
+func queryCodexCanonicalRows(t *testing.T, store *Store) []codexCanonicalProjection {
+	t.Helper()
+	rows, err := store.db.Query(`SELECT event_id, ingestion_key, occurred_at, project_id, session_id,
+		client_name, provider_name, requested_model, resolved_model, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, reasoning_tokens, source_record_id
+		FROM usage_events ORDER BY occurred_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var projections []codexCanonicalProjection
+	for rows.Next() {
+		var projection codexCanonicalProjection
+		if err := rows.Scan(&projection.EventID, &projection.IngestionKey, &projection.OccurredAt,
+			&projection.ProjectID, &projection.SessionID, &projection.Client, &projection.Provider,
+			&projection.RequestedModel, &projection.ResolvedModel, &projection.Input, &projection.Output,
+			&projection.CacheRead, &projection.CacheWrite, &projection.Reasoning, &projection.SourceRecord); err != nil {
+			t.Fatal(err)
+		}
+		projections = append(projections, projection)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return projections
+}
+
+func assertCodexAppendRowsAndReport(t *testing.T, store *Store) {
+	t.Helper()
+	rows, err := store.db.Query(`SELECT event_id, ingestion_key, occurred_at, project_id, session_id,
+		client_name, provider_name, requested_model, resolved_model, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, reasoning_tokens, source_record_id
+		FROM usage_events ORDER BY occurred_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []codexCanonicalProjection
+	for rows.Next() {
+		var projection codexCanonicalProjection
+		if err := rows.Scan(&projection.EventID, &projection.IngestionKey, &projection.OccurredAt,
+			&projection.ProjectID, &projection.SessionID, &projection.Client, &projection.Provider,
+			&projection.RequestedModel, &projection.ResolvedModel, &projection.Input, &projection.Output,
+			&projection.CacheRead, &projection.CacheWrite, &projection.Reasoning, &projection.SourceRecord); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, projection)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	identity := func(response string) string {
+		return digest([]byte("codex-response\x00session-1\x00thread-1\x00" + response))
+	}
+	want := []codexCanonicalProjection{
+		{EventID: "codex-response-event-" + identity("response-1"), IngestionKey: "codex:response:" + identity("response-1"), OccurredAt: "2026-10-11T00:00:01.000000000Z", ProjectID: "project-1", SessionID: "session-1", Client: "codex-cli", Provider: "openai", RequestedModel: "gpt-test", ResolvedModel: "gpt-test", Input: 10, Output: 1, SourceRecord: "response-1"},
+		{EventID: "codex-response-event-" + identity("response-2"), IngestionKey: "codex:response:" + identity("response-2"), OccurredAt: "2026-10-11T00:00:02.000000000Z", ProjectID: "project-1", SessionID: "session-1", Client: "codex-cli", Provider: "openai", RequestedModel: "gpt-test", ResolvedModel: "gpt-test", Input: 5, Output: 1, SourceRecord: "response-2"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("canonical rows = %+v, want %+v", got, want)
+	}
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	report, err := store.Query(UsageFilter{From: from, To: from.AddDate(0, 0, 1), GroupBy: []string{GroupProject, GroupSession, GroupClient, GroupProvider, GroupModel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.RequestCount != 2 || report.Summary.SessionCount != 1 || report.Summary.InputTokens != 15 ||
+		report.Summary.OutputTokens != 2 || report.Summary.TotalTokens != 17 || report.Summary.UnknownCostRequests != 2 {
+		t.Fatalf("report summary = %+v", report.Summary)
+	}
+	if len(report.Rows) != 1 || !reflect.DeepEqual(report.Rows[0].Dimensions, map[string]string{
+		GroupProject: "project-1", GroupSession: "session-1", GroupClient: "codex-cli", GroupProvider: "openai", GroupModel: "gpt-test",
+	}) || report.Rows[0].UsageMeasures != report.Summary {
+		t.Fatalf("report rows = %+v, summary = %+v", report.Rows, report.Summary)
+	}
+}
+
+func TestCodexTokenUsageRecordAttributionFailuresHaveExactOutcomes(t *testing.T) {
+	tests := []struct {
+		name       string
+		header     string
+		record     string
+		wantResult ImportResult
+	}{
+		{
+			name:       "invalid timestamp",
+			header:     `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}` + "\n",
+			record:     `{"type":"token_usage_record","timestamp":"not-rfc3339","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n",
+			wantResult: ImportResult{Outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		},
+		{
+			name:       "missing model context",
+			header:     `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project"}}` + "\n",
+			record:     `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n",
+			wantResult: ImportResult{Outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		},
+		{
+			name:       "unknown session context",
+			header:     `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}` + "\n",
+			record:     `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"missing-session","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n",
+			wantResult: ImportResult{Outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "attribution.jsonl")
+			if err := os.WriteFile(path, []byte(test.header+test.record), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (CodexAdapter{}).Import(path, store)
+			if err != nil || result.Receipt != test.wantResult.Receipt || result.Outcomes != test.wantResult.Outcomes || result.Outcomes.Incomplete() != true || result.Outcomes.Pending() {
+				t.Fatalf("attribution result = %+v, err = %v", result, err)
+			}
+		})
+	}
+}
+
+func TestCodexTokenUsageRecordIncompleteTailCompletesWithoutChangingSource(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "incomplete.jsonl")
+	header := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+`
+	record := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":4,"output_tokens":1}}}
+`
+	partial := []byte(header + strings.TrimSuffix(record, "}\n"))
+	if err := os.WriteFile(path, partial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := append([]byte(nil), partial...)
+	pending, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || pending.Receipt.Imported != 0 || pending.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1, DeferredIncompleteTail: 1}) || !bytes.Equal(original, mustReadFile(t, path)) {
+		t.Fatalf("pending result = %+v, err = %v", pending, err)
+	}
+	if err := os.WriteFile(path, []byte(header+record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || completed.Receipt.Imported != 1 || completed.Receipt.Duplicates != 0 || completed.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1}) {
+		t.Fatalf("completed result = %+v, err = %v", completed, err)
+	}
+}
+
+func TestCodexTokenUsageRecordPersistenceFailureRollsBackReferencesAndCursor(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "rollback.jsonl")
+	contents := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}
+{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":4,"output_tokens":1}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conflict := testEvent("seed")
+	conflict.EventID = "codex-response-event-" + digest([]byte("codex-response\x00session-1\x00thread-1\x00response-1"))
+	if _, err := store.Append([]UsageEvent{conflict}); err != nil {
+		t.Fatal(err)
+	}
+	original := mustReadFile(t, path)
+	if _, err := (CodexAdapter{}).Import(path, store); err == nil {
+		t.Fatal("conflicting new-format event unexpectedly imported")
+	}
+	if !bytes.Equal(original, mustReadFile(t, path)) {
+		t.Fatal("source changed after failed import")
+	}
+	for name, query := range map[string]string{
+		"project": `SELECT COUNT(*) FROM projects WHERE id = 'project-1'`,
+		"session": `SELECT COUNT(*) FROM sessions WHERE id = 'session-1'`,
+		"cursor":  `SELECT COUNT(*) FROM source_cursors WHERE source_id LIKE 'codex-file-%'`,
+	} {
+		var count int
+		if err := store.db.QueryRow(query).Scan(&count); err != nil {
+			t.Fatalf("query %s: %v", name, err)
+		}
+		if count != 0 {
+			t.Fatalf("failed import left %d %s rows", count, name)
+		}
+	}
+}
+
+func TestCodexTokenUsageRecordMirrorsDoNotChangeEventsOrTotals(t *testing.T) {
+	withMirror := mustReadFile(t, filepath.Join("testdata", "codex", "token-usage-records.jsonl"))
+	normalized := strings.ReplaceAll(string(withMirror), "\r\n", "\n")
+	normalized = strings.TrimSuffix(normalized, "\n")
+	lines := strings.Split(normalized, "\n")
+	if len(lines) < 2 {
+		t.Fatal("mirror fixture has no removable final record")
+	}
+	var finalEnvelope codexEnvelope
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &finalEnvelope); err != nil {
+		t.Fatalf("parse final mirror record: %v", err)
+	}
+	if finalEnvelope.Type != "event_msg" || !strings.Contains(string(finalEnvelope.Payload), `"token_count"`) {
+		t.Fatalf("final fixture record is not the expected legacy mirror: %s", lines[len(lines)-1])
+	}
+	withoutMirrorText := strings.Join(lines[:len(lines)-1], "\n") + "\n"
+	if len(withoutMirrorText) >= len(normalized)+1 {
+		t.Fatal("mirror fixture final record was not removed")
+	}
+	withoutMirror := []byte(withoutMirrorText)
+	path := filepath.Join(t.TempDir(), "mirror.jsonl")
+	type observation struct {
+		rows   []codexCanonicalProjection
+		report UsageReport
+		totals [6]int64
+	}
+	var observations map[string]observation
+	for name, contents := range map[string][]byte{"with mirror": withMirror, "without mirror": withoutMirror} {
+		t.Run(name, func(t *testing.T) {
+			store := openTestStore(t)
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (CodexAdapter{}).Import(path, store)
+			if err != nil || result.Receipt.Imported != 3 || result.Outcomes.UnsupportedUsage != 0 || result.Outcomes.MalformedRecord != 0 {
+				t.Fatalf("mirror result = %+v, err = %v", result, err)
+			}
+			var count, input, output, cached, writes, reasoning int64
+			if err := store.db.QueryRow(`SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens) FROM usage_events`).Scan(&count, &input, &output, &cached, &writes, &reasoning); err != nil {
+				t.Fatal(err)
+			}
+			totals := [6]int64{count, input, output, cached, writes, reasoning}
+			if totals != [6]int64{3, 150, 15, 3, 4, 2} {
+				t.Fatalf("mirror totals = %v", [6]int64{count, input, output, cached, writes, reasoning})
+			}
+			from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+			report, err := store.Query(UsageFilter{From: from, To: from.AddDate(0, 0, 1), GroupBy: []string{GroupProject, GroupSession, GroupClient, GroupProvider, GroupModel}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if observations == nil {
+				observations = make(map[string]observation)
+			}
+			observations[name] = observation{rows: queryCodexCanonicalRows(t, store), report: report, totals: totals}
+		})
+	}
+	if !reflect.DeepEqual(observations["with mirror"], observations["without mirror"]) {
+		t.Fatalf("mirrored and unmirrored canonical results differ: with=%+v without=%+v", observations["with mirror"], observations["without mirror"])
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contents
 }

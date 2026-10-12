@@ -62,6 +62,12 @@ double-counting. Unsupported results can also indicate a cumulative rollback,
 conflicting cache-write spellings, unknown usage fields, or ambiguous
 accounting; upgrade the importer after the provider format is understood.
 
+The importer intentionally does not require a Codex client-version marker.
+Support is selected from the record shape and validated against the pinned
+protocol provenance documented in the [usage guide](usage.md). This keeps
+forward-compatible records visible as typed unsupported or malformed outcomes
+instead of silently assigning behavior based on an unreliable version guess.
+
 ## Reports show unexpected hourly buckets
 
 Hourly reports use the selected reporting timezone and default to UTC. Pass

@@ -65,6 +65,20 @@ Response identity is based on the adapter, session/thread scope, and
 when file offsets or source generations change. A missing response ID,
 timestamp, model, or session attribution is not imported.
 
+Support provenance: the `token_usage_record` decoder is validated against the
+Codex protocol definitions at the pinned upstream revision
+[`a9b0815`](https://github.com/openai/codex/tree/a9b0815167c27ab13719dd12d13b63e02b70d221)
+and is capability-based rather than gated on a Codex version string. The
+repository does not currently claim that this shape maps to one specific
+released Codex CLI version; provider files do not carry reliable client-version
+metadata for that purpose.
+
+Claude Code can express per-message usage, but its transcript representation
+does not expose the Codex response/thread cumulative fields or the same
+legacy/new mirrored stream. Therefore the shared harness comparison uses
+provider-appropriate fixtures and normalized event projections; it does not
+pretend that the two raw formats are interchangeable.
+
 ## Reports
 
 Usage, cost, and session reports share the same filtering model:
