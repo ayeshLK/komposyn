@@ -52,6 +52,16 @@ an access, detection, or persistence failure. Use `--format json` to inspect
 typed counts without exposing source paths, and review the locally sanitized
 diagnostics before reporting an issue.
 
+If a Codex import reports `unsupported_usage` around a `token_usage_record`,
+inspect the sanitized outcome rather than manually adding the cumulative
+fields. KompoSyn imports only the per-response `usage`; turn- and
+thread-cumulative values are validation metadata. A source that contains both
+new response records and legacy `token_count` snapshots will show those
+mirrored snapshots as ignored non-usage records. This is expected and prevents
+double-counting. Unsupported results can also indicate a cumulative rollback,
+conflicting cache-write spellings, unknown usage fields, or ambiguous
+accounting; upgrade the importer after the provider format is understood.
+
 ## Reports show unexpected hourly buckets
 
 Hourly reports use the selected reporting timezone and default to UTC. Pass

@@ -60,6 +60,39 @@ type codexPayload struct {
 	TotalTokenUsage *codexUsage     `json:"total_token_usage"`
 }
 
+type codexUsageRecordPayload struct {
+	ThreadID         string          `json:"thread_id"`
+	TurnID           string          `json:"turn_id"`
+	SessionID        string          `json:"session_id"`
+	RootTurnID       string          `json:"root_turn_id"`
+	ResponseID       string          `json:"response_id"`
+	Usage            json.RawMessage `json:"usage"`
+	TurnTokenUsage   json.RawMessage `json:"turn_token_usage"`
+	ThreadTokenUsage json.RawMessage `json:"thread_token_usage"`
+}
+
+type codexUsageValue struct {
+	InputTokens          *int64 `json:"input_tokens"`
+	CachedInputTokens    *int64 `json:"cached_input_tokens"`
+	CacheReadInputTokens *int64 `json:"cache_read_input_tokens"`
+	CacheWriteTokens     *int64 `json:"cache_write_tokens"`
+	CacheWriteInput      *int64 `json:"cache_write_input_tokens"`
+	OutputTokens         *int64 `json:"output_tokens"`
+	ReasoningTokens      *int64 `json:"reasoning_output_tokens"`
+	TotalTokens          *int64 `json:"total_tokens"`
+}
+
+var codexUsageRecordFields = map[string]struct{}{
+	"thread_id": {}, "turn_id": {}, "session_id": {}, "root_turn_id": {},
+	"response_id": {}, "usage": {}, "turn_token_usage": {}, "thread_token_usage": {},
+}
+
+var codexTokenUsageFields = map[string]struct{}{
+	"input_tokens": {}, "cached_input_tokens": {}, "cache_read_input_tokens": {},
+	"cache_write_tokens": {}, "cache_write_input_tokens": {}, "output_tokens": {},
+	"reasoning_output_tokens": {}, "total_tokens": {},
+}
+
 type codexTokenInfo struct {
 	TotalTokenUsage *codexUsage `json:"total_token_usage"`
 }
@@ -96,8 +129,12 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	result := ImportResult{}
 	var offset int64
 	var current codexSession
-	var previous codexUsage
-	var hasPrevious bool
+	sessions := map[string]codexSession{}
+	legacyPrevious := map[string]codexUsage{}
+	legacyHasPrevious := map[string]bool{}
+	newStreamSessions := map[string]bool{}
+	threadCumulative := map[string]codexUsage{}
+	turnCumulative := map[string]codexUsage{}
 	var events []UsageEvent
 	var lastRecordID string
 
@@ -124,7 +161,39 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 				}
 				lastRecordID = recordID
 				if envelope.Type == "token_usage_record" {
-					result.Outcomes.Add(OutcomeUnsupportedUsage)
+					record, usage, turnUsage, threadUsage, status := decodeCodexUsageRecord(envelope)
+					if status == codexUsageRecordUnsupported {
+						result.Outcomes.Add(OutcomeUnsupportedUsage)
+					} else if status == codexUsageRecordMalformed {
+						result.Outcomes.Add(OutcomeMalformedRecord)
+					} else {
+						session, ok := codexUsageRecordSession(record, current, sessions)
+						if !ok || session.Model == "" || session.ProjectID == "" {
+							result.Outcomes.Add(OutcomeMalformedRecord)
+						} else {
+							if record.SessionID == "" {
+								record.SessionID = session.ID
+							}
+							if !codexCumulativeValid(record, usage, turnUsage, threadUsage, turnCumulative, threadCumulative) {
+								result.Outcomes.Add(OutcomeUnsupportedUsage)
+								continue
+							}
+							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
+							if timeErr != nil {
+								result.Outcomes.Add(OutcomeMalformedRecord)
+							} else {
+								logicalScope := codexLogicalScope(record.SessionID, record.ThreadID)
+								newStreamSessions[session.ID] = true
+								if len(record.ThreadTokenUsage) > 0 && string(record.ThreadTokenUsage) != "null" {
+									threadCumulative[logicalScope] = threadUsage
+								}
+								if record.TurnID != "" && len(record.TurnTokenUsage) > 0 && string(record.TurnTokenUsage) != "null" {
+									turnCumulative[session.ID+"\x00"+record.TurnID] = turnUsage
+								}
+								events = append(events, codexUsageEvent(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line))
+							}
+						}
+					}
 				} else {
 					payload, payloadErr := decodeCodexPayload(envelope.Payload)
 					if payloadErr != nil {
@@ -140,10 +209,19 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							if current.Model == "" {
 								current.Model = payload.Model
 							}
+							sessions[current.ID] = current
 							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						case "turn_context":
+							if payload.SessionID != "" {
+								if known, ok := sessions[payload.SessionID]; ok {
+									current = known
+								}
+							}
 							if payload.Model != "" {
 								current.Model = payload.Model
+							}
+							if current.ID != "" {
+								sessions[current.ID] = current
 							}
 							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						case "token_usage_record":
@@ -155,6 +233,17 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							if payload.Model != "" {
 								current.Model = payload.Model
 							}
+							legacyScope := payload.SessionID
+							if legacyScope == "" {
+								legacyScope = current.ID
+							}
+							if current.ID != "" {
+								sessions[current.ID] = current
+							}
+							if newStreamSessions[legacyScope] {
+								result.Outcomes.Add(OutcomeIgnoredNonUsage)
+								break
+							}
 							if !codexUsageShapeSupported(envelope) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
 								break
@@ -164,8 +253,8 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 								result.Outcomes.Add(OutcomeMalformedRecord)
 								break
 							}
-							delta, changed := codexDelta(previous, usage, hasPrevious)
-							previous, hasPrevious = usage, true
+							delta, changed := codexDelta(legacyPrevious[legacyScope], usage, legacyHasPrevious[legacyScope])
+							legacyPrevious[legacyScope], legacyHasPrevious[legacyScope] = usage, true
 							if !changed {
 								result.Outcomes.Add(OutcomeUnchangedSnapshot)
 								break
@@ -198,13 +287,29 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if current.ID == "" {
 		current = updateCodexSession(current, codexPayload{}, sourceID)
 	}
-	for index := range events {
-		events[index].ProjectID = current.ProjectID
-		events[index].SessionID = current.ID
+	if current.ID != "" {
+		sessions[current.ID] = current
+	}
+	projectsByID := map[string]Project{}
+	sessionsByID := map[string]Session{}
+	for _, session := range sessions {
+		if session.ID == "" || session.ProjectID == "" {
+			continue
+		}
+		projectsByID[session.ProjectID] = Project{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName}
+		sessionsByID[session.ID] = Session{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "codex-cli"}, SourceMetadata: json.RawMessage(`{"adapter":"codex"}`)}
+	}
+	projects := make([]Project, 0, len(projectsByID))
+	for _, project := range projectsByID {
+		projects = append(projects, project)
+	}
+	knownSessions := make([]Session, 0, len(sessionsByID))
+	for _, session := range sessionsByID {
+		knownSessions = append(knownSessions, session)
 	}
 	receipt, err := store.AppendWithReferencesAndCursor(events,
-		[]Project{{ID: current.ProjectID, Root: current.Root, DisplayName: current.ProjectName}},
-		[]Session{{ID: current.ID, ProjectID: current.ProjectID, Client: Client{Name: "codex-cli"}, SourceMetadata: json.RawMessage(`{"adapter":"codex"}`)}},
+		projects,
+		knownSessions,
 		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
 	if err != nil {
 		return result, fmt.Errorf("persist Codex project, session, events, and cursor: %w", err)
@@ -227,6 +332,191 @@ func codexRawRecordType(envelope codexEnvelope) string {
 		return payload.Type
 	}
 	return envelope.Type
+}
+
+type codexUsageRecordStatus string
+
+const (
+	codexUsageRecordValid       codexUsageRecordStatus = "valid"
+	codexUsageRecordUnsupported codexUsageRecordStatus = "unsupported"
+	codexUsageRecordMalformed   codexUsageRecordStatus = "malformed"
+)
+
+func decodeCodexUsageRecord(envelope codexEnvelope) (codexUsageRecordPayload, codexUsage, codexUsage, codexUsage, codexUsageRecordStatus) {
+	var record codexUsageRecordPayload
+	if len(envelope.Payload) == 0 || string(envelope.Payload) == "null" {
+		return record, codexUsage{}, codexUsage{}, codexUsage{}, codexUsageRecordUnsupported
+	}
+	if err := json.Unmarshal(envelope.Payload, &record); err != nil {
+		return record, codexUsage{}, codexUsage{}, codexUsage{}, codexUsageRecordMalformed
+	}
+	if !jsonObjectFieldsAllowed(envelope.Payload, codexUsageRecordFields) {
+		return record, codexUsage{}, codexUsage{}, codexUsage{}, codexUsageRecordUnsupported
+	}
+	if strings.TrimSpace(record.ResponseID) == "" || (strings.TrimSpace(record.ThreadID) == "" && strings.TrimSpace(record.SessionID) == "") {
+		return record, codexUsage{}, codexUsage{}, codexUsage{}, codexUsageRecordMalformed
+	}
+	usage, usageStatus := decodeCodexTokenUsage(record.Usage)
+	if usageStatus != codexUsageRecordValid {
+		return record, codexUsage{}, codexUsage{}, codexUsage{}, usageStatus
+	}
+	turnUsage, turnStatus := decodeOptionalCodexTokenUsage(record.TurnTokenUsage)
+	if turnStatus != codexUsageRecordValid {
+		return record, codexUsage{}, codexUsage{}, codexUsage{}, turnStatus
+	}
+	threadUsage, threadStatus := decodeOptionalCodexTokenUsage(record.ThreadTokenUsage)
+	if threadStatus != codexUsageRecordValid {
+		return record, codexUsage{}, codexUsage{}, codexUsage{}, threadStatus
+	}
+	return record, usage, turnUsage, threadUsage, codexUsageRecordValid
+}
+
+func decodeOptionalCodexTokenUsage(raw json.RawMessage) (codexUsage, codexUsageRecordStatus) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return codexUsage{}, codexUsageRecordValid
+	}
+	return decodeCodexTokenUsage(raw)
+}
+
+func decodeCodexTokenUsage(raw json.RawMessage) (codexUsage, codexUsageRecordStatus) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return codexUsage{}, codexUsageRecordMalformed
+	}
+	if !jsonObjectFieldsAllowed(raw, codexTokenUsageFields) {
+		return codexUsage{}, codexUsageRecordUnsupported
+	}
+	var value codexUsageValue
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return codexUsage{}, codexUsageRecordMalformed
+	}
+	if value.CacheWriteTokens != nil && value.CacheWriteInput != nil {
+		return codexUsage{}, codexUsageRecordUnsupported
+	}
+	usage := codexUsage{}
+	if value.InputTokens != nil {
+		usage.InputTokens = *value.InputTokens
+	}
+	if value.CachedInputTokens != nil {
+		usage.CachedInputTokens = *value.CachedInputTokens
+	}
+	if value.CacheReadInputTokens != nil {
+		usage.CacheReadInputTokens = *value.CacheReadInputTokens
+	}
+	if value.CacheWriteTokens != nil {
+		usage.CacheWriteTokens = *value.CacheWriteTokens
+	}
+	if value.CacheWriteInput != nil {
+		usage.CacheWriteTokens = *value.CacheWriteInput
+	}
+	if value.OutputTokens != nil {
+		usage.OutputTokens = *value.OutputTokens
+	}
+	if value.ReasoningTokens != nil {
+		usage.ReasoningOutputTokens = *value.ReasoningTokens
+	}
+	if value.TotalTokens != nil {
+		usageTotal := *value.TotalTokens
+		if usageTotal < 0 || usageTotal != usage.InputTokens+usage.OutputTokens {
+			return codexUsage{}, codexUsageRecordMalformed
+		}
+	}
+	if usage.InputTokens < 0 || usage.CachedInputTokens < 0 || usage.CacheReadInputTokens < 0 ||
+		usage.CacheWriteTokens < 0 || usage.OutputTokens < 0 || usage.ReasoningOutputTokens < 0 {
+		return codexUsage{}, codexUsageRecordMalformed
+	}
+	if value.InputTokens == nil && value.CachedInputTokens == nil && value.CacheReadInputTokens == nil &&
+		value.CacheWriteTokens == nil && value.CacheWriteInput == nil && value.OutputTokens == nil && value.ReasoningTokens == nil {
+		return codexUsage{}, codexUsageRecordMalformed
+	}
+	return usage, codexUsageRecordValid
+}
+
+func codexLogicalScope(sessionID, threadID string) string {
+	if strings.TrimSpace(threadID) != "" {
+		return sessionID + "\x00" + threadID
+	}
+	return sessionID
+}
+
+func codexUsageRecordSession(record codexUsageRecordPayload, current codexSession, sessions map[string]codexSession) (codexSession, bool) {
+	sessionID := strings.TrimSpace(record.SessionID)
+	if sessionID == "" {
+		sessionID = current.ID
+	}
+	if sessionID == "" {
+		return codexSession{}, false
+	}
+	if session, ok := sessions[sessionID]; ok {
+		return session, true
+	}
+	if current.ID == sessionID {
+		return current, true
+	}
+	return codexSession{}, false
+}
+
+func codexCumulativeValid(record codexUsageRecordPayload, usage, turnUsage, threadUsage codexUsage, turnCumulative, threadCumulative map[string]codexUsage) bool {
+	if len(record.ThreadTokenUsage) > 0 && string(record.ThreadTokenUsage) != "null" {
+		threadScope := codexLogicalScope(record.SessionID, record.ThreadID)
+		if previous, ok := threadCumulative[threadScope]; ok {
+			if codexCumulativeRegressed(previous, threadUsage) || !codexCumulativeDeltaMatches(previous, threadUsage, usage) {
+				return false
+			}
+		} else if !codexCumulativeCovers(threadUsage, usage) {
+			return false
+		}
+	}
+	if len(record.TurnTokenUsage) > 0 && string(record.TurnTokenUsage) != "null" && record.TurnID != "" {
+		turnScope := record.SessionID + "\x00" + record.TurnID
+		if previous, ok := turnCumulative[turnScope]; ok {
+			if codexCumulativeRegressed(previous, turnUsage) || !codexCumulativeDeltaMatches(previous, turnUsage, usage) {
+				return false
+			}
+		} else if !codexCumulativeCovers(turnUsage, usage) {
+			return false
+		}
+	}
+	return true
+}
+
+func codexCumulativeCovers(cumulative, usage codexUsage) bool {
+	return cumulative.InputTokens >= usage.InputTokens && cumulative.OutputTokens >= usage.OutputTokens &&
+		cumulative.CachedInputTokens >= usage.CachedInputTokens && cumulative.CacheReadInputTokens >= usage.CacheReadInputTokens &&
+		cumulative.CacheWriteTokens >= usage.CacheWriteTokens && cumulative.ReasoningOutputTokens >= usage.ReasoningOutputTokens
+}
+
+func codexCumulativeDeltaMatches(previous, current, usage codexUsage) bool {
+	return current.InputTokens-previous.InputTokens == usage.InputTokens &&
+		current.OutputTokens-previous.OutputTokens == usage.OutputTokens &&
+		current.CachedInputTokens-previous.CachedInputTokens == usage.CachedInputTokens &&
+		current.CacheReadInputTokens-previous.CacheReadInputTokens == usage.CacheReadInputTokens &&
+		current.CacheWriteTokens-previous.CacheWriteTokens == usage.CacheWriteTokens &&
+		current.ReasoningOutputTokens-previous.ReasoningOutputTokens == usage.ReasoningOutputTokens
+}
+
+func codexUsageEvent(sourceID, fingerprint string, offset int64, record codexUsageRecordPayload, session codexSession, usage codexUsage, occurredAt time.Time, line []byte) UsageEvent {
+	scope := codexLogicalScope(record.SessionID, record.ThreadID)
+	identity := digest([]byte("codex-response\x00" + scope + "\x00" + record.ResponseID))
+	offsetCopy := offset
+	return UsageEvent{
+		EventID: "codex-response-event-" + identity, SchemaVersion: 1, EventType: "model.request", OccurredAt: occurredAt,
+		ProjectID: session.ProjectID, SessionID: session.ID,
+		Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: session.Model,
+		ResolvedModel: session.Model,
+		Usage: TokenUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+			CacheReadTokens:  usage.CachedInputTokens + usage.CacheReadInputTokens,
+			CacheWriteTokens: usage.CacheWriteTokens, ReasoningTokens: usage.ReasoningOutputTokens},
+		Provenance: Provenance{Adapter: "codex", SourceID: sourceID, SourceRecord: record.ResponseID,
+			SourceOffset: &offsetCopy, RecordHash: digest(line)},
+		IngestionKey: "codex:response:" + identity,
+		Attributes:   json.RawMessage(fmt.Sprintf(`{"source_fingerprint":%q}`, fingerprint)),
+	}
+}
+
+func codexCumulativeRegressed(previous, current codexUsage) bool {
+	return current.InputTokens < previous.InputTokens || current.OutputTokens < previous.OutputTokens ||
+		current.CachedInputTokens < previous.CachedInputTokens || current.CacheReadInputTokens < previous.CacheReadInputTokens ||
+		current.CacheWriteTokens < previous.CacheWriteTokens || current.ReasoningOutputTokens < previous.ReasoningOutputTokens
 }
 
 func codexUsageShapeSupported(envelope codexEnvelope) bool {
@@ -396,6 +686,7 @@ func codexEvent(sourceID, fingerprint string, offset int64, recordID string, ses
 	offsetCopy := offset
 	return UsageEvent{
 		EventID: "codex-event-" + key, SchemaVersion: 1, EventType: "model.request", OccurredAt: occurredAt,
+		ProjectID: session.ProjectID, SessionID: session.ID,
 		Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: session.Model,
 		ResolvedModel: session.Model,
 		Usage: TokenUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,

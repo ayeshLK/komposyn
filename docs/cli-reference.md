@@ -47,6 +47,14 @@ retryable tail is pending), `1` is an argument error, `2` is a command setup or
 output error, and `3` means import completed with warning outcomes or failed
 sources.
 
+For Codex, `token_usage_record` contributes one event per non-empty
+`response_id` from its per-response `usage` object. The cumulative
+`turn_token_usage` and `thread_token_usage` fields, and `total_tokens`, are
+validation data only. Legacy cumulative `token_count` records are imported
+until a valid response-record stream begins for that session; mirrored legacy
+snapshots after that point are reported as `ignored_non_usage`. This precedence
+rule keeps mixed Codex files from double-counting responses.
+
 ### `usage`, `cost`, and `sessions`
 
 ```text
