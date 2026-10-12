@@ -156,7 +156,7 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 		if len(strings.TrimSpace(string(line))) > 0 {
 			var envelope claudeEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
-				if errors.Is(readErr, io.EOF) && len(line) > 0 {
+				if errors.Is(readErr, io.EOF) && len(line) > 0 && isTruncatedJSON(err) {
 					result.Outcomes.Add(OutcomeDeferredIncompleteTail)
 				} else {
 					result.Outcomes.Add(OutcomeMalformedRecord)
@@ -253,12 +253,13 @@ func claudeUsageShapeSupported(raw json.RawMessage) bool {
 	if json.Unmarshal(usageRaw, &usage) != nil {
 		return true
 	}
-	for _, field := range []string{"input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"} {
-		if _, ok := usage[field]; ok {
-			return true
-		}
+	if len(usage) == 0 {
+		return false
 	}
-	return false
+	return jsonObjectFieldsAllowed(usageRaw, map[string]struct{}{
+		"input_tokens": {}, "cache_creation_input_tokens": {}, "cache_read_input_tokens": {},
+		"output_tokens": {}, "service_tier": {},
+	})
 }
 
 func decodeClaudeMessage(raw json.RawMessage) (claudeMessage, error) {

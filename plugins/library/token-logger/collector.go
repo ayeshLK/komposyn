@@ -145,6 +145,12 @@ func (c *Collector) recordOutcomeDiagnostics(adapter string, outcomes OutcomeCou
 // need an immediate result should call PollOnce before Run. Operational source
 // failures are recorded as health errors while polling continues.
 func (c *Collector) Run(ctx context.Context) error {
+	return c.RunWithResults(ctx, nil)
+}
+
+// RunWithResults polls until ctx is cancelled and reports every completed poll
+// to observer. The observer runs synchronously and must return promptly.
+func (c *Collector) RunWithResults(ctx context.Context, observer func(ImportResult, error)) error {
 	if err := ctx.Err(); err != nil {
 		c.mu.Lock()
 		c.health.Status = "stopped"
@@ -161,7 +167,10 @@ func (c *Collector) Run(ctx context.Context) error {
 			c.mu.Unlock()
 			return nil
 		case <-ticker.C:
-			_, _ = c.PollOnce()
+			result, err := c.PollOnce()
+			if observer != nil {
+				observer(result, err)
+			}
 		}
 	}
 }

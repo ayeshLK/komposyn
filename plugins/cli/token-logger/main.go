@@ -442,19 +442,38 @@ func runWatch(args []string, stdout, stderr io.Writer) int {
 	if result, pollErr := collector.PollOnce(); pollErr != nil {
 		fmt.Fprintf(stderr, "initial collector poll: %v\n", pollErr)
 	} else {
-		fmt.Fprintf(stdout, "poll imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t complete=%t\n",
-			result.Receipt.Imported, result.Receipt.Duplicates, result.Outcomes.IgnoredNonUsage,
-			result.Outcomes.UnchangedSnapshot, result.Outcomes.DeferredIncompleteTail,
-			result.Outcomes.UnsupportedUsage, result.Outcomes.MalformedRecord,
-			result.Outcomes.FailedSource, result.Outcomes.Pending(), !result.Outcomes.Incomplete() && !result.Outcomes.Pending())
+		writeWatchPoll(stdout, result)
 	}
-	if err := collector.Run(ctx); err != nil {
+	if err := collector.RunWithResults(ctx, func(result tokenlogger.ImportResult, pollErr error) {
+		if pollErr != nil {
+			fmt.Fprintf(stderr, "collector poll: %v\n", pollErr)
+			return
+		}
+		writeWatchPoll(stdout, result)
+	}); err != nil {
 		fmt.Fprintf(stderr, "collector stopped: %v\n", err)
 		return 2
 	}
 	health := collector.Health()
-	fmt.Fprintf(stdout, "collector stopped: status=%s sources=%d imported=%d duplicates=%d\n", health.Status, health.Sources, health.Imported, health.Duplicates)
+	writeWatchSummary(stdout, health)
 	return 0
+}
+
+func writeWatchSummary(output io.Writer, health tokenlogger.CollectorHealth) {
+	fmt.Fprintf(output, "collector stopped: status=%s sources=%d imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t complete=%t\n",
+		health.Status, health.Sources, health.Imported, health.Duplicates,
+		health.Outcomes.IgnoredNonUsage, health.Outcomes.UnchangedSnapshot,
+		health.Outcomes.DeferredIncompleteTail, health.Outcomes.UnsupportedUsage,
+		health.Outcomes.MalformedRecord, health.Outcomes.FailedSource,
+		health.Pending, !health.Outcomes.Incomplete() && !health.Pending)
+}
+
+func writeWatchPoll(output io.Writer, result tokenlogger.ImportResult) {
+	fmt.Fprintf(output, "poll imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t complete=%t\n",
+		result.Receipt.Imported, result.Receipt.Duplicates, result.Outcomes.IgnoredNonUsage,
+		result.Outcomes.UnchangedSnapshot, result.Outcomes.DeferredIncompleteTail,
+		result.Outcomes.UnsupportedUsage, result.Outcomes.MalformedRecord,
+		result.Outcomes.FailedSource, result.Outcomes.Pending(), !result.Outcomes.Incomplete() && !result.Outcomes.Pending())
 }
 
 func runSettings(args []string, stdout, stderr io.Writer) int {
@@ -636,13 +655,13 @@ func writeImportText(output io.Writer, result importCommandOutput) {
 	if result.Pending {
 		fmt.Fprintln(output, "Pending: the incomplete final record will be retried after the source grows.")
 	}
-	if !result.Complete && !result.Pending {
+	if result.Outcomes.Incomplete() {
 		fmt.Fprintln(output, "Warning: usage accounting may be incomplete; review the warning outcomes and local diagnostics.")
 	}
 	status := "incomplete"
 	if result.Complete {
 		status = "complete"
-	} else if result.Pending {
+	} else if result.Pending && !result.Outcomes.Incomplete() {
 		status = "pending"
 	}
 	fmt.Fprintf(output, "Status: %s.\n", status)

@@ -97,7 +97,8 @@ diagnostics locally; it continues polling after an individual source failure.
 Normal ignores and unchanged snapshots do not degrade health. A final partial
 record is visible as pending but remains healthy. Unsupported usage, malformed
 records, and failed sources degrade health; repeated polls deduplicate their
-path-free diagnostics.
+path-free diagnostics. Each completed poll is printed, and the stop summary
+retains cumulative warning counts and the latest pending state.
 
 ## Settings and interactive mode
 

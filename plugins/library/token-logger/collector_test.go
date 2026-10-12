@@ -99,6 +99,46 @@ func TestCollectorOutcomeHealthAndDiagnosticDeduplication(t *testing.T) {
 	})
 }
 
+func TestCollectorRunReportsSubsequentWarningPolls(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "changing.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"session_meta","payload":{"id":"session","model":"gpt-test"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector, err := NewCollector(store, []string{path}, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var results []ImportResult
+	err = collector.RunWithResults(ctx, func(result ImportResult, pollErr error) {
+		if pollErr != nil {
+			t.Errorf("poll error: %v", pollErr)
+			cancel()
+			return
+		}
+		results = append(results, result)
+		if len(results) == 1 {
+			if err := os.WriteFile(path, []byte(`{"type":"token_usage_record","input_tokens":1}`+"\n"), 0o600); err != nil {
+				t.Errorf("replace source: %v", err)
+				cancel()
+			}
+		} else if result.Outcomes.UnsupportedUsage == 1 {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) < 2 || results[len(results)-1].Outcomes.UnsupportedUsage != 1 {
+		t.Fatalf("subsequent warning was not observed: %+v", results)
+	}
+	if health := collector.Health(); health.Outcomes.UnsupportedUsage == 0 {
+		t.Fatalf("final health omitted warning outcome: %+v", health)
+	}
+}
+
 func TestSettingsRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	want := DefaultSettings("/tmp/token-logger")

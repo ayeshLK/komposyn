@@ -100,7 +100,9 @@ Polls once immediately and continues until interrupted. The default interval is
 five seconds. Poll output uses the same typed outcomes as `import`. Ignored and
 unchanged records remain healthy; a deferred tail is visible as pending without
 degrading health; unsupported, malformed, and failed-source outcomes degrade
-health and create path-free, deduplicated local diagnostics.
+health and create path-free, deduplicated local diagnostics. Every poll is
+printed, including changes discovered after watch starts, and the final line
+includes cumulative outcome counts plus the latest pending state.
 
 ### `settings`
 

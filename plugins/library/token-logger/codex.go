@@ -61,7 +61,7 @@ type codexPayload struct {
 }
 
 type codexTokenInfo struct {
-	TotalTokenUsage codexUsage `json:"total_token_usage"`
+	TotalTokenUsage *codexUsage `json:"total_token_usage"`
 }
 
 type codexSession struct {
@@ -113,7 +113,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 			recordID := "offset-" + fmt.Sprint(lineOffset)
 			var envelope codexEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
-				if errors.Is(readErr, io.EOF) && len(line) > 0 {
+				if errors.Is(readErr, io.EOF) && len(line) > 0 && isTruncatedJSON(err) {
 					result.Outcomes.Add(OutcomeDeferredIncompleteTail)
 				} else {
 					result.Outcomes.Add(OutcomeMalformedRecord)
@@ -128,7 +128,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 				} else {
 					payload, payloadErr := decodeCodexPayload(envelope.Payload)
 					if payloadErr != nil {
-						if codexUsageBearingType(envelope.Type) {
+						if codexUsageBearingType(codexRawRecordType(envelope)) {
 							result.Outcomes.Add(OutcomeMalformedRecord)
 						} else {
 							result.Outcomes.Add(OutcomeIgnoredNonUsage)
@@ -154,6 +154,10 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							}
 							if payload.Model != "" {
 								current.Model = payload.Model
+							}
+							if !codexUsageShapeSupported(envelope) {
+								result.Outcomes.Add(OutcomeUnsupportedUsage)
+								break
 							}
 							usage, ok := codexCumulativeUsage(envelope, payload)
 							if !ok || current.Model == "" {
@@ -215,6 +219,84 @@ func codexUsageBearingType(recordType string) bool {
 		strings.Contains(recordType, "token_usage")
 }
 
+func codexRawRecordType(envelope codexEnvelope) string {
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(envelope.Payload, &payload) == nil && payload.Type != "" {
+		return payload.Type
+	}
+	return envelope.Type
+}
+
+func codexUsageShapeSupported(envelope codexEnvelope) bool {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(envelope.Payload, &payload) != nil {
+		return true
+	}
+	_, hasInfo := payload["info"]
+	_, hasTotalUsage := payload["total_token_usage"]
+	if envelope.Type == "token_count" && !hasInfo && !hasTotalUsage {
+		return jsonObjectFieldsAllowed(envelope.Payload, codexDirectUsageFields)
+	}
+	if !jsonObjectFieldsAllowed(envelope.Payload, codexTokenCountPayloadFields) {
+		return false
+	}
+	if infoRaw, ok := payload["info"]; ok {
+		var info map[string]json.RawMessage
+		if json.Unmarshal(infoRaw, &info) == nil {
+			if !jsonObjectFieldsAllowed(infoRaw, codexTokenInfoFields) {
+				return false
+			}
+			for _, field := range []string{"total_token_usage", "last_token_usage"} {
+				if usageRaw, found := info[field]; found && !jsonObjectFieldsAllowed(usageRaw, codexUsageFields) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	if usageRaw, ok := payload["total_token_usage"]; ok {
+		return jsonObjectFieldsAllowed(usageRaw, codexUsageFields)
+	}
+	return true
+}
+
+var codexUsageFields = map[string]struct{}{
+	"input_tokens": {}, "cached_input_tokens": {}, "cache_read_input_tokens": {},
+	"cache_write_tokens": {}, "output_tokens": {}, "reasoning_output_tokens": {},
+	"total_tokens": {},
+}
+
+var codexTokenInfoFields = map[string]struct{}{
+	"total_token_usage": {}, "last_token_usage": {}, "model_context_window": {},
+}
+
+var codexTokenCountPayloadFields = map[string]struct{}{
+	"type": {}, "id": {}, "session_id": {}, "project_id": {}, "project_name": {},
+	"cwd": {}, "model": {}, "info": {}, "total_token_usage": {}, "rate_limits": {},
+}
+
+var codexDirectUsageFields = map[string]struct{}{
+	"type": {}, "id": {}, "session_id": {}, "project_id": {}, "project_name": {},
+	"cwd": {}, "model": {}, "input_tokens": {}, "cached_input_tokens": {},
+	"cache_read_input_tokens": {}, "cache_write_tokens": {}, "output_tokens": {},
+	"reasoning_output_tokens": {}, "total_tokens": {},
+}
+
+func jsonObjectFieldsAllowed(raw json.RawMessage, allowed map[string]struct{}) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil {
+		return true
+	}
+	for field := range object {
+		if _, ok := allowed[field]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func decodeCodexPayload(raw json.RawMessage) (codexPayload, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return codexPayload{}, errors.New("missing payload")
@@ -265,8 +347,8 @@ func updateCodexSession(session codexSession, payload codexPayload, sourceID str
 }
 
 func codexCumulativeUsage(envelope codexEnvelope, payload codexPayload) (codexUsage, bool) {
-	if payload.Info != nil {
-		return payload.Info.TotalTokenUsage, true
+	if payload.Info != nil && payload.Info.TotalTokenUsage != nil {
+		return *payload.Info.TotalTokenUsage, true
 	}
 	if payload.TotalTokenUsage != nil {
 		return *payload.TotalTokenUsage, true

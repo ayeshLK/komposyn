@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -115,27 +116,95 @@ func TestImportWarningAndPendingExitBehavior(t *testing.T) {
 			t.Fatalf("unexpected pending result: %+v", result)
 		}
 	})
+
+	t.Run("warning and pending remain independent in text", func(t *testing.T) {
+		sourceDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(sourceDir, "unsupported.jsonl"), []byte(`{"type":"token_usage_record","input_tokens":1}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sourceDir, "partial.jsonl"), []byte(`{"type":"token_count","payload":`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"import", sourceDir, "--data-dir", t.TempDir()}, &stdout, &stderr); code != 3 {
+			t.Fatalf("combined exit code = %d, stderr=%q output=%q", code, stderr.String(), stdout.String())
+		}
+		for _, expected := range []string{"Pending:", "Warning:", "Status: incomplete."} {
+			if !strings.Contains(stdout.String(), expected) {
+				t.Fatalf("combined output omitted %q: %q", expected, stdout.String())
+			}
+		}
+	})
+}
+
+func TestWatchOutputIncludesSubsequentWarningAndFinalOutcomes(t *testing.T) {
+	result := tokenlogger.ImportResult{Outcomes: tokenlogger.OutcomeCounts{UnsupportedUsage: 1}}
+	var output bytes.Buffer
+	writeWatchPoll(&output, result)
+	writeWatchSummary(&output, tokenlogger.CollectorHealth{
+		Status: "stopped", Sources: 1, Outcomes: result.Outcomes,
+	})
+	for _, expected := range []string{
+		"poll imported=0", "unsupported_usage=1", "complete=false",
+		"collector stopped:", "pending=false",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("watch output omitted %q: %q", expected, output.String())
+		}
+	}
 }
 
 func TestImportFixtureMatchesHarnessCanonicalUsageProjection(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+		events  []tokenlogger.UsageEvent
+	}{
+		{
+			name:    "codex",
+			fixture: filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl"),
+			events: []tokenlogger.UsageEvent{
+				canonicalDifferentialEvent("codex-one", time.Date(2026, 10, 11, 10, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 100, OutputTokens: 30, CacheReadTokens: 20, ReasoningTokens: 10}, "project-fixture", "codex-session-fixture", "codex-cli", "openai", "gpt-5-codex"),
+				canonicalDifferentialEvent("codex-two", time.Date(2026, 10, 11, 10, 0, 3, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 50, OutputTokens: 20, CacheReadTokens: 10, ReasoningTokens: 5}, "project-fixture", "codex-session-fixture", "codex-cli", "openai", "gpt-5-codex"),
+			},
+		},
+		{
+			name:    "claude",
+			fixture: filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"),
+			events: []tokenlogger.UsageEvent{
+				canonicalDifferentialEvent("claude-one", time.Date(2026, 10, 11, 11, 0, 1, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 110, OutputTokens: 15, CacheReadTokens: 20, CacheWriteTokens: 10}, "claude-project-fixture", "claude-session-fixture", "claude-code", "anthropic", "claude-sonnet-fixture"),
+				canonicalDifferentialEvent("claude-two", time.Date(2026, 10, 11, 11, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 45, OutputTokens: 8, CacheReadTokens: 5}, "claude-project-fixture", "claude-session-fixture", "claude-code", "anthropic", "claude-sonnet-fixture"),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertImportMatchesHarness(t, test.fixture, test.events)
+		})
+	}
+}
+
+func assertImportMatchesHarness(t *testing.T, fixture string, events []tokenlogger.UsageEvent) {
+	t.Helper()
 	importDataDir := t.TempDir()
-	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl")
 	var importOutput, importErr bytes.Buffer
 	if code := run([]string{"import", fixture, "--data-dir", importDataDir}, &importOutput, &importErr); code != 0 {
 		t.Fatalf("fixture import exit=%d stderr=%q", code, importErr.String())
 	}
 
 	harnessDataDir := t.TempDir()
-	events := []tokenlogger.UsageEvent{
-		canonicalDifferentialEvent("one", time.Date(2026, 10, 11, 10, 0, 2, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 100, OutputTokens: 30, CacheReadTokens: 20, ReasoningTokens: 10}),
-		canonicalDifferentialEvent("two", time.Date(2026, 10, 11, 10, 0, 3, 0, time.UTC), tokenlogger.TokenUsage{InputTokens: 50, OutputTokens: 20, CacheReadTokens: 10, ReasoningTokens: 5}),
-	}
 	requests := []map[string]any{
 		{"protocol": protocolName, "version": protocolVersion, "id": "1", "method": "initialize", "params": map[string]any{"data_dir": harnessDataDir}},
-		{"protocol": protocolName, "version": protocolVersion, "id": "2", "method": "record", "params": canonicalDifferentialRecord(events[0])},
-		{"protocol": protocolName, "version": protocolVersion, "id": "3", "method": "record", "params": canonicalDifferentialRecord(events[1])},
-		{"protocol": protocolName, "version": protocolVersion, "id": "4", "method": "shutdown"},
 	}
+	for index, event := range events {
+		requests = append(requests, map[string]any{
+			"protocol": protocolName, "version": protocolVersion, "id": decimalString(index + 2),
+			"method": "record", "params": canonicalDifferentialRecord(event),
+		})
+	}
+	requests = append(requests, map[string]any{
+		"protocol": protocolName, "version": protocolVersion, "id": decimalString(len(events) + 2), "method": "shutdown",
+	})
 	var input bytes.Buffer
 	for _, request := range requests {
 		if err := json.NewEncoder(&input).Encode(request); err != nil {
@@ -150,19 +219,21 @@ func TestImportFixtureMatchesHarnessCanonicalUsageProjection(t *testing.T) {
 	filter := tokenlogger.UsageFilter{
 		From: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC),
 		To:   time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
+		GroupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel,
+			tokenlogger.GroupProject, tokenlogger.GroupSession},
 	}
-	imported := querySummary(t, importDataDir, filter)
-	harnessed := querySummary(t, harnessDataDir, filter)
-	if !reflect.DeepEqual(imported, harnessed) {
+	imported := queryReport(t, importDataDir, filter)
+	harnessed := queryReport(t, harnessDataDir, filter)
+	if !reflect.DeepEqual(imported.Summary, harnessed.Summary) || !reflect.DeepEqual(imported.Rows, harnessed.Rows) {
 		t.Fatalf("canonical usage differs: import=%+v harness=%+v", imported, harnessed)
 	}
 }
 
-func canonicalDifferentialEvent(id string, occurredAt time.Time, usage tokenlogger.TokenUsage) tokenlogger.UsageEvent {
+func canonicalDifferentialEvent(id string, occurredAt time.Time, usage tokenlogger.TokenUsage, projectID, sessionID, client, provider, model string) tokenlogger.UsageEvent {
 	return tokenlogger.UsageEvent{
 		EventID: "differential-" + id, SchemaVersion: 1, EventType: "model.request", OccurredAt: occurredAt,
-		ProjectID: "project-fixture", SessionID: "codex-session-fixture",
-		Client: tokenlogger.Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex",
+		ProjectID: projectID, SessionID: sessionID,
+		Client: tokenlogger.Client{Name: client}, Provider: provider, RequestedModel: model, ResolvedModel: model,
 		Usage: usage, Provenance: tokenlogger.Provenance{Adapter: "fixture", SourceID: "fixture", SourceRecord: id},
 		IngestionKey: "differential:" + id,
 	}
@@ -172,11 +243,11 @@ func canonicalDifferentialRecord(event tokenlogger.UsageEvent) map[string]any {
 	return map[string]any{
 		"event":   event,
 		"project": tokenlogger.Project{ID: event.ProjectID, Root: "/sanitized/project", DisplayName: "Sanitized Fixture Project"},
-		"session": tokenlogger.Session{ID: event.SessionID, ProjectID: event.ProjectID, Client: tokenlogger.Client{Name: "codex-cli"}},
+		"session": tokenlogger.Session{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client},
 	}
 }
 
-func querySummary(t *testing.T, dataDir string, filter tokenlogger.UsageFilter) tokenlogger.UsageMeasures {
+func queryReport(t *testing.T, dataDir string, filter tokenlogger.UsageFilter) tokenlogger.UsageReport {
 	t.Helper()
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
@@ -187,7 +258,11 @@ func querySummary(t *testing.T, dataDir string, filter tokenlogger.UsageFilter) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return report.Summary
+	return report
+}
+
+func decimalString(value int) string {
+	return fmt.Sprint(value)
 }
 
 func TestCLIUsage(t *testing.T) {

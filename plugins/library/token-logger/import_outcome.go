@@ -14,6 +14,12 @@
 
 package tokenlogger
 
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+)
+
 // RecordOutcome is the client-neutral reason a source record did not produce
 // a newly imported usage event.
 type RecordOutcome string
@@ -87,4 +93,9 @@ func (result *ImportResult) Merge(other ImportResult) {
 	result.Receipt.Imported += other.Receipt.Imported
 	result.Receipt.Duplicates += other.Receipt.Duplicates
 	result.Outcomes.Merge(other.Outcomes)
+}
+
+func isTruncatedJSON(err error) bool {
+	var syntaxError *json.SyntaxError
+	return errors.As(err, &syntaxError) && strings.Contains(syntaxError.Error(), "unexpected end of JSON input")
 }
