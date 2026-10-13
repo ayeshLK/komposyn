@@ -49,6 +49,7 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	output := newPTYOutputReader(master)
 	defer func() {
 		_ = master.Close()
 		if command.ProcessState == nil {
@@ -56,7 +57,7 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 			_ = command.Wait()
 		}
 	}()
-	waitForPTYText(t, master, "> ")
+	output.waitForText(t, "> ")
 
 	// Type "abc", delete the final character, insert "Z", and submit. The
 	// resulting command proves that editor-side editing is applied before
@@ -64,15 +65,15 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 	if _, err := master.Write([]byte("abc")); err != nil {
 		t.Fatal(err)
 	}
-	waitForPTYText(t, master, "> abc")
+	output.waitForText(t, "> abc")
 	if _, err := master.Write([]byte("\x7fZ\r")); err != nil {
 		t.Fatal(err)
 	}
-	waitForPTYText(t, master, "RESULT:abZ\n")
+	output.waitForText(t, "RESULT:abZ\n")
 	if _, err := master.Write([]byte("\x1b[A\r")); err != nil {
 		t.Fatal(err)
 	}
-	waitForPTYText(t, master, "RESULT:abZ\n")
+	output.waitForText(t, "RESULT:abZ\n")
 	if err := command.Wait(); err != nil {
 		t.Fatalf("PTY helper failed: %v", err)
 	}
@@ -112,6 +113,7 @@ func runPTYExitCase(t *testing.T, mode, result, input string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	output := newPTYOutputReader(master)
 	defer func() {
 		_ = master.Close()
 		if command.ProcessState == nil {
@@ -120,12 +122,12 @@ func runPTYExitCase(t *testing.T, mode, result, input string) {
 		}
 	}()
 	if mode != "init-error" {
-		waitForPTYText(t, master, "> ")
+		output.waitForText(t, "> ")
 	}
 	if _, err := master.Write([]byte(input)); err != nil {
 		t.Fatal(err)
 	}
-	waitForPTYText(t, master, result)
+	output.waitForText(t, result)
 	if err := command.Wait(); err != nil {
 		t.Fatalf("PTY helper failed: %v", err)
 	}
@@ -247,32 +249,45 @@ func errorName(err error) string {
 	return err.Error()
 }
 
-func waitForPTYText(t *testing.T, master *os.File, expected string) {
-	t.Helper()
-	result := make(chan error, 1)
+type ptyReadResult struct {
+	data []byte
+	err  error
+}
+
+type ptyOutputReader struct {
+	results chan ptyReadResult
+	output  bytes.Buffer
+}
+
+func newPTYOutputReader(master *os.File) *ptyOutputReader {
+	reader := &ptyOutputReader{results: make(chan ptyReadResult, 16)}
 	go func() {
-		var output bytes.Buffer
 		chunk := make([]byte, 256)
-		for !strings.Contains(output.String(), expected) {
+		for {
 			count, err := master.Read(chunk)
-			output.Write(chunk[:count])
-			if strings.Contains(output.String(), expected) {
-				result <- nil
-				return
-			}
+			result := ptyReadResult{data: append([]byte(nil), chunk[:count]...), err: err}
+			reader.results <- result
 			if err != nil {
-				result <- fmt.Errorf("read terminal output: %w (output=%q)", err, output.String())
 				return
 			}
 		}
-		result <- nil
 	}()
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatal(err)
+	return reader
+}
+
+func (reader *ptyOutputReader) waitForText(t *testing.T, expected string) {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for !strings.Contains(reader.output.String(), expected) {
+		select {
+		case result := <-reader.results:
+			reader.output.Write(result.data)
+			if result.err != nil && !strings.Contains(reader.output.String(), expected) {
+				t.Fatalf("read terminal output: %v (output=%q)", result.err, reader.output.String())
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for terminal output %q (output=%q)", expected, reader.output.String())
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for terminal output %q", expected)
 	}
 }
