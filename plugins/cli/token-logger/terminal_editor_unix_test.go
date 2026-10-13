@@ -24,7 +24,6 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -134,6 +133,19 @@ func terminalEditorPTYExitHelper(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Establish the platform's canonical state after a raw-mode round trip.
+	// macOS may normalize the IUTF8 flag during this operation.
+	probeRawState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Restore(int(os.Stdin.Fd()), probeRawState); err != nil {
+		t.Fatal(err)
+	}
+	expectedRestored, err := term.GetState(int(os.Stdin.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
 	reader, ok := newTerminalLineReader(os.Stdin, os.Stdout, os.Stderr)
 	if !ok {
 		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
@@ -143,11 +155,8 @@ func terminalEditorPTYExitHelper(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	restored, err := term.GetState(int(os.Stdin.Fd()))
-	// macOS may add the IUTF8 termios flag while entering raw mode. The
-	// flag is harmless and is normalized by the platform when the saved
-	// state is restored, so exact State equality is not portable there.
-	if err != nil || (!reflect.DeepEqual(initial, restored) && runtime.GOOS != "darwin") {
-		t.Fatalf("terminal state was not restored after %s: err=%v initial=%#v restored=%#v", mode, err, initial, restored)
+	if err != nil || !reflect.DeepEqual(expectedRestored, restored) {
+		t.Fatalf("terminal state was not restored after %s: err=%v initial=%#v expected=%#v restored=%#v", mode, err, initial, expectedRestored, restored)
 	}
 	if mode == "interrupt" && !errors.Is(readErr, readline.ErrInterrupt) {
 		t.Fatalf("interrupt error = %v", readErr)
