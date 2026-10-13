@@ -257,6 +257,7 @@ type ptyReadResult struct {
 type ptyOutputReader struct {
 	results chan ptyReadResult
 	output  bytes.Buffer
+	searched int
 }
 
 func newPTYOutputReader(master *os.File) *ptyOutputReader {
@@ -279,11 +280,16 @@ func (reader *ptyOutputReader) waitForText(t *testing.T, expected string) {
 	t.Helper()
 	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
-	for !strings.Contains(reader.output.String(), expected) {
+	for {
+		output := reader.output.String()
+		if index := strings.Index(output[reader.searched:], expected); index >= 0 {
+			reader.searched += index + len(expected)
+			return
+		}
 		select {
 		case result := <-reader.results:
 			reader.output.Write(result.data)
-			if result.err != nil && !strings.Contains(reader.output.String(), expected) {
+			if result.err != nil {
 				t.Fatalf("read terminal output: %v (output=%q)", result.err, reader.output.String())
 			}
 		case <-timer.C:
