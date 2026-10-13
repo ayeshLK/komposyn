@@ -78,12 +78,30 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 	}
 }
 
+func TestClearTerminalErasesVisibleScreenAndHomesCursor(t *testing.T) {
+	var output bytes.Buffer
+	if err := clearTerminal(&output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "\033[2J\033[H" {
+		t.Fatalf("clear sequence = %q", output.String())
+	}
+}
+
 func TestTerminalLineReaderRestoresAfterInterrupt(t *testing.T) {
 	runPTYExitCase(t, "interrupt", "RESULT_ERR:Interrupt\r\n", "\x03")
 }
 
 func TestTerminalLineReaderRestoresAfterEOF(t *testing.T) {
 	runPTYExitCase(t, "eof", "RESULT_ERR:EOF\r\n", "\x04")
+}
+
+func TestTerminalLineReaderRestoresAfterInitializationFailure(t *testing.T) {
+	runPTYExitCase(t, "init-error", "RESULT_INIT_ERROR\r\n", "")
+}
+
+func TestTerminalLineReaderRestoresAfterReadError(t *testing.T) {
+	runPTYExitCase(t, "read-error", "RESULT_READ_ERROR\r\n", "")
 }
 
 func runPTYExitCase(t *testing.T, mode, result, input string) {
@@ -101,7 +119,9 @@ func runPTYExitCase(t *testing.T, mode, result, input string) {
 			_ = command.Wait()
 		}
 	}()
-	waitForPTYText(t, master, "> ")
+	if mode != "init-error" {
+		waitForPTYText(t, master, "> ")
+	}
 	if _, err := master.Write([]byte(input)); err != nil {
 		t.Fatal(err)
 	}
@@ -112,11 +132,11 @@ func runPTYExitCase(t *testing.T, mode, result, input string) {
 }
 
 func terminalEditorPTYHelper(t *testing.T) {
+	expectedRestored := terminalStateAfterRawModeRoundTrip(t)
 	reader, ok := newTerminalLineReader(os.Stdin, os.Stdout, os.Stderr)
 	if !ok {
 		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
 	}
-	defer reader.Close()
 	for range 2 {
 		line, err := reader.ReadLine("> ")
 		if err != nil {
@@ -126,27 +146,39 @@ func terminalEditorPTYHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertTerminalStateRestored(t, expectedRestored, "normal exit")
 }
 
 func terminalEditorPTYExitHelper(t *testing.T, mode string) {
+	expectedRestored := terminalStateAfterRawModeRoundTrip(t)
+	if mode == "init-error" {
+		_, ok := newTerminalLineReaderWithFactory(os.Stdin, os.Stdout, os.Stderr, func(*readline.Config) (*readline.Instance, error) {
+			return nil, errors.New("injected readline initialization failure")
+		})
+		if ok {
+			t.Fatal("terminal reader unexpectedly initialized")
+		}
+		assertTerminalStateRestored(t, expectedRestored, mode)
+		if _, err := io.WriteString(os.Stdout, "RESULT_INIT_ERROR\n"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	initial, err := term.GetState(int(os.Stdin.Fd()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Establish the platform's canonical state after a raw-mode round trip.
-	// macOS may normalize the IUTF8 flag during this operation.
-	probeRawState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		t.Fatal(err)
+	factory := readline.NewEx
+	if mode == "read-error" {
+		factory = func(config *readline.Config) (*readline.Instance, error) {
+			config.Stdin = terminalEditorErrorReader{}
+			return readline.NewEx(config)
+		}
 	}
-	if err := term.Restore(int(os.Stdin.Fd()), probeRawState); err != nil {
-		t.Fatal(err)
-	}
-	expectedRestored, err := term.GetState(int(os.Stdin.Fd()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	reader, ok := newTerminalLineReader(os.Stdin, os.Stdout, os.Stderr)
+	reader, ok := newTerminalLineReaderWithFactory(os.Stdin, os.Stdout, os.Stderr, factory)
 	if !ok {
 		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
 	}
@@ -154,18 +186,54 @@ func terminalEditorPTYExitHelper(t *testing.T, mode string) {
 	if err := reader.Close(); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := term.GetState(int(os.Stdin.Fd()))
-	if err != nil || !reflect.DeepEqual(expectedRestored, restored) {
-		t.Fatalf("terminal state was not restored after %s: err=%v initial=%#v expected=%#v restored=%#v", mode, err, initial, expectedRestored, restored)
-	}
-	if mode == "interrupt" && !errors.Is(readErr, readline.ErrInterrupt) {
+	assertTerminalStateRestored(t, expectedRestored, mode+" (initial="+fmt.Sprintf("%#v", initial)+")")
+	if mode == "read-error" {
+		if readErr == nil {
+			t.Fatalf("read error = %v", readErr)
+		}
+	} else if mode == "interrupt" && !errors.Is(readErr, readline.ErrInterrupt) {
 		t.Fatalf("interrupt error = %v", readErr)
-	}
-	if mode == "eof" && !errors.Is(readErr, io.EOF) {
+	} else if mode == "eof" && !errors.Is(readErr, io.EOF) {
 		t.Fatalf("EOF error = %v", readErr)
 	}
-	if _, err := io.WriteString(os.Stdout, "RESULT_ERR:"+errorName(readErr)+"\n"); err != nil {
+	result := "RESULT_ERR:" + errorName(readErr) + "\n"
+	if mode == "read-error" {
+		result = "RESULT_READ_ERROR\n"
+	}
+	if _, err := io.WriteString(os.Stdout, result); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type terminalEditorErrorReader struct{}
+
+func (terminalEditorErrorReader) Read([]byte) (int, error) {
+	return 0, errors.New("injected terminal read failure")
+}
+
+func (terminalEditorErrorReader) Close() error { return nil }
+
+func terminalStateAfterRawModeRoundTrip(t *testing.T) *term.State {
+	t.Helper()
+	state, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Restore(int(os.Stdin.Fd()), state); err != nil {
+		t.Fatal(err)
+	}
+	state, err = term.GetState(int(os.Stdin.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func assertTerminalStateRestored(t *testing.T, expected *term.State, path string) {
+	t.Helper()
+	restored, err := term.GetState(int(os.Stdin.Fd()))
+	if err != nil || !reflect.DeepEqual(expected, restored) {
+		t.Fatalf("terminal state was not restored after %s: err=%v expected=%#v restored=%#v", path, err, expected, restored)
 	}
 }
 

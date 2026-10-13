@@ -581,16 +581,6 @@ func TestInteractiveClearIsNonTTYNoOp(t *testing.T) {
 	}
 }
 
-func TestClearTerminalErasesVisibleScreenAndHomesCursor(t *testing.T) {
-	var output bytes.Buffer
-	if err := clearTerminal(&output); err != nil {
-		t.Fatal(err)
-	}
-	if output.String() != "\033[2J\033[H" {
-		t.Fatalf("clear sequence = %q", output.String())
-	}
-}
-
 func TestPasteGuardFoldsBracketedMultilinePaste(t *testing.T) {
 	input := strings.NewReader("\033[200~/help\r\n/quit\033[201~\r")
 	guard := &pasteGuardReader{source: input}

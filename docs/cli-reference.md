@@ -160,13 +160,17 @@ input and exits. Ctrl-L has the same visible-screen clearing behavior as
 `/clear` clears the visible terminal and returns the cursor home without
 rerunning the report. It does not erase scrollback and does not delete or
 modify KompoSyn data, settings, consent, diagnostics, or session history. Use
-`/refresh` to redraw the report. Bracketed multiline paste is folded into one
-command, including CRLF input; it cannot silently execute several commands.
+`/refresh` to redraw the report. Multiline paste is folded into one command:
+Unix-like terminals use bracketed paste, while Windows consoles fold line
+breaks followed by more queued console input. Pasted commands are not executed
+as a batch.
 
 For non-TTY input or output, the CLI keeps scanner-style behavior. `/clear`
 then prints `clear is available only in an interactive terminal` and emits no
 ANSI or other terminal control sequence. No top-level `komposyn-lg clear`
-command exists. Interactive commands are limited to 64 KiB of UTF-8 bytes.
+command exists. Interactive commands are limited to 16,384 Unicode code
+points (runes), which is at most 64 KiB of UTF-8. Commands made from shorter
+UTF-8 characters therefore have a lower byte limit.
 
 ## Exit behavior
 

@@ -196,6 +196,10 @@ func (reader *terminalLineReader) Close() error {
 }
 
 func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminalLineReader, bool) {
+	return newTerminalLineReaderWithFactory(input, stdout, stderr, readline.NewEx)
+}
+
+func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer, create func(*readline.Config) (*readline.Instance, error)) (*terminalLineReader, bool) {
 	in, inputOK := input.(*os.File)
 	out, outputOK := stdout.(*os.File)
 	if !inputOK || !outputOK || !(isatty.IsTerminal(in.Fd()) || isatty.IsCygwinTerminal(in.Fd())) || !(isatty.IsTerminal(out.Fd()) || isatty.IsCygwinTerminal(out.Fd())) {
@@ -245,7 +249,7 @@ func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminal
 		}
 		return bounded, pos, true
 	})
-	instance, err := readline.NewEx(config)
+	instance, err := create(config)
 	if err != nil {
 		_ = term.Restore(int(in.Fd()), preflightState)
 		fmt.Fprintf(stderr, "interactive terminal setup failed; using line input: %v\n", err)

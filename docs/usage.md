@@ -152,15 +152,17 @@ commands, excludes onboarding and diagnostic answers, and is never written to
 disk. Ctrl-D on an empty prompt exits. Ctrl-C cancels the current input and
 exits interactive mode cleanly. Ctrl-L clears the visible terminal and keeps
 the prompt; it does not erase scrollback or application data. Commands are
-bounded to 64 KiB of UTF-8 bytes.
+limited to 16,384 Unicode code points (runes), or at most 64 KiB of UTF-8;
+commands made from shorter UTF-8 characters have a lower byte limit.
 
 Interactive reports support `/projects`, `/sessions`, `/total-usage`,
 `/by-client`, `/by-model`, `/cost`, `/range`, `/refresh`, `/clear`,
 `/settings`, `/report-issue`, and `/quit`. `/clear` clears the visible
 terminal, returns the cursor home, and does not rerun the report; use
 `/refresh` when a redraw is wanted. It never deletes usage, settings, consent,
-diagnostics, or history. Bracketed multiline paste is folded into one command
-(including CRLF input) and is not executed as a batch.
+diagnostics, or history. Multiline paste is folded into one command and is not
+executed as a batch. Unix-like terminals use bracketed paste; Windows consoles
+fold line breaks that arrive with more queued console input.
 
 When stdin or stdout is not a terminal, the CLI uses deterministic scanner
 input for pipes, redirects, and tests. In that mode `/clear` prints
