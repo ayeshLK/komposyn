@@ -25,15 +25,17 @@ import (
 )
 
 var (
-	fillConsoleOutputCharacterW = syscall.NewLazyDLL("kernel32.dll").NewProc("FillConsoleOutputCharacterW")
-	fillConsoleOutputAttribute  = syscall.NewLazyDLL("kernel32.dll").NewProc("FillConsoleOutputAttribute")
+	fillConsoleOutputCharacterW                       = syscall.NewLazyDLL("kernel32.dll").NewProc("FillConsoleOutputCharacterW")
+	fillConsoleOutputAttribute                        = syscall.NewLazyDLL("kernel32.dll").NewProc("FillConsoleOutputAttribute")
+	getWindowsStdoutHandle                            = func() (windows.Handle, error) { return windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) }
+	windowsConsoleClearOpsForOS windowsConsoleClearer = windowsConsoleClearOps{}
 )
 
 func clearTerminal(io.Writer) error {
 	// readline's Windows ANSIWriter does not safely handle cursor-home CSI H.
 	// Clear the visible window through the console API, leaving scrollback rows
 	// outside the viewport untouched.
-	handle, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	handle, err := getWindowsStdoutHandle()
 	if err != nil {
 		return err
 	}
@@ -41,7 +43,7 @@ func clearTerminal(io.Writer) error {
 }
 
 func clearWindowsConsole(handle windows.Handle) error {
-	return clearWindowsConsoleWith(handle, windowsConsoleClearOps{})
+	return clearWindowsConsoleWith(handle, windowsConsoleClearOpsForOS)
 }
 
 type windowsConsoleClearer interface {

@@ -36,8 +36,21 @@ func TestWindowsClearUsesNativeConsoleBufferOperations(t *testing.T) {
 			Window:     windows.SmallRect{Left: 2, Top: 10, Right: 81, Bottom: 49},
 		},
 	}
-	if err := clearWindowsConsoleWith(12, ops); err != nil {
+	previousHandle := getWindowsStdoutHandle
+	previousOps := windowsConsoleClearOpsForOS
+	getWindowsStdoutHandle = func() (windows.Handle, error) { return 12, nil }
+	windowsConsoleClearOpsForOS = ops
+	defer func() {
+		getWindowsStdoutHandle = previousHandle
+		windowsConsoleClearOpsForOS = previousOps
+	}()
+
+	var configuredWriter bytes.Buffer
+	if err := clearTerminal(&configuredWriter); err != nil {
 		t.Fatal(err)
+	}
+	if configuredWriter.Len() != 0 {
+		t.Fatalf("native clear wrote escape bytes through the configured writer: %q", configuredWriter.String())
 	}
 	expectedCalls := []string{"info"}
 	for range 40 {
