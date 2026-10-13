@@ -23,10 +23,11 @@ import (
 	"github.com/chzyer/readline"
 )
 
-func configureTerminalStreams(config *readline.Config, input *os.File, stdout, stderr io.Writer) {
+func configureTerminalStreams(config *readline.Config, input *os.File, stdout, stderr io.Writer) func(bool) {
 	config.Stdin = &pasteGuardReader{source: input}
 	config.Stdout = stdout
 	config.Stderr = stderr
+	return func(bool) {}
 }
 
 func enableTerminalFeatures(output io.Writer) {
@@ -36,3 +37,5 @@ func enableTerminalFeatures(output io.Writer) {
 func disableTerminalFeatures(output io.Writer) {
 	_, _ = io.WriteString(output, "\033[?2004l")
 }
+
+func interactiveInputHint() string { return "" }

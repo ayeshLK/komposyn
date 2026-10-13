@@ -34,21 +34,33 @@ var readConsoleInputW = syscall.NewLazyDLL("kernel32.dll").NewProc("ReadConsoleI
 // Windows console key events do not mark which Enter keys came from a paste.
 // Treat plain Enter as command text and require Ctrl+Enter to submit, so pasted
 // line breaks can never submit a command batch.
-func configureTerminalStreams(config *readline.Config, input *os.File, _, _ io.Writer) {
-	config.Stdin = &windowsConsoleKeyReader{
+func configureTerminalStreams(config *readline.Config, input *os.File, _, _ io.Writer) func(bool) {
+	reader := &windowsConsoleKeyReader{
 		inputHandle: windows.Handle(input.Fd()),
 		readRecord:  readWindowsConsoleInputRecord,
 	}
+	config.Stdin = reader
+	return reader.SetCommandMode
 }
 
 func enableTerminalFeatures(io.Writer)  {}
 func disableTerminalFeatures(io.Writer) {}
+
+func interactiveInputHint() string {
+	return "Windows REPL: Ctrl+Enter submits commands; plain Enter inserts a space. Prompt defaults still accept Enter."
+}
 
 type windowsConsoleKeyReader struct {
 	inputHandle   windows.Handle
 	readRecord    func(windows.Handle) (windowsInputRecord, error)
 	output        []byte
 	highSurrogate uint16
+	highRepeat    uint16
+	commandMode   bool
+}
+
+func (reader *windowsConsoleKeyReader) SetCommandMode(enabled bool) {
+	reader.commandMode = enabled
 }
 
 func (reader *windowsConsoleKeyReader) Read(target []byte) (int, error) {
@@ -60,22 +72,37 @@ func (reader *windowsConsoleKeyReader) Read(target []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		char, ok := windowsConsoleRecordRune(record)
+		char, ok := windowsConsoleRecordRune(record, reader.commandMode)
 		if !ok {
 			continue
 		}
+		repeat := binary.LittleEndian.Uint16(record.event[4:6])
+		if repeat == 0 {
+			repeat = 1
+		}
 		if char >= 0xD800 && char <= 0xDBFF {
 			reader.highSurrogate = uint16(char)
+			reader.highRepeat = repeat
 			continue
 		}
 		if char >= 0xDC00 && char <= 0xDFFF && reader.highSurrogate != 0 {
 			char = rune(utf16.DecodeRune(rune(reader.highSurrogate), char))
+			commonRepeat := repeat
+			if reader.highRepeat < commonRepeat {
+				commonRepeat = reader.highRepeat
+			}
+			reader.output = appendRepeatedRune(reader.output, char, commonRepeat)
+			reader.output = appendRepeatedRune(reader.output, utf8.RuneError, repeat-commonRepeat)
+			reader.output = appendRepeatedRune(reader.output, utf8.RuneError, reader.highRepeat-commonRepeat)
 			reader.highSurrogate = 0
+			reader.highRepeat = 0
+			continue
 		} else if reader.highSurrogate != 0 {
-			reader.output = utf8.AppendRune(reader.output, utf8.RuneError)
+			reader.output = appendRepeatedRune(reader.output, utf8.RuneError, reader.highRepeat)
 			reader.highSurrogate = 0
+			reader.highRepeat = 0
 		}
-		reader.output = utf8.AppendRune(reader.output, char)
+		reader.output = appendRepeatedRune(reader.output, char, repeat)
 	}
 	count := copy(target, reader.output)
 	reader.output = reader.output[count:]
@@ -84,7 +111,14 @@ func (reader *windowsConsoleKeyReader) Read(target []byte) (int, error) {
 
 func (reader *windowsConsoleKeyReader) Close() error { return nil }
 
-func windowsConsoleRecordRune(record windowsInputRecord) (rune, bool) {
+func appendRepeatedRune(output []byte, char rune, count uint16) []byte {
+	for range count {
+		output = utf8.AppendRune(output, char)
+	}
+	return output
+}
+
+func windowsConsoleRecordRune(record windowsInputRecord, commandMode bool) (rune, bool) {
 	if record.eventType != windows.KEY_EVENT || binary.LittleEndian.Uint32(record.event[:4]) == 0 {
 		return 0, false
 	}
@@ -112,8 +146,11 @@ func windowsConsoleRecordRune(record windowsInputRecord) (rune, bool) {
 			return readline.CharEnter, true
 		}
 	}
-	if key == windows.VK_RETURN {
+	if key == windows.VK_RETURN && commandMode {
 		return ' ', true
+	}
+	if key == windows.VK_RETURN {
+		return readline.CharEnter, true
 	}
 	if char != 0 {
 		return char, true
@@ -129,6 +166,12 @@ func windowsConsoleRecordRune(record windowsInputRecord) (rune, bool) {
 		return readline.CharNext, true
 	case windows.VK_BACK:
 		return readline.CharBackspace, true
+	case windows.VK_DELETE:
+		return readline.CharDelete, true
+	case windows.VK_HOME:
+		return readline.CharLineStart, true
+	case windows.VK_END:
+		return readline.CharLineEnd, true
 	default:
 		return 0, false
 	}

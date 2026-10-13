@@ -122,6 +122,7 @@ func TestWindowsConsoleKeyReaderRequiresCtrlEnterToSubmit(t *testing.T) {
 			return record, nil
 		},
 	}
+	reader.SetCommandMode(true)
 	output, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatal(err)
@@ -131,6 +132,44 @@ func TestWindowsConsoleKeyReaderRequiresCtrlEnterToSubmit(t *testing.T) {
 	}
 	if got := rune(readline.CharEnter); got != rune(output[len(output)-1]) {
 		t.Fatalf("Ctrl+Enter rune = %d; want %d", output[len(output)-1], got)
+	}
+	plainEnter, ok := windowsConsoleRecordRune(windowsTestKeyRecord(windows.VK_RETURN, '\r', 0), false)
+	if !ok || plainEnter != readline.CharEnter {
+		t.Fatalf("plain Enter in a prompt = %d, %v; want submit rune %d", plainEnter, ok, readline.CharEnter)
+	}
+}
+
+func TestWindowsConsoleReaderKeepsEnterSubmissionForNonCommandPrompts(t *testing.T) {
+	records := []windowsInputRecord{
+		windowsTestKeyRecord(windows.VK_RETURN, '\r', 0),
+		windowsTestKeyRecord(windows.VK_RETURN, '\r', 0),
+	}
+	index := 0
+	reader := &windowsConsoleKeyReader{
+		readRecord: func(windows.Handle) (windowsInputRecord, error) {
+			if index == len(records) {
+				return windowsInputRecord{}, io.EOF
+			}
+			record := records[index]
+			index++
+			return record, nil
+		},
+	}
+	reader.SetCommandMode(true)
+	commandEnter := make([]byte, 1)
+	if _, err := reader.Read(commandEnter); err != nil {
+		t.Fatal(err)
+	}
+	if commandEnter[0] != ' ' {
+		t.Fatalf("plain Enter in command mode = %q; want space", commandEnter[0])
+	}
+	reader.SetCommandMode(false)
+	promptEnter := make([]byte, 1)
+	if _, err := reader.Read(promptEnter); err != nil {
+		t.Fatal(err)
+	}
+	if promptEnter[0] != '\r' {
+		t.Fatalf("plain Enter in prompt mode = %q; want carriage return", promptEnter[0])
 	}
 }
 
@@ -154,7 +193,7 @@ func TestWindowsConsoleControlKeys(t *testing.T) {
 			if len(test.name) >= 4 && test.name[:4] == "Ctrl" {
 				modifiers = windows.LEFT_CTRL_PRESSED
 			}
-			got, ok := windowsConsoleRecordRune(windowsTestKeyRecord(test.key, test.char, modifiers))
+			got, ok := windowsConsoleRecordRune(windowsTestKeyRecord(test.key, test.char, modifiers), true)
 			if !ok || got != test.want {
 				t.Fatalf("translated rune = %d, %v; want %d", got, ok, test.want)
 			}
@@ -162,10 +201,42 @@ func TestWindowsConsoleControlKeys(t *testing.T) {
 	}
 }
 
+func TestWindowsConsoleKeyReaderMapsEditingKeysAndRepeatCount(t *testing.T) {
+	records := []windowsInputRecord{
+		windowsTestKeyRecordWithRepeat('A', 'a', 0, 3),
+		windowsTestKeyRecord(windows.VK_HOME, 0, 0),
+		windowsTestKeyRecord(windows.VK_END, 0, 0),
+		windowsTestKeyRecord(windows.VK_DELETE, 0, 0),
+	}
+	index := 0
+	reader := &windowsConsoleKeyReader{
+		readRecord: func(windows.Handle) (windowsInputRecord, error) {
+			if index == len(records) {
+				return windowsInputRecord{}, io.EOF
+			}
+			record := records[index]
+			index++
+			return record, nil
+		},
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "aaa"+string([]byte{1, 5, 4}) {
+		t.Fatalf("translated editing input = %q", output)
+	}
+}
+
 func windowsTestKeyRecord(key, char uint16, modifiers uint32) windowsInputRecord {
+	return windowsTestKeyRecordWithRepeat(key, char, modifiers, 1)
+}
+
+func windowsTestKeyRecordWithRepeat(key, char uint16, modifiers uint32, repeat uint16) windowsInputRecord {
 	var record windowsInputRecord
 	record.eventType = windows.KEY_EVENT
 	binary.LittleEndian.PutUint32(record.event[:4], 1)
+	binary.LittleEndian.PutUint16(record.event[4:6], repeat)
 	binary.LittleEndian.PutUint16(record.event[6:8], key)
 	binary.LittleEndian.PutUint16(record.event[10:12], char)
 	binary.LittleEndian.PutUint32(record.event[12:16], modifiers)
@@ -174,12 +245,20 @@ func windowsTestKeyRecord(key, char uint16, modifiers uint32) windowsInputRecord
 
 func TestWindowsTerminalStreamsKeepReadlineNativeAdapters(t *testing.T) {
 	config := &readline.Config{}
-	configureTerminalStreams(config, os.Stdin, io.Discard, io.Discard)
+	setCommandMode := configureTerminalStreams(config, os.Stdin, io.Discard, io.Discard)
 	reader, ok := config.Stdin.(*windowsConsoleKeyReader)
 	if !ok {
 		t.Fatalf("configured input type = %T", config.Stdin)
 	}
 	if reader.inputHandle != windows.Handle(os.Stdin.Fd()) {
 		t.Fatalf("configured console input handle = %v", reader.inputHandle)
+	}
+	setCommandMode(true)
+	if !reader.commandMode {
+		t.Fatal("command mode was not applied to the Windows reader")
+	}
+	setCommandMode(false)
+	if reader.commandMode {
+		t.Fatal("prompt mode did not restore Enter submission")
 	}
 }

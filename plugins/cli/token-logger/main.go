@@ -169,13 +169,17 @@ func (reader *scannerLineReader) EnableHistory()   {}
 func (reader *scannerLineReader) IsTerminal() bool { return false }
 
 type terminalLineReader struct {
-	instance *readline.Instance
-	output   io.Writer
-	input    *os.File
-	rawState *term.State
+	instance       *readline.Instance
+	output         io.Writer
+	input          *os.File
+	rawState       *term.State
+	setCommandMode func(bool)
 }
 
 func (reader *terminalLineReader) ReadLine(prompt string) (string, error) {
+	if reader.setCommandMode != nil {
+		reader.setCommandMode(prompt == "> ")
+	}
 	reader.instance.SetPrompt(prompt)
 	return reader.instance.Readline()
 }
@@ -235,7 +239,7 @@ func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer,
 			return r, true
 		},
 	}
-	configureTerminalStreams(config, in, stdout, stderr)
+	setCommandMode := configureTerminalStreams(config, in, stdout, stderr)
 	config.FuncMakeRaw = func() error {
 		return nil
 	}
@@ -256,7 +260,7 @@ func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer,
 		return nil, false
 	}
 	enableTerminalFeatures(stdout)
-	return &terminalLineReader{instance: instance, output: stdout, input: in, rawState: preflightState}, true
+	return &terminalLineReader{instance: instance, output: stdout, input: in, rawState: preflightState, setCommandMode: setCommandMode}, true
 }
 
 func truncateInteractiveCommand(line []rune) []rune {
@@ -380,6 +384,9 @@ func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, 
 	}
 	fmt.Fprintf(stdout, "komposyn-lg %s interactive\n", tokenlogger.Version)
 	fmt.Fprintln(stdout, "Type /help for commands; /quit to exit.")
+	if hint := interactiveInputHint(); hint != "" && reader.IsTerminal() {
+		fmt.Fprintln(stdout, hint)
+	}
 	if pending, err := store.PendingDiagnostics(); err == nil && len(pending) > 0 {
 		fmt.Fprintf(stdout, "There are %d pending local diagnostic(s).\n", len(pending))
 		for _, diagnostic := range pending {

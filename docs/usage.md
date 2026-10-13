@@ -162,8 +162,9 @@ terminal, returns the cursor home, and does not rerun the report; use
 `/refresh` when a redraw is wanted. It never deletes usage, settings, consent,
 diagnostics, or history. Multiline paste is folded into one command and is not
 executed as a batch. Unix-like terminals use bracketed paste. On Windows,
-Ctrl+Enter submits a command and plain Enter inserts a space, so pasted line
-breaks cannot submit a command batch.
+Ctrl+Enter submits a REPL command and plain Enter inserts a space, so pasted
+line breaks cannot submit a command batch. Onboarding and diagnostic prompts
+continue to accept plain Enter for the displayed default.
 
 When stdin or stdout is not a terminal, the CLI uses deterministic scanner
 input for pipes, redirects, and tests. In that mode `/clear` prints

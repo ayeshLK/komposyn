@@ -161,9 +161,11 @@ input and exits. Ctrl-L has the same visible-screen clearing behavior as
 rerunning the report. It does not erase scrollback and does not delete or
 modify KompoSyn data, settings, consent, diagnostics, or session history. Use
 `/refresh` to redraw the report. Multiline paste is folded into one command:
-Unix-like terminals use bracketed paste. On Windows, press Ctrl+Enter to
-submit; plain Enter inserts a space, so pasted line breaks cannot submit a
-command batch. Pasted commands are not executed as a batch.
+Unix-like terminals use bracketed paste. On Windows, press Ctrl+Enter to submit
+a REPL command; plain Enter inserts a space, so pasted line breaks cannot
+submit a command batch. Onboarding and diagnostic questions continue to accept
+plain Enter for their displayed default. Pasted commands are not executed as a
+batch.
 
 For non-TTY input or output, the CLI keeps scanner-style behavior. `/clear`
 then prints `clear is available only in an interactive terminal` and emits no
