@@ -609,10 +609,10 @@ func TestInteractiveCommandLimitUsesUTF8Bytes(t *testing.T) {
 	if len(string(bounded)) > maxInteractiveCommandBytes {
 		t.Fatalf("bounded command is %d bytes", len(string(bounded)))
 	}
-	if len(bounded) != maxInteractiveCommandBytes/len("界") {
+	if len(bounded) != maxInteractiveCommandRunes {
 		t.Fatalf("bounded rune count = %d", len(bounded))
 	}
-	if ascii := truncateInteractiveCommand([]rune(strings.Repeat("a", maxInteractiveCommandBytes+1))); len(ascii) != maxInteractiveCommandBytes {
+	if ascii := truncateInteractiveCommand([]rune(strings.Repeat("a", maxInteractiveCommandBytes+1))); len(ascii) != maxInteractiveCommandRunes {
 		t.Fatalf("bounded ASCII rune count = %d", len(ascii))
 	}
 }

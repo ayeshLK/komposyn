@@ -30,7 +30,6 @@ import (
 	"syscall"
 	"time"
 	_ "time/tzdata"
-	"unicode/utf8"
 
 	"github.com/ayeshLK/komposyn/plugins/library/token-logger"
 	"github.com/chzyer/readline"
@@ -39,6 +38,7 @@ import (
 )
 
 const maxInteractiveCommandBytes = 64 * 1024
+const maxInteractiveCommandRunes = maxInteractiveCommandBytes / 4 // UTF-8's maximum width.
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -171,6 +171,8 @@ func (reader *scannerLineReader) IsTerminal() bool { return false }
 type terminalLineReader struct {
 	instance *readline.Instance
 	output   io.Writer
+	input    *os.File
+	rawState *term.State
 }
 
 func (reader *terminalLineReader) ReadLine(prompt string) (string, error) {
@@ -182,8 +184,15 @@ func (reader *terminalLineReader) DisableHistory()  { reader.instance.HistoryDis
 func (reader *terminalLineReader) EnableHistory()   { reader.instance.HistoryEnable() }
 func (reader *terminalLineReader) IsTerminal() bool { return true }
 func (reader *terminalLineReader) Close() error {
-	_, _ = io.WriteString(reader.output, "\033[?2004l")
-	return reader.instance.Close()
+	disableTerminalFeatures(reader.output)
+	err := reader.instance.Close()
+	if reader.rawState != nil {
+		if restoreErr := term.Restore(int(reader.input.Fd()), reader.rawState); err == nil {
+			err = restoreErr
+		}
+		reader.rawState = nil
+	}
+	return err
 }
 
 func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminalLineReader, bool) {
@@ -197,10 +206,6 @@ func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminal
 		fmt.Fprintf(stderr, "interactive terminal raw-mode setup failed; using line input: %v\n", err)
 		return nil, false
 	}
-	if err := term.Restore(int(in.Fd()), preflightState); err != nil {
-		fmt.Fprintf(stderr, "interactive terminal restoration failed; using line input: %v\n", err)
-		return nil, false
-	}
 
 	config := &readline.Config{
 		Prompt:                 "> ",
@@ -210,9 +215,6 @@ func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminal
 		UniqueEditLine:         true,
 		InterruptPrompt:        "^C\n",
 		EOFPrompt:              "^D\n",
-		Stdin:                  &pasteGuardReader{source: in},
-		Stdout:                 stdout,
-		Stderr:                 stderr,
 		ForceUseInteractive:    true,
 		FuncIsTerminal:         func() bool { return true },
 		// Fold pasted line feeds into the current command. A command is submitted
@@ -229,21 +231,12 @@ func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminal
 			return r, true
 		},
 	}
-	var rawState *term.State
+	configureTerminalStreams(config, in, stdout, stderr)
 	config.FuncMakeRaw = func() error {
-		state, err := term.MakeRaw(int(in.Fd()))
-		if err == nil {
-			rawState = state
-		}
-		return err
+		return nil
 	}
 	config.FuncExitRaw = func() error {
-		if rawState == nil {
-			return nil
-		}
-		err := term.Restore(int(in.Fd()), rawState)
-		rawState = nil
-		return err
+		return nil
 	}
 	config.SetListener(func(line []rune, pos int, key rune) ([]rune, int, bool) {
 		bounded := truncateInteractiveCommand(line)
@@ -254,21 +247,17 @@ func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminal
 	})
 	instance, err := readline.NewEx(config)
 	if err != nil {
+		_ = term.Restore(int(in.Fd()), preflightState)
 		fmt.Fprintf(stderr, "interactive terminal setup failed; using line input: %v\n", err)
 		return nil, false
 	}
-	_, _ = io.WriteString(stdout, "\033[?2004h")
-	return &terminalLineReader{instance: instance, output: stdout}, true
+	enableTerminalFeatures(stdout)
+	return &terminalLineReader{instance: instance, output: stdout, input: in, rawState: preflightState}, true
 }
 
 func truncateInteractiveCommand(line []rune) []rune {
-	bytesUsed := 0
-	for index, value := range line {
-		width := utf8.RuneLen(value)
-		if width < 0 || bytesUsed+width > maxInteractiveCommandBytes {
-			return line[:index]
-		}
-		bytesUsed += width
+	if len(line) > maxInteractiveCommandRunes {
+		return line[:maxInteractiveCommandRunes]
 	}
 	return line
 }
@@ -421,7 +410,7 @@ func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, 
 			printInteractiveHelp(stdout)
 		case "/clear":
 			if terminalReader, ok := reader.(*terminalLineReader); ok {
-				if err := clearTerminal(terminalReader.output); err != nil {
+				if err := clearTerminal(terminalReader.instance.Stdout()); err != nil {
 					fmt.Fprintf(stderr, "clear terminal failed: %v\n", err)
 				}
 			} else {
