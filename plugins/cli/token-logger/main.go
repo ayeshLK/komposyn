@@ -221,9 +221,9 @@ func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer,
 		EOFPrompt:              "^D\n",
 		ForceUseInteractive:    true,
 		FuncIsTerminal:         func() bool { return true },
-		// Fold pasted line feeds into the current command. A command is submitted
-		// only by the terminal Enter key, so a multiline paste cannot execute a
-		// batch without an explicit submission.
+		// Fold Unix bracketed-paste line feeds into the current command. The
+		// Windows console adapter maps plain Enter to a space and Ctrl+Enter to
+		// submission, so a multiline paste cannot execute a command batch.
 		FuncFilterInputRune: func(r rune) (rune, bool) {
 			if r == readline.CharCtrlL {
 				_ = clearTerminal(stdout)

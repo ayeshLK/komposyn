@@ -101,15 +101,25 @@ func (ops *recordingWindowsConsoleClearer) setCursor(_ windows.Handle, origin wi
 	return nil
 }
 
-func TestWindowsPasteGuardFoldsEnterBeforeQueuedInput(t *testing.T) {
-	pendingResponses := []bool{true, false}
-	pendingIndex := 0
-	reader := &windowsPasteGuardReader{
-		source: bytes.NewBufferString("first\rsecond\r"),
-		pendingInput: func(windows.Handle) (bool, error) {
-			pending := pendingResponses[pendingIndex]
-			pendingIndex++
-			return pending, nil
+func TestWindowsConsoleKeyReaderRequiresCtrlEnterToSubmit(t *testing.T) {
+	var records []windowsInputRecord
+	for _, char := range "first" {
+		records = append(records, windowsTestKeyRecord(uint16(char), uint16(char), 0))
+	}
+	records = append(records, windowsTestKeyRecord(windows.VK_RETURN, '\r', 0))
+	for _, char := range "second" {
+		records = append(records, windowsTestKeyRecord(uint16(char), uint16(char), 0))
+	}
+	records = append(records, windowsTestKeyRecord(windows.VK_RETURN, '\r', windows.LEFT_CTRL_PRESSED))
+	index := 0
+	reader := &windowsConsoleKeyReader{
+		readRecord: func(windows.Handle) (windowsInputRecord, error) {
+			if index == len(records) {
+				return windowsInputRecord{}, io.EOF
+			}
+			record := records[index]
+			index++
+			return record, nil
 		},
 	}
 	output, err := io.ReadAll(reader)
@@ -117,32 +127,59 @@ func TestWindowsPasteGuardFoldsEnterBeforeQueuedInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(output) != "first second\r" {
-		t.Fatalf("guarded Windows input = %q", output)
+		t.Fatalf("Windows console input = %q", output)
+	}
+	if got := rune(readline.CharEnter); got != rune(output[len(output)-1]) {
+		t.Fatalf("Ctrl+Enter rune = %d; want %d", output[len(output)-1], got)
 	}
 }
 
-func TestWindowsInputRecordDetectionIgnoresKeyUp(t *testing.T) {
-	var keyUp, keyDown windowsInputRecord
-	keyUp.eventType = windows.KEY_EVENT
-	keyDown.eventType = windows.KEY_EVENT
-	binary.LittleEndian.PutUint32(keyUp.event[:4], 0)
-	binary.LittleEndian.PutUint32(keyDown.event[:4], 1)
-	if windowsRecordsHavePendingKeyDown([]windowsInputRecord{keyUp}) {
-		t.Fatal("key-up event was treated as pending input")
+func TestWindowsConsoleControlKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		key  uint16
+		char uint16
+		want rune
+	}{
+		{name: "Ctrl+C", key: 'C', char: 'C', want: readline.CharInterrupt},
+		{name: "Ctrl+D", key: 'D', char: 'D', want: readline.CharDelete},
+		{name: "Ctrl+L", key: 'L', char: 'L', want: readline.CharCtrlL},
+		{name: "plain C", key: 'C', char: 'C', want: 'C'},
+		{name: "plain D", key: 'D', char: 'D', want: 'D'},
+		{name: "plain L", key: 'L', char: 'L', want: 'L'},
 	}
-	if !windowsRecordsHavePendingKeyDown([]windowsInputRecord{keyUp, keyDown}) {
-		t.Fatal("key-down event was not detected")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			modifiers := uint32(0)
+			if len(test.name) >= 4 && test.name[:4] == "Ctrl" {
+				modifiers = windows.LEFT_CTRL_PRESSED
+			}
+			got, ok := windowsConsoleRecordRune(windowsTestKeyRecord(test.key, test.char, modifiers))
+			if !ok || got != test.want {
+				t.Fatalf("translated rune = %d, %v; want %d", got, ok, test.want)
+			}
+		})
 	}
+}
+
+func windowsTestKeyRecord(key, char uint16, modifiers uint32) windowsInputRecord {
+	var record windowsInputRecord
+	record.eventType = windows.KEY_EVENT
+	binary.LittleEndian.PutUint32(record.event[:4], 1)
+	binary.LittleEndian.PutUint16(record.event[6:8], key)
+	binary.LittleEndian.PutUint16(record.event[10:12], char)
+	binary.LittleEndian.PutUint32(record.event[12:16], modifiers)
+	return record
 }
 
 func TestWindowsTerminalStreamsKeepReadlineNativeAdapters(t *testing.T) {
 	config := &readline.Config{}
 	configureTerminalStreams(config, os.Stdin, io.Discard, io.Discard)
-	guard, ok := config.Stdin.(*windowsPasteGuardReader)
+	reader, ok := config.Stdin.(*windowsConsoleKeyReader)
 	if !ok {
 		t.Fatalf("configured input type = %T", config.Stdin)
 	}
-	if _, ok := guard.source.(*readline.RawReader); !ok {
-		t.Fatalf("underlying input adapter = %T", guard.source)
+	if reader.inputHandle != windows.Handle(os.Stdin.Fd()) {
+		t.Fatalf("configured console input handle = %v", reader.inputHandle)
 	}
 }

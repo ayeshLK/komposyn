@@ -21,78 +21,117 @@ import (
 	"io"
 	"os"
 	"syscall"
-	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/chzyer/readline"
 	"golang.org/x/sys/windows"
 )
 
-var peekConsoleInputW = syscall.NewLazyDLL("kernel32.dll").NewProc("PeekConsoleInputW")
+var readConsoleInputW = syscall.NewLazyDLL("kernel32.dll").NewProc("ReadConsoleInputW")
 
-// Keep readline's Windows RawReader and ANSIWriter behavior, while folding
-// line breaks that are followed by more queued console input into the current
-// command. Native console paste arrives as key events rather than bracketed
-// paste markers.
+// Windows console key events do not mark which Enter keys came from a paste.
+// Treat plain Enter as command text and require Ctrl+Enter to submit, so pasted
+// line breaks can never submit a command batch.
 func configureTerminalStreams(config *readline.Config, input *os.File, _, _ io.Writer) {
-	config.Stdin = &windowsPasteGuardReader{
-		source:       readline.NewRawReader(),
-		inputHandle:  windows.Handle(input.Fd()),
-		pendingInput: windowsConsoleHasPendingKeyDown,
-		settleDelay:  10 * time.Millisecond,
+	config.Stdin = &windowsConsoleKeyReader{
+		inputHandle: windows.Handle(input.Fd()),
+		readRecord:  readWindowsConsoleInputRecord,
 	}
 }
 
 func enableTerminalFeatures(io.Writer)  {}
 func disableTerminalFeatures(io.Writer) {}
 
-type windowsPasteGuardReader struct {
-	source       io.Reader
-	inputHandle  windows.Handle
-	pendingInput func(windows.Handle) (bool, error)
-	settleDelay  time.Duration
-	output       []byte
+type windowsConsoleKeyReader struct {
+	inputHandle   windows.Handle
+	readRecord    func(windows.Handle) (windowsInputRecord, error)
+	output        []byte
+	highSurrogate uint16
 }
 
-func (reader *windowsPasteGuardReader) Read(target []byte) (int, error) {
+func (reader *windowsConsoleKeyReader) Read(target []byte) (int, error) {
 	if len(target) == 0 {
 		return 0, nil
 	}
 	for len(reader.output) == 0 {
-		chunk := make([]byte, 4096)
-		count, err := reader.source.Read(chunk)
-		if count == 0 {
+		record, err := reader.readRecord(reader.inputHandle)
+		if err != nil {
 			return 0, err
 		}
-		for _, value := range chunk[:count] {
-			if value == '\r' || value == '\n' {
-				if reader.settleDelay > 0 {
-					time.Sleep(reader.settleDelay)
-				}
-				pending, pendingErr := reader.pendingInput(reader.inputHandle)
-				if pendingErr != nil {
-					return 0, pendingErr
-				}
-				if pending {
-					value = ' '
-				}
-			}
-			reader.output = append(reader.output, value)
+		char, ok := windowsConsoleRecordRune(record)
+		if !ok {
+			continue
 		}
-		if err != nil && len(reader.output) == 0 {
-			return 0, err
+		if char >= 0xD800 && char <= 0xDBFF {
+			reader.highSurrogate = uint16(char)
+			continue
 		}
+		if char >= 0xDC00 && char <= 0xDFFF && reader.highSurrogate != 0 {
+			char = rune(utf16.DecodeRune(rune(reader.highSurrogate), char))
+			reader.highSurrogate = 0
+		} else if reader.highSurrogate != 0 {
+			reader.output = utf8.AppendRune(reader.output, utf8.RuneError)
+			reader.highSurrogate = 0
+		}
+		reader.output = utf8.AppendRune(reader.output, char)
 	}
 	count := copy(target, reader.output)
 	reader.output = reader.output[count:]
 	return count, nil
 }
 
-func (reader *windowsPasteGuardReader) Close() error {
-	if closer, ok := reader.source.(io.Closer); ok {
-		return closer.Close()
+func (reader *windowsConsoleKeyReader) Close() error { return nil }
+
+func windowsConsoleRecordRune(record windowsInputRecord) (rune, bool) {
+	if record.eventType != windows.KEY_EVENT || binary.LittleEndian.Uint32(record.event[:4]) == 0 {
+		return 0, false
 	}
-	return nil
+	key := binary.LittleEndian.Uint16(record.event[6:8])
+	char := rune(binary.LittleEndian.Uint16(record.event[10:12]))
+	modifiers := binary.LittleEndian.Uint32(record.event[12:16])
+	control := modifiers&(windows.LEFT_CTRL_PRESSED|windows.RIGHT_CTRL_PRESSED) != 0
+	if control {
+		switch key {
+		case 'C':
+			return readline.CharInterrupt, true
+		case 'D':
+			return readline.CharDelete, true
+		case 'L':
+			return readline.CharCtrlL, true
+		case 'A':
+			return readline.CharLineStart, true
+		case 'E':
+			return readline.CharLineEnd, true
+		case 'R':
+			return readline.CharBckSearch, true
+		case 'S':
+			return readline.CharFwdSearch, true
+		case windows.VK_RETURN:
+			return readline.CharEnter, true
+		}
+	}
+	if key == windows.VK_RETURN {
+		return ' ', true
+	}
+	if char != 0 {
+		return char, true
+	}
+	switch key {
+	case windows.VK_LEFT:
+		return readline.CharBackward, true
+	case windows.VK_RIGHT:
+		return readline.CharForward, true
+	case windows.VK_UP:
+		return readline.CharPrev, true
+	case windows.VK_DOWN:
+		return readline.CharNext, true
+	case windows.VK_BACK:
+		return readline.CharBackspace, true
+	default:
+		return 0, false
+	}
 }
 
 type windowsInputRecord struct {
@@ -101,27 +140,17 @@ type windowsInputRecord struct {
 	event     [16]byte
 }
 
-func windowsConsoleHasPendingKeyDown(handle windows.Handle) (bool, error) {
-	const maxRecords = 128
-	var records [maxRecords]windowsInputRecord
+func readWindowsConsoleInputRecord(handle windows.Handle) (windowsInputRecord, error) {
+	var record windowsInputRecord
 	var read uint32
-	result, _, callErr := peekConsoleInputW.Call(
-		uintptr(handle), uintptr(unsafe.Pointer(&records[0])), maxRecords, uintptr(unsafe.Pointer(&read)),
+	result, _, callErr := readConsoleInputW.Call(
+		uintptr(handle), uintptr(unsafe.Pointer(&record)), 1, uintptr(unsafe.Pointer(&read)),
 	)
-	if result == 0 {
+	if result == 0 || read != 1 {
 		if callErr == nil || callErr == syscall.Errno(0) {
 			callErr = syscall.EINVAL
 		}
-		return false, callErr
+		return windowsInputRecord{}, callErr
 	}
-	return windowsRecordsHavePendingKeyDown(records[:read]), nil
-}
-
-func windowsRecordsHavePendingKeyDown(records []windowsInputRecord) bool {
-	for _, record := range records {
-		if record.eventType == windows.KEY_EVENT && binary.LittleEndian.Uint32(record.event[:4]) != 0 {
-			return true
-		}
-	}
-	return false
+	return record, nil
 }
