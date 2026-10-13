@@ -255,8 +255,8 @@ type ptyReadResult struct {
 }
 
 type ptyOutputReader struct {
-	results chan ptyReadResult
-	output  bytes.Buffer
+	results  chan ptyReadResult
+	output   bytes.Buffer
 	searched int
 }
 
