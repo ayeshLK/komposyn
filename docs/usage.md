@@ -56,6 +56,16 @@ only to validate ordering, resets, and reconciliation; they never create
 additional events. `total_tokens` is also a consistency check, not another
 token category.
 
+Attribution comes from the Codex record context: the event time is the
+`token_usage_record` envelope's `timestamp`, which must parse as a supported
+RFC3339 timestamp. Session identity is read from the record payload and must
+resolve to the matching `session_meta` state (or the active session context
+when the payload omits its session ID). Project attribution and the session's
+initial model come from that session metadata. Later `turn_context` records
+update the applicable session model, so responses after a model change use the
+new model. The adapter does not infer a model from usage values or unrelated
+records.
+
 Codex may also emit legacy `event_msg`/`token_count` snapshots for the same
 responses. Before a usage-record stream starts, legacy snapshots continue to
 be imported as cumulative deltas. Once a valid response record is observed for
@@ -65,8 +75,10 @@ is reported as unsupported rather than estimated heuristically.
 
 Response identity is based on the adapter, session/thread scope, and
 `response_id`, so retries, appends, and source rewrites remain idempotent even
-when file offsets or source generations change. A missing response ID,
-timestamp, model, or session attribution is not imported.
+when file offsets or source generations change. A missing response ID, invalid
+timestamp, unknown session, or unavailable model context is reported as
+malformed and is not imported. The adapter does not recover these values by
+guessing from unrelated records.
 
 Support provenance: the `token_usage_record` decoder is validated against the
 Codex protocol definitions at the pinned upstream revision
