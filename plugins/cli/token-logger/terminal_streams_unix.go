@@ -24,21 +24,30 @@ import (
 )
 
 // configureTerminalStreams wires readline's streams for a raw-mode terminal
-// session and returns the writer application code must use for all further
-// interactive output, together with the paste/command-mode toggle. Output is
-// wrapped so bare line feeds return to column zero: term.MakeRaw disables
-// OPOST on the controlling tty for the session, so without this, writes
-// through the unwrapped stdout would advance a row without a carriage
+// session and returns the writers application code must use for all further
+// interactive output, together with the paste/command-mode toggle. Both
+// stdout and stderr are wrapped so bare line feeds return to column zero:
+// term.MakeRaw disables OPOST on the controlling tty for the session (stdin,
+// stdout, and stderr are usually the same tty), so without this, writes
+// through either unwrapped stream would advance a row without a carriage
 // return.
-func configureTerminalStreams(config *readline.Config, input *os.File, stdout, stderr io.Writer) (io.Writer, func(bool)) {
+func configureTerminalStreams(config *readline.Config, input *os.File, stdout, stderr io.Writer) (io.Writer, io.Writer, func(bool)) {
 	config.Stdin = &pasteGuardReader{source: input}
-	output := io.Writer(stdout)
-	if file, ok := stdout.(*os.File); ok {
-		output = newCRLFWriter(file)
-	}
+	output := crlfSafeWriter(stdout)
+	errOutput := crlfSafeWriter(stderr)
 	config.Stdout = output
-	config.Stderr = stderr
-	return output, func(bool) {}
+	config.Stderr = errOutput
+	return output, errOutput, func(bool) {}
+}
+
+// crlfSafeWriter wraps w in a CRLF-safe writer when it is backed by a real
+// terminal file, leaving redirected (non-*os.File) writers untouched so
+// their output stays deterministic.
+func crlfSafeWriter(w io.Writer) io.Writer {
+	if file, ok := w.(*os.File); ok {
+		return newCRLFWriter(file)
+	}
+	return w
 }
 
 func enableTerminalFeatures(output io.Writer) {

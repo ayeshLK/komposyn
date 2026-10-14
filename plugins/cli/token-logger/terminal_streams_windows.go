@@ -37,15 +37,15 @@ var readConsoleInputW = syscall.NewLazyDLL("kernel32.dll").NewProc("ReadConsoleI
 //
 // term.MakeRaw on Windows only changes the input console handle's mode; it
 // never touches the output handle, so (unlike the unix tty case) bare line
-// feeds written to stdout are unaffected by raw mode here and need no CRLF
-// translation.
-func configureTerminalStreams(config *readline.Config, input *os.File, stdout, _ io.Writer) (io.Writer, func(bool)) {
+// feeds written to stdout or stderr are unaffected by raw mode here and
+// need no CRLF translation.
+func configureTerminalStreams(config *readline.Config, input *os.File, stdout, stderr io.Writer) (io.Writer, io.Writer, func(bool)) {
 	reader := &windowsConsoleKeyReader{
 		inputHandle: windows.Handle(input.Fd()),
 		readRecord:  readWindowsConsoleInputRecord,
 	}
 	config.Stdin = reader
-	return stdout, reader.SetCommandMode
+	return stdout, stderr, reader.SetCommandMode
 }
 
 func enableTerminalFeatures(io.Writer)  {}

@@ -393,7 +393,7 @@ func wideUsageReport() UsageReport {
 				},
 			},
 			{
-				Dimensions: map[string]string{GroupClient: "codex-cli-with-a-very-long-project-qualifier", GroupProvider: "openai", GroupModel: "codex-auto-review"},
+				Dimensions: map[string]string{GroupClient: "codex-cli-with-a-very-long-project-qualifier", GroupProvider: "openai", GroupModel: "codex-auto-review-with-a-very-long-descriptive-suffix"},
 				UsageMeasures: UsageMeasures{
 					RequestCount: 2_690, SessionCount: 12, InputTokens: 196_700_000, CachedInputTokens: 185_600_000,
 					OutputTokens: 221_000, ReasoningOutputTokens: 66_200, TotalTokens: 196_900_000,
@@ -433,7 +433,7 @@ func TestWriteTableWidthDegradesWithoutDroppingData(t *testing.T) {
 		// The vertical fallback (used once nothing else fits, e.g. width 20
 		// here) cannot bound width below the length of its longest single
 		// field value, so only the full/compact tiers are checked for width.
-		if width > 20 && lineRuneWidth([]byte(rendered)) > width {
+		if width > 20 && lineDisplayWidth([]byte(rendered)) > width {
 			t.Errorf("width %d: rendered line exceeds requested width:\n%s", width, rendered)
 		}
 		for _, row := range rows {
@@ -463,6 +463,56 @@ func TestWriteTableWidthFallsBackToVerticalLayout(t *testing.T) {
 	rendered := output.String()
 	if !strings.Contains(rendered, "CLIENT:") || !strings.Contains(rendered, "STATUS:") {
 		t.Fatalf("narrow width did not use the vertical key/value layout:\n%s", rendered)
+	}
+}
+
+// TestWriteTableWidthAccountsForEastAsianWideDimensions reproduces a
+// regression where the layout-selection width was measured in Unicode code
+// points rather than terminal display cells: an East Asian Wide dimension
+// value (two display cells per rune) was undercounted, so a line that did
+// not actually fit the terminal was still rendered using the full layout.
+func TestWriteTableWidthAccountsForEastAsianWideDimensions(t *testing.T) {
+	wideModel := strings.Repeat("测", 20) // 20 runes, each an East Asian Wide (2-cell) character.
+	report := UsageReport{
+		Filters: UsageFilter{GroupBy: []string{GroupClient, GroupProvider, GroupModel}},
+		Rows: []UsageRow{{
+			Dimensions: map[string]string{GroupClient: "claude-code", GroupProvider: "anthropic", GroupModel: wideModel},
+			UsageMeasures: UsageMeasures{
+				RequestCount: 1, SessionCount: 1, InputTokens: 10, OutputTokens: 5, TotalTokens: 15,
+				UnknownCostRequests: 1,
+			},
+		}},
+	}
+	_, headings, rows := tableRows(report)
+	full := renderFullTable(headings, rows)
+
+	naiveWidth := 0
+	for _, line := range strings.Split(string(full), "\n") {
+		if n := utf8.RuneCountInString(line); n > naiveWidth {
+			naiveWidth = n
+		}
+	}
+	actualWidth := lineDisplayWidth(full)
+	if actualWidth <= naiveWidth {
+		t.Fatalf("test fixture does not exercise wide characters: code-point width=%d, display-cell width=%d", naiveWidth, actualWidth)
+	}
+
+	var output bytes.Buffer
+	if err := WriteTableWidth(&output, report, naiveWidth); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(output.Bytes(), full) {
+		t.Fatalf("rendered the full layout at width %d even though the East Asian Wide model name needs %d display cells, not %d code points", naiveWidth, actualWidth, naiveWidth)
+	}
+	if lineDisplayWidth(output.Bytes()) > naiveWidth {
+		t.Fatalf("degraded layout still exceeds the requested display width %d:\n%s", naiveWidth, output.String())
+	}
+	for _, row := range rows {
+		for _, value := range row {
+			if value != "" && !strings.Contains(output.String(), value) {
+				t.Fatalf("value %q missing from degraded output:\n%s", value, output.String())
+			}
+		}
 	}
 }
 

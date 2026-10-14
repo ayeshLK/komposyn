@@ -26,7 +26,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 )
 
 const (
@@ -570,13 +571,13 @@ func WriteTableWidth(w io.Writer, report UsageReport, width int) error {
 	dimCount, headings, rows := tableRows(report)
 
 	full := renderFullTable(headings, rows)
-	if width <= 0 || lineRuneWidth(full) <= width {
+	if width <= 0 || lineDisplayWidth(full) <= width {
 		_, err := w.Write(full)
 		return err
 	}
 
 	compact := renderCompactTable(dimCount, headings, rows)
-	if lineRuneWidth(compact) <= width {
+	if lineDisplayWidth(compact) <= width {
 		_, err := w.Write(compact)
 		return err
 	}
@@ -700,11 +701,13 @@ func renderVerticalTable(headings []string, rows [][]string) []byte {
 	return buf.Bytes()
 }
 
-// lineRuneWidth reports the widest line in data, measured in runes.
-func lineRuneWidth(data []byte) int {
+// lineDisplayWidth reports the widest line in data, measured in terminal
+// display cells rather than Unicode code points, so East Asian wide
+// characters (which occupy two cells) are not undercounted.
+func lineDisplayWidth(data []byte) int {
 	widest := 0
 	for _, line := range strings.Split(string(data), "\n") {
-		if width := utf8.RuneCountInString(line); width > widest {
+		if width := runewidth.StringWidth(line); width > widest {
 			widest = width
 		}
 	}
