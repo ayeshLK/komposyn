@@ -508,6 +508,65 @@ func TestCodexTokenUsageRecordRejectsLegacyOnlyAttribution(t *testing.T) {
 	}
 }
 
+func TestCodexLegacyTokenCountAcceptsCacheWriteInputTokensAlias(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "legacy-cache-write-alias.jsonl")
+	legacy := `{"type":"event_msg","timestamp":"2026-10-11T00:00:00Z","payload":{"type":"token_count","session_id":"session-1","project_id":"project-1","model":"gpt-test","info":{"total_token_usage":{"input_tokens":10,"cache_write_input_tokens":4}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 1 || result.Outcomes != (OutcomeCounts{}) {
+		t.Fatalf("legacy cache-write alias result = %+v, err = %v", result, err)
+	}
+	var input, writes int64
+	if err := store.db.QueryRow(`SELECT input_tokens, cache_write_tokens FROM usage_events`).Scan(&input, &writes); err != nil {
+		t.Fatal(err)
+	}
+	if input != 10 || writes != 4 {
+		t.Fatalf("legacy cache-write alias usage = input %d, cache_write %d; want 10, 4", input, writes)
+	}
+}
+
+func TestCodexTokenUsageRecordDerivesProjectFromCWDWhenProjectIDAbsent(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "cwd-project.jsonl")
+	metadata := `{"type":"session_meta","payload":{"id":"session-1","cwd":"/tmp/project","model":"gpt-test"}}` + "\n"
+	usageRecord := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n"
+	if err := os.WriteFile(path, []byte(metadata+usageRecord), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 1 || result.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1}) {
+		t.Fatalf("cwd-derived project result = %+v, err = %v", result, err)
+	}
+	var projectID string
+	if err := store.db.QueryRow(`SELECT project_id FROM usage_events WHERE event_id LIKE 'codex-response-event-%'`).Scan(&projectID); err != nil {
+		t.Fatal(err)
+	}
+	if projectID == "" || strings.Contains(projectID, "-project") {
+		t.Fatalf("project id = %q, want a stable identity derived from cwd", projectID)
+	}
+
+	otherStore := openTestStore(t)
+	otherPath := filepath.Join(t.TempDir(), "cwd-project-other-source.jsonl")
+	if err := os.WriteFile(otherPath, []byte(metadata+usageRecord), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(otherPath, otherStore); err != nil {
+		t.Fatal(err)
+	}
+	var otherProjectID string
+	if err := otherStore.db.QueryRow(`SELECT project_id FROM usage_events WHERE event_id LIKE 'codex-response-event-%'`).Scan(&otherProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if otherProjectID != projectID {
+		t.Fatalf("project id differs across source files for the same cwd: %q vs %q", projectID, otherProjectID)
+	}
+}
+
 func TestCodexTokenUsageRecordAttributionUsesMetadataAfterLegacyRecords(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "metadata-context.jsonl")

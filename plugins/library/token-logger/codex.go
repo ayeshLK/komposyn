@@ -48,6 +48,35 @@ type codexUsage struct {
 	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
 }
 
+// UnmarshalJSON accepts the legacy cache_write_tokens field name alongside
+// the cache_write_input_tokens alias observed in newer Codex transcripts.
+func (u *codexUsage) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		InputTokens           int64 `json:"input_tokens"`
+		CachedInputTokens     int64 `json:"cached_input_tokens"`
+		CacheReadInputTokens  int64 `json:"cache_read_input_tokens"`
+		CacheWriteTokens      int64 `json:"cache_write_tokens"`
+		CacheWriteInputTokens int64 `json:"cache_write_input_tokens"`
+		OutputTokens          int64 `json:"output_tokens"`
+		ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*u = codexUsage{
+		InputTokens:           aux.InputTokens,
+		CachedInputTokens:     aux.CachedInputTokens,
+		CacheReadInputTokens:  aux.CacheReadInputTokens,
+		CacheWriteTokens:      aux.CacheWriteTokens,
+		OutputTokens:          aux.OutputTokens,
+		ReasoningOutputTokens: aux.ReasoningOutputTokens,
+	}
+	if aux.CacheWriteInputTokens != 0 {
+		u.CacheWriteTokens = aux.CacheWriteInputTokens
+	}
+	return nil
+}
+
 type codexPayload struct {
 	Type            string          `json:"type"`
 	ID              string          `json:"id"`
@@ -257,7 +286,6 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							if metadataCurrent.Model == "" {
 								metadataCurrent.Model = payload.Model
 							}
-							metadataCurrent.HasExplicitProjectID = strings.TrimSpace(payload.ProjectID) != ""
 							metadataSessions[metadataCurrent.ID] = metadataCurrent
 							sessions[metadataCurrent.ID] = metadataCurrent
 							activeSessionID = metadataCurrent.ID
@@ -643,8 +671,8 @@ func codexUsageShapeSupported(envelope codexEnvelope) bool {
 
 var codexUsageFields = map[string]struct{}{
 	"input_tokens": {}, "cached_input_tokens": {}, "cache_read_input_tokens": {},
-	"cache_write_tokens": {}, "output_tokens": {}, "reasoning_output_tokens": {},
-	"total_tokens": {},
+	"cache_write_tokens": {}, "cache_write_input_tokens": {}, "output_tokens": {},
+	"reasoning_output_tokens": {}, "total_tokens": {},
 }
 
 var codexTokenInfoFields = map[string]struct{}{
@@ -659,8 +687,8 @@ var codexTokenCountPayloadFields = map[string]struct{}{
 var codexDirectUsageFields = map[string]struct{}{
 	"type": {}, "id": {}, "session_id": {}, "project_id": {}, "project_name": {},
 	"cwd": {}, "model": {}, "input_tokens": {}, "cached_input_tokens": {},
-	"cache_read_input_tokens": {}, "cache_write_tokens": {}, "output_tokens": {},
-	"reasoning_output_tokens": {}, "total_tokens": {},
+	"cache_read_input_tokens": {}, "cache_write_tokens": {}, "cache_write_input_tokens": {},
+	"output_tokens": {}, "reasoning_output_tokens": {}, "total_tokens": {},
 }
 
 func jsonObjectFieldsAllowed(raw json.RawMessage, allowed map[string]struct{}) bool {
@@ -694,6 +722,16 @@ func codexRecordType(envelope codexEnvelope, payload codexPayload) string {
 	return envelope.Type
 }
 
+// codexCWDProjectID derives a stable project identity from a normalized
+// working directory for sessions that omit an explicit project_id.
+func codexCWDProjectID(cwd string) string {
+	normalized := filepath.Clean(strings.TrimSpace(cwd))
+	if normalized == "" || normalized == "." {
+		return ""
+	}
+	return "codex-cwd-" + digest([]byte(normalized))
+}
+
 func updateCodexSession(session codexSession, payload codexPayload, sourceID string) codexSession {
 	if payload.SessionID != "" {
 		session.ID = payload.SessionID
@@ -706,6 +744,12 @@ func updateCodexSession(session codexSession, payload codexPayload, sourceID str
 	}
 	if payload.ProjectID != "" {
 		session.ProjectID = payload.ProjectID
+		session.HasExplicitProjectID = true
+	} else if session.ProjectID == "" {
+		if derived := codexCWDProjectID(payload.CWD); derived != "" {
+			session.ProjectID = derived
+			session.HasExplicitProjectID = true
+		}
 	}
 	if session.ProjectID == "" {
 		session.ProjectID = sourceID + "-project"
