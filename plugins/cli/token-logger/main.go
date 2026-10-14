@@ -256,7 +256,11 @@ func terminalInputRuneFilter(stdout io.Writer) func(rune) (rune, bool) {
 	return func(input rune) (rune, bool) {
 		if input == readline.CharCtrlL {
 			_ = clearTerminal(stdout)
-			return 0, false
+			// Let readline handle Ctrl-L itself so it redraws the current line.
+			// Filtering it here would make readline issue an extra KickRead;
+			// depending on timing, that kick can leave the terminal reader
+			// blocked in a fresh input read while the editor is being closed.
+			return input, true
 		}
 		if input == '\n' {
 			return '\r', true

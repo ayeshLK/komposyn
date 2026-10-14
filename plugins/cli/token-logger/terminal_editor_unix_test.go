@@ -102,9 +102,7 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 	}
 	output.waitForText(t, "RESULT:new\n")
 
-	if err := command.Wait(); err != nil {
-		t.Fatalf("PTY helper failed: %v", err)
-	}
+	output.waitForCommand(t, command)
 }
 
 func TestClearTerminalErasesVisibleScreenAndHomesCursor(t *testing.T) {
@@ -157,9 +155,7 @@ func runPTYExitCase(t *testing.T, mode, result, input string) {
 		t.Fatal(err)
 	}
 	output.waitForText(t, result)
-	if err := command.Wait(); err != nil {
-		t.Fatalf("PTY helper failed: %v", err)
-	}
+	output.waitForCommand(t, command)
 }
 
 func setPTYSize(t *testing.T, terminal *os.File) {
@@ -330,6 +326,29 @@ func (reader *ptyOutputReader) waitForText(t *testing.T, expected string) {
 			}
 		case <-timer.C:
 			t.Fatalf("timed out waiting for terminal output %q (output=%q)", expected, reader.output.String())
+		}
+	}
+}
+
+func (reader *ptyOutputReader) waitForCommand(t *testing.T, command *exec.Cmd) {
+	t.Helper()
+	wait := make(chan error, 1)
+	go func() { wait <- command.Wait() }()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case result := <-reader.results:
+			reader.output.Write(result.data)
+		case err := <-wait:
+			if err != nil {
+				t.Fatalf("PTY helper failed: %v (output=%q)", err, reader.output.String())
+			}
+			return
+		case <-timer.C:
+			_ = command.Process.Kill()
+			err := <-wait
+			t.Fatalf("timed out waiting for PTY helper exit: %v (output=%q)", err, reader.output.String())
 		}
 	}
 }

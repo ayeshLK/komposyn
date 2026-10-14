@@ -599,8 +599,8 @@ func TestInteractiveHelpIncludesClear(t *testing.T) {
 func TestCtrlLClearsAndDoesNotReachCommandInput(t *testing.T) {
 	var output bytes.Buffer
 	filter := terminalInputRuneFilter(&output)
-	if got, keep := filter(readline.CharCtrlL); keep || got != 0 {
-		t.Fatalf("Ctrl-L filter = (%q, %t), want consumed", got, keep)
+	if got, keep := filter(readline.CharCtrlL); !keep || got != readline.CharCtrlL {
+		t.Fatalf("Ctrl-L filter = (%q, %t), want readline to handle Ctrl-L", got, keep)
 	}
 	if runtime.GOOS == "windows" {
 		// Native Windows clearing uses the active console buffer APIs instead
