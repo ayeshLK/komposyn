@@ -2,7 +2,7 @@
 
 Komposyn upgrades its SQLite schema automatically when `Store.Open` is called.
 Migrations are numbered, applied in order, and recorded in the
-`schema_migrations` table. The current schema version is 4.
+`schema_migrations` table. The current schema version is 5.
 
 ## Migration history
 
@@ -13,6 +13,8 @@ Migrations are numbered, applied in order, and recorded in the
    preserving their instants.
 4. Adds `source_generation` to source cursors so replacement transcripts can
    reuse byte offsets without colliding with previously imported records.
+5. Adds exact rational pricing rates and catalog source/identity metadata while
+   preserving legacy `rate_micros` as microunits per token.
 
 ## Compatibility rules
 

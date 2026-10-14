@@ -36,6 +36,8 @@ func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
 	event.EventID = "pricing-event"
 	event.ProjectID = "project-1"
 	event.SessionID = "session-1"
+	reportedAmount := int64(500)
+	event.Cost = Cost{Status: "reported", AmountMicros: &reportedAmount, Currency: "USD"}
 	if _, err := store.Append([]UsageEvent{event}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +61,9 @@ func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
 	}
 	if report.Summary.CalculatedCostMicros != 240 || report.Summary.CalculatedCurrency != "USD" || report.Summary.UnknownCostRequests != 0 {
 		t.Fatalf("unexpected cost summary: %+v", report.Summary)
+	}
+	if report.Summary.ProviderReportedCostMicros != reportedAmount || report.Summary.EstimatedCostRequests != 1 {
+		t.Fatalf("reported and estimated costs were not kept separately: %+v", report.Summary)
 	}
 	if len(report.Rows) != 1 || report.Rows[0].RequestCount != 1 {
 		t.Fatalf("unexpected grouped rows: %+v", report.Rows)
@@ -171,7 +176,7 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if _, err := store.db.Exec("UPDATE usage_events SET occurred_at = ?, started_at = NULL WHERE event_id = ?", "2026-10-11T00:00:00.5Z", event.EventID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4)"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -194,8 +199,8 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if err := store.db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 4 || latestMigration != 4 {
-		t.Fatalf("migration history = count %d, latest %d; want four migrations through version 4", migrationCount, latestMigration)
+	if migrationCount != 5 || latestMigration != 5 {
+		t.Fatalf("migration history = count %d, latest %d; want five migrations through version 5", migrationCount, latestMigration)
 	}
 	var sourceGenerationColumn string
 	if err := store.db.QueryRow("SELECT name FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&sourceGenerationColumn); err != nil {
@@ -277,7 +282,7 @@ func TestWriteTableUsesRequestedDimensionOrderAndSingleTimeColumn(t *testing.T) 
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-	if got, want := strings.Fields(lines[0]), []string{"HOUR", "CLIENT", "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "COST", "STATUS"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := strings.Fields(lines[0]), []string{"HOUR", "CLIENT", "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "ESTIMATE", "REPORTED", "STATUS"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("headings = %v, want %v", got, want)
 	}
 	if strings.Contains(lines[0], "BUCKET") || strings.Count(lines[1], hour) != 1 {
@@ -366,9 +371,11 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 		cost     string
 		status   string
 	}{
-		{name: "known zero", measures: UsageMeasures{RequestCount: 1, CalculatedCurrency: "USD"}, cost: "0 USD", status: "calculated"},
-		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD"}, cost: "0.00024 USD", status: "calculated"},
+		{name: "known zero", measures: UsageMeasures{RequestCount: 1, CalculatedCurrency: "USD", EstimatedCostRequests: 1}, cost: "0 USD", status: "estimated"},
+		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD", EstimatedCostRequests: 1}, cost: "0.00024 USD", status: "estimated"},
 		{name: "fully unknown", measures: UsageMeasures{RequestCount: 2, UnknownCostRequests: 2}, cost: "unknown", status: "pricing unavailable (2)"},
+		{name: "unknown reason", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, CostUnknownReason: "model_unresolved"}, cost: "unknown", status: "model unresolved (1)"},
+		{name: "reported only", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, ProviderReportedCostMicros: 10, ProviderReportedCurrency: "USD"}, cost: "unknown", status: "reported only; estimate unavailable (pricing unavailable, 1)"},
 		{name: "partially known", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "USD", UnknownCostRequests: 1}, cost: "12.34 USD", status: "partial; 1 pricing unavailable"},
 		{name: "mixed currencies", measures: UsageMeasures{RequestCount: 2, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed"}, cost: "not comparable", status: "mixed currencies"},
 		{name: "mixed and partially unknown", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed", UnknownCostRequests: 1}, cost: "not comparable", status: "mixed currencies; 1 pricing unavailable"},

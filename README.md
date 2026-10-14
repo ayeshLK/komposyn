@@ -162,5 +162,6 @@ the wire contract.
 | Learn common workflows | [Usage guide](docs/usage.md) |
 | Find every command and option | [CLI reference](docs/cli-reference.md) |
 | Understand data and privacy | [Privacy and data handling](docs/privacy.md) |
+| Review public pricing and maintain the offline catalog | [Pricing catalog maintenance](docs/pricing-catalog.md) |
 | Integrate through JSONL | [Harness protocol](docs/HARNESS_PROTOCOL.md) |
 | Contribute or extend the tool | [Contributing](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) |

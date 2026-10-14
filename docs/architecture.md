@@ -80,7 +80,12 @@ read-only from KompoSyn's perspective.
 
 ## Reporting semantics
 
-Reports operate on normalized events and stored pricing rules. Hourly grouping
+Reports operate on normalized events and stored pricing rules. A small reviewed
+catalog is embedded in the library and synchronized locally on database open;
+this path is idempotent and performs no network access. Exact rational pricing
+is rounded once per event to integer microunits. Public catalog calculations
+are estimates, distinct from source-reported amounts; unsupported or
+insufficiently described billing contexts stay unknown with a reason. Hourly grouping
 uses the caller-selected reporting timezone; when none is selected, reports use
 UTC. The selected IANA timezone is preserved in report output, so fractional-
 offset zones and repeated hours during daylight-saving folds remain distinct.

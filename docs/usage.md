@@ -116,8 +116,21 @@ Common filters are `--from`, `--to`, `--project`, `--session`, `--client`,
 location; it defaults to UTC. Hourly grouping uses that location's civil hour
 and retains its numeric offset, including fractional offsets and DST folds.
 
-If pricing is unavailable, reports preserve the usage event and mark its cost
-as unknown rather than inventing a price.
+Cost reports distinguish provider-reported amounts from public-list-price
+estimates. Estimates are not invoice amounts and do not account for
+subscriptions, negotiated terms, credits, tax, cloud resellers, or unobserved
+billing modifiers. Both reported and estimated amounts are retained when both
+exist. The bundled catalog is loaded locally; normal import and reporting make
+no pricing network requests.
+
+The initial reviewed catalog covers exact model IDs only. Unsupported models,
+missing categories (including cache-write duration where required), and events
+outside a known effective interval remain unknown. JSON/CSV include unknown
+reason, catalog version/source, matched model selector/effective interval, and
+separate reported and estimated values.
+Catalog entries and review dates are maintained in
+`plugins/library/token-logger/pricing-catalog.json`; update them only in a
+reviewed repository change against the linked official provider documentation.
 
 Table and interactive reports are optimized for terminal scanning. Selected
 grouping dimensions appear as separate columns in the order supplied to
@@ -132,11 +145,11 @@ Dimension values are terminal-safe and bounded to 32 Unicode code points;
 truncated values include a visible marker and short distinguishing hash. A
 wide or untruncated table mode is not currently provided.
 
-Human cost output converts stored currency microunits to currency units. It
-keeps known zero, fully unknown, partially known, and mixed-currency states
-distinct. The neutral `pricing unavailable` status is used because the
-aggregate does not yet retain a specific unknown-cost cause; the tool does not
-guess a rate. Use JSON or CSV for exact token integers, untruncated dimension
+Human cost output labels public list-price values as estimates and displays
+provider-reported amounts separately. It keeps known zero, fully unknown,
+partially known, and mixed-currency states distinct. Machine-readable output
+also identifies the unknown reason and matched catalog version/source when
+available. Use JSON or CSV for exact token integers, untruncated dimension
 values, stable machine-readable fields, and detailed cost measures. A report
 with no matching events displays `NO USAGE DATA` instead of fabricating an
 empty group.

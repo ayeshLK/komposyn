@@ -105,10 +105,10 @@ session counts remain exact with digit grouping. Empty dimensions display as
 `(none)`. Terminal controls are visibly escaped, and values longer than 32
 Unicode code points are shortened with an ellipsis and distinguishing hash.
 
-Cost status distinguishes calculated zero, fully unknown, partially known, and
-mixed-currency groups. `pricing unavailable` neutrally indicates that the local
-catalog could not calculate every request; the aggregate does not yet retain a
-more specific cause, and unknown cost is never silently treated as zero. A
+Cost status distinguishes estimated, provider-reported, fully unknown,
+partially known, and mixed-currency groups. JSON/CSV retain both reported and
+estimated values, plus catalog provenance and an unknown reason where
+applicable; unknown cost is never silently treated as zero. A
 query with no matching events prints `NO USAGE DATA`. Use `json` or `csv` for
 exact token integers, full dimension values, and stable machine-readable
 fields. An untruncated wide table mode is not currently available.

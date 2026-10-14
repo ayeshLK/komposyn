@@ -67,6 +67,13 @@ type UsageMeasures struct {
 	ProviderReportedCostMicros int64  `json:"provider_reported_cost_micros"`
 	ProviderReportedCurrency   string `json:"provider_reported_currency,omitempty"`
 	UnknownCostRequests        int64  `json:"unknown_cost_requests"`
+	EstimatedCostRequests      int64  `json:"estimated_cost_requests"`
+	CostUnknownReason          string `json:"cost_unknown_reason,omitempty"`
+	PricingVersion             string `json:"pricing_version,omitempty"`
+	PricingSource              string `json:"pricing_source,omitempty"`
+	PricingModelSelector       string `json:"pricing_model_selector,omitempty"`
+	PricingEffectiveFrom       string `json:"pricing_effective_from,omitempty"`
+	PricingEffectiveTo         string `json:"pricing_effective_to,omitempty"`
 }
 
 // UsageRow is a grouped report row. Bucket is populated for time groups.
@@ -87,16 +94,20 @@ type UsageReport struct {
 }
 
 type reportEvent struct {
-	OccurredAt       time.Time
-	ProjectID        string
-	SessionID        string
-	Client           string
-	Provider         string
-	RequestedModel   string
-	ResolvedModel    string
-	Usage            TokenUsage
-	ProviderAmount   *int64
-	ProviderCurrency string
+	OccurredAt           time.Time
+	ProjectID            string
+	SessionID            string
+	Client               string
+	Provider             string
+	RequestedModel       string
+	ResolvedModel        string
+	Usage                TokenUsage
+	ProviderAmount       *int64
+	ProviderCurrency     string
+	RequestedCostStatus  string
+	StoredCostAmount     *int64
+	StoredCostCurrency   string
+	StoredPricingVersion string
 }
 
 type reportAccumulator struct {
@@ -135,7 +146,8 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 	query := `SELECT occurred_at, COALESCE(project_id, ''), COALESCE(session_id, ''), client_name, provider_name,
 		requested_model, resolved_model, input_tokens, output_tokens, cache_read_tokens,
 		cache_write_tokens, reasoning_tokens, provider_cost_amount_micros,
-		provider_cost_currency FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?`
+		provider_cost_currency, cost_status, cost_amount_micros, cost_currency,
+		pricing_version FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?`
 	args := []any{formatStoredTime(filter.From), formatStoredTime(filter.To)}
 	if filter.ProjectID != "" {
 		query += " AND project_id = ?"
@@ -172,6 +184,13 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 			return UsageReport{}, fmt.Errorf("scan usage event: %w", err)
 		}
 		cost := catalog.calculate(event)
+		if event.RequestedCostStatus == "calculated" && event.StoredCostAmount != nil {
+			cost = eventCost{Status: "calculated", AmountMicros: *event.StoredCostAmount, Currency: event.StoredCostCurrency, PricingVersion: event.StoredPricingVersion}
+		}
+		if event.RequestedCostStatus == "reported" && event.StoredCostAmount != nil && event.ProviderAmount == nil {
+			amount := *event.StoredCostAmount
+			event.ProviderAmount, event.ProviderCurrency = &amount, event.StoredCostCurrency
+		}
 		addMeasures(&summary, event, cost)
 		if len(filter.GroupBy) == 0 {
 			continue
@@ -210,10 +229,12 @@ func scanReportEvent(rows *sql.Rows) (reportEvent, error) {
 	var occurred string
 	var providerAmount sql.NullInt64
 	var providerCurrency string
+	var storedCostAmount sql.NullInt64
 	if err := rows.Scan(&occurred, &event.ProjectID, &event.SessionID, &event.Client, &event.Provider,
 		&event.RequestedModel, &event.ResolvedModel, &event.Usage.InputTokens, &event.Usage.OutputTokens,
 		&event.Usage.CacheReadTokens, &event.Usage.CacheWriteTokens, &event.Usage.ReasoningTokens,
-		&providerAmount, &providerCurrency); err != nil {
+		&providerAmount, &providerCurrency, &event.RequestedCostStatus, &storedCostAmount,
+		&event.StoredCostCurrency, &event.StoredPricingVersion); err != nil {
 		return reportEvent{}, err
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, occurred)
@@ -225,6 +246,10 @@ func scanReportEvent(rows *sql.Rows) (reportEvent, error) {
 		amount := providerAmount.Int64
 		event.ProviderAmount = &amount
 		event.ProviderCurrency = providerCurrency
+	}
+	if storedCostAmount.Valid {
+		amount := storedCostAmount.Int64
+		event.StoredCostAmount = &amount
 	}
 	return event, nil
 }
@@ -243,13 +268,54 @@ func addMeasures(acc *reportAccumulator, event reportEvent, cost eventCost) {
 	if cost.Status == "calculated" {
 		acc.CalculatedCostMicros += cost.AmountMicros
 		acc.CalculatedCurrency = mergeCurrency(acc.CalculatedCurrency, cost.Currency)
+		acc.EstimatedCostRequests++
+		acc.PricingVersion = mergeLabel(acc.PricingVersion, cost.PricingVersion)
+		acc.PricingSource = mergeLabel(acc.PricingSource, pricingSourceLabel(cost))
+		acc.PricingModelSelector = mergeLabel(acc.PricingModelSelector, cost.ModelSelector)
+		acc.PricingEffectiveFrom = mergeLabel(acc.PricingEffectiveFrom, cost.EffectiveFrom)
+		acc.PricingEffectiveTo = mergeLabel(acc.PricingEffectiveTo, cost.EffectiveTo)
 	} else if cost.Status == "unknown" {
 		acc.UnknownCostRequests++
+		acc.CostUnknownReason = mergeLabel(acc.CostUnknownReason, cost.Reason)
+		if cost.Currency != "" {
+			acc.EstimatedCostRequests++
+			acc.CalculatedCostMicros += cost.AmountMicros
+			acc.CalculatedCurrency = mergeCurrency(acc.CalculatedCurrency, cost.Currency)
+			if cost.PricingVersion != "" {
+				acc.PricingVersion = mergeLabel(acc.PricingVersion, cost.PricingVersion)
+			}
+			if pricingSourceLabel(cost) != "" {
+				acc.PricingSource = mergeLabel(acc.PricingSource, pricingSourceLabel(cost))
+			}
+			acc.PricingModelSelector = mergeLabel(acc.PricingModelSelector, cost.ModelSelector)
+			acc.PricingEffectiveFrom = mergeLabel(acc.PricingEffectiveFrom, cost.EffectiveFrom)
+			acc.PricingEffectiveTo = mergeLabel(acc.PricingEffectiveTo, cost.EffectiveTo)
+		}
 	}
 	if event.ProviderAmount != nil {
 		acc.ProviderReportedCostMicros += *event.ProviderAmount
 		acc.ProviderReportedCurrency = mergeCurrency(acc.ProviderReportedCurrency, event.ProviderCurrency)
 	}
+}
+
+func pricingSourceLabel(cost eventCost) string {
+	if cost.SourceURL != "" {
+		return cost.SourceURL
+	}
+	return cost.Source
+}
+
+func mergeLabel(current, next string) string {
+	if current == "" || current == next {
+		return next
+	}
+	if next == "" {
+		return current
+	}
+	if current == "mixed" {
+		return current
+	}
+	return "mixed"
 }
 
 func mergeCurrency(current, next string) string {
@@ -330,7 +396,7 @@ func WriteJSON(w io.Writer, report UsageReport) error {
 // ungrouped report.
 func WriteCSV(w io.Writer, report UsageReport) error {
 	writer := csv.NewWriter(w)
-	if err := writer.Write([]string{"group", "bucket", "request_count", "session_count", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens", "calculated_cost_micros", "calculated_currency", "provider_reported_cost_micros", "unknown_cost_requests"}); err != nil {
+	if err := writer.Write([]string{"group", "bucket", "request_count", "session_count", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens", "calculated_cost_micros", "calculated_currency", "provider_reported_cost_micros", "unknown_cost_requests", "estimated_cost_requests", "unknown_cost_reason", "pricing_version", "pricing_source", "pricing_model_selector", "pricing_effective_from", "pricing_effective_to", "provider_reported_currency"}); err != nil {
 		return err
 	}
 	rows := report.Rows
@@ -352,7 +418,7 @@ func WriteCSV(w io.Writer, report UsageReport) error {
 			group = strings.Join(values, ",")
 		}
 		measures := row.UsageMeasures
-		if err := writer.Write([]string{group, row.Bucket, strconv.FormatInt(measures.RequestCount, 10), strconv.FormatInt(measures.SessionCount, 10), strconv.FormatInt(measures.InputTokens, 10), strconv.FormatInt(measures.CachedInputTokens, 10), strconv.FormatInt(measures.CacheWriteInputTokens, 10), strconv.FormatInt(measures.OutputTokens, 10), strconv.FormatInt(measures.ReasoningOutputTokens, 10), strconv.FormatInt(measures.TotalTokens, 10), strconv.FormatInt(measures.CalculatedCostMicros, 10), measures.CalculatedCurrency, strconv.FormatInt(measures.ProviderReportedCostMicros, 10), strconv.FormatInt(measures.UnknownCostRequests, 10)}); err != nil {
+		if err := writer.Write([]string{group, row.Bucket, strconv.FormatInt(measures.RequestCount, 10), strconv.FormatInt(measures.SessionCount, 10), strconv.FormatInt(measures.InputTokens, 10), strconv.FormatInt(measures.CachedInputTokens, 10), strconv.FormatInt(measures.CacheWriteInputTokens, 10), strconv.FormatInt(measures.OutputTokens, 10), strconv.FormatInt(measures.ReasoningOutputTokens, 10), strconv.FormatInt(measures.TotalTokens, 10), strconv.FormatInt(measures.CalculatedCostMicros, 10), measures.CalculatedCurrency, strconv.FormatInt(measures.ProviderReportedCostMicros, 10), strconv.FormatInt(measures.UnknownCostRequests, 10), strconv.FormatInt(measures.EstimatedCostRequests, 10), measures.CostUnknownReason, measures.PricingVersion, measures.PricingSource, measures.PricingModelSelector, measures.PricingEffectiveFrom, measures.PricingEffectiveTo, measures.ProviderReportedCurrency}); err != nil {
 			return err
 		}
 	}
@@ -376,7 +442,7 @@ func WriteTable(w io.Writer, report UsageReport) error {
 			headings = append(headings, strings.ToUpper(group))
 		}
 	}
-	headings = append(headings, "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "COST", "STATUS")
+	headings = append(headings, "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "ESTIMATE", "REPORTED", "STATUS")
 	fmt.Fprintln(writer, strings.Join(headings, "\t"))
 	rows := report.Rows
 	if len(rows) == 0 {
@@ -401,6 +467,7 @@ func WriteTable(w io.Writer, report UsageReport) error {
 			formatHumanTokens(row.ReasoningOutputTokens),
 			formatHumanTokens(row.TotalTokens),
 			cost,
+			reportedCostDisplay(row.UsageMeasures),
 			status,
 		)
 		fmt.Fprintln(writer, strings.Join(values, "\t"))
