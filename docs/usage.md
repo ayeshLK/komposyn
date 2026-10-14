@@ -166,6 +166,19 @@ Ctrl+Enter submits a REPL command and plain Enter inserts a space, so pasted
 line breaks cannot submit a command batch. Onboarding and diagnostic prompts
 continue to accept plain Enter for the displayed default.
 
+Interactive reports use a rolling last-seven-calendar-days range in UTC by
+default. The range is recalculated immediately before each report render, and
+the output shows the exact half-open bounds used for the query. `/refresh` and
+each report-view command therefore include newly committed usage on the next
+command-driven render; the terminal does not update passively while idle.
+`/range` displays whether the mode is `rolling` or `pinned` and its effective
+UTC bounds. `/range <from> <to>` pins an explicit half-open range until
+`/range reset` returns to rolling mode and renders immediately. Dates and
+ISO-8601 timestamps are accepted. When `watch` and the interactive CLI use a
+data-directory override (`--data-dir` or `TOKEN_LOGGER_DATA_DIR`), both must
+resolve to the same directory to share the database; the CLI does not search
+other data directories.
+
 When stdin or stdout is not a terminal, the CLI uses deterministic scanner
 input for pipes, redirects, and tests. In that mode `/clear` prints
 `clear is available only in an interactive terminal` and emits no terminal
