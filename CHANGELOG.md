@@ -4,6 +4,23 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
+## [0.2.0](https://github.com/ayeshLK/komposyn/compare/v0.1.0...v0.2.0) (2026-10-14)
+
+
+### Features
+
+* add interactive terminal editing and /clear ([#66](https://github.com/ayeshLK/komposyn/issues/66)) ([7720965](https://github.com/ayeshLK/komposyn/commit/77209659dd617356784aa477e7a3936207517c8f))
+* add versioned public pricing catalog ([#75](https://github.com/ayeshLK/komposyn/issues/75)) ([314a106](https://github.com/ayeshLK/komposyn/commit/314a106c6a908d866078c9992a01fa11161f114f))
+* define client-neutral import outcomes ([#61](https://github.com/ayeshLK/komposyn/issues/61)) ([e924425](https://github.com/ayeshLK/komposyn/commit/e924425d0a0c1fa62812692145d73c1463e049e0))
+* improve human-readable usage reports ([#60](https://github.com/ayeshLK/komposyn/issues/60)) ([b848dce](https://github.com/ayeshLK/komposyn/commit/b848dce0f447d329ad5c8d97aa49c6dbd07f1f4e))
+
+
+### Bug Fixes
+
+* import Codex token usage records without double-counting ([#62](https://github.com/ayeshLK/komposyn/issues/62)) ([62e5d37](https://github.com/ayeshLK/komposyn/commit/62e5d37743b1fa4202a0358493940608fe6feea3))
+* refresh interactive report time ranges ([#71](https://github.com/ayeshLK/komposyn/issues/71)) ([26b9be2](https://github.com/ayeshLK/komposyn/commit/26b9be27d0f22fd24550f0e5484deb38dcf0e9c0))
+* resolve token logger data directory consistently ([#72](https://github.com/ayeshLK/komposyn/issues/72)) ([1ce8460](https://github.com/ayeshLK/komposyn/commit/1ce846018e80ae3bb662b30213ea88c9bb8fec8e))
+
 ## 0.1.0 (2026-10-11)
 
 
