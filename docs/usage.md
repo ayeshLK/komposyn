@@ -145,9 +145,31 @@ komposyn-lg settings --data-dir /path/to/data --collector on --auto-start off
 ```
 
 Running `komposyn-lg` without a subcommand opens interactive mode. The first
-run asks whether to enable the local collector. Interactive reports support
-`/projects`, `/sessions`, `/total-usage`, `/by-client`, `/by-model`, `/cost`,
-`/range`, `/refresh`, `/settings`, `/report-issue`, and `/quit`.
+run asks whether to enable the local collector. In a terminal, the prompt
+supports Left/Right, Backspace, Delete, Home/End, and Up/Down session history.
+History is held in memory for this invocation only: it contains non-empty REPL
+commands, excludes onboarding and diagnostic answers, and is never written to
+disk. Ctrl-D on an empty prompt exits. Ctrl-C cancels the current input and
+exits interactive mode cleanly. Ctrl-L clears the visible terminal and keeps
+the prompt; it does not erase scrollback or application data. Commands are
+limited to 16,384 Unicode code points (runes), or at most 64 KiB of UTF-8;
+commands made from shorter UTF-8 characters have a lower byte limit.
+
+Interactive reports support `/projects`, `/sessions`, `/total-usage`,
+`/by-client`, `/by-model`, `/cost`, `/range`, `/refresh`, `/clear`,
+`/settings`, `/report-issue`, and `/quit`. `/clear` clears the visible
+terminal, returns the cursor home, and does not rerun the report; use
+`/refresh` when a redraw is wanted. It never deletes usage, settings, consent,
+diagnostics, or history. Multiline paste is folded into one command and is not
+executed as a batch. Unix-like terminals use bracketed paste. On Windows,
+Ctrl+Enter submits a REPL command and plain Enter inserts a space, so pasted
+line breaks cannot submit a command batch. Onboarding and diagnostic prompts
+continue to accept plain Enter for the displayed default.
+
+When stdin or stdout is not a terminal, the CLI uses deterministic scanner
+input for pipes, redirects, and tests. In that mode `/clear` prints
+`clear is available only in an interactive terminal` and emits no terminal
+control sequences.
 
 Diagnostics are sanitized and remain pending until explicitly reviewed. The
 tool only creates an issue draft after the user asks; it does not silently

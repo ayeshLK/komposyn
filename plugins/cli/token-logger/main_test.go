@@ -31,6 +31,7 @@ import (
 	"time"
 
 	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
+	"github.com/chzyer/readline"
 	_ "modernc.org/sqlite"
 )
 
@@ -557,6 +558,159 @@ func TestInteractiveReportsUseHumanReadableTable(t *testing.T) {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("interactive output does not contain %q: %s", expected, stdout.String())
 		}
+	}
+}
+
+func TestInteractiveClearIsNonTTYNoOp(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := runInteractive(strings.NewReader("/clear\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "clear is available only in an interactive terminal") {
+		t.Fatalf("missing non-TTY clear message: %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "\x1b[") || strings.Contains(stderr.String(), "\x1b[") {
+		t.Fatalf("non-TTY clear emitted terminal control bytes: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestInteractiveHelpIncludesClear(t *testing.T) {
+	store, err := tokenlogger.Open(filepath.Join(t.TempDir(), "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var output, stderr bytes.Buffer
+	if code := runInteractive(strings.NewReader("/help\n/quit\n"), &output, &stderr, store, t.TempDir()); code != 0 {
+		t.Fatalf("interactive exit code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(output.String(), "/clear") {
+		t.Fatalf("interactive help does not advertise /clear: %q", output.String())
+	}
+}
+
+func TestCtrlLClearsAndDoesNotReachCommandInput(t *testing.T) {
+	var output bytes.Buffer
+	filter := terminalInputRuneFilter(&output)
+	if got, keep := filter(readline.CharCtrlL); !keep || got != readline.CharCtrlL {
+		t.Fatalf("Ctrl-L filter = (%q, %t), want readline to handle Ctrl-L", got, keep)
+	}
+	if runtime.GOOS == "windows" {
+		// Native Windows clearing uses the active console buffer APIs instead
+		// of writing ANSI bytes to the supplied writer.
+		return
+	}
+	if output.String() != "\033[2J\033[H" {
+		t.Fatalf("Ctrl-L clear sequence = %q", output.String())
+	}
+}
+
+func TestPasteGuardFoldsBracketedMultilinePaste(t *testing.T) {
+	input := strings.NewReader("\033[200~/help\r\n/quit\033[201~\r")
+	guard := &pasteGuardReader{source: input}
+	output, err := io.ReadAll(guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "/help /quit\r" {
+		t.Fatalf("guarded paste = %q", output)
+	}
+}
+
+func TestPasteGuardPreservesCursorKeysAndUnicode(t *testing.T) {
+	input := "abc\x1b[D\x1b[C\x1b[3~界\r"
+	guard := &pasteGuardReader{source: strings.NewReader(input)}
+	output, err := io.ReadAll(guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != input {
+		t.Fatalf("guarded editor input = %q, want %q", output, input)
+	}
+}
+
+func TestInteractiveCommandLimitUsesUTF8Bytes(t *testing.T) {
+	line := []rune(strings.Repeat("界", maxInteractiveCommandBytes))
+	bounded := truncateInteractiveCommand(line)
+	if len(string(bounded)) > maxInteractiveCommandBytes {
+		t.Fatalf("bounded command is %d bytes", len(string(bounded)))
+	}
+	if len(bounded) != maxInteractiveCommandRunes {
+		t.Fatalf("bounded rune count = %d", len(bounded))
+	}
+	if ascii := truncateInteractiveCommand([]rune(strings.Repeat("a", maxInteractiveCommandBytes+1))); len(ascii) != maxInteractiveCommandRunes {
+		t.Fatalf("bounded ASCII rune count = %d", len(ascii))
+	}
+}
+
+type cancelledTerminalReader struct{}
+
+func (cancelledTerminalReader) ReadLine(string) (string, error) { return "", readline.ErrInterrupt }
+func (cancelledTerminalReader) DisableHistory()                 {}
+func (cancelledTerminalReader) EnableHistory()                  {}
+func (cancelledTerminalReader) IsTerminal() bool                { return true }
+
+func TestTerminalCancellationDoesNotCompleteOnboarding(t *testing.T) {
+	settings := tokenlogger.DefaultSettings(t.TempDir())
+	updated, startNow, err := runOnboarding(cancelledTerminalReader{}, settings.DataDir, settings)
+	if !errors.Is(err, readline.ErrInterrupt) {
+		t.Fatalf("onboarding error = %v", err)
+	}
+	if startNow || updated.OnboardingComplete || updated.CollectorEnabled != settings.CollectorEnabled {
+		t.Fatalf("cancellation changed onboarding settings: before=%+v after=%+v", settings, updated)
+	}
+}
+
+type historyTrackingReader struct {
+	answers       []string
+	history       bool
+	readWithState []bool
+}
+
+func (reader *historyTrackingReader) ReadLine(string) (string, error) {
+	reader.readWithState = append(reader.readWithState, reader.history)
+	answer := reader.answers[0]
+	reader.answers = reader.answers[1:]
+	return answer, nil
+}
+func (reader *historyTrackingReader) DisableHistory()  { reader.history = false }
+func (reader *historyTrackingReader) EnableHistory()   { reader.history = true }
+func (reader *historyTrackingReader) IsTerminal() bool { return true }
+
+func TestOnboardingAnswersAreReadWithHistoryDisabled(t *testing.T) {
+	reader := &historyTrackingReader{answers: []string{"n", "y"}, history: true}
+	settings := tokenlogger.DefaultSettings(t.TempDir())
+	if _, _, err := runOnboardingWithoutHistory(reader, settings.DataDir, settings); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reader.readWithState, []bool{false, false}) || !reader.history {
+		t.Fatalf("history state during onboarding=%v after=%t; want disabled for both answers and restored", reader.readWithState, reader.history)
+	}
+}
+
+func TestDiagnosticConsentIsReadWithHistoryDisabled(t *testing.T) {
+	store, err := tokenlogger.Open(filepath.Join(t.TempDir(), "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	diagnostic, err := store.RecordDiagnostic("test diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &historyTrackingReader{answers: []string{"view", "n"}, history: true}
+	if err := offerDiagnostic(reader, store, diagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reader.readWithState, []bool{false, false}) || !reader.history {
+		t.Fatalf("history state during diagnostic prompts=%v after=%t; want disabled for both answers then restored", reader.readWithState, reader.history)
 	}
 }
 
