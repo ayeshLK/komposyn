@@ -53,7 +53,7 @@ latest_output="$(env -u KOMPOSYN_VERSION \
 	KOMPOSYN_RELEASE_METADATA_URL="file://$metadata" \
 	KOMPOSYN_INSTALL_DIR="$install_dir" \
 	KOMPOSYN_COSIGN_BIN="$mock_cosign" \
-	bash "$standalone_installer")"
+	bash < "$standalone_installer")"
 [[ "$latest_output" == *'resolved Komposyn release: v1.2.3'* ]] || { echo 'default installer did not show resolved tag' >&2; exit 1; }
 [[ -x "$install_dir/komposyn-lg" ]] || { echo 'default installer did not install fixture artifact' >&2; exit 1; }
 "$install_dir/komposyn-lg" | grep -q fixture-binary
