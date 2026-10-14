@@ -23,12 +23,25 @@ case "$arch" in
 esac
 
 if [[ -z "$version" ]]; then
-	if [[ -n "$release_dir" ]]; then
+	if [[ -n "$release_dir" && -z "${KOMPOSYN_RELEASE_METADATA_URL:-}" ]]; then
 		version="$(sed -n 's/^# version=//p' "$release_dir/SHA256SUMS" | head -1)"
 		[[ -n "$version" ]] || { echo 'local SHA256SUMS is missing # version metadata' >&2; exit 1; }
 		[[ "$version" == v* ]] || version="v$version"
 	else
-		version="$(bash "$(dirname "${BASH_SOURCE[0]}")/resolve-latest-release.sh" "$repo")"
+		command -v jq >/dev/null 2>&1 || { echo 'jq is required to resolve the latest release' >&2; exit 1; }
+		metadata_url="${KOMPOSYN_RELEASE_METADATA_URL:-https://api.github.com/repos/${repo}/releases/latest}"
+		metadata="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$metadata_url")" || {
+			echo "unable to resolve latest release for $repo" >&2
+			exit 1
+		}
+		version="$(jq -er '
+		  if type == "object" and .draft == false and .prerelease == false and
+		     (.tag_name | type == "string" and test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+		  then .tag_name else error("not a stable Komposyn release") end
+		' <<<"$metadata")" || {
+			echo "latest release metadata for $repo is malformed or not a stable release" >&2
+			exit 1
+		}
 	fi
 fi
 [[ "$version" == v* ]] || version="v$version"

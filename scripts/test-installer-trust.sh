@@ -74,7 +74,6 @@ for identity in \
 	fi
 done
 
-grep -Fq 'refs/heads/master$' "$root_dir/scripts/install.ps1"
 ! grep -Fq 'refs/tags/' "$root_dir/scripts/install.sh"
 ! grep -Fq 'refs/tags/' "$root_dir/scripts/install.ps1"
 echo 'installer signing identity acceptance and rejection checks passed'

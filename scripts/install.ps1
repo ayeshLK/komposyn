@@ -8,16 +8,22 @@ $cosign = if ($env:KOMPOSYN_COSIGN_BIN) { $env:KOMPOSYN_COSIGN_BIN } else { 'cos
 $cosignIdentity = if ($env:KOMPOSYN_COSIGN_IDENTITY_REGEXP) { $env:KOMPOSYN_COSIGN_IDENTITY_REGEXP } else { '^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master$' }
 $cosignIssuer = 'https://token.actions.githubusercontent.com'
 if (-not $version) {
-    if ($releaseDir) {
+    if ($releaseDir -and -not $env:KOMPOSYN_RELEASE_METADATA_URL) {
         $version = ((Get-Content (Join-Path $releaseDir 'SHA256SUMS') | Where-Object { $_ -match '^# version=' } | Select-Object -First 1) -replace '^# version=', '').Trim()
         if (-not $version) { throw 'local SHA256SUMS is missing # version metadata' }
         if ($version -notmatch '^v') { $version = "v$version" }
     } else {
-        . (Join-Path $PSScriptRoot 'resolve-release.ps1')
         try {
             $metadataUri = if ($env:KOMPOSYN_RELEASE_METADATA_URL) { $env:KOMPOSYN_RELEASE_METADATA_URL } else { "https://api.github.com/repos/$repo/releases/latest" }
             $release = Invoke-RestMethod -Uri $metadataUri -Headers @{ Accept = 'application/vnd.github+json' }
-            $version = Resolve-KomposynReleaseTag -Release $release
+            if ($null -eq $release -or $release -isnot [pscustomobject] -or
+                $release.draft -isnot [bool] -or $release.prerelease -isnot [bool] -or
+                $release.draft -or $release.prerelease -or
+                $release.tag_name -isnot [string] -or
+                $release.tag_name -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+                throw 'latest release metadata is malformed or not a stable Komposyn release'
+            }
+            $version = $release.tag_name
         } catch {
             throw "unable to resolve a stable Komposyn release: $($_.Exception.Message)"
         }

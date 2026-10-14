@@ -53,6 +53,10 @@ jobs:
         shell: pwsh
         run: ./scripts/test-release-resolution.ps1
 
+      - name: Verify Unix installer resolution and trust
+        if: runner.os != 'Windows'
+        run: bash scripts/test-installer-trust.sh
+
   race:
     name: Race tests
     runs-on: ubuntu-latest
