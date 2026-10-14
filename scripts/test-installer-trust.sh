@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+bash "$root_dir/scripts/test-release-resolution.sh"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -35,15 +36,29 @@ done
 EOF
 chmod 0755 "$mock_cosign"
 
-KOMPOSYN_VERSION=v0.1.0 \
+install_output="$(KOMPOSYN_VERSION=v0.1.0 \
 	KOMPOSYN_RELEASE_DIR="$release_dir" \
 	KOMPOSYN_INSTALL_DIR="$install_dir" \
 	KOMPOSYN_COSIGN_BIN="$mock_cosign" \
-	bash "$root_dir/scripts/install.sh" >/dev/null
+	KOMPOSYN_RELEASE_METADATA_URL='file:///must-not-be-requested.json' \
+	bash "$root_dir/scripts/install.sh")"
+[[ "$install_output" == *'resolved Komposyn release: v0.1.0'* ]] || {
+	echo 'installer did not report its pinned release tag' >&2
+	exit 1
+}
 [[ -x "$install_dir/komposyn-lg" ]] || {
 	echo 'installer did not accept the configured release identity' >&2
 	exit 1
 }
+
+if KOMPOSYN_VERSION=v0.2.0 \
+	KOMPOSYN_RELEASE_DIR="$release_dir" \
+	KOMPOSYN_INSTALL_DIR="$tmp_dir/mismatched" \
+	KOMPOSYN_COSIGN_BIN="$mock_cosign" \
+	bash "$root_dir/scripts/install.sh" >/dev/null 2>&1; then
+	echo 'installer accepted a local manifest for a different pinned version' >&2
+	exit 1
+fi
 
 for identity in \
 	'^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/tags/.*$' \

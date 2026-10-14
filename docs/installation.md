@@ -18,10 +18,14 @@ standalone binary is named `komposyn-lg` (or `komposyn-lg.exe` on Windows).
 bash scripts/install.sh
 ```
 
-The Unix installer requires `curl`, `tar`, and `cosign` when downloading and
-verifying a published release. For local verification or air-gapped preparation,
-set `KOMPOSYN_RELEASE_DIR` to a directory containing the archive, `SHA256SUMS`,
-signature, and certificate.
+The Unix installer requires `curl`, `jq`, `tar`, and `cosign` when downloading
+and verifying a published release. It resolves GitHub's latest stable release,
+prints the concrete tag, then downloads every artifact from that immutable tag.
+Drafts, prereleases, malformed metadata, and API failures are rejected. Set
+`KOMPOSYN_VERSION=vX.Y.Z` to pin a specific stable release. For local
+verification or air-gapped preparation, set `KOMPOSYN_RELEASE_DIR` to a
+directory containing the archive, `SHA256SUMS`, signature, and certificate;
+the manifest's version is validated against any explicit pin.
 
 Useful overrides include `KOMPOSYN_VERSION`, `KOMPOSYN_REPO`,
 `KOMPOSYN_INSTALL_DIR`, and `KOMPOSYN_RELEASE_DIR`.
@@ -35,10 +39,13 @@ directory:
 .\scripts\install.ps1
 ```
 
-PowerShell and `cosign` are required. Use `KOMPOSYN_RELEASE_DIR`,
-`KOMPOSYN_VERSION`, and `KOMPOSYN_INSTALL_DIR` to select local artifacts and an
-installation path. Add the installation directory to `PATH` if the command is
-not found in a new terminal.
+PowerShell and `cosign` are required. By default, the installer resolves and
+prints the latest stable release tag, rejecting malformed or unavailable
+metadata, and pins all artifacts to that tag. Set `$env:KOMPOSYN_VERSION` to
+`vX.Y.Z` to pin a specific stable version. Use `KOMPOSYN_RELEASE_DIR` and
+`KOMPOSYN_INSTALL_DIR` to select local artifacts and an installation path. Add
+the installation directory to `PATH` if the command is not found in a new
+terminal.
 
 ## Verify an extracted release
 
