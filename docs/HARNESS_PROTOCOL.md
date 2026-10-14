@@ -95,8 +95,20 @@ Request parameters are optional:
 `params` may be omitted or `null`. `data_dir` is optional. Selection order is:
 
 1. `params.data_dir`, when non-empty;
-2. `TOKEN_LOGGER_DATA_DIR`;
-3. the platform default data directory.
+2. `TOKEN_LOGGER_DATA_DIR`, when non-empty;
+3. `$HOME/.komposyn/token-logger/data` (or the equivalent under the Windows
+   user profile), with legacy-state discovery when no override is provided.
+
+`XDG_DATA_HOME` affects only legacy discovery: the former path was
+`$XDG_DATA_HOME/token-logger`, or `$HOME/.local/share/token-logger` when XDG
+was unset. If only that location contains a Komposyn database, SQLite sidecar,
+or `settings.json`, the harness continues to use it without copying data. If
+both old and new locations contain state, the new location wins; no merge is
+performed and a warning is written to harness diagnostics. Set
+`TOKEN_LOGGER_DATA_DIR` to select the legacy path explicitly. A missing home
+directory is an initialization error; the process working directory is never
+used as a fallback. Successful initialize responses include the absolute
+selected path.
 
 The database is `token-logger.db` within the selected directory. On success,
 the result is:

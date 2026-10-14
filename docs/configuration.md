@@ -5,17 +5,33 @@ provider source directories are separate and remain provider-owned.
 
 ## Data directory selection
 
-For commands that accept `--data-dir`, the explicit option wins. When it is
-omitted, the CLI uses this precedence order:
+The data-directory selection order is:
 
-1. `TOKEN_LOGGER_DATA_DIR`
-2. `XDG_DATA_HOME/token-logger` when `XDG_DATA_HOME` is set
-3. `$HOME/.local/share/token-logger` on Unix-like systems
-4. `./.token-logger` if the home directory cannot be resolved
+1. A non-empty command-line `--data-dir` option or harness
+   `initialize.params.data_dir` value.
+2. A non-empty `TOKEN_LOGGER_DATA_DIR` environment variable.
+3. `$HOME/.komposyn/token-logger/data` (on Windows, the equivalent path below
+   the resolved user profile directory).
 
-The `harness` command has no CLI data-directory option; set
-`initialize.params.data_dir` in the request, or use the environment/default
-resolution when it is omitted.
+`XDG_DATA_HOME` does not change the new default. For compatibility, if no
+explicit path or `TOKEN_LOGGER_DATA_DIR` is set, Komposyn checks the former
+location (`$XDG_DATA_HOME/token-logger`, or `$HOME/.local/share/token-logger`
+when XDG is unset). If that legacy directory contains a Komposyn database,
+SQLite sidecar, or `settings.json` and the new directory does not, the legacy
+directory continues to be used in place; data is not copied. If both locations
+contain Komposyn state, the new directory wins and Komposyn warns that no merge
+was performed. Set `TOKEN_LOGGER_DATA_DIR` to the legacy path to select it.
+Other files do not trigger compatibility selection.
+
+If the home directory cannot be resolved, Komposyn stops with an actionable
+error; it does not fall back to the current working directory. Explicit and
+environment paths bypass legacy discovery. All selected paths are resolved to
+absolute paths.
+
+The no-argument interactive mode has no `--data-dir` option; set
+`TOKEN_LOGGER_DATA_DIR` to override it. `harness` accepts
+`initialize.params.data_dir` in the request, or uses the environment/default
+resolution when omitted.
 
 The database and settings files are:
 

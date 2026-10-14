@@ -5,9 +5,12 @@ embedded release version.
 
 ## Data directory
 
-Commands that access stored data use `--data-dir <path>`. The CLI also honors
-`TOKEN_LOGGER_DATA_DIR` when no flag is supplied. The `version` and `harness`
-commands do not accept this option; harness clients select a directory through
+Commands that access stored data and document the option below use
+`--data-dir <path>`. `TOKEN_LOGGER_DATA_DIR` is the override for no-argument
+interactive mode, which does not accept a command-line option. Without an
+override, data is stored under `$HOME/.komposyn/token-logger/data`; legacy data
+is discovered as described in [Configuration](configuration.md). The `version`
+command does not use a data directory. Harness clients may select one through
 `initialize.params.data_dir`.
 
 ## Commands
@@ -178,8 +181,8 @@ Use `/range` to show the mode and effective UTC bounds. `/range <from> <to>`
 pins an explicit half-open range (accepting ISO-8601 dates or timestamps),
 which remains unchanged across refreshes and report views. `/range reset`
 returns to rolling mode and renders immediately. If `watch` and interactive
-mode use an explicit `--data-dir` or `TOKEN_LOGGER_DATA_DIR`, configure both
-with the same resolved directory so they read and write the same database.
+mode should share a database, pass `--data-dir` to `watch` and set
+`TOKEN_LOGGER_DATA_DIR` for interactive mode to the same directory.
 
 For non-TTY input or output, the CLI keeps scanner-style behavior. `/clear`
 then prints `clear is available only in an interactive terminal` and emits no

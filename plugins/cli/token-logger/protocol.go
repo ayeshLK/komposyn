@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 
 	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
@@ -115,7 +114,7 @@ func (s *protocolServer) handle(request protocolRequest, stderr io.Writer) (prot
 	}
 	switch request.Method {
 	case "initialize":
-		return s.initialize(request)
+		return s.initialize(request, stderr)
 	case "record":
 		return s.record(request, stderr), false
 	case "flush":
@@ -140,22 +139,24 @@ func (s *protocolServer) handle(request protocolRequest, stderr io.Writer) (prot
 	}
 }
 
-func (s *protocolServer) initialize(request protocolRequest) (protocolResponse, bool) {
+func (s *protocolServer) initialize(request protocolRequest, stderr io.Writer) (protocolResponse, bool) {
 	var params initializeParams
 	if len(request.Params) > 0 && string(request.Params) != "null" {
 		if err := json.Unmarshal(request.Params, &params); err != nil {
 			return errorResponse(request.ID, "invalid_params", "initialize params are invalid"), false
 		}
 	}
-	if params.DataDir == "" {
-		params.DataDir = os.Getenv("TOKEN_LOGGER_DATA_DIR")
+	resolution, err := resolveDataDir(params.DataDir)
+	if err != nil {
+		writeProtocolDiagnostic(stderr, fmt.Errorf("resolve token logger data directory: %w", err))
+		return errorResponse(request.ID, "initialize_failed", "could not resolve logger data directory; see harness diagnostics"), false
 	}
-	if params.DataDir == "" {
-		params.DataDir = defaultDataDir()
-	}
+	reportDataDirResolution(stderr, resolution)
+	params.DataDir = resolution.Path
 	store, err := tokenlogger.Open(filepath.Join(params.DataDir, "token-logger.db"))
 	if err != nil {
-		return errorResponse(request.ID, "initialize_failed", "could not open logger store"), false
+		writeProtocolDiagnostic(stderr, fmt.Errorf("open logger store in %s: %w", params.DataDir, err))
+		return errorResponse(request.ID, "initialize_failed", "could not open logger store; see harness diagnostics"), false
 	}
 	if s.store != nil {
 		_ = s.store.Close()

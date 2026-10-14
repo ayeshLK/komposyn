@@ -50,20 +50,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
-		if dataDir == "" {
-			dataDir = defaultDataDir()
+		resolution, err := resolveDataDir("")
+		if err != nil {
+			fmt.Fprintf(stderr, "resolve token logger data directory: %v\n", err)
+			return 2
 		}
+		reportDataDirResolution(stderr, resolution)
+		dataDir := resolution.Path
 		store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 		if err != nil {
-			fmt.Fprintf(stderr, "open token logger database: %v\n", err)
+			fmt.Fprintf(stderr, "open token logger database in %s: %v\n", dataDir, err)
 			return 2
 		}
 		defer store.Close()
 		settingsPath := filepath.Join(dataDir, "settings.json")
 		settings, err := tokenlogger.LoadSettings(settingsPath, dataDir)
 		if err != nil {
-			fmt.Fprintf(stderr, "load settings: %v\n", err)
+			fmt.Fprintf(stderr, "load settings from %s: %v\n", settingsPath, err)
 			return 2
 		}
 		startNow := false
@@ -76,7 +79,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 					return 0
 				}
 				if err := tokenlogger.SaveSettings(settingsPath, settings); err != nil {
-					fmt.Fprintf(stderr, "save settings: %v\n", err)
+					fmt.Fprintf(stderr, "save settings to %s: %v\n", settingsPath, err)
 					return 2
 				}
 			}
@@ -90,7 +93,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 				return 0
 			}
 			if err := tokenlogger.SaveSettings(settingsPath, settings); err != nil {
-				fmt.Fprintf(stderr, "save settings: %v\n", err)
+				fmt.Fprintf(stderr, "save settings to %s: %v\n", settingsPath, err)
 				return 2
 			}
 		}
@@ -634,10 +637,7 @@ type diagnosticReport struct {
 }
 
 func runReportIssue(args []string, stdout, stderr io.Writer) int {
-	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
+	dataDir := ""
 	var outputPath string
 	for index := 0; index < len(args); index++ {
 		if index+1 >= len(args) {
@@ -660,9 +660,16 @@ func runReportIssue(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "report-issue requires --output <path>")
 		return 1
 	}
+	resolution, err := resolveDataDir(dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve token logger data directory: %v\n", err)
+		return 2
+	}
+	reportDataDirResolution(stderr, resolution)
+	dataDir = resolution.Path
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
-		fmt.Fprintf(stderr, "open token logger database: %v\n", err)
+		fmt.Fprintf(stderr, "open token logger database in %s: %v\n", dataDir, err)
 		return 2
 	}
 	defer store.Close()
@@ -772,10 +779,7 @@ func runWatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: komposyn-lg watch <file-or-directory> [--interval <duration>] [--data-dir <path>]")
 		return 1
 	}
-	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
+	dataDir := ""
 	interval := 5 * time.Second
 	root := args[0]
 	for index := 1; index < len(args); index++ {
@@ -799,9 +803,16 @@ func runWatch(args []string, stdout, stderr io.Writer) int {
 		}
 		index++
 	}
+	resolution, err := resolveDataDir(dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve token logger data directory: %v\n", err)
+		return 2
+	}
+	reportDataDirResolution(stderr, resolution)
+	dataDir = resolution.Path
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
-		fmt.Fprintf(stderr, "open token logger database: %v\n", err)
+		fmt.Fprintf(stderr, "open token logger database in %s: %v\n", dataDir, err)
 		return 2
 	}
 	defer store.Close()
@@ -851,10 +862,7 @@ func writeWatchPoll(output io.Writer, result tokenlogger.ImportResult) {
 }
 
 func runSettings(args []string, stdout, stderr io.Writer) int {
-	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
+	dataDir := ""
 	var collectorValue, autoStartValue string
 	for index := 0; index < len(args); index++ {
 		if index+1 >= len(args) {
@@ -874,10 +882,17 @@ func runSettings(args []string, stdout, stderr io.Writer) int {
 		}
 		index++
 	}
+	resolution, err := resolveDataDir(dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve token logger data directory: %v\n", err)
+		return 2
+	}
+	reportDataDirResolution(stderr, resolution)
+	dataDir = resolution.Path
 	path := filepath.Join(dataDir, "settings.json")
 	settings, err := tokenlogger.LoadSettings(path, dataDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "load settings: %v\n", err)
+		fmt.Fprintf(stderr, "load settings from %s: %v\n", path, err)
 		return 2
 	}
 	if collectorValue != "" {
@@ -921,10 +936,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: komposyn-lg import <file-or-directory> [--data-dir <path>] [--format text|json]")
 		return 1
 	}
-	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
+	dataDir := ""
 	path := args[0]
 	format := "text"
 	for index := 1; index < len(args); index++ {
@@ -947,9 +959,16 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		}
 		index++
 	}
+	resolution, err := resolveDataDir(dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve token logger data directory: %v\n", err)
+		return 2
+	}
+	reportDataDirResolution(stderr, resolution)
+	dataDir = resolution.Path
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
-		fmt.Fprintf(stderr, "open token logger database: %v\n", err)
+		fmt.Fprintf(stderr, "open token logger database in %s: %v\n", dataDir, err)
 		return 2
 	}
 	defer store.Close()
@@ -1047,9 +1066,16 @@ func runReport(command string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	resolution, err := resolveDataDir(dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve token logger data directory: %v\n", err)
+		return 2
+	}
+	reportDataDirResolution(stderr, resolution)
+	dataDir = resolution.Path
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
-		fmt.Fprintf(stderr, "open token logger database: %v\n", err)
+		fmt.Fprintf(stderr, "open token logger database in %s: %v\n", dataDir, err)
 		return 2
 	}
 	defer store.Close()
@@ -1080,10 +1106,7 @@ func parseReportArgs(command string, args []string) (tokenlogger.UsageFilter, st
 		filter.GroupBy = []string{tokenlogger.GroupSession}
 	}
 	format := "table"
-	dataDir := os.Getenv("TOKEN_LOGGER_DATA_DIR")
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
+	dataDir := ""
 	for index := 0; index < len(args); index++ {
 		if index+1 >= len(args) {
 			return filter, format, dataDir, fmt.Errorf("missing value for %s", args[index])
@@ -1171,14 +1194,4 @@ func codexPaths(path string) ([]string, error) {
 		return nil
 	})
 	return paths, err
-}
-
-func defaultDataDir() string {
-	if configured := os.Getenv("XDG_DATA_HOME"); configured != "" {
-		return filepath.Join(configured, "token-logger")
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "share", "token-logger")
-	}
-	return filepath.Join(".", ".token-logger")
 }
