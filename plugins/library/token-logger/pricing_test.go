@@ -69,20 +69,7 @@ func TestCatalogSyncClosesIntervalsAtomicallyWithoutRewritingRates(t *testing.T)
 	conflicting := old
 	conflicting.Numerator++
 	bad := bundle
-	bad.Entries = []struct {
-		ID             string `json:"id"`
-		Provider       string `json:"provider"`
-		Model          string `json:"model"`
-		Category       string `json:"category"`
-		Numerator      int64  `json:"numerator_micros"`
-		Denominator    int64  `json:"denominator_tokens"`
-		Currency       string `json:"currency"`
-		EffectiveFrom  string `json:"effective_from"`
-		EffectiveTo    string `json:"effective_to"`
-		SourceURL      string `json:"source_url"`
-		Notes          string `json:"notes"`
-		PricingVersion string `json:"pricing_version"`
-	}{old, conflicting}
+	bad.Entries = []bundledCatalogEntry{old, conflicting}
 	badData, err := json.Marshal(bad)
 	if err != nil {
 		t.Fatal(err)
@@ -104,20 +91,7 @@ func TestCatalogSyncClosesIntervalsAtomicallyWithoutRewritingRates(t *testing.T)
 	replacement.PricingVersion = "public-api-2026-10-15-v2"
 	replacement.Numerator += 100_000
 	bundle.Version = "public-api-2026-10-15-v2"
-	bundle.Entries = []struct {
-		ID             string `json:"id"`
-		Provider       string `json:"provider"`
-		Model          string `json:"model"`
-		Category       string `json:"category"`
-		Numerator      int64  `json:"numerator_micros"`
-		Denominator    int64  `json:"denominator_tokens"`
-		Currency       string `json:"currency"`
-		EffectiveFrom  string `json:"effective_from"`
-		EffectiveTo    string `json:"effective_to"`
-		SourceURL      string `json:"source_url"`
-		Notes          string `json:"notes"`
-		PricingVersion string `json:"pricing_version"`
-	}{old, replacement}
+	bundle.Entries = []bundledCatalogEntry{old, replacement}
 	updated, err := json.Marshal(bundle)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +112,97 @@ func TestCatalogSyncClosesIntervalsAtomicallyWithoutRewritingRates(t *testing.T)
 	}
 	if replacementCount != 1 {
 		t.Fatalf("replacement entries = %d, want 1", replacementCount)
+	}
+}
+
+func TestCatalogReviewDateIsPerEntryAndOverlapsRollback(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var bundle bundledCatalog
+	if err := json.Unmarshal(bundledPricingCatalog, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	var initialCount int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE catalog_entry_id IS NOT NULL").Scan(&initialCount); err != nil {
+		t.Fatal(err)
+	}
+	first := bundle.Entries[0]
+	first.ReviewedAt = "2026-10-14"
+	second := first
+	second.ID += ":overlap"
+	second.PricingVersion += "-next"
+	second.Numerator++
+	second.ReviewedAt = ""
+	bundle.Version = "public-api-2026-11-01-v2"
+	bundle.ReviewedAt = "2026-11-01"
+	bundle.Entries = []bundledCatalogEntry{first, second}
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.syncPricingCatalogBytes(data); err == nil {
+		t.Fatal("sync accepted overlapping bundled intervals")
+	}
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE catalog_entry_id IS NOT NULL").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != initialCount {
+		t.Fatalf("overlap sync changed catalog row count to %d, want %d", count, initialCount)
+	}
+
+	second.EffectiveFrom = "2026-11-01T00:00:00Z"
+	first.EffectiveTo = second.EffectiveFrom
+	bundle.Entries = []bundledCatalogEntry{first, second}
+	data, err = json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.syncPricingCatalogBytes(data); err != nil {
+		t.Fatalf("sync valid closed interval and new review date: %v", err)
+	}
+	var oldReview, newReview string
+	if err := store.db.QueryRow("SELECT source_reviewed_at FROM pricing_rules WHERE catalog_entry_id = ?", first.ID).Scan(&oldReview); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT source_reviewed_at FROM pricing_rules WHERE catalog_entry_id = ?", second.ID).Scan(&newReview); err != nil {
+		t.Fatal(err)
+	}
+	if oldReview != "2026-10-14" || newReview != "2026-11-01" {
+		t.Fatalf("review dates old/new = %q/%q", oldReview, newReview)
+	}
+}
+
+func TestBundledCatalogRejectsMissingProvenanceAndInvalidRate(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for name, mutate := range map[string]func(*bundledCatalogEntry){
+		"missing source":      func(e *bundledCatalogEntry) { e.SourceURL = "" },
+		"unofficial source":   func(e *bundledCatalogEntry) { e.SourceURL = "https://pricing.example.com/openai" },
+		"invalid review date": func(e *bundledCatalogEntry) { e.ReviewedAt = "not-a-date" },
+		"zero denominator":    func(e *bundledCatalogEntry) { e.Denominator = 0 },
+		"missing ID":          func(e *bundledCatalogEntry) { e.ID = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var bundle bundledCatalog
+			if err := json.Unmarshal(bundledPricingCatalog, &bundle); err != nil {
+				t.Fatal(err)
+			}
+			mutate(&bundle.Entries[0])
+			data, err := json.Marshal(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.syncPricingCatalogBytes(data); err == nil {
+				t.Fatal("invalid catalog was accepted")
+			}
+		})
 	}
 }
 
