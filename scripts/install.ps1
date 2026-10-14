@@ -1,22 +1,41 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = if ($env:KOMPOSYN_REPO) { $env:KOMPOSYN_REPO } else { 'ayeshLK/komposyn' }
-$version = if ($env:KOMPOSYN_VERSION) { $env:KOMPOSYN_VERSION.TrimStart('v') } else { 'latest' }
+$version = if ($env:KOMPOSYN_VERSION) { $env:KOMPOSYN_VERSION } else { $null }
 $base = "https://github.com/$repo/releases"
 $releaseDir = if ($env:KOMPOSYN_RELEASE_DIR) { $env:KOMPOSYN_RELEASE_DIR } else { $null }
 $cosign = if ($env:KOMPOSYN_COSIGN_BIN) { $env:KOMPOSYN_COSIGN_BIN } else { 'cosign' }
 $cosignIdentity = if ($env:KOMPOSYN_COSIGN_IDENTITY_REGEXP) { $env:KOMPOSYN_COSIGN_IDENTITY_REGEXP } else { '^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master$' }
 $cosignIssuer = 'https://token.actions.githubusercontent.com'
-if ($version -eq 'latest') {
-    if ($releaseDir) {
-        $version = ((Get-Content (Join-Path $releaseDir 'SHA256SUMS') | Where-Object { $_ -match '^# version=' }) -replace '^# version=', '').Trim()
+if (-not $version) {
+    if ($releaseDir -and -not $env:KOMPOSYN_RELEASE_METADATA_URL) {
+        $version = ((Get-Content (Join-Path $releaseDir 'SHA256SUMS') | Where-Object { $_ -match '^# version=' } | Select-Object -First 1) -replace '^# version=', '').Trim()
+        if (-not $version) { throw 'local SHA256SUMS is missing # version metadata' }
+        if ($version -notmatch '^v') { $version = "v$version" }
     } else {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest"
-        $version = $release.tag_name.TrimStart('v')
+        try {
+            $metadataUri = if ($env:KOMPOSYN_RELEASE_METADATA_URL) { $env:KOMPOSYN_RELEASE_METADATA_URL } else { "https://api.github.com/repos/$repo/releases/latest" }
+            $release = Invoke-RestMethod -Uri $metadataUri -Headers @{ Accept = 'application/vnd.github+json' }
+            if ($null -eq $release -or $release -isnot [pscustomobject] -or
+                $release.draft -isnot [bool] -or $release.prerelease -isnot [bool] -or
+                $release.draft -or $release.prerelease -or
+                $release.tag_name -isnot [string] -or
+                $release.tag_name -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+                throw 'latest release metadata is malformed or not a stable Komposyn release'
+            }
+            $version = $release.tag_name
+        } catch {
+            throw "unable to resolve a stable Komposyn release: $($_.Exception.Message)"
+        }
     }
 }
+if ($version -notmatch '^v') { $version = "v$version" }
+if ($version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "invalid release version/tag: $version" }
+$tag = $version
+$version = $tag.Substring(1)
+Write-Output "resolved Komposyn release: $tag"
 $installDir = if ($env:KOMPOSYN_INSTALL_DIR) { $env:KOMPOSYN_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Komposyn\bin' }
-$tagPath = "download/v$version"
+$tagPath = "download/$tag"
 $asset = "komposyn-lg_${version}_windows_amd64.zip"
 $assetUrl = "$base/$tagPath/$asset"
 $checksumsUrl = "$base/$tagPath/SHA256SUMS"
@@ -28,6 +47,8 @@ try {
     $signature = Join-Path $temp "$asset.sig"
     $certificate = Join-Path $temp "$asset.pem"
     if ($releaseDir) {
+        $manifestVersion = ((Get-Content (Join-Path $releaseDir 'SHA256SUMS') | Where-Object { $_ -match '^# version=' } | Select-Object -First 1) -replace '^# version=', '').Trim()
+        if ($manifestVersion.TrimStart('v') -ne $version) { throw "local release metadata does not match requested tag $tag" }
         $localFiles = @(
             (Join-Path $releaseDir $asset),
             (Join-Path $releaseDir 'SHA256SUMS'),

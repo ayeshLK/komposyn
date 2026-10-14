@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo="${KOMPOSYN_REPO:-ayeshLK/komposyn}"
-version="${KOMPOSYN_VERSION:-latest}"
+version="${KOMPOSYN_VERSION:-}"
 install_dir="${KOMPOSYN_INSTALL_DIR:-${HOME}/.local/bin}"
 cosign_bin="${KOMPOSYN_COSIGN_BIN:-cosign}"
 cosign_identity="${KOMPOSYN_COSIGN_IDENTITY_REGEXP:-^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master$}"
@@ -22,29 +22,42 @@ case "$arch" in
 	 *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
 esac
 
-if [[ "$version" == latest ]]; then
-	if [[ -n "$release_dir" ]]; then
+if [[ -z "$version" ]]; then
+	if [[ -n "$release_dir" && -z "${KOMPOSYN_RELEASE_METADATA_URL:-}" ]]; then
 		version="$(sed -n 's/^# version=//p' "$release_dir/SHA256SUMS" | head -1)"
+		[[ -n "$version" ]] || { echo 'local SHA256SUMS is missing # version metadata' >&2; exit 1; }
+		[[ "$version" == v* ]] || version="v$version"
 	else
-		version="$(curl -fsSL "${base_url}/latest/download/SHA256SUMS" | sed -n 's/^# version=//p' | head -1)"
-	fi
-	if [[ -z "$version" ]]; then
-		version="latest"
+		command -v jq >/dev/null 2>&1 || { echo 'jq is required to resolve the latest release' >&2; exit 1; }
+		metadata_url="${KOMPOSYN_RELEASE_METADATA_URL:-https://api.github.com/repos/${repo}/releases/latest}"
+		metadata="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$metadata_url")" || {
+			echo "unable to resolve latest release for $repo" >&2
+			exit 1
+		}
+		version="$(jq -er '
+		  if type == "object" and .draft == false and .prerelease == false and
+		     (.tag_name | type == "string" and test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+		  then .tag_name else error("not a stable Komposyn release") end
+		' <<<"$metadata")" || {
+			echo "latest release metadata for $repo is malformed or not a stable release" >&2
+			exit 1
+		}
 	fi
 fi
-version="${version#v}"
+[[ "$version" == v* ]] || version="v$version"
+[[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid release version/tag: $version" >&2; exit 1; }
+tag="$version"
+version="${tag#v}"
+echo "resolved Komposyn release: $tag"
 asset="komposyn-lg_${version}_${os}_${arch}.tar.gz"
-if [[ "$version" == latest ]]; then
-	asset_url="${base_url}/latest/download/${asset}"
-	checksums_url="${base_url}/latest/download/SHA256SUMS"
-else
-	asset_url="${base_url}/download/v${version}/${asset}"
-	checksums_url="${base_url}/download/v${version}/SHA256SUMS"
-fi
+asset_url="${base_url}/download/${tag}/${asset}"
+checksums_url="${base_url}/download/${tag}/SHA256SUMS"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 if [[ -n "$release_dir" ]]; then
+	manifest_version="$(sed -n 's/^# version=//p' "$release_dir/SHA256SUMS" | head -1)"
+	[[ "${manifest_version#v}" == "$version" ]] || { echo "local release metadata does not match requested tag $tag" >&2; exit 1; }
 	for release_file in "$release_dir/$asset" "$release_dir/SHA256SUMS" "$release_dir/$asset.sig" "$release_dir/$asset.pem"; do
 		[[ -f "$release_file" ]] || { echo "missing local release artifact: $release_file" >&2; exit 1; }
 	done

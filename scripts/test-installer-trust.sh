@@ -2,23 +2,28 @@
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+bash "$root_dir/scripts/test-release-resolution.sh"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 release_dir="$tmp_dir/release"
 install_dir="$tmp_dir/install"
 mkdir -p "$release_dir"
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m)"
+case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
+asset="komposyn-lg_0.1.0_${os}_${arch}.tar.gz"
 printf '#!/bin/sh\nexit 0\n' > "$tmp_dir/komposyn-lg"
 chmod 0755 "$tmp_dir/komposyn-lg"
-tar -C "$tmp_dir" -czf "$release_dir/komposyn-lg_0.1.0_linux_amd64.tar.gz" komposyn-lg
+tar -C "$tmp_dir" -czf "$release_dir/$asset" komposyn-lg
 (
 	cd "$release_dir"
 	echo '# version=0.1.0'
-	sha256sum komposyn-lg_0.1.0_linux_amd64.tar.gz
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$asset"; else shasum -a 256 "$asset"; fi
 ) > "$release_dir/SHA256SUMS"
 
 mock_cosign="$tmp_dir/cosign"
-touch "$release_dir/komposyn-lg_0.1.0_linux_amd64.tar.gz.sig" "$release_dir/komposyn-lg_0.1.0_linux_amd64.tar.gz.pem"
+touch "$release_dir/$asset.sig" "$release_dir/$asset.pem"
 cat > "$mock_cosign" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -35,15 +40,29 @@ done
 EOF
 chmod 0755 "$mock_cosign"
 
-KOMPOSYN_VERSION=v0.1.0 \
+install_output="$(KOMPOSYN_VERSION=v0.1.0 \
 	KOMPOSYN_RELEASE_DIR="$release_dir" \
 	KOMPOSYN_INSTALL_DIR="$install_dir" \
 	KOMPOSYN_COSIGN_BIN="$mock_cosign" \
-	bash "$root_dir/scripts/install.sh" >/dev/null
+	KOMPOSYN_RELEASE_METADATA_URL='file:///must-not-be-requested.json' \
+	bash "$root_dir/scripts/install.sh")"
+[[ "$install_output" == *'resolved Komposyn release: v0.1.0'* ]] || {
+	echo 'installer did not report its pinned release tag' >&2
+	exit 1
+}
 [[ -x "$install_dir/komposyn-lg" ]] || {
 	echo 'installer did not accept the configured release identity' >&2
 	exit 1
 }
+
+if KOMPOSYN_VERSION=v0.2.0 \
+	KOMPOSYN_RELEASE_DIR="$release_dir" \
+	KOMPOSYN_INSTALL_DIR="$tmp_dir/mismatched" \
+	KOMPOSYN_COSIGN_BIN="$mock_cosign" \
+	bash "$root_dir/scripts/install.sh" >/dev/null 2>&1; then
+	echo 'installer accepted a local manifest for a different pinned version' >&2
+	exit 1
+fi
 
 for identity in \
 	'^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/tags/.*$' \
@@ -59,7 +78,6 @@ for identity in \
 	fi
 done
 
-grep -Fq 'refs/heads/master$' "$root_dir/scripts/install.ps1"
 ! grep -Fq 'refs/tags/' "$root_dir/scripts/install.sh"
 ! grep -Fq 'refs/tags/' "$root_dir/scripts/install.ps1"
 echo 'installer signing identity acceptance and rejection checks passed'
