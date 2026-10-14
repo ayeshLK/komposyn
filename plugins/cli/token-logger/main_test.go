@@ -602,6 +602,11 @@ func TestCtrlLClearsAndDoesNotReachCommandInput(t *testing.T) {
 	if got, keep := filter(readline.CharCtrlL); keep || got != 0 {
 		t.Fatalf("Ctrl-L filter = (%q, %t), want consumed", got, keep)
 	}
+	if runtime.GOOS == "windows" {
+		// Native Windows clearing uses the active console buffer APIs instead
+		// of writing ANSI bytes to the supplied writer.
+		return
+	}
 	if output.String() != "\033[2J\033[H" {
 		t.Fatalf("Ctrl-L clear sequence = %q", output.String())
 	}
