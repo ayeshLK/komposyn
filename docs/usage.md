@@ -14,10 +14,13 @@ The supported flow is:
 Token Logger does not replace or modify provider-owned source files, and it
 does not collect prompts, responses, or provider credentials by default.
 
-Commands that access stored data accept a data directory through `--data-dir`.
-If it is omitted, KompoSyn uses `TOKEN_LOGGER_DATA_DIR` when set and otherwise
-its platform default. The `harness` command selects its directory through
-`initialize.params.data_dir` or the environment/default resolution.
+Stored-data commands accept `--data-dir`. The no-argument interactive mode
+uses `TOKEN_LOGGER_DATA_DIR` when set, otherwise
+`$HOME/.komposyn/token-logger/data` (or the equivalent under the Windows user
+profile). Legacy data discovery and conflict behavior are documented in
+[Configuration](configuration.md). The harness accepts
+`initialize.params.data_dir`, then `TOKEN_LOGGER_DATA_DIR`, then the same
+default and compatibility discovery.
 
 ## Import
 

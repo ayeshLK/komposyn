@@ -15,6 +15,18 @@ default on Unix-like systems. On Windows, use the installed `.exe` path.
 komposyn-lg version
 ```
 
+## The application opened an unexpected data directory
+
+Run `komposyn-lg settings` to see the absolute directory used by the CLI. Stored
+data defaults to `$HOME/.komposyn/token-logger/data`; an existing legacy
+directory (`$XDG_DATA_HOME/token-logger`, or `$HOME/.local/share/token-logger`)
+is reused only when it contains Komposyn state and the new location does not.
+If both locations contain state, the new location wins and a warning explains
+how to select the legacy location. No automatic merge or copy occurs. Set
+`TOKEN_LOGGER_DATA_DIR` to select a directory explicitly. If the home directory
+cannot be resolved, set this variable; Komposyn does not use the current
+working directory as a fallback.
+
 ## No events are imported
 
 Check that the source path exists, has readable JSON/JSONL files, and belongs

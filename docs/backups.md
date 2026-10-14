@@ -7,8 +7,9 @@ provider-owned data and are not included in a Komposyn data-directory backup.
 ## Create a consistent backup
 
 1. Stop `komposyn-lg` and any `watch` process using the data directory.
-2. Resolve the directory using [configuration](configuration.md), or set
-   `TOKEN_LOGGER_DATA_DIR` explicitly.
+2. Resolve the directory using [configuration](configuration.md). The
+   `komposyn-lg settings` output shows the absolute `data_dir`; alternatively,
+   set `TOKEN_LOGGER_DATA_DIR` explicitly for all commands and harness clients.
 3. Copy the complete directory to protected backup storage, preserving file
    permissions. Include `token-logger.db`, `settings.json`, and any
    `token-logger.db-wal` or `token-logger.db-shm` files.

@@ -69,9 +69,15 @@ Build the CLI locally, import a transcript, and inspect a report:
 
 ```text
 go build -o bin/komposyn-lg ./plugins/cli/token-logger
-bin/komposyn-lg import path/to/transcript.jsonl --data-dir "$HOME/.local/share/komposyn"
-bin/komposyn-lg usage --data-dir "$HOME/.local/share/komposyn" --format table
+bin/komposyn-lg import path/to/transcript.jsonl
+bin/komposyn-lg usage --format table
 ```
+
+By default, Komposyn stores data under `$HOME/.komposyn/token-logger/data`
+(or the equivalent under the Windows user profile). Existing legacy data is
+discovered automatically. Set `TOKEN_LOGGER_DATA_DIR` to override the
+directory; see [configuration](docs/configuration.md) for compatibility and
+conflict behavior.
 
 Release installation and platform-specific paths are documented in
 [Installation](docs/installation.md).

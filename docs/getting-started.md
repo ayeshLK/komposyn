@@ -33,11 +33,16 @@ bin/komposyn-lg version
 
 ## Import a source
 
-Choose a data directory for Komposyn’s SQLite database and settings:
+Komposyn stores its database and settings by default under
+`$HOME/.komposyn/token-logger/data` (or the equivalent under your Windows user
+profile). Existing legacy data is discovered automatically; see
+[Configuration](configuration.md) for precedence and conflict behavior. To
+choose another directory, set `TOKEN_LOGGER_DATA_DIR` or pass `--data-dir` to
+commands that support it:
 
 ```text
 bin/komposyn-lg import /path/to/source.jsonl \
-  --data-dir "$HOME/.local/share/komposyn"
+  --data-dir "$HOME/.komposyn/token-logger/data"
 ```
 
 The importer detects the Codex or Claude Code source shape, normalizes supported
@@ -47,7 +52,7 @@ usage records, skips unsupported records, and can be safely rerun.
 
 ```text
 bin/komposyn-lg usage \
-  --data-dir "$HOME/.local/share/komposyn" \
+  --data-dir "$HOME/.komposyn/token-logger/data" \
   --format table
 ```
 
@@ -61,7 +66,7 @@ Run the watcher against a file or directory:
 
 ```text
 bin/komposyn-lg watch /path/to/transcripts \
-  --data-dir "$HOME/.local/share/komposyn" \
+  --data-dir "$HOME/.komposyn/token-logger/data" \
   --interval 5s
 ```
 

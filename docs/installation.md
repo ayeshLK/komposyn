@@ -53,9 +53,11 @@ bash scripts/verify-release.sh /path/to/release-dir
 
 For the initial release, upgrade by rerunning the latest standalone installer.
 It replaces the executable and preserves the existing SQLite database,
-settings, consent choices, diagnostics, and data directory. Schema migrations
-run when the new executable opens the database. In-CLI self-updating is
-intentionally deferred.
+settings, consent choices, diagnostics, and data directory. New installations
+use `$HOME/.komposyn/token-logger/data` (or the equivalent under the Windows
+user profile); an existing legacy data directory is reused in place when
+detected. Schema migrations run when the new executable opens the database.
+In-CLI self-updating is intentionally deferred.
 
 The uninstall scripts remove the installed executable but preserve local data.
 Back up the data directory before manually removing it; uninstall does not
