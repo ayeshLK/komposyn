@@ -49,6 +49,7 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	setPTYSize(t, master)
 	output := newPTYOutputReader(master)
 	defer func() {
 		_ = master.Close()
@@ -59,21 +60,20 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 	}()
 	output.waitForText(t, "> ")
 
-	// Type "abc", delete the final character, insert "Z", and submit. The
-	// resulting command proves that editor-side editing is applied before
-	// command dispatch.
+	// Exercise cursor insertion, Right, Delete in the middle, Home/Right, and
+	// Unicode through the real editor before command dispatch.
 	if _, err := master.Write([]byte("abc")); err != nil {
 		t.Fatal(err)
 	}
 	output.waitForText(t, "> abc")
-	if _, err := master.Write([]byte("\x7fZ\r")); err != nil {
+	if _, err := master.Write([]byte("\x1b[D\x1b[D界\x1b[C\x1b[3~\x01\x1b[Cx\x05\r")); err != nil {
 		t.Fatal(err)
 	}
-	output.waitForText(t, "RESULT:abZ\n")
+	output.waitForText(t, "RESULT:ax界b\n")
 	if _, err := master.Write([]byte("\x1b[A\r")); err != nil {
 		t.Fatal(err)
 	}
-	output.waitForText(t, "RESULT:abZ\n")
+	output.waitForText(t, "RESULT:ax界b\n")
 
 	// Moving away from history and back restores the partially typed draft.
 	if _, err := master.Write([]byte("draft\x1b[A\x1b[B\r")); err != nil {
@@ -127,6 +127,7 @@ func runPTYExitCase(t *testing.T, mode, result, input string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	setPTYSize(t, master)
 	output := newPTYOutputReader(master)
 	defer func() {
 		_ = master.Close()
@@ -144,6 +145,13 @@ func runPTYExitCase(t *testing.T, mode, result, input string) {
 	output.waitForText(t, result)
 	if err := command.Wait(); err != nil {
 		t.Fatalf("PTY helper failed: %v", err)
+	}
+}
+
+func setPTYSize(t *testing.T, terminal *os.File) {
+	t.Helper()
+	if err := pty.Setsize(terminal, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -624,6 +624,18 @@ func TestPasteGuardFoldsBracketedMultilinePaste(t *testing.T) {
 	}
 }
 
+func TestPasteGuardPreservesCursorKeysAndUnicode(t *testing.T) {
+	input := "abc\x1b[D\x1b[C\x1b[3~界\r"
+	guard := &pasteGuardReader{source: strings.NewReader(input)}
+	output, err := io.ReadAll(guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != input {
+		t.Fatalf("guarded editor input = %q, want %q", output, input)
+	}
+}
+
 func TestInteractiveCommandLimitUsesUTF8Bytes(t *testing.T) {
 	line := []rune(strings.Repeat("界", maxInteractiveCommandBytes))
 	bounded := truncateInteractiveCommand(line)
