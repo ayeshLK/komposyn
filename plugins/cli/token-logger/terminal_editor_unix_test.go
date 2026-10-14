@@ -74,6 +74,20 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	output.waitForText(t, "RESULT:abZ\n")
+
+	// Moving away from history and back restores the partially typed draft.
+	if _, err := master.Write([]byte("draft\x1b[A\x1b[B\r")); err != nil {
+		t.Fatal(err)
+	}
+	output.waitForText(t, "RESULT:draft\n")
+
+	// Up stops at the oldest item; Down returns through the newest item to
+	// the draft typed before history navigation.
+	if _, err := master.Write([]byte("new\x1b[A\x1b[A\x1b[A\x1b[B\x1b[B\r")); err != nil {
+		t.Fatal(err)
+	}
+	output.waitForText(t, "RESULT:new\n")
+
 	if err := command.Wait(); err != nil {
 		t.Fatalf("PTY helper failed: %v", err)
 	}
@@ -139,7 +153,7 @@ func terminalEditorPTYHelper(t *testing.T) {
 	if !ok {
 		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
 	}
-	for range 2 {
+	for range 4 {
 		line, err := reader.ReadLine("> ")
 		if err != nil {
 			t.Fatalf("read terminal line: %v", err)

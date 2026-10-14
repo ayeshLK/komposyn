@@ -69,10 +69,9 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 		startNow := false
 		if terminalInput, ok := newTerminalLineReader(input, stdout, stderr); ok {
 			defer terminalInput.Close()
-			terminalInput.DisableHistory()
 			if !settings.OnboardingComplete {
 				var onboardingErr error
-				settings, startNow, onboardingErr = runOnboarding(terminalInput, dataDir, settings)
+				settings, startNow, onboardingErr = runOnboardingWithoutHistory(terminalInput, dataDir, settings)
 				if onboardingErr != nil {
 					return 0
 				}
@@ -81,7 +80,6 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 					return 2
 				}
 			}
-			terminalInput.EnableHistory()
 			return runInteractiveLoop(terminalInput, stdout, stderr, store, dataDir, settings, startNow)
 		}
 		scanner := bufio.NewScanner(input)
@@ -228,16 +226,7 @@ func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer,
 		// Fold Unix bracketed-paste line feeds into the current command. The
 		// Windows console adapter maps plain Enter to a space and Ctrl+Enter to
 		// submission, so a multiline paste cannot execute a command batch.
-		FuncFilterInputRune: func(r rune) (rune, bool) {
-			if r == readline.CharCtrlL {
-				_ = clearTerminal(stdout)
-				return 0, false
-			}
-			if r == '\n' {
-				return '\r', true
-			}
-			return r, true
-		},
+		FuncFilterInputRune: terminalInputRuneFilter(stdout),
 	}
 	setCommandMode := configureTerminalStreams(config, in, stdout, stderr)
 	config.FuncMakeRaw = func() error {
@@ -261,6 +250,19 @@ func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer,
 	}
 	enableTerminalFeatures(stdout)
 	return &terminalLineReader{instance: instance, output: stdout, input: in, rawState: preflightState, setCommandMode: setCommandMode}, true
+}
+
+func terminalInputRuneFilter(stdout io.Writer) func(rune) (rune, bool) {
+	return func(input rune) (rune, bool) {
+		if input == readline.CharCtrlL {
+			_ = clearTerminal(stdout)
+			return 0, false
+		}
+		if input == '\n' {
+			return '\r', true
+		}
+		return input, true
+	}
 }
 
 func truncateInteractiveCommand(line []rune) []rune {
@@ -686,6 +688,12 @@ func runOnboarding(reader interactiveLineReader, dataDir string, settings tokenl
 	settings.OnboardingComplete = true
 	settings.DataDir = dataDir
 	return settings, startNow, nil
+}
+
+func runOnboardingWithoutHistory(reader interactiveLineReader, dataDir string, settings tokenlogger.Settings) (tokenlogger.Settings, bool, error) {
+	reader.DisableHistory()
+	defer reader.EnableHistory()
+	return runOnboarding(reader, dataDir, settings)
 }
 
 func askYesNo(reader interactiveLineReader, question string, defaultYes bool) (bool, error) {

@@ -581,6 +581,32 @@ func TestInteractiveClearIsNonTTYNoOp(t *testing.T) {
 	}
 }
 
+func TestInteractiveHelpIncludesClear(t *testing.T) {
+	store, err := tokenlogger.Open(filepath.Join(t.TempDir(), "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var output, stderr bytes.Buffer
+	if code := runInteractive(strings.NewReader("/help\n/quit\n"), &output, &stderr, store, t.TempDir()); code != 0 {
+		t.Fatalf("interactive exit code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(output.String(), "/clear") {
+		t.Fatalf("interactive help does not advertise /clear: %q", output.String())
+	}
+}
+
+func TestCtrlLClearsAndDoesNotReachCommandInput(t *testing.T) {
+	var output bytes.Buffer
+	filter := terminalInputRuneFilter(&output)
+	if got, keep := filter(readline.CharCtrlL); keep || got != 0 {
+		t.Fatalf("Ctrl-L filter = (%q, %t), want consumed", got, keep)
+	}
+	if output.String() != "\033[2J\033[H" {
+		t.Fatalf("Ctrl-L clear sequence = %q", output.String())
+	}
+}
+
 func TestPasteGuardFoldsBracketedMultilinePaste(t *testing.T) {
 	input := strings.NewReader("\033[200~/help\r\n/quit\033[201~\r")
 	guard := &pasteGuardReader{source: input}
@@ -622,6 +648,52 @@ func TestTerminalCancellationDoesNotCompleteOnboarding(t *testing.T) {
 	}
 	if startNow || updated.OnboardingComplete || updated.CollectorEnabled != settings.CollectorEnabled {
 		t.Fatalf("cancellation changed onboarding settings: before=%+v after=%+v", settings, updated)
+	}
+}
+
+type historyTrackingReader struct {
+	answers       []string
+	history       bool
+	readWithState []bool
+}
+
+func (reader *historyTrackingReader) ReadLine(string) (string, error) {
+	reader.readWithState = append(reader.readWithState, reader.history)
+	answer := reader.answers[0]
+	reader.answers = reader.answers[1:]
+	return answer, nil
+}
+func (reader *historyTrackingReader) DisableHistory()  { reader.history = false }
+func (reader *historyTrackingReader) EnableHistory()   { reader.history = true }
+func (reader *historyTrackingReader) IsTerminal() bool { return true }
+
+func TestOnboardingAnswersAreReadWithHistoryDisabled(t *testing.T) {
+	reader := &historyTrackingReader{answers: []string{"n", "y"}, history: true}
+	settings := tokenlogger.DefaultSettings(t.TempDir())
+	if _, _, err := runOnboardingWithoutHistory(reader, settings.DataDir, settings); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reader.readWithState, []bool{false, false}) || !reader.history {
+		t.Fatalf("history state during onboarding=%v after=%t; want disabled for both answers and restored", reader.readWithState, reader.history)
+	}
+}
+
+func TestDiagnosticConsentIsReadWithHistoryDisabled(t *testing.T) {
+	store, err := tokenlogger.Open(filepath.Join(t.TempDir(), "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	diagnostic, err := store.RecordDiagnostic("test diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &historyTrackingReader{answers: []string{"view", "n"}, history: true}
+	if err := offerDiagnostic(reader, store, diagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reader.readWithState, []bool{false, false}) || !reader.history {
+		t.Fatalf("history state during diagnostic prompts=%v after=%t; want disabled for both answers then restored", reader.readWithState, reader.history)
 	}
 }
 
