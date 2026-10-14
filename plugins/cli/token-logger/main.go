@@ -775,6 +775,12 @@ func defaultCollectorRoots() []string {
 }
 
 func runWatch(args []string, stdout, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runWatchWithContext(args, stdout, stderr, ctx)
+}
+
+func runWatchWithContext(args []string, stdout, stderr io.Writer, ctx context.Context) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "usage: komposyn-lg watch <file-or-directory> [--interval <duration>] [--data-dir <path>]")
 		return 1
@@ -821,8 +827,6 @@ func runWatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "create collector: %v\n", err)
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	fmt.Fprintf(stdout, "watching %s every %s; press Ctrl-C to stop\n", root, interval)
 	if result, pollErr := collector.PollOnce(); pollErr != nil {
 		fmt.Fprintf(stderr, "initial collector poll: %v\n", pollErr)
