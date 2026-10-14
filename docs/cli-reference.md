@@ -66,7 +66,9 @@ placeholder project identifier is not accepted for these records. The model
 from that metadata applies until a later `turn_context` changes the model for
 subsequent responses. Missing or invalid timestamp, unresolved session,
 missing project identifier, or unavailable model context is counted as a
-malformed record; the CLI does not guess attribution from unrelated records.
+malformed record; legacy `token_count` payloads alone do not supply metadata
+for a response record or override matching session metadata, and the CLI does
+not guess attribution from unrelated records.
 
 ### `usage`, `cost`, and `sessions`
 

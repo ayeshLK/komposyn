@@ -485,6 +485,53 @@ func TestCodexTokenUsageRecordAttributionFailuresHaveExactOutcomes(t *testing.T)
 	}
 }
 
+func TestCodexTokenUsageRecordRejectsLegacyOnlyAttribution(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "legacy-context.jsonl")
+	legacy := `{"type":"event_msg","timestamp":"2026-10-11T00:00:00Z","payload":{"type":"token_count","session_id":"session-1","project_id":"project-1","model":"gpt-test","info":{"total_token_usage":{"input_tokens":10}}}}` + "\n"
+	usageRecord := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n"
+	if err := os.WriteFile(path, []byte(legacy+usageRecord), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 1 || result.Receipt.Duplicates != 0 ||
+		result.Outcomes != (OutcomeCounts{MalformedRecord: 1}) {
+		t.Fatalf("legacy-only attribution result = %+v, err = %v", result, err)
+	}
+	var eventCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_events`).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("event count = %d, want only the legacy event", eventCount)
+	}
+}
+
+func TestCodexTokenUsageRecordAttributionUsesMetadataAfterLegacyRecords(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "metadata-context.jsonl")
+	metadata := `{"type":"session_meta","payload":{"id":"session-1","project_id":"metadata-project","model":"metadata-model"}}` + "\n"
+	legacy := `{"type":"event_msg","timestamp":"2026-10-11T00:00:00Z","payload":{"type":"token_count","session_id":"session-1","project_id":"metadata-project","model":"legacy-model","info":{"total_token_usage":{"input_tokens":10}}}}` + "\n"
+	usageRecord := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n"
+	if err := os.WriteFile(path, []byte(metadata+legacy+usageRecord), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 2 || result.Receipt.Duplicates != 0 ||
+		result.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1}) {
+		t.Fatalf("metadata attribution result = %+v, err = %v", result, err)
+	}
+	var projectID, model string
+	if err := store.db.QueryRow(`SELECT project_id, requested_model FROM usage_events WHERE event_id LIKE 'codex-response-event-%'`).Scan(&projectID, &model); err != nil {
+		t.Fatal(err)
+	}
+	if projectID != "metadata-project" || model != "metadata-model" {
+		t.Fatalf("response attribution = project %q, model %q; want metadata values", projectID, model)
+	}
+}
+
 func TestCodexTokenUsageRecordIncompleteTailCompletesWithoutChangingSource(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "incomplete.jsonl")

@@ -66,7 +66,10 @@ placeholder used for other Codex record shapes is not accepted for these usage
 records. The session's initial model comes from the metadata. Later
 `turn_context` records update the applicable session model, so responses after
 a model change use the new model. The adapter does not infer a model from usage
-values or unrelated records.
+values or unrelated records. Legacy `token_count` payloads alone do not supply
+metadata for a `token_usage_record`; when matching session metadata exists,
+legacy snapshots also cannot replace its project or model attribution for
+response records.
 
 Codex may also emit legacy `event_msg`/`token_count` snapshots for the same
 responses. Before a usage-record stream starts, legacy snapshots continue to
