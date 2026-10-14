@@ -167,6 +167,20 @@ submit a command batch. Onboarding and diagnostic questions continue to accept
 plain Enter for their displayed default. Pasted commands are not executed as a
 batch.
 
+Interactive reports start in rolling mode. Immediately before each report
+render—including `/refresh`, `/projects`, `/sessions`, `/total-usage`,
+`/by-client`, `/by-model`, and `/cost`—the CLI resolves the last seven UTC
+calendar days and prints the exact half-open range used by that query. New
+committed usage appears when the next report command is run; reports do not
+redraw passively while the prompt is idle.
+
+Use `/range` to show the mode and effective UTC bounds. `/range <from> <to>`
+pins an explicit half-open range (accepting ISO-8601 dates or timestamps),
+which remains unchanged across refreshes and report views. `/range reset`
+returns to rolling mode and renders immediately. If `watch` and interactive
+mode use an explicit `--data-dir` or `TOKEN_LOGGER_DATA_DIR`, configure both
+with the same resolved directory so they read and write the same database.
+
 For non-TTY input or output, the CLI keeps scanner-style behavior. `/clear`
 then prints `clear is available only in an interactive terminal` and emits no
 ANSI or other terminal control sequence. No top-level `komposyn-lg clear`

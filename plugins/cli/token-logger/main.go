@@ -129,6 +129,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 type interactiveState struct {
 	from    time.Time
 	to      time.Time
+	pinned  bool
 	groupBy []string
 }
 
@@ -375,8 +376,11 @@ func normalizePaste(input []byte) []byte {
 }
 
 func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool) int {
-	now := time.Now().UTC()
-	state := interactiveState{from: now.AddDate(0, 0, -7), to: now, groupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}}
+	return runInteractiveLoopWithClock(reader, stdout, stderr, store, dataDir, settings, startNow, time.Now)
+}
+
+func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool, now func() time.Time) int {
+	state := interactiveState{groupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}}
 	collectorContext, stopCollector := context.WithCancel(context.Background())
 	defer stopCollector()
 	if startNow || (settings.CollectorEnabled && settings.AutoStart) {
@@ -402,7 +406,7 @@ func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, 
 			}
 		}
 	}
-	if interactiveRender(stdout, stderr, store, state, reader) {
+	if interactiveRender(stdout, stderr, store, &state, reader, now) {
 		return 0
 	}
 	for {
@@ -435,45 +439,61 @@ func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, 
 			}
 		case "/projects":
 			state.groupBy = []string{tokenlogger.GroupProject}
-			if interactiveRender(stdout, stderr, store, state, reader) {
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/sessions":
 			state.groupBy = []string{tokenlogger.GroupSession}
-			if interactiveRender(stdout, stderr, store, state, reader) {
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/total-usage":
 			state.groupBy = []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}
-			if interactiveRender(stdout, stderr, store, state, reader) {
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/by-client":
 			state.groupBy = []string{tokenlogger.GroupClient}
-			if interactiveRender(stdout, stderr, store, state, reader) {
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/by-model":
 			state.groupBy = []string{tokenlogger.GroupModel}
-			if interactiveRender(stdout, stderr, store, state, reader) {
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/cost":
 			state.groupBy = []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}
-			if interactiveRender(stdout, stderr, store, state, reader) {
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/refresh":
-			if interactiveRender(stdout, stderr, store, state, reader) {
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/range":
 			if len(fields) == 1 {
-				fmt.Fprintf(stdout, "active range: %s to %s (UTC)\n", state.from.Format(time.RFC3339), state.to.Format(time.RFC3339))
+				state.resolveRange(now)
+				mode := "rolling"
+				if state.pinned {
+					mode = "pinned"
+				}
+				fmt.Fprintf(stdout, "active range (%s): %s to %s (UTC)\n", mode, state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
+				continue
+			}
+			if len(fields) >= 2 && fields[1] == "reset" {
+				if len(fields) != 2 {
+					fmt.Fprintln(stdout, "usage: /range [reset | <from> <to>]")
+					continue
+				}
+				state.pinned = false
+				if interactiveRender(stdout, stderr, store, &state, reader, now) {
+					return 0
+				}
 				continue
 			}
 			if len(fields) != 3 {
-				fmt.Fprintln(stdout, "usage: /range <from> <to>")
+				fmt.Fprintln(stdout, "usage: /range [reset | <from> <to>]")
 				continue
 			}
 			from, fromErr := parseTime(fields[1])
@@ -482,17 +502,22 @@ func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, 
 				fmt.Fprintln(stdout, "range must be two increasing ISO-8601 timestamps or dates")
 				continue
 			}
-			state.from, state.to = from, to
-			if interactiveRender(stdout, stderr, store, state, reader) {
+			state.from, state.to, state.pinned = from, to, true
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/settings":
+			state.resolveRange(now)
 			fmt.Fprintf(stdout, "data directory: %s\n", dataDir)
 			fmt.Fprintf(stdout, "collector enabled: %t\n", settings.CollectorEnabled)
 			fmt.Fprintf(stdout, "collector auto-start: %t\n", settings.AutoStart)
 			fmt.Fprintf(stdout, "collector poll interval: %ds\n", settings.PollIntervalSeconds)
 			fmt.Fprintln(stdout, "diagnostic reporting: ask before any external action")
-			fmt.Fprintf(stdout, "active range: %s to %s (UTC)\n", state.from.Format(time.RFC3339), state.to.Format(time.RFC3339))
+			mode := "rolling"
+			if state.pinned {
+				mode = "pinned"
+			}
+			fmt.Fprintf(stdout, "active range (%s): %s to %s (UTC)\n", mode, state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
 		case "/report-issue":
 			printPendingDiagnostics(stdout, store)
 		default:
@@ -501,7 +526,16 @@ func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, 
 	}
 }
 
-func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state interactiveState, reader interactiveLineReader) error {
+func (state *interactiveState) resolveRange(now func() time.Time) {
+	if state.pinned {
+		return
+	}
+	state.to = now().UTC()
+	state.from = state.to.AddDate(0, 0, -7)
+}
+
+func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state *interactiveState, reader interactiveLineReader, now func() time.Time) error {
+	state.resolveRange(now)
 	report, err := store.Query(tokenlogger.UsageFilter{From: state.from, To: state.to, GroupBy: state.groupBy})
 	if err != nil {
 		fmt.Fprintf(stderr, "usage query failed: %v\n", err)
@@ -518,8 +552,8 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 	return nil
 }
 
-func interactiveRender(stdout, stderr io.Writer, store *tokenlogger.Store, state interactiveState, reader interactiveLineReader) bool {
-	return renderInteractive(stdout, stderr, store, state, reader) != nil
+func interactiveRender(stdout, stderr io.Writer, store *tokenlogger.Store, state *interactiveState, reader interactiveLineReader, now func() time.Time) bool {
+	return renderInteractive(stdout, stderr, store, state, reader, now) != nil
 }
 
 func offerDiagnostic(reader interactiveLineReader, store *tokenlogger.Store, diagnostic tokenlogger.Diagnostic) error {
@@ -575,7 +609,7 @@ func readerOutput(reader interactiveLineReader) io.Writer {
 
 func printInteractiveHelp(stdout io.Writer) {
 	fmt.Fprintln(stdout, "/projects /sessions /total-usage /by-client /by-model /cost")
-	fmt.Fprintln(stdout, "/range [from to] /refresh /clear /settings /report-issue /help /quit")
+	fmt.Fprintln(stdout, "/range [<from> <to> | reset] /refresh /clear /settings /report-issue /help /quit")
 }
 
 func printPendingDiagnostics(stdout io.Writer, store *tokenlogger.Store) {

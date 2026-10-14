@@ -16,6 +16,7 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"database/sql"
 	"encoding/json"
@@ -885,6 +886,224 @@ func TestInteractiveMode(t *testing.T) {
 			t.Fatalf("interactive output missing %q: %q", expected, stdout.String())
 		}
 	}
+}
+
+func TestInteractiveRollingRangeRefreshSeesCommittedEventFromSecondStore(t *testing.T) {
+	dataDir := t.TempDir()
+	databasePath := filepath.Join(dataDir, "token-logger.db")
+	absolutePath, err := filepath.Abs(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readStore, err := tokenlogger.Open(absolutePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readStore.Close()
+	writeStore, err := tokenlogger.Open(absolutePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writeStore.Close()
+
+	t1 := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	current := t1
+	reader := &beforeReadLineReader{
+		scannerLineReader: &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader("/refresh\n/quit\n")), output: io.Discard},
+		before: func(command string) {
+			if command != "/refresh" {
+				return
+			}
+			event := cliReportEvent("watched-after-start", t1.Add(time.Minute))
+			event.ResolvedModel = "newly-watched-model"
+			if _, err := writeStore.Append([]tokenlogger.UsageEvent{event}); err != nil {
+				t.Errorf("append event through writer store: %v", err)
+			}
+			current = t1.Add(2 * time.Minute)
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, readStore, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "range: 2026-10-07T10:00:00Z to 2026-10-14T10:00:00Z (UTC)") {
+		t.Fatalf("initial render did not use T1 rolling bounds: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "range: 2026-10-07T10:02:00Z to 2026-10-14T10:02:00Z (UTC)") {
+		t.Fatalf("refresh did not use T2 rolling bounds: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "newly-watched-model") {
+		t.Fatalf("refresh did not see committed event from second Store: %q", stdout.String())
+	}
+}
+
+func TestInteractiveReportCommandsResolveFreshRollingRanges(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	commands := []string{"/projects", "/sessions", "/total-usage", "/by-client", "/by-model", "/cost", "/refresh", "/quit"}
+	var stdout, stderr bytes.Buffer
+	base := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	current := base
+	var lines strings.Builder
+	for _, command := range commands {
+		lines.WriteString(command)
+		lines.WriteByte('\n')
+	}
+	reader := &beforeReadLineReader{
+		scannerLineReader: &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(lines.String())), output: io.Discard},
+		before: func(command string) {
+			for index, candidate := range commands[:len(commands)-1] {
+				if command == candidate {
+					current = base.Add(time.Duration(index+1) * time.Minute)
+					return
+				}
+			}
+		},
+	}
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
+	}
+	for minute := 0; minute <= len(commands)-1; minute++ {
+		to := base.Add(time.Duration(minute) * time.Minute)
+		from := to.AddDate(0, 0, -7)
+		want := fmt.Sprintf("range: %s to %s (UTC)", from.Format(time.RFC3339), to.Format(time.RFC3339))
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("rolling report range %q missing from output: %s", want, stdout.String())
+		}
+	}
+}
+
+func TestInteractivePinnedRangeAndResetUseHalfOpenBounds(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	resetWriter, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resetWriter.Close()
+	from := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(24 * time.Hour)
+	fromEvent := cliReportEvent("pinned-from-boundary", from)
+	fromEvent.ResolvedModel = "included-at-from"
+	toEvent := cliReportEvent("pinned-to-boundary", to)
+	toEvent.ResolvedModel = "excluded-at-to"
+	if _, err := store.Append([]tokenlogger.UsageEvent{fromEvent, toEvent}); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	current := base
+	commands := "/range 2026-10-01 2026-10-02\n/projects\n/range\n/range reset\n/by-model\n/range\n/quit\n"
+	reader := &beforeReadLineReader{
+		scannerLineReader: &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard},
+		before: func(command string) {
+			switch command {
+			case "/projects":
+				current = base.Add(time.Hour)
+			case "/range reset":
+				current = base.Add(2 * time.Hour)
+				event := cliReportEvent("committed-before-reset", current.Add(-time.Minute))
+				event.ResolvedModel = "new-event-visible-after-reset"
+				if _, err := resetWriter.Append([]tokenlogger.UsageEvent{event}); err != nil {
+					t.Errorf("append reset-visible event: %v", err)
+				}
+			case "/range":
+				current = current.Add(time.Hour)
+			}
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	pinnedRange := "range: 2026-10-01T00:00:00Z to 2026-10-02T00:00:00Z (UTC)"
+	if strings.Count(out, pinnedRange) != 2 {
+		t.Fatalf("pinned range should remain unchanged across report views: %q", out)
+	}
+	if !strings.Contains(out, "active range (pinned): 2026-10-01T00:00:00Z to 2026-10-02T00:00:00Z (UTC)") {
+		t.Fatalf("/range did not report pinned mode and bounds: %q", out)
+	}
+	if !strings.Contains(out, "included-at-from") || strings.Contains(out, "excluded-at-to") {
+		t.Fatalf("pinned query violated [from,to) boundary: %q", out)
+	}
+	if !strings.Contains(out, "new-event-visible-after-reset") {
+		t.Fatalf("reset rolling render did not include newly committed event: %q", out)
+	}
+	resetRange := "range: 2026-10-07T12:00:00Z to 2026-10-14T12:00:00Z (UTC)"
+	if !strings.Contains(out, resetRange) || !strings.Contains(out, "active range (rolling): 2026-10-07T13:00:00Z to 2026-10-14T13:00:00Z (UTC)") {
+		t.Fatalf("/range reset did not immediately restore rolling mode: %q", out)
+	}
+}
+
+func TestInteractiveRangeRejectsUnsupportedArguments(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	commands := "/range nonsense\n/range reset extra\n/range\n/quit\n"
+	var stdout, stderr bytes.Buffer
+	current := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if strings.Count(stdout.String(), "usage: /range [reset | <from> <to>]") != 2 {
+		t.Fatalf("unsupported range arguments did not get actionable usage: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "active range (rolling): 2026-10-07T10:00:00Z to 2026-10-14T10:00:00Z (UTC)") {
+		t.Fatalf("invalid range arguments changed the active mode: %q", stdout.String())
+	}
+}
+
+func TestInteractiveDoesNotSearchOtherDataDirectories(t *testing.T) {
+	readDir, otherDir := t.TempDir(), t.TempDir()
+	readStore, err := tokenlogger.Open(filepath.Join(readDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readStore.Close()
+	otherStore, err := tokenlogger.Open(filepath.Join(otherDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer otherStore.Close()
+	event := cliReportEvent("isolated-event", time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC))
+	event.ResolvedModel = "other-data-directory-only"
+	if _, err := otherStore.Append([]tokenlogger.UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	current := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader("/refresh\n/quit\n")), output: io.Discard}, &stdout, &stderr, readStore, readDir, tokenlogger.DefaultSettings(readDir), false, func() time.Time { return current }); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "other-data-directory-only") {
+		t.Fatalf("interactive report leaked data from another directory: %q", stdout.String())
+	}
+}
+
+type beforeReadLineReader struct {
+	*scannerLineReader
+	before func(string)
+}
+
+func (reader *beforeReadLineReader) ReadLine(prompt string) (string, error) {
+	line, err := reader.scannerLineReader.ReadLine(prompt)
+	if err == nil && reader.before != nil {
+		reader.before(line)
+	}
+	return line, err
 }
 
 func TestSettingsCommand(t *testing.T) {
