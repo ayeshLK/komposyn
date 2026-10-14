@@ -32,6 +32,33 @@ $global:LASTEXITCODE = 0
         return $global:TestReleaseMetadata
     }
 
+    # Keep this validation aligned with the copy/paste Windows bootstrap in issue #53.
+    $resolveBootstrapTag = {
+        param($Release)
+        if ($null -eq $Release -or $Release -isnot [pscustomobject] -or
+            $Release.draft -isnot [bool] -or $Release.prerelease -isnot [bool] -or
+            $Release.draft -or $Release.prerelease -or
+            $Release.tag_name -isnot [string] -or
+            $Release.tag_name -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw 'Latest release metadata is not a valid stable Komposyn release'
+        }
+        return $Release.tag_name
+    }
+    if ((& $resolveBootstrapTag ([pscustomobject]@{ tag_name = 'v1.2.3'; draft = $false; prerelease = $false })) -cne 'v1.2.3') {
+        throw 'Windows bootstrap did not resolve a valid stable release'
+    }
+    $invalidBootstrapMetadata = @(
+        [pscustomobject]@{ tag_name = 'v1.2.3'; draft = 'false'; prerelease = $false },
+        [pscustomobject]@{ tag_name = 'v1.2.3'; draft = 0; prerelease = $false },
+        [pscustomobject]@{ tag_name = 'v1.2.3'; draft = $false; prerelease = 0 },
+        [pscustomobject]@{ tag_name = 123; draft = $false; prerelease = $false }
+    )
+    foreach ($metadata in $invalidBootstrapMetadata) {
+        $rejected = $false
+        try { $null = & $resolveBootstrapTag $metadata } catch { $rejected = $true }
+        if (-not $rejected) { throw "Windows bootstrap accepted malformed metadata: $($metadata | ConvertTo-Json -Compress)" }
+    }
+
     $installer = Join-Path $temp 'install.ps1'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install.ps1') -Destination $installer
     $output = (& $installer | Out-String)
@@ -52,6 +79,7 @@ $global:LASTEXITCODE = 0
         [pscustomobject]@{ tag_name = 'main'; draft = $false; prerelease = $false },
         [pscustomobject]@{ tag_name = 'v1.2'; draft = $false; prerelease = $false },
         [pscustomobject]@{ tag_name = 'v1.2.3'; draft = 'false'; prerelease = $false },
+        [pscustomobject]@{ tag_name = 'v1.2.3'; draft = 0; prerelease = $false },
         [pscustomobject]@{ draft = $false; prerelease = $false },
         'malformed response'
     )
