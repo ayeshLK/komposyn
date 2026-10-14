@@ -48,6 +48,27 @@ func TestClaudeImportAttributesAndNormalizesUsage(t *testing.T) {
 	}
 }
 
+func TestClaudeImportAcceptsNewerUsageFields(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "newer-usage-fields.jsonl")
+	record := `{"type":"assistant","uuid":"u1","sessionId":"s1","timestamp":"2026-10-11T00:00:00Z","message":{"role":"assistant","model":"claude-x","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":2},"server_tool_use":{"web_search_requests":1},"output_tokens_details":{"reasoning_tokens":3},"iterations":1,"inference_geo":"us","speed":"fast"}}}` + "\n"
+	if err := os.WriteFile(path, []byte(record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := (ClaudeAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 1 || result.Outcomes != (OutcomeCounts{}) {
+		t.Fatalf("newer usage fields result = %+v, err = %v", result, err)
+	}
+	var input, output int64
+	if err := store.db.QueryRow(`SELECT input_tokens, output_tokens FROM usage_events`).Scan(&input, &output); err != nil {
+		t.Fatal(err)
+	}
+	if input != 13 || output != 5 {
+		t.Fatalf("usage = input %d, output %d; want 13, 5", input, output)
+	}
+}
+
 func TestDetectClaudeAdapter(t *testing.T) {
 	path := filepath.Join("testdata", "claude-code", "normal.jsonl")
 	adapter, err := DetectAdapter(path)
