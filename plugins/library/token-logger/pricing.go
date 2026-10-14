@@ -258,6 +258,7 @@ type eventCost struct {
 	Reason         string
 	AmountMicros   int64
 	Currency       string
+	Provider       string
 	PricingVersion string
 	SourceURL      string
 	Source         string
@@ -267,15 +268,16 @@ type eventCost struct {
 }
 
 type pricingProvenance struct {
-	count                                                         int
-	version, sourceURL, source, model, effectiveFrom, effectiveTo string
+	count                                                                   int
+	provider, version, sourceURL, source, model, effectiveFrom, effectiveTo string
 }
 
 func (p *pricingProvenance) add(rule PricingRule) {
 	from, to := formatStoredTime(rule.EffectiveFrom), formatEffectiveTo(rule.EffectiveTo)
 	if p.count == 0 {
-		p.version, p.sourceURL, p.source, p.model, p.effectiveFrom, p.effectiveTo = rule.PricingVersion, rule.SourceURL, rule.Source, rule.ModelSelector, from, to
+		p.provider, p.version, p.sourceURL, p.source, p.model, p.effectiveFrom, p.effectiveTo = rule.Provider, rule.PricingVersion, rule.SourceURL, rule.Source, rule.ModelSelector, from, to
 	} else {
+		p.provider = strictMergeProvenance(p.provider, rule.Provider)
 		p.version = strictMergeProvenance(p.version, rule.PricingVersion)
 		p.sourceURL = strictMergeProvenance(p.sourceURL, rule.SourceURL)
 		p.source = strictMergeProvenance(p.source, rule.Source)
@@ -297,7 +299,7 @@ func (p pricingProvenance) apply(cost *eventCost) {
 	if p.count == 0 {
 		return
 	}
-	cost.PricingVersion, cost.SourceURL, cost.Source = p.version, p.sourceURL, p.source
+	cost.Provider, cost.PricingVersion, cost.SourceURL, cost.Source = p.provider, p.version, p.sourceURL, p.source
 	cost.ModelSelector, cost.EffectiveFrom, cost.EffectiveTo = p.model, p.effectiveFrom, p.effectiveTo
 }
 
@@ -357,11 +359,11 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 		}
 	}
 	if missing {
-		cost := eventCost{Status: "unknown", Reason: reason, Currency: currency}
+		cost := eventCost{Status: "unknown", Reason: reason, Currency: currency, Provider: event.Provider}
 		if currency != "" {
 			rounded, ok := roundRationalMicros(amount)
 			if !ok {
-				return eventCost{Status: "unknown", Reason: "arithmetic_overflow", Currency: currency}
+				return eventCost{Status: "unknown", Reason: "arithmetic_overflow", Currency: currency, Provider: event.Provider}
 			}
 			cost.AmountMicros = rounded
 		}
@@ -371,7 +373,7 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 	// Round once per event to the nearest microcurrency unit; exact halves round away from zero.
 	rounded, ok := roundRationalMicros(amount)
 	if !ok {
-		return eventCost{Status: "unknown", Reason: "arithmetic_overflow", Currency: currency}
+		return eventCost{Status: "unknown", Reason: "arithmetic_overflow", Currency: currency, Provider: event.Provider}
 	}
 	cost := eventCost{Status: "calculated", AmountMicros: rounded, Currency: currency}
 	provenance.apply(&cost)
@@ -385,7 +387,7 @@ func (c pricingCatalog) calculateZeroUsage(event reportEvent) eventCost {
 	for _, category := range []string{TokenCategoryInput, TokenCategoryCacheRead, TokenCategoryCacheWrite, TokenCategoryOutput, TokenCategoryReasoning} {
 		rule, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt)
 		if ambiguous {
-			return eventCost{Status: "unknown", Reason: "ambiguous_pricing_rule"}
+			return eventCost{Status: "unknown", Reason: "ambiguous_pricing_rule", Provider: event.Provider}
 		}
 		if !ok {
 			continue
@@ -406,7 +408,7 @@ func (c pricingCatalog) calculateZeroUsage(event reportEvent) eventCost {
 				break
 			}
 		}
-		return eventCost{Status: "unknown", Reason: reason}
+		return eventCost{Status: "unknown", Reason: reason, Provider: event.Provider}
 	}
 	cost := eventCost{Status: "zero", Currency: currency}
 	provenance.apply(&cost)

@@ -66,6 +66,27 @@ func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
 	if report.Summary.ProviderReportedCostMicros != reportedAmount || report.Summary.EstimatedCostRequests != 1 {
 		t.Fatalf("reported and estimated costs were not kept separately: %+v", report.Summary)
 	}
+	if report.Summary.PricingProvider != "openai" || report.Summary.CalculationBasis != "public_catalog_estimate" {
+		t.Fatalf("pricing provenance = provider %q basis %q", report.Summary.PricingProvider, report.Summary.CalculationBasis)
+	}
+	var jsonOutput bytes.Buffer
+	if err := WriteJSON(&jsonOutput, report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(jsonOutput.String(), `"pricing_provider": "openai"`) || !strings.Contains(jsonOutput.String(), `"calculation_basis": "public_catalog_estimate"`) {
+		t.Fatalf("JSON omitted provider/basis provenance: %s", jsonOutput.String())
+	}
+	var csvOutput bytes.Buffer
+	if err := WriteCSV(&csvOutput, report); err != nil {
+		t.Fatal(err)
+	}
+	records, err := csv.NewReader(strings.NewReader(csvOutput.String())).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records[0][18] != "pricing_provider" || records[0][19] != "calculation_basis" || records[1][18] != "openai" || records[1][19] != "public_catalog_estimate" {
+		t.Fatalf("CSV omitted provider/basis provenance: %#v", records)
+	}
 	if len(report.Rows) != 1 || report.Rows[0].RequestCount != 1 {
 		t.Fatalf("unexpected grouped rows: %+v", report.Rows)
 	}
@@ -467,6 +488,19 @@ func TestGroupedUnknownCostReasonsRetainCounts(t *testing.T) {
 	}
 	if !strings.Contains(csvOutput.String(), `"{""model_unresolved"":1,""outside_effective_range"":2}"`) {
 		t.Fatalf("CSV does not preserve reason-count JSON: %q", csvOutput.String())
+	}
+}
+
+func TestGroupedPricingProviderAndBasisMergeExplicitly(t *testing.T) {
+	acc := reportAccumulator{sessions: map[string]struct{}{}}
+	if err := addMeasures(&acc, reportEvent{Provider: "openai"}, eventCost{Status: "calculated", AmountMicros: 10, Currency: "USD", Provider: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := addMeasures(&acc, reportEvent{Provider: "anthropic"}, eventCost{Status: "unknown", Reason: "no_matching_rate", Provider: "anthropic"}); err != nil {
+		t.Fatal(err)
+	}
+	if acc.PricingProvider != "mixed" || acc.CalculationBasis != "mixed" {
+		t.Fatalf("grouped pricing provider/basis = %q/%q, want mixed/mixed", acc.PricingProvider, acc.CalculationBasis)
 	}
 }
 

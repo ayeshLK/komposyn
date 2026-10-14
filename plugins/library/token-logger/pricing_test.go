@@ -281,11 +281,11 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 	supported := reportEvent{OccurredAt: at, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex"}
-	if got := catalog.calculate(supported); got.Status != "zero" || got.PricingVersion == "" || got.ModelSelector != "gpt-5-codex" {
+	if got := catalog.calculate(supported); got.Status != "zero" || got.Provider != "openai" || got.PricingVersion == "" || got.ModelSelector != "gpt-5-codex" {
 		t.Fatalf("supported zero usage = %+v, want known-zero basis with provenance", got)
 	}
 	unsupported := reportEvent{OccurredAt: at, Provider: "unknown", RequestedModel: "unknown-model", ResolvedModel: "unknown-model"}
-	if got := catalog.calculate(unsupported); got.Status != "unknown" || got.Reason != "no_matching_rate" {
+	if got := catalog.calculate(unsupported); got.Status != "unknown" || got.Reason != "no_matching_rate" || got.Provider != "unknown" {
 		t.Fatalf("unsupported zero usage = %+v, want unknown with no_matching_rate", got)
 	}
 }
@@ -430,7 +430,7 @@ func TestEstimateAggregatesEveryComponentProvenance(t *testing.T) {
 	event := reportEvent{OccurredAt: from.Add(time.Hour), Provider: "test", RequestedModel: "exact", ResolvedModel: "exact",
 		Usage: TokenUsage{InputTokens: 3, OutputTokens: 4}}
 	got := catalog.calculate(event)
-	if got.Status != "calculated" || got.AmountMicros != 11 || got.PricingVersion != "mixed" || got.SourceURL != "mixed" || got.EffectiveTo != "mixed" {
+	if got.Status != "calculated" || got.AmountMicros != 11 || got.Provider != "test" || got.PricingVersion != "mixed" || got.SourceURL != "mixed" || got.EffectiveTo != "mixed" {
 		t.Fatalf("multi-component provenance = %+v, want total 11 and mixed entry provenance", got)
 	}
 }
