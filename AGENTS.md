@@ -29,6 +29,8 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   import/report/settings commands, and the `harness` JSONL sidecar protocol.
 - `docs/HARNESS_PROTOCOL.md` — versioned protocol contract. Keep stdout clean:
   protocol responses only; diagnostics go to stderr.
+- `docs/pricing-catalog.md` — pricing catalog provenance, interval update,
+  validation, and estimate/reporting rules.
 - `scripts/` — release archive creation, dependency-license collection,
   installers/uninstallers, and release lifecycle verification.
 - `.github/workflows/ci.yml` — formatting, module verification, vet, tests,
@@ -52,17 +54,32 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
 - Event ingestion is idempotent through stable ingestion keys. Preserve
   transactional behavior: an append and its source cursor advance together, or
   neither is committed.
-- The current SQLite schema version is 4. Migrations 1 and 2 create the core
+- The current SQLite schema version is 5. Migrations 1 and 2 create the core
   and diagnostics tables, migration 3 normalizes stored timestamps to fixed
   width UTC values, and migration 4 adds source-generation tracking for
-  transcript replacement detection. SQLite schema changes require an explicit
-  numbered migration in `plugins/library/token-logger/migrations.go`, a
-  matching runner update, and an upgrade test covering the complete history.
+  transcript replacement detection. Migration 5 adds rational pricing rates
+  and catalog identity/source provenance while preserving the legacy
+  `rate_micros` meaning. SQLite schema changes require an explicit numbered
+  migration in `plugins/library/token-logger/migrations.go`, a matching runner
+  update, and an upgrade test covering the complete history.
 - Provider adapters parse one immutable source snapshot for both fingerprinting
   and event offsets. Preserve source-cursor generation behavior when handling
   replacements, and do not reintroduce separate file-descriptor parsing.
 - Reports group hourly data by local civil hour while retaining the event's
   numeric UTC offset, including fractional offsets and DST folds.
+- Pricing is calculated offline from time-bounded rules. The embedded public
+  API catalog is synchronized locally and transactionally; released entry
+  rates/provenance are immutable, with only a one-time `effective_to` closure
+  allowed when a replacement rate is added. Validate catalog provenance,
+  rational denominators, and overlapping equal-precedence selectors/intervals.
+  Keep unsupported or ambiguous billing contexts unknown; never infer
+  subscription or provider-specific pricing modifiers. See
+  [docs/pricing-catalog.md](docs/pricing-catalog.md).
+- Keep provider-reported cost separate from calculated estimates. Machine
+  reports expose `pricing_provider` and `calculation_basis` alongside pricing
+  version/source/model/effective interval; distinguish public-catalog,
+  custom, mixed, partial, known-zero, and unavailable bases. When grouping
+  combines different provenance, report `mixed` rather than implying one rule.
 - Harness reference metadata and its event must be persisted atomically. A
   session that names a project requires matching project metadata in the same
   record request; preserve stable protocol error codes and protocol version 1.
