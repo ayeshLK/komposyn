@@ -4,6 +4,13 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
+## [0.2.1](https://github.com/ayeshLK/komposyn/compare/v0.2.0...v0.2.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* accept Codex cache_write_input_tokens alias and derive project id from cwd ([#83](https://github.com/ayeshLK/komposyn/issues/83)) ([29dbc53](https://github.com/ayeshLK/komposyn/commit/29dbc53557ee76b949839c4467a6afffd48c94d5))
+
 ## [0.2.0](https://github.com/ayeshLK/komposyn/compare/v0.1.0...v0.2.0) (2026-10-14)
 
 
