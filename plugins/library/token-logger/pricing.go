@@ -88,22 +88,35 @@ func (s *Store) UpsertPricing(rule PricingRule) error {
 	if denominator == 0 {
 		numerator, denominator = rule.RateMicros, 1
 	}
-	var conflicts int
 	end := any("9999-12-31T23:59:59.999999999Z")
 	if rule.EffectiveTo != nil {
 		end = formatStoredTime(*rule.EffectiveTo)
 	}
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pricing_rules
-		WHERE provider_name = ? AND model_selector = ? AND token_category = ?
+	rows, err := s.db.Query(`SELECT model_selector FROM pricing_rules
+		WHERE provider_name = ? AND token_category = ?
 		AND catalog_entry_id IS NULL AND effective_from < ?
-		AND (effective_to IS NULL OR effective_to > ?)`, rule.Provider, rule.ModelSelector,
-		rule.TokenCategory, end, formatStoredTime(rule.EffectiveFrom)).Scan(&conflicts); err != nil {
+		AND (effective_to IS NULL OR effective_to > ?)`, rule.Provider,
+		rule.TokenCategory, end, formatStoredTime(rule.EffectiveFrom))
+	if err != nil {
 		return err
 	}
-	if conflicts > 0 {
-		return errors.New("overlapping custom pricing rules with the same model selector are ambiguous")
+	defer rows.Close()
+	for rows.Next() {
+		var existingSelector string
+		if err := rows.Scan(&existingSelector); err != nil {
+			return err
+		}
+		if selectorsHaveEqualPrecedenceOverlap(existingSelector, rule.ModelSelector) {
+			return errors.New("overlapping custom pricing rules with equal-precedence model selectors are ambiguous")
+		}
 	}
-	_, err := s.db.Exec(`INSERT INTO pricing_rules(
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO pricing_rules(
 		provider_name, model_selector, token_category, rate_micros, currency,
 		effective_from, effective_to, pricing_version, source, notes,
 		rate_numerator_micros, rate_denominator_tokens, catalog_entry_id, source_url, source_reviewed_at)
@@ -113,6 +126,19 @@ func (s *Store) UpsertPricing(rule PricingRule) error {
 		rule.PricingVersion, rule.Source, rule.Notes, numerator, denominator,
 		nullableString(rule.CatalogEntryID), rule.SourceURL, rule.SourceReviewedAt)
 	return err
+}
+
+func selectorsHaveEqualPrecedenceOverlap(a, b string) bool {
+	aGlobal, bGlobal := a == "" || a == "*", b == "" || b == "*"
+	if aGlobal || bGlobal {
+		return aGlobal && bGlobal
+	}
+	aWildcard, bWildcard := strings.HasSuffix(a, "*"), strings.HasSuffix(b, "*")
+	if aWildcard && bWildcard {
+		aPrefix, bPrefix := strings.TrimSuffix(a, "*"), strings.TrimSuffix(b, "*")
+		return strings.HasPrefix(aPrefix, bPrefix) || strings.HasPrefix(bPrefix, aPrefix)
+	}
+	return !aWildcard && !bWildcard && a == b
 }
 
 type pricingCatalog struct {

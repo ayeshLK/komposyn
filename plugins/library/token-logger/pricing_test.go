@@ -206,6 +206,69 @@ func TestBundledCatalogRejectsMissingProvenanceAndInvalidRate(t *testing.T) {
 	}
 }
 
+func TestCustomPricingRejectsEqualPrecedenceWildcardOverlap(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rule := PricingRule{Provider: "test", ModelSelector: "gpt-*", TokenCategory: TokenCategoryInput,
+		RateMicros: 1, Currency: "USD", EffectiveFrom: from, PricingVersion: "custom-v1"}
+	if err := store.UpsertPricing(rule); err != nil {
+		t.Fatal(err)
+	}
+	rule.ModelSelector = "gpt-5*"
+	rule.PricingVersion = "custom-v2"
+	if err := store.UpsertPricing(rule); err == nil {
+		t.Fatal("accepted intersecting wildcard selectors with equal precedence")
+	}
+	if !selectorsHaveEqualPrecedenceOverlap("gpt-*", "gpt-5*") || selectorsHaveEqualPrecedenceOverlap("gpt-5-codex", "gpt-5*") {
+		t.Fatal("selector overlap did not preserve equal-precedence distinctions")
+	}
+}
+
+func TestBundledCatalogRejectsEqualPrecedenceWildcardOverlap(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var bundle bundledCatalog
+	if err := json.Unmarshal(bundledPricingCatalog, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	base := bundle.Entries[0]
+	base.ID = "openai:gpt-prefix:wide"
+	base.Model = "gpt-*"
+	base.EffectiveFrom = "2027-01-01T00:00:00Z"
+	base.PricingVersion = "public-api-2027-v1"
+	base.ReviewedAt = "2026-10-14"
+	narrow := base
+	narrow.ID = "openai:gpt-prefix:narrow"
+	narrow.Model = "gpt-5*"
+	narrow.Numerator++
+	bundle.Entries = append(bundle.Entries, base, narrow)
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE catalog_entry_id IS NOT NULL").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.syncPricingCatalogBytes(data); err == nil {
+		t.Fatal("accepted overlapping bundled wildcard selectors")
+	}
+	var after int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE catalog_entry_id IS NOT NULL").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("rejected wildcard sync changed row count from %d to %d", before, after)
+	}
+}
+
 func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
