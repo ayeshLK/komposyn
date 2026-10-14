@@ -106,11 +106,12 @@ type codexTokenInfo struct {
 }
 
 type codexSession struct {
-	ID          string
-	ProjectID   string
-	ProjectName string
-	Root        string
-	Model       string
+	ID                   string
+	ProjectID            string
+	HasExplicitProjectID bool
+	ProjectName          string
+	Root                 string
+	Model                string
 }
 
 // Import reads a single Codex JSONL source and atomically persists its
@@ -137,7 +138,10 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	result := ImportResult{}
 	var offset int64
 	var current codexSession
+	var activeSessionID string
 	sessions := map[string]codexSession{}
+	var metadataCurrent codexSession
+	metadataSessions := map[string]codexSession{}
 	legacyPrevious := map[string]codexUsage{}
 	legacyHasPrevious := map[string]bool{}
 	newStreamSessions := map[string]bool{}
@@ -176,8 +180,8 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 					} else if status == codexUsageRecordMalformed {
 						result.Outcomes.Add(OutcomeMalformedRecord)
 					} else {
-						session, ok := codexUsageRecordSession(record, current, sessions)
-						if !ok || session.Model == "" || session.ProjectID == "" {
+						session, ok := codexUsageRecordSession(record, activeSessionID, metadataSessions)
+						if !ok || session.Model == "" || session.ProjectID == "" || !session.HasExplicitProjectID {
 							result.Outcomes.Add(OutcomeMalformedRecord)
 						} else {
 							if record.SessionID == "" {
@@ -242,9 +246,26 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							if current.Model == "" {
 								current.Model = payload.Model
 							}
-							sessions[current.ID] = current
+							metadataSessionID := payload.SessionID
+							if metadataSessionID == "" {
+								metadataSessionID = payload.ID
+							}
+							if metadataCurrent.ID != "" && metadataSessionID != "" && metadataCurrent.ID != metadataSessionID {
+								metadataCurrent = codexSession{}
+							}
+							metadataCurrent = updateCodexSession(metadataCurrent, payload, sourceID)
+							if metadataCurrent.Model == "" {
+								metadataCurrent.Model = payload.Model
+							}
+							metadataCurrent.HasExplicitProjectID = strings.TrimSpace(payload.ProjectID) != ""
+							metadataSessions[metadataCurrent.ID] = metadataCurrent
+							sessions[metadataCurrent.ID] = metadataCurrent
+							activeSessionID = metadataCurrent.ID
 							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						case "turn_context":
+							if payload.SessionID != "" {
+								activeSessionID = payload.SessionID
+							}
 							if payload.SessionID != "" {
 								if known, ok := sessions[payload.SessionID]; ok {
 									current = known
@@ -256,12 +277,31 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							if current.ID != "" {
 								sessions[current.ID] = current
 							}
+							if payload.SessionID != "" {
+								if known, ok := metadataSessions[payload.SessionID]; ok {
+									metadataCurrent = known
+								} else {
+									metadataCurrent = codexSession{}
+								}
+							}
+							if metadataCurrent.ID != "" {
+								if payload.Model != "" {
+									metadataCurrent.Model = payload.Model
+								}
+								metadataSessions[metadataCurrent.ID] = metadataCurrent
+								sessions[metadataCurrent.ID] = metadataCurrent
+							}
 							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						case "token_usage_record":
 							result.Outcomes.Add(OutcomeUnsupportedUsage)
 						case "token_count":
 							if payload.SessionID != "" || payload.ProjectID != "" || payload.CWD != "" {
 								current = updateCodexSession(current, payload, sourceID)
+							}
+							if payload.SessionID != "" {
+								activeSessionID = payload.SessionID
+							} else if current.ID != "" {
+								activeSessionID = current.ID
 							}
 							if payload.Model != "" {
 								current.Model = payload.Model
@@ -271,7 +311,9 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 								legacyScope = current.ID
 							}
 							if current.ID != "" {
-								sessions[current.ID] = current
+								if _, hasMetadata := metadataSessions[current.ID]; !hasMetadata {
+									sessions[current.ID] = current
+								}
 							}
 							if newStreamSessions[legacyScope] {
 								result.Outcomes.Add(OutcomeIgnoredNonUsage)
@@ -321,7 +363,9 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 		current = updateCodexSession(current, codexPayload{}, sourceID)
 	}
 	if current.ID != "" {
-		sessions[current.ID] = current
+		if _, hasMetadata := metadataSessions[current.ID]; !hasMetadata {
+			sessions[current.ID] = current
+		}
 	}
 	projectsByID := map[string]Project{}
 	sessionsByID := map[string]Session{}
@@ -477,19 +521,16 @@ func codexLogicalScope(sessionID, threadID string) string {
 	return sessionID
 }
 
-func codexUsageRecordSession(record codexUsageRecordPayload, current codexSession, sessions map[string]codexSession) (codexSession, bool) {
+func codexUsageRecordSession(record codexUsageRecordPayload, activeSessionID string, sessions map[string]codexSession) (codexSession, bool) {
 	sessionID := strings.TrimSpace(record.SessionID)
 	if sessionID == "" {
-		sessionID = current.ID
+		sessionID = activeSessionID
 	}
 	if sessionID == "" {
 		return codexSession{}, false
 	}
 	if session, ok := sessions[sessionID]; ok {
 		return session, true
-	}
-	if current.ID == sessionID {
-		return current, true
 	}
 	return codexSession{}, false
 }

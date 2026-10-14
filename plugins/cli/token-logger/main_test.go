@@ -65,22 +65,37 @@ func TestClaudeImportCommand(t *testing.T) {
 func TestImportJSONOutcomeContract(t *testing.T) {
 	dataDir := t.TempDir()
 	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl")
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"import", fixture, "--format", "json", "--data-dir", dataDir}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("import exit code = %d, stderr = %q", code, stderr.String())
+	contents, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var result importCommandOutput
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("decode import JSON: %v; output=%q", err, stdout.String())
+	const sentinel = "pr74-private-project-sentinel"
+	contents = bytes.Replace(contents, []byte("Sanitized Fixture Project"), []byte(sentinel), 1)
+	sourcePath := filepath.Join(t.TempDir(), "private-codex-transcript.jsonl")
+	if err := os.WriteFile(sourcePath, contents, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if result.FormatVersion != 1 || result.SourcesDiscovered != 1 || result.SourcesProcessed != 1 ||
-		result.ImportedEvents != 2 || result.DuplicateEvents != 0 || result.Outcomes.IgnoredNonUsage != 3 ||
-		result.Outcomes.UnchangedSnapshot != 1 || !result.Complete || result.Pending {
-		t.Fatalf("unexpected import JSON: %+v", result)
+
+	outputs := make([]string, 0, 2)
+	for runIndex := 0; runIndex < 2; runIndex++ {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"import", sourcePath, "--format", "json", "--data-dir", dataDir}, &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("import run %d exit code = %d, stderr = %q", runIndex+1, code, stderr.String())
+		}
+		outputs = append(outputs, stdout.String())
+		if strings.Contains(stdout.String(), sourcePath) || strings.Contains(stdout.String(), filepath.Base(sourcePath)) || strings.Contains(stdout.String(), sentinel) {
+			t.Fatalf("machine output disclosed source path or transcript content: %q", stdout.String())
+		}
 	}
-	if strings.Contains(stdout.String(), fixture) {
-		t.Fatalf("machine output disclosed source path: %q", stdout.String())
+
+	const firstImport = `{"format_version":1,"sources_discovered":1,"sources_processed":1,"imported_events":2,"duplicate_events":0,"outcomes":{"ignored_non_usage":3,"unchanged_snapshot":1,"deferred_incomplete_tail":0,"unsupported_usage":0,"malformed_record":0,"failed_source":0},"failed_sources":0,"complete":true,"pending":false}` + "\n"
+	const repeatedImport = `{"format_version":1,"sources_discovered":1,"sources_processed":1,"imported_events":0,"duplicate_events":2,"outcomes":{"ignored_non_usage":3,"unchanged_snapshot":1,"deferred_incomplete_tail":0,"unsupported_usage":0,"malformed_record":0,"failed_source":0},"failed_sources":0,"complete":true,"pending":false}` + "\n"
+	if outputs[0] != firstImport {
+		t.Errorf("first import JSON contract mismatch:\n got: %q\nwant: %q", outputs[0], firstImport)
+	}
+	if outputs[1] != repeatedImport {
+		t.Errorf("repeated import JSON contract mismatch:\n got: %q\nwant: %q", outputs[1], repeatedImport)
 	}
 }
 

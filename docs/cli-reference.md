@@ -58,6 +58,18 @@ until a valid response-record stream begins for that session; mirrored legacy
 snapshots after that point are reported as `ignored_non_usage`. This precedence
 rule keeps mixed Codex files from double-counting responses.
 
+For these records, the envelope `timestamp` must be a valid RFC3339 value.
+Session identity comes from the payload, or the active session context when
+omitted, and must resolve to matching `session_meta` state. Project attribution
+requires an explicit `project_id` in that session metadata; a source-scoped
+placeholder project identifier is not accepted for these records. The model
+from that metadata applies until a later `turn_context` changes the model for
+subsequent responses. Missing or invalid timestamp, unresolved session,
+missing project identifier, or unavailable model context is counted as a
+malformed record; legacy `token_count` payloads alone do not supply metadata
+for a response record or override matching session metadata, and the CLI does
+not guess attribution from unrelated records.
+
 ### `usage`, `cost`, and `sessions`
 
 ```text
