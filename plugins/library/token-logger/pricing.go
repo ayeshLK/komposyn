@@ -81,6 +81,9 @@ func (r PricingRule) validate() error {
 // UpsertPricing adds a pricing rule. Existing rules are never rewritten;
 // callers should use a new pricing version and effective interval for updates.
 func (s *Store) UpsertPricing(rule PricingRule) error {
+	if rule.CatalogEntryID != "" {
+		return errors.New("catalog entry IDs are reserved for bundled pricing rules")
+	}
 	if err := rule.validate(); err != nil {
 		return err
 	}
@@ -259,6 +262,7 @@ type eventCost struct {
 	AmountMicros   int64
 	Currency       string
 	Provider       string
+	PricingOrigin  string
 	PricingVersion string
 	SourceURL      string
 	Source         string
@@ -268,16 +272,21 @@ type eventCost struct {
 }
 
 type pricingProvenance struct {
-	count                                                                   int
-	provider, version, sourceURL, source, model, effectiveFrom, effectiveTo string
+	count                                                                           int
+	provider, origin, version, sourceURL, source, model, effectiveFrom, effectiveTo string
 }
 
 func (p *pricingProvenance) add(rule PricingRule) {
 	from, to := formatStoredTime(rule.EffectiveFrom), formatEffectiveTo(rule.EffectiveTo)
+	origin := "custom"
+	if rule.CatalogEntryID != "" {
+		origin = "public_catalog"
+	}
 	if p.count == 0 {
-		p.provider, p.version, p.sourceURL, p.source, p.model, p.effectiveFrom, p.effectiveTo = rule.Provider, rule.PricingVersion, rule.SourceURL, rule.Source, rule.ModelSelector, from, to
+		p.provider, p.origin, p.version, p.sourceURL, p.source, p.model, p.effectiveFrom, p.effectiveTo = rule.Provider, origin, rule.PricingVersion, rule.SourceURL, rule.Source, rule.ModelSelector, from, to
 	} else {
 		p.provider = strictMergeProvenance(p.provider, rule.Provider)
+		p.origin = strictMergeProvenance(p.origin, origin)
 		p.version = strictMergeProvenance(p.version, rule.PricingVersion)
 		p.sourceURL = strictMergeProvenance(p.sourceURL, rule.SourceURL)
 		p.source = strictMergeProvenance(p.source, rule.Source)
@@ -299,7 +308,7 @@ func (p pricingProvenance) apply(cost *eventCost) {
 	if p.count == 0 {
 		return
 	}
-	cost.Provider, cost.PricingVersion, cost.SourceURL, cost.Source = p.provider, p.version, p.sourceURL, p.source
+	cost.Provider, cost.PricingOrigin, cost.PricingVersion, cost.SourceURL, cost.Source = p.provider, p.origin, p.version, p.sourceURL, p.source
 	cost.ModelSelector, cost.EffectiveFrom, cost.EffectiveTo = p.model, p.effectiveFrom, p.effectiveTo
 }
 

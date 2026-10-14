@@ -307,7 +307,7 @@ func addMeasures(acc *reportAccumulator, event reportEvent, cost eventCost) erro
 		acc.CalculatedCostMicros = value
 		acc.CalculatedCurrency = mergeCurrency(acc.CalculatedCurrency, cost.Currency)
 		acc.EstimatedCostRequests++
-		mergePricingMetadata(acc, event, cost, "public_catalog_estimate")
+		mergePricingMetadata(acc, event, cost, estimateBasis(cost.PricingOrigin, false))
 		acc.PricingVersion = mergeLabel(acc.PricingVersion, cost.PricingVersion)
 		acc.PricingSource = mergeLabel(acc.PricingSource, pricingSourceLabel(cost))
 		acc.PricingModelSelector = mergeLabel(acc.PricingModelSelector, cost.ModelSelector)
@@ -338,7 +338,7 @@ func addMeasures(acc *reportAccumulator, event reportEvent, cost eventCost) erro
 			}
 			acc.CalculatedCostMicros = value
 			acc.CalculatedCurrency = mergeCurrency(acc.CalculatedCurrency, cost.Currency)
-			mergePricingMetadata(acc, event, cost, "partial_public_catalog_estimate")
+			mergePricingMetadata(acc, event, cost, estimateBasis(cost.PricingOrigin, true))
 			if cost.PricingVersion != "" {
 				acc.PricingVersion = mergeLabel(acc.PricingVersion, cost.PricingVersion)
 			}
@@ -370,6 +370,23 @@ func mergePricingMetadata(acc *reportAccumulator, event reportEvent, cost eventC
 	}
 	acc.PricingProvider = mergeLabel(acc.PricingProvider, provider)
 	acc.CalculationBasis = mergeLabel(acc.CalculationBasis, basis)
+}
+
+func estimateBasis(origin string, partial bool) string {
+	prefix := ""
+	if partial {
+		prefix = "partial_"
+	}
+	switch origin {
+	case "public_catalog":
+		return prefix + "public_catalog_estimate"
+	case "custom":
+		return prefix + "custom_pricing_estimate"
+	case "mixed":
+		return prefix + "mixed_estimate"
+	default:
+		return "unavailable"
+	}
 }
 
 func checkedCostAdd(current, next int64) (int64, bool) {

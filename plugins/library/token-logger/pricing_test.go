@@ -228,6 +228,20 @@ func TestCustomPricingRejectsEqualPrecedenceWildcardOverlap(t *testing.T) {
 	}
 }
 
+func TestCustomPricingCannotClaimBundledCatalogOrigin(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rule := PricingRule{Provider: "test", ModelSelector: "model", TokenCategory: TokenCategoryInput,
+		RateMicros: 1, Currency: "USD", EffectiveFrom: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		PricingVersion: "caller-v1", CatalogEntryID: "pretend:catalog"}
+	if err := store.UpsertPricing(rule); err == nil {
+		t.Fatal("custom pricing accepted reserved catalog entry ID")
+	}
+}
+
 func TestBundledCatalogRejectsEqualPrecedenceWildcardOverlap(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
@@ -433,6 +447,39 @@ func TestEstimateAggregatesEveryComponentProvenance(t *testing.T) {
 	if got.Status != "calculated" || got.AmountMicros != 11 || got.Provider != "test" || got.PricingVersion != "mixed" || got.SourceURL != "mixed" || got.EffectiveTo != "mixed" {
 		t.Fatalf("multi-component provenance = %+v, want total 11 and mixed entry provenance", got)
 	}
+}
+
+func TestCalculationBasisPreservesCustomAndCatalogOrigins(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	custom := PricingRule{Provider: "test", ModelSelector: "model", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "custom-v1"}
+	bundled := custom
+	bundled.TokenCategory = TokenCategoryOutput
+	bundled.PricingVersion = "public-v1"
+	bundled.CatalogEntryID = "public:model:output"
+	calculate := func(t *testing.T, rules []PricingRule, usage TokenUsage, wantStatus, wantBasis string) {
+		t.Helper()
+		catalog := pricingCatalog{rules: rules}
+		cost := catalog.calculate(reportEvent{OccurredAt: from, Provider: "test", RequestedModel: "model", ResolvedModel: "model", Usage: usage})
+		acc := reportAccumulator{sessions: map[string]struct{}{}}
+		if err := addMeasures(&acc, reportEvent{Provider: "test", Usage: usage}, cost); err != nil {
+			t.Fatal(err)
+		}
+		if cost.Status != wantStatus || acc.CalculationBasis != wantBasis {
+			t.Fatalf("cost=%+v basis=%q; want status=%q basis=%q", cost, acc.CalculationBasis, wantStatus, wantBasis)
+		}
+	}
+	t.Run("custom only", func(t *testing.T) {
+		calculate(t, []PricingRule{custom}, TokenUsage{InputTokens: 3}, "calculated", "custom_pricing_estimate")
+	})
+	t.Run("bundled only", func(t *testing.T) {
+		calculate(t, []PricingRule{bundled}, TokenUsage{OutputTokens: 3}, "calculated", "public_catalog_estimate")
+	})
+	t.Run("mixed components", func(t *testing.T) {
+		calculate(t, []PricingRule{custom, bundled}, TokenUsage{InputTokens: 3, OutputTokens: 3}, "calculated", "mixed_estimate")
+	})
+	t.Run("partially known custom", func(t *testing.T) {
+		calculate(t, []PricingRule{custom}, TokenUsage{InputTokens: 3, OutputTokens: 2}, "unknown", "partial_custom_pricing_estimate")
+	})
 }
 
 func TestExpiredPricingDoesNotApply(t *testing.T) {
