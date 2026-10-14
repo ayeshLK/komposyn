@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +37,8 @@ func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
 	event.EventID = "pricing-event"
 	event.ProjectID = "project-1"
 	event.SessionID = "session-1"
+	reportedAmount := int64(500)
+	event.Cost = Cost{Status: "reported", AmountMicros: &reportedAmount, Currency: "USD"}
 	if _, err := store.Append([]UsageEvent{event}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +63,30 @@ func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
 	if report.Summary.CalculatedCostMicros != 240 || report.Summary.CalculatedCurrency != "USD" || report.Summary.UnknownCostRequests != 0 {
 		t.Fatalf("unexpected cost summary: %+v", report.Summary)
 	}
+	if report.Summary.ProviderReportedCostMicros != reportedAmount || report.Summary.EstimatedCostRequests != 1 {
+		t.Fatalf("reported and estimated costs were not kept separately: %+v", report.Summary)
+	}
+	if report.Summary.PricingProvider != "openai" || report.Summary.CalculationBasis != "custom_pricing_estimate" {
+		t.Fatalf("pricing provenance = provider %q basis %q", report.Summary.PricingProvider, report.Summary.CalculationBasis)
+	}
+	var jsonOutput bytes.Buffer
+	if err := WriteJSON(&jsonOutput, report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(jsonOutput.String(), `"pricing_provider": "openai"`) || !strings.Contains(jsonOutput.String(), `"calculation_basis": "custom_pricing_estimate"`) {
+		t.Fatalf("JSON omitted provider/basis provenance: %s", jsonOutput.String())
+	}
+	var csvOutput bytes.Buffer
+	if err := WriteCSV(&csvOutput, report); err != nil {
+		t.Fatal(err)
+	}
+	records, err := csv.NewReader(strings.NewReader(csvOutput.String())).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records[0][18] != "pricing_provider" || records[0][19] != "calculation_basis" || records[1][18] != "openai" || records[1][19] != "custom_pricing_estimate" {
+		t.Fatalf("CSV omitted provider/basis provenance: %#v", records)
+	}
 	if len(report.Rows) != 1 || report.Rows[0].RequestCount != 1 {
 		t.Fatalf("unexpected grouped rows: %+v", report.Rows)
 	}
@@ -79,6 +106,24 @@ func TestQueryMarksMissingPricingAsUnknown(t *testing.T) {
 	}
 	if report.Summary.UnknownCostRequests != 1 || report.Summary.CalculatedCostMicros != 0 {
 		t.Fatalf("unexpected unknown cost summary: %+v", report.Summary)
+	}
+}
+
+func TestStoredCalculatedCostIsNotTreatedAsCatalogEstimate(t *testing.T) {
+	store := openTestStore(t)
+	event := testEvent("untrusted-stored-cost")
+	amount := int64(987654)
+	event.Cost = Cost{Status: "calculated", AmountMicros: &amount, Currency: "USD", PricingVersion: "caller-value"}
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	from := event.OccurredAt
+	report, err := store.Query(UsageFilter{From: from, To: from.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.CalculatedCostMicros != 0 || report.Summary.EstimatedCostRequests != 0 || report.Summary.UnknownCostRequests != 1 {
+		t.Fatalf("stored caller calculation was presented as a catalog estimate: %+v", report.Summary)
 	}
 }
 
@@ -171,7 +216,7 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if _, err := store.db.Exec("UPDATE usage_events SET occurred_at = ?, started_at = NULL WHERE event_id = ?", "2026-10-11T00:00:00.5Z", event.EventID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4)"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -194,8 +239,8 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if err := store.db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 4 || latestMigration != 4 {
-		t.Fatalf("migration history = count %d, latest %d; want four migrations through version 4", migrationCount, latestMigration)
+	if migrationCount != 5 || latestMigration != 5 {
+		t.Fatalf("migration history = count %d, latest %d; want five migrations through version 5", migrationCount, latestMigration)
 	}
 	var sourceGenerationColumn string
 	if err := store.db.QueryRow("SELECT name FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&sourceGenerationColumn); err != nil {
@@ -277,7 +322,7 @@ func TestWriteTableUsesRequestedDimensionOrderAndSingleTimeColumn(t *testing.T) 
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-	if got, want := strings.Fields(lines[0]), []string{"HOUR", "CLIENT", "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "COST", "STATUS"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := strings.Fields(lines[0]), []string{"HOUR", "CLIENT", "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "ESTIMATE", "REPORTED", "STATUS"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("headings = %v, want %v", got, want)
 	}
 	if strings.Contains(lines[0], "BUCKET") || strings.Count(lines[1], hour) != 1 {
@@ -366,9 +411,11 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 		cost     string
 		status   string
 	}{
-		{name: "known zero", measures: UsageMeasures{RequestCount: 1, CalculatedCurrency: "USD"}, cost: "0 USD", status: "calculated"},
-		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD"}, cost: "0.00024 USD", status: "calculated"},
+		{name: "known zero", measures: UsageMeasures{RequestCount: 1, CalculatedCurrency: "USD", KnownZeroCostRequests: 1}, cost: "0 USD", status: "known zero"},
+		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD", EstimatedCostRequests: 1}, cost: "0.00024 USD", status: "estimated"},
 		{name: "fully unknown", measures: UsageMeasures{RequestCount: 2, UnknownCostRequests: 2}, cost: "unknown", status: "pricing unavailable (2)"},
+		{name: "unknown reason", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, CostUnknownReason: "model_unresolved"}, cost: "unknown", status: "model unresolved (1)"},
+		{name: "reported only", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, ProviderReportedCostMicros: 10, ProviderReportedCurrency: "USD"}, cost: "unknown", status: "reported only; estimate unavailable (pricing unavailable, 1)"},
 		{name: "partially known", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "USD", UnknownCostRequests: 1}, cost: "12.34 USD", status: "partial; 1 pricing unavailable"},
 		{name: "mixed currencies", measures: UsageMeasures{RequestCount: 2, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed"}, cost: "not comparable", status: "mixed currencies"},
 		{name: "mixed and partially unknown", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed", UnknownCostRequests: 1}, cost: "not comparable", status: "mixed currencies; 1 pricing unavailable"},
@@ -380,6 +427,96 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 				t.Fatalf("cost/status = %q/%q, want %q/%q", cost, status, tc.cost, tc.status)
 			}
 		})
+	}
+}
+
+func TestZeroUsageReportDistinguishesKnownAndUnknownModels(t *testing.T) {
+	store := openTestStore(t)
+	date := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	supported := testEvent("zero-supported")
+	supported.EventID, supported.OccurredAt = "zero-supported", date
+	supported.RequestedModel, supported.ResolvedModel = "gpt-5-codex", "gpt-5-codex"
+	supported.Usage = TokenUsage{}
+	unsupported := testEvent("zero-unsupported")
+	unsupported.EventID, unsupported.OccurredAt = "zero-unsupported", date
+	unsupported.Provider, unsupported.RequestedModel, unsupported.ResolvedModel = "unknown", "unknown-model", "unknown-model"
+	unsupported.Usage = TokenUsage{}
+	if _, err := store.Append([]UsageEvent{supported, unsupported}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Query(UsageFilter{From: date.Add(-time.Minute), To: date.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.KnownZeroCostRequests != 1 || report.Summary.EstimatedCostRequests != 0 || report.Summary.UnknownCostRequests != 1 {
+		t.Fatalf("zero-cost summary = %+v", report.Summary)
+	}
+	var reasons map[string]int64
+	if err := json.Unmarshal([]byte(report.Summary.CostUnknownReasons), &reasons); err != nil {
+		t.Fatal(err)
+	}
+	if reasons["no_matching_rate"] != 1 {
+		t.Fatalf("zero event unknown reasons = %v", reasons)
+	}
+}
+
+func TestGroupedUnknownCostReasonsRetainCounts(t *testing.T) {
+	acc := reportAccumulator{sessions: map[string]struct{}{}}
+	for _, reason := range []string{"model_unresolved", "outside_effective_range", "outside_effective_range"} {
+		if err := addMeasures(&acc, reportEvent{}, eventCost{Status: "unknown", Reason: reason}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var output bytes.Buffer
+	if err := WriteJSON(&output, UsageReport{Summary: acc.UsageMeasures}); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Summary struct {
+			Reasons map[string]int64 `json:"cost_unknown_reasons"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Summary.Reasons["model_unresolved"] != 1 || decoded.Summary.Reasons["outside_effective_range"] != 2 {
+		t.Fatalf("JSON reason counts = %v", decoded.Summary.Reasons)
+	}
+	var csvOutput bytes.Buffer
+	if err := WriteCSV(&csvOutput, UsageReport{Summary: acc.UsageMeasures}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(csvOutput.String(), `"{""model_unresolved"":1,""outside_effective_range"":2}"`) {
+		t.Fatalf("CSV does not preserve reason-count JSON: %q", csvOutput.String())
+	}
+}
+
+func TestGroupedPricingProviderAndBasisMergeExplicitly(t *testing.T) {
+	acc := reportAccumulator{sessions: map[string]struct{}{}}
+	if err := addMeasures(&acc, reportEvent{Provider: "openai"}, eventCost{Status: "calculated", AmountMicros: 10, Currency: "USD", Provider: "openai", PricingOrigin: "public_catalog"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := addMeasures(&acc, reportEvent{Provider: "anthropic"}, eventCost{Status: "unknown", Reason: "no_matching_rate", Provider: "anthropic", PricingOrigin: "custom", Currency: "USD"}); err != nil {
+		t.Fatal(err)
+	}
+	if acc.PricingProvider != "mixed" || acc.CalculationBasis != "mixed" {
+		t.Fatalf("grouped pricing provider/basis = %q/%q, want mixed/mixed", acc.PricingProvider, acc.CalculationBasis)
+	}
+}
+
+func TestCostAggregationRejectsOverflow(t *testing.T) {
+	acc := reportAccumulator{sessions: map[string]struct{}{}, UsageMeasures: UsageMeasures{CalculatedCostMicros: int64(^uint64(0) >> 1)}}
+	if err := addMeasures(&acc, reportEvent{}, eventCost{Status: "calculated", AmountMicros: 1}); err == nil || !strings.Contains(err.Error(), "estimated cost aggregation overflow") {
+		t.Fatalf("estimated overflow error = %v", err)
+	}
+	acc = reportAccumulator{sessions: map[string]struct{}{}, UsageMeasures: UsageMeasures{ProviderReportedCostMicros: int64(^uint64(0) >> 1)}}
+	amount := int64(1)
+	if err := addMeasures(&acc, reportEvent{ProviderAmount: &amount}, eventCost{}); err == nil || !strings.Contains(err.Error(), "provider-reported cost aggregation overflow") {
+		t.Fatalf("reported overflow error = %v", err)
+	}
+	acc = reportAccumulator{sessions: map[string]struct{}{}, UsageMeasures: UsageMeasures{CalculatedCostMicros: int64(^uint64(0) >> 1)}}
+	if err := addMeasures(&acc, reportEvent{}, eventCost{Status: "unknown", AmountMicros: 1, Currency: "USD", Reason: "no_matching_rate"}); err == nil || !strings.Contains(err.Error(), "partial estimated cost aggregation overflow") {
+		t.Fatalf("partial estimate overflow error = %v", err)
 	}
 }
 

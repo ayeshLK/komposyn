@@ -62,6 +62,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := store.syncBundledPricingCatalog(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("load bundled pricing catalog: %w", err)
+	}
 	return store, nil
 }
 
@@ -163,7 +167,52 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("commit migration 4: %w", err)
 		}
 	}
+	if applied < 5 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 5: %w", err)
+		}
+		if err := applyPricingRationalMigration(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("apply migration 5: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 5, formatStoredTime(time.Now())); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration 5: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 5: %w", err)
+		}
+	}
 	return nil
+}
+
+func applyPricingRationalMigration(tx *sql.Tx) error {
+	columns := []struct{ name, definition string }{
+		{"rate_numerator_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"rate_denominator_tokens", "INTEGER NOT NULL DEFAULT 1"},
+		{"catalog_entry_id", "TEXT"},
+		{"source_url", "TEXT NOT NULL DEFAULT ''"},
+		{"source_reviewed_at", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		var present int
+		err := tx.QueryRow("SELECT 1 FROM pragma_table_info('pricing_rules') WHERE name = ?", column.name).Scan(&present)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.Exec("ALTER TABLE pricing_rules ADD COLUMN " + column.name + " " + column.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec("UPDATE pricing_rules SET rate_numerator_micros = rate_micros WHERE rate_numerator_micros = 0 AND rate_micros != 0 AND catalog_entry_id IS NULL"); err != nil {
+		return err
+	}
+	_, err := tx.Exec(schemaMigrationFive)
+	return err
 }
 
 func applySourceGenerationMigration(tx *sql.Tx) error {

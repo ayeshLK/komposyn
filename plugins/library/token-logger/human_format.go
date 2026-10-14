@@ -141,6 +141,10 @@ func escapeHumanText(value string) string {
 
 func humanCostDisplay(measures UsageMeasures) (string, string) {
 	unknown := measures.UnknownCostRequests
+	unknownLabel := "pricing unavailable"
+	if measures.CostUnknownReason != "" {
+		unknownLabel = strings.ReplaceAll(measures.CostUnknownReason, "_", " ")
+	}
 	known := measures.RequestCount - unknown
 	if known < 0 {
 		known = 0
@@ -149,7 +153,7 @@ func humanCostDisplay(measures UsageMeasures) (string, string) {
 	if measures.CalculatedCurrency == "mixed" {
 		status := "mixed currencies"
 		if unknown > 0 {
-			status += "; " + formatExactCount(unknown) + " pricing unavailable"
+			status += "; " + formatExactCount(unknown) + " " + unknownLabel
 		}
 		return "not comparable", status
 	}
@@ -159,12 +163,35 @@ func humanCostDisplay(measures UsageMeasures) (string, string) {
 		cost += " " + measures.CalculatedCurrency
 	}
 	if unknown == 0 {
-		return cost, "calculated"
+		if measures.EstimatedCostRequests > 0 {
+			return cost, "estimated"
+		}
+		if measures.KnownZeroCostRequests > 0 {
+			return cost, "known zero"
+		}
+		if measures.ProviderReportedCostMicros != 0 || measures.ProviderReportedCurrency != "" {
+			return "unknown", "reported only"
+		}
+		return cost, "estimated"
 	}
 	if known == 0 && measures.CalculatedCostMicros == 0 && measures.CalculatedCurrency == "" {
-		return "unknown", "pricing unavailable (" + formatExactCount(unknown) + ")"
+		if measures.ProviderReportedCurrency != "" || measures.ProviderReportedCostMicros != 0 {
+			return "unknown", "reported only; estimate unavailable (" + unknownLabel + ", " + formatExactCount(unknown) + ")"
+		}
+		return "unknown", unknownLabel + " (" + formatExactCount(unknown) + ")"
 	}
-	return cost, "partial; " + formatExactCount(unknown) + " pricing unavailable"
+	return cost, "partial; " + formatExactCount(unknown) + " " + unknownLabel
+}
+
+func reportedCostDisplay(measures UsageMeasures) string {
+	if measures.ProviderReportedCurrency == "" && measures.ProviderReportedCostMicros == 0 {
+		return "—"
+	}
+	value := formatCostMicros(measures.ProviderReportedCostMicros)
+	if measures.ProviderReportedCurrency != "" {
+		value += " " + measures.ProviderReportedCurrency
+	}
+	return value
 }
 
 func formatCostMicros(value int64) string {

@@ -126,3 +126,7 @@ CREATE INDEX diagnostics_status_idx ON diagnostics(status, last_seen_at);
 const schemaMigrationFour = `
 ALTER TABLE source_cursors ADD COLUMN source_generation INTEGER NOT NULL DEFAULT 0;
 `
+
+const schemaMigrationFive = `
+CREATE UNIQUE INDEX IF NOT EXISTS pricing_rules_catalog_entry_id_idx ON pricing_rules(catalog_entry_id) WHERE catalog_entry_id IS NOT NULL;
+`
