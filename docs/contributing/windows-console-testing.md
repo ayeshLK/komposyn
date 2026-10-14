@@ -14,19 +14,40 @@ the application and record which host was tested.
 
 ## Build and prepare
 
-From the repository root:
+From the repository root, save the current environment variable and enter a
+`try` block before running the remaining commands in this procedure. Keep all
+build, setup, and test commands inside that block. The final `finally` block
+restores the variable even if a build or manual check fails:
 
 ```powershell
-New-Item -ItemType Directory -Force .\bin | Out-Null
-go build -o .\bin\komposyn-lg.exe .\plugins\cli\token-logger
-$exe = (Resolve-Path .\bin\komposyn-lg.exe).Path
-$dataDir = Join-Path $env:TEMP ("komposyn-console-test-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $dataDir | Out-Null
-$env:TOKEN_LOGGER_DATA_DIR = $dataDir
+$hadTokenLoggerDataDir = Test-Path Env:TOKEN_LOGGER_DATA_DIR
+$previousTokenLoggerDataDir = $env:TOKEN_LOGGER_DATA_DIR
+try {
+    New-Item -ItemType Directory -Force .\bin | Out-Null
+    go build -o .\bin\komposyn-lg.exe .\plugins\cli\token-logger
+    $exe = (Resolve-Path .\bin\komposyn-lg.exe).Path
+    $dataDir = Join-Path $env:TEMP ("komposyn-console-test-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $dataDir | Out-Null
+    $env:TOKEN_LOGGER_DATA_DIR = $dataDir
 ```
 
 Use a new temporary data directory so first-run prompts appear and the test
-does not inspect or modify an existing Komposyn profile.
+does not inspect or modify an existing Komposyn profile. Keep the remaining
+commands below inside the open `try` block, then close it with this cleanup
+block after all checks:
+
+```powershell
+} finally {
+    if ($hadTokenLoggerDataDir) {
+        $env:TOKEN_LOGGER_DATA_DIR = $previousTokenLoggerDataDir
+    } else {
+        Remove-Item Env:TOKEN_LOGGER_DATA_DIR -ErrorAction SilentlyContinue
+    }
+}
+```
+
+The temporary directory is retained as test evidence. Remove it manually
+after reviewing any files it contains.
 
 Define a small helper to capture the console input mode. The application uses
 raw console input while the editor is active and must restore the original
