@@ -59,6 +59,20 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 		}
 	}()
 	output.waitForText(t, "> ")
+	if _, err := master.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	output.waitForText(t, "> partial")
+	if _, err := master.Write([]byte("\x0c")); err != nil {
+		t.Fatal(err)
+	}
+	output.waitForText(t, "\033[2J\033[H")
+	// Ctrl-L must clear the visible screen and redraw the active prompt and
+	// partially typed line, not merely emit the clear sequence.
+	output.waitForText(t, "> partial")
+	if _, err := master.Write([]byte("\x01\x0b")); err != nil {
+		t.Fatal(err)
+	}
 
 	// Exercise cursor insertion, Right, Delete in the middle, Home/Right, and
 	// Unicode through the real editor before command dispatch.
