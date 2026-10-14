@@ -52,6 +52,9 @@ integration reference.
   release checks, and final inspection.
 - [Testing guide](contributing/testing.md) — baseline checks and change-area
   coverage expectations.
+- [Windows console integration test](contributing/windows-console-testing.md)
+  — manual validation of native interactive input, clearing, and terminal
+  state restoration on an attached Windows console.
 - [Pull request guide](contributing/pull-requests.md) — readable descriptions,
   evidence, compatibility impact, and review handoff.
 - [Operations](operations.md) — data locations, collection health, backups,

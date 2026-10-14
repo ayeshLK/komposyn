@@ -28,6 +28,15 @@ remains the final cross-platform check.
 | Workflow or security | YAML review, least-privilege permissions, immutable action references, and relevant checks |
 | Documentation | Local links, command accuracy, examples, and consistency with implementation |
 
+## Windows console integration
+
+The hosted Windows job uses redirected standard streams, so its native
+console-record unit tests are not an attached-console end-to-end test. For
+manual cursor editing/history, Enter-key behavior, `/clear`/Ctrl-L, and console
+mode restoration checks, follow the
+[Windows console integration procedure](windows-console-testing.md). Report
+manual evidence separately from automated CI results.
+
 ## Evidence
 
 PRs should list exact commands and whether each passed. If a check cannot be
