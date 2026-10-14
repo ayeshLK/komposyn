@@ -2,7 +2,11 @@
 
 The library ships a small offline public API list-price catalog at
 `plugins/library/token-logger/pricing-catalog.json`. It is data, not a live
-provider feed. Normal startup, import, and reporting never fetch pricing pages.
+provider feed. At present it includes the exact `gpt-5-codex` API model only.
+Claude events remain unknown until the adapter extracts and persists the
+billing context needed to distinguish standard usage from service tiers and
+other pricing modifiers. Normal startup, import, and reporting never fetch
+pricing pages.
 
 For each catalog change, maintainers should:
 
@@ -30,6 +34,8 @@ bundled rate.
 JSON and CSV reports expose the matched model selector and effective interval
 along with catalog version and source, so grouped results that combine multiple
 entries visibly report `mixed` provenance instead of implying a single rule.
+Grouped unknown costs retain a reason-to-count object rather than collapsing
+distinct causes into one label.
 
 Bundled values describe public API list-price equivalents, not invoices. They
 exclude taxes, credits, negotiated pricing, subscription entitlements, and

@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,6 +85,24 @@ func TestQueryMarksMissingPricingAsUnknown(t *testing.T) {
 	}
 	if report.Summary.UnknownCostRequests != 1 || report.Summary.CalculatedCostMicros != 0 {
 		t.Fatalf("unexpected unknown cost summary: %+v", report.Summary)
+	}
+}
+
+func TestStoredCalculatedCostIsNotTreatedAsCatalogEstimate(t *testing.T) {
+	store := openTestStore(t)
+	event := testEvent("untrusted-stored-cost")
+	amount := int64(987654)
+	event.Cost = Cost{Status: "calculated", AmountMicros: &amount, Currency: "USD", PricingVersion: "caller-value"}
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	from := event.OccurredAt
+	report, err := store.Query(UsageFilter{From: from, To: from.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.CalculatedCostMicros != 0 || report.Summary.EstimatedCostRequests != 0 || report.Summary.UnknownCostRequests != 1 {
+		t.Fatalf("stored caller calculation was presented as a catalog estimate: %+v", report.Summary)
 	}
 }
 
@@ -387,6 +406,53 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 				t.Fatalf("cost/status = %q/%q, want %q/%q", cost, status, tc.cost, tc.status)
 			}
 		})
+	}
+}
+
+func TestGroupedUnknownCostReasonsRetainCounts(t *testing.T) {
+	acc := reportAccumulator{sessions: map[string]struct{}{}}
+	for _, reason := range []string{"model_unresolved", "outside_effective_range", "outside_effective_range"} {
+		if err := addMeasures(&acc, reportEvent{}, eventCost{Status: "unknown", Reason: reason}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var output bytes.Buffer
+	if err := WriteJSON(&output, UsageReport{Summary: acc.UsageMeasures}); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Summary struct {
+			Reasons map[string]int64 `json:"cost_unknown_reasons"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Summary.Reasons["model_unresolved"] != 1 || decoded.Summary.Reasons["outside_effective_range"] != 2 {
+		t.Fatalf("JSON reason counts = %v", decoded.Summary.Reasons)
+	}
+	var csvOutput bytes.Buffer
+	if err := WriteCSV(&csvOutput, UsageReport{Summary: acc.UsageMeasures}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(csvOutput.String(), `"{""model_unresolved"":1,""outside_effective_range"":2}"`) {
+		t.Fatalf("CSV does not preserve reason-count JSON: %q", csvOutput.String())
+	}
+}
+
+func TestCostAggregationRejectsOverflow(t *testing.T) {
+	acc := reportAccumulator{sessions: map[string]struct{}{}, UsageMeasures: UsageMeasures{CalculatedCostMicros: int64(^uint64(0) >> 1)}}
+	if err := addMeasures(&acc, reportEvent{}, eventCost{Status: "calculated", AmountMicros: 1}); err == nil || !strings.Contains(err.Error(), "estimated cost aggregation overflow") {
+		t.Fatalf("estimated overflow error = %v", err)
+	}
+	acc = reportAccumulator{sessions: map[string]struct{}{}, UsageMeasures: UsageMeasures{ProviderReportedCostMicros: int64(^uint64(0) >> 1)}}
+	amount := int64(1)
+	if err := addMeasures(&acc, reportEvent{ProviderAmount: &amount}, eventCost{}); err == nil || !strings.Contains(err.Error(), "provider-reported cost aggregation overflow") {
+		t.Fatalf("reported overflow error = %v", err)
+	}
+	acc = reportAccumulator{sessions: map[string]struct{}{}, UsageMeasures: UsageMeasures{CalculatedCostMicros: int64(^uint64(0) >> 1)}}
+	if err := addMeasures(&acc, reportEvent{}, eventCost{Status: "unknown", AmountMicros: 1, Currency: "USD", Reason: "no_matching_rate"}); err == nil || !strings.Contains(err.Error(), "partial estimated cost aggregation overflow") {
+		t.Fatalf("partial estimate overflow error = %v", err)
 	}
 }
 

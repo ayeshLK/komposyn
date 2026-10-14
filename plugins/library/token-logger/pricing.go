@@ -240,6 +240,41 @@ type eventCost struct {
 	EffectiveTo    string
 }
 
+type pricingProvenance struct {
+	count                                                         int
+	version, sourceURL, source, model, effectiveFrom, effectiveTo string
+}
+
+func (p *pricingProvenance) add(rule PricingRule) {
+	from, to := formatStoredTime(rule.EffectiveFrom), formatEffectiveTo(rule.EffectiveTo)
+	if p.count == 0 {
+		p.version, p.sourceURL, p.source, p.model, p.effectiveFrom, p.effectiveTo = rule.PricingVersion, rule.SourceURL, rule.Source, rule.ModelSelector, from, to
+	} else {
+		p.version = strictMergeProvenance(p.version, rule.PricingVersion)
+		p.sourceURL = strictMergeProvenance(p.sourceURL, rule.SourceURL)
+		p.source = strictMergeProvenance(p.source, rule.Source)
+		p.model = strictMergeProvenance(p.model, rule.ModelSelector)
+		p.effectiveFrom = strictMergeProvenance(p.effectiveFrom, from)
+		p.effectiveTo = strictMergeProvenance(p.effectiveTo, to)
+	}
+	p.count++
+}
+
+func strictMergeProvenance(current, next string) string {
+	if current == next || current == "mixed" {
+		return current
+	}
+	return "mixed"
+}
+
+func (p pricingProvenance) apply(cost *eventCost) {
+	if p.count == 0 {
+		return
+	}
+	cost.PricingVersion, cost.SourceURL, cost.Source = p.version, p.sourceURL, p.source
+	cost.ModelSelector, cost.EffectiveFrom, cost.EffectiveTo = p.model, p.effectiveFrom, p.effectiveTo
+}
+
 func (c pricingCatalog) calculate(event reportEvent) eventCost {
 	usage := event.Usage
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
@@ -249,7 +284,7 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 	currency := ""
 	missing := false
 	reason := ""
-	var provenance *PricingRule
+	var provenance pricingProvenance
 	charge := func(category string, tokens int64) {
 		if tokens == 0 {
 			return
@@ -264,6 +299,7 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 			}
 			return
 		}
+		provenance.add(rule)
 		if currency == "" {
 			currency = rule.Currency
 		} else if currency != rule.Currency {
@@ -272,10 +308,6 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 			amount.SetInt64(0)
 			currency = "mixed"
 			return
-		}
-		if provenance == nil {
-			copy := rule
-			provenance = &copy
 		}
 		numerator, denominator := rule.RateNumeratorMicros, rule.RateDenominatorTokens
 		if denominator == 0 {
@@ -307,10 +339,7 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 			}
 			cost.AmountMicros = rounded
 		}
-		if provenance != nil {
-			cost.PricingVersion, cost.SourceURL, cost.Source, cost.ModelSelector = provenance.PricingVersion, provenance.SourceURL, provenance.Source, provenance.ModelSelector
-			cost.EffectiveFrom, cost.EffectiveTo = formatStoredTime(provenance.EffectiveFrom), formatEffectiveTo(provenance.EffectiveTo)
-		}
+		provenance.apply(&cost)
 		return cost
 	}
 	// Round once per event to the nearest microcurrency unit; exact halves round away from zero.
@@ -319,10 +348,7 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 		return eventCost{Status: "unknown", Reason: "arithmetic_overflow", Currency: currency}
 	}
 	cost := eventCost{Status: "calculated", AmountMicros: rounded, Currency: currency}
-	if provenance != nil {
-		cost.PricingVersion, cost.SourceURL, cost.Source, cost.ModelSelector = provenance.PricingVersion, provenance.SourceURL, provenance.Source, provenance.ModelSelector
-		cost.EffectiveFrom, cost.EffectiveTo = formatStoredTime(provenance.EffectiveFrom), formatEffectiveTo(provenance.EffectiveTo)
-	}
+	provenance.apply(&cost)
 	return cost
 }
 
