@@ -68,6 +68,7 @@ type UsageMeasures struct {
 	ProviderReportedCurrency   string           `json:"provider_reported_currency,omitempty"`
 	UnknownCostRequests        int64            `json:"unknown_cost_requests"`
 	EstimatedCostRequests      int64            `json:"estimated_cost_requests"`
+	KnownZeroCostRequests      int64            `json:"known_zero_cost_requests"`
 	CostUnknownReason          string           `json:"cost_unknown_reason,omitempty"`
 	CostUnknownReasons         CostReasonCounts `json:"cost_unknown_reasons,omitempty"`
 	PricingVersion             string           `json:"pricing_version,omitempty"`
@@ -309,6 +310,14 @@ func addMeasures(acc *reportAccumulator, event reportEvent, cost eventCost) erro
 		acc.PricingModelSelector = mergeLabel(acc.PricingModelSelector, cost.ModelSelector)
 		acc.PricingEffectiveFrom = mergeLabel(acc.PricingEffectiveFrom, cost.EffectiveFrom)
 		acc.PricingEffectiveTo = mergeLabel(acc.PricingEffectiveTo, cost.EffectiveTo)
+	} else if cost.Status == "zero" {
+		acc.KnownZeroCostRequests++
+		acc.CalculatedCurrency = mergeCurrency(acc.CalculatedCurrency, cost.Currency)
+		acc.PricingVersion = mergeLabel(acc.PricingVersion, cost.PricingVersion)
+		acc.PricingSource = mergeLabel(acc.PricingSource, pricingSourceLabel(cost))
+		acc.PricingModelSelector = mergeLabel(acc.PricingModelSelector, cost.ModelSelector)
+		acc.PricingEffectiveFrom = mergeLabel(acc.PricingEffectiveFrom, cost.EffectiveFrom)
+		acc.PricingEffectiveTo = mergeLabel(acc.PricingEffectiveTo, cost.EffectiveTo)
 	} else if cost.Status == "unknown" {
 		acc.UnknownCostRequests++
 		acc.CostUnknownReason = mergeLabel(acc.CostUnknownReason, cost.Reason)
@@ -473,7 +482,7 @@ func WriteJSON(w io.Writer, report UsageReport) error {
 // ungrouped report.
 func WriteCSV(w io.Writer, report UsageReport) error {
 	writer := csv.NewWriter(w)
-	if err := writer.Write([]string{"group", "bucket", "request_count", "session_count", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens", "calculated_cost_micros", "calculated_currency", "provider_reported_cost_micros", "unknown_cost_requests", "estimated_cost_requests", "unknown_cost_reason", "unknown_cost_reasons", "pricing_version", "pricing_source", "pricing_model_selector", "pricing_effective_from", "pricing_effective_to", "provider_reported_currency"}); err != nil {
+	if err := writer.Write([]string{"group", "bucket", "request_count", "session_count", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens", "calculated_cost_micros", "calculated_currency", "provider_reported_cost_micros", "unknown_cost_requests", "estimated_cost_requests", "known_zero_cost_requests", "unknown_cost_reason", "unknown_cost_reasons", "pricing_version", "pricing_source", "pricing_model_selector", "pricing_effective_from", "pricing_effective_to", "provider_reported_currency"}); err != nil {
 		return err
 	}
 	rows := report.Rows
@@ -495,7 +504,7 @@ func WriteCSV(w io.Writer, report UsageReport) error {
 			group = strings.Join(values, ",")
 		}
 		measures := row.UsageMeasures
-		if err := writer.Write([]string{group, row.Bucket, strconv.FormatInt(measures.RequestCount, 10), strconv.FormatInt(measures.SessionCount, 10), strconv.FormatInt(measures.InputTokens, 10), strconv.FormatInt(measures.CachedInputTokens, 10), strconv.FormatInt(measures.CacheWriteInputTokens, 10), strconv.FormatInt(measures.OutputTokens, 10), strconv.FormatInt(measures.ReasoningOutputTokens, 10), strconv.FormatInt(measures.TotalTokens, 10), strconv.FormatInt(measures.CalculatedCostMicros, 10), measures.CalculatedCurrency, strconv.FormatInt(measures.ProviderReportedCostMicros, 10), strconv.FormatInt(measures.UnknownCostRequests, 10), strconv.FormatInt(measures.EstimatedCostRequests, 10), measures.CostUnknownReason, string(measures.CostUnknownReasons), measures.PricingVersion, measures.PricingSource, measures.PricingModelSelector, measures.PricingEffectiveFrom, measures.PricingEffectiveTo, measures.ProviderReportedCurrency}); err != nil {
+		if err := writer.Write([]string{group, row.Bucket, strconv.FormatInt(measures.RequestCount, 10), strconv.FormatInt(measures.SessionCount, 10), strconv.FormatInt(measures.InputTokens, 10), strconv.FormatInt(measures.CachedInputTokens, 10), strconv.FormatInt(measures.CacheWriteInputTokens, 10), strconv.FormatInt(measures.OutputTokens, 10), strconv.FormatInt(measures.ReasoningOutputTokens, 10), strconv.FormatInt(measures.TotalTokens, 10), strconv.FormatInt(measures.CalculatedCostMicros, 10), measures.CalculatedCurrency, strconv.FormatInt(measures.ProviderReportedCostMicros, 10), strconv.FormatInt(measures.UnknownCostRequests, 10), strconv.FormatInt(measures.EstimatedCostRequests, 10), strconv.FormatInt(measures.KnownZeroCostRequests, 10), measures.CostUnknownReason, string(measures.CostUnknownReasons), measures.PricingVersion, measures.PricingSource, measures.PricingModelSelector, measures.PricingEffectiveFrom, measures.PricingEffectiveTo, measures.ProviderReportedCurrency}); err != nil {
 			return err
 		}
 	}

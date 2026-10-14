@@ -390,7 +390,7 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 		cost     string
 		status   string
 	}{
-		{name: "known zero", measures: UsageMeasures{RequestCount: 1, CalculatedCurrency: "USD", EstimatedCostRequests: 1}, cost: "0 USD", status: "estimated"},
+		{name: "known zero", measures: UsageMeasures{RequestCount: 1, CalculatedCurrency: "USD", KnownZeroCostRequests: 1}, cost: "0 USD", status: "known zero"},
 		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD", EstimatedCostRequests: 1}, cost: "0.00024 USD", status: "estimated"},
 		{name: "fully unknown", measures: UsageMeasures{RequestCount: 2, UnknownCostRequests: 2}, cost: "unknown", status: "pricing unavailable (2)"},
 		{name: "unknown reason", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, CostUnknownReason: "model_unresolved"}, cost: "unknown", status: "model unresolved (1)"},
@@ -406,6 +406,36 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 				t.Fatalf("cost/status = %q/%q, want %q/%q", cost, status, tc.cost, tc.status)
 			}
 		})
+	}
+}
+
+func TestZeroUsageReportDistinguishesKnownAndUnknownModels(t *testing.T) {
+	store := openTestStore(t)
+	date := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	supported := testEvent("zero-supported")
+	supported.EventID, supported.OccurredAt = "zero-supported", date
+	supported.RequestedModel, supported.ResolvedModel = "gpt-5-codex", "gpt-5-codex"
+	supported.Usage = TokenUsage{}
+	unsupported := testEvent("zero-unsupported")
+	unsupported.EventID, unsupported.OccurredAt = "zero-unsupported", date
+	unsupported.Provider, unsupported.RequestedModel, unsupported.ResolvedModel = "unknown", "unknown-model", "unknown-model"
+	unsupported.Usage = TokenUsage{}
+	if _, err := store.Append([]UsageEvent{supported, unsupported}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Query(UsageFilter{From: date.Add(-time.Minute), To: date.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.KnownZeroCostRequests != 1 || report.Summary.EstimatedCostRequests != 0 || report.Summary.UnknownCostRequests != 1 {
+		t.Fatalf("zero-cost summary = %+v", report.Summary)
+	}
+	var reasons map[string]int64
+	if err := json.Unmarshal([]byte(report.Summary.CostUnknownReasons), &reasons); err != nil {
+		t.Fatal(err)
+	}
+	if reasons["no_matching_rate"] != 1 {
+		t.Fatalf("zero event unknown reasons = %v", reasons)
 	}
 }
 

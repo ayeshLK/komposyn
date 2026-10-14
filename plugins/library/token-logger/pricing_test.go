@@ -7,6 +7,7 @@ package tokenlogger
 
 import (
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -49,6 +50,115 @@ func TestBundledPricingCatalogLoadsIdempotently(t *testing.T) {
 	}
 	if after != before {
 		t.Fatalf("catalog entries after second sync = %d, want %d", after, before)
+	}
+}
+
+func TestCatalogSyncClosesIntervalsAtomicallyWithoutRewritingRates(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var bundle bundledCatalog
+	if err := json.Unmarshal(bundledPricingCatalog, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	old := bundle.Entries[0]
+	boundary := "2026-10-15T00:00:00Z"
+	old.EffectiveTo = boundary
+	conflicting := old
+	conflicting.Numerator++
+	bad := bundle
+	bad.Entries = []struct {
+		ID             string `json:"id"`
+		Provider       string `json:"provider"`
+		Model          string `json:"model"`
+		Category       string `json:"category"`
+		Numerator      int64  `json:"numerator_micros"`
+		Denominator    int64  `json:"denominator_tokens"`
+		Currency       string `json:"currency"`
+		EffectiveFrom  string `json:"effective_from"`
+		EffectiveTo    string `json:"effective_to"`
+		SourceURL      string `json:"source_url"`
+		Notes          string `json:"notes"`
+		PricingVersion string `json:"pricing_version"`
+	}{old, conflicting}
+	badData, err := json.Marshal(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.syncPricingCatalogBytes(badData); err == nil {
+		t.Fatal("sync accepted conflicting immutable catalog ID")
+	}
+	var oldEnd sql.NullString
+	if err := store.db.QueryRow("SELECT effective_to FROM pricing_rules WHERE catalog_entry_id = ?", old.ID).Scan(&oldEnd); err != nil {
+		t.Fatal(err)
+	}
+	if oldEnd.Valid {
+		t.Fatalf("failed sync partially closed interval at %q", oldEnd.String)
+	}
+
+	replacement := old
+	replacement.ID += ":v2"
+	replacement.EffectiveFrom, replacement.EffectiveTo = boundary, ""
+	replacement.PricingVersion = "public-api-2026-10-15-v2"
+	replacement.Numerator += 100_000
+	bundle.Version = "public-api-2026-10-15-v2"
+	bundle.Entries = []struct {
+		ID             string `json:"id"`
+		Provider       string `json:"provider"`
+		Model          string `json:"model"`
+		Category       string `json:"category"`
+		Numerator      int64  `json:"numerator_micros"`
+		Denominator    int64  `json:"denominator_tokens"`
+		Currency       string `json:"currency"`
+		EffectiveFrom  string `json:"effective_from"`
+		EffectiveTo    string `json:"effective_to"`
+		SourceURL      string `json:"source_url"`
+		Notes          string `json:"notes"`
+		PricingVersion string `json:"pricing_version"`
+	}{old, replacement}
+	updated, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.syncPricingCatalogBytes(updated); err != nil {
+		t.Fatal(err)
+	}
+	var oldStoredEnd string
+	if err := store.db.QueryRow("SELECT effective_to FROM pricing_rules WHERE catalog_entry_id = ?", old.ID).Scan(&oldStoredEnd); err != nil {
+		t.Fatal(err)
+	}
+	if oldStoredEnd != formatStoredTime(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("closed interval = %q", oldStoredEnd)
+	}
+	var replacementCount int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE catalog_entry_id = ?", replacement.ID).Scan(&replacementCount); err != nil {
+		t.Fatal(err)
+	}
+	if replacementCount != 1 {
+		t.Fatalf("replacement entries = %d, want 1", replacementCount)
+	}
+}
+
+func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	catalog, err := store.pricingCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	supported := reportEvent{OccurredAt: at, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex"}
+	if got := catalog.calculate(supported); got.Status != "zero" || got.PricingVersion == "" || got.ModelSelector != "gpt-5-codex" {
+		t.Fatalf("supported zero usage = %+v, want known-zero basis with provenance", got)
+	}
+	unsupported := reportEvent{OccurredAt: at, Provider: "unknown", RequestedModel: "unknown-model", ResolvedModel: "unknown-model"}
+	if got := catalog.calculate(unsupported); got.Status != "unknown" || got.Reason != "no_matching_rate" {
+		t.Fatalf("unsupported zero usage = %+v, want unknown with no_matching_rate", got)
 	}
 }
 

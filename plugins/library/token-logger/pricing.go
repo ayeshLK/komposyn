@@ -278,7 +278,7 @@ func (p pricingProvenance) apply(cost *eventCost) {
 func (c pricingCatalog) calculate(event reportEvent) eventCost {
 	usage := event.Usage
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
-		return eventCost{Status: "calculated", Currency: ""}
+		return c.calculateZeroUsage(event)
 	}
 	amount := new(big.Rat)
 	currency := ""
@@ -348,6 +348,41 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 		return eventCost{Status: "unknown", Reason: "arithmetic_overflow", Currency: currency}
 	}
 	cost := eventCost{Status: "calculated", AmountMicros: rounded, Currency: currency}
+	provenance.apply(&cost)
+	return cost
+}
+
+func (c pricingCatalog) calculateZeroUsage(event reportEvent) eventCost {
+	var provenance pricingProvenance
+	currency := ""
+	matched := false
+	for _, category := range []string{TokenCategoryInput, TokenCategoryCacheRead, TokenCategoryCacheWrite, TokenCategoryOutput, TokenCategoryReasoning} {
+		rule, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt)
+		if ambiguous {
+			return eventCost{Status: "unknown", Reason: "ambiguous_pricing_rule"}
+		}
+		if !ok {
+			continue
+		}
+		matched = true
+		provenance.add(rule)
+		if currency == "" {
+			currency = rule.Currency
+		} else if currency != rule.Currency {
+			currency = "mixed"
+		}
+	}
+	if !matched {
+		reason := c.missingReason(event.Provider, event.ResolvedModel, event.RequestedModel, TokenCategoryInput, event.OccurredAt)
+		for _, rule := range c.rules {
+			if rule.Provider == event.Provider && modelPrecedence(rule.ModelSelector, event.ResolvedModel, event.RequestedModel) > 0 {
+				reason = "outside_effective_range"
+				break
+			}
+		}
+		return eventCost{Status: "unknown", Reason: reason}
+	}
+	cost := eventCost{Status: "zero", Currency: currency}
 	provenance.apply(&cost)
 	return cost
 }

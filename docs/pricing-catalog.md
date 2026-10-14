@@ -12,9 +12,11 @@ For each catalog change, maintainers should:
 
 1. Verify every changed rate and billing modifier against the linked official
    provider documentation; record its URL and review date.
-2. Add a new stable entry ID/version for a new supported rate. Do not rewrite
-   rates already released: set the old entry's exclusive `effective_to` and
-   add the replacement with its evidence-backed `effective_from`.
+2. Add a new stable entry ID and per-entry pricing version for a new rate. Keep
+   all immutable fields of released entries unchanged. An old entry may only be
+   closed once by changing `effective_to` from null to its evidence-backed
+   exclusive boundary; add the replacement with a new ID/version and matching
+   `effective_from`.
 3. Include only exact model identifiers and categories the adapters can
    establish. Do not map client aliases or assume subscription, cloud, region,
    service-tier, long-context, or cache-duration pricing.
@@ -27,9 +29,11 @@ The numeric rate is in integer currency microunits per `denominator_tokens`.
 For example, USD 1.25 per million tokens is `1250000 / 1000000` micros per
 token. Calculation uses exact rational arithmetic and rounds once per event to
 the nearest microunit, with ties away from zero. Catalog synchronization only
-inserts a missing bundled `id`; it does not update account- or user-specific
-rules. A higher-precedence exact user rule may intentionally customize a
-bundled rate.
+inserts missing bundled IDs and transactionally applies that one-way interval
+closure after verifying all immutable fields. It rejects changed rates,
+provenance, reopened/changed intervals, and never updates account- or
+user-specific rules. A higher-precedence exact user rule may intentionally
+customize a bundled rate.
 
 JSON and CSV reports expose the matched model selector and effective interval
 along with catalog version and source, so grouped results that combine multiple

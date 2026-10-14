@@ -166,6 +166,9 @@ func humanCostDisplay(measures UsageMeasures) (string, string) {
 		if measures.EstimatedCostRequests > 0 {
 			return cost, "estimated"
 		}
+		if measures.KnownZeroCostRequests > 0 {
+			return cost, "known zero"
+		}
 		if measures.ProviderReportedCostMicros != 0 || measures.ProviderReportedCurrency != "" {
 			return "unknown", "reported only"
 		}

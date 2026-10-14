@@ -15,8 +15,10 @@
 package tokenlogger
 
 import (
+	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -28,25 +30,35 @@ type bundledCatalog struct {
 	Version    string `json:"version"`
 	ReviewedAt string `json:"reviewed_at"`
 	Entries    []struct {
-		ID            string `json:"id"`
-		Provider      string `json:"provider"`
-		Model         string `json:"model"`
-		Category      string `json:"category"`
-		Numerator     int64  `json:"numerator_micros"`
-		Denominator   int64  `json:"denominator_tokens"`
-		Currency      string `json:"currency"`
-		EffectiveFrom string `json:"effective_from"`
-		EffectiveTo   string `json:"effective_to"`
-		SourceURL     string `json:"source_url"`
-		Notes         string `json:"notes"`
+		ID             string `json:"id"`
+		Provider       string `json:"provider"`
+		Model          string `json:"model"`
+		Category       string `json:"category"`
+		Numerator      int64  `json:"numerator_micros"`
+		Denominator    int64  `json:"denominator_tokens"`
+		Currency       string `json:"currency"`
+		EffectiveFrom  string `json:"effective_from"`
+		EffectiveTo    string `json:"effective_to"`
+		SourceURL      string `json:"source_url"`
+		Notes          string `json:"notes"`
+		PricingVersion string `json:"pricing_version"`
 	} `json:"entries"`
 }
 
 func (s *Store) syncBundledPricingCatalog() error {
+	return s.syncPricingCatalogBytes(bundledPricingCatalog)
+}
+
+func (s *Store) syncPricingCatalogBytes(data []byte) error {
 	var bundle bundledCatalog
-	if err := json.Unmarshal(bundledPricingCatalog, &bundle); err != nil {
+	if err := json.Unmarshal(data, &bundle); err != nil {
 		return fmt.Errorf("decode bundled pricing catalog: %w", err)
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin pricing catalog sync: %w", err)
+	}
+	defer tx.Rollback()
 	for _, entry := range bundle.Entries {
 		from, err := time.Parse(time.RFC3339, entry.EffectiveFrom)
 		if err != nil {
@@ -61,23 +73,90 @@ func (s *Store) syncBundledPricingCatalog() error {
 			parsed = parsed.UTC()
 			to = &parsed
 		}
+		pricingVersion := entry.PricingVersion
+		if pricingVersion == "" {
+			pricingVersion = bundle.Version
+		}
 		rule := PricingRule{Provider: entry.Provider, ModelSelector: entry.Model, TokenCategory: entry.Category,
 			RateNumeratorMicros: entry.Numerator, RateDenominatorTokens: entry.Denominator, Currency: entry.Currency,
-			EffectiveFrom: from.UTC(), EffectiveTo: to, PricingVersion: bundle.Version, Source: "official public API pricing",
+			EffectiveFrom: from.UTC(), EffectiveTo: to, PricingVersion: pricingVersion, Source: "official public API pricing",
 			Notes: entry.Notes, CatalogEntryID: entry.ID, SourceURL: entry.SourceURL, SourceReviewedAt: bundle.ReviewedAt}
 		if err := rule.validate(); err != nil {
 			return fmt.Errorf("invalid bundled pricing entry %s: %w", entry.ID, err)
 		}
-		if _, err := s.db.Exec(`INSERT OR IGNORE INTO pricing_rules(
+		if err := syncCatalogEntry(tx, rule); err != nil {
+			return fmt.Errorf("sync catalog entry %s: %w", entry.ID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit pricing catalog sync: %w", err)
+	}
+	return nil
+}
+
+func syncCatalogEntry(tx *sql.Tx, rule PricingRule) error {
+	var existing PricingRule
+	var effectiveFrom string
+	var effectiveTo sql.NullString
+	var legacyRate int64
+	err := tx.QueryRow(`SELECT provider_name, model_selector, token_category, rate_micros, currency,
+		effective_from, effective_to, pricing_version, source, notes, rate_numerator_micros,
+		rate_denominator_tokens, source_url, source_reviewed_at FROM pricing_rules WHERE catalog_entry_id = ?`, rule.CatalogEntryID).
+		Scan(&existing.Provider, &existing.ModelSelector, &existing.TokenCategory, &legacyRate, &existing.Currency,
+			&effectiveFrom, &effectiveTo, &existing.PricingVersion, &existing.Source, &existing.Notes,
+			&existing.RateNumeratorMicros, &existing.RateDenominatorTokens, &existing.SourceURL, &existing.SourceReviewedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = tx.Exec(`INSERT INTO pricing_rules(
 			provider_name, model_selector, token_category, rate_micros, currency, effective_from,
 			effective_to, pricing_version, source, notes, rate_numerator_micros,
 			rate_denominator_tokens, catalog_entry_id, source_url, source_reviewed_at)
 			VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.Provider, rule.ModelSelector,
 			rule.TokenCategory, rule.Currency, formatStoredTime(rule.EffectiveFrom), nullableTime(rule.EffectiveTo), rule.PricingVersion,
 			rule.Source, rule.Notes, rule.RateNumeratorMicros, rule.RateDenominatorTokens,
-			rule.CatalogEntryID, rule.SourceURL, rule.SourceReviewedAt); err != nil {
-			return fmt.Errorf("sync catalog entry %s: %w", entry.ID, err)
+			rule.CatalogEntryID, rule.SourceURL, rule.SourceReviewedAt)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	var storedFrom time.Time
+	storedFrom, err = time.Parse(time.RFC3339Nano, effectiveFrom)
+	if err != nil {
+		return fmt.Errorf("parse stored effective_from: %w", err)
+	}
+	existing.EffectiveFrom = storedFrom.UTC()
+	if effectiveTo.Valid {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, effectiveTo.String)
+		if parseErr != nil {
+			return parseErr
 		}
+		parsed = parsed.UTC()
+		existing.EffectiveTo = &parsed
+	}
+	if legacyRate != 0 || existing.Provider != rule.Provider || existing.ModelSelector != rule.ModelSelector ||
+		existing.TokenCategory != rule.TokenCategory || existing.Currency != rule.Currency ||
+		existing.PricingVersion != rule.PricingVersion || existing.Source != rule.Source || existing.Notes != rule.Notes ||
+		existing.RateNumeratorMicros != rule.RateNumeratorMicros || existing.RateDenominatorTokens != rule.RateDenominatorTokens ||
+		existing.SourceURL != rule.SourceURL || existing.SourceReviewedAt != rule.SourceReviewedAt ||
+		!existing.EffectiveFrom.Equal(rule.EffectiveFrom) {
+		return errors.New("catalog entry ID conflicts with immutable stored pricing fields")
+	}
+	if existing.EffectiveTo == nil && rule.EffectiveTo != nil {
+		result, err := tx.Exec("UPDATE pricing_rules SET effective_to = ? WHERE catalog_entry_id = ? AND effective_to IS NULL", formatStoredTime(*rule.EffectiveTo), rule.CatalogEntryID)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return errors.New("catalog interval closure changed concurrently")
+		}
+		return nil
+	}
+	if (existing.EffectiveTo == nil) != (rule.EffectiveTo == nil) || (existing.EffectiveTo != nil && !existing.EffectiveTo.Equal(*rule.EffectiveTo)) {
+		return errors.New("catalog entry cannot reopen or change a closed effective interval")
 	}
 	return nil
 }
