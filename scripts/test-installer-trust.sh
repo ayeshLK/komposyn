@@ -9,17 +9,21 @@ trap 'rm -rf "$tmp_dir"' EXIT
 release_dir="$tmp_dir/release"
 install_dir="$tmp_dir/install"
 mkdir -p "$release_dir"
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m)"
+case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
+asset="komposyn-lg_0.1.0_${os}_${arch}.tar.gz"
 printf '#!/bin/sh\nexit 0\n' > "$tmp_dir/komposyn-lg"
 chmod 0755 "$tmp_dir/komposyn-lg"
-tar -C "$tmp_dir" -czf "$release_dir/komposyn-lg_0.1.0_linux_amd64.tar.gz" komposyn-lg
+tar -C "$tmp_dir" -czf "$release_dir/$asset" komposyn-lg
 (
 	cd "$release_dir"
 	echo '# version=0.1.0'
-	sha256sum komposyn-lg_0.1.0_linux_amd64.tar.gz
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$asset"; else shasum -a 256 "$asset"; fi
 ) > "$release_dir/SHA256SUMS"
 
 mock_cosign="$tmp_dir/cosign"
-touch "$release_dir/komposyn-lg_0.1.0_linux_amd64.tar.gz.sig" "$release_dir/komposyn-lg_0.1.0_linux_amd64.tar.gz.pem"
+touch "$release_dir/$asset.sig" "$release_dir/$asset.pem"
 cat > "$mock_cosign" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
