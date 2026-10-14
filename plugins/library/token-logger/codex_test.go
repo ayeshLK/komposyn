@@ -451,6 +451,12 @@ func TestCodexTokenUsageRecordAttributionFailuresHaveExactOutcomes(t *testing.T)
 			wantResult: ImportResult{Outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
 		},
 		{
+			name:       "missing explicit project metadata",
+			header:     `{"type":"session_meta","payload":{"id":"session-1","model":"gpt-test"}}` + "\n",
+			record:     `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n",
+			wantResult: ImportResult{Outcomes: OutcomeCounts{IgnoredNonUsage: 1, MalformedRecord: 1}},
+		},
+		{
 			name:       "unknown session context",
 			header:     `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}` + "\n",
 			record:     `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:00Z","payload":{"thread_id":"thread-1","session_id":"missing-session","response_id":"response-1","usage":{"input_tokens":1}}}` + "\n",
@@ -467,6 +473,13 @@ func TestCodexTokenUsageRecordAttributionFailuresHaveExactOutcomes(t *testing.T)
 			result, err := (CodexAdapter{}).Import(path, store)
 			if err != nil || result.Receipt != test.wantResult.Receipt || result.Outcomes != test.wantResult.Outcomes || result.Outcomes.Incomplete() != true || result.Outcomes.Pending() {
 				t.Fatalf("attribution result = %+v, err = %v", result, err)
+			}
+			var eventCount int
+			if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_events`).Scan(&eventCount); err != nil {
+				t.Fatal(err)
+			}
+			if eventCount != 0 {
+				t.Fatalf("imported %d events without trustworthy attribution", eventCount)
 			}
 		})
 	}

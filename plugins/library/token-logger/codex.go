@@ -106,11 +106,12 @@ type codexTokenInfo struct {
 }
 
 type codexSession struct {
-	ID          string
-	ProjectID   string
-	ProjectName string
-	Root        string
-	Model       string
+	ID                   string
+	ProjectID            string
+	HasExplicitProjectID bool
+	ProjectName          string
+	Root                 string
+	Model                string
 }
 
 // Import reads a single Codex JSONL source and atomically persists its
@@ -177,7 +178,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 						result.Outcomes.Add(OutcomeMalformedRecord)
 					} else {
 						session, ok := codexUsageRecordSession(record, current, sessions)
-						if !ok || session.Model == "" || session.ProjectID == "" {
+						if !ok || session.Model == "" || session.ProjectID == "" || !session.HasExplicitProjectID {
 							result.Outcomes.Add(OutcomeMalformedRecord)
 						} else {
 							if record.SessionID == "" {
@@ -654,6 +655,13 @@ func codexRecordType(envelope codexEnvelope, payload codexPayload) string {
 }
 
 func updateCodexSession(session codexSession, payload codexPayload, sourceID string) codexSession {
+	nextSessionID := payload.SessionID
+	if nextSessionID == "" {
+		nextSessionID = payload.ID
+	}
+	if session.ID != "" && nextSessionID != "" && session.ID != nextSessionID {
+		session = codexSession{}
+	}
 	if payload.SessionID != "" {
 		session.ID = payload.SessionID
 	}
@@ -665,6 +673,7 @@ func updateCodexSession(session codexSession, payload codexPayload, sourceID str
 	}
 	if payload.ProjectID != "" {
 		session.ProjectID = payload.ProjectID
+		session.HasExplicitProjectID = true
 	}
 	if session.ProjectID == "" {
 		session.ProjectID = sourceID + "-project"
