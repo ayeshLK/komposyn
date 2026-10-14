@@ -70,7 +70,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 			return 2
 		}
 		startNow := false
-		if terminalInput, ok := newTerminalLineReader(input, stdout, stderr); ok {
+		if terminalInput, interactiveOutput, ok := newTerminalLineReader(input, stdout, stderr); ok {
 			defer terminalInput.Close()
 			if !settings.OnboardingComplete {
 				var onboardingErr error
@@ -83,7 +83,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 					return 2
 				}
 			}
-			return runInteractiveLoop(terminalInput, stdout, stderr, store, dataDir, settings, startNow)
+			return runInteractiveLoop(terminalInput, interactiveOutput, stderr, store, dataDir, settings, startNow)
 		}
 		scanner := bufio.NewScanner(input)
 		if !settings.OnboardingComplete {
@@ -201,20 +201,20 @@ func (reader *terminalLineReader) Close() error {
 	return err
 }
 
-func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminalLineReader, bool) {
+func newTerminalLineReader(input io.Reader, stdout, stderr io.Writer) (*terminalLineReader, io.Writer, bool) {
 	return newTerminalLineReaderWithFactory(input, stdout, stderr, readline.NewEx)
 }
 
-func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer, create func(*readline.Config) (*readline.Instance, error)) (*terminalLineReader, bool) {
+func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer, create func(*readline.Config) (*readline.Instance, error)) (*terminalLineReader, io.Writer, bool) {
 	in, inputOK := input.(*os.File)
 	out, outputOK := stdout.(*os.File)
 	if !inputOK || !outputOK || !(isatty.IsTerminal(in.Fd()) || isatty.IsCygwinTerminal(in.Fd())) || !(isatty.IsTerminal(out.Fd()) || isatty.IsCygwinTerminal(out.Fd())) {
-		return nil, false
+		return nil, stdout, false
 	}
 	preflightState, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
 		fmt.Fprintf(stderr, "interactive terminal raw-mode setup failed; using line input: %v\n", err)
-		return nil, false
+		return nil, stdout, false
 	}
 
 	config := &readline.Config{
@@ -227,12 +227,12 @@ func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer,
 		EOFPrompt:              "^D\n",
 		ForceUseInteractive:    true,
 		FuncIsTerminal:         func() bool { return true },
-		// Fold Unix bracketed-paste line feeds into the current command. The
-		// Windows console adapter maps plain Enter to a space and Ctrl+Enter to
-		// submission, so a multiline paste cannot execute a command batch.
-		FuncFilterInputRune: terminalInputRuneFilter(stdout),
 	}
-	setCommandMode := configureTerminalStreams(config, in, stdout, stderr)
+	output, setCommandMode := configureTerminalStreams(config, in, stdout, stderr)
+	// Fold Unix bracketed-paste line feeds into the current command. The
+	// Windows console adapter maps plain Enter to a space and Ctrl+Enter to
+	// submission, so a multiline paste cannot execute a command batch.
+	config.FuncFilterInputRune = terminalInputRuneFilter(output)
 	config.FuncMakeRaw = func() error {
 		return nil
 	}
@@ -250,10 +250,27 @@ func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer,
 	if err != nil {
 		_ = term.Restore(int(in.Fd()), preflightState)
 		fmt.Fprintf(stderr, "interactive terminal setup failed; using line input: %v\n", err)
-		return nil, false
+		return nil, stdout, false
 	}
-	enableTerminalFeatures(stdout)
-	return &terminalLineReader{instance: instance, output: stdout, input: in, rawState: preflightState, setCommandMode: setCommandMode}, true
+	enableTerminalFeatures(output)
+	return &terminalLineReader{instance: instance, output: output, input: in, rawState: preflightState, setCommandMode: setCommandMode}, output, true
+}
+
+// terminalWidthOf reports the current terminal column width backing w, or 0
+// if w is not a real terminal or the size cannot be determined.
+func terminalWidthOf(w io.Writer) int {
+	file, ok := w.(*os.File)
+	if !ok {
+		return 0
+	}
+	if !(isatty.IsTerminal(file.Fd()) || isatty.IsCygwinTerminal(file.Fd())) {
+		return 0
+	}
+	width, _, err := term.GetSize(int(file.Fd()))
+	if err != nil {
+		return 0
+	}
+	return width
 }
 
 func terminalInputRuneFilter(stdout io.Writer) func(rune) (rune, bool) {
@@ -549,7 +566,11 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		return nil
 	}
 	fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
-	if err := tokenlogger.WriteTable(stdout, report); err != nil {
+	width := 0
+	if sized, ok := stdout.(interface{ TerminalWidth() int }); ok {
+		width = sized.TerminalWidth()
+	}
+	if err := tokenlogger.WriteTableWidth(stdout, report, width); err != nil {
 		fmt.Fprintf(stderr, "render report failed: %v\n", err)
 	}
 	return nil
@@ -1094,7 +1115,7 @@ func runReport(command string, args []string, stdout, stderr io.Writer) int {
 	case "csv":
 		err = tokenlogger.WriteCSV(stdout, report)
 	default:
-		err = tokenlogger.WriteTable(stdout, report)
+		err = tokenlogger.WriteTableWidth(stdout, report, terminalWidthOf(stdout))
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "write report: %v\n", err)

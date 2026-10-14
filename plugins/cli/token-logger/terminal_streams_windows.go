@@ -34,13 +34,18 @@ var readConsoleInputW = syscall.NewLazyDLL("kernel32.dll").NewProc("ReadConsoleI
 // Windows console key events do not mark which Enter keys came from a paste.
 // Treat plain Enter as command text and require Ctrl+Enter to submit, so pasted
 // line breaks can never submit a command batch.
-func configureTerminalStreams(config *readline.Config, input *os.File, _, _ io.Writer) func(bool) {
+//
+// term.MakeRaw on Windows only changes the input console handle's mode; it
+// never touches the output handle, so (unlike the unix tty case) bare line
+// feeds written to stdout are unaffected by raw mode here and need no CRLF
+// translation.
+func configureTerminalStreams(config *readline.Config, input *os.File, stdout, _ io.Writer) (io.Writer, func(bool)) {
 	reader := &windowsConsoleKeyReader{
 		inputHandle: windows.Handle(input.Fd()),
 		readRecord:  readWindowsConsoleInputRecord,
 	}
 	config.Stdin = reader
-	return reader.SetCommandMode
+	return stdout, reader.SetCommandMode
 }
 
 func enableTerminalFeatures(io.Writer)  {}

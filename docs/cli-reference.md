@@ -111,7 +111,19 @@ estimated values, plus catalog provenance and an unknown reason where
 applicable; unknown cost is never silently treated as zero. A
 query with no matching events prints `NO USAGE DATA`. Use `json` or `csv` for
 exact token integers, full dimension values, and stable machine-readable
-fields. An untruncated wide table mode is not currently available.
+fields.
+
+When writing to a real terminal, `table` output adapts to the detected
+terminal width without dropping any usage or cost information: wide
+terminals use the complete column-aligned table; terminals too narrow for
+that fall back to a compact layout with two lines per row (dimensions and
+request/session counts, then the remaining metrics, cost, and status);
+terminals too narrow even for that fall back to a vertical `LABEL: value`
+layout, one field per line. Redirected output (piped or written to a file)
+always uses the complete table layout regardless of the invoking shell's
+width, so scripted or saved `table` output stays deterministic. Use `json`
+or `csv` when you need a stable, unabridged machine-readable shape instead
+of a layout that adapts to terminal width.
 
 ### `watch`
 
