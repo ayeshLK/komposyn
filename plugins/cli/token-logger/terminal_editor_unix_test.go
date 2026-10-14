@@ -76,7 +76,11 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 
 	// Exercise cursor insertion, Right, Delete in the middle, Home/Right, and
 	// Unicode through the real editor before command dispatch.
-	if _, err := master.Write([]byte("abc")); err != nil {
+	if _, err := master.Write([]byte("abcz")); err != nil {
+		t.Fatal(err)
+	}
+	output.waitForText(t, "> abcz")
+	if _, err := master.Write([]byte("\x7f")); err != nil {
 		t.Fatal(err)
 	}
 	output.waitForText(t, "> abc")
