@@ -138,6 +138,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	result := ImportResult{}
 	var offset int64
 	var current codexSession
+	var activeSessionID string
 	sessions := map[string]codexSession{}
 	var metadataCurrent codexSession
 	metadataSessions := map[string]codexSession{}
@@ -179,7 +180,7 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 					} else if status == codexUsageRecordMalformed {
 						result.Outcomes.Add(OutcomeMalformedRecord)
 					} else {
-						session, ok := codexUsageRecordSession(record, metadataCurrent, metadataSessions)
+						session, ok := codexUsageRecordSession(record, activeSessionID, metadataSessions)
 						if !ok || session.Model == "" || session.ProjectID == "" || !session.HasExplicitProjectID {
 							result.Outcomes.Add(OutcomeMalformedRecord)
 						} else {
@@ -245,6 +246,13 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							if current.Model == "" {
 								current.Model = payload.Model
 							}
+							metadataSessionID := payload.SessionID
+							if metadataSessionID == "" {
+								metadataSessionID = payload.ID
+							}
+							if metadataCurrent.ID != "" && metadataSessionID != "" && metadataCurrent.ID != metadataSessionID {
+								metadataCurrent = codexSession{}
+							}
 							metadataCurrent = updateCodexSession(metadataCurrent, payload, sourceID)
 							if metadataCurrent.Model == "" {
 								metadataCurrent.Model = payload.Model
@@ -252,8 +260,12 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 							metadataCurrent.HasExplicitProjectID = strings.TrimSpace(payload.ProjectID) != ""
 							metadataSessions[metadataCurrent.ID] = metadataCurrent
 							sessions[metadataCurrent.ID] = metadataCurrent
+							activeSessionID = metadataCurrent.ID
 							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						case "turn_context":
+							if payload.SessionID != "" {
+								activeSessionID = payload.SessionID
+							}
 							if payload.SessionID != "" {
 								if known, ok := sessions[payload.SessionID]; ok {
 									current = known
@@ -285,6 +297,11 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 						case "token_count":
 							if payload.SessionID != "" || payload.ProjectID != "" || payload.CWD != "" {
 								current = updateCodexSession(current, payload, sourceID)
+							}
+							if payload.SessionID != "" {
+								activeSessionID = payload.SessionID
+							} else if current.ID != "" {
+								activeSessionID = current.ID
 							}
 							if payload.Model != "" {
 								current.Model = payload.Model
@@ -504,19 +521,16 @@ func codexLogicalScope(sessionID, threadID string) string {
 	return sessionID
 }
 
-func codexUsageRecordSession(record codexUsageRecordPayload, current codexSession, sessions map[string]codexSession) (codexSession, bool) {
+func codexUsageRecordSession(record codexUsageRecordPayload, activeSessionID string, sessions map[string]codexSession) (codexSession, bool) {
 	sessionID := strings.TrimSpace(record.SessionID)
 	if sessionID == "" {
-		sessionID = current.ID
+		sessionID = activeSessionID
 	}
 	if sessionID == "" {
 		return codexSession{}, false
 	}
 	if session, ok := sessions[sessionID]; ok {
 		return session, true
-	}
-	if current.ID == sessionID {
-		return current, true
 	}
 	return codexSession{}, false
 }
@@ -681,13 +695,6 @@ func codexRecordType(envelope codexEnvelope, payload codexPayload) string {
 }
 
 func updateCodexSession(session codexSession, payload codexPayload, sourceID string) codexSession {
-	nextSessionID := payload.SessionID
-	if nextSessionID == "" {
-		nextSessionID = payload.ID
-	}
-	if session.ID != "" && nextSessionID != "" && session.ID != nextSessionID {
-		session = codexSession{}
-	}
 	if payload.SessionID != "" {
 		session.ID = payload.SessionID
 	}

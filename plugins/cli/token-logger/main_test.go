@@ -69,6 +69,8 @@ func TestImportJSONOutcomeContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const sentinel = "pr74-private-project-sentinel"
+	contents = bytes.Replace(contents, []byte("Sanitized Fixture Project"), []byte(sentinel), 1)
 	sourcePath := filepath.Join(t.TempDir(), "private-codex-transcript.jsonl")
 	if err := os.WriteFile(sourcePath, contents, 0o600); err != nil {
 		t.Fatal(err)
@@ -82,7 +84,7 @@ func TestImportJSONOutcomeContract(t *testing.T) {
 			t.Fatalf("import run %d exit code = %d, stderr = %q", runIndex+1, code, stderr.String())
 		}
 		outputs = append(outputs, stdout.String())
-		if strings.Contains(stdout.String(), sourcePath) || strings.Contains(stdout.String(), "sanitized fixture content") {
+		if strings.Contains(stdout.String(), sourcePath) || strings.Contains(stdout.String(), filepath.Base(sourcePath)) || strings.Contains(stdout.String(), sentinel) {
 			t.Fatalf("machine output disclosed source path or transcript content: %q", stdout.String())
 		}
 	}
