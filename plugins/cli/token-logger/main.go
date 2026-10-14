@@ -545,7 +545,7 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		}
 		return nil
 	}
-	fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339), state.to.Format(time.RFC3339))
+	fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
 	if err := tokenlogger.WriteTable(stdout, report); err != nil {
 		fmt.Fprintf(stderr, "render report failed: %v\n", err)
 	}

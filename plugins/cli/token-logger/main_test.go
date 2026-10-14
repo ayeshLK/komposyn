@@ -937,6 +937,35 @@ func TestInteractiveRollingRangeRefreshSeesCommittedEventFromSecondStore(t *test
 	}
 }
 
+func TestInteractiveRollingRangeDisplaysFractionalUpperBoundaryExactly(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	to := time.Date(2026, 10, 14, 10, 0, 0, 500_000_000, time.UTC)
+	inside := cliReportEvent("fractional-before-upper", to.Add(-time.Nanosecond))
+	inside.ResolvedModel = "inside-upper"
+	atUpper := cliReportEvent("fractional-at-upper", to)
+	atUpper.ResolvedModel = "at-upper"
+	if _, err := store.Append([]tokenlogger.UsageEvent{inside, atUpper}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader("/quit\n")), output: io.Discard}, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return to }); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
+	}
+	wantRange := "range: 2026-10-07T10:00:00.5Z to 2026-10-14T10:00:00.5Z (UTC)"
+	if !strings.Contains(stdout.String(), wantRange) {
+		t.Fatalf("rendered range lost fractional precision: want %q in %q", wantRange, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "inside-upper") || strings.Contains(stdout.String(), "at-upper") {
+		t.Fatalf("report did not honor the exact displayed half-open range: %q", stdout.String())
+	}
+}
+
 func TestInteractiveReportCommandsResolveFreshRollingRanges(t *testing.T) {
 	dataDir := t.TempDir()
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
@@ -1090,6 +1119,56 @@ func TestInteractiveDoesNotSearchOtherDataDirectories(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "other-data-directory-only") {
 		t.Fatalf("interactive report leaked data from another directory: %q", stdout.String())
+	}
+}
+
+func TestInteractiveReportQueryFailureSavesAndOffersSanitizedDiagnostic(t *testing.T) {
+	dataDir := t.TempDir()
+	databasePath := filepath.Join(dataDir, "token-logger.db")
+	store, err := tokenlogger.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("DROP TABLE usage_events"); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	input := strings.NewReader("view\nn\n/quit\n")
+	current := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(input), output: &stdout}, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "usage query failed") || !strings.Contains(stdout.String(), "Sanitized diagnostic saved locally:") {
+		t.Fatalf("query failure did not use local diagnostic flow: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Open a prefilled issue draft? [y/N]") || !strings.Contains(stdout.String(), "skipped") {
+		t.Fatalf("diagnostic was not offered for review: %q", stdout.String())
+	}
+	const fingerprintMarker = "Sanitized diagnostic saved locally: "
+	marker := strings.Index(stdout.String(), fingerprintMarker)
+	if marker < 0 {
+		t.Fatalf("diagnostic fingerprint not found in output: %q", stdout.String())
+	}
+	fingerprint := strings.Fields(strings.SplitN(stdout.String()[marker+len(fingerprintMarker):], "\n", 2)[0])[0]
+	diagnostic, err := store.Diagnostic(fingerprint)
+	if err != nil {
+		t.Fatalf("load saved diagnostic: %v", err)
+	}
+	if diagnostic.Message == "" || diagnostic.Message != tokenlogger.SanitizeDiagnostic(diagnostic.Message) {
+		t.Fatalf("saved diagnostic is empty or not sanitized: %+v", diagnostic)
+	}
+	if diagnostic.Status != "skipped" {
+		t.Fatalf("diagnostic review status = %q, want skipped", diagnostic.Status)
 	}
 }
 
