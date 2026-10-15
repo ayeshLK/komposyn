@@ -24,21 +24,28 @@ import (
 // A changed file is append-only when the bytes up to the previously committed
 // offset still hash to the previous full-file fingerprint. Otherwise it is a
 // replacement and receives a new generation so reused offsets cannot collide.
-func sourceGeneration(store *Store, sourceID string, contents []byte) (int64, error) {
+type sourceCursorExpectation struct {
+	sourceID string
+	cursor   Cursor
+	exists   bool
+}
+
+func sourceGeneration(store *Store, sourceID string, contents []byte) (int64, sourceCursorExpectation, error) {
 	cursor, err := store.Cursor(sourceID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
+		return 0, sourceCursorExpectation{sourceID: sourceID}, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("read source cursor: %w", err)
+		return 0, sourceCursorExpectation{}, fmt.Errorf("read source cursor: %w", err)
 	}
+	expectation := sourceCursorExpectation{sourceID: sourceID, cursor: cursor, exists: true}
 	if cursor.ByteOffset < 0 || cursor.ByteOffset > int64(len(contents)) {
-		return cursor.SourceGeneration + 1, nil
+		return cursor.SourceGeneration + 1, expectation, nil
 	}
 	if digest(contents[:cursor.ByteOffset]) != cursor.FileFingerprint {
-		return cursor.SourceGeneration + 1, nil
+		return cursor.SourceGeneration + 1, expectation, nil
 	}
-	return cursor.SourceGeneration, nil
+	return cursor.SourceGeneration, expectation, nil
 }
 
 func unchangedSourceSnapshot(store *Store, sourceID string, contents []byte) (ImportResult, bool, error) {

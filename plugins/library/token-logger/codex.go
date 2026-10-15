@@ -166,15 +166,24 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 }
 
 func importCodexSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
+	for {
+		result, retry, err := importCodexSnapshotAttempt(ctx, contents, store, baseSourceID)
+		if err != nil || !retry {
+			return result, err
+		}
+	}
+}
+
+func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string) (ImportResult, bool, error) {
 	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
-		return ImportResult{}, fmt.Errorf("inspect unchanged Codex source: %w", err)
+		return ImportResult{}, false, fmt.Errorf("inspect unchanged Codex source: %w", err)
 	} else if ok {
-		return unchanged, nil
+		return unchanged, false, nil
 	}
 	fingerprint := digest(contents)
-	generation, err := sourceGeneration(store, baseSourceID, contents)
+	generation, expectedCursor, err := sourceGeneration(store, baseSourceID, contents)
 	if err != nil {
-		return ImportResult{}, fmt.Errorf("inspect Codex source cursor: %w", err)
+		return ImportResult{}, false, fmt.Errorf("inspect Codex source cursor: %w", err)
 	}
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
@@ -196,7 +205,7 @@ func importCodexSnapshotWithSourceID(ctx context.Context, contents []byte, store
 	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
 		if err := ctx.Err(); err != nil {
-			return result, err
+			return result, false, err
 		}
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
@@ -397,13 +406,13 @@ func importCodexSnapshotWithSourceID(ctx context.Context, contents []byte, store
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				return result, fmt.Errorf("read Codex source: %w", readErr)
+				return result, false, fmt.Errorf("read Codex source: %w", readErr)
 			}
 			break
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return result, err
+		return result, false, err
 	}
 
 	if current.ID == "" {
@@ -431,16 +440,19 @@ func importCodexSnapshotWithSourceID(ctx context.Context, contents []byte, store
 	for _, session := range sessionsByID {
 		knownSessions = append(knownSessions, session)
 	}
-	receipt, err := store.AppendWithReferencesAndCursor(events,
+	receipt, err := store.appendWithReferencesAndCursorIfCurrent(events,
 		projects,
 		knownSessions,
 		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
-			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()})
+			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	if errors.Is(err, errSourceCursorChanged) {
+		return ImportResult{}, true, nil
+	}
 	if err != nil {
-		return result, fmt.Errorf("persist Codex project, session, events, and cursor: %w", err)
+		return result, false, fmt.Errorf("persist Codex project, session, events, and cursor: %w", err)
 	}
 	result.Receipt = receipt
-	return result, nil
+	return result, false, nil
 }
 
 func codexUsageBearingType(recordType string) bool {

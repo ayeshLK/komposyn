@@ -29,8 +29,11 @@ import (
 
 // Store is the library-owned SQLite persistence boundary.
 type Store struct {
-	db *sql.DB
+	db           *sql.DB
+	beforeAppend func()
 }
+
+var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
 
 const storedTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
@@ -615,12 +618,12 @@ func (s *Store) UpsertSession(session Session) error {
 
 // Append persists events, deduplicating by stable ingestion key.
 func (s *Store) Append(events []UsageEvent) (Receipt, error) {
-	return s.append(events, nil, nil, nil)
+	return s.append(events, nil, nil, nil, nil)
 }
 
 // AppendWithReferences persists reference metadata and events atomically.
 func (s *Store) AppendWithReferences(events []UsageEvent, projects []Project, sessions []Session) (Receipt, error) {
-	return s.append(events, nil, projects, sessions)
+	return s.append(events, nil, projects, sessions, nil)
 }
 
 // AppendWithReferencesAndCursor persists reference metadata, events, and a
@@ -630,7 +633,17 @@ func (s *Store) AppendWithReferencesAndCursor(events []UsageEvent, projects []Pr
 	if err := cursor.validate(); err != nil {
 		return Receipt{}, err
 	}
-	return s.append(events, &cursor, projects, sessions)
+	return s.append(events, &cursor, projects, sessions, nil)
+}
+
+func (s *Store) appendWithReferencesAndCursorIfCurrent(events []UsageEvent, projects []Project, sessions []Session, cursor Cursor, expected sourceCursorExpectation) (Receipt, error) {
+	if err := cursor.validate(); err != nil {
+		return Receipt{}, err
+	}
+	if cursor.SourceID != expected.sourceID {
+		return Receipt{}, errors.New("cursor expectation source ID does not match committed cursor")
+	}
+	return s.append(events, &cursor, projects, sessions, &expected)
 }
 
 // AppendWithCursor persists events and advances the source cursor atomically.
@@ -639,10 +652,10 @@ func (s *Store) AppendWithCursor(events []UsageEvent, cursor Cursor) (Receipt, e
 	if err := cursor.validate(); err != nil {
 		return Receipt{}, err
 	}
-	return s.append(events, &cursor, nil, nil)
+	return s.append(events, &cursor, nil, nil, nil)
 }
 
-func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session) (Receipt, error) {
+func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session, expected *sourceCursorExpectation) (Receipt, error) {
 	events = append([]UsageEvent(nil), events...)
 	projects = append([]Project(nil), projects...)
 	sessions = append([]Session(nil), sessions...)
@@ -664,9 +677,27 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 			return Receipt{}, errors.New("session source metadata must contain valid JSON")
 		}
 	}
+	if s.beforeAppend != nil {
+		s.beforeAppend()
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Receipt{}, fmt.Errorf("begin append: %w", err)
+	}
+	if expected != nil {
+		current, currentErr := cursorInTransaction(tx, expected.sourceID)
+		if errors.Is(currentErr, sql.ErrNoRows) {
+			if expected.exists {
+				tx.Rollback()
+				return Receipt{}, errSourceCursorChanged
+			}
+		} else if currentErr != nil {
+			tx.Rollback()
+			return Receipt{}, fmt.Errorf("revalidate source cursor: %w", currentErr)
+		} else if !expected.exists || current != expected.cursor {
+			tx.Rollback()
+			return Receipt{}, errSourceCursorChanged
+		}
 	}
 	events, projects, sessions, err = reconcileImportedReferences(tx, events, projects, sessions)
 	if err != nil {
@@ -767,6 +798,14 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 		return Receipt{}, fmt.Errorf("commit append: %w", err)
 	}
 	return receipt, nil
+}
+
+func cursorInTransaction(tx *sql.Tx, sourceID string) (Cursor, error) {
+	var cursor Cursor
+	err := tx.QueryRow(`SELECT source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, pending_tail, snapshot_reusable
+		FROM source_cursors WHERE source_id = ?`, sourceID).Scan(&cursor.SourceID, &cursor.FileFingerprint,
+		&cursor.ByteOffset, &cursor.LastProviderRecordID, &cursor.SourceGeneration, &cursor.PendingTail, &cursor.SnapshotReusable)
+	return cursor, err
 }
 
 // EventCount returns the number of persisted usage events.

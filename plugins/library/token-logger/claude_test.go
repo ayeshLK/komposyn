@@ -15,8 +15,10 @@
 package tokenlogger
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -110,5 +112,107 @@ func TestClaudeImportDetectsReplacementWithProviderID(t *testing.T) {
 	}
 	if count, err := store.EventCount(); err != nil || count != 2 {
 		t.Fatalf("event count = %d, err = %v; want 2", count, err)
+	}
+}
+
+func TestConcurrentClaudeReplacementsRevalidateCursorBeforeCommit(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "shared.db")
+	stores := make([]*Store, 3)
+	for index := range stores {
+		store, err := Open(databasePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[index] = store
+		defer store.Close()
+	}
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	message := func(input int) []byte {
+		return []byte(fmt.Sprintf(`{"type":"assistant","uuid":"provider-record-1","sessionId":"session-1","cwd":"/tmp/project","timestamp":"2026-10-11T00:00:00Z","message":{"model":"claude-test","usage":{"input_tokens":%d,"output_tokens":1}}}`+"\n", input))
+	}
+	if err := os.WriteFile(path, message(110), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, stores[0]); err != nil || result.Receipt.Imported != 1 {
+		t.Fatalf("initial import = %+v, err = %v", result, err)
+	}
+
+	type importResult struct {
+		result ImportResult
+		err    error
+	}
+	installPause := func(store *Store) (<-chan struct{}, chan<- struct{}) {
+		reached := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		store.beforeAppend = func() {
+			once.Do(func() {
+				close(reached)
+				<-release
+			})
+		}
+		return reached, release
+	}
+	bReached, releaseB := installPause(stores[1])
+	cReached, releaseC := installPause(stores[2])
+
+	if err := os.WriteFile(path, message(111), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bDone := make(chan importResult, 1)
+	go func() {
+		result, err := (ClaudeAdapter{}).Import(path, stores[1])
+		bDone <- importResult{result: result, err: err}
+	}()
+	<-bReached
+
+	if err := os.WriteFile(path, message(112), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cDone := make(chan importResult, 1)
+	go func() {
+		result, err := (ClaudeAdapter{}).Import(path, stores[2])
+		cDone <- importResult{result: result, err: err}
+	}()
+	<-cReached
+
+	close(releaseB)
+	b := <-bDone
+	if b.err != nil || b.result.Receipt.Imported != 1 || b.result.Receipt.Duplicates != 0 {
+		t.Fatalf("first replacement = %+v, err = %v", b.result, b.err)
+	}
+	close(releaseC)
+	c := <-cDone
+	if c.err != nil || c.result.Receipt.Imported != 1 || c.result.Receipt.Duplicates != 0 {
+		t.Fatalf("stale replacement retry = %+v, err = %v", c.result, c.err)
+	}
+
+	if count, err := stores[0].EventCount(); err != nil || count != 3 {
+		t.Fatalf("event count = %d, err = %v; want 3", count, err)
+	}
+	source, err := collectorSourceForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSourceID, err := establishedCollectorSourceID(stores[0], source, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := stores[0].Cursor(baseSourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.SourceGeneration != 2 || cursor.FileFingerprint != digest(message(112)) || !cursor.SnapshotReusable {
+		t.Fatalf("latest cursor = %+v; want reusable generation 2 for final replacement", cursor)
+	}
+	var latestInput int64
+	if err := stores[0].db.QueryRow(`SELECT input_tokens FROM usage_events WHERE source_id = ?`, generationSourceID(baseSourceID, 2)).Scan(&latestInput); err != nil {
+		t.Fatal(err)
+	}
+	if latestInput != 112 {
+		t.Fatalf("latest replacement input = %d, want 112", latestInput)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, stores[0]); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("final retry = %+v, err = %v", result, err)
 	}
 }
