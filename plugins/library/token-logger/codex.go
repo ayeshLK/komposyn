@@ -149,15 +149,20 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	return importCodexSource(context.Background(), path, store)
+	return importCodexSource(context.Background(), path, store, false)
 }
 
-func importCodexSource(ctx context.Context, path string, store *Store) (ImportResult, error) {
+func importCodexSource(ctx context.Context, path string, store *Store, validateAdapter bool) (ImportResult, error) {
 	snapshot, err := acquireSourceSnapshot(ctx, path, store, "codex")
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("acquire Codex source: %w", err)
 	}
 	for attempt := 1; ; attempt++ {
+		if validateAdapter {
+			if err := validateSourceSnapshotAdapter(snapshot.contents, "codex"); err != nil {
+				return ImportResult{}, err
+			}
+		}
 		result, retry, err := importCodexSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
 		if err != nil || !retry {
 			return result, err

@@ -152,13 +152,8 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			c.recordFailure(fmt.Errorf("detect source: %w", detectErr))
 			continue
 		}
-		var result ImportResult
-		var importErr error
-		if adapter == "claude" {
-			result, importErr = importClaudeSource(ctx, path, c.store)
-		} else {
-			result, importErr = importCodexSource(ctx, path, c.store)
-		}
+		result, importedAdapter, importErr := importCollectorSource(ctx, path, c.store, adapter)
+		adapter = importedAdapter
 		if importErr != nil {
 			if errors.Is(importErr, context.Canceled) || errors.Is(importErr, context.DeadlineExceeded) {
 				pollErrors = append(pollErrors, importErr)
@@ -195,6 +190,24 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 	c.health.DiscoveryFailures = len(discovery.Failures)
 	c.mu.Unlock()
 	return total, errors.Join(pollErrors...)
+}
+
+func importCollectorSource(ctx context.Context, path string, store *Store, adapter string) (ImportResult, string, error) {
+	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
+		var result ImportResult
+		var err error
+		if adapter == "claude" {
+			result, err = importClaudeSource(ctx, path, store, true)
+		} else {
+			result, err = importCodexSource(ctx, path, store, true)
+		}
+		var changed *sourceAdapterChangedError
+		if !errors.As(err, &changed) {
+			return result, adapter, err
+		}
+		adapter = changed.adapter
+	}
+	return ImportResult{}, adapter, fmt.Errorf("source adapter kept changing during acquisition after %d attempts", sourceCursorRetryLimit)
 }
 
 func (c *Collector) recordOutcomeDiagnostics(adapter string, outcomes OutcomeCounts) {

@@ -50,6 +50,60 @@ func TestCollectorPollsBothProviderShapesAndReportsHealth(t *testing.T) {
 	}
 }
 
+func TestCollectorDetectsAdapterFromAuthoritativeSnapshot(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "growing.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"summary","summary":"preview without usage"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appended := false
+	store.beforeSnapshotRead = func() {
+		if appended {
+			return
+		}
+		appended = true
+		file, openErr := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if openErr != nil {
+			t.Fatalf("open growing source: %v", openErr)
+		}
+		if _, writeErr := file.Write(fixture); writeErr != nil {
+			file.Close()
+			t.Fatalf("append Claude usage: %v", writeErr)
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close growing source: %v", closeErr)
+		}
+	}
+	result, err := collector.PollOnce()
+	if err != nil || result.Receipt.Imported != 2 || result.Outcomes.Incomplete() {
+		t.Fatalf("authoritative poll result=%+v err=%v", result, err)
+	}
+	if count, err := store.EventCount(); err != nil || count != 2 {
+		t.Fatalf("event count=%d err=%v; want 2", count, err)
+	}
+	var claudeCursors, codexCursors int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM source_cursors WHERE source_id LIKE 'claude-file-%'`).Scan(&claudeCursors); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM source_cursors WHERE source_id LIKE 'codex-file-%'`).Scan(&codexCursors); err != nil {
+		t.Fatal(err)
+	}
+	if claudeCursors != 1 || codexCursors != 0 {
+		t.Fatalf("source cursors: claude=%d codex=%d; want 1, 0", claudeCursors, codexCursors)
+	}
+	if health := collector.Health(); health.Status != "healthy" || health.Imported != 2 {
+		t.Fatalf("collector health=%+v", health)
+	}
+}
+
 func TestCollectorLargeRecordsUseOneUnlimitedSnapshot(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -27,6 +27,25 @@ const sourceCursorRetryLimit = 3
 
 var errSourceCursorRetryExhausted = errors.New("source cursor kept changing while snapshot was being imported")
 
+type sourceAdapterChangedError struct {
+	adapter string
+}
+
+func (err *sourceAdapterChangedError) Error() string {
+	return fmt.Sprintf("authoritative source snapshot uses %s adapter", err.adapter)
+}
+
+func validateSourceSnapshotAdapter(contents []byte, expected string) error {
+	adapter, err := detectAdapterSnapshot(contents)
+	if err != nil {
+		return fmt.Errorf("detect authoritative source snapshot: %w", err)
+	}
+	if adapter != expected {
+		return &sourceAdapterChangedError{adapter: adapter}
+	}
+	return nil
+}
+
 type sourceSnapshot struct {
 	contents       []byte
 	baseSourceID   string
