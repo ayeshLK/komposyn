@@ -488,6 +488,62 @@ func TestExplicitImportsReuseCollectorSourceIdentity(t *testing.T) {
 	}
 }
 
+func TestCollectorAllocatesIdentityWhenSymlinkBecomesRegularFile(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "original.jsonl")
+	if err := os.WriteFile(target, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(t.TempDir(), "current.jsonl")
+	if err := os.Symlink(target, current); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("source symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	store := openTestStore(t)
+	originalCollector, err := NewCollector(store, []string{current}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := originalCollector.PollOnce(); err != nil || result.Receipt.Imported != 2 {
+		t.Fatalf("symlink source result=%+v err=%v", result, err)
+	}
+	if err := os.Remove(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(current, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacementCollector, err := NewCollector(store, []string{current}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := replacementCollector.PollOnce(); err != nil || result.Receipt.Imported != 2 {
+		t.Fatalf("regular replacement result=%+v err=%v", result, err)
+	}
+	if result, err := replacementCollector.PollOnce(); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("regular replacement retry result=%+v err=%v", result, err)
+	}
+	if result, err := (ClaudeAdapter{}).Import(current, store); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("regular replacement explicit import result=%+v err=%v", result, err)
+	}
+	if count, err := store.EventCount(); err != nil || count != 4 {
+		t.Fatalf("regular replacement event count=%d err=%v", count, err)
+	}
+	var identities, distinctSourceIDs int
+	if err := store.db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT source_id)
+		FROM collector_source_identities WHERE adapter = 'claude'`).Scan(&identities, &distinctSourceIDs); err != nil {
+		t.Fatal(err)
+	}
+	if identities != 2 || distinctSourceIDs != 2 {
+		t.Fatalf("regular replacement identities=%d distinct_source_ids=%d", identities, distinctSourceIDs)
+	}
+}
+
 func TestCollectorJoinsAfterPersistenceFailure(t *testing.T) {
 	store := openTestStore(t)
 	collector, err := NewCollector(store, []string{filepath.Join("testdata", "claude-code", "normal.jsonl")}, time.Hour)

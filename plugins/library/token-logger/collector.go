@@ -449,7 +449,17 @@ func establishedCollectorSourceID(store *Store, source collectorSource, adapter 
 			return storedSourceID, nil
 		}
 	}
-	return "", errors.New("all source identities are already assigned to other canonical sources")
+	// A pathname may already belong to an older canonical source when a
+	// symlink is replaced by a regular file at the same location. Derive a
+	// stable, path-safe fallback from the new canonical key so the replacement
+	// gets its own cursor without displacing the older source.
+	fallbackSourceID := prefix + digest([]byte("canonical\x00"+source.CanonicalKey))
+	if storedSourceID, claimed, err := store.rememberCollectorSourceIdentity(source.CanonicalKey, adapter, fallbackSourceID); err != nil {
+		return "", err
+	} else if claimed {
+		return storedSourceID, nil
+	}
+	return "", errors.New("could not allocate a distinct source identity")
 }
 
 func collectorSourceForPath(path string) (collectorSource, error) {
