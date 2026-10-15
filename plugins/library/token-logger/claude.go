@@ -141,47 +141,32 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	source, err := collectorSourceForPath(path)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("resolve Claude source: %w", err)
-	}
-	contents, err := os.ReadFile(source.Path)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("fingerprint Claude source: %w", err)
-	}
-	baseSourceID, err := establishedCollectorSourceID(store, source, "claude")
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("resolve Claude source identity: %w", err)
-	}
-	return importClaudeSnapshotWithSourceID(context.Background(), contents, store, baseSourceID, func() ([]byte, error) {
-		return os.ReadFile(source.Path)
-	})
+	return importClaudeSource(context.Background(), path, store)
 }
 
-func importClaudeSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string, refresh func() ([]byte, error)) (ImportResult, error) {
+func importClaudeSource(ctx context.Context, path string, store *Store) (ImportResult, error) {
+	snapshot, err := acquireSourceSnapshot(ctx, path, store, "claude")
+	if err != nil {
+		return ImportResult{}, fmt.Errorf("acquire Claude source: %w", err)
+	}
 	for attempt := 1; ; attempt++ {
-		result, retry, err := importClaudeSnapshotAttempt(ctx, contents, store, baseSourceID)
+		result, retry, err := importClaudeSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
 		if err != nil || !retry {
 			return result, err
 		}
-		contents, err = refreshSnapshotAfterCursorConflict(ctx, refresh, attempt)
+		snapshot, err = retrySourceSnapshotAfterCursorConflict(ctx, path, store, "claude", attempt)
 		if err != nil {
 			return ImportResult{}, fmt.Errorf("retry Claude source: %w", err)
 		}
 	}
 }
 
-func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string) (ImportResult, bool, error) {
-	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
-		return ImportResult{}, false, fmt.Errorf("inspect unchanged Claude source: %w", err)
-	} else if ok {
+func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
+	if unchanged, ok := unchangedExpectedSourceSnapshot(expectedCursor, contents); ok {
 		return unchanged, false, nil
 	}
 	fingerprint := digest(contents)
-	generation, expectedCursor, err := sourceGeneration(store, baseSourceID, contents)
-	if err != nil {
-		return ImportResult{}, false, fmt.Errorf("inspect Claude source cursor: %w", err)
-	}
+	generation := sourceGeneration(expectedCursor, contents)
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64

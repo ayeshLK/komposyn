@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -150,47 +149,32 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	source, err := collectorSourceForPath(path)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("resolve Codex source: %w", err)
-	}
-	contents, err := os.ReadFile(source.Path)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("fingerprint Codex source: %w", err)
-	}
-	baseSourceID, err := establishedCollectorSourceID(store, source, "codex")
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("resolve Codex source identity: %w", err)
-	}
-	return importCodexSnapshotWithSourceID(context.Background(), contents, store, baseSourceID, func() ([]byte, error) {
-		return os.ReadFile(source.Path)
-	})
+	return importCodexSource(context.Background(), path, store)
 }
 
-func importCodexSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string, refresh func() ([]byte, error)) (ImportResult, error) {
+func importCodexSource(ctx context.Context, path string, store *Store) (ImportResult, error) {
+	snapshot, err := acquireSourceSnapshot(ctx, path, store, "codex")
+	if err != nil {
+		return ImportResult{}, fmt.Errorf("acquire Codex source: %w", err)
+	}
 	for attempt := 1; ; attempt++ {
-		result, retry, err := importCodexSnapshotAttempt(ctx, contents, store, baseSourceID)
+		result, retry, err := importCodexSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
 		if err != nil || !retry {
 			return result, err
 		}
-		contents, err = refreshSnapshotAfterCursorConflict(ctx, refresh, attempt)
+		snapshot, err = retrySourceSnapshotAfterCursorConflict(ctx, path, store, "codex", attempt)
 		if err != nil {
 			return ImportResult{}, fmt.Errorf("retry Codex source: %w", err)
 		}
 	}
 }
 
-func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string) (ImportResult, bool, error) {
-	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
-		return ImportResult{}, false, fmt.Errorf("inspect unchanged Codex source: %w", err)
-	} else if ok {
+func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
+	if unchanged, ok := unchangedExpectedSourceSnapshot(expectedCursor, contents); ok {
 		return unchanged, false, nil
 	}
 	fingerprint := digest(contents)
-	generation, expectedCursor, err := sourceGeneration(store, baseSourceID, contents)
-	if err != nil {
-		return ImportResult{}, false, fmt.Errorf("inspect Codex source cursor: %w", err)
-	}
+	generation := sourceGeneration(expectedCursor, contents)
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64

@@ -152,32 +152,12 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			c.recordFailure(fmt.Errorf("detect source: %w", detectErr))
 			continue
 		}
-		baseSourceID, identityErr := establishedCollectorSourceID(c.store, source, adapter)
-		if identityErr != nil {
-			total.Outcomes.Add(OutcomeFailedSource)
-			pollErrors = append(pollErrors, identityErr)
-			c.recordFailure(fmt.Errorf("resolve source identity: %w", identityErr))
-			continue
-		}
-		if unchanged, ok, unchangedErr := unchangedSourceSnapshot(c.store, baseSourceID, contents); unchangedErr != nil {
-			total.Outcomes.Add(OutcomeFailedSource)
-			pollErrors = append(pollErrors, unchangedErr)
-			c.recordFailure(fmt.Errorf("inspect unchanged source: %w", unchangedErr))
-			continue
-		} else if ok {
-			total.Merge(unchanged)
-			continue
-		}
 		var result ImportResult
 		var importErr error
 		if adapter == "claude" {
-			result, importErr = importClaudeSnapshotWithSourceID(ctx, contents, c.store, baseSourceID, func() ([]byte, error) {
-				return os.ReadFile(path)
-			})
+			result, importErr = importClaudeSource(ctx, path, c.store)
 		} else {
-			result, importErr = importCodexSnapshotWithSourceID(ctx, contents, c.store, baseSourceID, func() ([]byte, error) {
-				return os.ReadFile(path)
-			})
+			result, importErr = importCodexSource(ctx, path, c.store)
 		}
 		if importErr != nil {
 			if errors.Is(importErr, context.Canceled) || errors.Is(importErr, context.DeadlineExceeded) {

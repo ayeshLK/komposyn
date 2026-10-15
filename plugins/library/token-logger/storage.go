@@ -29,8 +29,9 @@ import (
 
 // Store is the library-owned SQLite persistence boundary.
 type Store struct {
-	db           *sql.DB
-	beforeAppend func()
+	db                 *sql.DB
+	beforeSnapshotRead func()
+	beforeAppend       func()
 }
 
 var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
