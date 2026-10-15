@@ -245,7 +245,10 @@ func windowsTestKeyRecordWithRepeat(key, char uint16, modifiers uint32, repeat u
 
 func TestWindowsTerminalStreamsKeepReadlineNativeAdapters(t *testing.T) {
 	config := &readline.Config{}
-	setCommandMode := configureTerminalStreams(config, os.Stdin, io.Discard, io.Discard)
+	output, errOutput, setCommandMode := configureTerminalStreams(config, os.Stdin, io.Discard, io.Discard)
+	if output != io.Writer(io.Discard) || errOutput != io.Writer(io.Discard) {
+		t.Fatalf("configured output = %#v, errOutput = %#v, want both unwrapped writers unchanged", output, errOutput)
+	}
 	reader, ok := config.Stdin.(*windowsConsoleKeyReader)
 	if !ok {
 		t.Fatalf("configured input type = %T", config.Stdin)

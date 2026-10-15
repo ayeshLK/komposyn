@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 )
 
 func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
@@ -378,6 +380,166 @@ func TestWriteTableDistinguishesNoDataFromEmptyDimension(t *testing.T) {
 	}
 	if !strings.Contains(emptyDimensionOutput.String(), "(none)") || strings.Contains(emptyDimensionOutput.String(), "NO USAGE DATA") {
 		t.Fatalf("empty dimension was confused with no data: %q", emptyDimensionOutput.String())
+	}
+}
+
+func wideUsageReport() UsageReport {
+	return UsageReport{
+		Filters: UsageFilter{GroupBy: []string{GroupProject, GroupClient, GroupProvider, GroupModel}},
+		Rows: []UsageRow{
+			{
+				Dimensions: map[string]string{GroupProject: "example-claude-project", GroupClient: "claude-code", GroupProvider: "anthropic", GroupModel: "claude-sonnet-5"},
+				UsageMeasures: UsageMeasures{
+					RequestCount: 107, SessionCount: 1, InputTokens: 9_200_000, CachedInputTokens: 9_100_000,
+					OutputTokens: 53_100, TotalTokens: 9_300_000, UnknownCostRequests: 107,
+				},
+			},
+			{
+				Dimensions: map[string]string{GroupProject: "a-very-long-project-qualifier-that-must-be-bounded", GroupClient: "codex-cli", GroupProvider: "openai", GroupModel: "codex-auto-review-with-a-very-long-descriptive-suffix"},
+				UsageMeasures: UsageMeasures{
+					RequestCount: 2_690, SessionCount: 12, InputTokens: 196_700_000, CachedInputTokens: 185_600_000,
+					OutputTokens: 221_000, ReasoningOutputTokens: 66_200, TotalTokens: 196_900_000,
+					UnknownCostRequests: 1_000, EstimatedCostRequests: 1_690,
+					CalculatedCostMicros: 1_234_000, CalculatedCurrency: "USD",
+				},
+			},
+		},
+	}
+}
+
+func TestFullTableAlignsASCIIAndEastAsianWideRowsByDisplayCell(t *testing.T) {
+	headings := []string{"MODEL", "REQUESTS"}
+	rows := [][]string{
+		{strings.Repeat("a", 20), "101"},
+		{strings.Repeat("测", 20), "202"},
+	}
+	lines := strings.Split(strings.TrimSuffix(string(renderFullTable(headings, rows)), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("full table lines = %q", lines)
+	}
+	wantStart := -1
+	for index, request := range []string{"REQUESTS", "101", "202"} {
+		byteIndex := strings.Index(lines[index], request)
+		if byteIndex < 0 {
+			t.Fatalf("line %q has no value %q", lines[index], request)
+		}
+		start := runewidth.StringWidth(lines[index][:byteIndex])
+		if wantStart < 0 {
+			wantStart = start
+		} else if start != wantStart {
+			t.Fatalf("column starts differ in display cells: header=%d row=%d line=%q", wantStart, start, lines[index])
+		}
+	}
+}
+
+func TestWriteTableWidthUsesFullLayoutWhenItFits(t *testing.T) {
+	report := wideUsageReport()
+	var full bytes.Buffer
+	if err := WriteTable(&full, report); err != nil {
+		t.Fatal(err)
+	}
+	var wide bytes.Buffer
+	if err := WriteTableWidth(&wide, report, 4096); err != nil {
+		t.Fatal(err)
+	}
+	if wide.String() != full.String() {
+		t.Fatalf("wide-width output diverged from full layout:\nfull: %q\nwide: %q", full.String(), wide.String())
+	}
+}
+
+func TestWriteTableWidthDegradesWithoutDroppingData(t *testing.T) {
+	report := wideUsageReport()
+	_, headings, rows := tableRows(report)
+
+	for _, width := range []int{160, 120, 80, 20} {
+		var output bytes.Buffer
+		if err := WriteTableWidth(&output, report, width); err != nil {
+			t.Fatalf("width %d: %v", width, err)
+		}
+		rendered := output.String()
+		// The vertical fallback (used once nothing else fits, e.g. width 20
+		// here) cannot bound width below the length of its longest single
+		// field value, so only the full/compact tiers are checked for width.
+		if width > 20 && lineDisplayWidth([]byte(rendered)) > width {
+			t.Errorf("width %d: rendered line exceeds requested width:\n%s", width, rendered)
+		}
+		for _, row := range rows {
+			for _, value := range row {
+				if value == "" {
+					continue
+				}
+				if !strings.Contains(rendered, value) {
+					t.Errorf("width %d: value %q missing from output:\n%s", width, value, rendered)
+				}
+			}
+		}
+		for _, heading := range headings {
+			if !strings.Contains(rendered, heading) && !strings.Contains(rendered, strings.ToLower(heading)) {
+				t.Errorf("width %d: heading %q missing from output:\n%s", width, heading, rendered)
+			}
+		}
+	}
+}
+
+func TestWriteTableWidthFallsBackToVerticalLayout(t *testing.T) {
+	report := wideUsageReport()
+	var output bytes.Buffer
+	if err := WriteTableWidth(&output, report, 20); err != nil {
+		t.Fatal(err)
+	}
+	rendered := output.String()
+	if !strings.Contains(rendered, "CLIENT:") || !strings.Contains(rendered, "STATUS:") {
+		t.Fatalf("narrow width did not use the vertical key/value layout:\n%s", rendered)
+	}
+}
+
+// TestWriteTableWidthAccountsForEastAsianWideDimensions reproduces a
+// regression where the layout-selection width was measured in Unicode code
+// points rather than terminal display cells: an East Asian Wide dimension
+// value (two display cells per rune) was undercounted, so a line that did
+// not actually fit the terminal was still rendered using the full layout.
+func TestWriteTableWidthAccountsForEastAsianWideDimensions(t *testing.T) {
+	wideModel := strings.Repeat("测", 20) // 20 runes, each an East Asian Wide (2-cell) character.
+	report := UsageReport{
+		Filters: UsageFilter{GroupBy: []string{GroupClient, GroupProvider, GroupModel}},
+		Rows: []UsageRow{{
+			Dimensions: map[string]string{GroupClient: "claude-code", GroupProvider: "anthropic", GroupModel: wideModel},
+			UsageMeasures: UsageMeasures{
+				RequestCount: 1, SessionCount: 1, InputTokens: 10, OutputTokens: 5, TotalTokens: 15,
+				UnknownCostRequests: 1,
+			},
+		}},
+	}
+	_, headings, rows := tableRows(report)
+	full := renderFullTable(headings, rows)
+
+	naiveWidth := 0
+	for _, line := range strings.Split(string(full), "\n") {
+		if n := utf8.RuneCountInString(line); n > naiveWidth {
+			naiveWidth = n
+		}
+	}
+	actualWidth := lineDisplayWidth(full)
+	if actualWidth <= naiveWidth {
+		t.Fatalf("test fixture does not exercise wide characters: code-point width=%d, display-cell width=%d", naiveWidth, actualWidth)
+	}
+
+	var output bytes.Buffer
+	if err := WriteTableWidth(&output, report, naiveWidth); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(output.Bytes(), full) {
+		t.Fatalf("rendered the full layout at width %d even though the East Asian Wide model name needs %d display cells, not %d code points", naiveWidth, actualWidth, naiveWidth)
+	}
+	if lineDisplayWidth(output.Bytes()) > naiveWidth {
+		t.Fatalf("degraded layout still exceeds the requested display width %d:\n%s", naiveWidth, output.String())
+	}
+	for _, row := range rows {
+		for _, value := range row {
+			if value != "" && !strings.Contains(output.String(), value) {
+				t.Fatalf("value %q missing from degraded output:\n%s", value, output.String())
+			}
+		}
 	}
 }
 

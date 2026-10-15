@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ayeshLK/komposyn/plugins/library/token-logger"
 	"github.com/chzyer/readline"
 	"github.com/creack/pty/v2"
 	"golang.org/x/term"
@@ -109,6 +110,112 @@ func TestTerminalLineReaderUsesCursorEditingAndSessionHistory(t *testing.T) {
 	output.waitForCommand(t, command)
 }
 
+func TestTerminalLineReaderWritesTableRowsStartingAtColumnZero(t *testing.T) {
+	if os.Getenv("KOMPOSYN_PTY_TABLE_HELPER") == "1" {
+		terminalEditorPTYTableHelper(t)
+		return
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=TestTerminalLineReaderWritesTableRowsStartingAtColumnZero", "--")
+	command.Env = append(os.Environ(), "KOMPOSYN_PTY_TABLE_HELPER=1")
+	master, err := pty.Start(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setPTYSize(t, master)
+	output := newPTYOutputReader(master)
+	defer func() {
+		_ = master.Close()
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+
+	output.waitForText(t, "> ")
+	if _, err := master.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	// term.MakeRaw disables OPOST on the controlling tty for the session, so
+	// a bare "\n" between table rows would advance a row without returning
+	// to column zero (a "staircase"). The fix must insert a carriage return
+	// so each row boundary in the captured raw output is "\r\n".
+	output.waitForText(t, "CLIENT")
+	output.waitForText(t, "claude-code")
+	output.waitForText(t, "\r\n")
+	output.waitForText(t, "codex-cli")
+	output.waitForCommand(t, command)
+}
+
+func TestTerminalLineReaderWritesStderrStartingAtColumnZero(t *testing.T) {
+	if os.Getenv("KOMPOSYN_PTY_STDERR_HELPER") == "1" {
+		terminalEditorPTYStderrHelper(t)
+		return
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=TestTerminalLineReaderWritesStderrStartingAtColumnZero", "--")
+	command.Env = append(os.Environ(), "KOMPOSYN_PTY_STDERR_HELPER=1")
+	master, err := pty.Start(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setPTYSize(t, master)
+	output := newPTYOutputReader(master)
+	defer func() {
+		_ = master.Close()
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+
+	output.waitForText(t, "> ")
+	if _, err := master.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	// stdin, stdout, and stderr share the controlling tty in the usual
+	// interactive case, so term.MakeRaw's OPOST-disabling also affects
+	// application errors written to stderr: they must return to column zero
+	// between lines too, not just stdout.
+	output.waitForText(t, "ERRLINE1")
+	output.waitForText(t, "\r\n")
+	output.waitForText(t, "ERRLINE2")
+	output.waitForCommand(t, command)
+}
+
+func TestConfigureTerminalStreamsLeavesRedirectedStderrUnchanged(t *testing.T) {
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer master.Close()
+	defer terminal.Close()
+
+	redirected, err := os.CreateTemp(t.TempDir(), "stderr-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer redirected.Close()
+
+	config := &readline.Config{}
+	_, errOutput, _ := configureTerminalStreams(config, terminal, terminal, redirected)
+	if _, err := io.WriteString(errOutput, "first\nsecond\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := redirected.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(redirected.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(contents), "first\nsecond\n"; got != want {
+		t.Fatalf("redirected stderr = %q, want %q", got, want)
+	}
+}
+
 func TestClearTerminalErasesVisibleScreenAndHomesCursor(t *testing.T) {
 	var output bytes.Buffer
 	if err := clearTerminal(&output); err != nil {
@@ -171,7 +278,7 @@ func setPTYSize(t *testing.T, terminal *os.File) {
 
 func terminalEditorPTYHelper(t *testing.T) {
 	expectedRestored := terminalStateAfterRawModeRoundTrip(t)
-	reader, ok := newTerminalLineReader(os.Stdin, os.Stdout, os.Stderr)
+	reader, _, _, ok := newTerminalLineReader(os.Stdin, os.Stdout, os.Stderr)
 	if !ok {
 		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
 	}
@@ -190,10 +297,54 @@ func terminalEditorPTYHelper(t *testing.T) {
 	assertTerminalStateRestored(t, expectedRestored, "normal exit")
 }
 
+func terminalEditorPTYTableHelper(t *testing.T) {
+	reader, output, _, ok := newTerminalLineReader(os.Stdin, os.Stdout, os.Stderr)
+	if !ok {
+		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
+	}
+	if _, err := reader.ReadLine("> "); err != nil {
+		t.Fatalf("read terminal line: %v", err)
+	}
+	report := tokenlogger.UsageReport{
+		Filters: tokenlogger.UsageFilter{GroupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}},
+		Rows: []tokenlogger.UsageRow{
+			{
+				Dimensions:    map[string]string{tokenlogger.GroupClient: "claude-code", tokenlogger.GroupProvider: "anthropic", tokenlogger.GroupModel: "claude-sonnet-5"},
+				UsageMeasures: tokenlogger.UsageMeasures{RequestCount: 107, SessionCount: 1},
+			},
+			{
+				Dimensions:    map[string]string{tokenlogger.GroupClient: "codex-cli", tokenlogger.GroupProvider: "openai", tokenlogger.GroupModel: "codex-auto-review"},
+				UsageMeasures: tokenlogger.UsageMeasures{RequestCount: 2690, SessionCount: 12},
+			},
+		},
+	}
+	if err := tokenlogger.WriteTable(output, report); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func terminalEditorPTYStderrHelper(t *testing.T) {
+	reader, _, errOutput, ok := newTerminalLineReader(os.Stdin, os.Stdout, os.Stderr)
+	if !ok {
+		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
+	}
+	if _, err := reader.ReadLine("> "); err != nil {
+		t.Fatalf("read terminal line: %v", err)
+	}
+	fmt.Fprintln(errOutput, "ERRLINE1")
+	fmt.Fprintln(errOutput, "ERRLINE2")
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func terminalEditorPTYExitHelper(t *testing.T, mode string) {
 	expectedRestored := terminalStateAfterRawModeRoundTrip(t)
 	if mode == "init-error" {
-		_, ok := newTerminalLineReaderWithFactory(os.Stdin, os.Stdout, os.Stderr, func(*readline.Config) (*readline.Instance, error) {
+		_, _, _, ok := newTerminalLineReaderWithFactory(os.Stdin, os.Stdout, os.Stderr, func(*readline.Config) (*readline.Instance, error) {
 			return nil, errors.New("injected readline initialization failure")
 		})
 		if ok {
@@ -216,7 +367,7 @@ func terminalEditorPTYExitHelper(t *testing.T, mode string) {
 			return readline.NewEx(config)
 		}
 	}
-	reader, ok := newTerminalLineReaderWithFactory(os.Stdin, os.Stdout, os.Stderr, factory)
+	reader, _, _, ok := newTerminalLineReaderWithFactory(os.Stdin, os.Stdout, os.Stderr, factory)
 	if !ok {
 		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
 	}

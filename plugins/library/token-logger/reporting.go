@@ -15,6 +15,7 @@
 package tokenlogger
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -23,8 +24,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
+
+	"github.com/mattn/go-runewidth"
 )
 
 const (
@@ -545,13 +547,48 @@ func WriteCSV(w io.Writer, report UsageReport) error {
 	return writer.Error()
 }
 
-// WriteTable writes a compact human-readable usage report.
+// WriteTable writes a compact human-readable usage report using the
+// complete tabular layout, independent of any terminal width. Use
+// WriteTableWidth to adapt the layout to a known terminal width.
 func WriteTable(w io.Writer, report UsageReport) error {
-	writer := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	return WriteTableWidth(w, report, 0)
+}
+
+// WriteTableWidth writes a human-readable usage report, adapting the layout
+// to an available terminal width of width columns. A width of zero or less
+// always renders the complete tabular layout; this is used for redirected
+// output, where there is no terminal to adapt to, so output stays
+// deterministic. Otherwise the layout degrades from the complete table to a
+// compact multi-line-per-row layout to a vertical key/value layout, choosing
+// the first tier that fits the given width without dropping any usage or
+// cost information.
+func WriteTableWidth(w io.Writer, report UsageReport, width int) error {
 	if len(report.Rows) == 0 && report.Summary.RequestCount == 0 {
-		fmt.Fprintln(writer, "NO USAGE DATA")
-		return writer.Flush()
+		_, err := fmt.Fprintln(w, "NO USAGE DATA")
+		return err
 	}
+	dimCount, headings, rows := tableRows(report)
+
+	full := renderFullTable(headings, rows)
+	if width <= 0 || lineDisplayWidth(full) <= width {
+		_, err := w.Write(full)
+		return err
+	}
+
+	compact := renderCompactTable(dimCount, headings, rows)
+	if lineDisplayWidth(compact) <= width {
+		_, err := w.Write(compact)
+		return err
+	}
+
+	_, err := w.Write(renderVerticalTable(headings, rows))
+	return err
+}
+
+// tableRows builds the heading row and formatted cell values shared by every
+// table layout tier. dimCount is the number of leading grouping-dimension
+// columns; the 10 fixed metric/status columns always follow them.
+func tableRows(report UsageReport) (int, []string, [][]string) {
 	groups := report.Filters.GroupBy
 	headings := make([]string, 0, len(groups)+10)
 	if len(groups) == 0 {
@@ -562,13 +599,15 @@ func WriteTable(w io.Writer, report UsageReport) error {
 		}
 	}
 	headings = append(headings, "REQUESTS", "SESSIONS", "INPUT", "CACHED", "OUTPUT", "REASONING", "TOTAL", "ESTIMATE", "REPORTED", "STATUS")
-	fmt.Fprintln(writer, strings.Join(headings, "\t"))
-	rows := report.Rows
-	if len(rows) == 0 {
-		rows = []UsageRow{{UsageMeasures: report.Summary}}
+	dimCount := len(headings) - 10
+
+	reportRows := report.Rows
+	if len(reportRows) == 0 {
+		reportRows = []UsageRow{{UsageMeasures: report.Summary}}
 	}
-	for _, row := range rows {
-		values := make([]string, 0, len(groups)+10)
+	rows := make([][]string, 0, len(reportRows))
+	for _, row := range reportRows {
+		values := make([]string, 0, len(headings))
 		if len(groups) == 0 {
 			values = append(values, "TOTAL")
 		} else {
@@ -589,7 +628,108 @@ func WriteTable(w io.Writer, report UsageReport) error {
 			reportedCostDisplay(row.UsageMeasures),
 			status,
 		)
-		fmt.Fprintln(writer, strings.Join(values, "\t"))
+		rows = append(rows, values)
 	}
-	return writer.Flush()
+	return dimCount, headings, rows
+}
+
+// renderFullTable renders the complete tabular layout using terminal display
+// cells for alignment. Unicode code-point counts are insufficient here:
+// East Asian wide runes occupy two cells while combining marks occupy none.
+func renderFullTable(headings []string, rows [][]string) []byte {
+	widths := make([]int, len(headings))
+	for index, heading := range headings {
+		widths[index] = runewidth.StringWidth(heading)
+	}
+	for _, row := range rows {
+		for index, value := range row {
+			if width := runewidth.StringWidth(value); width > widths[index] {
+				widths[index] = width
+			}
+		}
+	}
+
+	var buf bytes.Buffer
+	writeRow := func(row []string) {
+		for index, value := range row {
+			buf.WriteString(value)
+			if index < len(row)-1 {
+				padding := widths[index] - runewidth.StringWidth(value) + 2
+				buf.WriteString(strings.Repeat(" ", padding))
+			}
+		}
+		buf.WriteByte('\n')
+	}
+	writeRow(headings)
+	for _, row := range rows {
+		writeRow(row)
+	}
+	return buf.Bytes()
+}
+
+// renderCompactTable renders two self-contained lines per row: dimensions
+// plus request/session counts, then the remaining metric and cost/status
+// fields indented on the next line. Rows are not aligned against each
+// other, so this degrades gracefully for any grouping or value length.
+func renderCompactTable(dimCount int, headings []string, rows [][]string) []byte {
+	var buf bytes.Buffer
+	splitAt := dimCount + 2
+	for i, row := range rows {
+		if i > 0 {
+			buf.WriteByte('\n')
+		}
+		dims := make([]string, 0, dimCount)
+		for index := 0; index < dimCount; index++ {
+			dims = append(dims, strings.ToLower(headings[index])+"="+row[index])
+		}
+		firstLine := []string{strings.Join(dims, " / ")}
+		for index := dimCount; index < splitAt; index++ {
+			firstLine = append(firstLine, strings.ToLower(headings[index])+" "+row[index])
+		}
+		buf.WriteString(strings.Join(firstLine, "  "))
+		buf.WriteByte('\n')
+
+		secondLine := make([]string, 0, len(headings)-splitAt)
+		for index := splitAt; index < len(headings); index++ {
+			secondLine = append(secondLine, strings.ToLower(headings[index])+" "+row[index])
+		}
+		buf.WriteString("  " + strings.Join(secondLine, "  "))
+		buf.WriteByte('\n')
+	}
+	return buf.Bytes()
+}
+
+// renderVerticalTable renders one "LABEL: value" line per field, with a
+// blank line between rows. This is the final fallback tier and always fits
+// as long as individual field values fit the terminal.
+func renderVerticalTable(headings []string, rows [][]string) []byte {
+	labelWidth := 0
+	for _, heading := range headings {
+		if len(heading) > labelWidth {
+			labelWidth = len(heading)
+		}
+	}
+	var buf bytes.Buffer
+	for i, row := range rows {
+		if i > 0 {
+			buf.WriteByte('\n')
+		}
+		for index, heading := range headings {
+			fmt.Fprintf(&buf, "%-*s %s\n", labelWidth+1, heading+":", row[index])
+		}
+	}
+	return buf.Bytes()
+}
+
+// lineDisplayWidth reports the widest line in data, measured in terminal
+// display cells rather than Unicode code points, so East Asian wide
+// characters (which occupy two cells) are not undercounted.
+func lineDisplayWidth(data []byte) int {
+	widest := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if width := runewidth.StringWidth(line); width > widest {
+			widest = width
+		}
+	}
+	return widest
 }
