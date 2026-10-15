@@ -37,16 +37,33 @@ komposyn-lg import /path/to/source --data-dir /path/to/data
 komposyn-lg usage --data-dir /path/to/data --format json
 ```
 
-The collector skips missing default roots and records operational failures in
-local diagnostics. It never edits source files. Check the configured roots and
-file permissions before changing settings.
+The collector skips missing built-in default roots. A missing explicit `watch`
+root or environment-configured root is required and therefore reports
+`health=degraded`, `discovery_failures`, and `failed_source`; collection keeps
+polling so creation or permission recovery can be observed. `sources=0` with
+healthy status means all configured roots were optional/missing or existing
+directories were empty. It never edits source files. Check configured roots
+and file permissions before changing settings.
 
 ## A repeated import reports duplicates
 
-This is expected when the same source records have already been committed.
-Stable ingestion keys make imports idempotent. A changed or replaced source
+This is expected when records from a changed source have already been
+committed. An exactly unchanged, safely reusable snapshot reports
+`unchanged_snapshot` without resubmitting its historical events. Stable
+ingestion keys remain the accounting backstop. A changed or replaced source
 may receive a new source generation so reused offsets do not collide with older
 events.
+
+## Interactive totals look stale
+
+Read the `collector runtime` line at the next command prompt or run
+`/settings`. `state` is worker lifecycle; `health` describes the latest poll.
+Compare `last_completed` and `last_success`, then inspect `sources`,
+`discovery_failures`, `pending`, and the typed failure counts. A degraded poll
+does not erase the last successful time. Every report prints `queried_at`; that
+is the SQLite query time, not proof that provider sources were just scanned.
+`/refresh` redraws committed database data only. Use foreground `watch` when an
+explicit source scan is needed, and ensure it uses the same data directory.
 
 ## Import reports pending or incomplete accounting
 

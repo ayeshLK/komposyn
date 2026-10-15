@@ -160,9 +160,18 @@ Polls once immediately and continues until interrupted. The default interval is
 five seconds. Poll output uses the same typed outcomes as `import`. Ignored and
 unchanged records remain healthy; a deferred tail is visible as pending without
 degrading health; unsupported, malformed, and failed-source outcomes degrade
-health and create path-free, deduplicated local diagnostics. Every poll is
-printed, including changes discovered after watch starts, and the final line
-includes cumulative outcome counts plus the latest pending state.
+health and create path-free, deduplicated local diagnostics. The positional
+root is required: a missing or inaccessible root produces a visible degraded
+poll while `watch` keeps polling so later creation can recover. Empty existing
+directories are healthy and have `sources=0`.
+
+Every poll prints its source and discovery-failure counts, including changes
+discovered after watch starts. The final `run_complete` field describes the
+whole foreground run: it remains false if any poll had an incomplete outcome,
+even if a later poll recovered. `latest_status` separately describes the most
+recent completed poll, while `lifecycle` reports whether the worker is running
+or stopped. Ctrl-C and SIGTERM are normal operator stops and return exit status
+zero; there is currently no strict non-zero-on-degraded watch mode.
 
 ### `settings`
 
@@ -200,6 +209,13 @@ Runs the versioned JSONL sidecar protocol over stdin/stdout. See the
 
 Running `komposyn-lg` without a subcommand starts onboarding on first use and
 then opens the interactive report view. Type `/help` for the command list.
+Each launch states whether the session-owned collector is starting or off and
+why. A starting collector means the initial scan is in progress; it does not
+delay the first database report. At command boundaries, a changed collector
+status line shows lifecycle, latest health, source/discovery counts, last
+completed and successful scan times, pending tails, and sanitized failure
+categories. `/settings` labels persisted preferences separately from this
+runtime state.
 
 When both stdin and stdout are terminals, the prompt provides cursor-aware
 editing with Left/Right, Backspace, Delete, Home/End, and Up/Down session
@@ -222,9 +238,11 @@ batch.
 Interactive reports start in rolling mode. Immediately before each report
 render—including `/refresh`, `/projects`, `/sessions`, `/total-usage`,
 `/by-client`, `/by-model`, and `/cost`—the CLI resolves the last seven UTC
-calendar days and prints the exact half-open range used by that query. New
-committed usage appears when the next report command is run; reports do not
-redraw passively while the prompt is idle.
+calendar days and prints the exact half-open range and `queried_at` time used by
+that database query. Source scanning is separate. New committed usage appears
+when the next report command is run; reports do not redraw passively while the
+prompt is idle. `/refresh` remains database redraw-only and neither starts nor
+waits for a source scan.
 
 Interactive row numbers select from the exact rows printed by the most recent
 render of that view. A refresh or another report command replaces that
@@ -237,6 +255,9 @@ which remains unchanged across refreshes and report views. `/range reset`
 returns to rolling mode and renders immediately. If `watch` and interactive
 mode should share a database, pass `--data-dir` to `watch` and set
 `TOKEN_LOGGER_DATA_DIR` for interactive mode to the same directory.
+For explicit session collection controls today, run or stop foreground
+`komposyn-lg watch` in another terminal. Detached registration and lifecycle
+controls are tracked in [issue #68](https://github.com/ayeshLK/komposyn/issues/68).
 
 For non-TTY input or output, the CLI keeps scanner-style behavior. `/clear`
 then prints `clear is available only in an interactive terminal` and emits no

@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -157,7 +158,16 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("fingerprint Codex source: %w", err)
 	}
+	return importCodexSnapshot(context.Background(), canonicalPath, contents, store)
+}
+
+func importCodexSnapshot(ctx context.Context, canonicalPath string, contents []byte, store *Store) (ImportResult, error) {
 	baseSourceID := "codex-file-" + digest([]byte(canonicalPath))
+	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
+		return ImportResult{}, fmt.Errorf("inspect unchanged Codex source: %w", err)
+	} else if ok {
+		return unchanged, nil
+	}
 	fingerprint := digest(contents)
 	generation, err := sourceGeneration(store, baseSourceID, contents)
 	if err != nil {
@@ -182,6 +192,9 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 
 	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
 		offset += int64(len(line))
@@ -386,6 +399,9 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 			break
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 
 	if current.ID == "" {
 		current = updateCodexSession(current, codexPayload{}, sourceID)
@@ -415,7 +431,8 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	receipt, err := store.AppendWithReferencesAndCursor(events,
 		projects,
 		knownSessions,
-		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
+		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()})
 	if err != nil {
 		return result, fmt.Errorf("persist Codex project, session, events, and cursor: %w", err)
 	}

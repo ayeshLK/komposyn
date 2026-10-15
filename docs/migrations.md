@@ -2,7 +2,7 @@
 
 Komposyn upgrades its SQLite schema automatically when `Store.Open` is called.
 Migrations are numbered, applied in order, and recorded in the
-`schema_migrations` table. The current schema version is 8.
+`schema_migrations` table. The current schema version is 9.
 
 ## Migration history
 
@@ -26,6 +26,9 @@ Migrations are numbered, applied in order, and recorded in the
    project and session namespaces. Any older persisted project or session using
    either reserved value is transactionally moved to a collision-free local ID,
    with all references updated.
+9. Adds pending-tail and snapshot-reusability state to source cursors so an
+   exactly unchanged full-digest snapshot can avoid historical replay without
+   hiding retryable tails or incomplete accounting.
 
 ## Compatibility rules
 

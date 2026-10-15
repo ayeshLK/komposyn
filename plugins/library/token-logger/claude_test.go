@@ -50,7 +50,7 @@ func TestClaudeImportAttributesAndNormalizesUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Receipt.Imported != 0 || second.Receipt.Duplicates != 2 {
+	if second.Receipt != (Receipt{}) || second.Outcomes.UnchangedSnapshot != 1 {
 		t.Fatalf("unexpected re-import result: %+v", second)
 	}
 }
@@ -105,8 +105,8 @@ func TestClaudeImportDetectsReplacementWithProviderID(t *testing.T) {
 		t.Fatalf("replacement import = %+v, err = %v; want one new event", replacement, err)
 	}
 	repeat, err := (ClaudeAdapter{}).Import(path, store)
-	if err != nil || repeat.Receipt.Imported != 0 || repeat.Receipt.Duplicates != 1 {
-		t.Fatalf("replacement re-import = %+v, err = %v; want one duplicate", repeat, err)
+	if err != nil || repeat.Receipt != (Receipt{}) || repeat.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("replacement re-import = %+v, err = %v; want unchanged snapshot", repeat, err)
 	}
 	if count, err := store.EventCount(); err != nil || count != 2 {
 		t.Fatalf("event count = %d, err = %v; want 2", count, err)

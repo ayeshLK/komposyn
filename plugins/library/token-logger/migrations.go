@@ -209,3 +209,8 @@ GROUP BY kind, scope, alias_digest, COALESCE(project_id, ''), COALESCE(session_i
 DROP TABLE reconciliation_warnings;
 ALTER TABLE reconciliation_warnings_v7 RENAME TO reconciliation_warnings;
 `
+
+const schemaMigrationNine = `
+ALTER TABLE source_cursors ADD COLUMN pending_tail INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE source_cursors ADD COLUMN snapshot_reusable INTEGER NOT NULL DEFAULT 0;
+`

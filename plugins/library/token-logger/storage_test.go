@@ -164,7 +164,9 @@ func TestMigrationEightRemapsCrossNamespaceSyntheticIDCollisions(t *testing.T) {
 		 VALUES ('legacy', 'cross-session', '` + UnattributedProjectID + `', '` + UnattributedSessionID + `', '2026-01-01', '2026-01-02')`,
 		`INSERT INTO reconciliation_warnings(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at, occurrence_count)
 		 VALUES ('cross-collision', 'legacy', 'digest', '` + UnattributedSessionID + `', '` + UnattributedProjectID + `', 'collision', '2026-01-01', '2026-01-02', 2)`,
-		`DELETE FROM schema_migrations WHERE version = 8`,
+		`ALTER TABLE source_cursors DROP COLUMN snapshot_reusable`,
+		`ALTER TABLE source_cursors DROP COLUMN pending_tail`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -249,7 +251,9 @@ func TestMigrationEightRemapsSyntheticIDCollisions(t *testing.T) {
 		 VALUES ('legacy', 'session-alias', '` + UnattributedSessionID + `', '` + UnattributedProjectID + `', '2026-01-01', '2026-01-02')`,
 		`INSERT INTO reconciliation_warnings(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at, occurrence_count)
 		 VALUES ('collision', 'legacy', 'digest', '` + UnattributedProjectID + `', '` + UnattributedSessionID + `', 'collision', '2026-01-01', '2026-01-02', 3)`,
-		`DELETE FROM schema_migrations WHERE version = 8`,
+		`ALTER TABLE source_cursors DROP COLUMN snapshot_reusable`,
+		`ALTER TABLE source_cursors DROP COLUMN pending_tail`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -331,6 +335,54 @@ func TestAppendRollsBackEventAndCursorOnPersistenceFailure(t *testing.T) {
 	}
 	if _, err := store.Cursor(cursor.SourceID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("failed append advanced cursor: %v", err)
+	}
+}
+
+func TestMultipleStoresWaitBoundedlyAndPreserveExactlyOnceAccounting(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "shared.db")
+	first, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	lock, err := first.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lock.Exec("INSERT INTO projects(id, display_name, created_at) VALUES ('lock-holder', 'Lock holder', ?)", formatStoredTime(time.Now())); err != nil {
+		lock.Rollback()
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		event := testEvent("concurrent-writer")
+		event.EventID, event.Provenance.SourceRecord = "concurrent-event", "concurrent-record"
+		_, appendErr := second.Append([]UsageEvent{event})
+		done <- appendErr
+	}()
+	<-started
+	if err := lock.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("bounded concurrent append failed: %v", err)
+	}
+	if count, err := first.EventCount(); err != nil || count != 1 {
+		t.Fatalf("shared-store event count=%d err=%v", count, err)
+	}
+	if _, err := first.Append([]UsageEvent{testEvent("concurrent-writer")}); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := second.EventCount(); err != nil || count != 1 {
+		t.Fatalf("idempotent shared-store event count=%d err=%v", count, err)
 	}
 }
 

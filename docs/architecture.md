@@ -45,11 +45,12 @@ completed general plugin contract.
 
 An explicit `import` and the background collector use the same adapters:
 
-1. The adapter canonicalizes the source path and reads one immutable byte
-   snapshot with `os.ReadFile`.
-2. The snapshot is fingerprinted and parsed. Every event is derived from that
-   same byte slice, so offsets and hashes cannot describe different file
-   contents.
+1. The collector canonicalizes and deduplicates roots/files, isolates
+   recoverable discovery failures, and reads each source into one immutable
+   byte snapshot with `os.ReadFile`.
+2. Provider detection, fingerprinting, and parsing use that same byte slice
+   with no scanner token ceiling, so offsets and hashes cannot describe
+   different file contents.
 3. Provider records are mapped to `UsageEvent`, with source adapter, source
    identity, record identity, byte offset, and record hash retained for
    traceability.
@@ -59,12 +60,19 @@ An explicit `import` and the background collector use the same adapters:
    evidence remains isolated and produces a path-free local warning.
 5. Identity mappings, project and session references, events, and the source
    cursor are committed atomically.
-6. A repeated import is idempotent through the event's stable ingestion key;
-   duplicates are reported rather than inserted again.
+6. A full digest plus committed cursor flags can classify an exactly unchanged,
+   reusable snapshot before parsing. Pending-tail state remains visible. Files
+   with incomplete accounting are reparsed; size or mtime alone is never used
+   as accounting truth.
+7. Changed sources are parsed and remain idempotent through stable ingestion
+   keys; duplicates are reported rather than inserted again.
 
-The collector performs an initial scan only when `PollOnce` is called. `Run`
-then polls at its configured interval and stops when its context is cancelled.
-It never writes to provider-owned source files.
+`RunImmediate` performs an initial scan and then polls at its configured
+interval. Discovery and parsing observe cancellation between safe boundaries;
+a persistence transaction already in progress completes atomically. Embedded
+owners cancel and join the worker before closing its Store. Lifecycle
+(`starting`, `running`, `stopped`) is separate from latest poll health. It never
+writes to provider-owned source files.
 
 ## Source replacement safety
 
@@ -76,11 +84,22 @@ events imported from an older version of the file.
 
 ## Persistence boundary
 
-`Store.Open` configures SQLite with foreign keys enabled and WAL journaling,
-limits the connection pool to one connection, then applies migrations before
-returning. Writes that affect related metadata and events use one transaction.
+`Store.Open` configures SQLite with foreign keys enabled, WAL journaling, and a
+bounded five-second busy timeout, limits each Store's connection pool to one
+connection, then applies migrations before returning. This allows independent
+foreground/embedded Stores to wait boundedly for ordinary write contention;
+failures remain visible rather than retrying indefinitely. Writes that affect
+related metadata, events, and cursors use one transaction.
 The database is application-owned; source transcripts remain provider-owned and
 read-only from KompoSyn's perspective.
+
+Unchanged-poll benchmarks cover small and 10,000-record histories and report
+time, allocations, bytes, and historical events resubmitted. On the issue #90
+Linux review host, the 10,000-record unchanged case resubmitted zero events and
+took about 2.5 ms. Append polls still parse history to preserve cumulative
+provider context: the 1,000-record case resubmitted 1,000 historical events and
+took about 130 ms. Incremental append parsing remains a measured limitation,
+not part of the unchanged-snapshot optimization.
 
 ## Reporting semantics
 

@@ -86,7 +86,7 @@ func TestCodexImportIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-import fixture: %v", err)
 	}
-	if result.Receipt.Imported != 0 || result.Receipt.Duplicates != 2 {
+	if result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
 		t.Fatalf("unexpected re-import result: %+v", result)
 	}
 	if _, err := store.Cursor("missing"); err != sql.ErrNoRows {
@@ -123,8 +123,8 @@ func TestCodexImportDetectsReplacementAndPreservesAppendIdempotency(t *testing.T
 		t.Fatalf("replacement import = %+v, err = %v; want one new event", replacement, err)
 	}
 	repeat, err := (CodexAdapter{}).Import(path, store)
-	if err != nil || repeat.Receipt.Imported != 0 || repeat.Receipt.Duplicates != 1 {
-		t.Fatalf("replacement re-import = %+v, err = %v; want one duplicate", repeat, err)
+	if err != nil || repeat.Receipt != (Receipt{}) || repeat.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("replacement re-import = %+v, err = %v; want unchanged snapshot", repeat, err)
 	}
 	if count, err := store.EventCount(); err != nil || count != 3 {
 		t.Fatalf("event count = %d, err = %v; want 3", count, err)
@@ -172,7 +172,7 @@ func TestCodexImportUsesTokenUsageRecordsOnceAndIgnoresMirroredSnapshots(t *test
 	if err != nil {
 		t.Fatalf("repeat import: %v", err)
 	}
-	if repeat.Receipt.Imported != 0 || repeat.Receipt.Duplicates != 3 {
+	if repeat.Receipt != (Receipt{}) || repeat.Outcomes.UnchangedSnapshot != 1 {
 		t.Fatalf("repeat result: %+v", repeat)
 	}
 }

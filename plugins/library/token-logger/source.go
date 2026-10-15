@@ -41,6 +41,38 @@ func sourceGeneration(store *Store, sourceID string, contents []byte) (int64, er
 	return cursor.SourceGeneration, nil
 }
 
+func unchangedSourceSnapshot(store *Store, sourceID string, contents []byte) (ImportResult, bool, error) {
+	cursor, err := store.Cursor(sourceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ImportResult{}, false, nil
+	}
+	if err != nil {
+		return ImportResult{}, false, fmt.Errorf("read source cursor: %w", err)
+	}
+	if !cursor.SnapshotReusable || cursor.ByteOffset != int64(len(contents)) || cursor.FileFingerprint != digest(contents) {
+		return ImportResult{}, false, nil
+	}
+	result := ImportResult{}
+	result.Outcomes.Add(OutcomeUnchangedSnapshot)
+	if cursor.PendingTail {
+		result.Outcomes.Add(OutcomeDeferredIncompleteTail)
+	}
+	return result, true, nil
+}
+
+func unchangedCollectorSnapshot(store *Store, canonicalPath string, contents []byte) (ImportResult, bool, error) {
+	for _, sourceID := range []string{
+		"claude-file-" + digest([]byte(canonicalPath)),
+		"codex-file-" + digest([]byte(canonicalPath)),
+	} {
+		result, unchanged, err := unchangedSourceSnapshot(store, sourceID, contents)
+		if err != nil || unchanged {
+			return result, unchanged, err
+		}
+	}
+	return ImportResult{}, false, nil
+}
+
 func generationSourceID(sourceID string, generation int64) string {
 	if generation == 0 {
 		return sourceID

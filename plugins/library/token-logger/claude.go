@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,15 +91,25 @@ func (ClaudeAdapter) Discover(path string) ([]string, error) {
 
 // DetectAdapter identifies the first recognized transcript shape.
 func DetectAdapter(path string) (string, error) {
-	file, err := os.Open(path)
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
-	reader := bufio.NewScanner(file)
-	for reader.Scan() {
-		line := strings.TrimSpace(reader.Text())
+	return detectAdapterSnapshot(contents)
+}
+
+func detectAdapterSnapshot(contents []byte) (string, error) {
+	reader := bufio.NewReader(bytes.NewReader(contents))
+	for {
+		lineBytes, readErr := reader.ReadBytes('\n')
+		line := strings.TrimSpace(string(lineBytes))
 		if line == "" {
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					break
+				}
+				return "", readErr
+			}
 			continue
 		}
 		var raw struct {
@@ -114,9 +125,12 @@ func DetectAdapter(path string) (string, error) {
 		if raw.Type == "session_meta" || raw.Type == "event_msg" || raw.Type == "token_count" || raw.Type == "token_usage_record" {
 			return "codex", nil
 		}
-	}
-	if err := reader.Err(); err != nil {
-		return "", err
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return "", readErr
+		}
 	}
 	return "codex", nil
 }
@@ -135,7 +149,16 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("fingerprint Claude source: %w", err)
 	}
+	return importClaudeSnapshot(context.Background(), canonicalPath, contents, store)
+}
+
+func importClaudeSnapshot(ctx context.Context, canonicalPath string, contents []byte, store *Store) (ImportResult, error) {
 	baseSourceID := "claude-file-" + digest([]byte(canonicalPath))
+	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
+		return ImportResult{}, fmt.Errorf("inspect unchanged Claude source: %w", err)
+	} else if ok {
+		return unchanged, nil
+	}
 	fingerprint := digest(contents)
 	generation, err := sourceGeneration(store, baseSourceID, contents)
 	if err != nil {
@@ -149,6 +172,9 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	var lastRecordID string
 	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
 		offset += int64(len(line))
@@ -217,6 +243,9 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 			break
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if session.ID == "" {
 		session = updateClaudeSession(session, claudeEnvelope{}, claudeMessage{}, sourceID)
 	}
@@ -227,7 +256,8 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	receipt, err := store.AppendWithReferencesAndCursor(events,
 		[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "claude-code", ProviderAlias: session.ProjectID, AliasProvenance: "claude-code metadata"}},
 		[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`), SourceAdapter: "claude-code", ProviderAlias: session.ID}},
-		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
+		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()})
 	if err != nil {
 		return result, fmt.Errorf("persist Claude project, session, events, and cursor: %w", err)
 	}

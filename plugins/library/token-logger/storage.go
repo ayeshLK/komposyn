@@ -73,6 +73,7 @@ func (s *Store) configure() error {
 	for _, statement := range []string{
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA journal_mode = WAL",
+		"PRAGMA busy_timeout = 5000",
 	} {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("configure SQLite: %w", err)
@@ -233,6 +234,23 @@ func (s *Store) Migrate() error {
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration 8: %w", err)
+		}
+	}
+	if applied < 9 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 9: %w", err)
+		}
+		if _, err := tx.Exec(schemaMigrationNine); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("apply migration 9: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 9, formatStoredTime(time.Now())); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration 9: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 9: %w", err)
 		}
 	}
 	return nil
@@ -777,12 +795,13 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 		}
 	}
 	if cursor != nil {
-		if _, err := tx.Exec(`INSERT INTO source_cursors(source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
+		if _, err := tx.Exec(`INSERT INTO source_cursors(source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, pending_tail, snapshot_reusable, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(source_id) DO UPDATE SET file_fingerprint = excluded.file_fingerprint,
 			byte_offset = excluded.byte_offset, last_provider_record_id = excluded.last_provider_record_id,
-			source_generation = excluded.source_generation, updated_at = excluded.updated_at`, cursor.SourceID, cursor.FileFingerprint, cursor.ByteOffset,
-			cursor.LastProviderRecordID, cursor.SourceGeneration, formatStoredTime(time.Now())); err != nil {
+			source_generation = excluded.source_generation, pending_tail = excluded.pending_tail,
+			snapshot_reusable = excluded.snapshot_reusable, updated_at = excluded.updated_at`, cursor.SourceID, cursor.FileFingerprint, cursor.ByteOffset,
+			cursor.LastProviderRecordID, cursor.SourceGeneration, cursor.PendingTail, cursor.SnapshotReusable, formatStoredTime(time.Now())); err != nil {
 			tx.Rollback()
 			return Receipt{}, fmt.Errorf("persist source cursor: %w", err)
 		}
@@ -803,9 +822,9 @@ func (s *Store) EventCount() (int, error) {
 // Cursor returns the committed cursor for a source.
 func (s *Store) Cursor(sourceID string) (Cursor, error) {
 	var cursor Cursor
-	err := s.db.QueryRow(`SELECT source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation
+	err := s.db.QueryRow(`SELECT source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, pending_tail, snapshot_reusable
 		FROM source_cursors WHERE source_id = ?`, sourceID).Scan(&cursor.SourceID, &cursor.FileFingerprint,
-		&cursor.ByteOffset, &cursor.LastProviderRecordID, &cursor.SourceGeneration)
+		&cursor.ByteOffset, &cursor.LastProviderRecordID, &cursor.SourceGeneration, &cursor.PendingTail, &cursor.SnapshotReusable)
 	if err != nil {
 		return Cursor{}, err
 	}

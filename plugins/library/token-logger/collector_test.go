@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,8 +45,296 @@ func TestCollectorPollsBothProviderShapesAndReportsHealth(t *testing.T) {
 	if err := collector.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if health := collector.Health(); health.Status != "stopped" || health.Imported != 4 || health.Duplicates != 0 {
+	if health := collector.Health(); health.Status != "healthy" || health.Lifecycle != "stopped" || health.Imported != 4 || health.Duplicates != 0 {
 		t.Fatalf("collector did not stop: %+v", collector.Health())
+	}
+}
+
+func TestCollectorLargeRecordsUseOneUnlimitedSnapshot(t *testing.T) {
+	tests := []struct {
+		name       string
+		fixture    string
+		largeLine  string
+		importFile func(string, *Store) (ImportResult, error)
+	}{
+		{"claude", filepath.Join("testdata", "claude-code", "normal.jsonl"), `{"type":"user","message":{"content":"` + strings.Repeat("x", 70_000) + `"}}`, (ClaudeAdapter{}).Import},
+		{"codex", filepath.Join("testdata", "codex", "normal.jsonl"), `{"type":"response_item","payload":{"type":"message","content":"` + strings.Repeat("x", 70_000) + `"}}`, (CodexAdapter{}).Import},
+	}
+	for _, test := range tests {
+		for _, position := range []string{"before-detection", "after-detection"} {
+			t.Run(test.name+"/"+position, func(t *testing.T) {
+				fixture, err := os.ReadFile(test.fixture)
+				if err != nil {
+					t.Fatal(err)
+				}
+				contents := []byte(test.largeLine + "\n" + string(fixture))
+				if position == "after-detection" {
+					firstBreak := strings.IndexByte(string(fixture), '\n') + 1
+					contents = append(append(append([]byte{}, fixture[:firstBreak]...), []byte(test.largeLine+"\n")...), fixture[firstBreak:]...)
+				}
+				contents = append(contents, []byte(`{"type":`)...)
+				path := filepath.Join(t.TempDir(), test.name+".jsonl")
+				if err := os.WriteFile(path, contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				directStore := openTestStore(t)
+				direct, err := test.importFile(path, directStore)
+				if err != nil || direct.Receipt.Imported != 2 || direct.Outcomes.DeferredIncompleteTail != 1 {
+					t.Fatalf("direct result=%+v err=%v", direct, err)
+				}
+				collectorStore := openTestStore(t)
+				collector, err := NewCollector(collectorStore, []string{path}, time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				first, err := collector.PollOnce()
+				if err != nil || first.Receipt.Imported != direct.Receipt.Imported || first.Outcomes.DeferredIncompleteTail != 1 {
+					t.Fatalf("collector first=%+v err=%v direct=%+v", first, err, direct)
+				}
+				second, err := collector.PollOnce()
+				if err != nil || second.Receipt != (Receipt{}) || second.Outcomes.UnchangedSnapshot != 1 || second.Outcomes.DeferredIncompleteTail != 1 {
+					t.Fatalf("collector retry=%+v err=%v", second, err)
+				}
+			})
+		}
+	}
+}
+
+func TestCollectorIsolatesDiscoveryFailuresAndRecovers(t *testing.T) {
+	fixture := filepath.Join("testdata", "claude-code", "normal.jsonl")
+	badParent := filepath.Join(t.TempDir(), "ordinary-file")
+	if err := os.WriteFile(badParent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badRoot := filepath.Join(badParent, "child")
+	for _, roots := range [][]string{{badRoot, fixture}, {fixture, badRoot}} {
+		store := openTestStore(t)
+		collector, err := NewCollector(store, roots, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, pollErr := collector.PollOnce()
+		if pollErr == nil || result.Receipt.Imported != 2 || result.Outcomes.FailedSource != 1 {
+			t.Fatalf("isolated discovery result=%+v err=%v roots=%v", result, pollErr, roots)
+		}
+		if health := collector.Health(); health.Status != "degraded" || health.Sources != 1 || health.DiscoveryFailures != 1 || health.Outcomes.FailedSource != 1 {
+			t.Fatalf("degraded health=%+v", health)
+		}
+	}
+
+	store := openTestStore(t)
+	recoveryRoot := filepath.Join(t.TempDir(), "later.jsonl")
+	collector, err := NewCollector(store, []string{fixture, recoveryRoot}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, firstErr := collector.PollOnce()
+	if firstErr == nil || first.Receipt.Imported != 2 || first.Outcomes.FailedSource != 1 {
+		t.Fatalf("pre-recovery result=%+v err=%v", first, firstErr)
+	}
+	contents, err := os.ReadFile(filepath.Join("testdata", "codex", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recoveryRoot, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, secondErr := collector.PollOnce()
+	if secondErr != nil || second.Receipt.Imported != 2 || second.Outcomes.FailedSource != 0 {
+		t.Fatalf("recovered result=%+v err=%v", second, secondErr)
+	}
+	if health := collector.Health(); health.Status != "healthy" || health.DiscoveryFailures != 0 || health.LastSuccessAt.IsZero() || health.Outcomes.FailedSource != 1 {
+		t.Fatalf("recovered health=%+v", health)
+	}
+	if err := os.Remove(recoveryRoot); err != nil {
+		t.Fatal(err)
+	}
+	third, thirdErr := collector.PollOnce()
+	if thirdErr == nil || third.Outcomes.FailedSource != 1 || collector.Health().Status != "degraded" || collector.Health().Outcomes.FailedSource != 2 {
+		t.Fatalf("post-recovery removal result=%+v err=%v health=%+v", third, thirdErr, collector.Health())
+	}
+}
+
+func TestCollectorIsolatesUnreadableSubtree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not define Windows directory readability")
+	}
+	root := t.TempDir()
+	contents, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "healthy.jsonl"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "hidden.jsonl"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
+
+	store := openTestStore(t)
+	collector, err := NewCollector(store, []string{root}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, pollErr := collector.PollOnce()
+	if pollErr == nil {
+		t.Skip("host privileges bypass unreadable-directory permission bits")
+	}
+	if result.Receipt.Imported != 2 || result.Outcomes.FailedSource != 1 || collector.Health().Sources != 1 {
+		t.Fatalf("unreadable subtree blocked healthy source: result=%+v err=%v health=%+v", result, pollErr, collector.Health())
+	}
+}
+
+func TestCollectorRequiredOptionalAndDuplicateRoots(t *testing.T) {
+	store := openTestStore(t)
+	missing := filepath.Join(t.TempDir(), "missing")
+	collector, err := NewCollector(store, []string{missing}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, pollErr := collector.PollOnce()
+	if pollErr == nil || result.Outcomes.FailedSource != 1 || collector.Health().Status != "degraded" {
+		t.Fatalf("required missing root result=%+v err=%v health=%+v", result, pollErr, collector.Health())
+	}
+
+	optional, err := NewCollectorWithRoots(store, []CollectorRoot{{Path: missing}}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, pollErr = optional.PollOnce()
+	if pollErr != nil || result.Outcomes.FailedSource != 0 || optional.Health().Status != "healthy" || optional.Health().Sources != 0 {
+		t.Fatalf("optional missing root result=%+v err=%v health=%+v", result, pollErr, optional.Health())
+	}
+
+	empty, err := NewCollector(store, []string{t.TempDir()}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, pollErr = empty.PollOnce()
+	if pollErr != nil || result != (ImportResult{}) || empty.Health().Status != "healthy" || empty.Health().Sources != 0 {
+		t.Fatalf("empty required directory result=%+v err=%v health=%+v", result, pollErr, empty.Health())
+	}
+
+	root := t.TempDir()
+	path := filepath.Join(root, "normal.jsonl")
+	contents, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	roots := []string{root, path, filepath.Join(root, ".", "normal.jsonl")}
+	link := filepath.Join(t.TempDir(), "source-link.jsonl")
+	if err := os.Symlink(path, link); err == nil {
+		roots = append(roots, link)
+	} else if runtime.GOOS != "windows" {
+		t.Fatalf("create source symlink: %v", err)
+	}
+	deduplicated, err := NewCollector(store, roots, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, pollErr = deduplicated.PollOnce()
+	if pollErr != nil || result.Receipt.Imported != 2 || deduplicated.Health().Sources != 1 {
+		t.Fatalf("deduplicated roots result=%+v err=%v health=%+v", result, pollErr, deduplicated.Health())
+	}
+	if _, err := os.Lstat(link); err == nil {
+		identityStore := openTestStore(t)
+		identityCollector, err := NewCollector(identityStore, []string{link, path}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result, err := identityCollector.PollOnce(); err != nil || result.Receipt.Imported != 2 || identityCollector.Health().Sources != 1 {
+			t.Fatalf("symlink-first deduplication result=%+v err=%v health=%+v", result, err, identityCollector.Health())
+		}
+		absoluteLink, err := filepath.Abs(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := identityStore.Cursor("claude-file-" + digest([]byte(absoluteLink))); err != nil {
+			t.Fatalf("configured symlink source identity was not preserved: %v", err)
+		}
+	}
+}
+
+func TestCollectorCancellationJoinsWithoutPartialPersistence(t *testing.T) {
+	store := openTestStore(t)
+	collector, err := NewCollector(store, []string{filepath.Join("testdata", "claude-code", "normal.jsonl")}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	collector.beforeSource = func(string) {
+		close(started)
+		<-release
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- collector.RunImmediate(ctx, nil) }()
+	<-started
+	cancel()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if health := collector.Health(); health.Lifecycle != "stopped" || health.Status != "cancelled" || health.Outcomes.FailedSource != 0 {
+		t.Fatalf("cancelled collector health=%+v", health)
+	}
+	if count, err := store.EventCount(); err != nil || count != 0 {
+		t.Fatalf("cancelled collector persisted events=%d err=%v", count, err)
+	}
+
+	preCancelled, err := NewCollector(store, []string{filepath.Join("testdata", "codex", "normal.jsonl")}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCtx, preCancel := context.WithCancel(context.Background())
+	preCancel()
+	if err := preCancelled.RunImmediate(preCtx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if health := preCancelled.Health(); health.Lifecycle != "stopped" || health.Outcomes.FailedSource != 0 {
+		t.Fatalf("pre-cancelled collector health=%+v", health)
+	}
+}
+
+func TestCollectorJoinsAfterPersistenceFailure(t *testing.T) {
+	store := openTestStore(t)
+	collector, err := NewCollector(store, []string{filepath.Join("testdata", "claude-code", "normal.jsonl")}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	observed := make(chan error, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- collector.RunImmediate(ctx, func(_ ImportResult, pollErr error) {
+			observed <- pollErr
+			cancel()
+		})
+	}()
+	if pollErr := <-observed; pollErr == nil {
+		t.Fatal("closed Store persistence failure was not reported")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if health := collector.Health(); health.Lifecycle != "stopped" || health.Status != "degraded" || health.Outcomes.FailedSource != 1 {
+		t.Fatalf("persistence-failed collector health=%+v", health)
 	}
 }
 
