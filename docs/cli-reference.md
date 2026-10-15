@@ -125,6 +125,25 @@ width, so scripted or saved `table` output stays deterministic. Use `json`
 or `csv` when you need a stable, unabridged machine-readable shape instead
 of a layout that adapts to terminal width.
 
+### Project and session resources
+
+```text
+komposyn-lg projects list [--from <time>] [--to <time>] [--format table|json|csv]
+komposyn-lg projects show <project-id> [--from <time>] [--to <time>] [--format table|json]
+komposyn-lg sessions list --project <project-id> [--from <time>] [--to <time>] [--format table|json|csv]
+komposyn-lg sessions show <session-id> [--project <project-id>] [--group-by model] [--format table|json]
+```
+
+These commands browse stable local resources. List JSON has
+`format_version: 1`; selectors in non-interactive commands are full stable IDs,
+never row numbers. Project output includes the readable name, canonical local
+location when known, clients/models, activity bounds, and complete usage/cost
+summary. A missing path is displayed as `location unavailable`. Session
+selection with `--project` verifies ownership, and `sessions show` includes
+per-model usage. The original `komposyn-lg sessions [report options]` command
+is retained as a compatibility report alias and keeps its existing output
+shape.
+
 ### `watch`
 
 ```text

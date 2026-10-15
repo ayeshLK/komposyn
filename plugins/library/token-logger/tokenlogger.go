@@ -29,7 +29,7 @@ import (
 // at link time.
 var Version = "0.0.0-dev"
 
-const currentSchemaVersion = 5
+const currentSchemaVersion = 6
 
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.
@@ -188,9 +188,12 @@ func (e UsageEvent) Validate() error {
 
 // Project is a stable local project identity.
 type Project struct {
-	ID          string `json:"id"`
-	Root        string `json:"root,omitempty"`
-	DisplayName string `json:"display_name"`
+	ID              string `json:"id"`
+	Root            string `json:"root,omitempty"`
+	DisplayName     string `json:"display_name"`
+	SourceAdapter   string `json:"source_adapter,omitempty"`
+	ProviderAlias   string `json:"provider_alias,omitempty"`
+	AliasProvenance string `json:"alias_provenance,omitempty"`
 }
 
 // Session associates a sequence of events with a project and client.
@@ -201,6 +204,8 @@ type Session struct {
 	StartedAt      *time.Time      `json:"started_at,omitempty"`
 	EndedAt        *time.Time      `json:"ended_at,omitempty"`
 	SourceMetadata json.RawMessage `json:"source_metadata,omitempty"`
+	SourceAdapter  string          `json:"source_adapter,omitempty"`
+	ProviderAlias  string          `json:"provider_alias,omitempty"`
 }
 
 // Cursor records the committed read position of a provider source.

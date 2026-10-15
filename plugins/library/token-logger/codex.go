@@ -401,8 +401,8 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 		if session.ID == "" || session.ProjectID == "" {
 			continue
 		}
-		projectsByID[session.ProjectID] = Project{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName}
-		sessionsByID[session.ID] = Session{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "codex-cli"}, SourceMetadata: json.RawMessage(`{"adapter":"codex"}`)}
+		projectsByID[session.ProjectID] = Project{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "codex", ProviderAlias: session.ProjectID, AliasProvenance: "codex metadata"}
+		sessionsByID[session.ID] = Session{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "codex-cli"}, SourceMetadata: json.RawMessage(`{"adapter":"codex"}`), SourceAdapter: "codex", ProviderAlias: session.ID}
 	}
 	projects := make([]Project, 0, len(projectsByID))
 	for _, project := range projectsByID {
@@ -758,7 +758,11 @@ func updateCodexSession(session codexSession, payload codexPayload, sourceID str
 		session.ProjectName = payload.ProjectName
 	}
 	if session.ProjectName == "" {
-		session.ProjectName = "Imported Codex project"
+		if session.Root == "" && payload.ProjectID == "" {
+			session.ProjectName = "Unattributed"
+		} else {
+			session.ProjectName = "Imported Codex project"
+		}
 	}
 	if payload.CWD != "" {
 		session.Root = payload.CWD

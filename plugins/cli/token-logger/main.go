@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -115,7 +116,14 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 		return runProtocol(input, stdout, stderr)
 	case "import":
 		return runImport(args[1:], stdout, stderr)
-	case "usage", "cost", "sessions":
+	case "projects":
+		return runProjectResources(args[1:], stdout, stderr)
+	case "sessions":
+		if len(args) > 1 && (args[1] == "list" || args[1] == "show") {
+			return runSessionResources(args[1:], stdout, stderr)
+		}
+		return runReport(args[0], args[1:], stdout, stderr)
+	case "usage", "cost":
 		return runReport(args[0], args[1:], stdout, stderr)
 	case "watch":
 		return runWatch(args[1:], stdout, stderr)
@@ -124,16 +132,21 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 	case "report-issue":
 		return runReportIssue(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "usage: komposyn-lg {version|harness|import|usage|cost|sessions|watch|settings|report-issue} ...")
+		fmt.Fprintln(stderr, "usage: komposyn-lg {version|harness|import|usage|cost|projects|sessions|watch|settings|report-issue} ...")
 		return 1
 	}
 }
 
 type interactiveState struct {
-	from    time.Time
-	to      time.Time
-	pinned  bool
-	groupBy []string
+	from        time.Time
+	to          time.Time
+	pinned      bool
+	groupBy     []string
+	view        string
+	projectID   string
+	projectName string
+	sessionID   string
+	model       string
 }
 
 func runInteractive(input io.Reader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string) int {
@@ -430,7 +443,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 		return 0
 	}
 	for {
-		line, err := reader.ReadLine("> ")
+		line, err := reader.ReadLine(interactivePrompt(&state))
 		if errors.Is(err, readline.ErrInterrupt) || errors.Is(err, io.EOF) {
 			return 0
 		}
@@ -458,31 +471,112 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				fmt.Fprintln(stdout, "clear is available only in an interactive terminal")
 			}
 		case "/projects":
-			state.groupBy = []string{tokenlogger.GroupProject}
+			state.view = "projects"
+			state.projectID, state.projectName, state.sessionID, state.model = "", "", "", ""
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
+				return 0
+			}
+		case "/project":
+			if len(fields) != 2 {
+				fmt.Fprintln(stdout, "usage: /project <row-number|unambiguous-name|stable-id>")
+				continue
+			}
+			state.resolveRange(now)
+			project, err := selectInteractiveProject(store, tokenlogger.ResourceFilter{From: state.from, To: state.to}, fields[1])
+			if err != nil {
+				fmt.Fprintf(stdout, "project selection failed: %v\n", err)
+				continue
+			}
+			state.projectID, state.projectName, state.sessionID, state.model, state.view = project.ID, project.DisplayName, "", "", "project"
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/sessions":
-			state.groupBy = []string{tokenlogger.GroupSession}
+			if state.projectID == "" {
+				fmt.Fprintln(stdout, "select a project first with /project")
+				continue
+			}
+			state.view = "sessions"
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
+				return 0
+			}
+		case "/session":
+			if state.projectID == "" || len(fields) != 2 {
+				fmt.Fprintln(stdout, "usage: /session <row-number|unambiguous-id-prefix> (after selecting a project)")
+				continue
+			}
+			state.resolveRange(now)
+			session, err := selectInteractiveSession(store, state.projectID, tokenlogger.ResourceFilter{From: state.from, To: state.to}, fields[1])
+			if err != nil {
+				fmt.Fprintf(stdout, "session selection failed: %v\n", err)
+				continue
+			}
+			state.sessionID, state.model, state.view = session.ID, "", "session"
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
+				return 0
+			}
+		case "/models":
+			if state.sessionID == "" {
+				fmt.Fprintln(stdout, "select a session first with /session")
+				continue
+			}
+			state.view = "models"
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
+				return 0
+			}
+		case "/model":
+			if state.sessionID == "" || len(fields) != 2 {
+				fmt.Fprintln(stdout, "usage: /model <row-number|unambiguous-name> (after selecting a session)")
+				continue
+			}
+			state.resolveRange(now)
+			model, err := selectInteractiveModel(store, &state, fields[1])
+			if err != nil {
+				fmt.Fprintf(stdout, "model selection failed: %v\n", err)
+				continue
+			}
+			state.model, state.view = model, "model"
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
+				return 0
+			}
+		case "/back":
+			if state.model != "" {
+				state.model, state.view = "", "models"
+			} else if state.sessionID != "" {
+				state.sessionID, state.view = "", "sessions"
+			} else if state.projectID != "" {
+				state.projectID, state.projectName, state.view = "", "", "projects"
+			} else {
+				state.view = ""
+			}
+			if interactiveRender(stdout, stderr, store, &state, reader, now) {
+				return 0
+			}
+		case "/home":
+			state.projectID, state.projectName, state.sessionID, state.model, state.view = "", "", "", "", ""
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/total-usage":
+			state.view = ""
 			state.groupBy = []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/by-client":
+			state.view = ""
 			state.groupBy = []string{tokenlogger.GroupClient}
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/by-model":
+			state.view = ""
 			state.groupBy = []string{tokenlogger.GroupModel}
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/cost":
+			state.view = ""
 			state.groupBy = []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
@@ -556,16 +650,42 @@ func (state *interactiveState) resolveRange(now func() time.Time) {
 
 func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state *interactiveState, reader interactiveLineReader, now func() time.Time) error {
 	state.resolveRange(now)
-	report, err := store.Query(tokenlogger.UsageFilter{From: state.from, To: state.to, GroupBy: state.groupBy})
-	if err != nil {
-		fmt.Fprintf(stderr, "usage query failed: %v\n", err)
-		if diagnostic, diagnosticErr := store.RecordDiagnostic(err.Error()); diagnosticErr == nil {
-			fmt.Fprintf(stdout, "Sanitized diagnostic saved locally: %s\n", diagnostic.Fingerprint)
-			return offerDiagnostic(reader, store, diagnostic)
+	fmt.Fprintf(stdout, "%s\n", interactiveBreadcrumb(state))
+	resourceFilter := tokenlogger.ResourceFilter{From: state.from, To: state.to}
+	if state.view == "projects" {
+		list, err := store.ListProjects(resourceFilter)
+		if err != nil {
+			return renderInteractiveError(stdout, stderr, store, reader, err)
 		}
-		return nil
+		fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
+		return writeProjectTable(stdout, list.Projects)
+	}
+	if state.view == "sessions" {
+		list, err := store.ListSessions(state.projectID, resourceFilter)
+		if err != nil {
+			return renderInteractiveError(stdout, stderr, store, reader, err)
+		}
+		fmt.Fprintf(stdout, "PROJECT: %s\nrange: %s to %s (UTC)\n", state.projectName, state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
+		return writeSessionTable(stdout, list.Sessions)
+	}
+	filter := tokenlogger.UsageFilter{From: state.from, To: state.to, GroupBy: state.groupBy, ProjectID: state.projectID, SessionID: state.sessionID, Model: state.model}
+	if state.view == "project" {
+		filter.GroupBy = []string{tokenlogger.GroupModel}
+	}
+	if state.view == "session" || state.view == "models" {
+		filter.GroupBy = []string{tokenlogger.GroupModel, tokenlogger.GroupProvider}
+	}
+	if state.view == "model" {
+		filter.GroupBy = []string{tokenlogger.GroupDay}
+	}
+	report, err := store.Query(filter)
+	if err != nil {
+		return renderInteractiveError(stdout, stderr, store, reader, err)
 	}
 	fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
+	if state.view == "session" || state.view == "models" {
+		return writeInteractiveModelTable(stdout, report)
+	}
 	width := 0
 	if sized, ok := stdout.(interface{ TerminalWidth() int }); ok {
 		width = sized.TerminalWidth()
@@ -574,6 +694,105 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		fmt.Fprintf(stderr, "render report failed: %v\n", err)
 	}
 	return nil
+}
+
+func renderInteractiveError(stdout, stderr io.Writer, store *tokenlogger.Store, reader interactiveLineReader, err error) error {
+	fmt.Fprintf(stderr, "usage query failed: %v\n", err)
+	if diagnostic, diagnosticErr := store.RecordDiagnostic(err.Error()); diagnosticErr == nil {
+		fmt.Fprintf(stdout, "Sanitized diagnostic saved locally: %s\n", diagnostic.Fingerprint)
+		return offerDiagnostic(reader, store, diagnostic)
+	}
+	return nil
+}
+
+func interactiveBreadcrumb(state *interactiveState) string {
+	parts := []string{"komposyn"}
+	if state.projectID != "" {
+		name := state.projectName
+		if name == "" {
+			name = shortResourceID(state.projectID)
+		}
+		parts = append(parts, "project:"+name)
+	}
+	if state.sessionID != "" {
+		parts = append(parts, "session:"+shortResourceID(state.sessionID))
+	}
+	if state.model != "" {
+		parts = append(parts, "model:"+state.model)
+	}
+	return strings.Join(parts, " / ")
+}
+
+func interactivePrompt(state *interactiveState) string { return interactiveBreadcrumb(state) + " > " }
+
+func selectInteractiveProject(store *tokenlogger.Store, filter tokenlogger.ResourceFilter, selector string) (tokenlogger.ProjectResource, error) {
+	list, err := store.ListProjects(filter)
+	if err != nil {
+		return tokenlogger.ProjectResource{}, err
+	}
+	if row, err := strconv.Atoi(selector); err == nil {
+		if row < 1 || row > len(list.Projects) {
+			return tokenlogger.ProjectResource{}, errors.New("project row is outside the current result")
+		}
+		return list.Projects[row-1], nil
+	}
+	var matches []tokenlogger.ProjectResource
+	for _, project := range list.Projects {
+		if project.ID == selector || strings.EqualFold(project.DisplayName, selector) {
+			matches = append(matches, project)
+		}
+	}
+	if len(matches) != 1 {
+		return tokenlogger.ProjectResource{}, fmt.Errorf("selector matched %d projects; use a row or stable ID", len(matches))
+	}
+	return matches[0], nil
+}
+
+func selectInteractiveSession(store *tokenlogger.Store, projectID string, filter tokenlogger.ResourceFilter, selector string) (tokenlogger.SessionResource, error) {
+	list, err := store.ListSessions(projectID, filter)
+	if err != nil {
+		return tokenlogger.SessionResource{}, err
+	}
+	if row, err := strconv.Atoi(selector); err == nil {
+		if row < 1 || row > len(list.Sessions) {
+			return tokenlogger.SessionResource{}, errors.New("session row is outside the current result")
+		}
+		return list.Sessions[row-1], nil
+	}
+	var matches []tokenlogger.SessionResource
+	for _, session := range list.Sessions {
+		if session.ID == selector || strings.HasPrefix(session.ID, selector) {
+			matches = append(matches, session)
+		}
+	}
+	if len(matches) != 1 {
+		return tokenlogger.SessionResource{}, fmt.Errorf("selector matched %d sessions; use a row or longer stable ID", len(matches))
+	}
+	return matches[0], nil
+}
+
+func selectInteractiveModel(store *tokenlogger.Store, state *interactiveState, selector string) (string, error) {
+	report, err := store.Query(tokenlogger.UsageFilter{From: state.from, To: state.to, ProjectID: state.projectID, SessionID: state.sessionID, GroupBy: []string{tokenlogger.GroupModel, tokenlogger.GroupProvider}})
+	if err != nil {
+		return "", err
+	}
+	if row, err := strconv.Atoi(selector); err == nil {
+		if row < 1 || row > len(report.Rows) {
+			return "", errors.New("model row is outside the current result")
+		}
+		return report.Rows[row-1].Dimensions[tokenlogger.GroupModel], nil
+	}
+	var matches []string
+	for _, row := range report.Rows {
+		model := row.Dimensions[tokenlogger.GroupModel]
+		if model == selector || strings.HasPrefix(model, selector) {
+			matches = append(matches, model)
+		}
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("selector matched %d models; use a row or unambiguous name", len(matches))
+	}
+	return matches[0], nil
 }
 
 func interactiveRender(stdout, stderr io.Writer, store *tokenlogger.Store, state *interactiveState, reader interactiveLineReader, now func() time.Time) bool {
@@ -632,7 +851,8 @@ func readerOutput(reader interactiveLineReader) io.Writer {
 }
 
 func printInteractiveHelp(stdout io.Writer) {
-	fmt.Fprintln(stdout, "/projects /sessions /total-usage /by-client /by-model /cost")
+	fmt.Fprintln(stdout, "/projects /project <selector> /sessions /session <selector> /models /model <selector>")
+	fmt.Fprintln(stdout, "/back /home /total-usage /by-client /by-model /cost")
 	fmt.Fprintln(stdout, "/range [<from> <to> | reset] /refresh /clear /settings /report-issue /help /quit")
 }
 

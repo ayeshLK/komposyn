@@ -126,8 +126,8 @@ func TestAppendWithReferencesAndCursorRollsBackAllPersistenceOnEventFailure(t *t
 	event.ProjectID = "project-1"
 	event.EventID = conflict.EventID
 	event.SessionID = "session-1"
-	project := Project{ID: "project-1", Root: "/redacted/project", DisplayName: "Example"}
-	session := Session{ID: event.SessionID, ProjectID: project.ID, Client: Client{Name: "codex-cli"}}
+	project := Project{ID: "project-1", Root: "/redacted/project", DisplayName: "Example", SourceAdapter: "codex", ProviderAlias: "project-1"}
+	session := Session{ID: event.SessionID, ProjectID: project.ID, Client: Client{Name: "codex-cli"}, SourceAdapter: "codex", ProviderAlias: event.SessionID}
 	cursor := Cursor{SourceID: "source", FileFingerprint: "fingerprint", ByteOffset: 42}
 
 	if _, err := store.AppendWithReferencesAndCursor([]UsageEvent{event}, []Project{project}, []Session{session}, cursor); err == nil {
@@ -142,6 +142,9 @@ func TestAppendWithReferencesAndCursorRollsBackAllPersistenceOnEventFailure(t *t
 		{name: "session", query: "SELECT COUNT(*) FROM sessions WHERE id = ?", args: []any{session.ID}},
 		{name: "event", query: "SELECT COUNT(*) FROM usage_events WHERE ingestion_key = ?", args: []any{event.IngestionKey}},
 		{name: "cursor", query: "SELECT COUNT(*) FROM source_cursors WHERE source_id = ?", args: []any{cursor.SourceID}},
+		{name: "project alias", query: "SELECT COUNT(*) FROM project_aliases WHERE scope = 'codex' AND alias = ?", args: []any{project.ProviderAlias}},
+		{name: "project location", query: "SELECT COUNT(*) FROM project_locations WHERE project_id LIKE 'project-%'", args: nil},
+		{name: "session alias", query: "SELECT COUNT(*) FROM session_aliases WHERE scope = 'codex:codex-cli' AND alias = ?", args: []any{session.ProviderAlias}},
 	} {
 		var count int
 		if err := store.db.QueryRow(check.query, check.args...).Scan(&count); err != nil {

@@ -184,6 +184,149 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("commit migration 5: %w", err)
 		}
 	}
+	if applied < 6 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 6: %w", err)
+		}
+		if err := applyProjectIdentityMigration(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("apply migration 6: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 6, formatStoredTime(time.Now())); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration 6: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 6: %w", err)
+		}
+	}
+	return nil
+}
+
+func applyProjectIdentityMigration(tx *sql.Tx) error {
+	if _, err := tx.Exec(schemaMigrationSix); err != nil {
+		return err
+	}
+	now := formatStoredTime(time.Now())
+	rows, err := tx.Query("SELECT id, root FROM projects WHERE root <> ''")
+	if err != nil {
+		return err
+	}
+	type legacyLocation struct{ id, root string }
+	var locations []legacyLocation
+	for rows.Next() {
+		var item legacyLocation
+		if err := rows.Scan(&item.id, &item.root); err != nil {
+			rows.Close()
+			return err
+		}
+		locations = append(locations, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range locations {
+		canonical, err := canonicalProjectLocation(item.root)
+		if err != nil || canonical == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO project_locations
+			(project_id, canonical_path, display_path, is_preferred, first_seen_at, last_seen_at, provenance)
+			VALUES (?, ?, ?, 1, ?, ?, 'legacy-project-root')`, item.id, canonical, item.root, now, now); err != nil {
+			return err
+		}
+	}
+	type legacySessionIdentity struct {
+		id, projectID, client, adapter string
+	}
+	sessionRows, err := tx.Query("SELECT id, COALESCE(project_id, ''), client_name, COALESCE(source_metadata, '') FROM sessions")
+	if err != nil {
+		return err
+	}
+	var legacySessions []legacySessionIdentity
+	for sessionRows.Next() {
+		var item legacySessionIdentity
+		var metadata string
+		if err := sessionRows.Scan(&item.id, &item.projectID, &item.client, &metadata); err != nil {
+			sessionRows.Close()
+			return err
+		}
+		if metadata != "" {
+			var source struct {
+				Adapter string `json:"adapter"`
+			}
+			if json.Unmarshal([]byte(metadata), &source) == nil {
+				item.adapter = strings.TrimSpace(source.Adapter)
+			}
+		}
+		legacySessions = append(legacySessions, item)
+	}
+	if err := sessionRows.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO project_aliases(scope, alias, project_id, provenance, first_seen_at, last_seen_at)
+		SELECT 'legacy', id, id, 'migration-6', ?, ? FROM projects`, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO session_aliases(scope, alias, session_id, project_id, provenance, first_seen_at, last_seen_at)
+		SELECT 'legacy:' || client_name, id, id, project_id, 'migration-6', ?, ? FROM sessions`, now, now); err != nil {
+		return err
+	}
+	for _, item := range legacySessions {
+		if item.adapter == "" {
+			continue
+		}
+		if item.projectID != "" {
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO project_aliases(scope, alias, project_id, provenance, first_seen_at, last_seen_at)
+				VALUES (?, ?, ?, 'migration-6 source metadata', ?, ?)`, item.adapter, item.projectID, item.projectID, now, now); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO session_aliases(scope, alias, session_id, project_id, provenance, first_seen_at, last_seen_at)
+			VALUES (?, ?, ?, NULLIF(?, ''), 'migration-6 source metadata', ?, ?)`, identityScope(item.adapter, item.client), item.id, item.id, item.projectID, now, now); err != nil {
+			return err
+		}
+	}
+	duplicateRows, err := tx.Query(`SELECT canonical_path FROM project_locations GROUP BY canonical_path HAVING COUNT(DISTINCT project_id) > 1`)
+	if err != nil {
+		return err
+	}
+	var duplicates []string
+	for duplicateRows.Next() {
+		var canonical string
+		if err := duplicateRows.Scan(&canonical); err != nil {
+			duplicateRows.Close()
+			return err
+		}
+		duplicates = append(duplicates, canonical)
+	}
+	if err := duplicateRows.Close(); err != nil {
+		return err
+	}
+	for _, canonical := range duplicates {
+		projectRows, err := tx.Query("SELECT project_id FROM project_locations WHERE canonical_path = ? ORDER BY project_id", canonical)
+		if err != nil {
+			return err
+		}
+		var projectIDs []string
+		for projectRows.Next() {
+			var projectID string
+			if err := projectRows.Scan(&projectID); err != nil {
+				projectRows.Close()
+				return err
+			}
+			projectIDs = append(projectIDs, projectID)
+		}
+		if err := projectRows.Close(); err != nil {
+			return err
+		}
+		for _, projectID := range projectIDs {
+			if err := recordReconciliationWarning(tx, "legacy-location-conflict", "migration-6", canonical, projectID, "", "multiple legacy projects share one canonical location; identities were retained for review", now); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -300,11 +443,22 @@ func (s *Store) UpsertProject(project Project) error {
 	if strings.TrimSpace(project.ID) == "" || strings.TrimSpace(project.DisplayName) == "" {
 		return errors.New("project ID and display name are required")
 	}
-	_, err := s.db.Exec(`INSERT INTO projects(id, root, display_name, created_at)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`INSERT INTO projects(id, root, display_name, created_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET root = excluded.root, display_name = excluded.display_name`,
-		project.ID, project.Root, project.DisplayName, formatStoredTime(time.Now()))
-	return err
+		project.ID, project.Root, project.DisplayName, formatStoredTime(time.Now())); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := persistExplicitProjectLocation(tx, project, formatStoredTime(time.Now())); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpsertSession creates or updates a session identity.
@@ -358,6 +512,9 @@ func (s *Store) AppendWithCursor(events []UsageEvent, cursor Cursor) (Receipt, e
 }
 
 func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session) (Receipt, error) {
+	events = append([]UsageEvent(nil), events...)
+	projects = append([]Project(nil), projects...)
+	sessions = append([]Session(nil), sessions...)
 	for _, event := range events {
 		if err := event.Validate(); err != nil {
 			return Receipt{}, fmt.Errorf("validate event %q: %w", event.EventID, err)
@@ -380,14 +537,27 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 	if err != nil {
 		return Receipt{}, fmt.Errorf("begin append: %w", err)
 	}
+	events, projects, sessions, err = reconcileImportedReferences(tx, events, projects, sessions)
+	if err != nil {
+		tx.Rollback()
+		return Receipt{}, fmt.Errorf("reconcile imported references: %w", err)
+	}
 	receipt := Receipt{}
 	for _, project := range projects {
 		if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at)
 			VALUES (?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET root = excluded.root, display_name = excluded.display_name`,
+			ON CONFLICT(id) DO UPDATE SET
+			root = CASE WHEN excluded.root = '' THEN projects.root ELSE excluded.root END,
+			display_name = CASE WHEN excluded.display_name = '' THEN projects.display_name ELSE excluded.display_name END`,
 			project.ID, project.Root, project.DisplayName, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			tx.Rollback()
 			return Receipt{}, fmt.Errorf("persist project %q: %w", project.ID, err)
+		}
+		if project.SourceAdapter == "" {
+			if err := persistExplicitProjectLocation(tx, project, formatStoredTime(time.Now())); err != nil {
+				tx.Rollback()
+				return Receipt{}, fmt.Errorf("persist project location %q: %w", project.ID, err)
+			}
 		}
 	}
 	for _, session := range sessions {

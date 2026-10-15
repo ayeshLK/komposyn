@@ -8,7 +8,11 @@ that do not fit the common model may be retained in `usage_events.attributes_jso
 | Table | Purpose |
 | --- | --- |
 | `projects` | A logical project root and display name. |
+| `project_locations` | Canonical local paths associated with a project, including preferred and first/last-seen state. |
+| `project_aliases` | Adapter-scoped provider project identifiers mapped to local project IDs. |
 | `sessions` | A provider session, optionally associated with a project. |
+| `session_aliases` | Adapter/client-scoped provider session identifiers mapped to local session IDs. |
+| `reconciliation_warnings` | Path-free local records of ambiguous or conflicting identity evidence. |
 | `usage_events` | One normalized usage record, including token counts, models, costs, and source provenance. |
 | `source_cursors` | The committed position, fingerprint, and generation for an imported source. |
 | `pricing_rules` | Time-bounded provider/model/token-category rates used for cost calculation. |
@@ -20,6 +24,21 @@ that do not fit the common model may be retained in `usage_events.attributes_jso
 reference is available. When references are known, the CLI and adapters pass
 them to `AppendWithReferences`, which creates or updates the references and
 inserts events in one transaction.
+
+`projects.id` and `sessions.id` are KompoSyn-owned identities. Provider IDs are
+aliases rather than primary keys for new adapter imports. Reconciliation first
+uses an existing scoped alias, then an absolute cleaned path (with symlinks
+resolved when the target exists). A unique location match attaches a new alias
+to the existing project. Display names never merge projects. An established
+alias may add a new unclaimed location, but conflicting or ambiguous evidence
+is retained as a local warning and never silently reassigns a session.
+Project resource output includes the local warning count so conflicts remain
+visible without exposing full paths in diagnostics or external issue drafts.
+
+Migration 6 seeds every legacy project and session as a valid local identity,
+adds compatibility aliases, and records each non-empty legacy root as a
+location. It does not rewrite historical event references or merge legacy
+projects by name.
 
 ## Event identity and provenance
 
@@ -57,8 +76,9 @@ retains the event's numeric offset.
 
 ## Transaction guarantees
 
-An append transaction may include project rows, session rows, usage events, and
-the source cursor. If any part fails, none of those changes are committed. This
+An append transaction may include project aliases and locations, session
+aliases, project/session rows, usage events, warnings, and the source cursor.
+If any part fails, none of those changes are committed. This
 prevents metadata from referring to an event that was not stored and prevents a
 cursor from advancing past an unsuccessful import.
 

@@ -255,10 +255,9 @@ func assertImportMatchesHarness(t *testing.T, fixture string, events []tokenlogg
 	}
 
 	filter := tokenlogger.UsageFilter{
-		From: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC),
-		To:   time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
-		GroupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel,
-			tokenlogger.GroupProject, tokenlogger.GroupSession},
+		From:    time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC),
+		To:      time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
+		GroupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel},
 	}
 	imported := queryReport(t, importDataDir, filter)
 	harnessed := queryReport(t, harnessDataDir, filter)
@@ -405,6 +404,11 @@ func canonicalProjection(event testEventProjection) testEventProjection {
 	event.EventID = ""
 	event.IngestionKey = ""
 	event.SourceID = ""
+	// Provider imports reconcile aliases to KompoSyn-owned IDs, while harness
+	// callers supply local IDs explicitly. Identity is tested separately from
+	// normalized usage equivalence.
+	event.ProjectID = ""
+	event.SessionID = ""
 	return event
 }
 
@@ -426,6 +430,67 @@ func TestCLIUsage(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "usage:") {
 		t.Fatalf("missing usage output: %q", stderr.String())
+	}
+}
+
+func TestProjectAndSessionResourceCommands(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := cliReportEvent("resource-command", time.Now().UTC().Add(-time.Hour))
+	event.ProjectID, event.SessionID = "local-project", "local-session"
+	project := tokenlogger.Project{ID: event.ProjectID, Root: filepath.Join(t.TempDir(), "workspace"), DisplayName: "Readable Project"}
+	session := tokenlogger.Session{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}
+	if _, err := store.AppendWithReferences([]tokenlogger.UsageEvent{event}, []tokenlogger.Project{project}, []tokenlogger.Session{session}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	var projectsOut, projectsErr bytes.Buffer
+	if code := run([]string{"projects", "list", "--data-dir", dataDir, "--format", "json"}, &projectsOut, &projectsErr); code != 0 {
+		t.Fatalf("projects list exit=%d stderr=%q", code, projectsErr.String())
+	}
+	if !strings.Contains(projectsOut.String(), `"format_version": 1`) || !strings.Contains(projectsOut.String(), `"display_name": "Readable Project"`) || !strings.Contains(projectsOut.String(), `"request_count": 1`) {
+		t.Fatalf("unexpected projects JSON: %s", projectsOut.String())
+	}
+
+	var sessionsOut, sessionsErr bytes.Buffer
+	if code := run([]string{"sessions", "list", "--project", "local-project", "--data-dir", dataDir, "--format", "json"}, &sessionsOut, &sessionsErr); code != 0 {
+		t.Fatalf("sessions list exit=%d stderr=%q", code, sessionsErr.String())
+	}
+	if !strings.Contains(sessionsOut.String(), `"format_version": 1`) || !strings.Contains(sessionsOut.String(), `"id": "local-session"`) || !strings.Contains(sessionsOut.String(), event.ResolvedModel) {
+		t.Fatalf("unexpected sessions JSON: %s", sessionsOut.String())
+	}
+}
+
+func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	event := cliReportEvent("navigation", now.Add(-time.Hour))
+	event.ProjectID, event.SessionID, event.ResolvedModel = "nav-project", "nav-session", "nav-model"
+	if _, err := store.AppendWithReferences([]tokenlogger.UsageEvent{event},
+		[]tokenlogger.Project{{ID: event.ProjectID, Root: "/workspace/navigation", DisplayName: "Navigation Project"}},
+		[]tokenlogger.Session{{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}}); err != nil {
+		t.Fatal(err)
+	}
+	commands := "/range 2026-10-14 2026-10-16\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/back\n/home\n/range\n/quit\n"
+	var stdout, stderr bytes.Buffer
+	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return now }); code != 0 {
+		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{"Navigation Project", "nav-session", "nav-model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav-model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("interactive navigation missing %q: %s", expected, output)
+		}
 	}
 }
 
@@ -1013,12 +1078,20 @@ func TestInteractiveReportCommandsResolveFreshRollingRanges(t *testing.T) {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	for minute := 0; minute <= len(commands)-1; minute++ {
+		// /sessions is now scoped to an explicitly selected project and does not
+		// render a report when invoked at home.
+		if minute == 2 {
+			continue
+		}
 		to := base.Add(time.Duration(minute) * time.Minute)
 		from := to.AddDate(0, 0, -7)
 		want := fmt.Sprintf("range: %s to %s (UTC)", from.Format(time.RFC3339), to.Format(time.RFC3339))
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("rolling report range %q missing from output: %s", want, stdout.String())
 		}
+	}
+	if !strings.Contains(stdout.String(), "select a project first with /project") {
+		t.Fatalf("project-scoped /sessions did not explain the missing selection: %q", stdout.String())
 	}
 }
 

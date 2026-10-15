@@ -225,8 +225,8 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 		events[index].SessionID = session.ID
 	}
 	receipt, err := store.AppendWithReferencesAndCursor(events,
-		[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName}},
-		[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`)}},
+		[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "claude-code", ProviderAlias: session.ProjectID, AliasProvenance: "claude-code metadata"}},
+		[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`), SourceAdapter: "claude-code", ProviderAlias: session.ID}},
 		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
 	if err != nil {
 		return result, fmt.Errorf("persist Claude project, session, events, and cursor: %w", err)
@@ -303,7 +303,11 @@ func updateClaudeSession(session claudeSession, envelope claudeEnvelope, message
 		}
 	}
 	if session.ProjectName == "" {
-		session.ProjectName = "Imported Claude Code project"
+		if session.Root == "" && envelope.ProjectID == "" {
+			session.ProjectName = "Unattributed"
+		} else {
+			session.ProjectName = "Imported Claude Code project"
+		}
 	}
 	if message.Model != "" {
 		session.Model = message.Model
