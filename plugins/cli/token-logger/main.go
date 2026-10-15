@@ -161,6 +161,52 @@ type interactiveModelSelection struct {
 	Provider string
 }
 
+type interactiveCollectorRuntime struct {
+	collector *tokenlogger.Collector
+	cancel    context.CancelFunc
+	done      chan struct{}
+}
+
+func startInteractiveCollector(store *tokenlogger.Store, roots []tokenlogger.CollectorRoot, interval time.Duration) (*interactiveCollectorRuntime, error) {
+	collector, err := tokenlogger.NewCollectorWithRoots(store, roots, interval)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runtime := &interactiveCollectorRuntime{collector: collector, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(runtime.done)
+		_ = collector.RunImmediate(ctx, nil)
+	}()
+	return runtime, nil
+}
+
+func (runtime *interactiveCollectorRuntime) stop() {
+	if runtime == nil {
+		return
+	}
+	runtime.cancel()
+	<-runtime.done
+}
+
+func collectorStatusLine(collector *tokenlogger.Collector) string {
+	if collector == nil {
+		return "collector runtime: state=off"
+	}
+	health := collector.Health()
+	return fmt.Sprintf("collector runtime: state=%s health=%s sources=%d discovery_failures=%d last_completed=%s last_success=%s pending=%t interrupted=%t failed_source=%d unsupported_usage=%d malformed_record=%d",
+		health.Lifecycle, health.Status, health.Sources, health.DiscoveryFailures,
+		collectorTime(health.LastCompletedAt), collectorTime(health.LastSuccessAt), health.Pending, health.Interrupted,
+		health.Outcomes.FailedSource, health.Outcomes.UnsupportedUsage, health.Outcomes.MalformedRecord)
+}
+
+func collectorTime(value time.Time) string {
+	if value.IsZero() {
+		return "unavailable"
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
 func runInteractive(input io.Reader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string) int {
 	settings := tokenlogger.DefaultSettings(dataDir)
 	settings.OnboardingComplete = true
@@ -426,18 +472,23 @@ func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, 
 
 func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool, now func() time.Time) int {
 	state := interactiveState{groupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}}
-	collectorContext, stopCollector := context.WithCancel(context.Background())
-	defer stopCollector()
+	var collectorRuntime *interactiveCollectorRuntime
 	if startNow || (settings.CollectorEnabled && settings.AutoStart) {
-		collector, err := tokenlogger.NewCollector(store, defaultCollectorRoots(), time.Duration(settings.PollIntervalSeconds)*time.Second)
+		var err error
+		collectorRuntime, err = startInteractiveCollector(store, defaultCollectorRoots(), time.Duration(settings.PollIntervalSeconds)*time.Second)
 		if err != nil {
 			fmt.Fprintf(stderr, "collector setup failed: %v\n", err)
 		} else {
-			go func() { _, _ = collector.PollOnce(); _ = collector.Run(collectorContext) }()
-			fmt.Fprintln(stdout, "local collector running for this session")
+			defer collectorRuntime.stop()
+			fmt.Fprintf(stdout, "local collector starting for this REPL session (%s)\n", map[bool]string{true: "requested during onboarding", false: "saved auto-start preference"}[startNow])
 		}
+	} else if settings.CollectorEnabled {
+		fmt.Fprintln(stdout, "local collector off for this session: enabled preference saved, auto-start on REPL launch is off")
+	} else {
+		fmt.Fprintln(stdout, "local collector off for this session: collection is disabled")
 	}
 	fmt.Fprintf(stdout, "komposyn-lg %s interactive\n", tokenlogger.Version)
+	fmt.Fprintf(stdout, "data directory: %s\n", dataDir)
 	fmt.Fprintln(stdout, "Type /help for commands; /quit to exit.")
 	if hint := interactiveInputHint(); hint != "" && reader.IsTerminal() {
 		fmt.Fprintln(stdout, hint)
@@ -454,7 +505,16 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 	if interactiveRender(stdout, stderr, store, &state, reader, now) {
 		return 0
 	}
+	lastCollectorStatus := ""
 	for {
+		currentCollectorStatus := collectorStatusLine(nil)
+		if collectorRuntime != nil {
+			currentCollectorStatus = collectorStatusLine(collectorRuntime.collector)
+		}
+		if currentCollectorStatus != lastCollectorStatus {
+			fmt.Fprintln(stdout, currentCollectorStatus)
+			lastCollectorStatus = currentCollectorStatus
+		}
 		line, err := reader.ReadLine(interactivePrompt(&state))
 		if errors.Is(err, readline.ErrInterrupt) || errors.Is(err, io.EOF) {
 			return 0
@@ -511,7 +571,8 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				fmt.Fprintln(stdout, "select a project first with /project")
 				continue
 			}
-			state.view = "sessions"
+			state.sessionID, state.view = "", "sessions"
+			state.clearModelSelection()
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
@@ -536,6 +597,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				fmt.Fprintln(stdout, "select a session first with /session")
 				continue
 			}
+			state.clearModelSelection()
 			state.view = "models"
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
@@ -641,9 +703,14 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 		case "/settings":
 			state.resolveRange(now)
 			fmt.Fprintf(stdout, "data directory: %s\n", dataDir)
-			fmt.Fprintf(stdout, "collector enabled: %t\n", settings.CollectorEnabled)
-			fmt.Fprintf(stdout, "collector auto-start: %t\n", settings.AutoStart)
-			fmt.Fprintf(stdout, "collector poll interval: %ds\n", settings.PollIntervalSeconds)
+			fmt.Fprintf(stdout, "saved collector enabled preference: %t\n", settings.CollectorEnabled)
+			fmt.Fprintf(stdout, "saved collector auto-start on REPL launch: %t\n", settings.AutoStart)
+			fmt.Fprintf(stdout, "saved collector poll interval: %ds\n", settings.PollIntervalSeconds)
+			if collectorRuntime != nil {
+				fmt.Fprintln(stdout, collectorStatusLine(collectorRuntime.collector))
+			} else {
+				fmt.Fprintln(stdout, collectorStatusLine(nil))
+			}
 			fmt.Fprintln(stdout, "diagnostic reporting: ask before any external action")
 			mode := "rolling"
 			if state.pinned {
@@ -674,6 +741,7 @@ func (state *interactiveState) clearModelSelection() {
 func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state *interactiveState, reader interactiveLineReader, now func() time.Time) error {
 	state.resolveRange(now)
 	fmt.Fprintf(stdout, "%s\n", interactiveBreadcrumb(state))
+	fmt.Fprintf(stdout, "report queried_at: %s (database snapshot; source scanning is separate)\n", now().UTC().Format(time.RFC3339Nano))
 	resourceFilter := tokenlogger.ResourceFilter{From: state.from, To: state.to}
 	if state.view == "projects" {
 		list, err := store.ListProjects(resourceFilter)
@@ -1026,7 +1094,7 @@ func runOnboarding(reader interactiveLineReader, dataDir string, settings tokenl
 		return settings, false, err
 	}
 	settings.CollectorEnabled = startNow
-	settings.AutoStart, err = askYesNo(reader, "Start the collector automatically when I sign in?", false)
+	settings.AutoStart, err = askYesNo(reader, "Start the collector automatically when I launch the REPL?", false)
 	if err != nil {
 		return settings, false, err
 	}
@@ -1060,16 +1128,18 @@ func askYesNo(reader interactiveLineReader, question string, defaultYes bool) (b
 	return answer == "y" || answer == "yes", nil
 }
 
-func defaultCollectorRoots() []string {
-	roots := []string{}
+func defaultCollectorRoots() []tokenlogger.CollectorRoot {
+	roots := []tokenlogger.CollectorRoot{}
 	if configured := os.Getenv("TOKEN_LOGGER_CODEX_DIR"); configured != "" {
-		roots = append(roots, configured)
+		roots = append(roots, tokenlogger.CollectorRoot{Path: configured, Required: true})
 	}
 	if configured := os.Getenv("TOKEN_LOGGER_CLAUDE_DIR"); configured != "" {
-		roots = append(roots, configured)
+		roots = append(roots, tokenlogger.CollectorRoot{Path: configured, Required: true})
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		roots = append(roots, filepath.Join(home, ".codex", "sessions"), filepath.Join(home, ".claude", "projects"))
+		roots = append(roots,
+			tokenlogger.CollectorRoot{Path: filepath.Join(home, ".codex", "sessions")},
+			tokenlogger.CollectorRoot{Path: filepath.Join(home, ".claude", "projects")})
 	}
 	return roots
 }
@@ -1128,17 +1198,17 @@ func runWatchWithContext(args []string, stdout, stderr io.Writer, ctx context.Co
 		return 2
 	}
 	fmt.Fprintf(stdout, "watching %s every %s; press Ctrl-C to stop\n", root, interval)
-	if result, pollErr := collector.PollOnce(); pollErr != nil {
+	if result, pollErr := collector.PollOnceContext(ctx); pollErr != nil {
+		writeWatchPoll(stdout, result, collector.Health())
 		fmt.Fprintf(stderr, "initial collector poll: %v\n", pollErr)
 	} else {
-		writeWatchPoll(stdout, result)
+		writeWatchPoll(stdout, result, collector.Health())
 	}
 	if err := collector.RunWithResults(ctx, func(result tokenlogger.ImportResult, pollErr error) {
+		writeWatchPoll(stdout, result, collector.Health())
 		if pollErr != nil {
 			fmt.Fprintf(stderr, "collector poll: %v\n", pollErr)
-			return
 		}
-		writeWatchPoll(stdout, result)
 	}); err != nil {
 		fmt.Fprintf(stderr, "collector stopped: %v\n", err)
 		return 2
@@ -1149,20 +1219,21 @@ func runWatchWithContext(args []string, stdout, stderr io.Writer, ctx context.Co
 }
 
 func writeWatchSummary(output io.Writer, health tokenlogger.CollectorHealth) {
-	fmt.Fprintf(output, "collector stopped: status=%s sources=%d imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t complete=%t\n",
-		health.Status, health.Sources, health.Imported, health.Duplicates,
+	fmt.Fprintf(output, "collector stopped: lifecycle=%s latest_status=%s sources=%d discovery_failures=%d imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t interrupted=%t run_complete=%t\n",
+		health.Lifecycle, health.Status, health.Sources, health.DiscoveryFailures, health.Imported, health.Duplicates,
 		health.Outcomes.IgnoredNonUsage, health.Outcomes.UnchangedSnapshot,
 		health.Outcomes.DeferredIncompleteTail, health.Outcomes.UnsupportedUsage,
 		health.Outcomes.MalformedRecord, health.Outcomes.FailedSource,
-		health.Pending, !health.Outcomes.Incomplete() && !health.Pending)
+		health.Pending, health.Interrupted, !health.Interrupted && !health.Outcomes.Incomplete() && !health.Pending)
 }
 
-func writeWatchPoll(output io.Writer, result tokenlogger.ImportResult) {
-	fmt.Fprintf(output, "poll imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t complete=%t\n",
-		result.Receipt.Imported, result.Receipt.Duplicates, result.Outcomes.IgnoredNonUsage,
+func writeWatchPoll(output io.Writer, result tokenlogger.ImportResult, health tokenlogger.CollectorHealth) {
+	fmt.Fprintf(output, "poll status=%s sources=%d discovery_failures=%d imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t interrupted=%t complete=%t\n",
+		health.Status, health.Sources, health.DiscoveryFailures, result.Receipt.Imported, result.Receipt.Duplicates, result.Outcomes.IgnoredNonUsage,
 		result.Outcomes.UnchangedSnapshot, result.Outcomes.DeferredIncompleteTail,
 		result.Outcomes.UnsupportedUsage, result.Outcomes.MalformedRecord,
-		result.Outcomes.FailedSource, result.Outcomes.Pending(), !result.Outcomes.Incomplete() && !result.Outcomes.Pending())
+		result.Outcomes.FailedSource, result.Outcomes.Pending(), health.LatestInterrupted,
+		!health.LatestInterrupted && !result.Outcomes.Incomplete() && !result.Outcomes.Pending())
 }
 
 func runSettings(args []string, stdout, stderr io.Writer) int {

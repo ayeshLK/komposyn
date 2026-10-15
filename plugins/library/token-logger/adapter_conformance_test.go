@@ -108,7 +108,7 @@ func runAdapterConformance(t *testing.T, adapter conformanceAdapter) {
 		}
 		assertSourceUnchanged(t, path, initial)
 		repeat, err := adapter.importFile(path, store)
-		if err != nil || repeat.Receipt.Duplicates != 1 || repeat.Receipt.Imported != 0 {
+		if err != nil || repeat.Receipt != (Receipt{}) || repeat.Outcomes.UnchangedSnapshot != 1 {
 			t.Fatalf("repeat result=%+v err=%v", repeat, err)
 		}
 		appended := []byte(adapter.header + adapter.usage("one", 10) + adapter.usage("two", 20))

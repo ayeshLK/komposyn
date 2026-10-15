@@ -168,8 +168,12 @@ diagnostics locally; it continues polling after an individual source failure.
 Normal ignores and unchanged snapshots do not degrade health. A final partial
 record is visible as pending but remains healthy. Unsupported usage, malformed
 records, and failed sources degrade health; repeated polls deduplicate their
-path-free diagnostics. Each completed poll is printed, and the stop summary
-retains cumulative warning counts and the latest pending state.
+path-free diagnostics. A missing positional root is a visible degraded poll;
+an empty existing directory is healthy. Each completed poll prints source and
+discovery counts. The stop summary retains cumulative warning counts and the
+latest pending state; `run_complete` covers the whole run, while
+`latest_status` covers only the latest poll. Ctrl-C/SIGTERM returns zero as a
+normal stop even after degraded polls.
 
 ## Settings and interactive mode
 
@@ -180,7 +184,10 @@ komposyn-lg settings --data-dir /path/to/data --collector on --auto-start off
 ```
 
 Running `komposyn-lg` without a subcommand opens interactive mode. The first
-run asks whether to enable the local collector. In a terminal, the prompt
+run asks whether to enable the local collector. Every later launch explains
+whether collection starts for this REPL session from that saved preference or
+remains off. The initial scan is asynchronous, and collector health/freshness
+is shown at safe prompt boundaries and by `/settings`. In a terminal, the prompt
 supports Left/Right, Backspace, Delete, Home/End, and Up/Down session history.
 History is held in memory for this invocation only: it contains non-empty REPL
 commands, excludes onboarding and diagnostic answers, and is never written to
@@ -224,9 +231,11 @@ continue to accept plain Enter for the displayed default.
 
 Interactive reports use a rolling last-seven-calendar-days range in UTC by
 default. The range is recalculated immediately before each report render, and
-the output shows the exact half-open bounds used for the query. `/refresh` and
+the output shows the exact half-open bounds and database query time. Source
+scan completion is reported separately. `/refresh` and
 each report-view command therefore include newly committed usage on the next
-command-driven render; the terminal does not update passively while idle.
+command-driven render; `/refresh` does not initiate or await collection, and
+the terminal does not update passively while idle.
 `/range` displays whether the mode is `rolling` or `pinned` and its effective
 UTC bounds. `/range <from> <to>` pins an explicit half-open range until
 `/range reset` returns to rolling mode and renders immediately. Dates and

@@ -17,13 +17,13 @@ package tokenlogger
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -149,20 +149,37 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	canonicalPath, err := filepath.Abs(path)
+	return importCodexSource(context.Background(), path, store, false)
+}
+
+func importCodexSource(ctx context.Context, path string, store *Store, validateAdapter bool) (ImportResult, error) {
+	snapshot, err := acquireSourceSnapshot(ctx, path, store, "codex")
 	if err != nil {
-		return ImportResult{}, fmt.Errorf("resolve Codex source: %w", err)
+		return ImportResult{}, fmt.Errorf("acquire Codex source: %w", err)
 	}
-	contents, err := os.ReadFile(canonicalPath)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("fingerprint Codex source: %w", err)
+	for attempt := 1; ; attempt++ {
+		if validateAdapter {
+			if err := validateSourceSnapshotAdapter(snapshot.contents, "codex"); err != nil {
+				return ImportResult{}, err
+			}
+		}
+		result, retry, err := importCodexSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
+		if err != nil || !retry {
+			return result, err
+		}
+		snapshot, err = retrySourceSnapshotAfterCursorConflict(ctx, path, store, "codex", attempt)
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("retry Codex source: %w", err)
+		}
 	}
-	baseSourceID := "codex-file-" + digest([]byte(canonicalPath))
+}
+
+func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
+	if unchanged, ok := unchangedExpectedSourceSnapshot(expectedCursor, contents); ok {
+		return unchanged, false, nil
+	}
 	fingerprint := digest(contents)
-	generation, err := sourceGeneration(store, baseSourceID, contents)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("inspect Codex source cursor: %w", err)
-	}
+	generation := sourceGeneration(expectedCursor, contents)
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
@@ -182,6 +199,9 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 
 	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
+		if err := ctx.Err(); err != nil {
+			return result, false, err
+		}
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
 		offset += int64(len(line))
@@ -381,10 +401,13 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				return result, fmt.Errorf("read Codex source: %w", readErr)
+				return result, false, fmt.Errorf("read Codex source: %w", readErr)
 			}
 			break
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return result, false, err
 	}
 
 	if current.ID == "" {
@@ -412,15 +435,19 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	for _, session := range sessionsByID {
 		knownSessions = append(knownSessions, session)
 	}
-	receipt, err := store.AppendWithReferencesAndCursor(events,
+	receipt, err := store.appendWithReferencesAndCursorIfCurrent(events,
 		projects,
 		knownSessions,
-		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
+		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	if errors.Is(err, errSourceCursorChanged) {
+		return ImportResult{}, true, nil
+	}
 	if err != nil {
-		return result, fmt.Errorf("persist Codex project, session, events, and cursor: %w", err)
+		return result, false, fmt.Errorf("persist Codex project, session, events, and cursor: %w", err)
 	}
 	result.Receipt = receipt
-	return result, nil
+	return result, false, nil
 }
 
 func codexUsageBearingType(recordType string) bool {

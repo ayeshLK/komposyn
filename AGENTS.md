@@ -54,7 +54,7 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
 - Event ingestion is idempotent through stable ingestion keys. Preserve
   transactional behavior: an append and its source cursor advance together, or
   neither is committed.
-- The current SQLite schema version is 8. Migrations 1 and 2 create the core
+- The current SQLite schema version is 10. Migrations 1 and 2 create the core
   and diagnostics tables, migration 3 normalizes stored timestamps to fixed
   width UTC values, and migration 4 adds source-generation tracking for
   transcript replacement detection. Migration 5 adds rational pricing rates
@@ -65,12 +65,17 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   deduplicates nullable reconciliation-warning keys. Migration 8 reserves both
   synthetic Unattributed navigation ID strings across the project and session
   namespaces and remaps any older persisted collisions without losing
-  references. SQLite schema changes require an
-  explicit numbered migration in `plugins/library/token-logger/migrations.go`,
+  references. Migration 9 records pending-tail and safe unchanged-snapshot
+  reuse state on source cursors. Migration 10 stores path-safe mappings from a
+  canonical source digest to its established collector source ID. SQLite
+  schema changes require an explicit numbered migration in
+  `plugins/library/token-logger/migrations.go`,
   a matching runner update, and an upgrade test covering the complete history.
 - Provider adapters parse one immutable source snapshot for both fingerprinting
-  and event offsets. Preserve source-cursor generation behavior when handling
-  replacements, and do not reintroduce separate file-descriptor parsing.
+  and event offsets; collector detection uses the same snapshot. Preserve
+  source-cursor generation, pending-tail visibility, and full-digest unchanged
+  checks when handling replacements, and do not reintroduce separate
+  file-descriptor parsing or mtime/size-only shortcuts.
 - Reports group hourly data by local civil hour while retaining the event's
   numeric UTC offset, including fractional offsets and DST folds.
 - Pricing is calculated offline from time-bounded rules. The embedded public

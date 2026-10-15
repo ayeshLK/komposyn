@@ -69,7 +69,10 @@ TOKEN_LOGGER_CODEX_DIR=/path/to/codex TOKEN_LOGGER_CLAUDE_DIR=/path/to/claude \
 
 These environment variables configure interactive auto-start only. The
 explicit `watch` command uses its positional source argument and does not read
-these variables as additional roots.
+these variables as additional roots. Configured environment roots augment the
+defaults below; they do not replace them. Environment roots are required and a
+missing/inaccessible one degrades collector health. Built-in defaults are
+optional and may be absent without creating a failure.
 
 When interactive auto-start is enabled, default roots include:
 
@@ -83,7 +86,9 @@ komposyn-lg watch /path/to/source --data-dir /path/to/data
 ```
 
 Directory discovery accepts provider JSON and JSONL files according to the
-adapter’s detection rules.
+adapter’s detection rules. Repeated, overlapping, relative/absolute, and
+symlinked roots are canonicalized and each discovered source is processed at
+most once per poll where the platform supports resolving the alias.
 
 ## Ownership and removal
 

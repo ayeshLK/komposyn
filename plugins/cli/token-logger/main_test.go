@@ -18,6 +18,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -36,6 +37,20 @@ import (
 	"github.com/chzyer/readline"
 	_ "modernc.org/sqlite"
 )
+
+type cancelOnWriteBuffer struct {
+	bytes.Buffer
+	marker string
+	cancel context.CancelFunc
+}
+
+func (buffer *cancelOnWriteBuffer) Write(value []byte) (int, error) {
+	written, err := buffer.Buffer.Write(value)
+	if strings.Contains(string(value), buffer.marker) {
+		buffer.cancel()
+	}
+	return written, err
+}
 
 func TestImportCommand(t *testing.T) {
 	dataDir := t.TempDir()
@@ -91,7 +106,7 @@ func TestImportJSONOutcomeContract(t *testing.T) {
 	}
 
 	const firstImport = `{"format_version":1,"sources_discovered":1,"sources_processed":1,"imported_events":2,"duplicate_events":0,"outcomes":{"ignored_non_usage":3,"unchanged_snapshot":1,"deferred_incomplete_tail":0,"unsupported_usage":0,"malformed_record":0,"failed_source":0},"failed_sources":0,"complete":true,"pending":false}` + "\n"
-	const repeatedImport = `{"format_version":1,"sources_discovered":1,"sources_processed":1,"imported_events":0,"duplicate_events":2,"outcomes":{"ignored_non_usage":3,"unchanged_snapshot":1,"deferred_incomplete_tail":0,"unsupported_usage":0,"malformed_record":0,"failed_source":0},"failed_sources":0,"complete":true,"pending":false}` + "\n"
+	const repeatedImport = `{"format_version":1,"sources_discovered":1,"sources_processed":1,"imported_events":0,"duplicate_events":0,"outcomes":{"ignored_non_usage":0,"unchanged_snapshot":1,"deferred_incomplete_tail":0,"unsupported_usage":0,"malformed_record":0,"failed_source":0},"failed_sources":0,"complete":true,"pending":false}` + "\n"
 	if outputs[0] != firstImport {
 		t.Errorf("first import JSON contract mismatch:\n got: %q\nwant: %q", outputs[0], firstImport)
 	}
@@ -160,17 +175,126 @@ func TestImportWarningAndPendingExitBehavior(t *testing.T) {
 func TestWatchOutputIncludesSubsequentWarningAndFinalOutcomes(t *testing.T) {
 	result := tokenlogger.ImportResult{Outcomes: tokenlogger.OutcomeCounts{UnsupportedUsage: 1}}
 	var output bytes.Buffer
-	writeWatchPoll(&output, result)
+	writeWatchPoll(&output, result, tokenlogger.CollectorHealth{Status: "degraded", Sources: 1})
 	writeWatchSummary(&output, tokenlogger.CollectorHealth{
-		Status: "stopped", Sources: 1, Outcomes: result.Outcomes,
+		Status: "degraded", Lifecycle: "stopped", Sources: 1, Outcomes: result.Outcomes,
 	})
 	for _, expected := range []string{
-		"poll imported=0", "unsupported_usage=1", "complete=false",
+		"poll status=degraded sources=1", "imported=0", "unsupported_usage=1", "complete=false",
 		"collector stopped:", "pending=false",
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("watch output omitted %q: %q", expected, output.String())
 		}
+	}
+}
+
+func TestWatchDiscoveryFailureStopNeverClaimsComplete(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "ordinary-file")
+	if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stdout := cancelOnWriteBuffer{marker: "poll status=", cancel: cancel}
+	var stderr bytes.Buffer
+	code := runWatchWithContext([]string{filepath.Join(parent, "child"), "--data-dir", t.TempDir()}, &stdout, &stderr, ctx)
+	if code != 0 {
+		t.Fatalf("cancelled watch exit=%d stderr=%q output=%q", code, stderr.String(), stdout.String())
+	}
+	for _, expected := range []string{"poll status=degraded sources=0 discovery_failures=1", "failed_source=1", "collector stopped: lifecycle=stopped latest_status=degraded", "run_complete=false"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("failed watch output omitted %q: %q", expected, stdout.String())
+		}
+	}
+}
+
+func TestWatchInitialPollHonorsCancellation(t *testing.T) {
+	dataDir := t.TempDir()
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	code := runWatchWithContext([]string{fixture, "--data-dir", dataDir}, &stdout, &stderr, ctx)
+	if code != 0 {
+		t.Fatalf("cancelled initial watch exit=%d stderr=%q output=%q", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "interrupted=true run_complete=false") {
+		t.Fatalf("cancelled initial watch claimed completion: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "poll status=cancelled") || !strings.Contains(stdout.String(), "interrupted=true complete=false") {
+		t.Fatalf("cancelled initial poll claimed completion: %q", stdout.String())
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if count, err := store.EventCount(); err != nil || count != 0 {
+		t.Fatalf("cancelled initial watch persisted events=%d err=%v", count, err)
+	}
+}
+
+func TestWatchInterruptedStopNeverClaimsComplete(t *testing.T) {
+	var output bytes.Buffer
+	writeWatchSummary(&output, tokenlogger.CollectorHealth{
+		Status: "cancelled", Lifecycle: "stopped", Sources: 1, Interrupted: true,
+	})
+	if !strings.Contains(output.String(), "interrupted=true run_complete=false") {
+		t.Fatalf("interrupted watch claimed completion: %q", output.String())
+	}
+}
+
+func TestCollectorStatusShowsFailureRecoveryAndFreshness(t *testing.T) {
+	store, err := tokenlogger.Open(filepath.Join(t.TempDir(), "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	path := filepath.Join(t.TempDir(), "later.jsonl")
+	collector, err := tokenlogger.NewCollector(store, []string{path}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.PollOnce(); err == nil {
+		t.Fatal("missing required root was reported as successful")
+	}
+	degraded := collectorStatusLine(collector)
+	for _, expected := range []string{"health=degraded", "sources=0", "discovery_failures=1", "last_completed=", "last_success=unavailable", "failed_source=1"} {
+		if !strings.Contains(degraded, expected) {
+			t.Fatalf("degraded status omitted %q: %s", expected, degraded)
+		}
+	}
+	contents, err := os.ReadFile(filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.PollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := collectorStatusLine(collector)
+	for _, expected := range []string{"health=healthy", "sources=1", "discovery_failures=0", "last_success="} {
+		if !strings.Contains(recovered, expected) {
+			t.Fatalf("recovered status omitted %q: %s", expected, recovered)
+		}
+	}
+	if strings.Contains(recovered, "last_success=unavailable") {
+		t.Fatalf("recovered status omitted successful scan time: %s", recovered)
+	}
+}
+
+func TestDefaultCollectorRootsAugmentDefaultsAndMarkConfiguredRootsRequired(t *testing.T) {
+	t.Setenv("TOKEN_LOGGER_CODEX_DIR", filepath.Join(t.TempDir(), "codex"))
+	t.Setenv("TOKEN_LOGGER_CLAUDE_DIR", filepath.Join(t.TempDir(), "claude"))
+	roots := defaultCollectorRoots()
+	if len(roots) < 4 {
+		t.Fatalf("collector roots = %+v, want configured roots plus two defaults", roots)
+	}
+	if !roots[0].Required || !roots[1].Required || roots[2].Required || roots[3].Required {
+		t.Fatalf("collector root requirements = %+v", roots)
 	}
 }
 
@@ -267,7 +391,7 @@ func assertImportMatchesHarness(t *testing.T, fixture string, events []tokenlogg
 	}
 
 	var replayOutput, replayErr bytes.Buffer
-	if code := run([]string{"import", fixture, "--data-dir", importDataDir}, &replayOutput, &replayErr); code != 0 || !strings.Contains(replayOutput.String(), "storage duplicates: "+decimalString(len(events))) {
+	if code := run([]string{"import", fixture, "--data-dir", importDataDir}, &replayOutput, &replayErr); code != 0 || !strings.Contains(replayOutput.String(), "unchanged_snapshot=1") || !strings.Contains(replayOutput.String(), "storage duplicates: 0") {
 		t.Fatalf("fixture replay code=%d stderr=%q output=%q", code, replayErr.String(), replayOutput.String())
 	}
 	assertProjectionStable(t, importedBefore, eventProjections(t, importDataDir), "fixture replay")
@@ -611,6 +735,54 @@ func TestUnattributedModelSelectionHasExplicitState(t *testing.T) {
 	state.clearModelSelection()
 	if strings.Contains(interactiveBreadcrumb(&state), "model:") {
 		t.Fatalf("cleared model remained in breadcrumb: %q", interactiveBreadcrumb(&state))
+	}
+}
+
+func TestModelsCommandClearsDescendantSelection(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "token-logger.db")
+	store, err := tokenlogger.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	events := []tokenlogger.UsageEvent{
+		cliReportEvent("provider-a", now.Add(-3*time.Hour)),
+		cliReportEvent("provider-b", now.Add(-2*time.Hour)),
+		cliReportEvent("missing-model", now.Add(-time.Hour)),
+	}
+	for index := range events {
+		events[index].ProjectID, events[index].SessionID = "project", "session"
+		events[index].ResolvedModel = "shared model"
+		events[index].Provider = fmt.Sprintf("provider-%c", 'a'+index)
+	}
+	if _, err := store.AppendWithReferences(events,
+		[]tokenlogger.Project{{ID: "project", DisplayName: "Project"}},
+		[]tokenlogger.Session{{ID: "session", ProjectID: "project", Client: events[0].Client}}); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec("UPDATE usage_events SET requested_model = '', resolved_model = '' WHERE event_id = ?", events[2].EventID); err != nil {
+		t.Fatal(err)
+	}
+	commands := "/range 2026-10-14 2026-10-16\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/models\n/quit\n"
+	var stdout, stderr bytes.Buffer
+	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, t.TempDir(), tokenlogger.DefaultSettings(t.TempDir()), false, func() time.Time { return now }); code != 0 {
+		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
+	}
+	marker := "komposyn / project:Project / session:session\n"
+	index := strings.LastIndex(stdout.String(), marker)
+	if index < 0 {
+		t.Fatalf("final models breadcrumb missing: %s", stdout.String())
+	}
+	finalModels := stdout.String()[index:]
+	if strings.Contains(strings.SplitN(finalModels, "\n", 2)[0], "model:") || strings.Count(finalModels, "shared model") < 2 || !strings.Contains(finalModels, "(unattributed)") {
+		t.Fatalf("/models retained descendant selection or lost model rows: %s", finalModels)
 	}
 }
 

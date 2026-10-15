@@ -24,13 +24,17 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite"
 )
 
 // Store is the library-owned SQLite persistence boundary.
 type Store struct {
-	db *sql.DB
+	db                 *sql.DB
+	beforeSnapshotRead func()
+	beforeAppend       func()
 }
+
+var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
 
 const storedTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
@@ -48,7 +52,14 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("create database directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	// Install the wait policy as each driver connection is created. Setting it
+	// only in configure is too late when another process is already changing
+	// journal mode or applying the initial migrations.
+	dsn := path + "?_pragma=busy_timeout(5000)&_txlock=immediate"
+	if strings.Contains(path, "?") {
+		dsn = path + "&_pragma=busy_timeout(5000)&_txlock=immediate"
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite database: %w", err)
 	}
@@ -71,14 +82,30 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) configure() error {
 	for _, statement := range []string{
+		"PRAGMA busy_timeout = 5000",
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA journal_mode = WAL",
 	} {
-		if _, err := s.db.Exec(statement); err != nil {
-			return fmt.Errorf("configure SQLite: %w", err)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := s.db.Exec(statement); err == nil {
+				break
+			} else if !sqliteBusy(err) || !time.Now().Before(deadline) {
+				return fmt.Errorf("configure SQLite: %w", err)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	return nil
+}
+
+func sqliteBusy(err error) bool {
+	var sqliteErr *sqlite3.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xff
+	return code == 5 || code == 6
 }
 
 // Close releases the database connection.
@@ -86,154 +113,106 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // Migrate applies numbered schema migrations in order.
 func (s *Store) Migrate() error {
-	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migrations: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
 		applied_at TEXT NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("create migration table: %w", err)
 	}
 	var applied int
-	if err := s.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
+	if err := tx.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if applied > currentSchemaVersion {
 		return fmt.Errorf("database schema version %d is newer than supported version %d", applied, currentSchemaVersion)
 	}
 	if applied < 1 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration: %w", err)
-		}
 		if _, err := tx.Exec(schemaMigrationOne); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 1: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 1, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 1: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 1: %w", err)
 		}
 	}
 	if applied < 2 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 2: %w", err)
-		}
 		if _, err := tx.Exec(schemaMigrationTwo); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 2: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 2, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 2: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 2: %w", err)
 		}
 	}
 	if applied < 3 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 3: %w", err)
-		}
 		if err := normalizeStoredTimestamps(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("normalize timestamps: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 3, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 3: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 3: %w", err)
 		}
 	}
 	if applied < 4 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 4: %w", err)
-		}
 		if err := applySourceGenerationMigration(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 4: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 4, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 4: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 4: %w", err)
 		}
 	}
 	if applied < 5 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 5: %w", err)
-		}
 		if err := applyPricingRationalMigration(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 5: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 5, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 5: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 5: %w", err)
 		}
 	}
 	if applied < 6 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 6: %w", err)
-		}
 		if err := applyProjectIdentityMigration(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 6: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 6, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 6: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 6: %w", err)
 		}
 	}
 	if applied < 7 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 7: %w", err)
-		}
 		if _, err := tx.Exec(schemaMigrationSeven); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 7: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 7, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 7: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 7: %w", err)
 		}
 	}
 	if applied < 8 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 8: %w", err)
-		}
 		if err := migrateReservedResourceIDs(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 8: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 8, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 8: %w", err)
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 8: %w", err)
+	}
+	if applied < 9 {
+		if _, err := tx.Exec(schemaMigrationNine); err != nil {
+			return fmt.Errorf("apply migration 9: %w", err)
 		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 9, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 9: %w", err)
+		}
+	}
+	if applied < 10 {
+		if _, err := tx.Exec(schemaMigrationTen); err != nil {
+			return fmt.Errorf("apply migration 10: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 10, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 10: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
 	}
 	return nil
 }
@@ -640,12 +619,12 @@ func (s *Store) UpsertSession(session Session) error {
 
 // Append persists events, deduplicating by stable ingestion key.
 func (s *Store) Append(events []UsageEvent) (Receipt, error) {
-	return s.append(events, nil, nil, nil)
+	return s.append(events, nil, nil, nil, nil)
 }
 
 // AppendWithReferences persists reference metadata and events atomically.
 func (s *Store) AppendWithReferences(events []UsageEvent, projects []Project, sessions []Session) (Receipt, error) {
-	return s.append(events, nil, projects, sessions)
+	return s.append(events, nil, projects, sessions, nil)
 }
 
 // AppendWithReferencesAndCursor persists reference metadata, events, and a
@@ -655,7 +634,17 @@ func (s *Store) AppendWithReferencesAndCursor(events []UsageEvent, projects []Pr
 	if err := cursor.validate(); err != nil {
 		return Receipt{}, err
 	}
-	return s.append(events, &cursor, projects, sessions)
+	return s.append(events, &cursor, projects, sessions, nil)
+}
+
+func (s *Store) appendWithReferencesAndCursorIfCurrent(events []UsageEvent, projects []Project, sessions []Session, cursor Cursor, expected sourceCursorExpectation) (Receipt, error) {
+	if err := cursor.validate(); err != nil {
+		return Receipt{}, err
+	}
+	if cursor.SourceID != expected.sourceID {
+		return Receipt{}, errors.New("cursor expectation source ID does not match committed cursor")
+	}
+	return s.append(events, &cursor, projects, sessions, &expected)
 }
 
 // AppendWithCursor persists events and advances the source cursor atomically.
@@ -664,10 +653,10 @@ func (s *Store) AppendWithCursor(events []UsageEvent, cursor Cursor) (Receipt, e
 	if err := cursor.validate(); err != nil {
 		return Receipt{}, err
 	}
-	return s.append(events, &cursor, nil, nil)
+	return s.append(events, &cursor, nil, nil, nil)
 }
 
-func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session) (Receipt, error) {
+func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session, expected *sourceCursorExpectation) (Receipt, error) {
 	events = append([]UsageEvent(nil), events...)
 	projects = append([]Project(nil), projects...)
 	sessions = append([]Session(nil), sessions...)
@@ -689,9 +678,27 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 			return Receipt{}, errors.New("session source metadata must contain valid JSON")
 		}
 	}
+	if s.beforeAppend != nil {
+		s.beforeAppend()
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Receipt{}, fmt.Errorf("begin append: %w", err)
+	}
+	if expected != nil {
+		current, currentErr := cursorInTransaction(tx, expected.sourceID)
+		if errors.Is(currentErr, sql.ErrNoRows) {
+			if expected.exists {
+				tx.Rollback()
+				return Receipt{}, errSourceCursorChanged
+			}
+		} else if currentErr != nil {
+			tx.Rollback()
+			return Receipt{}, fmt.Errorf("revalidate source cursor: %w", currentErr)
+		} else if !expected.exists || current != expected.cursor {
+			tx.Rollback()
+			return Receipt{}, errSourceCursorChanged
+		}
 	}
 	events, projects, sessions, err = reconcileImportedReferences(tx, events, projects, sessions)
 	if err != nil {
@@ -777,12 +784,13 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 		}
 	}
 	if cursor != nil {
-		if _, err := tx.Exec(`INSERT INTO source_cursors(source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
+		if _, err := tx.Exec(`INSERT INTO source_cursors(source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, pending_tail, snapshot_reusable, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(source_id) DO UPDATE SET file_fingerprint = excluded.file_fingerprint,
 			byte_offset = excluded.byte_offset, last_provider_record_id = excluded.last_provider_record_id,
-			source_generation = excluded.source_generation, updated_at = excluded.updated_at`, cursor.SourceID, cursor.FileFingerprint, cursor.ByteOffset,
-			cursor.LastProviderRecordID, cursor.SourceGeneration, formatStoredTime(time.Now())); err != nil {
+			source_generation = excluded.source_generation, pending_tail = excluded.pending_tail,
+			snapshot_reusable = excluded.snapshot_reusable, updated_at = excluded.updated_at`, cursor.SourceID, cursor.FileFingerprint, cursor.ByteOffset,
+			cursor.LastProviderRecordID, cursor.SourceGeneration, cursor.PendingTail, cursor.SnapshotReusable, formatStoredTime(time.Now())); err != nil {
 			tx.Rollback()
 			return Receipt{}, fmt.Errorf("persist source cursor: %w", err)
 		}
@@ -791,6 +799,14 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 		return Receipt{}, fmt.Errorf("commit append: %w", err)
 	}
 	return receipt, nil
+}
+
+func cursorInTransaction(tx *sql.Tx, sourceID string) (Cursor, error) {
+	var cursor Cursor
+	err := tx.QueryRow(`SELECT source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, pending_tail, snapshot_reusable
+		FROM source_cursors WHERE source_id = ?`, sourceID).Scan(&cursor.SourceID, &cursor.FileFingerprint,
+		&cursor.ByteOffset, &cursor.LastProviderRecordID, &cursor.SourceGeneration, &cursor.PendingTail, &cursor.SnapshotReusable)
+	return cursor, err
 }
 
 // EventCount returns the number of persisted usage events.
@@ -803,13 +819,36 @@ func (s *Store) EventCount() (int, error) {
 // Cursor returns the committed cursor for a source.
 func (s *Store) Cursor(sourceID string) (Cursor, error) {
 	var cursor Cursor
-	err := s.db.QueryRow(`SELECT source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation
+	err := s.db.QueryRow(`SELECT source_id, file_fingerprint, byte_offset, last_provider_record_id, source_generation, pending_tail, snapshot_reusable
 		FROM source_cursors WHERE source_id = ?`, sourceID).Scan(&cursor.SourceID, &cursor.FileFingerprint,
-		&cursor.ByteOffset, &cursor.LastProviderRecordID, &cursor.SourceGeneration)
+		&cursor.ByteOffset, &cursor.LastProviderRecordID, &cursor.SourceGeneration, &cursor.PendingTail, &cursor.SnapshotReusable)
 	if err != nil {
 		return Cursor{}, err
 	}
 	return cursor, nil
+}
+
+func (s *Store) collectorSourceIdentity(canonicalKey, adapter string) (string, error) {
+	var sourceID string
+	err := s.db.QueryRow(`SELECT source_id FROM collector_source_identities
+		WHERE canonical_key = ? AND adapter = ?`, canonicalKey, adapter).Scan(&sourceID)
+	return sourceID, err
+}
+
+func (s *Store) rememberCollectorSourceIdentity(canonicalKey, adapter, sourceID string) (string, bool, error) {
+	if _, err := s.db.Exec(`INSERT INTO collector_source_identities(canonical_key, adapter, source_id, created_at)
+		VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+		canonicalKey, adapter, sourceID, formatStoredTime(time.Now())); err != nil {
+		return "", false, err
+	}
+	storedSourceID, err := s.collectorSourceIdentity(canonicalKey, adapter)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return storedSourceID, true, nil
 }
 
 func nullableTime(value *time.Time) any {

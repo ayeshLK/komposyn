@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,15 +91,25 @@ func (ClaudeAdapter) Discover(path string) ([]string, error) {
 
 // DetectAdapter identifies the first recognized transcript shape.
 func DetectAdapter(path string) (string, error) {
-	file, err := os.Open(path)
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
-	reader := bufio.NewScanner(file)
-	for reader.Scan() {
-		line := strings.TrimSpace(reader.Text())
+	return detectAdapterSnapshot(contents)
+}
+
+func detectAdapterSnapshot(contents []byte) (string, error) {
+	reader := bufio.NewReader(bytes.NewReader(contents))
+	for {
+		lineBytes, readErr := reader.ReadBytes('\n')
+		line := strings.TrimSpace(string(lineBytes))
 		if line == "" {
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					break
+				}
+				return "", readErr
+			}
 			continue
 		}
 		var raw struct {
@@ -114,9 +125,12 @@ func DetectAdapter(path string) (string, error) {
 		if raw.Type == "session_meta" || raw.Type == "event_msg" || raw.Type == "token_count" || raw.Type == "token_usage_record" {
 			return "codex", nil
 		}
-	}
-	if err := reader.Err(); err != nil {
-		return "", err
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return "", readErr
+		}
 	}
 	return "codex", nil
 }
@@ -127,20 +141,37 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	canonicalPath, err := filepath.Abs(path)
+	return importClaudeSource(context.Background(), path, store, false)
+}
+
+func importClaudeSource(ctx context.Context, path string, store *Store, validateAdapter bool) (ImportResult, error) {
+	snapshot, err := acquireSourceSnapshot(ctx, path, store, "claude")
 	if err != nil {
-		return ImportResult{}, fmt.Errorf("resolve Claude source: %w", err)
+		return ImportResult{}, fmt.Errorf("acquire Claude source: %w", err)
 	}
-	contents, err := os.ReadFile(canonicalPath)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("fingerprint Claude source: %w", err)
+	for attempt := 1; ; attempt++ {
+		if validateAdapter {
+			if err := validateSourceSnapshotAdapter(snapshot.contents, "claude"); err != nil {
+				return ImportResult{}, err
+			}
+		}
+		result, retry, err := importClaudeSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
+		if err != nil || !retry {
+			return result, err
+		}
+		snapshot, err = retrySourceSnapshotAfterCursorConflict(ctx, path, store, "claude", attempt)
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("retry Claude source: %w", err)
+		}
 	}
-	baseSourceID := "claude-file-" + digest([]byte(canonicalPath))
+}
+
+func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
+	if unchanged, ok := unchangedExpectedSourceSnapshot(expectedCursor, contents); ok {
+		return unchanged, false, nil
+	}
 	fingerprint := digest(contents)
-	generation, err := sourceGeneration(store, baseSourceID, contents)
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("inspect Claude source cursor: %w", err)
-	}
+	generation := sourceGeneration(expectedCursor, contents)
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
@@ -149,6 +180,9 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	var lastRecordID string
 	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
+		if err := ctx.Err(); err != nil {
+			return result, false, err
+		}
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
 		offset += int64(len(line))
@@ -212,10 +246,13 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				return result, fmt.Errorf("read Claude source: %w", readErr)
+				return result, false, fmt.Errorf("read Claude source: %w", readErr)
 			}
 			break
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return result, false, err
 	}
 	if session.ID == "" {
 		session = updateClaudeSession(session, claudeEnvelope{}, claudeMessage{}, sourceID)
@@ -224,15 +261,19 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 		events[index].ProjectID = session.ProjectID
 		events[index].SessionID = session.ID
 	}
-	receipt, err := store.AppendWithReferencesAndCursor(events,
+	receipt, err := store.appendWithReferencesAndCursorIfCurrent(events,
 		[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "claude-code", ProviderAlias: session.ProjectID, AliasProvenance: "claude-code metadata"}},
 		[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`), SourceAdapter: "claude-code", ProviderAlias: session.ID}},
-		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation})
+		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	if errors.Is(err, errSourceCursorChanged) {
+		return ImportResult{}, true, nil
+	}
 	if err != nil {
-		return result, fmt.Errorf("persist Claude project, session, events, and cursor: %w", err)
+		return result, false, fmt.Errorf("persist Claude project, session, events, and cursor: %w", err)
 	}
 	result.Receipt = receipt
-	return result, nil
+	return result, false, nil
 }
 
 func claudeUsageBearingType(recordType string) bool {
