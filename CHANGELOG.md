@@ -4,6 +4,13 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
+## [0.2.2](https://github.com/ayeshLK/komposyn/compare/v0.2.1...v0.2.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* keep interactive table rows aligned and adapt to terminal width ([#86](https://github.com/ayeshLK/komposyn/issues/86)) ([4fc65cc](https://github.com/ayeshLK/komposyn/commit/4fc65cc7d7411eed9e8ae21a02ca86af2d2ab0f6))
+
 ## [0.2.1](https://github.com/ayeshLK/komposyn/compare/v0.2.0...v0.2.1) (2026-10-14)
 
 
