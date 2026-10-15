@@ -1198,7 +1198,7 @@ func runWatchWithContext(args []string, stdout, stderr io.Writer, ctx context.Co
 		return 2
 	}
 	fmt.Fprintf(stdout, "watching %s every %s; press Ctrl-C to stop\n", root, interval)
-	if result, pollErr := collector.PollOnce(); pollErr != nil {
+	if result, pollErr := collector.PollOnceContext(ctx); pollErr != nil {
 		writeWatchPoll(stdout, result, collector.Health())
 		fmt.Fprintf(stderr, "initial collector poll: %v\n", pollErr)
 	} else {

@@ -154,6 +154,10 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 
 func importClaudeSnapshot(ctx context.Context, canonicalPath string, contents []byte, store *Store) (ImportResult, error) {
 	baseSourceID := "claude-file-" + digest([]byte(canonicalPath))
+	return importClaudeSnapshotWithSourceID(ctx, canonicalPath, contents, store, baseSourceID)
+}
+
+func importClaudeSnapshotWithSourceID(ctx context.Context, canonicalPath string, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
 	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
 		return ImportResult{}, fmt.Errorf("inspect unchanged Claude source: %w", err)
 	} else if ok {

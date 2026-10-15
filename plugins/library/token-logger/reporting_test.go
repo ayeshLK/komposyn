@@ -224,7 +224,10 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if _, err := store.db.Exec("ALTER TABLE source_cursors DROP COLUMN pending_tail"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9)"); err != nil {
+	if _, err := store.db.Exec("DROP TABLE collector_source_identities"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -247,8 +250,8 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if err := store.db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 9 || latestMigration != 9 {
-		t.Fatalf("migration history = count %d, latest %d; want nine migrations through version 9", migrationCount, latestMigration)
+	if migrationCount != 10 || latestMigration != 10 {
+		t.Fatalf("migration history = count %d, latest %d; want ten migrations through version 10", migrationCount, latestMigration)
 	}
 	var sourceGenerationColumn string
 	if err := store.db.QueryRow("SELECT name FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&sourceGenerationColumn); err != nil {

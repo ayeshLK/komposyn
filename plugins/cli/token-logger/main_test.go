@@ -38,6 +38,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type cancelOnWriteBuffer struct {
+	bytes.Buffer
+	marker string
+	cancel context.CancelFunc
+}
+
+func (buffer *cancelOnWriteBuffer) Write(value []byte) (int, error) {
+	written, err := buffer.Buffer.Write(value)
+	if strings.Contains(string(value), buffer.marker) {
+		buffer.cancel()
+	}
+	return written, err
+}
+
 func TestImportCommand(t *testing.T) {
 	dataDir := t.TempDir()
 	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "codex", "normal.jsonl")
@@ -181,8 +195,9 @@ func TestWatchDiscoveryFailureStopNeverClaimsComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	var stdout, stderr bytes.Buffer
+	defer cancel()
+	stdout := cancelOnWriteBuffer{marker: "poll status=", cancel: cancel}
+	var stderr bytes.Buffer
 	code := runWatchWithContext([]string{filepath.Join(parent, "child"), "--data-dir", t.TempDir()}, &stdout, &stderr, ctx)
 	if code != 0 {
 		t.Fatalf("cancelled watch exit=%d stderr=%q output=%q", code, stderr.String(), stdout.String())
@@ -191,6 +206,29 @@ func TestWatchDiscoveryFailureStopNeverClaimsComplete(t *testing.T) {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("failed watch output omitted %q: %q", expected, stdout.String())
 		}
+	}
+}
+
+func TestWatchInitialPollHonorsCancellation(t *testing.T) {
+	dataDir := t.TempDir()
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	code := runWatchWithContext([]string{fixture, "--data-dir", dataDir}, &stdout, &stderr, ctx)
+	if code != 0 {
+		t.Fatalf("cancelled initial watch exit=%d stderr=%q output=%q", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "interrupted=true run_complete=false") {
+		t.Fatalf("cancelled initial watch claimed completion: %q", stdout.String())
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if count, err := store.EventCount(); err != nil || count != 0 {
+		t.Fatalf("cancelled initial watch persisted events=%d err=%v", count, err)
 	}
 }
 

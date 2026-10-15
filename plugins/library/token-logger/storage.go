@@ -199,6 +199,14 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("record migration 9: %w", err)
 		}
 	}
+	if applied < 10 {
+		if _, err := tx.Exec(schemaMigrationTen); err != nil {
+			return fmt.Errorf("apply migration 10: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 10, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 10: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
 	}
@@ -778,6 +786,22 @@ func (s *Store) Cursor(sourceID string) (Cursor, error) {
 		return Cursor{}, err
 	}
 	return cursor, nil
+}
+
+func (s *Store) collectorSourceIdentity(canonicalKey, adapter string) (string, error) {
+	var sourceID string
+	err := s.db.QueryRow(`SELECT source_id FROM collector_source_identities
+		WHERE canonical_key = ? AND adapter = ?`, canonicalKey, adapter).Scan(&sourceID)
+	return sourceID, err
+}
+
+func (s *Store) rememberCollectorSourceIdentity(canonicalKey, adapter, sourceID string) (string, error) {
+	if _, err := s.db.Exec(`INSERT INTO collector_source_identities(canonical_key, adapter, source_id, created_at)
+		VALUES (?, ?, ?, ?) ON CONFLICT(canonical_key, adapter) DO NOTHING`,
+		canonicalKey, adapter, sourceID, formatStoredTime(time.Now())); err != nil {
+		return "", err
+	}
+	return s.collectorSourceIdentity(canonicalKey, adapter)
 }
 
 func nullableTime(value *time.Time) any {

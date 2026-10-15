@@ -166,7 +166,8 @@ func TestMigrationEightRemapsCrossNamespaceSyntheticIDCollisions(t *testing.T) {
 		 VALUES ('cross-collision', 'legacy', 'digest', '` + UnattributedSessionID + `', '` + UnattributedProjectID + `', 'collision', '2026-01-01', '2026-01-02', 2)`,
 		`ALTER TABLE source_cursors DROP COLUMN snapshot_reusable`,
 		`ALTER TABLE source_cursors DROP COLUMN pending_tail`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9)`,
+		`DROP TABLE collector_source_identities`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -253,7 +254,8 @@ func TestMigrationEightRemapsSyntheticIDCollisions(t *testing.T) {
 		 VALUES ('collision', 'legacy', 'digest', '` + UnattributedProjectID + `', '` + UnattributedSessionID + `', 'collision', '2026-01-01', '2026-01-02', 3)`,
 		`ALTER TABLE source_cursors DROP COLUMN snapshot_reusable`,
 		`ALTER TABLE source_cursors DROP COLUMN pending_tail`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9)`,
+		`DROP TABLE collector_source_identities`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -423,6 +425,39 @@ func TestSimultaneousOpenCoordinatesConfigurationAndMigrations(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func TestMigrationTenAddsCollectorIdentityMapWithoutChangingCursors(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "token-logger.db")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := Cursor{SourceID: "claude-file-established", FileFingerprint: "fingerprint", ByteOffset: 42, SnapshotReusable: true}
+	if _, err := store.AppendWithCursor(nil, cursor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE collector_source_identities"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 10"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if got, err := store.Cursor(cursor.SourceID); err != nil || got != cursor {
+		t.Fatalf("migration changed cursor: got=%+v err=%v", got, err)
+	}
+	if sourceID, err := store.rememberCollectorSourceIdentity("canonical-digest", "claude", cursor.SourceID); err != nil || sourceID != cursor.SourceID {
+		t.Fatalf("migrated identity map source=%q err=%v", sourceID, err)
 	}
 }
 

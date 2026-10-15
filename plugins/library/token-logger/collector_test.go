@@ -270,6 +270,25 @@ func TestCollectorRequiredOptionalAndDuplicateRoots(t *testing.T) {
 		if result, err := reorderedCollector.PollOnce(); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
 			t.Fatalf("reordered aliases changed source identity: result=%+v err=%v", result, err)
 		}
+		realOnlyCollector, err := NewCollector(identityStore, []string{path}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result, err := realOnlyCollector.PollOnce(); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+			t.Fatalf("removed alias changed established source identity: result=%+v err=%v", result, err)
+		}
+		canonicalPath, err := canonicalCollectorPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var storedCanonicalKey, storedSourceID string
+		if err := identityStore.db.QueryRow(`SELECT canonical_key, source_id FROM collector_source_identities
+			WHERE adapter = 'claude'`).Scan(&storedCanonicalKey, &storedSourceID); err != nil {
+			t.Fatal(err)
+		}
+		if storedCanonicalKey != digest([]byte(canonicalPath)) || storedSourceID != "claude-file-"+digest([]byte(absoluteLink)) {
+			t.Fatalf("persisted source identity = %q/%q", storedCanonicalKey, storedSourceID)
+		}
 
 		directStore := openTestStore(t)
 		directCollector, err := NewCollector(directStore, []string{path}, time.Second)
@@ -288,6 +307,27 @@ func TestCollectorRequiredOptionalAndDuplicateRoots(t *testing.T) {
 		}
 		if count, err := directStore.EventCount(); err != nil || count != 2 {
 			t.Fatalf("alias transition event count=%d err=%v", count, err)
+		}
+
+		directoryStore := openTestStore(t)
+		directoryRoot := t.TempDir()
+		directoryFile := filepath.Join(directoryRoot, "normal.jsonl")
+		if err := os.WriteFile(directoryFile, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		directoryLink := filepath.Join(t.TempDir(), "source-directory")
+		if err := os.Symlink(directoryRoot, directoryLink); err != nil {
+			t.Fatalf("create directory symlink: %v", err)
+		}
+		if result, err := (ClaudeAdapter{}).Import(filepath.Join(directoryLink, "normal.jsonl"), directoryStore); err != nil || result.Receipt.Imported != 2 {
+			t.Fatalf("directory alias import result=%+v err=%v", result, err)
+		}
+		directoryCollector, err := NewCollector(directoryStore, []string{directoryLink}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result, err := directoryCollector.PollOnce(); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+			t.Fatalf("directory alias collection changed source identity: result=%+v err=%v", result, err)
 		}
 	}
 }

@@ -163,6 +163,10 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 
 func importCodexSnapshot(ctx context.Context, canonicalPath string, contents []byte, store *Store) (ImportResult, error) {
 	baseSourceID := "codex-file-" + digest([]byte(canonicalPath))
+	return importCodexSnapshotWithSourceID(ctx, canonicalPath, contents, store, baseSourceID)
+}
+
+func importCodexSnapshotWithSourceID(ctx context.Context, canonicalPath string, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
 	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
 		return ImportResult{}, fmt.Errorf("inspect unchanged Codex source: %w", err)
 	} else if ok {
