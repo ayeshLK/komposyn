@@ -16,6 +16,7 @@ package tokenlogger
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -37,6 +38,7 @@ type CollectorHealth struct {
 	Duplicates        int
 	Outcomes          OutcomeCounts
 	Pending           bool
+	Interrupted       bool
 	Sources           int
 	DiscoveryFailures int
 }
@@ -114,9 +116,17 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		pollErrors = append(pollErrors, failure.Err)
 		c.recordFailure(failure.Err)
 	}
-	for _, path := range discovery.Paths {
+	interrupted := false
+	for _, failure := range discovery.Failures {
+		if errors.Is(failure.Err, context.Canceled) || errors.Is(failure.Err, context.DeadlineExceeded) {
+			interrupted = true
+		}
+	}
+	for _, source := range discovery.Sources {
+		path := source.Path
 		if err := ctx.Err(); err != nil {
 			pollErrors = append(pollErrors, err)
+			interrupted = true
 			break
 		}
 		if c.beforeSource != nil {
@@ -124,6 +134,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		}
 		if err := ctx.Err(); err != nil {
 			pollErrors = append(pollErrors, err)
+			interrupted = true
 			break
 		}
 		contents, readErr := os.ReadFile(path)
@@ -133,14 +144,14 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			c.recordFailure(fmt.Errorf("read source: %w", readErr))
 			continue
 		}
-		canonicalPath, canonicalErr := filepath.Abs(path)
-		if canonicalErr != nil {
+		identityPath, identityErr := establishedCollectorSourcePath(c.store, source)
+		if identityErr != nil {
 			total.Outcomes.Add(OutcomeFailedSource)
-			pollErrors = append(pollErrors, canonicalErr)
-			c.recordFailure(fmt.Errorf("resolve source: %w", canonicalErr))
+			pollErrors = append(pollErrors, identityErr)
+			c.recordFailure(fmt.Errorf("resolve source identity: %w", identityErr))
 			continue
 		}
-		if unchanged, ok, unchangedErr := unchangedCollectorSnapshot(c.store, canonicalPath, contents); unchangedErr != nil {
+		if unchanged, ok, unchangedErr := unchangedCollectorSnapshot(c.store, identityPath, contents); unchangedErr != nil {
 			total.Outcomes.Add(OutcomeFailedSource)
 			pollErrors = append(pollErrors, unchangedErr)
 			c.recordFailure(fmt.Errorf("inspect unchanged source: %w", unchangedErr))
@@ -159,13 +170,14 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		var result ImportResult
 		var importErr error
 		if adapter == "claude" {
-			result, importErr = importClaudeSnapshot(ctx, canonicalPath, contents, c.store)
+			result, importErr = importClaudeSnapshot(ctx, identityPath, contents, c.store)
 		} else {
-			result, importErr = importCodexSnapshot(ctx, canonicalPath, contents, c.store)
+			result, importErr = importCodexSnapshot(ctx, identityPath, contents, c.store)
 		}
 		if importErr != nil {
 			if errors.Is(importErr, context.Canceled) || errors.Is(importErr, context.DeadlineExceeded) {
 				pollErrors = append(pollErrors, importErr)
+				interrupted = true
 				break
 			}
 			total.Outcomes.Add(OutcomeFailedSource)
@@ -192,7 +204,8 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 	c.health.Duplicates += total.Receipt.Duplicates
 	c.health.Outcomes.Merge(total.Outcomes)
 	c.health.Pending = total.Outcomes.Pending()
-	c.health.Sources = len(discovery.Paths)
+	c.health.Interrupted = c.health.Interrupted || interrupted
+	c.health.Sources = len(discovery.Sources)
 	c.health.DiscoveryFailures = len(discovery.Failures)
 	c.mu.Unlock()
 	return total, errors.Join(pollErrors...)
@@ -299,13 +312,30 @@ type collectorDiscoveryFailure struct {
 }
 
 type collectorDiscovery struct {
-	Paths    []string
+	Sources  []collectorSource
 	Failures []collectorDiscoveryFailure
+}
+
+type collectorSource struct {
+	Path          string
+	IdentityPaths []string
 }
 
 func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collectorDiscovery {
 	result := collectorDiscovery{}
-	seen := map[string]string{}
+	seen := map[string]*collectorSource{}
+	addSource := func(canonicalPath, path string, identityPaths ...string) {
+		source, exists := seen[canonicalPath]
+		if !exists {
+			source = &collectorSource{Path: path}
+			seen[canonicalPath] = source
+		}
+		for _, identityPath := range append([]string{path}, identityPaths...) {
+			if !containsCollectorPath(source.IdentityPaths, identityPath) {
+				source.IdentityPaths = append(source.IdentityPaths, identityPath)
+			}
+		}
+	}
 	for _, root := range roots {
 		if err := ctx.Err(); err != nil {
 			result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: err})
@@ -330,9 +360,8 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 			continue
 		}
 		if !info.IsDir() {
-			if _, exists := seen[canonicalRoot]; !exists {
-				seen[canonicalRoot] = absoluteRoot
-			}
+			resolvedRoot, _ := filepath.EvalSymlinks(absoluteRoot)
+			addSource(canonicalRoot, absoluteRoot, resolvedRoot)
 			continue
 		}
 		walkRoot := absoluteRoot
@@ -356,9 +385,8 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 					result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: fmt.Errorf("resolve discovered source: %w", canonicalErr)})
 					return nil
 				}
-				if _, exists := seen[canonicalPath]; !exists {
-					seen[canonicalPath] = path
-				}
+				resolvedPath, _ := filepath.EvalSymlinks(path)
+				addSource(canonicalPath, path, resolvedPath)
 			}
 			return nil
 		})
@@ -366,11 +394,39 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 			result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: fmt.Errorf("walk source root: %w", err)})
 		}
 	}
-	for _, path := range seen {
-		result.Paths = append(result.Paths, path)
+	for _, source := range seen {
+		result.Sources = append(result.Sources, *source)
 	}
-	sort.Strings(result.Paths)
+	sort.Slice(result.Sources, func(i, j int) bool { return result.Sources[i].Path < result.Sources[j].Path })
 	return result
+}
+
+func containsCollectorPath(paths []string, candidate string) bool {
+	if candidate == "" {
+		return true
+	}
+	for _, path := range paths {
+		if path == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func establishedCollectorSourcePath(store *Store, source collectorSource) (string, error) {
+	for _, path := range source.IdentityPaths {
+		for _, sourceID := range []string{
+			"claude-file-" + digest([]byte(path)),
+			"codex-file-" + digest([]byte(path)),
+		} {
+			if _, err := store.Cursor(sourceID); err == nil {
+				return path, nil
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return "", err
+			}
+		}
+	}
+	return source.Path, nil
 }
 
 func absoluteCollectorPath(path string) (string, error) {

@@ -194,9 +194,9 @@ func collectorStatusLine(collector *tokenlogger.Collector) string {
 		return "collector runtime: state=off"
 	}
 	health := collector.Health()
-	return fmt.Sprintf("collector runtime: state=%s health=%s sources=%d discovery_failures=%d last_completed=%s last_success=%s pending=%t failed_source=%d unsupported_usage=%d malformed_record=%d",
+	return fmt.Sprintf("collector runtime: state=%s health=%s sources=%d discovery_failures=%d last_completed=%s last_success=%s pending=%t interrupted=%t failed_source=%d unsupported_usage=%d malformed_record=%d",
 		health.Lifecycle, health.Status, health.Sources, health.DiscoveryFailures,
-		collectorTime(health.LastCompletedAt), collectorTime(health.LastSuccessAt), health.Pending,
+		collectorTime(health.LastCompletedAt), collectorTime(health.LastSuccessAt), health.Pending, health.Interrupted,
 		health.Outcomes.FailedSource, health.Outcomes.UnsupportedUsage, health.Outcomes.MalformedRecord)
 }
 
@@ -1219,12 +1219,12 @@ func runWatchWithContext(args []string, stdout, stderr io.Writer, ctx context.Co
 }
 
 func writeWatchSummary(output io.Writer, health tokenlogger.CollectorHealth) {
-	fmt.Fprintf(output, "collector stopped: lifecycle=%s latest_status=%s sources=%d discovery_failures=%d imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t run_complete=%t\n",
+	fmt.Fprintf(output, "collector stopped: lifecycle=%s latest_status=%s sources=%d discovery_failures=%d imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t interrupted=%t run_complete=%t\n",
 		health.Lifecycle, health.Status, health.Sources, health.DiscoveryFailures, health.Imported, health.Duplicates,
 		health.Outcomes.IgnoredNonUsage, health.Outcomes.UnchangedSnapshot,
 		health.Outcomes.DeferredIncompleteTail, health.Outcomes.UnsupportedUsage,
 		health.Outcomes.MalformedRecord, health.Outcomes.FailedSource,
-		health.Pending, !health.Outcomes.Incomplete() && !health.Pending)
+		health.Pending, health.Interrupted, !health.Interrupted && !health.Outcomes.Incomplete() && !health.Pending)
 }
 
 func writeWatchPoll(output io.Writer, result tokenlogger.ImportResult, health tokenlogger.CollectorHealth) {

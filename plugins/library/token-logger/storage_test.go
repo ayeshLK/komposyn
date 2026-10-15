@@ -386,6 +386,46 @@ func TestMultipleStoresWaitBoundedlyAndPreserveExactlyOnceAccounting(t *testing.
 	}
 }
 
+func TestSimultaneousOpenCoordinatesConfigurationAndMigrations(t *testing.T) {
+	for attempt := 0; attempt < 10; attempt++ {
+		databasePath := filepath.Join(t.TempDir(), "shared.db")
+		start := make(chan struct{})
+		type openResult struct {
+			store *Store
+			err   error
+		}
+		results := make(chan openResult, 2)
+		for range 2 {
+			go func() {
+				<-start
+				store, err := Open(databasePath)
+				results <- openResult{store: store, err: err}
+			}()
+		}
+		close(start)
+		opened := make([]*Store, 0, 2)
+		for range 2 {
+			result := <-results
+			if result.err != nil {
+				for _, store := range opened {
+					_ = store.Close()
+				}
+				t.Fatalf("simultaneous open attempt %d failed: %v", attempt+1, result.err)
+			}
+			opened = append(opened, result.store)
+		}
+		var version int
+		if err := opened[0].db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&version); err != nil || version != currentSchemaVersion {
+			t.Fatalf("simultaneous open schema version=%d err=%v", version, err)
+		}
+		for _, store := range opened {
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 func TestAppendWithReferencesRollsBackReferencesOnEventFailure(t *testing.T) {
 	store := openTestStore(t)
 	event := testEvent("ingestion-1")

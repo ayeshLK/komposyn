@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite"
 )
 
 // Store is the library-owned SQLite persistence boundary.
@@ -48,7 +48,14 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("create database directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	// Install the wait policy as each driver connection is created. Setting it
+	// only in configure is too late when another process is already changing
+	// journal mode or applying the initial migrations.
+	dsn := path + "?_pragma=busy_timeout(5000)&_txlock=immediate"
+	if strings.Contains(path, "?") {
+		dsn = path + "&_pragma=busy_timeout(5000)&_txlock=immediate"
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite database: %w", err)
 	}
@@ -71,15 +78,30 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) configure() error {
 	for _, statement := range []string{
+		"PRAGMA busy_timeout = 5000",
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA journal_mode = WAL",
-		"PRAGMA busy_timeout = 5000",
 	} {
-		if _, err := s.db.Exec(statement); err != nil {
-			return fmt.Errorf("configure SQLite: %w", err)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := s.db.Exec(statement); err == nil {
+				break
+			} else if !sqliteBusy(err) || !time.Now().Before(deadline) {
+				return fmt.Errorf("configure SQLite: %w", err)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	return nil
+}
+
+func sqliteBusy(err error) bool {
+	var sqliteErr *sqlite3.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xff
+	return code == 5 || code == 6
 }
 
 // Close releases the database connection.
@@ -87,171 +109,98 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // Migrate applies numbered schema migrations in order.
 func (s *Store) Migrate() error {
-	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migrations: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
 		applied_at TEXT NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("create migration table: %w", err)
 	}
 	var applied int
-	if err := s.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
+	if err := tx.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if applied > currentSchemaVersion {
 		return fmt.Errorf("database schema version %d is newer than supported version %d", applied, currentSchemaVersion)
 	}
 	if applied < 1 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration: %w", err)
-		}
 		if _, err := tx.Exec(schemaMigrationOne); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 1: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 1, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 1: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 1: %w", err)
 		}
 	}
 	if applied < 2 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 2: %w", err)
-		}
 		if _, err := tx.Exec(schemaMigrationTwo); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 2: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 2, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 2: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 2: %w", err)
 		}
 	}
 	if applied < 3 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 3: %w", err)
-		}
 		if err := normalizeStoredTimestamps(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("normalize timestamps: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 3, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 3: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 3: %w", err)
 		}
 	}
 	if applied < 4 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 4: %w", err)
-		}
 		if err := applySourceGenerationMigration(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 4: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 4, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 4: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 4: %w", err)
 		}
 	}
 	if applied < 5 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 5: %w", err)
-		}
 		if err := applyPricingRationalMigration(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 5: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 5, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 5: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 5: %w", err)
 		}
 	}
 	if applied < 6 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 6: %w", err)
-		}
 		if err := applyProjectIdentityMigration(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 6: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 6, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 6: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 6: %w", err)
 		}
 	}
 	if applied < 7 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 7: %w", err)
-		}
 		if _, err := tx.Exec(schemaMigrationSeven); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 7: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 7, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 7: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 7: %w", err)
 		}
 	}
 	if applied < 8 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 8: %w", err)
-		}
 		if err := migrateReservedResourceIDs(tx); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 8: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 8, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 8: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 8: %w", err)
 		}
 	}
 	if applied < 9 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration 9: %w", err)
-		}
 		if _, err := tx.Exec(schemaMigrationNine); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("apply migration 9: %w", err)
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 9, formatStoredTime(time.Now())); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("record migration 9: %w", err)
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration 9: %w", err)
-		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
 	}
 	return nil
 }

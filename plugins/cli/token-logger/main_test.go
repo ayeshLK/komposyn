@@ -194,6 +194,16 @@ func TestWatchDiscoveryFailureStopNeverClaimsComplete(t *testing.T) {
 	}
 }
 
+func TestWatchInterruptedStopNeverClaimsComplete(t *testing.T) {
+	var output bytes.Buffer
+	writeWatchSummary(&output, tokenlogger.CollectorHealth{
+		Status: "cancelled", Lifecycle: "stopped", Sources: 1, Interrupted: true,
+	})
+	if !strings.Contains(output.String(), "interrupted=true run_complete=false") {
+		t.Fatalf("interrupted watch claimed completion: %q", output.String())
+	}
+}
+
 func TestCollectorStatusShowsFailureRecoveryAndFreshness(t *testing.T) {
 	store, err := tokenlogger.Open(filepath.Join(t.TempDir(), "token-logger.db"))
 	if err != nil {

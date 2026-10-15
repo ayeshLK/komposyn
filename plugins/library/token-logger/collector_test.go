@@ -263,6 +263,32 @@ func TestCollectorRequiredOptionalAndDuplicateRoots(t *testing.T) {
 		if _, err := identityStore.Cursor("claude-file-" + digest([]byte(absoluteLink))); err != nil {
 			t.Fatalf("configured symlink source identity was not preserved: %v", err)
 		}
+		reorderedCollector, err := NewCollector(identityStore, []string{path, link}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result, err := reorderedCollector.PollOnce(); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+			t.Fatalf("reordered aliases changed source identity: result=%+v err=%v", result, err)
+		}
+
+		directStore := openTestStore(t)
+		directCollector, err := NewCollector(directStore, []string{path}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result, err := directCollector.PollOnce(); err != nil || result.Receipt.Imported != 2 {
+			t.Fatalf("direct source setup result=%+v err=%v", result, err)
+		}
+		aliasedCollector, err := NewCollector(directStore, []string{link, path}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result, err := aliasedCollector.PollOnce(); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+			t.Fatalf("new alias changed established source identity: result=%+v err=%v", result, err)
+		}
+		if count, err := directStore.EventCount(); err != nil || count != 2 {
+			t.Fatalf("alias transition event count=%d err=%v", count, err)
+		}
 	}
 }
 
@@ -287,7 +313,7 @@ func TestCollectorCancellationJoinsWithoutPartialPersistence(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if health := collector.Health(); health.Lifecycle != "stopped" || health.Status != "cancelled" || health.Outcomes.FailedSource != 0 {
+	if health := collector.Health(); health.Lifecycle != "stopped" || health.Status != "cancelled" || !health.Interrupted || health.Outcomes.FailedSource != 0 {
 		t.Fatalf("cancelled collector health=%+v", health)
 	}
 	if count, err := store.EventCount(); err != nil || count != 0 {
@@ -303,7 +329,7 @@ func TestCollectorCancellationJoinsWithoutPartialPersistence(t *testing.T) {
 	if err := preCancelled.RunImmediate(preCtx, nil); err != nil {
 		t.Fatal(err)
 	}
-	if health := preCancelled.Health(); health.Lifecycle != "stopped" || health.Outcomes.FailedSource != 0 {
+	if health := preCancelled.Health(); health.Lifecycle != "stopped" || !health.Interrupted || health.Outcomes.FailedSource != 0 {
 		t.Fatalf("pre-cancelled collector health=%+v", health)
 	}
 }
