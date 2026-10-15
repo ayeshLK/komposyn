@@ -162,14 +162,20 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("resolve Codex source identity: %w", err)
 	}
-	return importCodexSnapshotWithSourceID(context.Background(), contents, store, baseSourceID)
+	return importCodexSnapshotWithSourceID(context.Background(), contents, store, baseSourceID, func() ([]byte, error) {
+		return os.ReadFile(source.Path)
+	})
 }
 
-func importCodexSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
-	for {
+func importCodexSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string, refresh func() ([]byte, error)) (ImportResult, error) {
+	for attempt := 1; ; attempt++ {
 		result, retry, err := importCodexSnapshotAttempt(ctx, contents, store, baseSourceID)
 		if err != nil || !retry {
 			return result, err
+		}
+		contents, err = refreshSnapshotAfterCursorConflict(ctx, refresh, attempt)
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("retry Codex source: %w", err)
 		}
 	}
 }

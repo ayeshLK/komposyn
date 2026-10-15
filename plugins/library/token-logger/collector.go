@@ -171,9 +171,13 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		var result ImportResult
 		var importErr error
 		if adapter == "claude" {
-			result, importErr = importClaudeSnapshotWithSourceID(ctx, contents, c.store, baseSourceID)
+			result, importErr = importClaudeSnapshotWithSourceID(ctx, contents, c.store, baseSourceID, func() ([]byte, error) {
+				return os.ReadFile(path)
+			})
 		} else {
-			result, importErr = importCodexSnapshotWithSourceID(ctx, contents, c.store, baseSourceID)
+			result, importErr = importCodexSnapshotWithSourceID(ctx, contents, c.store, baseSourceID, func() ([]byte, error) {
+				return os.ReadFile(path)
+			})
 		}
 		if importErr != nil {
 			if errors.Is(importErr, context.Canceled) || errors.Is(importErr, context.DeadlineExceeded) {

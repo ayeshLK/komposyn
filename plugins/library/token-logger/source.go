@@ -15,10 +15,29 @@
 package tokenlogger
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 )
+
+const sourceCursorRetryLimit = 3
+
+var errSourceCursorRetryExhausted = errors.New("source cursor kept changing while snapshot was being imported")
+
+func refreshSnapshotAfterCursorConflict(ctx context.Context, refresh func() ([]byte, error), attempt int) ([]byte, error) {
+	if attempt >= sourceCursorRetryLimit {
+		return nil, fmt.Errorf("%w after %d attempts", errSourceCursorRetryExhausted, sourceCursorRetryLimit)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	contents, err := refresh()
+	if err != nil {
+		return nil, fmt.Errorf("refresh source after cursor conflict: %w", err)
+	}
+	return contents, nil
+}
 
 // sourceGeneration returns the generation for the current source contents.
 // A changed file is append-only when the bytes up to the previously committed

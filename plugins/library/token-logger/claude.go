@@ -153,14 +153,20 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("resolve Claude source identity: %w", err)
 	}
-	return importClaudeSnapshotWithSourceID(context.Background(), contents, store, baseSourceID)
+	return importClaudeSnapshotWithSourceID(context.Background(), contents, store, baseSourceID, func() ([]byte, error) {
+		return os.ReadFile(source.Path)
+	})
 }
 
-func importClaudeSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
-	for {
+func importClaudeSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string, refresh func() ([]byte, error)) (ImportResult, error) {
+	for attempt := 1; ; attempt++ {
 		result, retry, err := importClaudeSnapshotAttempt(ctx, contents, store, baseSourceID)
 		if err != nil || !retry {
 			return result, err
+		}
+		contents, err = refreshSnapshotAfterCursorConflict(ctx, refresh, attempt)
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("retry Claude source: %w", err)
 		}
 	}
 }

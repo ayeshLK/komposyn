@@ -15,6 +15,7 @@
 package tokenlogger
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -214,5 +215,146 @@ func TestConcurrentClaudeReplacementsRevalidateCursorBeforeCommit(t *testing.T) 
 	}
 	if result, err := (ClaudeAdapter{}).Import(path, stores[0]); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
 		t.Fatalf("final retry = %+v, err = %v", result, err)
+	}
+}
+
+func TestConcurrentClaudeAppendDiscardsSupersededSnapshot(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "shared.db")
+	stores := make([]*Store, 3)
+	for index := range stores {
+		store, err := Open(databasePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[index] = store
+		defer store.Close()
+	}
+	record := func(id string, input int, second int) []byte {
+		return []byte(fmt.Sprintf(`{"type":"assistant","uuid":%q,"sessionId":"session-1","cwd":"/tmp/project","timestamp":"2026-10-11T00:00:%02dZ","message":{"model":"claude-test","usage":{"input_tokens":%d,"output_tokens":1}}}`+"\n", id, second, input))
+	}
+	a := record("provider-record-1", 110, 1)
+	b := append(append([]byte(nil), a...), record("provider-record-2", 20, 2)...)
+	c := append(append([]byte(nil), b...), record("provider-record-3", 30, 3)...)
+	path := filepath.Join(t.TempDir(), "append-only.jsonl")
+	if err := os.WriteFile(path, a, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, stores[0]); err != nil || result.Receipt.Imported != 1 {
+		t.Fatalf("initial import = %+v, err = %v", result, err)
+	}
+
+	type importResult struct {
+		result ImportResult
+		err    error
+	}
+	installPause := func(store *Store) (<-chan struct{}, chan<- struct{}) {
+		reached := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		store.beforeAppend = func() {
+			once.Do(func() {
+				close(reached)
+				<-release
+			})
+		}
+		return reached, release
+	}
+	bReached, releaseB := installPause(stores[1])
+	cReached, releaseC := installPause(stores[2])
+
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bDone := make(chan importResult, 1)
+	go func() {
+		result, err := (ClaudeAdapter{}).Import(path, stores[1])
+		bDone <- importResult{result: result, err: err}
+	}()
+	<-bReached
+	if err := os.WriteFile(path, c, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cDone := make(chan importResult, 1)
+	go func() {
+		result, err := (ClaudeAdapter{}).Import(path, stores[2])
+		cDone <- importResult{result: result, err: err}
+	}()
+	<-cReached
+
+	close(releaseC)
+	newer := <-cDone
+	if newer.err != nil || newer.result.Receipt.Imported != 2 {
+		t.Fatalf("newer append = %+v, err = %v", newer.result, newer.err)
+	}
+	close(releaseB)
+	older := <-bDone
+	if older.err != nil || older.result.Receipt != (Receipt{}) || older.result.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("superseded append = %+v, err = %v", older.result, older.err)
+	}
+	if count, err := stores[0].EventCount(); err != nil || count != 3 {
+		t.Fatalf("event count = %d, err = %v; want 3", count, err)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, stores[0]); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("current snapshot retry = %+v, err = %v", result, err)
+	}
+}
+
+func TestClaudeImportBoundsCursorConflictRetries(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "shared.db")
+	primary, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	competitor, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer competitor.Close()
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	message := func(input int) []byte {
+		return []byte(fmt.Sprintf(`{"type":"assistant","uuid":"provider-record-1","sessionId":"session-1","cwd":"/tmp/project","timestamp":"2026-10-11T00:00:00Z","message":{"model":"claude-test","usage":{"input_tokens":%d,"output_tokens":1}}}`+"\n", input))
+	}
+	if err := os.WriteFile(path, message(110), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, primary); err != nil || result.Receipt.Imported != 1 {
+		t.Fatalf("initial import = %+v, err = %v", result, err)
+	}
+	source, err := collectorSourceForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSourceID, err := establishedCollectorSourceID(primary, source, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, message(111), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	primary.beforeAppend = func() {
+		attempts++
+		cursor, cursorErr := competitor.Cursor(baseSourceID)
+		if cursorErr != nil {
+			t.Errorf("read competing cursor: %v", cursorErr)
+			return
+		}
+		cursor.FileFingerprint = fmt.Sprintf("competing-fingerprint-%d", attempts)
+		cursor.SourceGeneration++
+		cursor.SnapshotReusable = false
+		if _, appendErr := competitor.AppendWithCursor(nil, cursor); appendErr != nil {
+			t.Errorf("advance competing cursor: %v", appendErr)
+		}
+	}
+	result, err := (ClaudeAdapter{}).Import(path, primary)
+	if !errors.Is(err, errSourceCursorRetryExhausted) {
+		t.Fatalf("bounded import result = %+v, err = %v; want retry exhaustion", result, err)
+	}
+	if attempts != sourceCursorRetryLimit {
+		t.Fatalf("append attempts = %d, want %d", attempts, sourceCursorRetryLimit)
+	}
+	if count, countErr := primary.EventCount(); countErr != nil || count != 1 {
+		t.Fatalf("event count after exhausted retries = %d, err = %v; want 1", count, countErr)
 	}
 }
