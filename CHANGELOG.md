@@ -4,6 +4,18 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
+## [0.3.0](https://github.com/ayeshLK/komposyn/compare/v0.2.2...v0.3.0) (2026-10-15)
+
+
+### Features
+
+* reconcile projects and add hierarchical navigation ([#88](https://github.com/ayeshLK/komposyn/issues/88)) ([435ebe2](https://github.com/ayeshLK/komposyn/commit/435ebe2fc70fabe3967e56e718ccf8d7504b7354))
+
+
+### Bug Fixes
+
+* restore watch and REPL collection correctness ([#91](https://github.com/ayeshLK/komposyn/issues/91)) ([1aa30f9](https://github.com/ayeshLK/komposyn/commit/1aa30f9712ac62c4d636183ab5ab633fe54408cd))
+
 ## [0.2.2](https://github.com/ayeshLK/komposyn/compare/v0.2.1...v0.2.2) (2026-10-15)
 
 
