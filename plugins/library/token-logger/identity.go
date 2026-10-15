@@ -269,7 +269,7 @@ func resolveSession(tx *sql.Tx, session Session, scope, alias, now string) (stri
 func recordReconciliationWarning(tx *sql.Tx, kind, scope, alias, projectID, sessionID, message, now string) error {
 	aliasDigest := digest([]byte(alias))
 	_, err := tx.Exec(`INSERT INTO reconciliation_warnings(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at)
-		VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(kind, scope, alias_digest, project_id, session_id) DO UPDATE SET
 		last_seen_at = excluded.last_seen_at, occurrence_count = occurrence_count + 1`, kind, scope, aliasDigest, projectID, sessionID, message, now, now)
 	if err != nil {

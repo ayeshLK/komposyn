@@ -21,6 +21,13 @@ import (
 	"time"
 )
 
+const (
+	// UnattributedProjectID and UnattributedSessionID identify synthetic local
+	// navigation buckets; they are never persisted as provider identities.
+	UnattributedProjectID = "komposyn:unattributed-project"
+	UnattributedSessionID = "komposyn:unattributed-session"
+)
+
 // ResourceFilter limits project and session summaries without changing their
 // stable identities.
 type ResourceFilter struct {
@@ -92,11 +99,33 @@ func (s *Store) ListProjects(filter ResourceFilter) (ProjectResourceList, error)
 			return ProjectResourceList{}, err
 		}
 	}
+	unattributedEvents, err := s.unattributedEventsExist(filter, false)
+	if err != nil {
+		return ProjectResourceList{}, err
+	}
+	var unattributedSessions int
+	if err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id IS NULL)").Scan(&unattributedSessions); err != nil {
+		return ProjectResourceList{}, err
+	}
+	if unattributedEvents || unattributedSessions != 0 {
+		project := ProjectResource{ID: UnattributedProjectID, DisplayName: "Unattributed"}
+		if err := s.populateProjectResource(&project, filter); err != nil {
+			return ProjectResourceList{}, err
+		}
+		result.Projects = append(result.Projects, project)
+	}
 	return result, nil
 }
 
 // ProjectResource returns one stable local project.
 func (s *Store) ProjectResource(id string, filter ResourceFilter) (ProjectResource, error) {
+	if id == UnattributedProjectID {
+		project := ProjectResource{ID: id, DisplayName: "Unattributed"}
+		if err := s.populateProjectResource(&project, filter); err != nil {
+			return ProjectResource{}, err
+		}
+		return project, nil
+	}
 	var project ProjectResource
 	if err := s.db.QueryRow("SELECT id, display_name FROM projects WHERE id = ?", id).Scan(&project.ID, &project.DisplayName); err != nil {
 		return ProjectResource{}, err
@@ -108,6 +137,19 @@ func (s *Store) ProjectResource(id string, filter ResourceFilter) (ProjectResour
 }
 
 func (s *Store) populateProjectResource(project *ProjectResource, filter ResourceFilter) error {
+	if project.ID == UnattributedProjectID {
+		report, err := s.Query(resourceUsageFilter(filter, project.ID, ""))
+		if err != nil {
+			return err
+		}
+		project.Summary = report.Summary
+		project.FirstActive, project.LastActive, err = s.activityBounds("project_id", project.ID, filter)
+		if err != nil {
+			return err
+		}
+		project.Clients, project.Models, err = s.resourceDimensions("project_id", project.ID, filter)
+		return err
+	}
 	locationRows, err := s.db.Query(`SELECT canonical_path, is_preferred FROM project_locations
 		WHERE project_id = ? ORDER BY is_preferred DESC, canonical_path`, project.ID)
 	if err != nil {
@@ -149,8 +191,13 @@ func (s *Store) ListSessions(projectID string, filter ResourceFilter) (SessionRe
 	if projectID == "" {
 		return SessionResourceList{}, errors.New("project ID is required")
 	}
-	rows, err := s.db.Query(`SELECT id, project_id, client_name, started_at, ended_at
-		FROM sessions WHERE project_id = ? ORDER BY COALESCE(started_at, ''), id`, projectID)
+	query := `SELECT id, COALESCE(project_id, ''), client_name, started_at, ended_at FROM sessions WHERE project_id = ? ORDER BY COALESCE(started_at, ''), id`
+	args := []any{projectID}
+	if projectID == UnattributedProjectID {
+		query = `SELECT id, '', client_name, started_at, ended_at FROM sessions WHERE project_id IS NULL ORDER BY COALESCE(started_at, ''), id`
+		args = nil
+	}
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return SessionResourceList{}, err
 	}
@@ -170,10 +217,22 @@ func (s *Store) ListSessions(projectID string, filter ResourceFilter) (SessionRe
 		if err != nil {
 			return SessionResourceList{}, err
 		}
+		if projectID == UnattributedProjectID {
+			session.ProjectID = UnattributedProjectID
+		}
 		result.Sessions = append(result.Sessions, session)
 	}
 	if err := rows.Close(); err != nil {
 		return SessionResourceList{}, err
+	}
+	if projectID == UnattributedProjectID {
+		missingSessionEvents, err := s.unattributedEventsExist(filter, true)
+		if err != nil {
+			return SessionResourceList{}, err
+		}
+		if missingSessionEvents {
+			result.Sessions = append(result.Sessions, SessionResource{ID: UnattributedSessionID, ProjectID: UnattributedProjectID, Client: "unattributed"})
+		}
 	}
 	for index := range result.Sessions {
 		session := &result.Sessions[index]
@@ -194,11 +253,42 @@ func (s *Store) ListSessions(projectID string, filter ResourceFilter) (SessionRe
 	return result, nil
 }
 
+func (s *Store) unattributedEventsExist(filter ResourceFilter, sessionMissing bool) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM usage_events WHERE project_id IS NULL AND occurred_at >= ? AND occurred_at < ?`
+	args := []any{formatStoredTime(filter.From), formatStoredTime(filter.To)}
+	if sessionMissing {
+		query += " AND session_id IS NULL"
+	}
+	query, args = appendResourceConditions(query, args, filter)
+	query += ")"
+	var exists bool
+	err := s.db.QueryRow(query, args...).Scan(&exists)
+	return exists, err
+}
+
 // SessionResource returns one session, optionally verifying project ownership.
 func (s *Store) SessionResource(id, projectID string, filter ResourceFilter) (SessionResource, error) {
+	if id == UnattributedSessionID {
+		if projectID != "" && projectID != UnattributedProjectID {
+			return SessionResource{}, errors.New("session does not belong to the selected project")
+		}
+		list, err := s.ListSessions(UnattributedProjectID, filter)
+		if err != nil {
+			return SessionResource{}, err
+		}
+		for _, session := range list.Sessions {
+			if session.ID == id {
+				return session, nil
+			}
+		}
+		return SessionResource{}, sql.ErrNoRows
+	}
 	var actualProject string
 	if err := s.db.QueryRow("SELECT COALESCE(project_id, '') FROM sessions WHERE id = ?", id).Scan(&actualProject); err != nil {
 		return SessionResource{}, err
+	}
+	if actualProject == "" {
+		actualProject = UnattributedProjectID
 	}
 	if projectID != "" && actualProject != projectID {
 		return SessionResource{}, errors.New("session does not belong to the selected project")
@@ -216,8 +306,15 @@ func (s *Store) SessionResource(id, projectID string, filter ResourceFilter) (Se
 }
 
 func (s *Store) activityBounds(column, id string, filter ResourceFilter) (*time.Time, *time.Time, error) {
-	query := "SELECT MIN(occurred_at), MAX(occurred_at) FROM usage_events WHERE " + column + " = ? AND occurred_at >= ? AND occurred_at < ?"
-	args := []any{id, formatStoredTime(filter.From), formatStoredTime(filter.To)}
+	condition := column + " = ?"
+	args := []any{id}
+	if id == UnattributedProjectID {
+		condition, args = "project_id IS NULL", nil
+	} else if id == UnattributedSessionID {
+		condition, args = "project_id IS NULL AND session_id IS NULL", nil
+	}
+	query := "SELECT MIN(occurred_at), MAX(occurred_at) FROM usage_events WHERE " + condition + " AND occurred_at >= ? AND occurred_at < ?"
+	args = append(args, formatStoredTime(filter.From), formatStoredTime(filter.To))
 	query, args = appendResourceConditions(query, args, filter)
 	var first, last sql.NullString
 	if err := s.db.QueryRow(query, args...).Scan(&first, &last); err != nil {
@@ -232,9 +329,16 @@ func (s *Store) activityBounds(column, id string, filter ResourceFilter) (*time.
 }
 
 func (s *Store) resourceDimensions(column, id string, filter ResourceFilter) ([]string, []string, error) {
+	condition := column + " = ?"
+	args := []any{id}
+	if id == UnattributedProjectID {
+		condition, args = "project_id IS NULL", nil
+	} else if id == UnattributedSessionID {
+		condition, args = "project_id IS NULL AND session_id IS NULL", nil
+	}
 	query := `SELECT DISTINCT client_name, CASE WHEN resolved_model <> '' THEN resolved_model ELSE requested_model END
-		FROM usage_events WHERE ` + column + ` = ? AND occurred_at >= ? AND occurred_at < ?`
-	args := []any{id, formatStoredTime(filter.From), formatStoredTime(filter.To)}
+		FROM usage_events WHERE ` + condition + ` AND occurred_at >= ? AND occurred_at < ?`
+	args = append(args, formatStoredTime(filter.From), formatStoredTime(filter.To))
 	query, args = appendResourceConditions(query, args, filter)
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -259,7 +363,14 @@ func (s *Store) resourceDimensions(column, id string, filter ResourceFilter) ([]
 }
 
 func resourceUsageFilter(filter ResourceFilter, projectID, sessionID string) UsageFilter {
-	return UsageFilter{From: filter.From, To: filter.To, ProjectID: projectID, SessionID: sessionID, Client: filter.Client, Provider: filter.Provider, Model: filter.Model}
+	usage := UsageFilter{From: filter.From, To: filter.To, ProjectID: projectID, SessionID: sessionID, Client: filter.Client, Provider: filter.Provider, Model: filter.Model}
+	if projectID == UnattributedProjectID {
+		usage.ProjectID, usage.ProjectMissing = "", true
+	}
+	if sessionID == UnattributedSessionID {
+		usage.SessionID, usage.SessionMissing = "", true
+	}
+	return usage
 }
 
 func appendResourceConditions(query string, args []any, filter ResourceFilter) (string, []any) {

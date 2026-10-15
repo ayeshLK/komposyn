@@ -138,15 +138,26 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 }
 
 type interactiveState struct {
-	from        time.Time
-	to          time.Time
-	pinned      bool
-	groupBy     []string
-	view        string
-	projectID   string
-	projectName string
-	sessionID   string
-	model       string
+	from          time.Time
+	to            time.Time
+	pinned        bool
+	groupBy       []string
+	view          string
+	projectID     string
+	projectName   string
+	sessionID     string
+	model         string
+	modelProvider string
+	modelSelected bool
+	modelMissing  bool
+	projectRows   []tokenlogger.ProjectResource
+	sessionRows   []tokenlogger.SessionResource
+	modelRows     []interactiveModelSelection
+}
+
+type interactiveModelSelection struct {
+	Model    string
+	Provider string
 }
 
 func runInteractive(input io.Reader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string) int {
@@ -472,7 +483,8 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 			}
 		case "/projects":
 			state.view = "projects"
-			state.projectID, state.projectName, state.sessionID, state.model = "", "", "", ""
+			state.projectID, state.projectName, state.sessionID = "", "", ""
+			state.clearModelSelection()
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
@@ -482,12 +494,13 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				continue
 			}
 			state.resolveRange(now)
-			project, err := selectInteractiveProject(store, tokenlogger.ResourceFilter{From: state.from, To: state.to}, fields[1])
+			project, err := selectInteractiveProject(store, &state, tokenlogger.ResourceFilter{From: state.from, To: state.to}, fields[1])
 			if err != nil {
 				fmt.Fprintf(stdout, "project selection failed: %v\n", err)
 				continue
 			}
-			state.projectID, state.projectName, state.sessionID, state.model, state.view = project.ID, project.DisplayName, "", "", "project"
+			state.projectID, state.projectName, state.sessionID, state.view = project.ID, project.DisplayName, "", "project"
+			state.clearModelSelection()
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
@@ -506,12 +519,13 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				continue
 			}
 			state.resolveRange(now)
-			session, err := selectInteractiveSession(store, state.projectID, tokenlogger.ResourceFilter{From: state.from, To: state.to}, fields[1])
+			session, err := selectInteractiveSession(store, &state, tokenlogger.ResourceFilter{From: state.from, To: state.to}, fields[1])
 			if err != nil {
 				fmt.Fprintf(stdout, "session selection failed: %v\n", err)
 				continue
 			}
-			state.sessionID, state.model, state.view = session.ID, "", "session"
+			state.sessionID, state.view = session.ID, "session"
+			state.clearModelSelection()
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
@@ -530,18 +544,19 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				continue
 			}
 			state.resolveRange(now)
-			model, err := selectInteractiveModel(store, &state, fields[1])
+			model, err := selectInteractiveModel(&state, fields[1])
 			if err != nil {
 				fmt.Fprintf(stdout, "model selection failed: %v\n", err)
 				continue
 			}
-			state.model, state.view = model, "model"
+			state.model, state.modelProvider, state.modelMissing, state.modelSelected, state.view = model.Model, model.Provider, model.Model == "", true, "model"
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
 		case "/back":
-			if state.model != "" {
-				state.model, state.view = "", "models"
+			if state.modelSelected {
+				state.clearModelSelection()
+				state.view = "models"
 			} else if state.sessionID != "" {
 				state.sessionID, state.view = "", "sessions"
 			} else if state.projectID != "" {
@@ -553,7 +568,8 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				return 0
 			}
 		case "/home":
-			state.projectID, state.projectName, state.sessionID, state.model, state.view = "", "", "", "", ""
+			state.projectID, state.projectName, state.sessionID, state.view = "", "", "", ""
+			state.clearModelSelection()
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
@@ -648,6 +664,11 @@ func (state *interactiveState) resolveRange(now func() time.Time) {
 	state.from = state.to.AddDate(0, 0, -7)
 }
 
+func (state *interactiveState) clearModelSelection() {
+	state.model, state.modelProvider = "", ""
+	state.modelSelected, state.modelMissing = false, false
+}
+
 func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state *interactiveState, reader interactiveLineReader, now func() time.Time) error {
 	state.resolveRange(now)
 	fmt.Fprintf(stdout, "%s\n", interactiveBreadcrumb(state))
@@ -657,6 +678,8 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		if err != nil {
 			return renderInteractiveError(stdout, stderr, store, reader, err)
 		}
+		state.projectRows = append(state.projectRows[:0], list.Projects...)
+		state.sessionRows, state.modelRows = nil, nil
 		fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
 		return writeProjectTable(stdout, list.Projects)
 	}
@@ -665,10 +688,13 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		if err != nil {
 			return renderInteractiveError(stdout, stderr, store, reader, err)
 		}
-		fmt.Fprintf(stdout, "PROJECT: %s\nrange: %s to %s (UTC)\n", state.projectName, state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
+		state.sessionRows = append(state.sessionRows[:0], list.Sessions...)
+		state.projectRows, state.modelRows = nil, nil
+		fmt.Fprintf(stdout, "PROJECT: %s\nrange: %s to %s (UTC)\n", tokenlogger.FormatHumanLabel(state.projectName), state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
 		return writeSessionTable(stdout, list.Sessions)
 	}
-	filter := tokenlogger.UsageFilter{From: state.from, To: state.to, GroupBy: state.groupBy, ProjectID: state.projectID, SessionID: state.sessionID, Model: state.model}
+	state.projectRows, state.sessionRows = nil, nil
+	filter := interactiveUsageFilter(state)
 	if state.view == "project" {
 		filter.GroupBy = []string{tokenlogger.GroupModel}
 	}
@@ -684,8 +710,13 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 	}
 	fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
 	if state.view == "session" || state.view == "models" {
+		state.modelRows = make([]interactiveModelSelection, 0, len(report.Rows))
+		for _, row := range report.Rows {
+			state.modelRows = append(state.modelRows, interactiveModelSelection{Model: row.Dimensions[tokenlogger.GroupModel], Provider: row.Dimensions[tokenlogger.GroupProvider]})
+		}
 		return writeInteractiveModelTable(stdout, report)
 	}
+	state.modelRows = nil
 	width := 0
 	if sized, ok := stdout.(interface{ TerminalWidth() int }); ok {
 		width = sized.TerminalWidth()
@@ -694,6 +725,17 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		fmt.Fprintf(stderr, "render report failed: %v\n", err)
 	}
 	return nil
+}
+
+func interactiveUsageFilter(state *interactiveState) tokenlogger.UsageFilter {
+	filter := tokenlogger.UsageFilter{From: state.from, To: state.to, GroupBy: state.groupBy, ProjectID: state.projectID, SessionID: state.sessionID, Model: state.model, Provider: state.modelProvider, ModelMissing: state.modelMissing}
+	if state.projectID == tokenlogger.UnattributedProjectID {
+		filter.ProjectID, filter.ProjectMissing = "", true
+	}
+	if state.sessionID == tokenlogger.UnattributedSessionID {
+		filter.SessionID, filter.SessionMissing = "", true
+	}
+	return filter
 }
 
 func renderInteractiveError(stdout, stderr io.Writer, store *tokenlogger.Store, reader interactiveLineReader, err error) error {
@@ -712,34 +754,40 @@ func interactiveBreadcrumb(state *interactiveState) string {
 		if name == "" {
 			name = shortResourceID(state.projectID)
 		}
-		parts = append(parts, "project:"+name)
+		parts = append(parts, "project:"+tokenlogger.FormatHumanLabel(name))
 	}
 	if state.sessionID != "" {
 		parts = append(parts, "session:"+shortResourceID(state.sessionID))
 	}
-	if state.model != "" {
-		parts = append(parts, "model:"+state.model)
+	if state.modelSelected {
+		model := state.model
+		if state.modelMissing {
+			model = "Unattributed"
+		}
+		parts = append(parts, "model:"+tokenlogger.FormatHumanLabel(model))
 	}
 	return strings.Join(parts, " / ")
 }
 
 func interactivePrompt(state *interactiveState) string { return interactiveBreadcrumb(state) + " > " }
 
-func selectInteractiveProject(store *tokenlogger.Store, filter tokenlogger.ResourceFilter, selector string) (tokenlogger.ProjectResource, error) {
-	list, err := store.ListProjects(filter)
-	if err != nil {
-		return tokenlogger.ProjectResource{}, err
-	}
+func selectInteractiveProject(store *tokenlogger.Store, state *interactiveState, filter tokenlogger.ResourceFilter, selector string) (tokenlogger.ProjectResource, error) {
 	if row, err := strconv.Atoi(selector); err == nil {
-		if row < 1 || row > len(list.Projects) {
+		if state.view != "projects" || row < 1 || row > len(state.projectRows) {
 			return tokenlogger.ProjectResource{}, errors.New("project row is outside the current result")
 		}
-		return list.Projects[row-1], nil
+		return state.projectRows[row-1], nil
 	}
 	var matches []tokenlogger.ProjectResource
-	for _, project := range list.Projects {
+	for _, project := range state.projectRows {
 		if project.ID == selector || strings.EqualFold(project.DisplayName, selector) {
 			matches = append(matches, project)
+		}
+	}
+	if len(matches) == 0 {
+		project, err := store.ProjectResource(selector, filter)
+		if err == nil {
+			return project, nil
 		}
 	}
 	if len(matches) != 1 {
@@ -748,21 +796,23 @@ func selectInteractiveProject(store *tokenlogger.Store, filter tokenlogger.Resou
 	return matches[0], nil
 }
 
-func selectInteractiveSession(store *tokenlogger.Store, projectID string, filter tokenlogger.ResourceFilter, selector string) (tokenlogger.SessionResource, error) {
-	list, err := store.ListSessions(projectID, filter)
-	if err != nil {
-		return tokenlogger.SessionResource{}, err
-	}
+func selectInteractiveSession(store *tokenlogger.Store, state *interactiveState, filter tokenlogger.ResourceFilter, selector string) (tokenlogger.SessionResource, error) {
 	if row, err := strconv.Atoi(selector); err == nil {
-		if row < 1 || row > len(list.Sessions) {
+		if state.view != "sessions" || row < 1 || row > len(state.sessionRows) {
 			return tokenlogger.SessionResource{}, errors.New("session row is outside the current result")
 		}
-		return list.Sessions[row-1], nil
+		return state.sessionRows[row-1], nil
 	}
 	var matches []tokenlogger.SessionResource
-	for _, session := range list.Sessions {
+	for _, session := range state.sessionRows {
 		if session.ID == selector || strings.HasPrefix(session.ID, selector) {
 			matches = append(matches, session)
+		}
+	}
+	if len(matches) == 0 {
+		session, err := store.SessionResource(selector, state.projectID, filter)
+		if err == nil {
+			return session, nil
 		}
 	}
 	if len(matches) != 1 {
@@ -771,26 +821,25 @@ func selectInteractiveSession(store *tokenlogger.Store, projectID string, filter
 	return matches[0], nil
 }
 
-func selectInteractiveModel(store *tokenlogger.Store, state *interactiveState, selector string) (string, error) {
-	report, err := store.Query(tokenlogger.UsageFilter{From: state.from, To: state.to, ProjectID: state.projectID, SessionID: state.sessionID, GroupBy: []string{tokenlogger.GroupModel, tokenlogger.GroupProvider}})
-	if err != nil {
-		return "", err
-	}
+func selectInteractiveModel(state *interactiveState, selector string) (interactiveModelSelection, error) {
 	if row, err := strconv.Atoi(selector); err == nil {
-		if row < 1 || row > len(report.Rows) {
-			return "", errors.New("model row is outside the current result")
+		if (state.view != "models" && state.view != "session") || row < 1 || row > len(state.modelRows) {
+			return interactiveModelSelection{}, errors.New("model row is outside the current result")
 		}
-		return report.Rows[row-1].Dimensions[tokenlogger.GroupModel], nil
+		return state.modelRows[row-1], nil
 	}
-	var matches []string
-	for _, row := range report.Rows {
-		model := row.Dimensions[tokenlogger.GroupModel]
-		if model == selector || strings.HasPrefix(model, selector) {
-			matches = append(matches, model)
+	var matches []interactiveModelSelection
+	for _, row := range state.modelRows {
+		display := row.Model
+		if display == "" {
+			display = "Unattributed"
+		}
+		if strings.EqualFold(display, selector) || strings.HasPrefix(display, selector) {
+			matches = append(matches, row)
 		}
 	}
 	if len(matches) != 1 {
-		return "", fmt.Errorf("selector matched %d models; use a row or unambiguous name", len(matches))
+		return interactiveModelSelection{}, fmt.Errorf("selector matched %d models; use a row or unambiguous name", len(matches))
 	}
 	return matches[0], nil
 }

@@ -112,6 +112,11 @@ func formatHumanDimension(value string) string {
 	return string(runes[:prefixLength]) + suffix
 }
 
+// FormatHumanLabel escapes terminal controls and bounds untrusted labels for
+// human-facing tables and prompts. Machine-readable output must retain the
+// original value instead.
+func FormatHumanLabel(value string) string { return formatHumanDimension(value) }
+
 func escapeHumanText(value string) string {
 	var escaped strings.Builder
 	for _, character := range value {
@@ -192,6 +197,13 @@ func reportedCostDisplay(measures UsageMeasures) string {
 		value += " " + measures.ProviderReportedCurrency
 	}
 	return value
+}
+
+// FormatHumanCost preserves the report table's separate estimate, reported,
+// and availability/status presentation for other human-facing views.
+func FormatHumanCost(measures UsageMeasures) (estimate, reported, status string) {
+	estimate, status = humanCostDisplay(measures)
+	return estimate, reportedCostDisplay(measures), status
 }
 
 func formatCostMicros(value int64) string {

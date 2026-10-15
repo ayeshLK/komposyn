@@ -108,7 +108,7 @@ func runSessionResources(args []string, stdout, stderr io.Writer) int {
 		}
 		id, optionArgs = optionArgs[0], optionArgs[1:]
 	}
-	options, err := parseResourceOptions(optionArgs, action == "list")
+	options, err := parseResourceOptions(optionArgs, true)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -128,13 +128,22 @@ func runSessionResources(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "load session %q: %v\n", id, err)
 			return 2
 		}
-		report, err := store.Query(tokenlogger.UsageFilter{From: options.filter.From, To: options.filter.To, ProjectID: session.ProjectID, SessionID: session.ID, Client: options.filter.Client, Provider: options.filter.Provider, Model: options.filter.Model, GroupBy: []string{tokenlogger.GroupModel}})
+		usageFilter := tokenlogger.UsageFilter{From: options.filter.From, To: options.filter.To, ProjectID: session.ProjectID, SessionID: session.ID, Client: options.filter.Client, Provider: options.filter.Provider, Model: options.filter.Model, GroupBy: []string{tokenlogger.GroupModel, tokenlogger.GroupProvider}}
+		if session.ProjectID == tokenlogger.UnattributedProjectID {
+			usageFilter.ProjectID, usageFilter.ProjectMissing = "", true
+		}
+		if session.ID == tokenlogger.UnattributedSessionID {
+			usageFilter.SessionID, usageFilter.SessionMissing = "", true
+		}
+		report, err := store.Query(usageFilter)
 		if err != nil {
 			fmt.Fprintf(stderr, "query session usage: %v\n", err)
 			return 2
 		}
 		if options.format == "json" {
 			err = writeResourceJSON(stdout, sessionDetail{1, session, report})
+		} else if options.format == "csv" {
+			err = writeSessionDetailCSV(stdout, session, report)
 		} else {
 			err = writeSessionTable(stdout, []tokenlogger.SessionResource{session})
 			if err == nil {
@@ -275,7 +284,7 @@ func writeResourceJSON(output io.Writer, value any) error {
 func writeProjectTable(output io.Writer, projects []tokenlogger.ProjectResource) error {
 	rows := [][]string{{"#", "PROJECT", "LOCATION", "ID", "SESSIONS", "REQUESTS", "TOKENS", "WARNINGS", "LAST ACTIVE"}}
 	for index, project := range projects {
-		rows = append(rows, []string{strconv.Itoa(index + 1), project.DisplayName, humanLocation(project.Location), shortResourceID(project.ID), strconv.FormatInt(project.Summary.SessionCount, 10), strconv.FormatInt(project.Summary.RequestCount, 10), strconv.FormatInt(project.Summary.TotalTokens, 10), strconv.FormatInt(project.Warnings, 10), resourceTime(project.LastActive)})
+		rows = append(rows, []string{strconv.Itoa(index + 1), tokenlogger.FormatHumanLabel(project.DisplayName), humanLocation(project.Location), shortResourceID(project.ID), strconv.FormatInt(project.Summary.SessionCount, 10), strconv.FormatInt(project.Summary.RequestCount, 10), strconv.FormatInt(project.Summary.TotalTokens, 10), strconv.FormatInt(project.Warnings, 10), resourceTime(project.LastActive)})
 	}
 	return writeResourceRows(output, rows)
 }
@@ -287,13 +296,13 @@ func writeSessionTable(output io.Writer, sessions []tokenlogger.SessionResource)
 		if started == nil {
 			started = session.FirstActive
 		}
-		rows = append(rows, []string{strconv.Itoa(index + 1), shortResourceID(session.ID), session.Client, resourceTime(started), resourceTime(session.LastActive), strconv.Itoa(len(session.Models)), strconv.FormatInt(session.Summary.RequestCount, 10), strconv.FormatInt(session.Summary.TotalTokens, 10)})
+		rows = append(rows, []string{strconv.Itoa(index + 1), shortResourceID(session.ID), tokenlogger.FormatHumanLabel(session.Client), resourceTime(started), resourceTime(session.LastActive), strconv.Itoa(len(session.Models)), strconv.FormatInt(session.Summary.RequestCount, 10), strconv.FormatInt(session.Summary.TotalTokens, 10)})
 	}
 	return writeResourceRows(output, rows)
 }
 
 func writeInteractiveModelTable(output io.Writer, report tokenlogger.UsageReport) error {
-	rows := [][]string{{"#", "MODEL", "PROVIDER", "REQUESTS", "INPUT", "CACHED", "CACHE WRITE", "OUTPUT", "REASONING", "TOTAL", "COST"}}
+	rows := [][]string{{"#", "MODEL", "PROVIDER", "REQUESTS", "INPUT", "CACHED", "CACHE WRITE", "OUTPUT", "REASONING", "TOTAL", "ESTIMATE", "REPORTED", "STATUS"}}
 	for index, row := range report.Rows {
 		model := row.Dimensions[tokenlogger.GroupModel]
 		if model == "" {
@@ -303,11 +312,8 @@ func writeInteractiveModelTable(output io.Writer, report tokenlogger.UsageReport
 		if provider == "" {
 			provider = "(unattributed)"
 		}
-		cost := "unknown"
-		if row.UnknownCostRequests == 0 {
-			cost = strconv.FormatInt(row.CalculatedCostMicros, 10) + " " + row.CalculatedCurrency + " micros"
-		}
-		rows = append(rows, []string{strconv.Itoa(index + 1), model, provider, strconv.FormatInt(row.RequestCount, 10), strconv.FormatInt(row.InputTokens, 10), strconv.FormatInt(row.CachedInputTokens, 10), strconv.FormatInt(row.CacheWriteInputTokens, 10), strconv.FormatInt(row.OutputTokens, 10), strconv.FormatInt(row.ReasoningOutputTokens, 10), strconv.FormatInt(row.TotalTokens, 10), cost})
+		estimate, reported, status := tokenlogger.FormatHumanCost(row.UsageMeasures)
+		rows = append(rows, []string{strconv.Itoa(index + 1), tokenlogger.FormatHumanLabel(model), tokenlogger.FormatHumanLabel(provider), strconv.FormatInt(row.RequestCount, 10), strconv.FormatInt(row.InputTokens, 10), strconv.FormatInt(row.CachedInputTokens, 10), strconv.FormatInt(row.CacheWriteInputTokens, 10), strconv.FormatInt(row.OutputTokens, 10), strconv.FormatInt(row.ReasoningOutputTokens, 10), strconv.FormatInt(row.TotalTokens, 10), tokenlogger.FormatHumanLabel(estimate), tokenlogger.FormatHumanLabel(reported), tokenlogger.FormatHumanLabel(status)})
 	}
 	return writeResourceRows(output, rows)
 }
@@ -349,16 +355,30 @@ func humanLocation(location string) string {
 	}
 	home, err := os.UserHomeDir()
 	if err == nil && (location == home || strings.HasPrefix(location, home+string(filepath.Separator))) {
-		return "~" + strings.TrimPrefix(location, home)
+		location = "~" + strings.TrimPrefix(location, home)
 	}
-	return location
+	return tokenlogger.FormatHumanLabel(location)
 }
 
 func shortResourceID(id string) string {
-	if len(id) <= 16 {
-		return id
+	return tokenlogger.FormatHumanLabel(id)
+}
+
+func writeSessionDetailCSV(output io.Writer, session tokenlogger.SessionResource, report tokenlogger.UsageReport) error {
+	writer := csv.NewWriter(output)
+	header := []string{"format_version", "session_id", "project_id", "client", "model", "provider", "request_count", "session_count", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens", "calculated_cost_micros", "calculated_currency", "provider_reported_cost_micros", "provider_reported_currency", "unknown_cost_requests", "estimated_cost_requests", "known_zero_cost_requests", "cost_unknown_reason", "calculation_basis", "pricing_provider", "pricing_version", "pricing_source"}
+	if err := writer.Write(header); err != nil {
+		return err
 	}
-	return id[:8] + "…" + id[len(id)-4:]
+	for _, row := range report.Rows {
+		m := row.UsageMeasures
+		values := []string{"1", session.ID, session.ProjectID, session.Client, row.Dimensions[tokenlogger.GroupModel], row.Dimensions[tokenlogger.GroupProvider], strconv.FormatInt(m.RequestCount, 10), strconv.FormatInt(m.SessionCount, 10), strconv.FormatInt(m.InputTokens, 10), strconv.FormatInt(m.CachedInputTokens, 10), strconv.FormatInt(m.CacheWriteInputTokens, 10), strconv.FormatInt(m.OutputTokens, 10), strconv.FormatInt(m.ReasoningOutputTokens, 10), strconv.FormatInt(m.TotalTokens, 10), strconv.FormatInt(m.CalculatedCostMicros, 10), m.CalculatedCurrency, strconv.FormatInt(m.ProviderReportedCostMicros, 10), m.ProviderReportedCurrency, strconv.FormatInt(m.UnknownCostRequests, 10), strconv.FormatInt(m.EstimatedCostRequests, 10), strconv.FormatInt(m.KnownZeroCostRequests, 10), m.CostUnknownReason, m.CalculationBasis, m.PricingProvider, m.PricingVersion, m.PricingSource}
+		if err := writer.Write(values); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
 }
 
 func resourceTime(value *time.Time) string {

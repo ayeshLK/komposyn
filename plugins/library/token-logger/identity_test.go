@@ -15,6 +15,7 @@
 package tokenlogger
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,48 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReconciliationWarningMigrationCoalescesNullableKeys(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE reconciliation_warnings (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '', alias_digest TEXT NOT NULL DEFAULT '',
+		project_id TEXT, session_id TEXT, message TEXT NOT NULL,
+		first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+		occurrence_count INTEGER NOT NULL DEFAULT 1,
+		UNIQUE(kind, scope, alias_digest, project_id, session_id)
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, occurrences := range []int{2, 3} {
+		if _, err := db.Exec(`INSERT INTO reconciliation_warnings
+			(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at, occurrence_count)
+			VALUES ('conflict', 'scope', 'digest', NULL, NULL, 'message', '2026-01-01', '2026-01-02', ?)`, occurrences); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(schemaMigrationSeven); err != nil {
+		t.Fatal(err)
+	}
+	var rows, occurrences int
+	var projectID, sessionID string
+	if err := db.QueryRow(`SELECT COUNT(*), SUM(occurrence_count), project_id, session_id
+		FROM reconciliation_warnings`).Scan(&rows, &occurrences, &projectID, &sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || occurrences != 5 || projectID != "" || sessionID != "" {
+		t.Fatalf("migrated warnings = rows %d occurrences %d project %q session %q, want 1/5/empty/empty", rows, occurrences, projectID, sessionID)
+	}
+	if _, err := db.Exec(`INSERT INTO reconciliation_warnings
+		(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at)
+		VALUES ('conflict', 'scope', 'other', NULL, '', 'message', '2026-01-01', '2026-01-02')`); err == nil {
+		t.Fatal("migrated project_id unexpectedly accepted NULL")
+	}
+}
 
 func TestCrossClientImportsAtSameLocationShareLocalProject(t *testing.T) {
 	store := openTestStore(t)
@@ -104,18 +147,22 @@ func TestConflictingAliasAndLocationDoesNotSilentlyMerge(t *testing.T) {
 	first, _ := appendImportedFixture(t, store, "codex", "codex-cli", "stable-a", "first", firstRoot, "first")
 	second, _ := appendImportedFixture(t, store, "claude-code", "claude-code", "stable-b", "second", secondRoot, "second")
 	conflicted, _ := appendImportedFixture(t, store, "codex", "codex-cli", "stable-a", "first", secondRoot, "conflict")
+	appendImportedFixture(t, store, "codex", "codex-cli", "stable-a", "first", secondRoot, "conflict-repeat")
 	if conflicted != first || conflicted == second {
 		t.Fatalf("conflict reassigned alias: first=%q second=%q conflicted=%q", first, second, conflicted)
 	}
-	var claimed, warnings int
+	var claimed, warnings, occurrences int
 	if err := store.db.QueryRow("SELECT COUNT(*) FROM project_locations WHERE project_id = ? AND canonical_path = ?", first, secondRoot).Scan(&claimed); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.db.QueryRow("SELECT COUNT(*) FROM reconciliation_warnings WHERE kind = 'alias-location-conflict'").Scan(&warnings); err != nil {
 		t.Fatal(err)
 	}
-	if claimed != 0 || warnings != 1 {
-		t.Fatalf("conflicting location claimed=%d warnings=%d, want 0/1", claimed, warnings)
+	if err := store.db.QueryRow("SELECT occurrence_count FROM reconciliation_warnings WHERE kind = 'alias-location-conflict'").Scan(&occurrences); err != nil {
+		t.Fatal(err)
+	}
+	if claimed != 0 || warnings != 1 || occurrences != 2 {
+		t.Fatalf("conflicting location claimed=%d warnings=%d occurrences=%d, want 0/1/2", claimed, warnings, occurrences)
 	}
 }
 
@@ -170,6 +217,53 @@ func TestConcurrentImportAndProjectBrowsing(t *testing.T) {
 	close(errorsFound)
 	for err := range errorsFound {
 		t.Errorf("concurrent operation: %v", err)
+	}
+}
+
+func TestUnattributedResourcesReconcileWithGlobalTotals(t *testing.T) {
+	store := openTestStore(t)
+	from := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	attributed := testEvent("attributed")
+	attributed.EventID, attributed.ProjectID, attributed.SessionID = "attributed-event", "project", "session"
+	unattributed := testEvent("unattributed")
+	unattributed.EventID, unattributed.ProjectID, unattributed.SessionID = "unattributed-event", "", ""
+	if _, err := store.AppendWithReferences([]UsageEvent{attributed}, []Project{{ID: "project", DisplayName: "Project"}}, []Session{{ID: "session", ProjectID: "project", Client: attributed.Client}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append([]UsageEvent{unattributed}); err != nil {
+		t.Fatal(err)
+	}
+	filter := ResourceFilter{From: from, To: to}
+	projects, err := store.ListProjects(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	global, err := store.Query(UsageFilter{From: from, To: to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projectRequests int64
+	foundUnattributed := false
+	for _, project := range projects.Projects {
+		projectRequests += project.Summary.RequestCount
+		if project.ID == UnattributedProjectID {
+			foundUnattributed = project.DisplayName == "Unattributed" && project.Summary.RequestCount == 1
+		}
+	}
+	if !foundUnattributed || projectRequests != global.Summary.RequestCount {
+		t.Fatalf("project resources = %+v requests=%d, global=%d", projects.Projects, projectRequests, global.Summary.RequestCount)
+	}
+	sessions, err := store.ListSessions(UnattributedProjectID, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessionRequests int64
+	for _, session := range sessions.Sessions {
+		sessionRequests += session.Summary.RequestCount
+	}
+	if len(sessions.Sessions) != 1 || sessions.Sessions[0].ID != UnattributedSessionID || sessionRequests != 1 {
+		t.Fatalf("unattributed sessions = %+v, request sum=%d", sessions.Sessions, sessionRequests)
 	}
 }
 

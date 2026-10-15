@@ -201,6 +201,23 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("commit migration 6: %w", err)
 		}
 	}
+	if applied < 7 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 7: %w", err)
+		}
+		if _, err := tx.Exec(schemaMigrationSeven); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("apply migration 7: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 7, formatStoredTime(time.Now())); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration 7: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 7: %w", err)
+		}
+	}
 	return nil
 }
 

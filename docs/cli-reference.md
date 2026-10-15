@@ -131,7 +131,7 @@ of a layout that adapts to terminal width.
 komposyn-lg projects list [--from <time>] [--to <time>] [--format table|json|csv]
 komposyn-lg projects show <project-id> [--from <time>] [--to <time>] [--format table|json]
 komposyn-lg sessions list --project <project-id> [--from <time>] [--to <time>] [--format table|json|csv]
-komposyn-lg sessions show <session-id> [--project <project-id>] [--group-by model] [--format table|json]
+komposyn-lg sessions show <session-id> [--project <project-id>] [--group-by model] [--format table|json|csv]
 ```
 
 These commands browse stable local resources. List JSON has
@@ -140,9 +140,13 @@ never row numbers. Project output includes the readable name, canonical local
 location when known, clients/models, activity bounds, and complete usage/cost
 summary. A missing path is displayed as `location unavailable`. Session
 selection with `--project` verifies ownership, and `sessions show` includes
-per-model usage. The original `komposyn-lg sessions [report options]` command
-is retained as a compatibility report alias and keeps its existing output
-shape.
+per-model usage. Its CSV output has one row per model/provider pair and includes
+`format_version`, stable resource IDs, all token categories, calculated and
+provider-reported cost fields, and pricing provenance. Events without a project
+or session reference remain browsable under synthetic `Unattributed` resources;
+their IDs are stable CLI identifiers, not rows persisted in the database. The
+original `komposyn-lg sessions [report options]` command is retained as a
+compatibility report alias and keeps its existing output shape.
 
 ### `watch`
 
@@ -219,6 +223,11 @@ render—including `/refresh`, `/projects`, `/sessions`, `/total-usage`,
 calendar days and prints the exact half-open range used by that query. New
 committed usage appears when the next report command is run; reports do not
 redraw passively while the prompt is idle.
+
+Interactive row numbers select from the exact rows printed by the most recent
+render of that view. A refresh or another report command replaces that
+selection snapshot. Stable IDs can still be supplied directly for project and
+session selection.
 
 Use `/range` to show the mode and effective UTC bounds. `/range <from> <to>`
 pins an explicit half-open range (accepting ISO-8601 dates or timestamps),

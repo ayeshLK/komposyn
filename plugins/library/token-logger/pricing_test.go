@@ -304,7 +304,7 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 }
 
-func TestMigrationsOneThroughSixPreserveLegacyData(t *testing.T) {
+func TestMigrationsOneThroughSevenPreserveLegacyData(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -353,8 +353,8 @@ func TestMigrationsOneThroughSixPreserveLegacyData(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 6 || latestMigration != 6 {
-		t.Fatalf("migration history = %d/%d, want all migrations 1 through 6", migrationCount, latestMigration)
+	if migrationCount != 7 || latestMigration != 7 {
+		t.Fatalf("migration history = %d/%d, want all migrations 1 through 7", migrationCount, latestMigration)
 	}
 	var legacy, numerator, denominator int64
 	if err := db.QueryRow("SELECT rate_micros, rate_numerator_micros, rate_denominator_tokens FROM pricing_rules WHERE provider_name = 'custom'").Scan(&legacy, &numerator, &denominator); err != nil {

@@ -25,6 +25,12 @@ reference is available. When references are known, the CLI and adapters pass
 them to `AppendWithReferences`, which creates or updates the references and
 inserts events in one transaction.
 
+Resource browsing does not discard events whose project or session reference
+is null. The library exposes synthetic `Unattributed` project and session
+resources for those events so resource summaries reconcile with the unfiltered
+usage total. These synthetic identities are query-layer sentinels and are not
+inserted into `projects` or `sessions`.
+
 `projects.id` and `sessions.id` are KompoSyn-owned identities. Provider IDs are
 aliases rather than primary keys for new adapter imports. Reconciliation first
 uses an existing scoped alias, then an absolute cleaned path (with symlinks
