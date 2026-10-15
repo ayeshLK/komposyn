@@ -222,6 +222,9 @@ func TestWatchInitialPollHonorsCancellation(t *testing.T) {
 	if !strings.Contains(stdout.String(), "interrupted=true run_complete=false") {
 		t.Fatalf("cancelled initial watch claimed completion: %q", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "poll status=cancelled") || !strings.Contains(stdout.String(), "interrupted=true complete=false") {
+		t.Fatalf("cancelled initial poll claimed completion: %q", stdout.String())
+	}
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
 		t.Fatal(err)

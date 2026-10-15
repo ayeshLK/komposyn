@@ -374,6 +374,120 @@ func TestCollectorCancellationJoinsWithoutPartialPersistence(t *testing.T) {
 	}
 }
 
+func TestCollectorRetargetedAliasKeepsCanonicalSourcesDistinct(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "first.jsonl")
+	secondPath := filepath.Join(root, "second.jsonl")
+	for _, path := range []string{firstPath, secondPath} {
+		if err := os.WriteFile(path, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(t.TempDir(), "current.jsonl")
+	if err := os.Symlink(firstPath, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("source symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	store := openTestStore(t)
+	firstCollector, err := NewCollector(store, []string{link, firstPath}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := firstCollector.PollOnce(); err != nil || result.Receipt.Imported != 2 {
+		t.Fatalf("first canonical source result=%+v err=%v", result, err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secondPath, link); err != nil {
+		t.Fatal(err)
+	}
+	retargetedCollector, err := NewCollector(store, []string{link, firstPath}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for poll := 0; poll < 3; poll++ {
+		result, err := retargetedCollector.PollOnce()
+		if err != nil {
+			t.Fatalf("retargeted poll %d: %v", poll+1, err)
+		}
+		if poll == 0 && result.Receipt.Imported != 2 {
+			t.Fatalf("retargeted first result=%+v", result)
+		}
+		if poll > 0 && (result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 2) {
+			t.Fatalf("retargeted repeated result=%+v", result)
+		}
+		if count, err := store.EventCount(); err != nil || count != 4 {
+			t.Fatalf("retargeted poll %d event count=%d err=%v", poll+1, count, err)
+		}
+	}
+	var identities, distinctSourceIDs int
+	if err := store.db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT source_id)
+		FROM collector_source_identities WHERE adapter = 'claude'`).Scan(&identities, &distinctSourceIDs); err != nil {
+		t.Fatal(err)
+	}
+	if identities != 2 || distinctSourceIDs != 2 {
+		t.Fatalf("retargeted identities=%d distinct_source_ids=%d", identities, distinctSourceIDs)
+	}
+}
+
+func TestExplicitImportsReuseCollectorSourceIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		fixture  string
+		importer func(string, *Store) (ImportResult, error)
+	}{
+		{"claude", filepath.Join("testdata", "claude-code", "normal.jsonl"), (ClaudeAdapter{}).Import},
+		{"codex", filepath.Join("testdata", "codex", "normal.jsonl"), (CodexAdapter{}).Import},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			contents, err := os.ReadFile(test.fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "normal.jsonl")
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(t.TempDir(), "source.jsonl")
+			if err := os.Symlink(path, link); err != nil {
+				if runtime.GOOS == "windows" {
+					t.Skipf("source symlinks unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			store := openTestStore(t)
+			collector, err := NewCollector(store, []string{link, path}, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, err := collector.PollOnce(); err != nil || result.Receipt.Imported != 2 {
+				t.Fatalf("collector setup result=%+v err=%v", result, err)
+			}
+			realOnly, err := NewCollector(store, []string{path}, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, err := realOnly.PollOnce(); err != nil || result.Outcomes.UnchangedSnapshot != 1 {
+				t.Fatalf("real-only collector result=%+v err=%v", result, err)
+			}
+			if result, err := test.importer(path, store); err != nil || result.Receipt != (Receipt{}) || result.Outcomes.UnchangedSnapshot != 1 {
+				t.Fatalf("explicit import changed identity: result=%+v err=%v", result, err)
+			}
+			if count, err := store.EventCount(); err != nil || count != 2 {
+				t.Fatalf("explicit import event count=%d err=%v", count, err)
+			}
+		})
+	}
+}
+
 func TestCollectorJoinsAfterPersistenceFailure(t *testing.T) {
 	store := openTestStore(t)
 	collector, err := NewCollector(store, []string{filepath.Join("testdata", "claude-code", "normal.jsonl")}, time.Hour)

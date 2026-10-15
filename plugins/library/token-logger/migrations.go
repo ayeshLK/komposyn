@@ -221,6 +221,7 @@ CREATE TABLE collector_source_identities (
     adapter TEXT NOT NULL,
     source_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    PRIMARY KEY(canonical_key, adapter)
+    PRIMARY KEY(canonical_key, adapter),
+    UNIQUE(adapter, source_id)
 );
 `

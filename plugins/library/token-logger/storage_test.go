@@ -456,8 +456,8 @@ func TestMigrationTenAddsCollectorIdentityMapWithoutChangingCursors(t *testing.T
 	if got, err := store.Cursor(cursor.SourceID); err != nil || got != cursor {
 		t.Fatalf("migration changed cursor: got=%+v err=%v", got, err)
 	}
-	if sourceID, err := store.rememberCollectorSourceIdentity("canonical-digest", "claude", cursor.SourceID); err != nil || sourceID != cursor.SourceID {
-		t.Fatalf("migrated identity map source=%q err=%v", sourceID, err)
+	if sourceID, claimed, err := store.rememberCollectorSourceIdentity("canonical-digest", "claude", cursor.SourceID); err != nil || !claimed || sourceID != cursor.SourceID {
+		t.Fatalf("migrated identity map source=%q claimed=%t err=%v", sourceID, claimed, err)
 	}
 }
 

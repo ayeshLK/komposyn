@@ -1228,11 +1228,12 @@ func writeWatchSummary(output io.Writer, health tokenlogger.CollectorHealth) {
 }
 
 func writeWatchPoll(output io.Writer, result tokenlogger.ImportResult, health tokenlogger.CollectorHealth) {
-	fmt.Fprintf(output, "poll status=%s sources=%d discovery_failures=%d imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t complete=%t\n",
+	fmt.Fprintf(output, "poll status=%s sources=%d discovery_failures=%d imported=%d duplicates=%d ignored_non_usage=%d unchanged_snapshot=%d deferred_incomplete_tail=%d unsupported_usage=%d malformed_record=%d failed_source=%d pending=%t interrupted=%t complete=%t\n",
 		health.Status, health.Sources, health.DiscoveryFailures, result.Receipt.Imported, result.Receipt.Duplicates, result.Outcomes.IgnoredNonUsage,
 		result.Outcomes.UnchangedSnapshot, result.Outcomes.DeferredIncompleteTail,
 		result.Outcomes.UnsupportedUsage, result.Outcomes.MalformedRecord,
-		result.Outcomes.FailedSource, result.Outcomes.Pending(), !result.Outcomes.Incomplete() && !result.Outcomes.Pending())
+		result.Outcomes.FailedSource, result.Outcomes.Pending(), health.LatestInterrupted,
+		!health.LatestInterrupted && !result.Outcomes.Incomplete() && !result.Outcomes.Pending())
 }
 
 func runSettings(args []string, stdout, stderr io.Writer) int {

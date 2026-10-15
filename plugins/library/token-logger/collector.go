@@ -39,6 +39,7 @@ type CollectorHealth struct {
 	Outcomes          OutcomeCounts
 	Pending           bool
 	Interrupted       bool
+	LatestInterrupted bool
 	Sources           int
 	DiscoveryFailures int
 }
@@ -170,9 +171,9 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		var result ImportResult
 		var importErr error
 		if adapter == "claude" {
-			result, importErr = importClaudeSnapshotWithSourceID(ctx, source.Path, contents, c.store, baseSourceID)
+			result, importErr = importClaudeSnapshotWithSourceID(ctx, contents, c.store, baseSourceID)
 		} else {
-			result, importErr = importCodexSnapshotWithSourceID(ctx, source.Path, contents, c.store, baseSourceID)
+			result, importErr = importCodexSnapshotWithSourceID(ctx, contents, c.store, baseSourceID)
 		}
 		if importErr != nil {
 			if errors.Is(importErr, context.Canceled) || errors.Is(importErr, context.DeadlineExceeded) {
@@ -205,6 +206,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 	c.health.Outcomes.Merge(total.Outcomes)
 	c.health.Pending = total.Outcomes.Pending()
 	c.health.Interrupted = c.health.Interrupted || interrupted
+	c.health.LatestInterrupted = interrupted
 	c.health.Sources = len(discovery.Sources)
 	c.health.DiscoveryFailures = len(discovery.Failures)
 	c.mu.Unlock()
@@ -430,12 +432,43 @@ func establishedCollectorSourceID(store *Store, source collectorSource, adapter 
 	for _, path := range source.IdentityPaths {
 		sourceID := prefix + digest([]byte(path))
 		if _, err := store.Cursor(sourceID); err == nil {
-			return store.rememberCollectorSourceIdentity(source.CanonicalKey, adapter, sourceID)
+			if storedSourceID, claimed, claimErr := store.rememberCollectorSourceIdentity(source.CanonicalKey, adapter, sourceID); claimErr != nil {
+				return "", claimErr
+			} else if claimed {
+				return storedSourceID, nil
+			}
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return "", err
 		}
 	}
-	return store.rememberCollectorSourceIdentity(source.CanonicalKey, adapter, prefix+digest([]byte(source.Path)))
+	for _, path := range source.IdentityPaths {
+		sourceID := prefix + digest([]byte(path))
+		if storedSourceID, claimed, err := store.rememberCollectorSourceIdentity(source.CanonicalKey, adapter, sourceID); err != nil {
+			return "", err
+		} else if claimed {
+			return storedSourceID, nil
+		}
+	}
+	return "", errors.New("all source identities are already assigned to other canonical sources")
+}
+
+func collectorSourceForPath(path string) (collectorSource, error) {
+	absolutePath, err := absoluteCollectorPath(path)
+	if err != nil {
+		return collectorSource{}, err
+	}
+	canonicalPath, err := canonicalCollectorPath(absolutePath)
+	if err != nil {
+		return collectorSource{}, err
+	}
+	resolvedPath, _ := filepath.EvalSymlinks(absolutePath)
+	source := collectorSource{Path: absolutePath, CanonicalKey: digest([]byte(canonicalPath))}
+	for _, identityPath := range []string{absolutePath, resolvedPath} {
+		if !containsCollectorPath(source.IdentityPaths, identityPath) {
+			source.IdentityPaths = append(source.IdentityPaths, identityPath)
+		}
+	}
+	return source, nil
 }
 
 func absoluteCollectorPath(path string) (string, error) {

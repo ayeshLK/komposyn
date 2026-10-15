@@ -150,23 +150,22 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	canonicalPath, err := filepath.Abs(path)
+	source, err := collectorSourceForPath(path)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("resolve Codex source: %w", err)
 	}
-	contents, err := os.ReadFile(canonicalPath)
+	contents, err := os.ReadFile(source.Path)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("fingerprint Codex source: %w", err)
 	}
-	return importCodexSnapshot(context.Background(), canonicalPath, contents, store)
+	baseSourceID, err := establishedCollectorSourceID(store, source, "codex")
+	if err != nil {
+		return ImportResult{}, fmt.Errorf("resolve Codex source identity: %w", err)
+	}
+	return importCodexSnapshotWithSourceID(context.Background(), contents, store, baseSourceID)
 }
 
-func importCodexSnapshot(ctx context.Context, canonicalPath string, contents []byte, store *Store) (ImportResult, error) {
-	baseSourceID := "codex-file-" + digest([]byte(canonicalPath))
-	return importCodexSnapshotWithSourceID(ctx, canonicalPath, contents, store, baseSourceID)
-}
-
-func importCodexSnapshotWithSourceID(ctx context.Context, canonicalPath string, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
+func importCodexSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
 	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
 		return ImportResult{}, fmt.Errorf("inspect unchanged Codex source: %w", err)
 	} else if ok {

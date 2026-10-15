@@ -141,23 +141,22 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	canonicalPath, err := filepath.Abs(path)
+	source, err := collectorSourceForPath(path)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("resolve Claude source: %w", err)
 	}
-	contents, err := os.ReadFile(canonicalPath)
+	contents, err := os.ReadFile(source.Path)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("fingerprint Claude source: %w", err)
 	}
-	return importClaudeSnapshot(context.Background(), canonicalPath, contents, store)
+	baseSourceID, err := establishedCollectorSourceID(store, source, "claude")
+	if err != nil {
+		return ImportResult{}, fmt.Errorf("resolve Claude source identity: %w", err)
+	}
+	return importClaudeSnapshotWithSourceID(context.Background(), contents, store, baseSourceID)
 }
 
-func importClaudeSnapshot(ctx context.Context, canonicalPath string, contents []byte, store *Store) (ImportResult, error) {
-	baseSourceID := "claude-file-" + digest([]byte(canonicalPath))
-	return importClaudeSnapshotWithSourceID(ctx, canonicalPath, contents, store, baseSourceID)
-}
-
-func importClaudeSnapshotWithSourceID(ctx context.Context, canonicalPath string, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
+func importClaudeSnapshotWithSourceID(ctx context.Context, contents []byte, store *Store, baseSourceID string) (ImportResult, error) {
 	if unchanged, ok, err := unchangedSourceSnapshot(store, baseSourceID, contents); err != nil {
 		return ImportResult{}, fmt.Errorf("inspect unchanged Claude source: %w", err)
 	} else if ok {

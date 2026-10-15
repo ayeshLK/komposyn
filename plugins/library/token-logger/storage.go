@@ -795,13 +795,20 @@ func (s *Store) collectorSourceIdentity(canonicalKey, adapter string) (string, e
 	return sourceID, err
 }
 
-func (s *Store) rememberCollectorSourceIdentity(canonicalKey, adapter, sourceID string) (string, error) {
+func (s *Store) rememberCollectorSourceIdentity(canonicalKey, adapter, sourceID string) (string, bool, error) {
 	if _, err := s.db.Exec(`INSERT INTO collector_source_identities(canonical_key, adapter, source_id, created_at)
-		VALUES (?, ?, ?, ?) ON CONFLICT(canonical_key, adapter) DO NOTHING`,
+		VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 		canonicalKey, adapter, sourceID, formatStoredTime(time.Now())); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return s.collectorSourceIdentity(canonicalKey, adapter)
+	storedSourceID, err := s.collectorSourceIdentity(canonicalKey, adapter)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return storedSourceID, true, nil
 }
 
 func nullableTime(value *time.Time) any {
