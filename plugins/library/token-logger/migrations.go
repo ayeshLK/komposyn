@@ -130,3 +130,82 @@ ALTER TABLE source_cursors ADD COLUMN source_generation INTEGER NOT NULL DEFAULT
 const schemaMigrationFive = `
 CREATE UNIQUE INDEX IF NOT EXISTS pricing_rules_catalog_entry_id_idx ON pricing_rules(catalog_entry_id) WHERE catalog_entry_id IS NOT NULL;
 `
+
+const schemaMigrationSix = `
+CREATE TABLE IF NOT EXISTS project_locations (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    canonical_path TEXT NOT NULL,
+    display_path TEXT NOT NULL,
+    is_preferred INTEGER NOT NULL DEFAULT 0,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    provenance TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(project_id, canonical_path)
+);
+CREATE INDEX IF NOT EXISTS project_locations_path_idx ON project_locations(canonical_path);
+
+CREATE TABLE IF NOT EXISTS project_aliases (
+    scope TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    provenance TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY(scope, alias)
+);
+CREATE INDEX IF NOT EXISTS project_aliases_project_idx ON project_aliases(project_id);
+
+CREATE TABLE IF NOT EXISTS session_aliases (
+    scope TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id),
+    provenance TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY(scope, alias)
+);
+CREATE INDEX IF NOT EXISTS session_aliases_session_idx ON session_aliases(session_id);
+
+CREATE TABLE IF NOT EXISTS reconciliation_warnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
+    alias_digest TEXT NOT NULL DEFAULT '',
+    project_id TEXT,
+    session_id TEXT,
+    message TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(kind, scope, alias_digest, project_id, session_id)
+);
+`
+
+const schemaMigrationSeven = `
+CREATE TABLE reconciliation_warnings_v7 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
+    alias_digest TEXT NOT NULL DEFAULT '',
+    project_id TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(kind, scope, alias_digest, project_id, session_id)
+);
+
+INSERT INTO reconciliation_warnings_v7 (
+    kind, scope, alias_digest, project_id, session_id, message,
+    first_seen_at, last_seen_at, occurrence_count
+)
+SELECT kind, scope, alias_digest, COALESCE(project_id, ''), COALESCE(session_id, ''),
+       MIN(message), MIN(first_seen_at), MAX(last_seen_at), SUM(occurrence_count)
+FROM reconciliation_warnings
+GROUP BY kind, scope, alias_digest, COALESCE(project_id, ''), COALESCE(session_id, '');
+
+DROP TABLE reconciliation_warnings;
+ALTER TABLE reconciliation_warnings_v7 RENAME TO reconciliation_warnings;
+`

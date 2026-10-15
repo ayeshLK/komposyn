@@ -136,6 +136,9 @@ komposyn-lg import <file-or-directory> --data-dir <path> [--format text|json]
 komposyn-lg usage --data-dir <path> --format table
 komposyn-lg cost --data-dir <path> --format json
 komposyn-lg sessions --data-dir <path> --format csv
+komposyn-lg projects list --data-dir <path> --format table
+komposyn-lg sessions list --project <project-id> --data-dir <path> --format json
+komposyn-lg sessions show <session-id> --group-by model --data-dir <path>
 komposyn-lg watch <file-or-directory> --data-dir <path>
 komposyn-lg settings --data-dir <path> --collector on
 komposyn-lg report-issue --output <path> --data-dir <path>

@@ -53,9 +53,13 @@ An explicit `import` and the background collector use the same adapters:
 3. Provider records are mapped to `UsageEvent`, with source adapter, source
    identity, record identity, byte offset, and record hash retained for
    traceability.
-4. Project and session references, events, and the source cursor are committed
-   atomically.
-5. A repeated import is idempotent through the event's stable ingestion key;
+4. Adapter-scoped aliases and canonical local locations reconcile provider
+   references to KompoSyn-owned project/session IDs. Existing aliases win;
+   unique location matches may connect clients, while ambiguous or conflicting
+   evidence remains isolated and produces a path-free local warning.
+5. Identity mappings, project and session references, events, and the source
+   cursor are committed atomically.
+6. A repeated import is idempotent through the event's stable ingestion key;
    duplicates are reported rather than inserted again.
 
 The collector performs an initial scan only when `PollOnce` is called. `Run`
@@ -89,3 +93,9 @@ insufficiently described billing contexts stay unknown with a reason. Hourly gro
 uses the caller-selected reporting timezone; when none is selected, reports use
 UTC. The selected IANA timezone is preserved in report output, so fractional-
 offset zones and repeated hours during daylight-saving folds remain distinct.
+
+Resource queries expose a stable hierarchy over the same facts: projects own
+sessions, while models remain an event aggregation dimension rather than a
+persistent child table. New resource-list JSON uses `format_version: 1`.
+Legacy `sessions` report syntax remains available; `sessions list/show` is the
+resource-browser surface.

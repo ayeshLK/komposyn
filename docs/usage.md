@@ -190,9 +190,30 @@ the prompt; it does not erase scrollback or application data. Commands are
 limited to 16,384 Unicode code points (runes), or at most 64 KiB of UTF-8;
 commands made from shorter UTF-8 characters have a lower byte limit.
 
-Interactive reports support `/projects`, `/sessions`, `/total-usage`,
-`/by-client`, `/by-model`, `/cost`, `/range`, `/refresh`, `/clear`,
-`/settings`, `/report-issue`, and `/quit`. `/clear` clears the visible
+Interactive navigation follows `Projects → Project → Sessions → Session →
+Models → Usage`:
+
+```text
+/projects
+/project <row-number|unambiguous-name|stable-id>
+/sessions
+/session <row-number|unambiguous-id-prefix|stable-id>
+/models
+/model <row-number|unambiguous-name>
+/back
+/home
+```
+
+Row numbers apply only to the currently displayed result. Ambiguous names and
+prefixes are rejected, and a session selection is verified against the active
+project. The prompt/report breadcrumb shows the current scope. `/back` removes
+only the deepest selection; `/home` clears all navigation selections. Neither
+changes the rolling or pinned range. Models are computed from session events
+using resolved model with the existing requested-model fallback.
+
+Interactive reports also support `/total-usage`, `/by-client`, `/by-model`,
+`/cost`, `/range`, `/refresh`, `/clear`, `/settings`, `/report-issue`, and
+`/quit`. `/clear` clears the visible
 terminal, returns the cursor home, and does not rerun the report; use
 `/refresh` when a redraw is wanted. It never deletes usage, settings, consent,
 diagnostics, or history. Multiline paste is folded into one command and is not

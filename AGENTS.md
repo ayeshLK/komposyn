@@ -54,14 +54,20 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
 - Event ingestion is idempotent through stable ingestion keys. Preserve
   transactional behavior: an append and its source cursor advance together, or
   neither is committed.
-- The current SQLite schema version is 5. Migrations 1 and 2 create the core
+- The current SQLite schema version is 8. Migrations 1 and 2 create the core
   and diagnostics tables, migration 3 normalizes stored timestamps to fixed
   width UTC values, and migration 4 adds source-generation tracking for
   transcript replacement detection. Migration 5 adds rational pricing rates
   and catalog identity/source provenance while preserving the legacy
-  `rate_micros` meaning. SQLite schema changes require an explicit numbered
-  migration in `plugins/library/token-logger/migrations.go`, a matching runner
-  update, and an upgrade test covering the complete history.
+  `rate_micros` meaning. Migration 6 adds KompoSyn-owned project identity,
+  canonical locations, scoped provider aliases, and reconciliation warnings
+  without rewriting historical event references. Migration 7 normalizes and
+  deduplicates nullable reconciliation-warning keys. Migration 8 reserves both
+  synthetic Unattributed navigation ID strings across the project and session
+  namespaces and remaps any older persisted collisions without losing
+  references. SQLite schema changes require an
+  explicit numbered migration in `plugins/library/token-logger/migrations.go`,
+  a matching runner update, and an upgrade test covering the complete history.
 - Provider adapters parse one immutable source snapshot for both fingerprinting
   and event offsets. Preserve source-cursor generation behavior when handling
   replacements, and do not reintroduce separate file-descriptor parsing.

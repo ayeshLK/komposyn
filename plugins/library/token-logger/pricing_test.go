@@ -304,7 +304,7 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 }
 
-func TestMigrationsOneThroughFivePreserveLegacyData(t *testing.T) {
+func TestMigrationsOneThroughEightPreserveLegacyData(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +326,13 @@ func TestMigrationsOneThroughFivePreserveLegacyData(t *testing.T) {
 	event.ProjectID, event.SessionID = "legacy-project", "legacy-session"
 	reportedAmount, providerAmount := int64(111), int64(222)
 	event.Cost = Cost{Status: "reported", AmountMicros: &reportedAmount, Currency: "USD", ProviderAmount: &providerAmount, ProviderCurrency: "USD"}
-	if _, err := store.AppendWithReferences([]UsageEvent{event}, []Project{{ID: "legacy-project", DisplayName: "Legacy Project"}}, []Session{{ID: "legacy-session", ProjectID: "legacy-project", Client: Client{Name: "codex-cli"}}}); err != nil {
+	if _, err := store.AppendWithReferences([]UsageEvent{event}, []Project{{ID: "legacy-project", DisplayName: "Legacy Project"}}, []Session{{ID: "legacy-session", ProjectID: "legacy-project", Client: Client{Name: "codex-cli"}, SourceMetadata: json.RawMessage(`{"adapter":"codex"}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE projects SET root = '/legacy/shared' WHERE id = 'legacy-project'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-project-2', '/legacy/shared', 'Legacy Project 2', ?)", "2026-01-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec("UPDATE usage_events SET occurred_at = ? WHERE event_id = ?", "2026-10-11T00:00:00.5Z", event.EventID); err != nil {
@@ -347,8 +353,8 @@ func TestMigrationsOneThroughFivePreserveLegacyData(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 5 || latestMigration != 5 {
-		t.Fatalf("migration history = %d/%d, want all migrations 1 through 5", migrationCount, latestMigration)
+	if migrationCount != 8 || latestMigration != 8 {
+		t.Fatalf("migration history = %d/%d, want all migrations 1 through 8", migrationCount, latestMigration)
 	}
 	var legacy, numerator, denominator int64
 	if err := db.QueryRow("SELECT rate_micros, rate_numerator_micros, rate_denominator_tokens FROM pricing_rules WHERE provider_name = 'custom'").Scan(&legacy, &numerator, &denominator); err != nil {
@@ -373,6 +379,19 @@ func TestMigrationsOneThroughFivePreserveLegacyData(t *testing.T) {
 	}
 	if projectName != "Legacy Project" || sessionClient != "codex-cli" {
 		t.Fatalf("legacy event references changed: %q/%q", projectName, sessionClient)
+	}
+	var projectAlias, sessionAlias, locationWarnings int
+	if err := db.QueryRow("SELECT COUNT(*) FROM project_aliases WHERE scope = 'codex' AND alias = 'legacy-project' AND project_id = 'legacy-project'").Scan(&projectAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM session_aliases WHERE scope = 'codex:codex-cli' AND alias = 'legacy-session' AND session_id = 'legacy-session'").Scan(&sessionAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM reconciliation_warnings WHERE kind = 'legacy-location-conflict'").Scan(&locationWarnings); err != nil {
+		t.Fatal(err)
+	}
+	if projectAlias != 1 || sessionAlias != 1 || locationWarnings != 2 {
+		t.Fatalf("migration identity seed = project alias %d, session alias %d, warnings %d; want 1/1/2", projectAlias, sessionAlias, locationWarnings)
 	}
 	if occurredAt != "2026-10-11T00:00:00.500000000Z" {
 		t.Fatalf("legacy event timestamp = %q, was not normalized", occurredAt)

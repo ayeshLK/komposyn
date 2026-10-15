@@ -43,15 +43,18 @@ const (
 
 // UsageFilter is composable. From is inclusive and To is exclusive.
 type UsageFilter struct {
-	ProjectID string         `json:"project_id,omitempty"`
-	SessionID string         `json:"session_id,omitempty"`
-	Client    string         `json:"client,omitempty"`
-	Provider  string         `json:"provider,omitempty"`
-	Model     string         `json:"model,omitempty"`
-	From      time.Time      `json:"from"`
-	To        time.Time      `json:"to"`
-	GroupBy   []string       `json:"group_by,omitempty"`
-	Timezone  *time.Location `json:"-"`
+	ProjectID      string         `json:"project_id,omitempty"`
+	SessionID      string         `json:"session_id,omitempty"`
+	Client         string         `json:"client,omitempty"`
+	Provider       string         `json:"provider,omitempty"`
+	Model          string         `json:"model,omitempty"`
+	ProjectMissing bool           `json:"-"`
+	SessionMissing bool           `json:"-"`
+	ModelMissing   bool           `json:"-"`
+	From           time.Time      `json:"from"`
+	To             time.Time      `json:"to"`
+	GroupBy        []string       `json:"group_by,omitempty"`
+	Timezone       *time.Location `json:"-"`
 }
 
 // UsageMeasures contains additive token and cost measures.
@@ -188,9 +191,15 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 		query += " AND project_id = ?"
 		args = append(args, filter.ProjectID)
 	}
+	if filter.ProjectMissing {
+		query += " AND project_id IS NULL"
+	}
 	if filter.SessionID != "" {
 		query += " AND session_id = ?"
 		args = append(args, filter.SessionID)
+	}
+	if filter.SessionMissing {
+		query += " AND session_id IS NULL"
 	}
 	if filter.Client != "" {
 		query += " AND client_name = ?"
@@ -203,6 +212,9 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 	if filter.Model != "" {
 		query += " AND (resolved_model = ? OR requested_model = ?)"
 		args = append(args, filter.Model, filter.Model)
+	}
+	if filter.ModelMissing {
+		query += " AND resolved_model = '' AND requested_model = ''"
 	}
 	query += " ORDER BY occurred_at, event_id"
 	rows, err := s.db.Query(query, args...)

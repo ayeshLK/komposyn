@@ -210,7 +210,8 @@ func TestCodexTokenUsageRecordIdentitySurvivesRewriteAndSeparatesSessions(t *tes
 		t.Fatalf("separate session import = %+v, err = %v", separate, err)
 	}
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_events WHERE session_id = 'session-2'`).Scan(&count); err != nil {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_events e JOIN session_aliases a ON a.session_id = e.session_id
+		WHERE a.scope = 'codex:codex-cli' AND a.alias = 'session-2'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -408,9 +409,16 @@ func assertCodexAppendRowsAndReport(t *testing.T, store *Store) {
 	identity := func(response string) string {
 		return digest([]byte("codex-response\x00session-1\x00thread-1\x00" + response))
 	}
+	var localProjectID, localSessionID string
+	if err := store.db.QueryRow("SELECT project_id FROM project_aliases WHERE scope = 'codex' AND alias = 'project-1'").Scan(&localProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT session_id FROM session_aliases WHERE scope = 'codex:codex-cli' AND alias = 'session-1'").Scan(&localSessionID); err != nil {
+		t.Fatal(err)
+	}
 	want := []codexCanonicalProjection{
-		{EventID: "codex-response-event-" + identity("response-1"), IngestionKey: "codex:response:" + identity("response-1"), OccurredAt: "2026-10-11T00:00:01.000000000Z", ProjectID: "project-1", SessionID: "session-1", Client: "codex-cli", Provider: "openai", RequestedModel: "gpt-test", ResolvedModel: "gpt-test", Input: 10, Output: 1, SourceRecord: "response-1"},
-		{EventID: "codex-response-event-" + identity("response-2"), IngestionKey: "codex:response:" + identity("response-2"), OccurredAt: "2026-10-11T00:00:02.000000000Z", ProjectID: "project-1", SessionID: "session-1", Client: "codex-cli", Provider: "openai", RequestedModel: "gpt-test", ResolvedModel: "gpt-test", Input: 5, Output: 1, SourceRecord: "response-2"},
+		{EventID: "codex-response-event-" + identity("response-1"), IngestionKey: "codex:response:" + identity("response-1"), OccurredAt: "2026-10-11T00:00:01.000000000Z", ProjectID: localProjectID, SessionID: localSessionID, Client: "codex-cli", Provider: "openai", RequestedModel: "gpt-test", ResolvedModel: "gpt-test", Input: 10, Output: 1, SourceRecord: "response-1"},
+		{EventID: "codex-response-event-" + identity("response-2"), IngestionKey: "codex:response:" + identity("response-2"), OccurredAt: "2026-10-11T00:00:02.000000000Z", ProjectID: localProjectID, SessionID: localSessionID, Client: "codex-cli", Provider: "openai", RequestedModel: "gpt-test", ResolvedModel: "gpt-test", Input: 5, Output: 1, SourceRecord: "response-2"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("canonical rows = %+v, want %+v", got, want)
@@ -425,7 +433,7 @@ func assertCodexAppendRowsAndReport(t *testing.T, store *Store) {
 		t.Fatalf("report summary = %+v", report.Summary)
 	}
 	if len(report.Rows) != 1 || !reflect.DeepEqual(report.Rows[0].Dimensions, map[string]string{
-		GroupProject: "project-1", GroupSession: "session-1", GroupClient: "codex-cli", GroupProvider: "openai", GroupModel: "gpt-test",
+		GroupProject: localProjectID, GroupSession: localSessionID, GroupClient: "codex-cli", GroupProvider: "openai", GroupModel: "gpt-test",
 	}) || report.Rows[0].UsageMeasures != report.Summary {
 		t.Fatalf("report rows = %+v, summary = %+v", report.Rows, report.Summary)
 	}
@@ -586,7 +594,11 @@ func TestCodexTokenUsageRecordAttributionUsesMetadataAfterLegacyRecords(t *testi
 	if err := store.db.QueryRow(`SELECT project_id, requested_model FROM usage_events WHERE event_id LIKE 'codex-response-event-%'`).Scan(&projectID, &model); err != nil {
 		t.Fatal(err)
 	}
-	if projectID != "metadata-project" || model != "metadata-model" {
+	var expectedProjectID string
+	if err := store.db.QueryRow("SELECT project_id FROM project_aliases WHERE scope = 'codex' AND alias = 'metadata-project'").Scan(&expectedProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if projectID != expectedProjectID || model != "metadata-model" {
 		t.Fatalf("response attribution = project %q, model %q; want metadata values", projectID, model)
 	}
 }
@@ -628,10 +640,15 @@ func TestCodexLegacyTokenCountSessionSwitchPreservesContext(t *testing.T) {
 		t.Fatalf("legacy session-switch result = %+v, err = %v", result, err)
 	}
 	var projectID, model string
-	if err := store.db.QueryRow(`SELECT project_id, requested_model FROM usage_events WHERE session_id = 'session-2'`).Scan(&projectID, &model); err != nil {
+	if err := store.db.QueryRow(`SELECT e.project_id, e.requested_model FROM usage_events e JOIN session_aliases a ON a.session_id = e.session_id
+		WHERE a.scope = 'codex:codex-cli' AND a.alias = 'session-2'`).Scan(&projectID, &model); err != nil {
 		t.Fatal(err)
 	}
-	if projectID != "project-1" || model != "gpt-test" {
+	var expectedProjectID string
+	if err := store.db.QueryRow("SELECT project_id FROM project_aliases WHERE scope = 'codex' AND alias = 'project-1'").Scan(&expectedProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if projectID != expectedProjectID || model != "gpt-test" {
 		t.Fatalf("legacy session-switch attribution = project %q, model %q; want inherited context", projectID, model)
 	}
 }

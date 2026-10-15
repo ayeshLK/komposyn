@@ -36,7 +36,14 @@ func TestClaudeImportAttributesAndNormalizesUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if input != 110 || cached != 20 || cacheWrite != 10 || output != 15 || client != "claude-code" || provider != "anthropic" || project != "claude-project-fixture" || session != "claude-session-fixture" {
+	var aliasedProject, aliasedSession string
+	if err := store.db.QueryRow("SELECT project_id FROM project_aliases WHERE scope = 'claude-code' AND alias = 'claude-project-fixture'").Scan(&aliasedProject); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT session_id FROM session_aliases WHERE scope = 'claude-code:claude-code' AND alias = 'claude-session-fixture'").Scan(&aliasedSession); err != nil {
+		t.Fatal(err)
+	}
+	if input != 110 || cached != 20 || cacheWrite != 10 || output != 15 || client != "claude-code" || provider != "anthropic" || project != aliasedProject || session != aliasedSession {
 		t.Fatalf("unexpected Claude event: input=%d cached=%d cacheWrite=%d output=%d client=%s provider=%s project=%s session=%s", input, cached, cacheWrite, output, client, provider, project, session)
 	}
 	second, err := (ClaudeAdapter{}).Import(path, store)

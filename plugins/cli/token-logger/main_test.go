@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"bytes"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -255,10 +256,9 @@ func assertImportMatchesHarness(t *testing.T, fixture string, events []tokenlogg
 	}
 
 	filter := tokenlogger.UsageFilter{
-		From: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC),
-		To:   time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
-		GroupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel,
-			tokenlogger.GroupProject, tokenlogger.GroupSession},
+		From:    time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC),
+		To:      time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
+		GroupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel},
 	}
 	imported := queryReport(t, importDataDir, filter)
 	harnessed := queryReport(t, harnessDataDir, filter)
@@ -405,6 +405,11 @@ func canonicalProjection(event testEventProjection) testEventProjection {
 	event.EventID = ""
 	event.IngestionKey = ""
 	event.SourceID = ""
+	// Provider imports reconcile aliases to KompoSyn-owned IDs, while harness
+	// callers supply local IDs explicitly. Identity is tested separately from
+	// normalized usage equivalence.
+	event.ProjectID = ""
+	event.SessionID = ""
 	return event
 }
 
@@ -426,6 +431,223 @@ func TestCLIUsage(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "usage:") {
 		t.Fatalf("missing usage output: %q", stderr.String())
+	}
+}
+
+func TestProjectAndSessionResourceCommands(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := cliReportEvent("resource-command", time.Now().UTC().Add(-time.Hour))
+	event.ProjectID, event.SessionID = "local-project", "local-session"
+	project := tokenlogger.Project{ID: event.ProjectID, Root: filepath.Join(t.TempDir(), "workspace"), DisplayName: "Readable Project"}
+	session := tokenlogger.Session{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}
+	if _, err := store.AppendWithReferences([]tokenlogger.UsageEvent{event}, []tokenlogger.Project{project}, []tokenlogger.Session{session}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	var projectsOut, projectsErr bytes.Buffer
+	if code := run([]string{"projects", "list", "--data-dir", dataDir, "--format", "json"}, &projectsOut, &projectsErr); code != 0 {
+		t.Fatalf("projects list exit=%d stderr=%q", code, projectsErr.String())
+	}
+	if !strings.Contains(projectsOut.String(), `"format_version": 1`) || !strings.Contains(projectsOut.String(), `"display_name": "Readable Project"`) || !strings.Contains(projectsOut.String(), `"request_count": 1`) {
+		t.Fatalf("unexpected projects JSON: %s", projectsOut.String())
+	}
+	var projectsCSVOut, projectsCSVErr bytes.Buffer
+	if code := run([]string{"projects", "list", "--data-dir", dataDir, "--format", "csv"}, &projectsCSVOut, &projectsCSVErr); code != 0 {
+		t.Fatalf("projects list CSV exit=%d stderr=%q", code, projectsCSVErr.String())
+	}
+	projectRecords, err := csv.NewReader(strings.NewReader(projectsCSVOut.String())).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projectRecords) != 2 || projectRecords[0][0] != "format_version" || projectRecords[0][1] != "project_id" || projectRecords[1][0] != "1" || projectRecords[1][1] != "local-project" {
+		t.Fatalf("unexpected project-list CSV: %#v", projectRecords)
+	}
+
+	var sessionsOut, sessionsErr bytes.Buffer
+	if code := run([]string{"sessions", "list", "--project", "local-project", "--data-dir", dataDir, "--format", "json"}, &sessionsOut, &sessionsErr); code != 0 {
+		t.Fatalf("sessions list exit=%d stderr=%q", code, sessionsErr.String())
+	}
+	if !strings.Contains(sessionsOut.String(), `"format_version": 1`) || !strings.Contains(sessionsOut.String(), `"id": "local-session"`) || !strings.Contains(sessionsOut.String(), event.ResolvedModel) {
+		t.Fatalf("unexpected sessions JSON: %s", sessionsOut.String())
+	}
+	var sessionsCSVOut, sessionsCSVErr bytes.Buffer
+	if code := run([]string{"sessions", "list", "--project", "local-project", "--data-dir", dataDir, "--format", "csv"}, &sessionsCSVOut, &sessionsCSVErr); code != 0 {
+		t.Fatalf("sessions list CSV exit=%d stderr=%q", code, sessionsCSVErr.String())
+	}
+	sessionRecords, err := csv.NewReader(strings.NewReader(sessionsCSVOut.String())).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessionRecords) != 2 || sessionRecords[0][0] != "format_version" || sessionRecords[0][1] != "session_id" || sessionRecords[1][0] != "1" || sessionRecords[1][1] != "local-session" {
+		t.Fatalf("unexpected session-list CSV: %#v", sessionRecords)
+	}
+
+	var detailOut, detailErr bytes.Buffer
+	if code := run([]string{"sessions", "show", "local-session", "--data-dir", dataDir, "--format", "csv", "--group-by", "model"}, &detailOut, &detailErr); code != 0 {
+		t.Fatalf("sessions show CSV exit=%d stderr=%q", code, detailErr.String())
+	}
+	reader := csv.NewReader(strings.NewReader(detailOut.String()))
+	records, err := reader.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantModel := event.ResolvedModel
+	if wantModel == "" {
+		wantModel = event.RequestedModel
+	}
+	if len(records) != 2 || records[0][0] != "format_version" || records[0][1] != "session_id" || records[1][0] != "1" || records[1][1] != "local-session" || records[1][4] != wantModel {
+		t.Fatalf("unexpected session detail CSV: %#v", records)
+	}
+}
+
+func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	event := cliReportEvent("navigation", now.Add(-time.Hour))
+	event.ProjectID, event.SessionID, event.ResolvedModel = "nav-project", "nav-session", "nav model"
+	if _, err := store.AppendWithReferences([]tokenlogger.UsageEvent{event},
+		[]tokenlogger.Project{{ID: event.ProjectID, Root: "/workspace/navigation", DisplayName: "Navigation Project"}},
+		[]tokenlogger.Session{{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}}); err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.ProjectResource(event.ProjectID, tokenlogger.ResourceFilter{From: now.AddDate(0, 0, -1), To: now.AddDate(0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedLocation := "LOCATION: " + humanLocation(project.Location)
+	commands := "/range 2026-10-14 2026-10-16\n/projects\n/project Navigation Project\n/sessions\n/session nav-session\n/models\n/model nav model\n/back\n/home\n/range\n/quit\n"
+	var stdout, stderr bytes.Buffer
+	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return now }); code != 0 {
+		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{"Navigation Project", expectedLocation, "nav-session", "nav model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("interactive navigation missing %q: %s", expected, output)
+		}
+	}
+}
+
+func TestInteractiveProjectHeaderUsesUnavailableLocationFallback(t *testing.T) {
+	var output bytes.Buffer
+	writeInteractiveProjectHeader(&output, &interactiveState{projectName: "No Location"})
+	if got := output.String(); !strings.Contains(got, "PROJECT: No Location") || !strings.Contains(got, "LOCATION: location unavailable") {
+		t.Fatalf("missing-location project header = %q", got)
+	}
+}
+
+func TestInteractiveSelectorsUseDisplayedSnapshots(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	filter := tokenlogger.ResourceFilter{From: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}
+	state := interactiveState{view: "projects", projectRows: []tokenlogger.ProjectResource{{ID: "displayed-b", DisplayName: "B"}}}
+	if err := store.UpsertProject(tokenlogger.Project{ID: "new-a", DisplayName: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := selectInteractiveProject(store, &state, filter, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ID != "displayed-b" {
+		t.Fatalf("row selection used a refreshed query: got %q", selected.ID)
+	}
+	state.view = "sessions"
+	state.sessionRows = []tokenlogger.SessionResource{{ID: "displayed-session", ProjectID: "displayed-b"}}
+	session, err := selectInteractiveSession(store, &state, filter, "1")
+	if err != nil || session.ID != "displayed-session" {
+		t.Fatalf("session snapshot selection = %+v, %v", session, err)
+	}
+}
+
+func TestUnattributedModelSelectionHasExplicitState(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "token-logger.db")
+	store, err := tokenlogger.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	from := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	event := cliReportEvent("missing-model", from.Add(time.Hour))
+	event.ProjectID, event.SessionID = "project", "session"
+	if _, err := store.AppendWithReferences([]tokenlogger.UsageEvent{event}, []tokenlogger.Project{{ID: "project", DisplayName: "Project"}}, []tokenlogger.Session{{ID: "session", ProjectID: "project", Client: event.Client}}); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec("UPDATE usage_events SET requested_model = '', resolved_model = '' WHERE event_id = ?", event.EventID); err != nil {
+		t.Fatal(err)
+	}
+	state := interactiveState{from: from, to: from.AddDate(0, 0, 1), view: "models", projectID: "project", projectName: "Project", sessionID: "session", modelRows: []interactiveModelSelection{{Model: "", Provider: event.Provider}}}
+	selection, err := selectInteractiveModel(&state, "Unattributed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.model, state.modelProvider, state.modelMissing, state.modelSelected = selection.Model, selection.Provider, selection.Model == "", true
+	report, err := store.Query(interactiveUsageFilter(&state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.RequestCount != 1 || !strings.Contains(interactiveBreadcrumb(&state), "model:Unattributed") {
+		t.Fatalf("missing-model state report=%+v breadcrumb=%q", report.Summary, interactiveBreadcrumb(&state))
+	}
+	state.clearModelSelection()
+	if strings.Contains(interactiveBreadcrumb(&state), "model:") {
+		t.Fatalf("cleared model remained in breadcrumb: %q", interactiveBreadcrumb(&state))
+	}
+}
+
+func TestResourceHumanOutputEscapesUntrustedMetadataAndPreservesUnicode(t *testing.T) {
+	unsafe := "name\nwith\ttab\x1b[31m\u202E界"
+	project := tokenlogger.ProjectResource{ID: "id\n\x1b", DisplayName: unsafe, Location: "/tmp/" + unsafe}
+	var projectOut bytes.Buffer
+	if err := writeProjectTable(&projectOut, []tokenlogger.ProjectResource{project}); err != nil {
+		t.Fatal(err)
+	}
+	output := projectOut.String()
+	if strings.ContainsAny(output, "\t\r\x1b") || strings.Contains(output, "\u202E") || !strings.Contains(output, `\n`) || !strings.Contains(output, `\t`) || !strings.Contains(output, `\x1B`) || !strings.Contains(output, `\u202E`) || !strings.Contains(output, "界") {
+		t.Fatalf("unsafe or incorrectly escaped project table: %q", output)
+	}
+	state := interactiveState{projectID: "id", projectName: unsafe, sessionID: "session\n", model: unsafe, modelSelected: true}
+	breadcrumb := interactiveBreadcrumb(&state)
+	if strings.ContainsAny(breadcrumb, "\n\t\r\x1b") || !strings.Contains(breadcrumb, `\n`) || !strings.Contains(breadcrumb, `\x1B`) {
+		t.Fatalf("unsafe breadcrumb: %q", breadcrumb)
+	}
+}
+
+func TestInteractiveModelTablePreservesCostSemantics(t *testing.T) {
+	unsafeModel := "reported\n\x1b[31m\u202E界"
+	unsafeProvider := "provider\t\x1b[2J"
+	reported := tokenlogger.UsageRow{Dimensions: map[string]string{tokenlogger.GroupModel: unsafeModel, tokenlogger.GroupProvider: unsafeProvider}, UsageMeasures: tokenlogger.UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, ProviderReportedCostMicros: 2_000_000, ProviderReportedCurrency: "USD", CostUnknownReason: "no_matching_rate"}}
+	partial := tokenlogger.UsageRow{Dimensions: map[string]string{tokenlogger.GroupModel: "partial", tokenlogger.GroupProvider: "provider"}, UsageMeasures: tokenlogger.UsageMeasures{RequestCount: 2, EstimatedCostRequests: 1, UnknownCostRequests: 1, CalculatedCostMicros: 1_000_000, CalculatedCurrency: "USD", CostUnknownReason: "no_matching_rate"}}
+	var output bytes.Buffer
+	if err := writeInteractiveModelTable(&output, tokenlogger.UsageReport{Rows: []tokenlogger.UsageRow{reported, partial}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"ESTIMATE", "REPORTED", "STATUS", "2 USD", "reported only", "1 USD", "partial; 1 no matching rate"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("model table missing %q: %s", expected, output.String())
+		}
+	}
+	if strings.ContainsAny(output.String(), "\t\r\x1b") || strings.Contains(output.String(), "\u202E") || !strings.Contains(output.String(), `\n`) || !strings.Contains(output.String(), `\t`) || !strings.Contains(output.String(), `\x1B`) || !strings.Contains(output.String(), `\u202E`) || !strings.Contains(output.String(), "界") {
+		t.Fatalf("unsafe or incorrectly escaped model table: %q", output.String())
 	}
 }
 
@@ -1013,12 +1235,20 @@ func TestInteractiveReportCommandsResolveFreshRollingRanges(t *testing.T) {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	for minute := 0; minute <= len(commands)-1; minute++ {
+		// /sessions is now scoped to an explicitly selected project and does not
+		// render a report when invoked at home.
+		if minute == 2 {
+			continue
+		}
 		to := base.Add(time.Duration(minute) * time.Minute)
 		from := to.AddDate(0, 0, -7)
 		want := fmt.Sprintf("range: %s to %s (UTC)", from.Format(time.RFC3339), to.Format(time.RFC3339))
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("rolling report range %q missing from output: %s", want, stdout.String())
 		}
+	}
+	if !strings.Contains(stdout.String(), "select a project first with /project") {
+		t.Fatalf("project-scoped /sessions did not explain the missing selection: %q", stdout.String())
 	}
 }
 
