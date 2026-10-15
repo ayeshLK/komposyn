@@ -62,9 +62,10 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   `rate_micros` meaning. Migration 6 adds KompoSyn-owned project identity,
   canonical locations, scoped provider aliases, and reconciliation warnings
   without rewriting historical event references. Migration 7 normalizes and
-  deduplicates nullable reconciliation-warning keys. Migration 8 reserves the
-  synthetic Unattributed navigation IDs and remaps any older persisted
-  collisions without losing references. SQLite schema changes require an
+  deduplicates nullable reconciliation-warning keys. Migration 8 reserves both
+  synthetic Unattributed navigation ID strings across the project and session
+  namespaces and remaps any older persisted collisions without losing
+  references. SQLite schema changes require an
   explicit numbered migration in `plugins/library/token-logger/migrations.go`,
   a matching runner update, and an upgrade test covering the complete history.
 - Provider adapters parse one immutable source snapshot for both fingerprinting

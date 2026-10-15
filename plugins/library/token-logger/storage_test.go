@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -83,20 +84,25 @@ func TestAppendRejectsInvalidEventBeforeTransaction(t *testing.T) {
 
 func TestPersistenceRejectsSyntheticNavigationIDs(t *testing.T) {
 	store := openTestStore(t)
-	if err := store.UpsertProject(Project{ID: UnattributedProjectID, DisplayName: "Collision"}); err == nil {
-		t.Fatal("reserved project ID was accepted")
+	for _, id := range []string{UnattributedProjectID, UnattributedSessionID} {
+		if err := store.UpsertProject(Project{ID: id, DisplayName: "Collision"}); err == nil {
+			t.Fatalf("reserved project ID %q was accepted", id)
+		}
+		if err := store.UpsertSession(Session{ID: id, Client: Client{Name: "client"}}); err == nil {
+			t.Fatalf("reserved session ID %q was accepted", id)
+		}
 	}
-	if err := store.UpsertSession(Session{ID: UnattributedSessionID, Client: Client{Name: "client"}}); err == nil {
-		t.Fatal("reserved session ID was accepted")
-	}
-	event := testEvent("reserved-event")
-	event.ProjectID = UnattributedProjectID
-	if _, err := store.Append([]UsageEvent{event}); err == nil {
-		t.Fatal("event with reserved project ID was accepted")
-	}
-	event.ProjectID, event.SessionID = "", UnattributedSessionID
-	if _, err := store.Append([]UsageEvent{event}); err == nil {
-		t.Fatal("event with reserved session ID was accepted")
+	for index, id := range []string{UnattributedProjectID, UnattributedSessionID} {
+		event := testEvent(fmt.Sprintf("reserved-project-%d", index))
+		event.EventID, event.ProjectID = fmt.Sprintf("reserved-project-event-%d", index), id
+		if _, err := store.Append([]UsageEvent{event}); err == nil {
+			t.Fatalf("event with reserved project ID %q was accepted", id)
+		}
+		event = testEvent(fmt.Sprintf("reserved-session-%d", index))
+		event.EventID, event.SessionID = fmt.Sprintf("reserved-session-event-%d", index), id
+		if _, err := store.Append([]UsageEvent{event}); err == nil {
+			t.Fatalf("event with reserved session ID %q was accepted", id)
+		}
 	}
 	imported := testEvent("reserved-provider-alias")
 	imported.EventID, imported.Provenance.SourceRecord = "provider-event", "provider-record"
@@ -111,6 +117,99 @@ func TestPersistenceRejectsSyntheticNavigationIDs(t *testing.T) {
 	}
 	if persistedProjectID == UnattributedProjectID || persistedProjectID == "" {
 		t.Fatalf("provider alias was persisted without local reconciliation: %q", persistedProjectID)
+	}
+	crossImported := testEvent("reserved-cross-provider-alias")
+	crossImported.EventID, crossImported.Provenance.SourceRecord = "cross-provider-event", "cross-provider-record"
+	crossImported.ProjectID, crossImported.SessionID = UnattributedSessionID, UnattributedProjectID
+	crossProject := Project{ID: UnattributedSessionID, DisplayName: "Cross provider alias", SourceAdapter: "codex", ProviderAlias: UnattributedSessionID}
+	crossSession := Session{ID: UnattributedProjectID, ProjectID: UnattributedSessionID, Client: crossImported.Client, SourceAdapter: "codex", ProviderAlias: UnattributedProjectID}
+	if _, err := store.AppendWithReferences([]UsageEvent{crossImported}, []Project{crossProject}, []Session{crossSession}); err != nil {
+		t.Fatalf("cross-namespace provider aliases were not reconciled: %v", err)
+	}
+	var crossProjectID, crossSessionID string
+	if err := store.db.QueryRow("SELECT project_id, session_id FROM usage_events WHERE event_id = ?", crossImported.EventID).Scan(&crossProjectID, &crossSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if isReservedProjectID(crossProjectID) || isReservedSessionID(crossSessionID) || crossProjectID == "" || crossSessionID == "" {
+		t.Fatalf("cross-namespace provider aliases persisted reserved IDs: project=%q session=%q", crossProjectID, crossSessionID)
+	}
+}
+
+func TestMigrationEightRemapsCrossNamespaceSyntheticIDCollisions(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "token-logger.db")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := testEvent("cross-collision")
+	event.EventID, event.ProjectID, event.SessionID = "cross-collision-event", "legacy-project", "legacy-session"
+	if _, err := store.AppendWithReferences([]UsageEvent{event},
+		[]Project{{ID: event.ProjectID, DisplayName: "Cross collision"}},
+		[]Session{{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}}); err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO projects(id, root, display_name, created_at) SELECT '` + UnattributedSessionID + `', root, display_name, created_at FROM projects WHERE id = 'legacy-project'`,
+		`UPDATE sessions SET project_id = '` + UnattributedSessionID + `' WHERE project_id = 'legacy-project'`,
+		`UPDATE usage_events SET project_id = '` + UnattributedSessionID + `' WHERE project_id = 'legacy-project'`,
+		`DELETE FROM projects WHERE id = 'legacy-project'`,
+		`INSERT INTO sessions(id, project_id, client_name, client_version, client_mode, started_at, ended_at, source_metadata)
+		 SELECT '` + UnattributedProjectID + `', project_id, client_name, client_version, client_mode, started_at, ended_at, source_metadata
+		 FROM sessions WHERE id = 'legacy-session'`,
+		`UPDATE usage_events SET session_id = '` + UnattributedProjectID + `' WHERE session_id = 'legacy-session'`,
+		`DELETE FROM sessions WHERE id = 'legacy-session'`,
+		`INSERT INTO project_aliases(scope, alias, project_id, first_seen_at, last_seen_at)
+		 VALUES ('legacy', 'cross-project', '` + UnattributedSessionID + `', '2026-01-01', '2026-01-02')`,
+		`INSERT INTO session_aliases(scope, alias, session_id, project_id, first_seen_at, last_seen_at)
+		 VALUES ('legacy', 'cross-session', '` + UnattributedProjectID + `', '` + UnattributedSessionID + `', '2026-01-01', '2026-01-02')`,
+		`INSERT INTO reconciliation_warnings(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at, occurrence_count)
+		 VALUES ('cross-collision', 'legacy', 'digest', '` + UnattributedSessionID + `', '` + UnattributedProjectID + `', 'collision', '2026-01-01', '2026-01-02', 2)`,
+		`DELETE FROM schema_migrations WHERE version = 8`,
+	}
+	for _, statement := range statements {
+		if _, err := store.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var projectID, sessionID string
+	if err := store.db.QueryRow("SELECT project_id, session_id FROM usage_events WHERE event_id = ?", event.EventID).Scan(&projectID, &sessionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range []string{projectID, sessionID} {
+		if isReservedProjectID(got) || isReservedSessionID(got) || got == "" {
+			t.Fatalf("migration left cross-namespace collision: project=%q session=%q", projectID, sessionID)
+		}
+	}
+	checks := []struct {
+		query string
+		args  []any
+	}{
+		{"SELECT COUNT(*) FROM project_aliases WHERE project_id = ?", []any{projectID}},
+		{"SELECT COUNT(*) FROM session_aliases WHERE project_id = ? AND session_id = ?", []any{projectID, sessionID}},
+		{"SELECT COUNT(*) FROM reconciliation_warnings WHERE project_id = ? AND session_id = ? AND occurrence_count = 2", []any{projectID, sessionID}},
+	}
+	for _, check := range checks {
+		var count int
+		if err := store.db.QueryRow(check.query, check.args...).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("cross-collision reference count=%d err=%v query=%q", count, err, check.query)
+		}
+	}
+	filter := ResourceFilter{From: event.OccurredAt.Add(-time.Hour), To: event.OccurredAt.Add(time.Hour)}
+	project, err := store.ProjectResource(projectID, filter)
+	if err != nil || project.Summary.RequestCount != 1 {
+		t.Fatalf("migrated cross-collision project=%+v err=%v", project, err)
+	}
+	session, err := store.SessionResource(sessionID, projectID, filter)
+	if err != nil || session.Summary.RequestCount != 1 {
+		t.Fatalf("migrated cross-collision session=%+v err=%v", session, err)
 	}
 }
 

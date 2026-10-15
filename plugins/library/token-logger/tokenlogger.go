@@ -186,9 +186,13 @@ func (e UsageEvent) Validate() error {
 	return e.Cost.validate()
 }
 
-func isReservedProjectID(id string) bool { return id == UnattributedProjectID }
+func isReservedProjectID(id string) bool {
+	return id == UnattributedProjectID || id == UnattributedSessionID
+}
 
-func isReservedSessionID(id string) bool { return id == UnattributedSessionID }
+func isReservedSessionID(id string) bool {
+	return id == UnattributedProjectID || id == UnattributedSessionID
+}
 
 // Project is a stable local project identity.
 type Project struct {

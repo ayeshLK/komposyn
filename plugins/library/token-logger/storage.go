@@ -239,10 +239,17 @@ func (s *Store) Migrate() error {
 }
 
 func migrateReservedResourceIDs(tx *sql.Tx) error {
-	if err := migrateReservedProjectID(tx, UnattributedProjectID); err != nil {
-		return err
+	for _, id := range []string{UnattributedProjectID, UnattributedSessionID} {
+		if err := migrateReservedProjectID(tx, id); err != nil {
+			return err
+		}
 	}
-	return migrateReservedSessionID(tx, UnattributedSessionID)
+	for _, id := range []string{UnattributedProjectID, UnattributedSessionID} {
+		if err := migrateReservedSessionID(tx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateReservedProjectID(tx *sql.Tx, oldID string) error {

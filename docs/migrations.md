@@ -22,9 +22,10 @@ Migrations are numbered, applied in order, and recorded in the
 7. Normalizes reconciliation-warning project/session keys to non-null values
    and consolidates duplicate NULL-key warnings while preserving occurrence
    totals and activity bounds.
-8. Reserves the synthetic Unattributed navigation IDs. Any older persisted
-   project or session using a reserved value is transactionally moved to a
-   collision-free local ID, with all references updated.
+8. Reserves both synthetic Unattributed navigation ID strings across both the
+   project and session namespaces. Any older persisted project or session using
+   either reserved value is transactionally moved to a collision-free local ID,
+   with all references updated.
 
 ## Compatibility rules
 
