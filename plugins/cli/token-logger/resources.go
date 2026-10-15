@@ -389,11 +389,11 @@ func resourceTime(value *time.Time) string {
 }
 
 func resourceCSVHeader(kind string) []string {
-	return []string{kind + "_id", "name", "location_or_project_id", "clients", "models", "first_active", "last_active", "session_count", "request_count", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens", "calculated_cost_micros", "calculated_currency", "unknown_cost_requests", "cost_status"}
+	return []string{"format_version", kind + "_id", "name", "location_or_project_id", "clients", "models", "first_active", "last_active", "session_count", "request_count", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens", "calculated_cost_micros", "calculated_currency", "unknown_cost_requests", "cost_status"}
 }
 
 func resourceCSVRow(id, name, location string, clients, models []string, first, last *time.Time, summary tokenlogger.UsageMeasures) []string {
-	return []string{id, name, location, strings.Join(clients, ";"), strings.Join(models, ";"), csvTime(first), csvTime(last), strconv.FormatInt(summary.SessionCount, 10), strconv.FormatInt(summary.RequestCount, 10), strconv.FormatInt(summary.InputTokens, 10), strconv.FormatInt(summary.CachedInputTokens, 10), strconv.FormatInt(summary.CacheWriteInputTokens, 10), strconv.FormatInt(summary.OutputTokens, 10), strconv.FormatInt(summary.ReasoningOutputTokens, 10), strconv.FormatInt(summary.TotalTokens, 10), strconv.FormatInt(summary.CalculatedCostMicros, 10), summary.CalculatedCurrency, strconv.FormatInt(summary.UnknownCostRequests, 10), summary.CostUnknownReason}
+	return []string{"1", id, name, location, strings.Join(clients, ";"), strings.Join(models, ";"), csvTime(first), csvTime(last), strconv.FormatInt(summary.SessionCount, 10), strconv.FormatInt(summary.RequestCount, 10), strconv.FormatInt(summary.InputTokens, 10), strconv.FormatInt(summary.CachedInputTokens, 10), strconv.FormatInt(summary.CacheWriteInputTokens, 10), strconv.FormatInt(summary.OutputTokens, 10), strconv.FormatInt(summary.ReasoningOutputTokens, 10), strconv.FormatInt(summary.TotalTokens, 10), strconv.FormatInt(summary.CalculatedCostMicros, 10), summary.CalculatedCurrency, strconv.FormatInt(summary.UnknownCostRequests, 10), summary.CostUnknownReason}
 }
 
 func csvTime(value *time.Time) string {

@@ -456,6 +456,17 @@ func TestProjectAndSessionResourceCommands(t *testing.T) {
 	if !strings.Contains(projectsOut.String(), `"format_version": 1`) || !strings.Contains(projectsOut.String(), `"display_name": "Readable Project"`) || !strings.Contains(projectsOut.String(), `"request_count": 1`) {
 		t.Fatalf("unexpected projects JSON: %s", projectsOut.String())
 	}
+	var projectsCSVOut, projectsCSVErr bytes.Buffer
+	if code := run([]string{"projects", "list", "--data-dir", dataDir, "--format", "csv"}, &projectsCSVOut, &projectsCSVErr); code != 0 {
+		t.Fatalf("projects list CSV exit=%d stderr=%q", code, projectsCSVErr.String())
+	}
+	projectRecords, err := csv.NewReader(strings.NewReader(projectsCSVOut.String())).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projectRecords) != 2 || projectRecords[0][0] != "format_version" || projectRecords[0][1] != "project_id" || projectRecords[1][0] != "1" || projectRecords[1][1] != "local-project" {
+		t.Fatalf("unexpected project-list CSV: %#v", projectRecords)
+	}
 
 	var sessionsOut, sessionsErr bytes.Buffer
 	if code := run([]string{"sessions", "list", "--project", "local-project", "--data-dir", dataDir, "--format", "json"}, &sessionsOut, &sessionsErr); code != 0 {
@@ -463,6 +474,17 @@ func TestProjectAndSessionResourceCommands(t *testing.T) {
 	}
 	if !strings.Contains(sessionsOut.String(), `"format_version": 1`) || !strings.Contains(sessionsOut.String(), `"id": "local-session"`) || !strings.Contains(sessionsOut.String(), event.ResolvedModel) {
 		t.Fatalf("unexpected sessions JSON: %s", sessionsOut.String())
+	}
+	var sessionsCSVOut, sessionsCSVErr bytes.Buffer
+	if code := run([]string{"sessions", "list", "--project", "local-project", "--data-dir", dataDir, "--format", "csv"}, &sessionsCSVOut, &sessionsCSVErr); code != 0 {
+		t.Fatalf("sessions list CSV exit=%d stderr=%q", code, sessionsCSVErr.String())
+	}
+	sessionRecords, err := csv.NewReader(strings.NewReader(sessionsCSVOut.String())).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessionRecords) != 2 || sessionRecords[0][0] != "format_version" || sessionRecords[0][1] != "session_id" || sessionRecords[1][0] != "1" || sessionRecords[1][1] != "local-session" {
+		t.Fatalf("unexpected session-list CSV: %#v", sessionRecords)
 	}
 
 	var detailOut, detailErr bytes.Buffer
@@ -505,10 +527,18 @@ func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
 		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, expected := range []string{"Navigation Project", "nav-session", "nav model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
+	for _, expected := range []string{"Navigation Project", "LOCATION: /workspace/navigation", "nav-session", "nav model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("interactive navigation missing %q: %s", expected, output)
 		}
+	}
+}
+
+func TestInteractiveProjectHeaderUsesUnavailableLocationFallback(t *testing.T) {
+	var output bytes.Buffer
+	writeInteractiveProjectHeader(&output, &interactiveState{projectName: "No Location"})
+	if got := output.String(); !strings.Contains(got, "PROJECT: No Location") || !strings.Contains(got, "LOCATION: location unavailable") {
+		t.Fatalf("missing-location project header = %q", got)
 	}
 }
 

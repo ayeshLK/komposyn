@@ -228,10 +228,16 @@ func TestUnattributedResourcesReconcileWithGlobalTotals(t *testing.T) {
 	attributed.EventID, attributed.ProjectID, attributed.SessionID = "attributed-event", "project", "session"
 	unattributed := testEvent("unattributed")
 	unattributed.EventID, unattributed.ProjectID, unattributed.SessionID = "unattributed-event", "", ""
+	projectScoped := testEvent("project-scoped-unattributed-session")
+	projectScoped.EventID, projectScoped.ProjectID, projectScoped.SessionID = "project-scoped-event", "project", ""
+	projectScoped.Provenance.SourceRecord = "project-scoped-record"
 	if _, err := store.AppendWithReferences([]UsageEvent{attributed}, []Project{{ID: "project", DisplayName: "Project"}}, []Session{{ID: "session", ProjectID: "project", Client: attributed.Client}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Append([]UsageEvent{unattributed}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append([]UsageEvent{projectScoped}); err != nil {
 		t.Fatal(err)
 	}
 	filter := ResourceFilter{From: from, To: to}
@@ -253,6 +259,34 @@ func TestUnattributedResourcesReconcileWithGlobalTotals(t *testing.T) {
 	}
 	if !foundUnattributed || projectRequests != global.Summary.RequestCount {
 		t.Fatalf("project resources = %+v requests=%d, global=%d", projects.Projects, projectRequests, global.Summary.RequestCount)
+	}
+	projectSessions, err := store.ListSessions("project", filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projectSessionRequests int64
+	var projectSessionCount int64
+	foundMissingSession := false
+	for _, session := range projectSessions.Sessions {
+		projectSessionRequests += session.Summary.RequestCount
+		projectSessionCount += session.Summary.SessionCount
+		if session.ID == UnattributedSessionID {
+			foundMissingSession = session.ProjectID == "project" && session.Summary.RequestCount == 1
+		}
+	}
+	project, err := store.ProjectResource("project", filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !foundMissingSession || len(projectSessions.Sessions) != 2 || projectSessionRequests != project.Summary.RequestCount || projectSessionCount != project.Summary.SessionCount || project.Summary.SessionCount != 2 {
+		t.Fatalf("project sessions = %+v request sum=%d session count=%d project=%+v", projectSessions.Sessions, projectSessionRequests, projectSessionCount, project.Summary)
+	}
+	missingSession, err := store.SessionResource(UnattributedSessionID, "project", filter)
+	if err != nil || missingSession.Summary.RequestCount != 1 || missingSession.Summary.SessionCount != 1 {
+		t.Fatalf("project-scoped Unattributed session = %+v, %v", missingSession, err)
+	}
+	if _, err := store.SessionResource(UnattributedSessionID, "", filter); err == nil {
+		t.Fatal("ambiguous Unattributed session lookup without project was accepted")
 	}
 	sessions, err := store.ListSessions(UnattributedProjectID, filter)
 	if err != nil {

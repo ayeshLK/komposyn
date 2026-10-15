@@ -138,21 +138,22 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 }
 
 type interactiveState struct {
-	from          time.Time
-	to            time.Time
-	pinned        bool
-	groupBy       []string
-	view          string
-	projectID     string
-	projectName   string
-	sessionID     string
-	model         string
-	modelProvider string
-	modelSelected bool
-	modelMissing  bool
-	projectRows   []tokenlogger.ProjectResource
-	sessionRows   []tokenlogger.SessionResource
-	modelRows     []interactiveModelSelection
+	from            time.Time
+	to              time.Time
+	pinned          bool
+	groupBy         []string
+	view            string
+	projectID       string
+	projectName     string
+	projectLocation string
+	sessionID       string
+	model           string
+	modelProvider   string
+	modelSelected   bool
+	modelMissing    bool
+	projectRows     []tokenlogger.ProjectResource
+	sessionRows     []tokenlogger.SessionResource
+	modelRows       []interactiveModelSelection
 }
 
 type interactiveModelSelection struct {
@@ -484,7 +485,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 			}
 		case "/projects":
 			state.view = "projects"
-			state.projectID, state.projectName, state.sessionID = "", "", ""
+			state.projectID, state.projectName, state.projectLocation, state.sessionID = "", "", "", ""
 			state.clearModelSelection()
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
@@ -500,7 +501,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				fmt.Fprintf(stdout, "project selection failed: %v\n", err)
 				continue
 			}
-			state.projectID, state.projectName, state.sessionID, state.view = project.ID, project.DisplayName, "", "project"
+			state.projectID, state.projectName, state.projectLocation, state.sessionID, state.view = project.ID, project.DisplayName, project.Location, "", "project"
 			state.clearModelSelection()
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
@@ -561,7 +562,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 			} else if state.sessionID != "" {
 				state.sessionID, state.view = "", "sessions"
 			} else if state.projectID != "" {
-				state.projectID, state.projectName, state.view = "", "", "projects"
+				state.projectID, state.projectName, state.projectLocation, state.view = "", "", "", "projects"
 			} else {
 				state.view = ""
 			}
@@ -569,7 +570,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				return 0
 			}
 		case "/home":
-			state.projectID, state.projectName, state.sessionID, state.view = "", "", "", ""
+			state.projectID, state.projectName, state.projectLocation, state.sessionID, state.view = "", "", "", "", ""
 			state.clearModelSelection()
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
@@ -691,7 +692,8 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		}
 		state.sessionRows = append(state.sessionRows[:0], list.Sessions...)
 		state.projectRows, state.modelRows = nil, nil
-		fmt.Fprintf(stdout, "PROJECT: %s\nrange: %s to %s (UTC)\n", tokenlogger.FormatHumanLabel(state.projectName), state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
+		writeInteractiveProjectHeader(stdout, state)
+		fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
 		return writeSessionTable(stdout, list.Sessions)
 	}
 	state.projectRows, state.sessionRows = nil, nil
@@ -708,6 +710,9 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 	report, err := store.Query(filter)
 	if err != nil {
 		return renderInteractiveError(stdout, stderr, store, reader, err)
+	}
+	if state.view == "project" {
+		writeInteractiveProjectHeader(stdout, state)
 	}
 	fmt.Fprintf(stdout, "range: %s to %s (UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
 	if state.view == "session" || state.view == "models" {
@@ -726,6 +731,10 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 		fmt.Fprintf(stderr, "render report failed: %v\n", err)
 	}
 	return nil
+}
+
+func writeInteractiveProjectHeader(output io.Writer, state *interactiveState) {
+	fmt.Fprintf(output, "PROJECT: %s\nLOCATION: %s\n", tokenlogger.FormatHumanLabel(state.projectName), humanLocation(state.projectLocation))
 }
 
 func interactiveUsageFilter(state *interactiveState) tokenlogger.UsageFilter {

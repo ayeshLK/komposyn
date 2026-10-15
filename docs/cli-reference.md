@@ -134,7 +134,7 @@ komposyn-lg sessions list --project <project-id> [--from <time>] [--to <time>] [
 komposyn-lg sessions show <session-id> [--project <project-id>] [--group-by model] [--format table|json|csv]
 ```
 
-These commands browse stable local resources. List JSON has
+These commands browse stable local resources. List JSON and CSV have
 `format_version: 1`; selectors in non-interactive commands are full stable IDs,
 never row numbers. Project output includes the readable name, canonical local
 location when known, clients/models, activity bounds, and complete usage/cost
@@ -144,7 +144,9 @@ per-model usage. Its CSV output has one row per model/provider pair and includes
 `format_version`, stable resource IDs, all token categories, calculated and
 provider-reported cost fields, and pricing provenance. Events without a project
 or session reference remain browsable under synthetic `Unattributed` resources;
-their IDs are stable CLI identifiers, not rows persisted in the database. The
+their IDs are stable CLI identifiers, not rows persisted in the database.
+Because the synthetic session is scoped to its selected project, pass
+`--project <project-id>` when showing it non-interactively. The
 original `komposyn-lg sessions [report options]` command is retained as a
 compatibility report alias and keeps its existing output shape.
 
