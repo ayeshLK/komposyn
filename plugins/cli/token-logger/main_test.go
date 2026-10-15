@@ -520,6 +520,11 @@ func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
 		[]tokenlogger.Session{{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}}); err != nil {
 		t.Fatal(err)
 	}
+	project, err := store.ProjectResource(event.ProjectID, tokenlogger.ResourceFilter{From: now.AddDate(0, 0, -1), To: now.AddDate(0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedLocation := "LOCATION: " + humanLocation(project.Location)
 	commands := "/range 2026-10-14 2026-10-16\n/projects\n/project Navigation Project\n/sessions\n/session nav-session\n/models\n/model nav model\n/back\n/home\n/range\n/quit\n"
 	var stdout, stderr bytes.Buffer
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
@@ -527,7 +532,7 @@ func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
 		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, expected := range []string{"Navigation Project", "LOCATION: /workspace/navigation", "nav-session", "nav model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
+	for _, expected := range []string{"Navigation Project", expectedLocation, "nav-session", "nav model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("interactive navigation missing %q: %s", expected, output)
 		}
