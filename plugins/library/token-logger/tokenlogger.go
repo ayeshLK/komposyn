@@ -29,7 +29,7 @@ import (
 // at link time.
 var Version = "0.0.0-dev"
 
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.
@@ -185,6 +185,10 @@ func (e UsageEvent) Validate() error {
 	}
 	return e.Cost.validate()
 }
+
+func isReservedProjectID(id string) bool { return id == UnattributedProjectID }
+
+func isReservedSessionID(id string) bool { return id == UnattributedSessionID }
 
 // Project is a stable local project identity.
 type Project struct {

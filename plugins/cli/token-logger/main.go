@@ -468,6 +468,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 		}
 		fields := strings.Fields(line)
 		command := fields[0]
+		selector := strings.TrimSpace(line[len(command):])
 		switch command {
 		case "/quit", "/exit":
 			return 0
@@ -489,12 +490,12 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				return 0
 			}
 		case "/project":
-			if len(fields) != 2 {
+			if selector == "" {
 				fmt.Fprintln(stdout, "usage: /project <row-number|unambiguous-name|stable-id>")
 				continue
 			}
 			state.resolveRange(now)
-			project, err := selectInteractiveProject(store, &state, tokenlogger.ResourceFilter{From: state.from, To: state.to}, fields[1])
+			project, err := selectInteractiveProject(store, &state, tokenlogger.ResourceFilter{From: state.from, To: state.to}, selector)
 			if err != nil {
 				fmt.Fprintf(stdout, "project selection failed: %v\n", err)
 				continue
@@ -514,12 +515,12 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				return 0
 			}
 		case "/session":
-			if state.projectID == "" || len(fields) != 2 {
+			if state.projectID == "" || selector == "" {
 				fmt.Fprintln(stdout, "usage: /session <row-number|unambiguous-id-prefix> (after selecting a project)")
 				continue
 			}
 			state.resolveRange(now)
-			session, err := selectInteractiveSession(store, &state, tokenlogger.ResourceFilter{From: state.from, To: state.to}, fields[1])
+			session, err := selectInteractiveSession(store, &state, tokenlogger.ResourceFilter{From: state.from, To: state.to}, selector)
 			if err != nil {
 				fmt.Fprintf(stdout, "session selection failed: %v\n", err)
 				continue
@@ -539,12 +540,12 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 				return 0
 			}
 		case "/model":
-			if state.sessionID == "" || len(fields) != 2 {
+			if state.sessionID == "" || selector == "" {
 				fmt.Fprintln(stdout, "usage: /model <row-number|unambiguous-name> (after selecting a session)")
 				continue
 			}
 			state.resolveRange(now)
-			model, err := selectInteractiveModel(&state, fields[1])
+			model, err := selectInteractiveModel(&state, selector)
 			if err != nil {
 				fmt.Fprintf(stdout, "model selection failed: %v\n", err)
 				continue

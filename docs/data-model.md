@@ -29,7 +29,9 @@ Resource browsing does not discard events whose project or session reference
 is null. The library exposes synthetic `Unattributed` project and session
 resources for those events so resource summaries reconcile with the unfiltered
 usage total. These synthetic identities are query-layer sentinels and are not
-inserted into `projects` or `sessions`.
+inserted into `projects` or `sessions`; their identifiers are reserved at
+persistence boundaries. Migration 8 remaps any older persisted collision and
+its references to a collision-free local identifier.
 
 `projects.id` and `sessions.id` are KompoSyn-owned identities. Provider IDs are
 aliases rather than primary keys for new adapter imports. Reconciliation first

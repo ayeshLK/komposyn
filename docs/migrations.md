@@ -2,7 +2,7 @@
 
 Komposyn upgrades its SQLite schema automatically when `Store.Open` is called.
 Migrations are numbered, applied in order, and recorded in the
-`schema_migrations` table. The current schema version is 6.
+`schema_migrations` table. The current schema version is 8.
 
 ## Migration history
 
@@ -19,6 +19,12 @@ Migrations are numbered, applied in order, and recorded in the
    reconciliation warnings. Existing project/session/event IDs remain valid;
    non-empty legacy roots seed locations, and compatibility aliases preserve
    old filters without destructively rewriting accounting history.
+7. Normalizes reconciliation-warning project/session keys to non-null values
+   and consolidates duplicate NULL-key warnings while preserving occurrence
+   totals and activity bounds.
+8. Reserves the synthetic Unattributed navigation IDs. Any older persisted
+   project or session using a reserved value is transactionally moved to a
+   collision-free local ID, with all references updated.
 
 ## Compatibility rules
 

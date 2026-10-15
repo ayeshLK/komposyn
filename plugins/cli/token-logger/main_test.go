@@ -492,20 +492,20 @@ func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
 	defer store.Close()
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	event := cliReportEvent("navigation", now.Add(-time.Hour))
-	event.ProjectID, event.SessionID, event.ResolvedModel = "nav-project", "nav-session", "nav-model"
+	event.ProjectID, event.SessionID, event.ResolvedModel = "nav-project", "nav-session", "nav model"
 	if _, err := store.AppendWithReferences([]tokenlogger.UsageEvent{event},
 		[]tokenlogger.Project{{ID: event.ProjectID, Root: "/workspace/navigation", DisplayName: "Navigation Project"}},
 		[]tokenlogger.Session{{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}}); err != nil {
 		t.Fatal(err)
 	}
-	commands := "/range 2026-10-14 2026-10-16\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/back\n/home\n/range\n/quit\n"
+	commands := "/range 2026-10-14 2026-10-16\n/projects\n/project Navigation Project\n/sessions\n/session nav-session\n/models\n/model nav model\n/back\n/home\n/range\n/quit\n"
 	var stdout, stderr bytes.Buffer
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
 	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return now }); code != 0 {
 		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, expected := range []string{"Navigation Project", "nav-session", "nav-model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav-model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
+	for _, expected := range []string{"Navigation Project", "nav-session", "nav model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("interactive navigation missing %q: %s", expected, output)
 		}

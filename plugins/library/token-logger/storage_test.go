@@ -81,6 +81,144 @@ func TestAppendRejectsInvalidEventBeforeTransaction(t *testing.T) {
 	}
 }
 
+func TestPersistenceRejectsSyntheticNavigationIDs(t *testing.T) {
+	store := openTestStore(t)
+	if err := store.UpsertProject(Project{ID: UnattributedProjectID, DisplayName: "Collision"}); err == nil {
+		t.Fatal("reserved project ID was accepted")
+	}
+	if err := store.UpsertSession(Session{ID: UnattributedSessionID, Client: Client{Name: "client"}}); err == nil {
+		t.Fatal("reserved session ID was accepted")
+	}
+	event := testEvent("reserved-event")
+	event.ProjectID = UnattributedProjectID
+	if _, err := store.Append([]UsageEvent{event}); err == nil {
+		t.Fatal("event with reserved project ID was accepted")
+	}
+	event.ProjectID, event.SessionID = "", UnattributedSessionID
+	if _, err := store.Append([]UsageEvent{event}); err == nil {
+		t.Fatal("event with reserved session ID was accepted")
+	}
+	imported := testEvent("reserved-provider-alias")
+	imported.EventID, imported.Provenance.SourceRecord = "provider-event", "provider-record"
+	imported.ProjectID = UnattributedProjectID
+	project := Project{ID: UnattributedProjectID, DisplayName: "Provider alias", SourceAdapter: "codex", ProviderAlias: UnattributedProjectID}
+	if _, err := store.AppendWithReferences([]UsageEvent{imported}, []Project{project}, nil); err != nil {
+		t.Fatalf("provider alias equal to reserved local ID was not reconciled: %v", err)
+	}
+	var persistedProjectID string
+	if err := store.db.QueryRow("SELECT project_id FROM usage_events WHERE event_id = ?", imported.EventID).Scan(&persistedProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if persistedProjectID == UnattributedProjectID || persistedProjectID == "" {
+		t.Fatalf("provider alias was persisted without local reconciliation: %q", persistedProjectID)
+	}
+}
+
+func TestMigrationEightRemapsSyntheticIDCollisions(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "token-logger.db")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributed := testEvent("collision-attributed")
+	attributed.ProjectID, attributed.SessionID = "legacy-project", "legacy-session"
+	if _, err := store.AppendWithReferences([]UsageEvent{attributed},
+		[]Project{{ID: attributed.ProjectID, DisplayName: "Persisted collision"}},
+		[]Session{{ID: attributed.SessionID, ProjectID: attributed.ProjectID, Client: attributed.Client}}); err != nil {
+		t.Fatal(err)
+	}
+	unattributed := testEvent("collision-unattributed")
+	unattributed.EventID, unattributed.Provenance.SourceRecord = "event-2", "record-2"
+	if _, err := store.Append([]UsageEvent{unattributed}); err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO projects(id, root, display_name, created_at) SELECT '` + UnattributedProjectID + `', root, display_name, created_at FROM projects WHERE id = 'legacy-project'`,
+		`UPDATE sessions SET project_id = '` + UnattributedProjectID + `' WHERE project_id = 'legacy-project'`,
+		`UPDATE usage_events SET project_id = '` + UnattributedProjectID + `' WHERE project_id = 'legacy-project'`,
+		`DELETE FROM projects WHERE id = 'legacy-project'`,
+		`INSERT INTO sessions(id, project_id, client_name, client_version, client_mode, started_at, ended_at, source_metadata)
+		 SELECT '` + UnattributedSessionID + `', project_id, client_name, client_version, client_mode, started_at, ended_at, source_metadata
+		 FROM sessions WHERE id = 'legacy-session'`,
+		`UPDATE usage_events SET session_id = '` + UnattributedSessionID + `' WHERE session_id = 'legacy-session'`,
+		`DELETE FROM sessions WHERE id = 'legacy-session'`,
+		`INSERT INTO project_locations(project_id, canonical_path, display_path, first_seen_at, last_seen_at)
+		 VALUES ('` + UnattributedProjectID + `', '/collision', '/collision', '2026-01-01', '2026-01-02')`,
+		`INSERT INTO project_aliases(scope, alias, project_id, first_seen_at, last_seen_at)
+		 VALUES ('legacy', 'project-alias', '` + UnattributedProjectID + `', '2026-01-01', '2026-01-02')`,
+		`INSERT INTO session_aliases(scope, alias, session_id, project_id, first_seen_at, last_seen_at)
+		 VALUES ('legacy', 'session-alias', '` + UnattributedSessionID + `', '` + UnattributedProjectID + `', '2026-01-01', '2026-01-02')`,
+		`INSERT INTO reconciliation_warnings(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at, occurrence_count)
+		 VALUES ('collision', 'legacy', 'digest', '` + UnattributedProjectID + `', '` + UnattributedSessionID + `', 'collision', '2026-01-01', '2026-01-02', 3)`,
+		`DELETE FROM schema_migrations WHERE version = 8`,
+	}
+	for _, statement := range statements {
+		if _, err := store.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var projectID, sessionID string
+	if err := store.db.QueryRow("SELECT project_id, session_id FROM usage_events WHERE event_id = ?", attributed.EventID).Scan(&projectID, &sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if projectID == UnattributedProjectID || sessionID == UnattributedSessionID || projectID == "" || sessionID == "" {
+		t.Fatalf("migration left colliding references: project=%q session=%q", projectID, sessionID)
+	}
+	checks := []struct {
+		query string
+		args  []any
+	}{
+		{"SELECT COUNT(*) FROM project_locations WHERE project_id = ?", []any{projectID}},
+		{"SELECT COUNT(*) FROM project_aliases WHERE project_id = ?", []any{projectID}},
+		{"SELECT COUNT(*) FROM session_aliases WHERE project_id = ? AND session_id = ?", []any{projectID, sessionID}},
+		{"SELECT COUNT(*) FROM reconciliation_warnings WHERE project_id = ? AND session_id = ? AND occurrence_count = 3", []any{projectID, sessionID}},
+	}
+	for _, check := range checks {
+		var count int
+		if err := store.db.QueryRow(check.query, check.args...).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("migration did not preserve dependent reference for %q", check.query)
+		}
+	}
+	filter := ResourceFilter{From: attributed.OccurredAt.Add(-time.Hour), To: attributed.OccurredAt.Add(time.Hour)}
+	projects, err := store.ListProjects(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects.Projects) != 2 {
+		t.Fatalf("projects after collision migration = %+v, want persisted and synthetic resources", projects.Projects)
+	}
+	var persisted, synthetic int
+	for _, project := range projects.Projects {
+		if project.ID == projectID && project.Summary.RequestCount == 1 {
+			persisted++
+		}
+		if project.ID == UnattributedProjectID && project.Summary.RequestCount == 1 {
+			synthetic++
+		}
+	}
+	if persisted != 1 || synthetic != 1 {
+		t.Fatalf("collision migration navigation persisted=%d synthetic=%d projects=%+v", persisted, synthetic, projects.Projects)
+	}
+	sessions, err := store.ListSessions(projectID, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Sessions) != 1 || sessions.Sessions[0].ID != sessionID || sessions.Sessions[0].Summary.RequestCount != 1 {
+		t.Fatalf("migrated session navigation = %+v", sessions.Sessions)
+	}
+}
+
 func TestAppendRollsBackEventAndCursorOnPersistenceFailure(t *testing.T) {
 	store := openTestStore(t)
 	event := testEvent("ingestion-1")

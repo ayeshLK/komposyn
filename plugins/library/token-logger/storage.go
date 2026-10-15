@@ -218,7 +218,133 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("commit migration 7: %w", err)
 		}
 	}
+	if applied < 8 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 8: %w", err)
+		}
+		if err := migrateReservedResourceIDs(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("apply migration 8: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 8, formatStoredTime(time.Now())); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration 8: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 8: %w", err)
+		}
+	}
 	return nil
+}
+
+func migrateReservedResourceIDs(tx *sql.Tx) error {
+	if err := migrateReservedProjectID(tx, UnattributedProjectID); err != nil {
+		return err
+	}
+	return migrateReservedSessionID(tx, UnattributedSessionID)
+}
+
+func migrateReservedProjectID(tx *sql.Tx, oldID string) error {
+	var exists bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)", oldID).Scan(&exists); err != nil || !exists {
+		return err
+	}
+	newID, err := unusedResourceID(tx, "projects", "project", oldID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at)
+		SELECT ?, root, display_name, created_at FROM projects WHERE id = ?`, newID, oldID); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		"UPDATE sessions SET project_id = ? WHERE project_id = ?",
+		"UPDATE usage_events SET project_id = ? WHERE project_id = ?",
+		"UPDATE project_locations SET project_id = ? WHERE project_id = ?",
+		"UPDATE project_aliases SET project_id = ? WHERE project_id = ?",
+		"UPDATE session_aliases SET project_id = ? WHERE project_id = ?",
+	} {
+		if _, err := tx.Exec(statement, newID, oldID); err != nil {
+			return err
+		}
+	}
+	if err := migrateWarningResourceID(tx, "project_id", oldID, newID); err != nil {
+		return err
+	}
+	_, err = tx.Exec("DELETE FROM projects WHERE id = ?", oldID)
+	return err
+}
+
+func migrateReservedSessionID(tx *sql.Tx, oldID string) error {
+	var exists bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)", oldID).Scan(&exists); err != nil || !exists {
+		return err
+	}
+	newID, err := unusedResourceID(tx, "sessions", "session", oldID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO sessions(id, project_id, client_name, client_version, client_mode, started_at, ended_at, source_metadata)
+		SELECT ?, project_id, client_name, client_version, client_mode, started_at, ended_at, source_metadata
+		FROM sessions WHERE id = ?`, newID, oldID); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		"UPDATE usage_events SET session_id = ? WHERE session_id = ?",
+		"UPDATE session_aliases SET session_id = ? WHERE session_id = ?",
+	} {
+		if _, err := tx.Exec(statement, newID, oldID); err != nil {
+			return err
+		}
+	}
+	if err := migrateWarningResourceID(tx, "session_id", oldID, newID); err != nil {
+		return err
+	}
+	_, err = tx.Exec("DELETE FROM sessions WHERE id = ?", oldID)
+	return err
+}
+
+func unusedResourceID(tx *sql.Tx, table, kind, oldID string) (string, error) {
+	base := stableLocalID(kind, "migration-8", oldID)
+	for suffix := 0; ; suffix++ {
+		candidate := base
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		var exists bool
+		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE id = ?)", candidate).Scan(&exists); err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+}
+
+func migrateWarningResourceID(tx *sql.Tx, column, oldID, newID string) error {
+	otherColumn := "session_id"
+	if column == "session_id" {
+		otherColumn = "project_id"
+	}
+	query := `INSERT INTO reconciliation_warnings(
+		kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at, occurrence_count)
+		SELECT kind, scope, alias_digest, `
+	if column == "project_id" {
+		query += `?, session_id, message, first_seen_at, last_seen_at, occurrence_count `
+	} else {
+		query += `project_id, ?, message, first_seen_at, last_seen_at, occurrence_count `
+	}
+	query += `FROM reconciliation_warnings WHERE ` + column + ` = ?
+		ON CONFLICT(kind, scope, alias_digest, project_id, session_id) DO UPDATE SET
+		first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
+		last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
+		occurrence_count = occurrence_count + excluded.occurrence_count`
+	if _, err := tx.Exec(query, newID, oldID); err != nil {
+		return fmt.Errorf("migrate warning %s while preserving %s: %w", column, otherColumn, err)
+	}
+	_, err := tx.Exec("DELETE FROM reconciliation_warnings WHERE "+column+" = ?", oldID)
+	return err
 }
 
 func applyProjectIdentityMigration(tx *sql.Tx) error {
@@ -460,6 +586,9 @@ func (s *Store) UpsertProject(project Project) error {
 	if strings.TrimSpace(project.ID) == "" || strings.TrimSpace(project.DisplayName) == "" {
 		return errors.New("project ID and display name are required")
 	}
+	if isReservedProjectID(project.ID) {
+		return errors.New("project ID is reserved for synthetic navigation")
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -482,6 +611,9 @@ func (s *Store) UpsertProject(project Project) error {
 func (s *Store) UpsertSession(session Session) error {
 	if strings.TrimSpace(session.ID) == "" || strings.TrimSpace(session.Client.Name) == "" {
 		return errors.New("session ID and client name are required")
+	}
+	if isReservedSessionID(session.ID) || isReservedProjectID(session.ProjectID) {
+		return errors.New("session ID or project ID is reserved for synthetic navigation")
 	}
 	if session.SourceMetadata != nil && !json.Valid(session.SourceMetadata) {
 		return errors.New("session source metadata must contain valid JSON")
@@ -558,6 +690,24 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 	if err != nil {
 		tx.Rollback()
 		return Receipt{}, fmt.Errorf("reconcile imported references: %w", err)
+	}
+	for _, event := range events {
+		if isReservedProjectID(event.ProjectID) || isReservedSessionID(event.SessionID) {
+			tx.Rollback()
+			return Receipt{}, fmt.Errorf("event %q uses a resource ID reserved for synthetic navigation", event.EventID)
+		}
+	}
+	for _, project := range projects {
+		if isReservedProjectID(project.ID) {
+			tx.Rollback()
+			return Receipt{}, errors.New("project ID is reserved for synthetic navigation")
+		}
+	}
+	for _, session := range sessions {
+		if isReservedSessionID(session.ID) || isReservedProjectID(session.ProjectID) {
+			tx.Rollback()
+			return Receipt{}, errors.New("session ID or project ID is reserved for synthetic navigation")
+		}
 	}
 	receipt := Receipt{}
 	for _, project := range projects {
