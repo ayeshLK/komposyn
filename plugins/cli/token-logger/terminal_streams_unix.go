@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/chzyer/readline"
+	"github.com/mattn/go-isatty"
 )
 
 // configureTerminalStreams wires readline's streams for a raw-mode terminal
@@ -33,21 +34,28 @@ import (
 // return.
 func configureTerminalStreams(config *readline.Config, input *os.File, stdout, stderr io.Writer) (io.Writer, io.Writer, func(bool)) {
 	config.Stdin = &pasteGuardReader{source: input}
-	output := crlfSafeWriter(stdout)
-	errOutput := crlfSafeWriter(stderr)
+	output := crlfSafeWriter(input, stdout)
+	errOutput := crlfSafeWriter(input, stderr)
 	config.Stdout = output
 	config.Stderr = errOutput
 	return output, errOutput, func(bool) {}
 }
 
-// crlfSafeWriter wraps w in a CRLF-safe writer when it is backed by a real
-// terminal file, leaving redirected (non-*os.File) writers untouched so
-// their output stays deterministic.
-func crlfSafeWriter(w io.Writer) io.Writer {
-	if file, ok := w.(*os.File); ok {
-		return newCRLFWriter(file)
+// crlfSafeWriter wraps w only when it refers to the same terminal device as
+// the raw input. A redirected file/pipe or a different terminal did not have
+// its output processing changed by term.MakeRaw and must remain byte-for-byte
+// untouched.
+func crlfSafeWriter(input *os.File, w io.Writer) io.Writer {
+	file, ok := w.(*os.File)
+	if !ok || !(isatty.IsTerminal(file.Fd()) || isatty.IsCygwinTerminal(file.Fd())) {
+		return w
 	}
-	return w
+	inputInfo, inputErr := input.Stat()
+	outputInfo, outputErr := file.Stat()
+	if inputErr != nil || outputErr != nil || !os.SameFile(inputInfo, outputInfo) {
+		return w
+	}
+	return newCRLFWriter(file)
 }
 
 func enableTerminalFeatures(output io.Writer) {

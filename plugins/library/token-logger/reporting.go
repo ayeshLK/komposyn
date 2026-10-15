@@ -24,7 +24,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/mattn/go-runewidth"
@@ -634,16 +633,37 @@ func tableRows(report UsageReport) (int, []string, [][]string) {
 	return dimCount, headings, rows
 }
 
-// renderFullTable renders the complete tabular layout: every column aligned
-// through text/tabwriter.
+// renderFullTable renders the complete tabular layout using terminal display
+// cells for alignment. Unicode code-point counts are insufficient here:
+// East Asian wide runes occupy two cells while combining marks occupy none.
 func renderFullTable(headings []string, rows [][]string) []byte {
-	var buf bytes.Buffer
-	writer := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, strings.Join(headings, "\t"))
-	for _, row := range rows {
-		fmt.Fprintln(writer, strings.Join(row, "\t"))
+	widths := make([]int, len(headings))
+	for index, heading := range headings {
+		widths[index] = runewidth.StringWidth(heading)
 	}
-	writer.Flush()
+	for _, row := range rows {
+		for index, value := range row {
+			if width := runewidth.StringWidth(value); width > widths[index] {
+				widths[index] = width
+			}
+		}
+	}
+
+	var buf bytes.Buffer
+	writeRow := func(row []string) {
+		for index, value := range row {
+			buf.WriteString(value)
+			if index < len(row)-1 {
+				padding := widths[index] - runewidth.StringWidth(value) + 2
+				buf.WriteString(strings.Repeat(" ", padding))
+			}
+		}
+		buf.WriteByte('\n')
+	}
+	writeRow(headings)
+	for _, row := range rows {
+		writeRow(row)
+	}
 	return buf.Bytes()
 }
 

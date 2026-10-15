@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 )
 
 func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
@@ -383,17 +385,17 @@ func TestWriteTableDistinguishesNoDataFromEmptyDimension(t *testing.T) {
 
 func wideUsageReport() UsageReport {
 	return UsageReport{
-		Filters: UsageFilter{GroupBy: []string{GroupClient, GroupProvider, GroupModel}},
+		Filters: UsageFilter{GroupBy: []string{GroupProject, GroupClient, GroupProvider, GroupModel}},
 		Rows: []UsageRow{
 			{
-				Dimensions: map[string]string{GroupClient: "claude-code", GroupProvider: "anthropic", GroupModel: "claude-sonnet-5"},
+				Dimensions: map[string]string{GroupProject: "example-claude-project", GroupClient: "claude-code", GroupProvider: "anthropic", GroupModel: "claude-sonnet-5"},
 				UsageMeasures: UsageMeasures{
 					RequestCount: 107, SessionCount: 1, InputTokens: 9_200_000, CachedInputTokens: 9_100_000,
 					OutputTokens: 53_100, TotalTokens: 9_300_000, UnknownCostRequests: 107,
 				},
 			},
 			{
-				Dimensions: map[string]string{GroupClient: "codex-cli-with-a-very-long-project-qualifier", GroupProvider: "openai", GroupModel: "codex-auto-review-with-a-very-long-descriptive-suffix"},
+				Dimensions: map[string]string{GroupProject: "a-very-long-project-qualifier-that-must-be-bounded", GroupClient: "codex-cli", GroupProvider: "openai", GroupModel: "codex-auto-review-with-a-very-long-descriptive-suffix"},
 				UsageMeasures: UsageMeasures{
 					RequestCount: 2_690, SessionCount: 12, InputTokens: 196_700_000, CachedInputTokens: 185_600_000,
 					OutputTokens: 221_000, ReasoningOutputTokens: 66_200, TotalTokens: 196_900_000,
@@ -402,6 +404,31 @@ func wideUsageReport() UsageReport {
 				},
 			},
 		},
+	}
+}
+
+func TestFullTableAlignsASCIIAndEastAsianWideRowsByDisplayCell(t *testing.T) {
+	headings := []string{"MODEL", "REQUESTS"}
+	rows := [][]string{
+		{strings.Repeat("a", 20), "101"},
+		{strings.Repeat("测", 20), "202"},
+	}
+	lines := strings.Split(strings.TrimSuffix(string(renderFullTable(headings, rows)), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("full table lines = %q", lines)
+	}
+	wantStart := -1
+	for index, request := range []string{"REQUESTS", "101", "202"} {
+		byteIndex := strings.Index(lines[index], request)
+		if byteIndex < 0 {
+			t.Fatalf("line %q has no value %q", lines[index], request)
+		}
+		start := runewidth.StringWidth(lines[index][:byteIndex])
+		if wantStart < 0 {
+			wantStart = start
+		} else if start != wantStart {
+			t.Fatalf("column starts differ in display cells: header=%d row=%d line=%q", wantStart, start, lines[index])
+		}
 	}
 }
 

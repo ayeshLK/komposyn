@@ -185,6 +185,37 @@ func TestTerminalLineReaderWritesStderrStartingAtColumnZero(t *testing.T) {
 	output.waitForCommand(t, command)
 }
 
+func TestConfigureTerminalStreamsLeavesRedirectedStderrUnchanged(t *testing.T) {
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer master.Close()
+	defer terminal.Close()
+
+	redirected, err := os.CreateTemp(t.TempDir(), "stderr-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer redirected.Close()
+
+	config := &readline.Config{}
+	_, errOutput, _ := configureTerminalStreams(config, terminal, terminal, redirected)
+	if _, err := io.WriteString(errOutput, "first\nsecond\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := redirected.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(redirected.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(contents), "first\nsecond\n"; got != want {
+		t.Fatalf("redirected stderr = %q, want %q", got, want)
+	}
+}
+
 func TestClearTerminalErasesVisibleScreenAndHomesCursor(t *testing.T) {
 	var output bytes.Buffer
 	if err := clearTerminal(&output); err != nil {
