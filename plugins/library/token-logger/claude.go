@@ -282,13 +282,15 @@ func claudeUsageBearingType(recordType string) bool {
 }
 
 // claudeUsageFields allowlists Claude usage field names, including newer
-// fields (cache_creation, inference_geo, iterations, output_tokens_details,
-// server_tool_use, speed) that carry no additional normalized token counts
-// and are intentionally not captured beyond this shape check.
+// fields (cache_creation, fallback_credit, inference_geo, iterations,
+// output_tokens_details, server_tool_use, speed) that carry no additional
+// normalized token counts and are intentionally not captured beyond this
+// shape check. fallback_credit is billing metadata; its presence does not
+// alter the provider-reported top-level token counts.
 var claudeUsageFields = map[string]struct{}{
 	"input_tokens": {}, "cache_creation_input_tokens": {}, "cache_read_input_tokens": {},
 	"output_tokens": {}, "service_tier": {}, "cache_creation": {}, "inference_geo": {},
-	"iterations": {}, "output_tokens_details": {}, "server_tool_use": {}, "speed": {},
+	"fallback_credit": {}, "iterations": {}, "output_tokens_details": {}, "server_tool_use": {}, "speed": {},
 }
 
 func claudeUsageShapeSupported(raw json.RawMessage) bool {

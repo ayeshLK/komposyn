@@ -81,6 +81,63 @@ func TestImportCommand(t *testing.T) {
 	}
 }
 
+func TestClaudeFallbackCreditImportIsVisibleInReportsAndInteractiveMode(t *testing.T) {
+	dataDir := t.TempDir()
+	path := filepath.Join(t.TempDir(), "fallback-credit.jsonl")
+	record := `{"type":"assistant","uuid":"fallback-cli","sessionId":"fallback-session","cwd":"/sanitized/fallback-project","timestamp":"2026-10-11T12:00:00Z","message":{"role":"assistant","model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":1,"fallback_credit":{"status":{"type":"redeemed"}},"server_tool_use":{"web_search_requests":1}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var importOutput, importErr bytes.Buffer
+	if code := run([]string{"import", path, "--format", "json", "--data-dir", dataDir}, &importOutput, &importErr); code != 0 {
+		t.Fatalf("import exit=%d stderr=%q output=%q", code, importErr.String(), importOutput.String())
+	}
+	for _, expected := range []string{`"imported_events":1`, `"unsupported_usage":0`, `"complete":true`} {
+		if !strings.Contains(importOutput.String(), expected) {
+			t.Fatalf("import output missing %q: %s", expected, importOutput.String())
+		}
+	}
+
+	var reportOutput, reportErr bytes.Buffer
+	if code := run([]string{"usage", "--data-dir", dataDir, "--format", "json", "--group-by", "model", "--from", "2026-10-11", "--to", "2026-10-12"}, &reportOutput, &reportErr); code != 0 {
+		t.Fatalf("usage exit=%d stderr=%q output=%q", code, reportErr.String(), reportOutput.String())
+	}
+	var report tokenlogger.UsageReport
+	if err := json.Unmarshal(reportOutput.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].Dimensions[tokenlogger.GroupModel] != "claude-sonnet-5" {
+		t.Fatalf("unexpected report rows: %+v", report.Rows)
+	}
+	row := report.Rows[0]
+	if row.RequestCount != 1 || row.InputTokens != 13 || row.CachedInputTokens != 1 || row.CacheWriteInputTokens != 2 || row.OutputTokens != 5 || row.TotalTokens != 18 {
+		t.Fatalf("unexpected report totals: %+v", row.UsageMeasures)
+	}
+	if row.UnknownCostRequests != 1 || row.EstimatedCostRequests != 0 || row.CalculationBasis != "unavailable" {
+		t.Fatalf("fallback credit changed cost semantics: %+v", row.UsageMeasures)
+	}
+
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	commands := "/range 2026-10-11 2026-10-12\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/quit\n"
+	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
+	var interactiveOutput, interactiveErr bytes.Buffer
+	if code := runInteractiveLoopWithClock(reader, &interactiveOutput, &interactiveErr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time {
+		return time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	}); code != 0 {
+		t.Fatalf("interactive exit=%d stderr=%q", code, interactiveErr.String())
+	}
+	for _, expected := range []string{"fallback-project", "session:", "claude-sonnet-5", "13", "5", "18", "unknown"} {
+		if !strings.Contains(interactiveOutput.String(), expected) {
+			t.Fatalf("interactive output missing %q: %s", expected, interactiveOutput.String())
+		}
+	}
+}
+
 func TestClaudeImportCommand(t *testing.T) {
 	dataDir := t.TempDir()
 	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl")

@@ -85,6 +85,49 @@ func TestCollectorReportsHealthForEachConfiguredRoot(t *testing.T) {
 	}
 }
 
+func TestCollectorImportsClaudeFallbackCreditWithoutMaskingOtherFailures(t *testing.T) {
+	store := openTestStore(t)
+	healthyRoot := t.TempDir()
+	affectedRoot := t.TempDir()
+	fixture, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(healthyRoot, "normal.jsonl"), fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	affected := append(
+		claudeFallbackCreditRecord("fallback-valid", "claude-sonnet-5", `,"fallback_credit":{"status":{"type":"redeemed"}}`, ""),
+		claudeFallbackCreditRecord("future-unknown", "claude-sonnet-5", `,"fallback_credit":null`, `,"future_token_units":1`)...,
+	)
+	if err := os.WriteFile(filepath.Join(affectedRoot, "affected.jsonl"), affected, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	collector, err := NewCollector(store, []string{healthyRoot, affectedRoot}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := collector.PollOnce()
+	if err != nil || result.Receipt.Imported != 3 || result.Outcomes.UnsupportedUsage != 1 {
+		t.Fatalf("poll result=%+v err=%v", result, err)
+	}
+	health := collector.Health()
+	if root := health.Roots[healthyRoot]; root.Status != "healthy" || root.Sources != 1 || root.Outcomes.IgnoredNonUsage != 2 || root.Outcomes.Incomplete() {
+		t.Fatalf("healthy root=%+v", root)
+	}
+	if root := health.Roots[affectedRoot]; root.Status != "degraded" || root.Sources != 1 || root.Outcomes.UnsupportedUsage != 1 || !strings.Contains(root.LastError, "unsupported_usage=1") {
+		t.Fatalf("affected root=%+v", root)
+	}
+	var affectedEvents int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_events WHERE resolved_model = 'claude-sonnet-5'`).Scan(&affectedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if affectedEvents != 1 {
+		t.Fatalf("affected events = %d, want 1", affectedEvents)
+	}
+}
+
 func TestCollectorDetectsAdapterFromAuthoritativeSnapshot(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "growing.jsonl")

@@ -94,6 +94,18 @@ an access, detection, or persistence failure. Use `--format json` to inspect
 typed counts without exposing source paths, and review the locally sanitized
 diagnostics before reporting an issue.
 
+Claude Code may include optional `fallback_credit` billing metadata alongside
+its top-level token counters. Current versions recognize that metadata without
+storing it, changing token totals, or inferring a discount. If an older
+KompoSyn version reported those otherwise valid records as `unsupported_usage`,
+upgrade normally and allow the same source to complete another scan. The
+non-reusable cursor recorded for the incomplete import causes the unchanged
+transcript to be parsed again; already imported events remain duplicates and
+the skipped events are recovered automatically. Do not edit provider files,
+delete the database, reset cursors, or touch file timestamps. A different
+unknown usage field can still keep the source incomplete and should be reduced
+to a sanitized record shape before it is reported.
+
 If a Codex import reports `unsupported_usage` around a `token_usage_record`,
 inspect the sanitized outcome rather than manually adding the cumulative
 fields. KompoSyn imports only the per-response `usage`; turn- and
