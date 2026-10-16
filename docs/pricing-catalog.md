@@ -142,3 +142,24 @@ the estimate stays unknown until the source provides enough evidence. Ambiguous
 rules and currency conflicts must be resolved before estimating. The coverage
 appendix wraps to the available terminal width and shows at most eight
 provider/model pairs.
+
+## Existing events and upgrades
+
+Adding a catalog entry can price an already stored event when its event date,
+model, usage categories, and stored billing evidence satisfy that entry. The
+catalog does not rewrite event rows. A parser change that learns a new field
+does not backfill it into old events: a reusable unchanged source snapshot may
+skip parsing, and parsing it again still encounters a duplicate ingestion key
+whose existing normalized event is retained. In particular, an event inside a
+supported pricing interval can remain unknown because it lacks stored billing
+evidence, while an event with sufficient evidence can remain unknown because
+its date is outside that interval. These are distinct from an uncovered model
+or category and have different remedies.
+
+Keep the data directory and provider source files intact. Do not delete or
+reimport the database, reset cursors, touch source timestamps, or create new
+ingestion keys to force a price; those actions can damage idempotency or hide
+the original history and do not constitute safe metadata enrichment.
+Historical event metadata enrichment is deferred. A future enrichment feature
+would need an explicit, audited migration path that preserves event identity
+and source provenance.

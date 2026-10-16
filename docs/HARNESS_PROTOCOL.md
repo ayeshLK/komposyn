@@ -247,7 +247,14 @@ event timestamps must carry UTC (`Z`), as required by the library validator.
 | `attributes` | JSON value | Optional; when present, must contain valid JSON. |
 
 `TokenUsage` contains `input_tokens`, `output_tokens`, `cache_read_tokens`,
-`cache_write_tokens`, and `reasoning_tokens`, all integer counts.
+`cache_write_tokens`, and `reasoning_tokens`, all integer counts. Optional
+`cache_write_5m_tokens` and `cache_write_1h_tokens` describe duration-specific
+subsets of `cache_write_tokens`. They must be non-negative, each no greater
+than the aggregate, and their sum must not exceed it. Any aggregate remainder
+has no known duration and needs its own applicable aggregate cache-write rate
+to be priced. For Claude records, the adapter normalizes these subsets only
+when both provider duration values are present and sum to the provider's
+aggregate `cache_creation_input_tokens`.
 
 `Cost` contains `status`, optional `amount_micros`, `currency`,
 `pricing_version`, optional `provider_amount`, and `provider_currency`.
@@ -259,12 +266,46 @@ negative.
 `Provenance` contains required `adapter`, `source_id`, and `source_record`,
 plus optional `source_offset` and `record_hash`.
 
-`BillingContext` may contain `service_tier` and `region` values. Each is an
-object with a non-blank `value` and `evidence`, where evidence is one of
+`BillingContext` may contain `service_tier`, `region`, and `speed` values. Each
+is an object with a non-blank `value` and `evidence`, where evidence is one of
 `provider_response`, `provider_source_record`, or `harness_explicit`. A missing
 value is unknown; `standard` or another default must be supplied explicitly.
 This optional event metadata is accepted by protocol version 1 and adds no new
-required request fields.
+required request fields. Optional pricing evidence and cache duration counts
+remain optional; existing v1 clients and legacy requests remain valid.
+
+Complete optional-metadata example (sanitized; the normalized input count is
+uncached input plus cache reads and writes):
+
+```json
+{"protocol":"komposyn.token-logger","version":1,"id":"priced-1","method":"record","params":{"event":{"event_id":"claude-response-1","schema_version":1,"event_type":"model.request","occurred_at":"2026-10-16T12:00:00Z","client":{"name":"claude-code"},"provider":"anthropic","requested_model":"claude-opus-5-5","resolved_model":"claude-opus-5-5","usage":{"input_tokens":1300000,"output_tokens":300000,"cache_read_tokens":200000,"cache_write_tokens":100000,"cache_write_5m_tokens":60000,"cache_write_1h_tokens":40000},"billing_context":{"service_tier":{"value":"standard","evidence":"provider_response"},"region":{"value":"global","evidence":"provider_response"},"speed":{"value":"standard","evidence":"provider_response"}},"provenance":{"adapter":"fixture","source_id":"sanitized-source","source_record":"claude-response-1"},"ingestion_key":"sanitized-source:claude-response-1"}}}
+```
+
+Legacy v1 requests can omit the duration and billing fields:
+
+```json
+{"protocol":"komposyn.token-logger","version":1,"id":"legacy-1","method":"record","params":{"event":{"event_id":"legacy-response-1","schema_version":1,"event_type":"model.request","occurred_at":"2026-10-16T12:00:00Z","client":{"name":"claude-code"},"provider":"anthropic","requested_model":"claude-opus-5-5","resolved_model":"claude-opus-5-5","usage":{"input_tokens":1300000,"output_tokens":300000,"cache_read_tokens":200000,"cache_write_tokens":100000},"provenance":{"adapter":"fixture","source_id":"sanitized-source","source_record":"legacy-response-1"},"ingestion_key":"sanitized-source:legacy-response-1"}}}
+```
+
+This legacy event is valid protocol input. Its cache-write portion remains
+unknown without duration evidence for a duration-priced model; verified
+portions may still contribute to the reported subtotal.
+
+### Stored events and pricing upgrades
+
+Catalog additions can price existing events when their dates and stored facts
+are sufficient. New parser extraction does not enrich an already-imported
+event. A reusable unchanged snapshot may bypass parsing; reparsing a
+non-reusable snapshot retains the original event because its ingestion key is
+already stored. An event inside a supported catalog interval can therefore
+remain unknown for missing billing evidence, while an event outside the
+interval remains unknown because no rate applies on that date. Keep the data
+directory and provider files; do not delete/reimport the database, reset
+cursors, alter source timestamps, or replace ingestion keys to force a price.
+Historical metadata enrichment is deferred.
+
+These optional fields do not change protocol version 1, required fields, or
+the stable error codes described below.
 
 ### `Project`
 

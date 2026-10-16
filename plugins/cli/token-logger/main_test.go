@@ -1974,6 +1974,259 @@ func TestHarnessRecordReferenceMetadata(t *testing.T) {
 	}
 }
 
+func TestHarnessPersistsOptionalPricingMetadataAndKeepsV1Errors(t *testing.T) {
+	dataDir := t.TempDir()
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	serviceTier := &tokenlogger.BillingContextValue{Value: "standard", Evidence: tokenlogger.BillingEvidenceProviderResponse}
+	region := &tokenlogger.BillingContextValue{Value: "global", Evidence: tokenlogger.BillingEvidenceProviderResponse}
+	speed := &tokenlogger.BillingContextValue{Value: "standard", Evidence: tokenlogger.BillingEvidenceProviderResponse}
+	valid := tokenlogger.UsageEvent{EventID: "anthropic-priced", SchemaVersion: 1, EventType: "model.request", OccurredAt: at,
+		Client: tokenlogger.Client{Name: "fixture"}, Provider: "anthropic", RequestedModel: "claude-opus-5-5", ResolvedModel: "claude-opus-5-5",
+		Usage:          tokenlogger.TokenUsage{InputTokens: 1_300_000, OutputTokens: 300_000, CacheReadTokens: 200_000, CacheWriteTokens: 100_000, CacheWrite5mTokens: 60_000, CacheWrite1hTokens: 40_000},
+		BillingContext: tokenlogger.BillingContext{ServiceTier: serviceTier, Region: region, Speed: speed},
+		Provenance:     tokenlogger.Provenance{Adapter: "fixture", SourceID: "pricing-source", SourceRecord: "anthropic-priced"}, IngestionKey: "pricing-source:anthropic-priced"}
+	invalidEvidence := valid
+	invalidEvidence.EventID, invalidEvidence.IngestionKey, invalidEvidence.Provenance.SourceRecord = "invalid-evidence", "pricing-source:invalid-evidence", "invalid-evidence"
+	invalidEvidence.BillingContext.Speed = &tokenlogger.BillingContextValue{Value: "standard", Evidence: "inferred"}
+	invalidSplit := valid
+	invalidSplit.EventID, invalidSplit.IngestionKey, invalidSplit.Provenance.SourceRecord = "invalid-split", "pricing-source:invalid-split", "invalid-split"
+	invalidSplit.Usage.CacheWrite5mTokens = 80_000
+	invalidJSON := `{"event":{"event_id":"decode-error","schema_version":1,"event_type":"model.request","occurred_at":"2026-10-16T12:00:00Z","client":{"name":"fixture"},"provider":"openai","requested_model":"gpt-5.3-codex","usage":{"input_tokens":"not-an-integer"},"provenance":{"adapter":"fixture","source_id":"s","source_record":"r"},"ingestion_key":"s:r"}}`
+	requests := []map[string]any{
+		{"protocol": protocolName, "version": protocolVersion, "id": "1", "method": "initialize", "params": map[string]any{"data_dir": dataDir}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "2", "method": "record", "params": map[string]any{"event": valid}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "3", "method": "record", "params": map[string]any{"event": valid}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "4", "method": "record", "params": map[string]any{"event": invalidEvidence}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "5", "method": "record", "params": map[string]any{"event": invalidSplit}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "6", "method": "record", "params": json.RawMessage(invalidJSON)},
+		{"protocol": protocolName, "version": protocolVersion, "id": "7", "method": "shutdown"},
+	}
+	var input bytes.Buffer
+	for _, request := range requests {
+		if err := json.NewEncoder(&input).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithInput([]string{"harness"}, &input, &stdout, &stderr); code != 0 {
+		t.Fatalf("harness exit = %d, stderr=%q", code, stderr.String())
+	}
+	var responses []protocolResponse
+	decoder := json.NewDecoder(&stdout)
+	for {
+		var response protocolResponse
+		if err := decoder.Decode(&response); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		responses = append(responses, response)
+	}
+	if len(responses) != len(requests) || !responses[1].OK || !responses[2].OK {
+		t.Fatalf("unexpected harness responses: %+v", responses)
+	}
+	if responses[2].Result.(map[string]any)["duplicates"] != float64(1) {
+		t.Fatalf("duplicate response = %#v", responses[2].Result)
+	}
+	for index, code := range map[int]string{3: "record_failed", 4: "record_failed", 5: "invalid_params"} {
+		if responses[index].OK || responses[index].Error == nil || responses[index].Error.Code != code {
+			t.Fatalf("response %d = %+v; want %s", index, responses[index], code)
+		}
+	}
+	for scanner := bufio.NewScanner(bytes.NewReader(stdout.Bytes())); scanner.Scan(); {
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(scanner.Bytes(), &envelope); err != nil || len(envelope["protocol"]) == 0 {
+			t.Fatalf("stdout contains non-protocol output %q, err=%v", scanner.Text(), err)
+		}
+	}
+	if !strings.Contains(stderr.String(), "protocol diagnostic: validate event") || strings.Contains(stderr.String(), "inferred") == false {
+		t.Fatalf("validation diagnostics were not sent to stderr: %q", stderr.String())
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if count, err := store.EventCount(); err != nil || count != 1 {
+		t.Fatalf("persisted event count = %d, err=%v", count, err)
+	}
+	report, err := store.Query(tokenlogger.UsageFilter{From: at.Add(-time.Minute), To: at.Add(time.Minute)})
+	if err != nil || report.Summary.CalculatedCostMicros != 10_660_000 || report.Summary.UnknownCostRequests != 0 || report.Summary.PricingVersion != "anthropic-api-2026-10-16-v1" {
+		t.Fatalf("persisted optional metadata report = %+v, err=%v", report.Summary, err)
+	}
+}
+
+func TestClaudePricingAcceptanceAcrossCLIReportsAndREPL(t *testing.T) {
+	dataDir := t.TempDir()
+	sourcePath := filepath.Join(t.TempDir(), "claude-priced.jsonl")
+	priced := claudePricingAcceptanceRecord("priced-claude", "2026-10-16T12:00:00Z", true)
+	if err := os.WriteFile(sourcePath, []byte(priced+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	importSource := func() string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"import", sourcePath, "--format", "json", "--data-dir", dataDir}, &stdout, &stderr); code != 0 {
+			t.Fatalf("Claude import exit=%d stderr=%q output=%q", code, stderr.String(), stdout.String())
+		}
+		return stdout.String()
+	}
+	if result := importSource(); !strings.Contains(result, `"imported_events":1`) {
+		t.Fatalf("first Claude import = %s", result)
+	}
+	queryJSON := func() tokenlogger.UsageReport {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		args := []string{"cost", "--data-dir", dataDir, "--format", "json", "--from", "2026-10-16", "--to", "2026-10-17"}
+		if code := run(args, &stdout, &stderr); code != 0 {
+			t.Fatalf("cost JSON exit=%d stderr=%q output=%q", code, stderr.String(), stdout.String())
+		}
+		var report tokenlogger.UsageReport
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+			t.Fatalf("decode cost JSON %q: %v", stdout.String(), err)
+		}
+		return report
+	}
+	first := queryJSON()
+	if first.Summary.InputTokens != 1_300_000 || first.Summary.OutputTokens != 300_000 || first.Summary.CalculatedCostMicros != 10_660_000 || first.Summary.UnknownCostRequests != 0 || first.Summary.PricingVersion != "anthropic-api-2026-10-16-v1" {
+		t.Fatalf("priced Claude CLI report = %+v", first.Summary)
+	}
+	var csvOut, csvErr bytes.Buffer
+	if code := run([]string{"cost", "--data-dir", dataDir, "--format", "csv", "--from", "2026-10-16", "--to", "2026-10-17"}, &csvOut, &csvErr); code != 0 {
+		t.Fatalf("cost CSV exit=%d stderr=%q", code, csvErr.String())
+	}
+	csvRows, err := csv.NewReader(strings.NewReader(csvOut.String())).ReadAll()
+	if err != nil || len(csvRows) < 2 || !strings.Contains(csvOut.String(), "1300000") || !strings.Contains(csvOut.String(), "10660000") || !strings.Contains(csvOut.String(), "anthropic-api-2026-10-16-v1") {
+		t.Fatalf("cost CSV lacks exact usage, estimate, or provenance: rows=%d err=%v output=%s", len(csvRows), err, csvOut.String())
+	}
+	var humanOut, humanErr bytes.Buffer
+	if code := run([]string{"cost", "--data-dir", dataDir, "--format", "table", "--from", "2026-10-16", "--to", "2026-10-17"}, &humanOut, &humanErr); code != 0 {
+		t.Fatalf("human cost exit=%d stderr=%q", code, humanErr.String())
+	}
+	if !strings.Contains(humanOut.String(), "claude-opus-5-5") || !strings.Contains(humanOut.String(), "10.66") {
+		t.Fatalf("human cost report missing model or estimate: %s", humanOut.String())
+	}
+	if repeated := importSource(); !strings.Contains(repeated, `"unchanged_snapshot":1`) {
+		t.Fatalf("repeated Claude import = %s", repeated)
+	}
+	if repeated := queryJSON(); repeated.Summary.CalculatedCostMicros != 10_660_000 || repeated.Summary.RequestCount != 1 {
+		t.Fatalf("report changed after unchanged import: %+v", repeated.Summary)
+	}
+
+	// Add a second event with matching tier/geography/speed but aggregate-only
+	// cache writes. Its verified subtotal is retained while its write charge is
+	// unknown, so the combined report exercises mixed priced/unpriced coverage.
+	partial := claudePricingAcceptanceRecord("partial-claude", "2026-10-16T13:00:00Z", false)
+	if err := os.WriteFile(sourcePath, []byte(priced+"\n"+partial+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result := importSource(); !strings.Contains(result, `"imported_events":1`) || !strings.Contains(result, `"duplicate_events":1`) {
+		t.Fatalf("append Claude import = %s", result)
+	}
+	mixed := queryJSON()
+	if mixed.Summary.RequestCount != 2 || mixed.Summary.UnknownCostRequests != 1 || mixed.Summary.CalculatedCostMicros != 20_700_000 || mixed.Summary.InputTokens != 2_600_000 {
+		t.Fatalf("mixed Claude report = %+v; want one unknown and verified subtotal", mixed.Summary)
+	}
+	if string(mixed.Summary.CostUnknownReasons) != `{"billing_context_missing":1}` {
+		t.Fatalf("mixed report omitted cache-write unknown reason: %s", mixed.Summary.CostUnknownReasons)
+	}
+	var mixedCSV, mixedCSVErr bytes.Buffer
+	if code := run([]string{"cost", "--data-dir", dataDir, "--format", "csv", "--from", "2026-10-16", "--to", "2026-10-17"}, &mixedCSV, &mixedCSVErr); code != 0 {
+		t.Fatalf("mixed CSV exit=%d stderr=%q", code, mixedCSVErr.String())
+	}
+	mixedCSVRows, err := csv.NewReader(strings.NewReader(mixedCSV.String())).ReadAll()
+	if err != nil || len(mixedCSVRows) < 2 {
+		t.Fatalf("decode mixed CSV rows=%d err=%v output=%s", len(mixedCSVRows), err, mixedCSV.String())
+	}
+	columns := make(map[string]int, len(mixedCSVRows[0]))
+	for index, name := range mixedCSVRows[0] {
+		columns[name] = index
+	}
+	firstRow := mixedCSVRows[1]
+	if firstRow[columns["input_tokens"]] != "2600000" || firstRow[columns["calculated_cost_micros"]] != "20700000" || firstRow[columns["unknown_cost_requests"]] != "1" || firstRow[columns["unknown_cost_reasons"]] != `{"billing_context_missing":1}` {
+		t.Fatalf("mixed CSV row lacks exact tokens/cost/unknown counts: %#v", firstRow)
+	}
+	var mixedHuman bytes.Buffer
+	if code := run([]string{"cost", "--data-dir", dataDir, "--format", "table", "--from", "2026-10-16", "--to", "2026-10-17"}, &mixedHuman, &humanErr); code != 0 {
+		t.Fatalf("mixed human cost exit=%d stderr=%q", code, humanErr.String())
+	}
+	if !strings.Contains(mixedHuman.String(), "billing context or rate unavailable") || !strings.Contains(mixedHuman.String(), "cache-write") || !strings.Contains(mixedHuman.String(), "anthropic") {
+		t.Fatalf("mixed human report lacks actionable coverage text: %s", mixedHuman.String())
+	}
+
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := "/range 2026-10-16 2026-10-17\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/quit\n"
+	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
+	var replOut, replErr bytes.Buffer
+	if code := runInteractiveLoopWithClock(reader, &replOut, &replErr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }); code != 0 {
+		store.Close()
+		t.Fatalf("pricing REPL exit=%d stderr=%q output=%q", code, replErr.String(), replOut.String())
+	}
+	store.Close()
+	if !strings.Contains(replOut.String(), "claude-opus-5-5") || !strings.Contains(replOut.String(), "billing context or rate unavailable") || !strings.Contains(replOut.String(), "anthropic") || !strings.Contains(replOut.String(), "20.7 USD") {
+		t.Fatalf("pricing REPL missing model estimate/unknown explanation: %s", replOut.String())
+	}
+}
+
+func claudePricingAcceptanceRecord(id, timestamp string, includeSplit bool) string {
+	cacheCreation := `,"cache_creation":{"ephemeral_5m_input_tokens":60000,"ephemeral_1h_input_tokens":40000}`
+	if !includeSplit {
+		cacheCreation = ""
+	}
+	return `{"type":"assistant","uuid":"` + id + `","sessionId":"pricing-session","project_id":"pricing-project","project_name":"Pricing Project","timestamp":"` + timestamp + `","cwd":"/sanitized/pricing-project","message":{"role":"assistant","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"cache_creation_input_tokens":100000,"cache_read_input_tokens":200000,"output_tokens":300000` + cacheCreation + `,"service_tier":"standard","inference_geo":"global","speed":"standard"}}}`
+}
+
+func TestOpenAIPricingAcceptanceThroughHarnessAndCLI(t *testing.T) {
+	dataDir := t.TempDir()
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	makeEvent := func(id, tier string, hour int) tokenlogger.UsageEvent {
+		value := &tokenlogger.BillingContextValue{Value: tier, Evidence: tokenlogger.BillingEvidenceHarness}
+		return tokenlogger.UsageEvent{EventID: id, SchemaVersion: 1, EventType: "model.request", OccurredAt: at.Add(time.Duration(hour-12) * time.Hour),
+			Client: tokenlogger.Client{Name: "fixture"}, Provider: "openai", RequestedModel: "gpt-5.3-codex", ResolvedModel: "gpt-5.3-codex",
+			Usage:          tokenlogger.TokenUsage{InputTokens: 2_000_000, OutputTokens: 1_000_000, CacheReadTokens: 1_000_000, ReasoningTokens: 100_000},
+			BillingContext: tokenlogger.BillingContext{ServiceTier: value},
+			Provenance:     tokenlogger.Provenance{Adapter: "fixture", SourceID: "openai-harness", SourceRecord: id}, IngestionKey: "openai-harness:" + id}
+	}
+	requests := []map[string]any{
+		{"protocol": protocolName, "version": protocolVersion, "id": "1", "method": "initialize", "params": map[string]any{"data_dir": dataDir}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "2", "method": "record", "params": map[string]any{"event": makeEvent("default-tier", "default", 12)}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "3", "method": "record", "params": map[string]any{"event": makeEvent("priority-tier", "priority", 13)}},
+		{"protocol": protocolName, "version": protocolVersion, "id": "4", "method": "shutdown"},
+	}
+	var input bytes.Buffer
+	for _, request := range requests {
+		if err := json.NewEncoder(&input).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var protocolOut, protocolErr bytes.Buffer
+	if code := runWithInput([]string{"harness"}, &input, &protocolOut, &protocolErr); code != 0 {
+		t.Fatalf("OpenAI harness exit=%d stderr=%q", code, protocolErr.String())
+	}
+	if protocolErr.Len() != 0 {
+		t.Fatalf("OpenAI harness stderr=%q", protocolErr.String())
+	}
+	for _, test := range []struct {
+		from, to string
+		want     int64
+	}{{"2026-10-16T12:00:00Z", "2026-10-16T12:30:00Z", 15_925_000}, {"2026-10-16T13:00:00Z", "2026-10-16T13:30:00Z", 31_850_000}} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"cost", "--data-dir", dataDir, "--format", "json", "--from", test.from, "--to", test.to}, &stdout, &stderr); code != 0 {
+			t.Fatalf("OpenAI cost CLI exit=%d stderr=%q output=%q", code, stderr.String(), stdout.String())
+		}
+		var report tokenlogger.UsageReport
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.Summary.CalculatedCostMicros != test.want || report.Summary.UnknownCostRequests != 0 || report.Summary.OutputTokens != 1_000_000 {
+			t.Fatalf("OpenAI %s report = %+v; want %d, reasoning included once", test.from, report.Summary, test.want)
+		}
+	}
+}
+
 func TestInteractiveMode(t *testing.T) {
 	t.Setenv("TOKEN_LOGGER_DATA_DIR", t.TempDir())
 	var stdout, stderr bytes.Buffer
