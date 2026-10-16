@@ -661,11 +661,47 @@ func TestHumanPricingCoverageIsBoundedAndSanitized(t *testing.T) {
 		rows[index] = PricingCoverageRow{Provider: "provider\n\x1b", Model: fmt.Sprintf("model-%d", index), Requests: 1, Reasons: map[string]int64{"no_matching_rate": 1}}
 	}
 	var output bytes.Buffer
-	if err := WriteHumanPricingCoverage(&output, rows); err != nil {
+	if err := WriteHumanPricingCoverage(&output, rows, 80); err != nil {
 		t.Fatal(err)
 	}
 	if strings.ContainsAny(output.String(), "\t\r\x1b") || strings.Count(output.String(), "model-") != maxHumanPricingCoverageRows || !strings.Contains(output.String(), "and 2 more provider/model combinations") || !strings.Contains(output.String(), `provider\n\x1B`) {
 		t.Fatalf("coverage output is unbounded or unsafe: %q", output.String())
+	}
+}
+
+func TestHumanPricingCoverageWrapsAndExplainsEachGap(t *testing.T) {
+	coverage := []PricingCoverageRow{{
+		Provider: "anthropic",
+		Model:    strings.Repeat("界", 12),
+		Requests: 3,
+		Reasons: map[string]int64{
+			"no_matching_rate":        1,
+			"outside_effective_range": 1,
+			"billing_context_missing": 1,
+		},
+	}}
+	report := UsageReport{Summary: UsageMeasures{RequestCount: 3, UnknownCostRequests: 3}, PricingCoverage: coverage}
+	var output bytes.Buffer
+	if err := WriteTableWidth(&output, report, 80); err != nil {
+		t.Fatal(err)
+	}
+	for lineNo, line := range strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n") {
+		if width := runewidth.StringWidth(line); width > 80 {
+			t.Errorf("line %d has display width %d > 80: %q", lineNo+1, width, line)
+		}
+	}
+	for _, expected := range []string{
+		"no public catalog rate (1)",
+		"outside pricing dates (1)",
+		"billing context or rate",
+		"unavailable (1)",
+		"Review exact-model catalog coverage",
+		"Do not apply current prices retroactively",
+		"Required billing evidence is absent",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("coverage output missing %q: %s", expected, output.String())
+		}
 	}
 }
 

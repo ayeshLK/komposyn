@@ -622,7 +622,7 @@ func WriteTableWidth(w io.Writer, report UsageReport, width int) error {
 		if _, err := w.Write(full); err != nil {
 			return err
 		}
-		return WriteHumanPricingCoverage(w, report.PricingCoverage)
+		return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
 	}
 
 	compact := renderCompactTable(dimCount, headings, rows)
@@ -630,24 +630,27 @@ func WriteTableWidth(w io.Writer, report UsageReport, width int) error {
 		if _, err := w.Write(compact); err != nil {
 			return err
 		}
-		return WriteHumanPricingCoverage(w, report.PricingCoverage)
+		return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
 	}
 
 	if _, err := w.Write(renderVerticalTable(headings, rows)); err != nil {
 		return err
 	}
-	return WriteHumanPricingCoverage(w, report.PricingCoverage)
+	return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
 }
 
 const maxHumanPricingCoverageRows = 8
 
 // WriteHumanPricingCoverage writes a bounded, sanitized explanation of
 // provider/model combinations whose estimates are unavailable.
-func WriteHumanPricingCoverage(w io.Writer, rows []PricingCoverageRow) error {
+func WriteHumanPricingCoverage(w io.Writer, rows []PricingCoverageRow, width int) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	if _, err := fmt.Fprintln(w, "\nPRICING COVERAGE GAPS (unpriced requests)"); err != nil {
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		return err
+	}
+	if err := writeWrappedHumanLine(w, "PRICING COVERAGE GAPS (unpriced requests)", width, ""); err != nil {
 		return err
 	}
 	shown := len(rows)
@@ -667,20 +670,101 @@ func WriteHumanPricingCoverage(w io.Writer, rows []PricingCoverageRow) error {
 			reasons = append(reasons, reason)
 		}
 		sort.Strings(reasons)
-		labels := make([]string, 0, len(reasons))
 		for _, reason := range reasons {
-			labels = append(labels, humanPricingReason(reason)+" ("+formatExactCount(row.Reasons[reason])+")")
+			if err := writeWrappedHumanLine(w, fmt.Sprintf("%s / %s: %s requests; %s (%s)", provider, model, formatExactCount(row.Requests), humanPricingReason(reason), formatExactCount(row.Reasons[reason])), width, "  "); err != nil {
+				return err
+			}
 		}
-		if _, err := fmt.Fprintf(w, "  %s / %s: %s requests; %s\n", provider, model, formatExactCount(row.Requests), strings.Join(labels, ", ")); err != nil {
-			return err
+		remediations := make([]string, 0, len(reasons))
+		seenRemediations := make(map[string]struct{}, len(reasons))
+		for _, reason := range reasons {
+			remediation := humanPricingRemediation(reason)
+			if remediation == "" {
+				continue
+			}
+			if _, exists := seenRemediations[remediation]; exists {
+				continue
+			}
+			seenRemediations[remediation] = struct{}{}
+			remediations = append(remediations, remediation)
+		}
+		for _, remediation := range remediations {
+			if err := writeWrappedHumanLine(w, "Next: "+remediation, width, "    "); err != nil {
+				return err
+			}
 		}
 	}
 	if len(rows) > shown {
-		if _, err := fmt.Fprintf(w, "  ... and %s more provider/model combinations\n", formatExactCount(int64(len(rows)-shown))); err != nil {
+		if err := writeWrappedHumanLine(w, fmt.Sprintf("... and %s more provider/model combinations", formatExactCount(int64(len(rows)-shown))), width, "  "); err != nil {
 			return err
 		}
 	}
-	_, err := fmt.Fprintln(w, "  Estimates require a matching reviewed rate and billing context; unsupported or ambiguous usage remains unknown.")
+	return nil
+}
+
+func humanPricingRemediation(reason string) string {
+	switch reason {
+	case "no_matching_rate":
+		return "Review exact-model catalog coverage and add only an official-source, evidence-backed rate."
+	case "outside_effective_range":
+		return "Do not apply current prices retroactively; use a verified rate for the event dates or keep costs unknown."
+	case "billing_context_missing":
+		return "Required billing evidence is absent; keep unknown until source data can select the applicable rate."
+	case "model_unresolved":
+		return "Check model extraction with a sanitized fixture; do not guess a model alias."
+	case "ambiguous_pricing_rule":
+		return "Resolve overlapping rules before estimating; ambiguous matches remain unknown."
+	case "currency_conflict":
+		return "Resolve the conflicting rule currencies before estimating."
+	case "arithmetic_overflow":
+		return "Reduce the report range or investigate the out-of-range usage values."
+	default:
+		return "Keep unsupported or ambiguous usage unknown until its pricing evidence is verified."
+	}
+}
+
+func writeWrappedHumanLine(w io.Writer, text string, width int, indent string) error {
+	text = FormatHumanText(text)
+	prefix := indent
+	lineWidth := runewidth.StringWidth(prefix)
+	if _, err := io.WriteString(w, prefix); err != nil {
+		return err
+	}
+	for _, word := range strings.Fields(text) {
+		wordWidth := runewidth.StringWidth(word)
+		if width > 0 && lineWidth > runewidth.StringWidth(prefix) && lineWidth+1+wordWidth > width {
+			if _, err := io.WriteString(w, "\n"+indent); err != nil {
+				return err
+			}
+			lineWidth = runewidth.StringWidth(indent)
+		} else if lineWidth > runewidth.StringWidth(prefix) {
+			if _, err := io.WriteString(w, " "); err != nil {
+				return err
+			}
+			lineWidth++
+		}
+		if width > 0 && wordWidth > width-lineWidth {
+			for _, r := range word {
+				runeWidth := runewidth.RuneWidth(r)
+				if lineWidth > runewidth.StringWidth(indent) && lineWidth+runeWidth > width {
+					if _, err := io.WriteString(w, "\n"+indent); err != nil {
+						return err
+					}
+					lineWidth = runewidth.StringWidth(indent)
+				}
+				if _, err := fmt.Fprint(w, string(r)); err != nil {
+					return err
+				}
+				lineWidth += runeWidth
+			}
+		} else {
+			if _, err := io.WriteString(w, word); err != nil {
+				return err
+			}
+			lineWidth += wordWidth
+		}
+	}
+	_, err := io.WriteString(w, "\n")
 	return err
 }
 

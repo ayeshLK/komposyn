@@ -1485,6 +1485,35 @@ func TestInteractiveModelTablePreservesCostSemantics(t *testing.T) {
 	}
 }
 
+func TestInteractiveModelTableShowsReasonSpecificPricingSteps(t *testing.T) {
+	report := tokenlogger.UsageReport{
+		Rows: []tokenlogger.UsageRow{{Dimensions: map[string]string{tokenlogger.GroupModel: "model", tokenlogger.GroupProvider: "provider"}, UsageMeasures: tokenlogger.UsageMeasures{RequestCount: 3, UnknownCostRequests: 3}}},
+		PricingCoverage: []tokenlogger.PricingCoverageRow{{
+			Provider: "provider",
+			Model:    "model",
+			Requests: 3,
+			Reasons: map[string]int64{
+				"no_matching_rate":        1,
+				"outside_effective_range": 1,
+				"billing_context_missing": 1,
+			},
+		}},
+	}
+	var output bytes.Buffer
+	if err := writeInteractiveModelTable(&output, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Review exact-model catalog coverage",
+		"Do not apply current prices retroactively",
+		"Required billing evidence is absent",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("interactive report missing %q: %s", expected, output.String())
+		}
+	}
+}
+
 func TestVersionCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"version"}, &stdout, &stderr); code != 0 {
@@ -1626,7 +1655,7 @@ func TestInteractiveReportsUseHumanReadableTable(t *testing.T) {
 	if code := runInteractive(strings.NewReader("/by-client\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
-	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "no public catalog rate"} {
+	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "no public catalog rate", "Review exact-model catalog coverage"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("interactive output does not contain %q: %s", expected, stdout.String())
 		}

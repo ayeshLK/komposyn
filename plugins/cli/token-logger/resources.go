@@ -318,7 +318,7 @@ func writeInteractiveModelTable(output io.Writer, report tokenlogger.UsageReport
 	if err := writeResourceRows(output, rows); err != nil {
 		return err
 	}
-	return tokenlogger.WriteHumanPricingCoverage(output, report.PricingCoverage)
+	return tokenlogger.WriteHumanPricingCoverage(output, report.PricingCoverage, terminalWidthOf(output))
 }
 
 func writeResourceRows(output io.Writer, rows [][]string) error {

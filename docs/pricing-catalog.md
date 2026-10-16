@@ -54,3 +54,11 @@ bundled rate applies; it does not indicate a parser failure or justify a
 fallback price. The library exposes `Store.UpsertPricing` for applications
 that need custom rates; `komposyn-lg` does not currently provide a custom-rate
 editor.
+
+Human reports give reason-specific next steps. Missing model coverage calls
+for checking the exact model and adding a rate only with official evidence.
+An out-of-range event needs a verified rate for its event date; current prices
+are not applied retroactively. Missing billing context stays unknown until the
+source provides enough evidence to select a rate. Ambiguous rules and currency
+conflicts must be resolved before estimating. The coverage appendix wraps to
+the available terminal width and shows at most eight provider/model pairs.
