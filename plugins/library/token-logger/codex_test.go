@@ -76,6 +76,36 @@ func TestCodexImportNormalizesCumulativeSnapshots(t *testing.T) {
 	}
 }
 
+func TestCodexGPT53UsageWithoutObservedTierRemainsUnknownInReport(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "gpt-5.3-codex.jsonl")
+	contents := `{"type":"session_meta","timestamp":"2026-10-16T12:00:00Z","payload":{"id":"session-1","project_id":"project-1","model":"gpt-5.3-codex"}}
+{"type":"token_usage_record","timestamp":"2026-10-16T12:00:01Z","payload":{"thread_id":"thread-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":100,"output_tokens":20,"reasoning_output_tokens":10}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 1 {
+		t.Fatalf("Codex import = %+v, err = %v", result, err)
+	}
+	var billingContext string
+	if err := store.db.QueryRow("SELECT COALESCE(billing_context_json, '') FROM usage_events").Scan(&billingContext); err != nil {
+		t.Fatal(err)
+	}
+	if billingContext != "" && billingContext != "{}" {
+		t.Fatalf("adapter synthesized billing context %q without source evidence", billingContext)
+	}
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	report, err := store.Query(UsageFilter{From: at.Add(-time.Minute), To: at.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.UnknownCostRequests != 1 || report.Summary.CostUnknownReason != "billing_context_missing" || report.Summary.CalculatedCostMicros != 0 {
+		t.Fatalf("tierless Codex report = %+v, want unknown billing context", report.Summary)
+	}
+}
+
 func TestCodexImportIsIdempotent(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join("testdata", "codex", "normal.jsonl")

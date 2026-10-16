@@ -2,11 +2,49 @@
 
 The library ships a small offline public API list-price catalog at
 `plugins/library/token-logger/pricing-catalog.json`. It is data, not a live
-provider feed. At present it includes the exact `gpt-5-codex` API model only.
-Claude events remain unknown until the adapter extracts and persists the
-billing context needed to distinguish standard usage from service tiers and
-other pricing modifiers. Normal startup, import, and reporting never fetch
-pricing pages.
+provider feed. Its OpenAI coverage is deliberately narrow: exact model IDs,
+token categories, and observed billing context only. Claude events remain
+unknown until the adapter extracts and persists the billing context needed to
+distinguish standard usage from service tiers and other pricing modifiers.
+Normal startup, import, and reporting never fetch pricing pages.
+
+## Reviewed OpenAI coverage
+
+The catalog currently covers the public API list rates for `gpt-5-codex` and
+`gpt-5.3-codex`. The maintained sources are the official [GPT-5.3-Codex model
+page](https://developers.openai.com/api/docs/models/gpt-5.3-codex), [API
+pricing](https://developers.openai.com/api/docs/pricing), and the [Codex model
+page](https://developers.openai.com/api/docs/models/gpt-5-codex). Rates below
+are USD per million tokens.
+
+| Exact model | Billing context | Input | Cached input | Output | Other categories |
+| --- | --- | ---: | ---: | ---: | --- |
+| `gpt-5-codex` | No tier selector | $1.25 | $0.125 | $10.00 | Cache-write unknown |
+| `gpt-5.3-codex` | Observed `service_tier=default` | $1.75 | $0.175 | $14.00 | Cache-write unknown |
+| `gpt-5.3-codex` | Observed response `service_tier=priority` (Fast) | $3.50 | $0.35 | $28.00 | Cache-write unknown |
+
+GPT-5.3-Codex has a documented 400K context window, but the cited pricing
+sources do not define a separate long-context price boundary, cache-write rate,
+or regional rate for this model; the catalog does not invent those selectors.
+[OpenAI's Responses API reference](https://developers.openai.com/api/reference/python/resources/responses)
+documents that the response reports the actual `service_tier` used. Fast
+requests are returned with `service_tier=priority`, including requests that
+asked for `fast`; the logger only selects the Fast rates when the response
+value `priority` is present as evidence. Standard uses `default`. It does not
+infer a tier from the requested tier, model, or client defaults. Current Codex
+`token_usage_record` events do not include this response field, so those
+imports remain unknown with `billing_context_missing` until the source format
+provides observed tier evidence. Other tier values such as `flex` remain
+unknown.
+
+OpenAI's current pages do not establish the historical start date of these
+GPT-5.3-Codex rates. The catalog therefore uses `2026-10-16T00:00:00Z`, the
+review date, as the start of KompoSyn's supported estimate interval. This is a
+conservative catalog boundary, not a claim about when OpenAI first charged
+these prices; events before it remain unknown. Recheck official sources before
+extending that interval or adding historical rates. Reasoning tokens are part
+of output usage and are billed at the output rate; do not add a second
+reasoning charge.
 
 For each catalog change, maintainers should:
 
