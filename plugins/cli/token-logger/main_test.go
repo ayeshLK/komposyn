@@ -455,8 +455,13 @@ func TestRegistryForegroundSummaryAccumulatesAcrossReloadedCollectors(t *testing
 		cancel()
 		t.Fatalf("timed out waiting for %s; stderr=%q output=%q", description, stderr.String(), stdout.String())
 	}
+	failedSourcesBeforeRecovery := 0
 	waitForRuntime("missing-root failure", func(status tokenlogger.CollectorRuntimeStatus) bool {
-		return status.Outcomes.FailedSource > 0
+		if status.Outcomes.FailedSource > 0 {
+			failedSourcesBeforeRecovery = status.Outcomes.FailedSource
+			return true
+		}
+		return false
 	})
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -468,13 +473,8 @@ func TestRegistryForegroundSummaryAccumulatesAcrossReloadedCollectors(t *testing
 	if err := os.WriteFile(filepath.Join(root, "normal.jsonl"), fixture, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	accumulatedFailedSources := 0
 	waitForRuntime("successful import and unchanged follow-up", func(status tokenlogger.CollectorRuntimeStatus) bool {
-		complete := status.Imported == 2 && status.Outcomes.FailedSource > 0 && status.Outcomes.UnchangedSnapshot > 0
-		if complete {
-			accumulatedFailedSources = status.Outcomes.FailedSource
-		}
-		return complete
+		return status.Imported == 2 && status.Outcomes.FailedSource >= failedSourcesBeforeRecovery && status.Outcomes.UnchangedSnapshot > 0
 	})
 	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
 		t.Fatalf("request stop=%t err=%v", requested, err)
@@ -487,13 +487,20 @@ func TestRegistryForegroundSummaryAccumulatesAcrossReloadedCollectors(t *testing
 	case <-time.After(3 * time.Second):
 		t.Fatal("registry-backed foreground did not stop")
 	}
+	finalStatus, err := store.CollectorRuntimeStatus(time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalStatus.Outcomes.FailedSource < failedSourcesBeforeRecovery {
+		t.Fatalf("failed-source count was lost across collector reloads: before=%d final=%d", failedSourcesBeforeRecovery, finalStatus.Outcomes.FailedSource)
+	}
 	output := stdout.String()
 	index := strings.LastIndex(output, "collector stopped:")
 	if index < 0 {
 		t.Fatalf("missing stopped summary: %q", output)
 	}
 	summary := output[index:]
-	for _, expected := range []string{"imported=2", fmt.Sprintf("failed_source=%d", accumulatedFailedSources), "run_complete=false"} {
+	for _, expected := range []string{" imported=2 ", fmt.Sprintf(" failed_source=%d ", finalStatus.Outcomes.FailedSource), " run_complete=false\n"} {
 		if !strings.Contains(summary, expected) {
 			t.Fatalf("stopped summary omitted %q: %q", expected, summary)
 		}
