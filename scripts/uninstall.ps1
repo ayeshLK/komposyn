@@ -2,10 +2,23 @@ $ErrorActionPreference = 'Stop'
 $installDir = if ($env:KOMPOSYN_INSTALL_DIR) { $env:KOMPOSYN_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Komposyn\bin' }
 $binary = Join-Path $installDir 'komposyn-lg.exe'
 if (Test-Path $binary) {
-    $capability = (& $binary _watch-lifecycle 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $capability -eq '1') {
-        $collectorStatus = (& $binary watch status --format json 2>$null | ConvertFrom-Json)
-        if ($LASTEXITCODE -ne 0 -or $null -eq $collectorStatus) { throw 'unable to inspect the background collector; executable was not removed' }
+    $capability = $null
+    $capabilityExit = -1
+    try {
+        $capability = (& $binary _watch-lifecycle 2>$null)
+        $capabilityExit = $LASTEXITCODE
+    } catch {
+        # Legacy, corrupt, and non-executable files have no managed lifecycle.
+    }
+    if ($capabilityExit -eq 0 -and $capability -eq '1') {
+        try {
+            $collectorStatusJson = (& $binary watch status --format json 2>$null)
+            $collectorStatusExit = $LASTEXITCODE
+            $collectorStatus = $collectorStatusJson | ConvertFrom-Json
+        } catch {
+            throw 'unable to inspect the background collector; executable was not removed'
+        }
+        if ($collectorStatusExit -ne 0 -or $null -eq $collectorStatus) { throw 'unable to inspect the background collector; executable was not removed' }
         if ($collectorStatus.state -in @('starting', 'running', 'degraded', 'stopping')) {
             & $binary watch stop --timeout 30s
             if ($LASTEXITCODE -ne 0) { throw 'background collector stop timed out' }

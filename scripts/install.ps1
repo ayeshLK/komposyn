@@ -78,10 +78,23 @@ try {
     $installedBinary = Join-Path $installDir 'komposyn-lg.exe'
     $restartCollector = $false
     if (Test-Path -LiteralPath $installedBinary -PathType Leaf) {
-        $capability = (& $installedBinary _watch-lifecycle 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $capability -eq '1') {
-            $collectorStatus = (& $installedBinary watch status --format json 2>$null | ConvertFrom-Json)
-            if ($LASTEXITCODE -ne 0 -or $null -eq $collectorStatus) { throw 'unable to inspect the existing background collector; executable was not replaced' }
+        $capability = $null
+        $capabilityExit = -1
+        try {
+            $capability = (& $installedBinary _watch-lifecycle 2>$null)
+            $capabilityExit = $LASTEXITCODE
+        } catch {
+            # Legacy, corrupt, and non-executable files have no managed lifecycle.
+        }
+        if ($capabilityExit -eq 0 -and $capability -eq '1') {
+            try {
+                $collectorStatusJson = (& $installedBinary watch status --format json 2>$null)
+                $collectorStatusExit = $LASTEXITCODE
+                $collectorStatus = $collectorStatusJson | ConvertFrom-Json
+            } catch {
+                throw 'unable to inspect the existing background collector; executable was not replaced'
+            }
+            if ($collectorStatusExit -ne 0 -or $null -eq $collectorStatus) { throw 'unable to inspect the existing background collector; executable was not replaced' }
             if ($collectorStatus.state -in @('starting', 'running', 'degraded', 'stopping')) {
                 $restartCollector = $true
                 & $installedBinary watch stop --timeout 30s
