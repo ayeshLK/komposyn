@@ -235,6 +235,7 @@ type priceMatch struct {
 	modelPrecedence    int
 	contextSpecificity int
 	custom             bool
+	durationSpecific   bool
 }
 
 func (c pricingCatalog) find(provider, resolvedModel, requestedModel, category string, at time.Time, billing BillingContext) (PricingRule, bool, bool) {
@@ -284,6 +285,49 @@ func billingContextMatchesRule(rule PricingRule, billing BillingContext) bool {
 		return false
 	}
 	return true
+}
+
+func (c pricingCatalog) findCacheWrite(provider, resolvedModel, requestedModel, durationCategory string, at time.Time, billing BillingContext) (string, bool, bool) {
+	best := priceMatch{}
+	bestCategory := ""
+	ambiguous := false
+	for _, rule := range c.rules {
+		durationSpecific := rule.TokenCategory == TokenCategoryCacheWrite5m || rule.TokenCategory == TokenCategoryCacheWrite1h
+		if rule.TokenCategory != TokenCategoryCacheWrite && rule.TokenCategory != durationCategory {
+			continue
+		}
+		if rule.Provider != provider || at.Before(rule.EffectiveFrom) || (rule.EffectiveTo != nil && !at.Before(*rule.EffectiveTo)) || !billingContextMatchesRule(rule, billing) {
+			continue
+		}
+		modelSpecificity := modelPrecedence(rule.ModelSelector, resolvedModel, requestedModel)
+		if modelSpecificity == 0 {
+			continue
+		}
+		contextSpecificity := 0
+		if rule.ServiceTierSelector != "" {
+			contextSpecificity++
+		}
+		if rule.RegionSelector != "" {
+			contextSpecificity++
+		}
+		if rule.SpeedSelector != "" {
+			contextSpecificity++
+		}
+		custom := rule.CatalogEntryID == ""
+		better := modelSpecificity > best.modelPrecedence ||
+			(modelSpecificity == best.modelPrecedence && custom && !best.custom) ||
+			(modelSpecificity == best.modelPrecedence && custom == best.custom && contextSpecificity > best.contextSpecificity) ||
+			(modelSpecificity == best.modelPrecedence && custom == best.custom && contextSpecificity == best.contextSpecificity && durationSpecific && !best.durationSpecific)
+		equal := modelSpecificity == best.modelPrecedence && custom == best.custom && contextSpecificity == best.contextSpecificity && durationSpecific == best.durationSpecific
+		if better {
+			best = priceMatch{rule: rule, modelPrecedence: modelSpecificity, contextSpecificity: contextSpecificity, custom: custom, durationSpecific: durationSpecific}
+			bestCategory = rule.TokenCategory
+			ambiguous = false
+		} else if equal && rule != best.rule {
+			ambiguous = true
+		}
+	}
+	return bestCategory, best.modelPrecedence > 0 && !ambiguous, ambiguous
 }
 
 func (c pricingCatalog) missingReason(provider, resolvedModel, requestedModel, category string, at time.Time, billing BillingContext) string {
@@ -447,9 +491,9 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 		if tokens == 0 {
 			return
 		}
-		_, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, durationCategory, event.OccurredAt, event.BillingContext)
+		category, ok, ambiguous := c.findCacheWrite(event.Provider, event.ResolvedModel, event.RequestedModel, durationCategory, event.OccurredAt, event.BillingContext)
 		if ok || ambiguous {
-			charge(durationCategory, tokens)
+			charge(category, tokens)
 			return
 		}
 		// A duration split adds precision, but existing aggregate cache-write

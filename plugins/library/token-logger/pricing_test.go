@@ -575,6 +575,41 @@ func TestSplitCacheWritesFallBackToAggregateCustomRule(t *testing.T) {
 	}
 }
 
+func TestStoreQueryPrefersExactCustomAggregateOverBundledDurationRates(t *testing.T) {
+	store := openTestStore(t)
+	from := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	if err := store.UpsertPricing(PricingRule{Provider: "anthropic", ModelSelector: "claude-opus-5-5", TokenCategory: TokenCategoryCacheWrite,
+		RateMicros: 7, Currency: "USD", EffectiveFrom: from, PricingVersion: "custom-aggregate-v1"}); err != nil {
+		t.Fatal(err)
+	}
+	serviceTier := BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}
+	region := BillingContextValue{Value: "global", Evidence: BillingEvidenceProviderResponse}
+	speed := BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}
+	events := []UsageEvent{testEvent("aggregate-cache-write"), testEvent("split-cache-write")}
+	for i := range events {
+		events[i].EventID = events[i].IngestionKey
+		events[i].OccurredAt = from.Add(time.Duration(i) * time.Hour)
+		events[i].Provider = "anthropic"
+		events[i].RequestedModel = "claude-opus-5-5"
+		events[i].ResolvedModel = "claude-opus-5-5"
+		events[i].Usage = TokenUsage{InputTokens: 100, CacheWriteTokens: 100}
+		events[i].BillingContext = BillingContext{ServiceTier: &serviceTier, Region: &region, Speed: &speed}
+	}
+	events[1].Usage.CacheWrite5mTokens, events[1].Usage.CacheWrite1hTokens = 60, 40
+	if _, err := store.Append(events); err != nil {
+		t.Fatal(err)
+	}
+	for i, event := range events {
+		report, err := store.Query(UsageFilter{From: event.OccurredAt, To: event.OccurredAt.Add(time.Minute)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Summary.CalculatedCostMicros != 700 || report.Summary.UnknownCostRequests != 0 || report.Summary.CalculationBasis != "custom_pricing_estimate" {
+			t.Fatalf("store query %d cost = %+v; want 700 micros custom estimate", i, report.Summary)
+		}
+	}
+}
+
 func TestPricingPrecedenceAndAmbiguousIntervals(t *testing.T) {
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	catalog := pricingCatalog{rules: []PricingRule{
