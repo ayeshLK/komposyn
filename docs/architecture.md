@@ -53,7 +53,9 @@ An explicit `import` and the background collector use the same adapters:
    different file contents.
 3. Provider records are mapped to `UsageEvent`, with source adapter, source
    identity, record identity, byte offset, and record hash retained for
-   traceability.
+   traceability. Pricing-relevant billing context is stored only when its
+   normalized value and controlled evidence are available; absent context stays
+   unknown.
 4. Adapter-scoped aliases and canonical local locations reconcile provider
    references to KompoSyn-owned project/session IDs. Existing aliases win;
    unique location matches may connect clients, while ambiguous or conflicting

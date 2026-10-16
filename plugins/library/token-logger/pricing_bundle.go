@@ -48,6 +48,8 @@ type bundledCatalogEntry struct {
 	Notes          string `json:"notes"`
 	PricingVersion string `json:"pricing_version"`
 	ReviewedAt     string `json:"reviewed_at"`
+	ServiceTier    string `json:"service_tier,omitempty"`
+	Region         string `json:"region,omitempty"`
 }
 
 func (s *Store) syncBundledPricingCatalog() error {
@@ -116,7 +118,8 @@ func (s *Store) syncPricingCatalogBytes(data []byte) error {
 		rule := PricingRule{Provider: entry.Provider, ModelSelector: entry.Model, TokenCategory: entry.Category,
 			RateNumeratorMicros: entry.Numerator, RateDenominatorTokens: entry.Denominator, Currency: entry.Currency,
 			EffectiveFrom: from.UTC(), EffectiveTo: to, PricingVersion: pricingVersion, Source: "official public API pricing",
-			Notes: entry.Notes, CatalogEntryID: entry.ID, SourceURL: entry.SourceURL, SourceReviewedAt: reviewedAt}
+			Notes: entry.Notes, CatalogEntryID: entry.ID, SourceURL: entry.SourceURL, SourceReviewedAt: reviewedAt,
+			ServiceTierSelector: entry.ServiceTier, RegionSelector: entry.Region}
 		if err := rule.validate(); err != nil {
 			return fmt.Errorf("invalid bundled pricing entry %s: %w", entry.ID, err)
 		}
@@ -157,7 +160,7 @@ func isOfficialPricingHost(provider, hostname string) bool {
 }
 
 func validateBundledIntervals(tx *sql.Tx) error {
-	rows, err := tx.Query(`SELECT provider_name, model_selector, token_category, effective_from, effective_to FROM pricing_rules WHERE catalog_entry_id IS NOT NULL`)
+	rows, err := tx.Query(`SELECT provider_name, model_selector, token_category, effective_from, effective_to, service_tier_selector, region_selector FROM pricing_rules WHERE catalog_entry_id IS NOT NULL`)
 	if err != nil {
 		return err
 	}
@@ -167,7 +170,7 @@ func validateBundledIntervals(tx *sql.Tx) error {
 		var rule PricingRule
 		var from string
 		var to sql.NullString
-		if err := rows.Scan(&rule.Provider, &rule.ModelSelector, &rule.TokenCategory, &from, &to); err != nil {
+		if err := rows.Scan(&rule.Provider, &rule.ModelSelector, &rule.TokenCategory, &from, &to, &rule.ServiceTierSelector, &rule.RegionSelector); err != nil {
 			return err
 		}
 		rule.EffectiveFrom, err = time.Parse(time.RFC3339Nano, from)
@@ -190,7 +193,7 @@ func validateBundledIntervals(tx *sql.Tx) error {
 		for j := i + 1; j < len(rules); j++ {
 			a, b := rules[i], rules[j]
 			if a.Provider == b.Provider && a.TokenCategory == b.TokenCategory &&
-				selectorsHaveEqualPrecedenceOverlap(a.ModelSelector, b.ModelSelector) && intervalsOverlap(a, b) {
+				selectorsHaveEqualPrecedenceOverlap(a.ModelSelector, b.ModelSelector) && a.ServiceTierSelector == b.ServiceTierSelector && a.RegionSelector == b.RegionSelector && intervalsOverlap(a, b) {
 				return fmt.Errorf("bundled pricing intervals overlap for %s/%s/%s", a.Provider, a.ModelSelector, a.TokenCategory)
 			}
 		}
@@ -209,19 +212,20 @@ func syncCatalogEntry(tx *sql.Tx, rule PricingRule) error {
 	var legacyRate int64
 	err := tx.QueryRow(`SELECT provider_name, model_selector, token_category, rate_micros, currency,
 		effective_from, effective_to, pricing_version, source, notes, rate_numerator_micros,
-		rate_denominator_tokens, source_url, source_reviewed_at FROM pricing_rules WHERE catalog_entry_id = ?`, rule.CatalogEntryID).
+		rate_denominator_tokens, source_url, source_reviewed_at, service_tier_selector, region_selector FROM pricing_rules WHERE catalog_entry_id = ?`, rule.CatalogEntryID).
 		Scan(&existing.Provider, &existing.ModelSelector, &existing.TokenCategory, &legacyRate, &existing.Currency,
 			&effectiveFrom, &effectiveTo, &existing.PricingVersion, &existing.Source, &existing.Notes,
-			&existing.RateNumeratorMicros, &existing.RateDenominatorTokens, &existing.SourceURL, &existing.SourceReviewedAt)
+			&existing.RateNumeratorMicros, &existing.RateDenominatorTokens, &existing.SourceURL, &existing.SourceReviewedAt,
+			&existing.ServiceTierSelector, &existing.RegionSelector)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = tx.Exec(`INSERT INTO pricing_rules(
 			provider_name, model_selector, token_category, rate_micros, currency, effective_from,
 			effective_to, pricing_version, source, notes, rate_numerator_micros,
-			rate_denominator_tokens, catalog_entry_id, source_url, source_reviewed_at)
-			VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.Provider, rule.ModelSelector,
+			rate_denominator_tokens, catalog_entry_id, source_url, source_reviewed_at, service_tier_selector, region_selector)
+			VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.Provider, rule.ModelSelector,
 			rule.TokenCategory, rule.Currency, formatStoredTime(rule.EffectiveFrom), nullableTime(rule.EffectiveTo), rule.PricingVersion,
 			rule.Source, rule.Notes, rule.RateNumeratorMicros, rule.RateDenominatorTokens,
-			rule.CatalogEntryID, rule.SourceURL, rule.SourceReviewedAt)
+			rule.CatalogEntryID, rule.SourceURL, rule.SourceReviewedAt, rule.ServiceTierSelector, rule.RegionSelector)
 		return err
 	}
 	if err != nil {
@@ -246,6 +250,7 @@ func syncCatalogEntry(tx *sql.Tx, rule PricingRule) error {
 		existing.PricingVersion != rule.PricingVersion || existing.Source != rule.Source || existing.Notes != rule.Notes ||
 		existing.RateNumeratorMicros != rule.RateNumeratorMicros || existing.RateDenominatorTokens != rule.RateDenominatorTokens ||
 		existing.SourceURL != rule.SourceURL || existing.SourceReviewedAt != rule.SourceReviewedAt ||
+		existing.ServiceTierSelector != rule.ServiceTierSelector || existing.RegionSelector != rule.RegionSelector ||
 		!existing.EffectiveFrom.Equal(rule.EffectiveFrom) {
 		return errors.New("catalog entry ID conflicts with immutable stored pricing fields")
 	}

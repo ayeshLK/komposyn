@@ -50,6 +50,8 @@ type PricingRule struct {
 	CatalogEntryID        string
 	SourceURL             string
 	SourceReviewedAt      string
+	ServiceTierSelector   string
+	RegionSelector        string
 }
 
 func (r PricingRule) validate() error {
@@ -63,6 +65,10 @@ func (r PricingRule) validate() error {
 	}
 	if r.RateMicros < 0 {
 		return errors.New("pricing rate must not be negative")
+	}
+	if (r.ServiceTierSelector != "" && strings.TrimSpace(r.ServiceTierSelector) != r.ServiceTierSelector) ||
+		(r.RegionSelector != "" && strings.TrimSpace(r.RegionSelector) != r.RegionSelector) {
+		return errors.New("billing context selectors must not contain surrounding whitespace")
 	}
 	if r.RateNumeratorMicros < 0 || r.RateDenominatorTokens < 0 {
 		return errors.New("pricing rational rate must not be negative")
@@ -96,7 +102,7 @@ func (s *Store) UpsertPricing(rule PricingRule) error {
 	if rule.EffectiveTo != nil {
 		end = formatStoredTime(*rule.EffectiveTo)
 	}
-	rows, err := s.db.Query(`SELECT model_selector FROM pricing_rules
+	rows, err := s.db.Query(`SELECT model_selector, service_tier_selector, region_selector FROM pricing_rules
 		WHERE provider_name = ? AND token_category = ?
 		AND catalog_entry_id IS NULL AND effective_from < ?
 		AND (effective_to IS NULL OR effective_to > ?)`, rule.Provider,
@@ -106,11 +112,11 @@ func (s *Store) UpsertPricing(rule PricingRule) error {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var existingSelector string
-		if err := rows.Scan(&existingSelector); err != nil {
+		var existingSelector, existingTier, existingRegion string
+		if err := rows.Scan(&existingSelector, &existingTier, &existingRegion); err != nil {
 			return err
 		}
-		if selectorsHaveEqualPrecedenceOverlap(existingSelector, rule.ModelSelector) {
+		if selectorsHaveEqualPrecedenceOverlap(existingSelector, rule.ModelSelector) && existingTier == rule.ServiceTierSelector && existingRegion == rule.RegionSelector {
 			return errors.New("overlapping custom pricing rules with equal-precedence model selectors are ambiguous")
 		}
 	}
@@ -123,12 +129,13 @@ func (s *Store) UpsertPricing(rule PricingRule) error {
 	_, err = s.db.Exec(`INSERT INTO pricing_rules(
 		provider_name, model_selector, token_category, rate_micros, currency,
 		effective_from, effective_to, pricing_version, source, notes,
-		rate_numerator_micros, rate_denominator_tokens, catalog_entry_id, source_url, source_reviewed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.Provider, rule.ModelSelector,
+		rate_numerator_micros, rate_denominator_tokens, catalog_entry_id, source_url, source_reviewed_at,
+		service_tier_selector, region_selector)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.Provider, rule.ModelSelector,
 		rule.TokenCategory, rule.RateMicros, rule.Currency,
 		formatStoredTime(rule.EffectiveFrom), nullableTime(rule.EffectiveTo),
 		rule.PricingVersion, rule.Source, rule.Notes, numerator, denominator,
-		nullableString(rule.CatalogEntryID), rule.SourceURL, rule.SourceReviewedAt)
+		nullableString(rule.CatalogEntryID), rule.SourceURL, rule.SourceReviewedAt, rule.ServiceTierSelector, rule.RegionSelector)
 	return err
 }
 
@@ -153,7 +160,7 @@ func (s *Store) pricingCatalog() (pricingCatalog, error) {
 	rows, err := s.db.Query(`SELECT provider_name, model_selector, token_category,
 		rate_micros, currency, effective_from, effective_to, pricing_version, source, notes,
 		rate_numerator_micros, rate_denominator_tokens, COALESCE(catalog_entry_id, ''), source_url, source_reviewed_at
-		FROM pricing_rules ORDER BY effective_from DESC, id DESC`)
+		, service_tier_selector, region_selector FROM pricing_rules ORDER BY effective_from DESC, id DESC`)
 	if err != nil {
 		return pricingCatalog{}, err
 	}
@@ -166,7 +173,7 @@ func (s *Store) pricingCatalog() (pricingCatalog, error) {
 		if err := rows.Scan(&rule.Provider, &rule.ModelSelector, &rule.TokenCategory,
 			&rule.RateMicros, &rule.Currency, &from, &to, &rule.PricingVersion,
 			&rule.Source, &rule.Notes, &rule.RateNumeratorMicros, &rule.RateDenominatorTokens,
-			&rule.CatalogEntryID, &rule.SourceURL, &rule.SourceReviewedAt); err != nil {
+			&rule.CatalogEntryID, &rule.SourceURL, &rule.SourceReviewedAt, &rule.ServiceTierSelector, &rule.RegionSelector); err != nil {
 			return pricingCatalog{}, err
 		}
 		parsedFrom, err := time.Parse(time.RFC3339Nano, from)
@@ -188,35 +195,53 @@ func (s *Store) pricingCatalog() (pricingCatalog, error) {
 }
 
 type priceMatch struct {
-	rule       PricingRule
-	precedence int
-	custom     bool
+	rule               PricingRule
+	modelPrecedence    int
+	contextSpecificity int
+	custom             bool
 }
 
-func (c pricingCatalog) find(provider, resolvedModel, requestedModel, category string, at time.Time) (PricingRule, bool, bool) {
+func (c pricingCatalog) find(provider, resolvedModel, requestedModel, category string, at time.Time, billing BillingContext) (PricingRule, bool, bool) {
 	best := priceMatch{}
 	ambiguous := false
 	for _, rule := range c.rules {
 		if rule.Provider != provider || rule.TokenCategory != category || at.Before(rule.EffectiveFrom) || (rule.EffectiveTo != nil && !at.Before(*rule.EffectiveTo)) {
 			continue
 		}
-		precedence := modelPrecedence(rule.ModelSelector, resolvedModel, requestedModel)
+		modelSpecificity := modelPrecedence(rule.ModelSelector, resolvedModel, requestedModel)
+		contextSpecificity := 0
+		if rule.ServiceTierSelector != "" {
+			if billing.ServiceTier == nil || billing.ServiceTier.Value != rule.ServiceTierSelector {
+				continue
+			}
+			contextSpecificity++
+		}
+		if rule.RegionSelector != "" {
+			if billing.Region == nil || billing.Region.Value != rule.RegionSelector {
+				continue
+			}
+			contextSpecificity++
+		}
 		custom := rule.CatalogEntryID == ""
-		if precedence > best.precedence || (precedence == best.precedence && custom && !best.custom) {
-			best = priceMatch{rule: rule, precedence: precedence, custom: custom}
+		better := modelSpecificity > best.modelPrecedence ||
+			(modelSpecificity == best.modelPrecedence && custom && !best.custom) ||
+			(modelSpecificity == best.modelPrecedence && custom == best.custom && contextSpecificity > best.contextSpecificity)
+		equal := modelSpecificity == best.modelPrecedence && custom == best.custom && contextSpecificity == best.contextSpecificity
+		if better {
+			best = priceMatch{rule: rule, modelPrecedence: modelSpecificity, contextSpecificity: contextSpecificity, custom: custom}
 			ambiguous = false
-		} else if precedence > 0 && precedence == best.precedence && custom == best.custom && rule != best.rule {
+		} else if modelSpecificity > 0 && equal && rule != best.rule {
 			ambiguous = true
 		}
 	}
-	return best.rule, best.precedence > 0 && !ambiguous, ambiguous
+	return best.rule, best.modelPrecedence > 0 && !ambiguous, ambiguous
 }
 
-func (c pricingCatalog) missingReason(provider, resolvedModel, requestedModel, category string, at time.Time) string {
+func (c pricingCatalog) missingReason(provider, resolvedModel, requestedModel, category string, at time.Time, billing BillingContext) string {
 	if resolvedModel == "" && requestedModel == "" {
 		return "model_unresolved"
 	}
-	modelKnown, categoryKnown := false, false
+	modelKnown, categoryKnown, contextRequired := false, false, false
 	for _, rule := range c.rules {
 		if rule.Provider != provider || modelPrecedence(rule.ModelSelector, resolvedModel, requestedModel) == 0 {
 			continue
@@ -224,12 +249,19 @@ func (c pricingCatalog) missingReason(provider, resolvedModel, requestedModel, c
 		modelKnown = true
 		if rule.TokenCategory == category {
 			categoryKnown = true
+			if (rule.ServiceTierSelector != "" && (billing.ServiceTier == nil || billing.ServiceTier.Value != rule.ServiceTierSelector)) ||
+				(rule.RegionSelector != "" && (billing.Region == nil || billing.Region.Value != rule.RegionSelector)) {
+				contextRequired = true
+			}
 			if at.Before(rule.EffectiveFrom) || (rule.EffectiveTo != nil && !at.Before(*rule.EffectiveTo)) {
 				return "outside_effective_range"
 			}
 		}
 	}
 	if modelKnown && !categoryKnown {
+		return "billing_context_missing"
+	}
+	if contextRequired {
 		return "billing_context_missing"
 	}
 	return "no_matching_rate"
@@ -329,14 +361,14 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 		if tokens == 0 {
 			return
 		}
-		rule, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt)
+		rule, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt, event.BillingContext)
 		if !ok {
 			missing = true
 			missingCategories[category] = struct{}{}
 			if ambiguous {
 				reason = "ambiguous_pricing_rule"
 			} else if reason == "" {
-				reason = c.missingReason(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt)
+				reason = c.missingReason(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt, event.BillingContext)
 			}
 			return
 		}
@@ -362,7 +394,7 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 	charge(TokenCategoryCacheWrite, usage.CacheWriteTokens)
 	charge(TokenCategoryOutput, usage.OutputTokens-usage.ReasoningTokens)
 	if usage.ReasoningTokens > 0 {
-		if _, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, TokenCategoryReasoning, event.OccurredAt); ambiguous {
+		if _, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, TokenCategoryReasoning, event.OccurredAt, event.BillingContext); ambiguous {
 			missing = true
 			reason = "ambiguous_pricing_rule"
 		} else if ok {
@@ -403,7 +435,7 @@ func (c pricingCatalog) calculateZeroUsage(event reportEvent) eventCost {
 	currency := ""
 	matched := false
 	for _, category := range []string{TokenCategoryInput, TokenCategoryCacheRead, TokenCategoryCacheWrite, TokenCategoryOutput, TokenCategoryReasoning} {
-		rule, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt)
+		rule, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt, event.BillingContext)
 		if ambiguous {
 			return eventCost{Status: "unknown", Reason: "ambiguous_pricing_rule", Provider: event.Provider}
 		}
@@ -419,9 +451,12 @@ func (c pricingCatalog) calculateZeroUsage(event reportEvent) eventCost {
 		}
 	}
 	if !matched {
-		reason := c.missingReason(event.Provider, event.ResolvedModel, event.RequestedModel, TokenCategoryInput, event.OccurredAt)
+		reason := c.missingReason(event.Provider, event.ResolvedModel, event.RequestedModel, TokenCategoryInput, event.OccurredAt, event.BillingContext)
 		for _, rule := range c.rules {
-			if rule.Provider == event.Provider && modelPrecedence(rule.ModelSelector, event.ResolvedModel, event.RequestedModel) > 0 {
+			if rule.Provider == event.Provider && modelPrecedence(rule.ModelSelector, event.ResolvedModel, event.RequestedModel) > 0 &&
+				(event.BillingContext.ServiceTier == nil || rule.ServiceTierSelector == "" || event.BillingContext.ServiceTier.Value == rule.ServiceTierSelector) &&
+				(event.BillingContext.Region == nil || rule.RegionSelector == "" || event.BillingContext.Region.Value == rule.RegionSelector) &&
+				(event.OccurredAt.Before(rule.EffectiveFrom) || (rule.EffectiveTo != nil && !event.OccurredAt.Before(*rule.EffectiveTo))) {
 				reason = "outside_effective_range"
 				break
 			}

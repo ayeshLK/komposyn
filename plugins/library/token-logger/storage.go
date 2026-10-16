@@ -219,8 +219,46 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("record migration 11: %w", err)
 		}
 	}
+	if applied < 12 {
+		if err := applyBillingContextMigration(tx); err != nil {
+			return fmt.Errorf("apply migration 12: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 12, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 12: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
+	}
+	return nil
+}
+
+func applyBillingContextMigration(tx *sql.Tx) error {
+	columns := []struct{ table, name, definition string }{
+		{"usage_events", "billing_context_json", "TEXT"},
+		{"pricing_rules", "service_tier_selector", "TEXT NOT NULL DEFAULT ''"},
+		{"pricing_rules", "region_selector", "TEXT NOT NULL DEFAULT ''"},
+	}
+	present := make([]bool, len(columns))
+	missing := 0
+	for index, column := range columns {
+		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name = ?)", column.table, column.name).Scan(&present[index]); err != nil {
+			return err
+		}
+		if !present[index] {
+			missing++
+		}
+	}
+	if missing == len(columns) {
+		_, err := tx.Exec(schemaMigrationTwelve)
+		return err
+	}
+	for index, column := range columns {
+		if !present[index] {
+			if _, err := tx.Exec("ALTER TABLE " + column.table + " ADD COLUMN " + column.name + " " + column.definition); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -693,6 +731,15 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 	if err != nil {
 		return Receipt{}, fmt.Errorf("begin append: %w", err)
 	}
+	var hasBillingContext bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_events') WHERE name = 'billing_context_json')").Scan(&hasBillingContext); err != nil {
+		tx.Rollback()
+		return Receipt{}, fmt.Errorf("inspect usage event schema: %w", err)
+	}
+	insertSQL := eventInsertSQL
+	if !hasBillingContext {
+		insertSQL = legacyEventInsertSQL
+	}
 	if expected != nil {
 		current, currentErr := cursorInTransaction(tx, expected.sourceID)
 		if errors.Is(currentErr, sql.ErrNoRows) {
@@ -765,7 +812,12 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 		}
 	}
 	for _, event := range events {
-		result, err := tx.Exec(eventInsertSQL,
+		billingContextJSON, err := json.Marshal(event.BillingContext)
+		if err != nil {
+			tx.Rollback()
+			return Receipt{}, fmt.Errorf("encode event %q billing context: %w", event.EventID, err)
+		}
+		args := []any{
 			event.EventID, event.SchemaVersion, event.EventType, formatStoredTime(event.OccurredAt),
 			nullableTime(event.StartedAt), nullableTime(event.CompletedAt), event.ProjectID, event.SessionID,
 			event.RequestID, event.Attempt, event.Operation, event.Client.Name, event.Client.Version,
@@ -775,7 +827,11 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 			nullableInt64(event.Cost.AmountMicros), event.Cost.Currency, event.Cost.PricingVersion,
 			nullableInt64(event.Cost.ProviderAmount), event.Cost.ProviderCurrency, event.Provenance.Adapter,
 			event.Provenance.SourceID, event.Provenance.SourceRecord, nullableInt64(event.Provenance.SourceOffset),
-			event.Provenance.RecordHash, event.IngestionKey, nullableJSON(event.Attributes))
+			event.Provenance.RecordHash, event.IngestionKey, nullableJSON(event.Attributes)}
+		if hasBillingContext {
+			args = append(args, nullableJSON(billingContextJSON))
+		}
+		result, err := tx.Exec(insertSQL, args...)
 		if err != nil {
 			tx.Rollback()
 			return Receipt{}, fmt.Errorf("persist event %q: %w", event.EventID, err)

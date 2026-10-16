@@ -228,6 +228,48 @@ func TestCustomPricingRejectsEqualPrecedenceWildcardOverlap(t *testing.T) {
 	}
 }
 
+func TestPricingContextSelectorsRequireKnownMatchingValues(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	catalog := pricingCatalog{rules: []PricingRule{
+		{Provider: "openai", ModelSelector: "model-x", TokenCategory: TokenCategoryInput, RateMicros: 1, Currency: "USD", EffectiveFrom: from, PricingVersion: "tier-v1", CatalogEntryID: "bundle:standard", ServiceTierSelector: "standard"},
+		{Provider: "openai", ModelSelector: "model-x", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "tier-v1", CatalogEntryID: "bundle:priority", ServiceTierSelector: "priority"},
+	}}
+	at := from.Add(time.Hour)
+	if _, ok, ambiguous := catalog.find("openai", "model-x", "", TokenCategoryInput, at, BillingContext{}); ok || ambiguous {
+		t.Fatal("unknown tier matched a tier-specific rate")
+	}
+	standard := BillingContext{ServiceTier: &BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}}
+	rule, ok, ambiguous := catalog.find("openai", "model-x", "", TokenCategoryInput, at, standard)
+	if !ok || ambiguous || rule.ServiceTierSelector != "standard" {
+		t.Fatalf("known standard context matched %+v (ok=%v ambiguous=%v)", rule, ok, ambiguous)
+	}
+	other := BillingContext{ServiceTier: &BillingContextValue{Value: "flex", Evidence: BillingEvidenceProviderResponse}}
+	if _, ok, ambiguous := catalog.find("openai", "model-x", "", TokenCategoryInput, at, other); ok || ambiguous {
+		t.Fatal("unpriced known tier fell back to another tier")
+	}
+}
+
+func TestCustomContextIndependentRuleKeepsBundledPrecedence(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	catalog := pricingCatalog{rules: []PricingRule{
+		{Provider: "openai", ModelSelector: "model-x", TokenCategory: TokenCategoryInput, RateMicros: 1, Currency: "USD", EffectiveFrom: from, PricingVersion: "custom-v1"},
+		{Provider: "openai", ModelSelector: "model-x", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "bundle-v1", CatalogEntryID: "bundle:standard", ServiceTierSelector: "standard"},
+	}}
+	context := BillingContext{ServiceTier: &BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}}
+	rule, ok, ambiguous := catalog.find("openai", "model-x", "", TokenCategoryInput, from.Add(time.Hour), context)
+	if !ok || ambiguous || rule.PricingVersion != "custom-v1" {
+		t.Fatalf("context-independent custom rule lost its established precedence: %+v (ok=%v ambiguous=%v)", rule, ok, ambiguous)
+	}
+}
+
+func TestBillingContextRequiresEvidence(t *testing.T) {
+	event := testEvent("billing-context")
+	event.BillingContext.ServiceTier = &BillingContextValue{Value: "standard", Evidence: "untrusted free text"}
+	if err := event.Validate(); err == nil {
+		t.Fatal("billing context without evidence was accepted")
+	}
+}
+
 func TestCustomPricingCannotClaimBundledCatalogOrigin(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
@@ -304,7 +346,7 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 }
 
-func TestMigrationsOneThroughElevenPreserveLegacyData(t *testing.T) {
+func TestMigrationsOneThroughTwelvePreserveLegacyData(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -353,8 +395,8 @@ func TestMigrationsOneThroughElevenPreserveLegacyData(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 11 || latestMigration != 11 {
-		t.Fatalf("migration history = %d/%d, want all migrations 1 through 11", migrationCount, latestMigration)
+	if migrationCount != 12 || latestMigration != 12 {
+		t.Fatalf("migration history = %d/%d, want all migrations 1 through 12", migrationCount, latestMigration)
 	}
 	var identityTable string
 	if err := db.QueryRow("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'collector_source_identities'").Scan(&identityTable); err != nil {

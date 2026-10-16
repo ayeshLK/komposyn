@@ -96,6 +96,53 @@ func TestQueryCalculatesCostWithoutDoubleCountingSubsets(t *testing.T) {
 	}
 }
 
+func TestQueryUsesPersistedBillingContextSelectors(t *testing.T) {
+	store := openTestStore(t)
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	rule := PricingRule{Provider: "openai", ModelSelector: "context-model", TokenCategory: TokenCategoryInput,
+		RateMicros: 7, Currency: "USD", EffectiveFrom: from, PricingVersion: "context-v1", ServiceTierSelector: "standard"}
+	if err := store.UpsertPricing(rule); err != nil {
+		t.Fatal(err)
+	}
+	event := testEvent("context-priced")
+	event.EventID, event.RequestedModel, event.ResolvedModel = "context-priced", "context-model", "context-model"
+	event.OccurredAt = from.Add(time.Hour)
+	event.Usage = TokenUsage{InputTokens: 1}
+	event.BillingContext.ServiceTier = &BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := store.db.QueryRow("SELECT billing_context_json FROM usage_events WHERE event_id = ?", event.EventID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip BillingContext
+	if err := json.Unmarshal([]byte(stored), &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.ServiceTier == nil || roundTrip.ServiceTier.Value != "standard" || roundTrip.ServiceTier.Evidence != BillingEvidenceProviderResponse {
+		t.Fatalf("persisted billing context = %+v", roundTrip)
+	}
+	filter := UsageFilter{From: from, To: from.AddDate(0, 0, 1)}
+	priced, err := store.Query(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priced.Summary.CalculatedCostMicros != 7 || priced.Summary.UnknownCostRequests != 0 {
+		t.Fatalf("known context report = %+v", priced.Summary)
+	}
+	if _, err := store.db.Exec("UPDATE usage_events SET billing_context_json = NULL WHERE event_id = ?", event.EventID); err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := store.Query(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Summary.UnknownCostRequests != 1 || unknown.Summary.CalculatedCostMicros != 0 {
+		t.Fatalf("missing context silently selected a tiered rule: %+v", unknown.Summary)
+	}
+}
+
 func TestQueryMarksMissingPricingAsUnknown(t *testing.T) {
 	store := openTestStore(t)
 	event := testEvent("unknown-price")
@@ -234,7 +281,7 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11)"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -257,8 +304,8 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if err := store.db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 11 || latestMigration != 11 {
-		t.Fatalf("migration history = count %d, latest %d; want eleven migrations through version 11", migrationCount, latestMigration)
+	if migrationCount != 12 || latestMigration != 12 {
+		t.Fatalf("migration history = count %d, latest %d; want twelve migrations through version 12", migrationCount, latestMigration)
 	}
 	var sourceGenerationColumn string
 	if err := store.db.QueryRow("SELECT name FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&sourceGenerationColumn); err != nil {
