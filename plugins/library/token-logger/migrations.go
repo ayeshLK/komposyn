@@ -107,6 +107,18 @@ const eventInsertSQL = `INSERT INTO usage_events (
     reasoning_tokens, cost_status, cost_amount_micros, cost_currency,
     pricing_version, provider_cost_amount_micros, provider_cost_currency,
     source_adapter, source_id, source_record_id, source_offset,
+    source_record_hash, ingestion_key, attributes_json, billing_context_json
+) VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(ingestion_key) DO NOTHING`
+
+const legacyEventInsertSQL = `INSERT INTO usage_events (
+    event_id, schema_version, event_type, occurred_at, started_at, completed_at,
+    project_id, session_id, request_id, attempt, operation, client_name,
+    client_version, client_mode, provider_name, requested_model, resolved_model,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+    reasoning_tokens, cost_status, cost_amount_micros, cost_currency,
+    pricing_version, provider_cost_amount_micros, provider_cost_currency,
+    source_adapter, source_id, source_record_id, source_offset,
     source_record_hash, ingestion_key, attributes_json
 ) VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(ingestion_key) DO NOTHING`
@@ -282,4 +294,10 @@ CREATE TABLE collector_runs (
     terminal_state TEXT NOT NULL DEFAULT '',
     last_error TEXT NOT NULL DEFAULT ''
 );
+`
+
+const schemaMigrationTwelve = `
+ALTER TABLE usage_events ADD COLUMN billing_context_json TEXT;
+ALTER TABLE pricing_rules ADD COLUMN service_tier_selector TEXT NOT NULL DEFAULT '';
+ALTER TABLE pricing_rules ADD COLUMN region_selector TEXT NOT NULL DEFAULT '';
 `

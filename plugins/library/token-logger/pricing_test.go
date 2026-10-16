@@ -228,6 +228,111 @@ func TestCustomPricingRejectsEqualPrecedenceWildcardOverlap(t *testing.T) {
 	}
 }
 
+func TestCustomPricingRejectsIntersectingContextSelectorsAtEqualSpecificity(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	base := PricingRule{Provider: "test", ModelSelector: "model", TokenCategory: TokenCategoryInput,
+		RateMicros: 1, Currency: "USD", EffectiveFrom: from, PricingVersion: "v1"}
+	standard := base
+	standard.ServiceTierSelector = "standard"
+	if err := store.UpsertPricing(standard); err != nil {
+		t.Fatal(err)
+	}
+	region := base
+	region.RegionSelector = "us"
+	if err := store.UpsertPricing(region); err == nil {
+		t.Fatal("accepted equal-specificity service-tier and region selectors that intersect")
+	}
+	priority := base
+	priority.ServiceTierSelector = "priority"
+	if err := store.UpsertPricing(priority); err != nil {
+		t.Fatalf("rejected disjoint tier alternative: %v", err)
+	}
+	standardUS := standard
+	standardUS.RegionSelector = "us"
+	if err := store.UpsertPricing(standardUS); err != nil {
+		t.Fatalf("rejected deterministic more-specific override: %v", err)
+	}
+}
+
+func TestBundledCatalogRejectsIntersectingContextSelectorsAtEqualSpecificity(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var bundle bundledCatalog
+	if err := json.Unmarshal(bundledPricingCatalog, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	first := bundle.Entries[0]
+	first.ID, first.Model, first.Category = "phase2:standard", "phase2-overlap-model", TokenCategoryInput
+	first.ServiceTier, first.Region = "standard", ""
+	second := first
+	second.ID, second.ServiceTier, second.Region = "phase2:region", "", "us"
+	bundle.Entries = append(bundle.Entries, first, second)
+	encoded, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.syncPricingCatalogBytes(encoded); err == nil {
+		t.Fatal("accepted bundled equal-specificity context selectors that intersect")
+	}
+	var persisted int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE catalog_entry_id IN ('phase2:standard', 'phase2:region')").Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != 0 {
+		t.Fatalf("rejected bundled entries persisted %d rows", persisted)
+	}
+}
+
+func TestPricingContextSelectorsRequireKnownMatchingValues(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	catalog := pricingCatalog{rules: []PricingRule{
+		{Provider: "openai", ModelSelector: "model-x", TokenCategory: TokenCategoryInput, RateMicros: 1, Currency: "USD", EffectiveFrom: from, PricingVersion: "tier-v1", CatalogEntryID: "bundle:standard", ServiceTierSelector: "standard"},
+		{Provider: "openai", ModelSelector: "model-x", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "tier-v1", CatalogEntryID: "bundle:priority", ServiceTierSelector: "priority"},
+	}}
+	at := from.Add(time.Hour)
+	if _, ok, ambiguous := catalog.find("openai", "model-x", "", TokenCategoryInput, at, BillingContext{}); ok || ambiguous {
+		t.Fatal("unknown tier matched a tier-specific rate")
+	}
+	standard := BillingContext{ServiceTier: &BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}}
+	rule, ok, ambiguous := catalog.find("openai", "model-x", "", TokenCategoryInput, at, standard)
+	if !ok || ambiguous || rule.ServiceTierSelector != "standard" {
+		t.Fatalf("known standard context matched %+v (ok=%v ambiguous=%v)", rule, ok, ambiguous)
+	}
+	other := BillingContext{ServiceTier: &BillingContextValue{Value: "flex", Evidence: BillingEvidenceProviderResponse}}
+	if _, ok, ambiguous := catalog.find("openai", "model-x", "", TokenCategoryInput, at, other); ok || ambiguous {
+		t.Fatal("unpriced known tier fell back to another tier")
+	}
+}
+
+func TestCustomContextIndependentRuleKeepsBundledPrecedence(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	catalog := pricingCatalog{rules: []PricingRule{
+		{Provider: "openai", ModelSelector: "model-x", TokenCategory: TokenCategoryInput, RateMicros: 1, Currency: "USD", EffectiveFrom: from, PricingVersion: "custom-v1"},
+		{Provider: "openai", ModelSelector: "model-x", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "bundle-v1", CatalogEntryID: "bundle:standard", ServiceTierSelector: "standard"},
+	}}
+	context := BillingContext{ServiceTier: &BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}}
+	rule, ok, ambiguous := catalog.find("openai", "model-x", "", TokenCategoryInput, from.Add(time.Hour), context)
+	if !ok || ambiguous || rule.PricingVersion != "custom-v1" {
+		t.Fatalf("context-independent custom rule lost its established precedence: %+v (ok=%v ambiguous=%v)", rule, ok, ambiguous)
+	}
+}
+
+func TestBillingContextRequiresEvidence(t *testing.T) {
+	event := testEvent("billing-context")
+	event.BillingContext.ServiceTier = &BillingContextValue{Value: "standard", Evidence: "untrusted free text"}
+	if err := event.Validate(); err == nil {
+		t.Fatal("billing context without evidence was accepted")
+	}
+}
+
 func TestCustomPricingCannotClaimBundledCatalogOrigin(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
@@ -304,7 +409,7 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 }
 
-func TestMigrationsOneThroughElevenPreserveLegacyData(t *testing.T) {
+func TestMigrationsOneThroughTwelvePreserveLegacyData(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -353,8 +458,8 @@ func TestMigrationsOneThroughElevenPreserveLegacyData(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 11 || latestMigration != 11 {
-		t.Fatalf("migration history = %d/%d, want all migrations 1 through 11", migrationCount, latestMigration)
+	if migrationCount != 12 || latestMigration != 12 {
+		t.Fatalf("migration history = %d/%d, want all migrations 1 through 12", migrationCount, latestMigration)
 	}
 	var identityTable string
 	if err := db.QueryRow("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'collector_source_identities'").Scan(&identityTable); err != nil {

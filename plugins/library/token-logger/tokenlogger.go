@@ -29,7 +29,43 @@ import (
 // at link time.
 var Version = "0.0.0-dev"
 
-const currentSchemaVersion = 11
+const currentSchemaVersion = 12
+
+const (
+	BillingEvidenceProviderResponse = "provider_response"
+	BillingEvidenceProviderRecord   = "provider_source_record"
+	BillingEvidenceHarness          = "harness_explicit"
+)
+
+// BillingContextValue records a pricing-relevant value and where it came from.
+// A nil value means unknown; known standard/default values must be explicit.
+type BillingContextValue struct {
+	Value    string `json:"value"`
+	Evidence string `json:"evidence"`
+}
+
+// BillingContext contains only request billing dimensions with source evidence.
+type BillingContext struct {
+	ServiceTier *BillingContextValue `json:"service_tier,omitempty"`
+	Region      *BillingContextValue `json:"region,omitempty"`
+}
+
+func (c BillingContext) validate() error {
+	for name, value := range map[string]*BillingContextValue{"service_tier": c.ServiceTier, "region": c.Region} {
+		if value == nil {
+			continue
+		}
+		if strings.TrimSpace(value.Value) == "" {
+			return fmt.Errorf("billing context %s value and evidence are required", name)
+		}
+		switch value.Evidence {
+		case BillingEvidenceProviderResponse, BillingEvidenceProviderRecord, BillingEvidenceHarness:
+		default:
+			return fmt.Errorf("billing context %s has unsupported evidence %q", name, value.Evidence)
+		}
+	}
+	return nil
+}
 
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.
@@ -128,6 +164,7 @@ type UsageEvent struct {
 	ResolvedModel  string          `json:"resolved_model,omitempty"`
 	Usage          TokenUsage      `json:"usage"`
 	Cost           Cost            `json:"cost,omitempty"`
+	BillingContext BillingContext  `json:"billing_context,omitempty"`
 	Provenance     Provenance      `json:"provenance"`
 	IngestionKey   string          `json:"ingestion_key"`
 	Attributes     json.RawMessage `json:"attributes,omitempty"`
@@ -181,6 +218,12 @@ func (e UsageEvent) Validate() error {
 		return errors.New("attributes must contain valid JSON")
 	}
 	if err := e.Usage.validate(); err != nil {
+		return err
+	}
+	if err := e.BillingContext.validate(); err != nil {
+		return err
+	}
+	if err := e.BillingContext.validate(); err != nil {
 		return err
 	}
 	return e.Cost.validate()

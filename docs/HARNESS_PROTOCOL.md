@@ -241,6 +241,7 @@ event timestamps must carry UTC (`Z`), as required by the library validator.
 | `resolved_model` | string | Optional, but at least one of requested/resolved model is required. |
 | `usage` | `TokenUsage` | All counts non-negative; cache counts must not exceed input; reasoning must not exceed output. |
 | `cost` | `Cost` | Optional; see below. |
+| `billing_context` | `BillingContext` | Optional; absent values remain unknown. Each supplied value requires controlled evidence metadata. |
 | `provenance` | `Provenance` | `adapter`, `source_id`, and `source_record` are required and non-blank. |
 | `ingestion_key` | string | Required and non-blank; used for idempotency. |
 | `attributes` | JSON value | Optional; when present, must contain valid JSON. |
@@ -257,6 +258,13 @@ negative.
 `Client` contains required `name` and optional `version` and `mode`.
 `Provenance` contains required `adapter`, `source_id`, and `source_record`,
 plus optional `source_offset` and `record_hash`.
+
+`BillingContext` may contain `service_tier` and `region` values. Each is an
+object with a non-blank `value` and `evidence`, where evidence is one of
+`provider_response`, `provider_source_record`, or `harness_explicit`. A missing
+value is unknown; `standard` or another default must be supplied explicitly.
+This optional event metadata is accepted by protocol version 1 and adds no new
+required request fields.
 
 ### `Project`
 
