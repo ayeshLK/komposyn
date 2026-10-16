@@ -1172,8 +1172,8 @@ func TestCLIUsage(t *testing.T) {
 	if code := run([]string{"unknown"}, &stdout, &stderr); code != 1 {
 		t.Fatalf("unknown command exit code = %d", code)
 	}
-	if !strings.Contains(stderr.String(), "usage:") {
-		t.Fatalf("missing usage output: %q", stderr.String())
+	if !strings.Contains(stderr.String(), `unknown command "unknown"`) || !strings.Contains(stderr.String(), "--help") {
+		t.Fatalf("missing unknown-command help guidance: %q", stderr.String())
 	}
 }
 
