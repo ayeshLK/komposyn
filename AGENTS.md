@@ -26,7 +26,10 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   migrations, provider adapters, collector, pricing, diagnostics, and report
   formatting. This package must remain usable independently of the CLI.
 - `plugins/cli/token-logger/` — the `komposyn-lg` command, interactive mode,
-  import/report/settings commands, and the `harness` JSONL sidecar protocol.
+  project/session resource navigation, import/report/settings/watch commands,
+  and the `harness` JSONL sidecar protocol.
+- `docs/README.md` — documentation map for installation, configuration,
+  operation, CLI usage, data handling, migrations, and release verification.
 - `docs/HARNESS_PROTOCOL.md` — versioned protocol contract. Keep stdout clean:
   protocol responses only; diagnostics go to stderr.
 - `docs/pricing-catalog.md` — pricing catalog provenance, interval update,
@@ -37,8 +40,11 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   builds, and race tests on GitHub Actions.
 - `.github/workflows/codeql.yml` — scheduled and pull-request CodeQL analysis
   with read-only repository access and narrowly scoped security-events access.
-- `.github/workflows/release.yml` — tagged release build, Cosign signing and
-  verification, publication, and installer lifecycle checks.
+- `.github/workflows/release-please.yml` — manually dispatched Release Please
+  preparation of the next version and reviewed changelog pull request.
+- `.github/workflows/release.yml` — manually dispatched publication of a
+  merged release PR: validation, build, Cosign signing, installer lifecycle
+  checks, protected-environment approval, and GitHub Release publication.
 - `Makefile` — the preferred local entry points for development and releases.
 - `docs/vision.md` — maintained product direction and explicitly open harness
   and plugin questions.
@@ -54,6 +60,12 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
 - Event ingestion is idempotent through stable ingestion keys. Preserve
   transactional behavior: an append and its source cursor advance together, or
   neither is committed.
+- Projects and sessions use KompoSyn-owned stable identities. Provider IDs are
+  scoped aliases; canonical locations may reconcile projects, but display
+  names must never merge them. Preserve path-free reconciliation warnings and
+  synthetic Unattributed project/session resources so hierarchical totals
+  reconcile with global reports. Resource selectors must remain scoped and
+  reject ambiguous names or prefixes.
 - The current SQLite schema version is 11. Migrations 1 and 2 create the core
   and diagnostics tables, migration 3 normalizes stored timestamps to fixed
   width UTC values, and migration 4 adds source-generation tracking for
@@ -78,8 +90,32 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   source-cursor generation, pending-tail visibility, and full-digest unchanged
   checks when handling replacements, and do not reintroduce separate
   file-descriptor parsing or mtime/size-only shortcuts.
+- Usage-shape allowlists remain strict. Claude `fallback_credit` is recognized
+  as optional billing metadata but is not persisted, interpreted as tokens, or
+  used to infer a discount. A non-reusable cursor from an incomplete older
+  import must let an upgraded parser recover skipped events from unchanged
+  bytes while already imported events remain duplicates; independent unknown
+  fields must still keep the snapshot non-reusable.
+- Persistent collection is configured through the SQLite source registry.
+  Background, foreground-registry, and embedded REPL collectors share one
+  healthy lease per data directory, use cooperative stop requests, and retain
+  cumulative run outcomes separately from latest-poll/root health. Registered
+  roots reload before each background poll; explicit foreground roots and
+  embedded environment/default roots must not mutate the registry. Required
+  missing roots degrade health, optional missing defaults do not, and
+  overlapping/symlinked sources are deduplicated by canonical identity.
+- Interactive collector startup remains consent-driven. `collector_enabled`
+  and `auto_start` govern embedded REPL collection only; only `watch start`
+  launches a detached process. `/refresh` queries committed SQLite data and
+  never initiates source collection. Do not start competing collectors to make
+  a report appear fresh.
 - Reports group hourly data by local civil hour while retaining the event's
   numeric UTC offset, including fractional offsets and DST folds.
+- Human report/resource tables are terminal-width-aware, sanitize untrusted
+  dimensions, and compact token counts with decimal suffixes. JSON and CSV are
+  the exact, untruncated machine-readable surfaces; do not change their integer
+  token values to match human display formatting. Empty human reports show
+  `NO USAGE DATA`.
 - Pricing is calculated offline from time-bounded rules. The embedded public
   API catalog is synchronized locally and transactionally; released entry
   rates/provenance are immutable, with only a one-time `effective_to` closure
@@ -99,6 +135,11 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
 - Preserve existing database, configuration, consent, and local diagnostic
   data during upgrades and uninstall. The initial upgrade strategy is to rerun
   the latest standalone installer; in-CLI self-updating is deferred.
+- Resolve the data directory consistently: explicit command/harness input,
+  then `TOKEN_LOGGER_DATA_DIR`, then the platform default with documented
+  legacy-directory compatibility. Never silently copy or merge two data
+  directories, and never fall back to the current working directory when the
+  user home cannot be resolved.
 - The harness protocol is versioned. Maintain stable error codes and the
   `initialize`, `record`, `flush`, `health`, and `shutdown` method semantics.
   Keep the per-message input limit and never write logs to protocol stdout.
@@ -124,6 +165,9 @@ Note that `make fmt` and the `fmt` phase of `make check` modify Go files;
 review the resulting diff afterward. Add or update tests alongside behavior
 changes, especially for provider normalization, immutable snapshots,
 idempotency, migrations, reporting, protocol errors, and data preservation.
+For asynchronous collector tests, assert persisted/final state and monotonic
+outcomes instead of assuming an exact number of timer polls; runner scheduling
+differs substantially across Linux, macOS, and Windows.
 
 Useful local commands:
 
@@ -150,15 +194,27 @@ or overwrite caller-owned files. The release contains six Go targets:
 Linux/macOS amd64 and arm64, plus Windows amd64 and arm64. It also includes
 third-party license attribution and `SHA256SUMS`.
 
-Tagged releases are built and signed in GitHub Actions. Installers verify both
-checksums and Cosign blob signatures, including the expected GitHub Actions
-certificate identity and OIDC issuer. Do not weaken those checks or introduce
-an installer path that bypasses signature verification.
+Release publication is a two-stage, manually dispatched GitHub Actions flow.
+Run **Prepare release** so Release Please opens or updates the version/changelog
+PR, review and merge that PR, then run **Publish release** with the required
+release-gate confirmation. The publish workflow resolves the one merged
+`autorelease: pending` PR and tests, tags, signs, and publishes that exact
+commit. A post-release-PR recovery commit may be selected only through the
+validated `release_commit` input and must descend from the prepared commit and
+remain reachable from `master`. Do not create or move release tags manually.
 
-The release workflow keeps permissions least-privilege: the build job receives
-OIDC signing access, installer verification is read-only, and only publication
-receives `contents: write`. Keep third-party Actions pinned to immutable commit
-SHAs when changing workflows.
+Installers verify both checksums and Cosign blob signatures, including the
+expected GitHub Actions certificate identity and OIDC issuer. Do not weaken
+those checks or introduce an installer path that bypasses signature
+verification. Keep Release Please manifest/config changes coordinated with the
+generated release PR; conventional commit types determine the proposed version
+and changelog entries.
+
+The release workflows keep permissions least-privilege: preparation receives
+only the contents/pull-request writes needed to maintain the release PR, the
+build job receives OIDC signing access, installer verification is read-only,
+and only publication receives `contents: write`. Keep third-party Actions
+pinned to immutable commit SHAs when changing workflows.
 
 Before changing release scripts, run shell syntax checks and the lifecycle
 verifier:
