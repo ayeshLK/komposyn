@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -307,10 +308,12 @@ func TestHumanTokenFormatting(t *testing.T) {
 		{value: 1_000_000_000_001, want: "1T"},
 		{value: 1_050_000_000_000, want: "1.1T"},
 		{value: -1_500, want: "-1.5K"},
+		{value: math.MaxInt64, want: "9223372T"},
+		{value: math.MinInt64, want: "-9223372T"},
 	}
 	for _, tc := range cases {
-		if got := formatHumanTokens(tc.value); got != tc.want {
-			t.Errorf("formatHumanTokens(%d) = %q, want %q", tc.value, got, tc.want)
+		if got := FormatHumanTokens(tc.value); got != tc.want {
+			t.Errorf("FormatHumanTokens(%d) = %q, want %q", tc.value, got, tc.want)
 		}
 	}
 	if got := formatExactCount(1_234_567); got != "1,234,567" {

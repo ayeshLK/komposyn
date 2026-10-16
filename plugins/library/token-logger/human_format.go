@@ -36,9 +36,11 @@ var humanTokenUnits = []decimalUnit{
 	{value: 1_000_000_000_000, suffix: "T"},
 }
 
-// formatHumanTokens uses decimal units, one fractional digit at most, and
-// half-up rounding. A rounded 1000 of one unit is promoted to the next unit.
-func formatHumanTokens(value int64) string {
+// FormatHumanTokens formats a token count for human display using decimal K,
+// M, B, and T units, at most one fractional digit, and half-up rounding. A
+// rounded 1000 of one unit is promoted to the next unit. Machine-readable
+// output should retain the exact integer instead.
+func FormatHumanTokens(value int64) string {
 	negative, magnitude := signedMagnitude(value)
 	if magnitude < 1_000 {
 		return strconv.FormatInt(value, 10)
