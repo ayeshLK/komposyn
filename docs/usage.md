@@ -134,6 +134,23 @@ Catalog entries and review dates are maintained in
 `plugins/library/token-logger/pricing-catalog.json`; update them only in a
 reviewed repository change against the linked official provider documentation.
 
+### Existing events after an upgrade
+
+New catalog rates can apply to existing events when their stored model, event
+date, usage categories, and billing evidence are sufficient. New parser
+extraction does not enrich an event that was already imported. An unchanged
+reusable snapshot may bypass parsing, and reparsing a non-reusable snapshot
+still deduplicates the event by its existing ingestion key while preserving
+its original normalized metadata. Thus an event inside the supported pricing
+interval can remain unknown for missing stored billing evidence; an event
+outside that interval remains unknown for the separate reason that no rate
+applies on its date.
+
+Keep the data directory and provider files intact. Do not delete/reimport the
+database, reset cursors, touch source timestamps, or generate replacement
+ingestion keys to force a new price. Historical metadata enrichment is
+deferred; follow future documented upgrade tooling if it becomes available.
+
 Table and interactive reports are optimized for terminal scanning. Selected
 grouping dimensions appear as separate columns in the order supplied to
 `--group-by`; a time group such as `hour` appears once and retains its numeric
