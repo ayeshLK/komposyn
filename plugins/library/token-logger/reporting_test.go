@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"math"
 	"path/filepath"
 	"strings"
@@ -594,6 +595,7 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD", EstimatedCostRequests: 1}, cost: "0.00024 USD", status: "estimated"},
 		{name: "fully unknown", measures: UsageMeasures{RequestCount: 2, UnknownCostRequests: 2}, cost: "unknown", status: "pricing unavailable (2)"},
 		{name: "unknown reason", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, CostUnknownReason: "model_unresolved"}, cost: "unknown", status: "model unresolved (1)"},
+		{name: "no matching rate", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, CostUnknownReason: "no_matching_rate"}, cost: "unknown", status: "no public catalog rate (1)"},
 		{name: "reported only", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, ProviderReportedCostMicros: 10, ProviderReportedCurrency: "USD"}, cost: "unknown", status: "reported only; estimate unavailable (pricing unavailable, 1)"},
 		{name: "partially known", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "USD", UnknownCostRequests: 1}, cost: "12.34 USD", status: "partial; 1 pricing unavailable"},
 		{name: "mixed currencies", measures: UsageMeasures{RequestCount: 2, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed"}, cost: "not comparable", status: "mixed currencies"},
@@ -606,6 +608,138 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 				t.Fatalf("cost/status = %q/%q, want %q/%q", cost, status, tc.cost, tc.status)
 			}
 		})
+	}
+}
+
+func TestPricingCoverageIsIndependentOfReportGroupingAndMachineShape(t *testing.T) {
+	store := openTestStore(t)
+	date := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	if err := store.UpsertProject(Project{ID: "same-project", DisplayName: "Same project"}); err != nil {
+		t.Fatal(err)
+	}
+	first, second := testEvent("coverage-first"), testEvent("coverage-second")
+	for index, event := range []*UsageEvent{&first, &second} {
+		event.EventID = fmt.Sprintf("coverage-%d", index)
+		event.OccurredAt = date
+		event.Provider = "unlisted-provider"
+		event.RequestedModel = fmt.Sprintf("unlisted-model-%d", index)
+		event.ResolvedModel = event.RequestedModel
+		event.ProjectID = "same-project"
+		event.Usage = TokenUsage{InputTokens: 10}
+	}
+	if _, err := store.Append([]UsageEvent{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Query(UsageFilter{From: date.Add(-time.Hour), To: date.Add(time.Hour), GroupBy: []string{GroupProject}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || len(report.PricingCoverage) != 2 {
+		t.Fatalf("grouped rows/coverage = %d/%d, want 1/2", len(report.Rows), len(report.PricingCoverage))
+	}
+	var human bytes.Buffer
+	if err := WriteTable(&human, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"PRICING COVERAGE GAPS", "unlisted-provider / unlisted-model-0: 1 requests", "no public catalog rate (1)"} {
+		if !strings.Contains(human.String(), expected) {
+			t.Fatalf("human report missing %q: %s", expected, human.String())
+		}
+	}
+	var machine bytes.Buffer
+	if err := WriteJSON(&machine, report); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(machine.String(), "pricing_coverage") || strings.Contains(machine.String(), "PRICING COVERAGE GAPS") {
+		t.Fatalf("human-only coverage leaked into JSON: %s", machine.String())
+	}
+}
+
+func TestHumanPricingCoverageIsBoundedAndSanitized(t *testing.T) {
+	rows := make([]PricingCoverageRow, maxHumanPricingCoverageRows+2)
+	for index := range rows {
+		rows[index] = PricingCoverageRow{Provider: "provider\n\x1b", Model: fmt.Sprintf("model-%d", index), Requests: 1, Reasons: map[string]int64{"no_matching_rate": 1}}
+	}
+	var output bytes.Buffer
+	if err := WriteHumanPricingCoverage(&output, rows, 80); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(output.String(), "\t\r\x1b") || strings.Count(output.String(), "model-") != maxHumanPricingCoverageRows || !strings.Contains(output.String(), "and 2 more provider/model combinations") || !strings.Contains(output.String(), `provider\n\x1B`) {
+		t.Fatalf("coverage output is unbounded or unsafe: %q", output.String())
+	}
+}
+
+func TestHumanPricingCoverageWrapsAndExplainsEachGap(t *testing.T) {
+	coverage := []PricingCoverageRow{{
+		Provider: "anthropic",
+		Model:    strings.Repeat("界", 12),
+		Requests: 3,
+		Reasons: map[string]int64{
+			"no_matching_rate":        1,
+			"outside_effective_range": 1,
+			"billing_context_missing": 1,
+		},
+	}}
+	report := UsageReport{Summary: UsageMeasures{RequestCount: 3, UnknownCostRequests: 3}, PricingCoverage: coverage}
+	var output bytes.Buffer
+	if err := WriteTableWidth(&output, report, 80); err != nil {
+		t.Fatal(err)
+	}
+	for lineNo, line := range strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n") {
+		if width := runewidth.StringWidth(line); width > 80 {
+			t.Errorf("line %d has display width %d > 80: %q", lineNo+1, width, line)
+		}
+	}
+	for _, expected := range []string{
+		"no public catalog rate (1)",
+		"outside pricing dates (1)",
+		"billing context or rate",
+		"unavailable (1)",
+		"Review exact-model catalog coverage",
+		"Do not apply current prices retroactively",
+		"Check for a verified rate for the affected token category",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("coverage output missing %q: %s", expected, output.String())
+		}
+	}
+}
+
+func TestKnownModelMissingTokenCategoryRateHasAccurateGuidance(t *testing.T) {
+	store := openTestStore(t)
+	date := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	event := testEvent("known-model-missing-cache-write")
+	event.EventID = "known-model-missing-cache-write"
+	event.OccurredAt = date
+	event.Provider = "openai"
+	event.RequestedModel = "gpt-5-codex"
+	event.ResolvedModel = "gpt-5-codex"
+	event.Usage = TokenUsage{InputTokens: 12, CacheWriteTokens: 2}
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Query(UsageFilter{From: date.Add(-time.Minute), To: date.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.UnknownCostRequests != 1 || report.Summary.CostUnknownReason != "billing_context_missing" {
+		t.Fatalf("summary unknown count/reason = %d/%q", report.Summary.UnknownCostRequests, report.Summary.CostUnknownReason)
+	}
+	if len(report.PricingCoverage) != 1 || report.PricingCoverage[0].Categories[TokenCategoryCacheWrite] != 1 {
+		t.Fatalf("coverage did not identify missing cache-write pricing: %+v", report.PricingCoverage)
+	}
+	var output bytes.Buffer
+	if err := WriteTable(&output, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Affected category: cache-write (1)",
+		"Check for a verified rate for the affected token category",
+		"If rate selection needs billing evidence absent from the source",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("human report missing %q: %s", expected, output.String())
+		}
 	}
 }
 

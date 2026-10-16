@@ -122,14 +122,26 @@ type UsageRow struct {
 	UsageMeasures
 }
 
+// PricingCoverageRow identifies provider/model combinations whose estimates
+// are unavailable. It is used only by human reports; machine report schemas
+// remain unchanged.
+type PricingCoverageRow struct {
+	Provider   string
+	Model      string
+	Requests   int64
+	Reasons    map[string]int64
+	Categories map[string]int64
+}
+
 // UsageReport is the stable machine-readable report shape.
 type UsageReport struct {
-	From     time.Time     `json:"from"`
-	To       time.Time     `json:"to"`
-	Timezone string        `json:"timezone"`
-	Filters  UsageFilter   `json:"filters"`
-	Summary  UsageMeasures `json:"summary"`
-	Rows     []UsageRow    `json:"rows"`
+	From            time.Time            `json:"from"`
+	To              time.Time            `json:"to"`
+	Timezone        string               `json:"timezone"`
+	Filters         UsageFilter          `json:"filters"`
+	Summary         UsageMeasures        `json:"summary"`
+	Rows            []UsageRow           `json:"rows"`
+	PricingCoverage []PricingCoverageRow `json:"-"`
 }
 
 type reportEvent struct {
@@ -225,6 +237,7 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 	summary := reportAccumulator{sessions: map[string]struct{}{}}
 	grouped := map[string]*reportAccumulator{}
 	groupLabels := map[string]UsageRow{}
+	coverage := map[string]*PricingCoverageRow{}
 	for rows.Next() {
 		event, err := scanReportEvent(rows)
 		if err != nil {
@@ -237,6 +250,23 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 		}
 		if err := addMeasures(&summary, event, cost); err != nil {
 			return UsageReport{}, err
+		}
+		if cost.Status == "unknown" {
+			provider, model := event.Provider, event.ResolvedModel
+			if model == "" {
+				model = event.RequestedModel
+			}
+			key := provider + "\x00" + model
+			entry := coverage[key]
+			if entry == nil {
+				entry = &PricingCoverageRow{Provider: provider, Model: model, Reasons: map[string]int64{}, Categories: map[string]int64{}}
+				coverage[key] = entry
+			}
+			entry.Requests++
+			entry.Reasons[cost.Reason]++
+			for _, category := range cost.MissingCategories {
+				entry.Categories[category]++
+			}
 		}
 		if len(filter.GroupBy) == 0 {
 			continue
@@ -269,7 +299,17 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 		row.UsageMeasures = acc.UsageMeasures
 		resultRows = append(resultRows, row)
 	}
-	return UsageReport{From: filter.From, To: filter.To, Timezone: location.String(), Filters: filter, Summary: summary.UsageMeasures, Rows: resultRows}, nil
+	coverageRows := make([]PricingCoverageRow, 0, len(coverage))
+	for _, row := range coverage {
+		coverageRows = append(coverageRows, *row)
+	}
+	sort.Slice(coverageRows, func(i, j int) bool {
+		if coverageRows[i].Provider != coverageRows[j].Provider {
+			return coverageRows[i].Provider < coverageRows[j].Provider
+		}
+		return coverageRows[i].Model < coverageRows[j].Model
+	})
+	return UsageReport{From: filter.From, To: filter.To, Timezone: location.String(), Filters: filter, Summary: summary.UsageMeasures, Rows: resultRows, PricingCoverage: coverageRows}, nil
 }
 
 func scanReportEvent(rows *sql.Rows) (reportEvent, error) {
@@ -583,17 +623,164 @@ func WriteTableWidth(w io.Writer, report UsageReport, width int) error {
 
 	full := renderFullTable(headings, rows)
 	if width <= 0 || lineDisplayWidth(full) <= width {
-		_, err := w.Write(full)
-		return err
+		if _, err := w.Write(full); err != nil {
+			return err
+		}
+		return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
 	}
 
 	compact := renderCompactTable(dimCount, headings, rows)
 	if lineDisplayWidth(compact) <= width {
-		_, err := w.Write(compact)
-		return err
+		if _, err := w.Write(compact); err != nil {
+			return err
+		}
+		return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
 	}
 
-	_, err := w.Write(renderVerticalTable(headings, rows))
+	if _, err := w.Write(renderVerticalTable(headings, rows)); err != nil {
+		return err
+	}
+	return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
+}
+
+const maxHumanPricingCoverageRows = 8
+
+// WriteHumanPricingCoverage writes a bounded, sanitized explanation of
+// provider/model combinations whose estimates are unavailable.
+func WriteHumanPricingCoverage(w io.Writer, rows []PricingCoverageRow, width int) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		return err
+	}
+	if err := writeWrappedHumanLine(w, "PRICING COVERAGE GAPS (unpriced requests)", width, ""); err != nil {
+		return err
+	}
+	shown := len(rows)
+	if shown > maxHumanPricingCoverageRows {
+		shown = maxHumanPricingCoverageRows
+	}
+	for _, row := range rows[:shown] {
+		provider, model := formatHumanDimension(row.Provider), formatHumanDimension(row.Model)
+		if row.Provider == "" {
+			provider = "(unknown provider)"
+		}
+		if row.Model == "" {
+			model = "(unresolved model)"
+		}
+		reasons := make([]string, 0, len(row.Reasons))
+		for reason := range row.Reasons {
+			reasons = append(reasons, reason)
+		}
+		sort.Strings(reasons)
+		for _, reason := range reasons {
+			if err := writeWrappedHumanLine(w, fmt.Sprintf("%s / %s: %s requests; %s (%s)", provider, model, formatExactCount(row.Requests), humanPricingReason(reason), formatExactCount(row.Reasons[reason])), width, "  "); err != nil {
+				return err
+			}
+			if reason == "billing_context_missing" && len(row.Categories) > 0 {
+				categories := make([]string, 0, len(row.Categories))
+				for category := range row.Categories {
+					categories = append(categories, category)
+				}
+				sort.Strings(categories)
+				for _, category := range categories {
+					if err := writeWrappedHumanLine(w, fmt.Sprintf("Affected category: %s (%s)", category, formatExactCount(row.Categories[category])), width, "    "); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		remediations := make([]string, 0, len(reasons))
+		seenRemediations := make(map[string]struct{}, len(reasons))
+		for _, reason := range reasons {
+			remediation := humanPricingRemediation(reason)
+			if remediation == "" {
+				continue
+			}
+			if _, exists := seenRemediations[remediation]; exists {
+				continue
+			}
+			seenRemediations[remediation] = struct{}{}
+			remediations = append(remediations, remediation)
+		}
+		for _, remediation := range remediations {
+			if err := writeWrappedHumanLine(w, "Next: "+remediation, width, "    "); err != nil {
+				return err
+			}
+		}
+	}
+	if len(rows) > shown {
+		if err := writeWrappedHumanLine(w, fmt.Sprintf("... and %s more provider/model combinations", formatExactCount(int64(len(rows)-shown))), width, "  "); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func humanPricingRemediation(reason string) string {
+	switch reason {
+	case "no_matching_rate":
+		return "Review exact-model catalog coverage and add only an official-source, evidence-backed rate."
+	case "outside_effective_range":
+		return "Do not apply current prices retroactively; use a verified rate for the event dates or keep costs unknown."
+	case "billing_context_missing":
+		return "Check for a verified rate for the affected token category. If rate selection needs billing evidence absent from the source, keep the estimate unknown until that evidence is available."
+	case "model_unresolved":
+		return "Check model extraction with a sanitized fixture; do not guess a model alias."
+	case "ambiguous_pricing_rule":
+		return "Resolve overlapping rules before estimating; ambiguous matches remain unknown."
+	case "currency_conflict":
+		return "Resolve the conflicting rule currencies before estimating."
+	case "arithmetic_overflow":
+		return "Reduce the report range or investigate the out-of-range usage values."
+	default:
+		return "Keep unsupported or ambiguous usage unknown until its pricing evidence is verified."
+	}
+}
+
+func writeWrappedHumanLine(w io.Writer, text string, width int, indent string) error {
+	text = FormatHumanText(text)
+	prefix := indent
+	lineWidth := runewidth.StringWidth(prefix)
+	if _, err := io.WriteString(w, prefix); err != nil {
+		return err
+	}
+	for _, word := range strings.Fields(text) {
+		wordWidth := runewidth.StringWidth(word)
+		if width > 0 && lineWidth > runewidth.StringWidth(prefix) && lineWidth+1+wordWidth > width {
+			if _, err := io.WriteString(w, "\n"+indent); err != nil {
+				return err
+			}
+			lineWidth = runewidth.StringWidth(indent)
+		} else if lineWidth > runewidth.StringWidth(prefix) {
+			if _, err := io.WriteString(w, " "); err != nil {
+				return err
+			}
+			lineWidth++
+		}
+		if width > 0 && wordWidth > width-lineWidth {
+			for _, r := range word {
+				runeWidth := runewidth.RuneWidth(r)
+				if lineWidth > runewidth.StringWidth(indent) && lineWidth+runeWidth > width {
+					if _, err := io.WriteString(w, "\n"+indent); err != nil {
+						return err
+					}
+					lineWidth = runewidth.StringWidth(indent)
+				}
+				if _, err := fmt.Fprint(w, string(r)); err != nil {
+					return err
+				}
+				lineWidth += runeWidth
+			}
+		} else {
+			if _, err := io.WriteString(w, word); err != nil {
+				return err
+			}
+			lineWidth += wordWidth
+		}
+	}
+	_, err := io.WriteString(w, "\n")
 	return err
 }
 

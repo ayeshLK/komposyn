@@ -45,3 +45,22 @@ Bundled values describe public API list-price equivalents, not invoices. They
 exclude taxes, credits, negotiated pricing, subscription entitlements, and
 provider resellers. If the source data lacks a required billing modifier, keep
 the result unknown and explain the missing context instead of guessing.
+
+Human reports translate unavailable-cost reason codes into explanatory labels
+and include a bounded provider/model breakdown of unpriced requests, regardless
+of the selected report grouping. JSON reason codes and CSV columns remain the
+machine-readable contract. A missing public catalog match means no reviewed
+bundled rate applies; it does not indicate a parser failure or justify a
+fallback price. The library exposes `Store.UpsertPricing` for applications
+that need custom rates; `komposyn-lg` does not currently provide a custom-rate
+editor.
+
+Human reports give reason-specific next steps. Missing model coverage calls
+for checking the exact model and adding a rate only with official evidence.
+An out-of-range event needs a verified rate for its event date; current prices
+are not applied retroactively. A missing category rate requires verified
+pricing for that category. Where selecting a rate depends on billing context,
+the estimate stays unknown until the source provides enough evidence. Ambiguous
+rules and currency conflicts must be resolved before estimating. The coverage
+appendix wraps to the available terminal width and shows at most eight
+provider/model pairs.
