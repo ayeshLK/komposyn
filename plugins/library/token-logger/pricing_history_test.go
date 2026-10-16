@@ -42,6 +42,10 @@ func TestSchemaTwelveClaudeHistoryKeepsExistingEventsAndCursors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			sourceIdentity, err := collectorSourceForPath(sourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
 			sourceID := "claude-file-" + digest([]byte(absoluteSource))
 			fingerprint := digest(originalBytes)
 			db, err := sql.Open("sqlite", databasePath)
@@ -87,7 +91,7 @@ func TestSchemaTwelveClaudeHistoryKeepsExistingEventsAndCursors(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := db.Exec(`INSERT INTO collector_source_identities(canonical_key, adapter, source_id, created_at)
-				VALUES (?, 'claude', ?, '2026-10-16T12:00:00.000000000Z')`, digest([]byte(absoluteSource)), sourceID); err != nil {
+				VALUES (?, 'claude', ?, '2026-10-16T12:00:00.000000000Z')`, sourceIdentity.CanonicalKey, sourceID); err != nil {
 				db.Close()
 				t.Fatal(err)
 			}
@@ -115,7 +119,7 @@ func TestSchemaTwelveClaudeHistoryKeepsExistingEventsAndCursors(t *testing.T) {
 				t.Fatalf("custom pricing rule count = %d, err = %v; want 1", latest, err)
 			}
 			var identitySourceID string
-			if err := store.db.QueryRow("SELECT source_id FROM collector_source_identities WHERE canonical_key = ? AND adapter = 'claude'", digest([]byte(absoluteSource))).Scan(&identitySourceID); err != nil || identitySourceID != sourceID {
+			if err := store.db.QueryRow("SELECT source_id FROM collector_source_identities WHERE canonical_key = ? AND adapter = 'claude'", sourceIdentity.CanonicalKey).Scan(&identitySourceID); err != nil || identitySourceID != sourceID {
 				t.Fatalf("historical source identity = %q, err = %v; want %q", identitySourceID, err, sourceID)
 			}
 			assertHistoricalClaudeEvent(t, store, old.EventID, old.IngestionKey, old.ProjectID, old.SessionID)
