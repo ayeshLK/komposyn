@@ -11,6 +11,19 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.4.0](https://github.com/ayeshLK/komposyn/compare/v0.3.0...v0.4.0) (2026-10-16)
+
+
+### Features
+
+* add persistent multi-source background watch ([#95](https://github.com/ayeshLK/komposyn/issues/95)) ([c3cf5ab](https://github.com/ayeshLK/komposyn/commit/c3cf5abc24ea7c6872c644c202e460f1f1bd64ff))
+
+
+### Bug Fixes
+
+* accept Claude fallback credit metadata ([#99](https://github.com/ayeshLK/komposyn/issues/99)) ([75dfb21](https://github.com/ayeshLK/komposyn/commit/75dfb21cc4d43dc1e07b3941e23e264c5898f67f))
+* **token-logger:** compact resource token counts ([#97](https://github.com/ayeshLK/komposyn/issues/97)) ([42a5d6e](https://github.com/ayeshLK/komposyn/commit/42a5d6e0554d2045d70a5bbd71d2fed722d5a809))
+
 ## [0.3.0](https://github.com/ayeshLK/komposyn/compare/v0.2.2...v0.3.0) (2026-10-15)
 
 
