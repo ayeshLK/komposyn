@@ -198,7 +198,7 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 		requested_model, resolved_model, input_tokens, output_tokens, cache_read_tokens,
 		cache_write_tokens, reasoning_tokens, provider_cost_amount_micros,
 		provider_cost_currency, cost_status, cost_amount_micros, cost_currency
-		, billing_context_json FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?`
+		, billing_context_json, cache_write_5m_tokens, cache_write_1h_tokens FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?`
 	args := []any{formatStoredTime(filter.From), formatStoredTime(filter.To)}
 	if filter.ProjectID != "" {
 		query += " AND project_id = ?"
@@ -324,7 +324,7 @@ func scanReportEvent(rows *sql.Rows) (reportEvent, error) {
 		&event.RequestedModel, &event.ResolvedModel, &event.Usage.InputTokens, &event.Usage.OutputTokens,
 		&event.Usage.CacheReadTokens, &event.Usage.CacheWriteTokens, &event.Usage.ReasoningTokens,
 		&providerAmount, &providerCurrency, &event.RequestedCostStatus, &reportedFallback,
-		&event.ReportedCurrency, &billingContextJSON); err != nil {
+		&event.ReportedCurrency, &billingContextJSON, &event.Usage.CacheWrite5mTokens, &event.Usage.CacheWrite1hTokens); err != nil {
 		return reportEvent{}, err
 	}
 	if billingContextJSON.Valid && billingContextJSON.String != "" {

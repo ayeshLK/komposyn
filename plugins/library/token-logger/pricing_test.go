@@ -30,8 +30,8 @@ func TestBundledPricingCatalogLoadsIdempotently(t *testing.T) {
 	if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE provider_name = 'anthropic' AND catalog_entry_id IS NOT NULL").Scan(&anthropicRates); err != nil {
 		t.Fatal(err)
 	}
-	if anthropicRates != 0 {
-		t.Fatalf("Anthropic rates loaded without billing-context support: %d", anthropicRates)
+	if anthropicRates != 50 {
+		t.Fatalf("bundled Anthropic rates = %d, want the reviewed Opus/Sonnet context matrix of 50 entries", anthropicRates)
 	}
 	catalog, err := store.pricingCatalog()
 	if err != nil {
@@ -409,7 +409,7 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 }
 
-func TestMigrationsOneThroughTwelvePreserveLegacyData(t *testing.T) {
+func TestMigrationsOneThroughFourteenPreserveLegacyData(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -458,8 +458,8 @@ func TestMigrationsOneThroughTwelvePreserveLegacyData(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 12 || latestMigration != 12 {
-		t.Fatalf("migration history = %d/%d, want all migrations 1 through 12", migrationCount, latestMigration)
+	if migrationCount != 14 || latestMigration != 14 {
+		t.Fatalf("migration history = %d/%d, want all migrations 1 through 14", migrationCount, latestMigration)
 	}
 	var identityTable string
 	if err := db.QueryRow("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'collector_source_identities'").Scan(&identityTable); err != nil {

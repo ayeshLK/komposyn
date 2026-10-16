@@ -29,7 +29,7 @@ import (
 // at link time.
 var Version = "0.0.0-dev"
 
-const currentSchemaVersion = 12
+const currentSchemaVersion = 14
 
 const (
 	BillingEvidenceProviderResponse = "provider_response"
@@ -48,10 +48,11 @@ type BillingContextValue struct {
 type BillingContext struct {
 	ServiceTier *BillingContextValue `json:"service_tier,omitempty"`
 	Region      *BillingContextValue `json:"region,omitempty"`
+	Speed       *BillingContextValue `json:"speed,omitempty"`
 }
 
 func (c BillingContext) validate() error {
-	for name, value := range map[string]*BillingContextValue{"service_tier": c.ServiceTier, "region": c.Region} {
+	for name, value := range map[string]*BillingContextValue{"service_tier": c.ServiceTier, "region": c.Region, "speed": c.Speed} {
 		if value == nil {
 			continue
 		}
@@ -70,20 +71,24 @@ func (c BillingContext) validate() error {
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.
 type TokenUsage struct {
-	InputTokens      int64 `json:"input_tokens"`
-	OutputTokens     int64 `json:"output_tokens"`
-	CacheReadTokens  int64 `json:"cache_read_tokens"`
-	CacheWriteTokens int64 `json:"cache_write_tokens"`
-	ReasoningTokens  int64 `json:"reasoning_tokens"`
+	InputTokens        int64 `json:"input_tokens"`
+	OutputTokens       int64 `json:"output_tokens"`
+	CacheReadTokens    int64 `json:"cache_read_tokens"`
+	CacheWriteTokens   int64 `json:"cache_write_tokens"`
+	CacheWrite5mTokens int64 `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens int64 `json:"cache_write_1h_tokens,omitempty"`
+	ReasoningTokens    int64 `json:"reasoning_tokens"`
 }
 
 func (u TokenUsage) validate() error {
 	counts := map[string]int64{
-		"input_tokens":       u.InputTokens,
-		"output_tokens":      u.OutputTokens,
-		"cache_read_tokens":  u.CacheReadTokens,
-		"cache_write_tokens": u.CacheWriteTokens,
-		"reasoning_tokens":   u.ReasoningTokens,
+		"input_tokens":          u.InputTokens,
+		"output_tokens":         u.OutputTokens,
+		"cache_read_tokens":     u.CacheReadTokens,
+		"cache_write_tokens":    u.CacheWriteTokens,
+		"cache_write_5m_tokens": u.CacheWrite5mTokens,
+		"cache_write_1h_tokens": u.CacheWrite1hTokens,
+		"reasoning_tokens":      u.ReasoningTokens,
 	}
 	for name, count := range counts {
 		if count < 0 {
@@ -92,6 +97,9 @@ func (u TokenUsage) validate() error {
 	}
 	if u.CacheReadTokens+u.CacheWriteTokens > u.InputTokens {
 		return errors.New("cache token counts must not exceed input tokens")
+	}
+	if u.CacheWrite5mTokens > u.CacheWriteTokens || u.CacheWrite1hTokens > u.CacheWriteTokens-u.CacheWrite5mTokens {
+		return errors.New("cache write duration counts must not exceed total cache writes")
 	}
 	if u.ReasoningTokens > u.OutputTokens {
 		return errors.New("reasoning tokens must not exceed output tokens")

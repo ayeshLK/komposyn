@@ -123,12 +123,13 @@ billing modifiers. Both reported and estimated amounts are retained when both
 exist. The bundled catalog is loaded locally; normal import and reporting make
 no pricing network requests.
 
-The initial reviewed catalog currently covers the exact `gpt-5-codex` API model.
-Claude events remain unknown until the adapter can establish billing context.
-Unsupported models, missing categories (including cache-write duration where
-required), and events outside a known effective interval remain unknown. JSON/CSV include unknown
-reason and per-reason counts, catalog version/source, matched model
-selector/effective interval, and separate reported and estimated values.
+The reviewed catalog covers exact OpenAI Codex models and Claude Opus 5.5 and
+Sonnet 5.5 API models. Claude estimates require observed service tier, speed,
+inference geography, and cache-write duration splits when cache writes occur.
+Unsupported models, missing categories or evidence, aggregate-only cache-write
+counts, and events outside a known effective interval remain unknown. JSON/CSV
+include unknown reason and per-reason counts, catalog version/source, matched
+model selector/effective interval, and separate reported and estimated values.
 Catalog entries and review dates are maintained in
 `plugins/library/token-logger/pricing-catalog.json`; update them only in a
 reviewed repository change against the linked official provider documentation.
