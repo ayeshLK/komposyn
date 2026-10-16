@@ -185,6 +185,10 @@ change it. Use `watch foreground add` for a literal path named `add` (and the
 same pattern for other lifecycle words). Use Ctrl-C or SIGTERM to stop it. The
 collector records health and sanitized diagnostics locally; it continues
 polling after an individual source failure.
+Foreground collection owns the same per-data-directory lease as background and
+embedded collection, appears in `watch status`, and can be stopped with
+`watch stop` from another terminal. A second collector is rejected while that
+lease is healthy.
 Normal ignores and unchanged snapshots do not degrade health. A final partial
 record is visible as pending but remains healthy. Unsupported usage, malformed
 records, and failed sources degrade health; repeated polls deduplicate their

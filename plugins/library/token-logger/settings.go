@@ -52,6 +52,9 @@ func LoadSettings(path, dataDir string) (Settings, error) {
 	if err != nil {
 		return Settings{}, fmt.Errorf("read settings: %w", err)
 	}
+	// Leave the newer field unset while decoding an existing file so a legacy
+	// poll_interval_seconds value is not shadowed by the current default.
+	settings.PollIntervalMillis = 0
 	if err := json.Unmarshal(contents, &settings); err != nil {
 		return Settings{}, fmt.Errorf("parse settings: %w", err)
 	}

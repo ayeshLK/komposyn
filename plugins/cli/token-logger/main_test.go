@@ -44,6 +44,22 @@ type cancelOnWriteBuffer struct {
 	cancel context.CancelFunc
 }
 
+type blockingWatchPoller struct {
+	started      chan struct{}
+	laterStarted bool
+}
+
+func (poller *blockingWatchPoller) PollOnceContext(ctx context.Context) (tokenlogger.ImportResult, error) {
+	close(poller.started)
+	select {
+	case <-ctx.Done():
+		return tokenlogger.ImportResult{}, ctx.Err()
+	case <-time.After(5 * time.Second):
+		poller.laterStarted = true
+		return tokenlogger.ImportResult{}, nil
+	}
+}
+
 func (buffer *cancelOnWriteBuffer) Write(value []byte) (int, error) {
 	written, err := buffer.Buffer.Write(value)
 	if strings.Contains(string(value), buffer.marker) {
@@ -150,6 +166,76 @@ func TestWatchSubcommandsRejectIrrelevantOptions(t *testing.T) {
 	}
 }
 
+func TestForegroundWatchRejectsActiveCollectorLease(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireCollectorLease("background", 1, tokenlogger.Version, "background", time.Second, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCollectorReady("background"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl")
+	var stdout, stderr bytes.Buffer
+	code := runWatchWithContext([]string{"foreground", fixture, "--data-dir", dataDir}, &stdout, &stderr, context.Background())
+	if code != 2 || !strings.Contains(stderr.String(), "another collector is already active") {
+		t.Fatalf("foreground code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	store, err = tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	report, err := store.Query(tokenlogger.UsageFilter{From: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil || report.Summary.RequestCount != 0 {
+		t.Fatalf("foreground imported alongside active collector: summary=%+v err=%v", report.Summary, err)
+	}
+}
+
+func TestPollWithLeaseHeartbeatHonorsStopRequest(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.AcquireCollectorLease("poll-stop", 1, tokenlogger.Version, "background", time.Second, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCollectorReady("poll-stop"); err != nil {
+		t.Fatal(err)
+	}
+	poller := &blockingWatchPoller{started: make(chan struct{})}
+	type pollResult struct {
+		pollErr      error
+		heartbeatErr error
+		stop         bool
+	}
+	done := make(chan pollResult, 1)
+	go func() {
+		_, pollErr, heartbeatErr, stop := pollWithLeaseHeartbeat(context.Background(), store, "poll-stop", poller, 15*time.Second)
+		done <- pollResult{pollErr: pollErr, heartbeatErr: heartbeatErr, stop: stop}
+	}()
+	<-poller.started
+	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
+		t.Fatalf("request stop=%t err=%v", requested, err)
+	}
+	select {
+	case result := <-done:
+		if !result.stop || result.heartbeatErr != nil || !errors.Is(result.pollErr, context.Canceled) || poller.laterStarted {
+			t.Fatalf("poll result=%+v later_started=%t", result, poller.laterStarted)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stop request did not cancel the active poll")
+	}
+}
+
 func TestWatchServeReloadsRegistryAndStopsCooperatively(t *testing.T) {
 	dataDir := t.TempDir()
 	codex, err := filepath.Abs(filepath.Join("..", "..", "library", "token-logger", "testdata", "codex"))
@@ -229,6 +315,61 @@ func TestWatchServeReloadsRegistryAndStopsCooperatively(t *testing.T) {
 	status, err := store.CollectorRuntimeStatus(time.Second)
 	if err != nil || status.State != "stopped" {
 		t.Fatalf("stopped status=%+v err=%v", status, err)
+	}
+}
+
+func TestRegisteredSourceHealthUsesCollectorOutcomes(t *testing.T) {
+	dataDir := t.TempDir()
+	healthyRoot := t.TempDir()
+	degradedRoot := t.TempDir()
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(healthyRoot, "normal.jsonl"), fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	malformed := append(append([]byte(nil), fixture...), []byte("{not-json}\n")...)
+	if err := os.WriteFile(filepath.Join(degradedRoot, "malformed.jsonl"), malformed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, root := range []string{healthyRoot, degradedRoot} {
+		if _, err := store.RegisterCollectorSource(root, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sources, err := store.ListCollectorSources(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err := tokenlogger.NewCollector(store, []string{healthyRoot, degradedRoot}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.PollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRegisteredSourceHealth(store, sources, collector.Health()); err != nil {
+		t.Fatal(err)
+	}
+	sources, err = store.ListCollectorSources(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusByPath := map[string]tokenlogger.RegisteredSource{}
+	for _, source := range sources {
+		statusByPath[source.Path] = source
+	}
+	if source := statusByPath[healthyRoot]; source.Status != "healthy" || source.LastError != "" {
+		t.Fatalf("healthy source=%+v", source)
+	}
+	if source := statusByPath[degradedRoot]; source.Status != "degraded" || !strings.Contains(source.LastError, "malformed_record=1") {
+		t.Fatalf("degraded source=%+v", source)
 	}
 }
 

@@ -181,6 +181,10 @@ can be replaced transactionally by the next start.
 
 Foreground forms poll once immediately and continue until interrupted.
 Explicit roots are ephemeral; no-root `foreground` uses the enabled registry.
+Foreground, background, and embedded REPL collectors share the same singleton
+lease for a data directory. Foreground collection appears in `watch status`,
+can be stopped cooperatively from another terminal, and refuses to start while
+another collector owns the lease.
 Lifecycle words are reserved, so use `watch foreground add` to watch a literal
 path named `add`. The default interval is
 five seconds. Poll output uses the same typed outcomes as `import`. Ignored and

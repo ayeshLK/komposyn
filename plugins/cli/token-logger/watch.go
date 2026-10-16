@@ -542,12 +542,14 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 		return 2
 	}
 	defer store.Close()
+	var registeredSources []tokenlogger.RegisteredSource
 	if len(roots) == 0 && registryFallback {
 		sources, listErr := store.ListCollectorSources(true)
 		if listErr != nil {
 			fmt.Fprintf(stderr, "list enabled sources: %v\n", listErr)
 			return 2
 		}
+		registeredSources = sources
 		for _, source := range sources {
 			roots = append(roots, source.Path)
 		}
@@ -560,28 +562,81 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 	if options.intervalSet {
 		interval = options.interval
 	}
+	instanceID, err := tokenlogger.NewCollectorInstanceID()
+	if err != nil {
+		fmt.Fprintf(stderr, "create collector identity: %v\n", err)
+		return 2
+	}
+	recovered, err := store.AcquireCollectorLease(instanceID, os.Getpid(), tokenlogger.Version, "foreground", interval, staleWindow(interval))
+	if errors.Is(err, tokenlogger.ErrCollectorActive) {
+		fmt.Fprintln(stderr, "another collector is already active for this data directory; stop it before starting foreground watch")
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "acquire foreground collector lease: %v\n", err)
+		return 2
+	}
+	terminalState, terminalError := "stopped", ""
+	defer func() { _ = store.ReleaseCollectorLease(instanceID, terminalState, terminalError) }()
+	if err := store.MarkCollectorReady(instanceID); err != nil {
+		terminalState, terminalError = "failed", err.Error()
+		fmt.Fprintf(stderr, "publish foreground collector readiness: %v\n", err)
+		return 2
+	}
 	collector, err := tokenlogger.NewCollector(store, roots, interval)
 	if err != nil {
+		terminalState, terminalError = "failed", err.Error()
 		fmt.Fprintf(stderr, "create collector: %v\n", err)
 		return 2
 	}
-	fmt.Fprintf(stdout, "watching %d source root(s) every %s; press Ctrl-C to stop\n", len(roots), interval)
-	result, pollErr := collector.PollOnceContext(ctx)
-	writeWatchPoll(stdout, result, collector.Health())
-	if pollErr != nil {
-		fmt.Fprintf(stderr, "initial collector poll: %v\n", pollErr)
-	}
-	if err := collector.RunWithResults(ctx, func(result tokenlogger.ImportResult, pollErr error) {
+	fmt.Fprintf(stdout, "watching %d source root(s) every %s instance=%s recovered_stale=%t; press Ctrl-C to stop\n", len(roots), interval, instanceID, recovered)
+	for {
+		if err := store.BeginCollectorPoll(instanceID, len(roots)); err != nil {
+			terminalState, terminalError = "failed", err.Error()
+			fmt.Fprintf(stderr, "begin foreground collector poll: %v\n", err)
+			return 2
+		}
+		result, pollErr, heartbeatErr, stop := pollWithLeaseHeartbeat(ctx, store, instanceID, collector, staleWindow(interval))
+		health := collector.Health()
+		if err := store.CompleteCollectorPoll(instanceID, result, health, pollErr); err != nil {
+			terminalState, terminalError = "failed", err.Error()
+			fmt.Fprintf(stderr, "complete foreground collector poll: %v\n", err)
+			return 2
+		}
+		if err := updateRegisteredSourceHealth(store, registeredSources, health); err != nil {
+			terminalState, terminalError = "failed", err.Error()
+			fmt.Fprintf(stderr, "persist source health: %v\n", err)
+			return 2
+		}
 		writeWatchPoll(stdout, result, collector.Health())
-		if pollErr != nil {
+		if pollErr != nil && !errors.Is(pollErr, context.Canceled) && !errors.Is(pollErr, context.DeadlineExceeded) {
 			fmt.Fprintf(stderr, "collector poll: %v\n", pollErr)
 		}
-	}); err != nil {
-		fmt.Fprintf(stderr, "collector stopped: %v\n", err)
-		return 2
+		if heartbeatErr != nil {
+			terminalState, terminalError = "failed", heartbeatErr.Error()
+			fmt.Fprintf(stderr, "foreground collector heartbeat: %v\n", heartbeatErr)
+			return 2
+		}
+		if stop || ctx.Err() != nil {
+			writeStoppedWatchSummary(stdout, collector.Health())
+			return 0
+		}
+		stop, heartbeatErr = waitWithLeaseHeartbeat(ctx, store, instanceID, interval, staleWindow(interval))
+		if heartbeatErr != nil {
+			terminalState, terminalError = "failed", heartbeatErr.Error()
+			fmt.Fprintf(stderr, "foreground collector heartbeat: %v\n", heartbeatErr)
+			return 2
+		}
+		if stop || ctx.Err() != nil {
+			writeStoppedWatchSummary(stdout, collector.Health())
+			return 0
+		}
 	}
-	writeWatchSummary(stdout, collector.Health())
-	return 0
+}
+
+func writeStoppedWatchSummary(output io.Writer, health tokenlogger.CollectorHealth) {
+	health.Lifecycle = "stopped"
+	writeWatchSummary(output, health)
 }
 
 func runWatchServe(args []string, stderr io.Writer, ctx context.Context) int {
@@ -633,11 +688,6 @@ func runWatchServe(args []string, stderr io.Writer, ctx context.Context) int {
 		roots := make([]string, 0, len(sources))
 		for _, source := range sources {
 			roots = append(roots, source.Path)
-			status, message := "healthy", ""
-			if _, statErr := os.Stat(source.Path); statErr != nil {
-				status, message = "missing", statErr.Error()
-			}
-			_ = store.UpdateCollectorSourceHealth(source.ID, status, message)
 		}
 		if err := store.BeginCollectorPoll(options.instanceID, len(sources)); err != nil {
 			terminalState, terminalError = "failed", err.Error()
@@ -648,57 +698,61 @@ func runWatchServe(args []string, stderr io.Writer, ctx context.Context) int {
 			terminalState, terminalError = "failed", err.Error()
 			return 2
 		}
-		result, pollErr, heartbeatErr := pollWithLeaseHeartbeat(store, options.instanceID, collector, staleWindow(options.interval))
+		result, pollErr, heartbeatErr, stop := pollWithLeaseHeartbeat(ctx, store, options.instanceID, collector, staleWindow(options.interval))
 		if heartbeatErr != nil {
 			terminalState, terminalError = "failed", heartbeatErr.Error()
 			return 2
 		}
-		if err := store.CompleteCollectorPoll(options.instanceID, result, collector.Health(), pollErr); err != nil {
+		health := collector.Health()
+		if err := store.CompleteCollectorPoll(options.instanceID, result, health, pollErr); err != nil {
 			terminalState, terminalError = "failed", err.Error()
 			return 2
 		}
-		waitUntil := time.Now().Add(options.interval)
-		for time.Now().Before(waitUntil) {
-			remaining := time.Until(waitUntil)
-			delay := time.Second
-			if remaining < delay {
-				delay = remaining
-			}
-			select {
-			case <-ctx.Done():
-				return 0
-			case <-time.After(delay):
-			}
-			stop, heartbeatErr = store.HeartbeatCollector(options.instanceID)
-			if heartbeatErr != nil {
-				terminalState, terminalError = "failed", heartbeatErr.Error()
-				return 2
-			}
-			if stop {
-				return 0
-			}
+		if err := updateRegisteredSourceHealth(store, sources, health); err != nil {
+			terminalState, terminalError = "failed", err.Error()
+			return 2
+		}
+		if stop || ctx.Err() != nil {
+			return 0
+		}
+		stop, heartbeatErr = waitWithLeaseHeartbeat(ctx, store, options.instanceID, options.interval, staleWindow(options.interval))
+		if heartbeatErr != nil {
+			terminalState, terminalError = "failed", heartbeatErr.Error()
+			return 2
+		}
+		if stop || ctx.Err() != nil {
+			return 0
 		}
 	}
 }
 
-func pollWithLeaseHeartbeat(store *tokenlogger.Store, instanceID string, collector *tokenlogger.Collector, staleAfter time.Duration) (tokenlogger.ImportResult, error, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+type watchPoller interface {
+	PollOnceContext(context.Context) (tokenlogger.ImportResult, error)
+}
+
+type leaseHeartbeatResult struct {
+	stop bool
+	err  error
+}
+
+func pollWithLeaseHeartbeat(parent context.Context, store *tokenlogger.Store, instanceID string, collector watchPoller, staleAfter time.Duration) (tokenlogger.ImportResult, error, error, bool) {
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	interval := leaseHeartbeatInterval(staleAfter)
-	done := make(chan error, 1)
+	done := make(chan leaseHeartbeatResult, 1)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
-				done <- nil
+				done <- leaseHeartbeatResult{}
 				return
 			case <-ticker.C:
-				_, err := store.HeartbeatCollector(instanceID)
-				if err != nil {
+				stop, err := store.HeartbeatCollector(instanceID)
+				if err != nil || stop {
 					cancel()
-					done <- err
+					done <- leaseHeartbeatResult{stop: stop, err: err}
 					return
 				}
 			}
@@ -706,14 +760,49 @@ func pollWithLeaseHeartbeat(store *tokenlogger.Store, instanceID string, collect
 	}()
 	result, pollErr := collector.PollOnceContext(ctx)
 	cancel()
-	heartbeatErr := <-done
-	return result, pollErr, heartbeatErr
+	heartbeat := <-done
+	return result, pollErr, heartbeat.err, heartbeat.stop
+}
+
+func waitWithLeaseHeartbeat(ctx context.Context, store *tokenlogger.Store, instanceID string, wait, staleAfter time.Duration) (bool, error) {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	ticker := time.NewTicker(leaseHeartbeatInterval(staleAfter))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, nil
+		case <-timer.C:
+			return false, nil
+		case <-ticker.C:
+			stop, err := store.HeartbeatCollector(instanceID)
+			if err != nil || stop {
+				return stop, err
+			}
+		}
+	}
+}
+
+func updateRegisteredSourceHealth(store *tokenlogger.Store, sources []tokenlogger.RegisteredSource, health tokenlogger.CollectorHealth) error {
+	for _, source := range sources {
+		root, ok := health.Roots[source.Path]
+		if !ok {
+			continue
+		}
+		if err := store.UpdateCollectorSourceHealth(source.ID, root.Status, root.LastError); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func leaseHeartbeatInterval(staleAfter time.Duration) time.Duration {
 	interval := staleAfter / 3
-	if interval > 5*time.Second {
-		interval = 5 * time.Second
+	// Keep cooperative stop latency comfortably below the default ten-second
+	// CLI timeout even when the stale window is large.
+	if interval > time.Second {
+		interval = time.Second
 	}
 	if interval < time.Second {
 		interval = time.Second
