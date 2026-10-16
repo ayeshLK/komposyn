@@ -353,6 +353,91 @@ func TestRegistryForegroundReloadsSourcesBeforeEachPoll(t *testing.T) {
 	}
 }
 
+func TestRegistryForegroundSummaryAccumulatesAcrossReloadedCollectors(t *testing.T) {
+	dataDir := t.TempDir()
+	root := filepath.Join(t.TempDir(), "registered")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterCollectorSource(root, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(root); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		done <- runWatchWithContext([]string{"foreground", "--interval", "20ms", "--data-dir", dataDir}, &stdout, &stderr, ctx)
+	}()
+	store, err = tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	waitForRuntime := func(description string, condition func(tokenlogger.CollectorRuntimeStatus) bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			status, statusErr := store.CollectorRuntimeStatus(time.Second)
+			if statusErr == nil && condition(status) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+		t.Fatalf("timed out waiting for %s; stderr=%q output=%q", description, stderr.String(), stdout.String())
+	}
+	waitForRuntime("missing-root failure", func(status tokenlogger.CollectorRuntimeStatus) bool {
+		return status.Outcomes.FailedSource > 0
+	})
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "normal.jsonl"), fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForRuntime("successful import and unchanged follow-up", func(status tokenlogger.CollectorRuntimeStatus) bool {
+		return status.Imported == 2 && status.Outcomes.FailedSource > 0 && status.Outcomes.UnchangedSnapshot > 0
+	})
+	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
+		t.Fatalf("request stop=%t err=%v", requested, err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("foreground code=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("registry-backed foreground did not stop")
+	}
+	output := stdout.String()
+	index := strings.LastIndex(output, "collector stopped:")
+	if index < 0 {
+		t.Fatalf("missing stopped summary: %q", output)
+	}
+	summary := output[index:]
+	for _, expected := range []string{"imported=2", "failed_source=1", "run_complete=false"} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("stopped summary omitted %q: %q", expected, summary)
+		}
+	}
+}
+
 func TestWatchServeReloadsRegistryAndStopsCooperatively(t *testing.T) {
 	dataDir := t.TempDir()
 	codex, err := filepath.Abs(filepath.Join("..", "..", "library", "token-logger", "testdata", "codex"))
@@ -684,6 +769,29 @@ func TestWatchInterruptedStopNeverClaimsComplete(t *testing.T) {
 	})
 	if !strings.Contains(output.String(), "interrupted=true run_complete=false") {
 		t.Fatalf("interrupted watch claimed completion: %q", output.String())
+	}
+}
+
+func TestAccumulateWatchHealthPreservesRunTotalsAndInterruptedState(t *testing.T) {
+	run := tokenlogger.CollectorHealth{
+		Imported:    2,
+		Duplicates:  1,
+		Outcomes:    tokenlogger.OutcomeCounts{FailedSource: 1},
+		Interrupted: true,
+		Sources:     3,
+	}
+	result := tokenlogger.ImportResult{
+		Receipt:  tokenlogger.Receipt{Imported: 4, Duplicates: 2},
+		Outcomes: tokenlogger.OutcomeCounts{UnchangedSnapshot: 1},
+	}
+	latest := tokenlogger.CollectorHealth{Status: "healthy", Sources: 1}
+
+	got := accumulateWatchHealth(run, result, latest)
+	if got.Imported != 6 || got.Duplicates != 3 || got.Outcomes.FailedSource != 1 || got.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("cumulative health=%+v", got)
+	}
+	if !got.Interrupted || got.LatestInterrupted || got.Status != "healthy" || got.Sources != 1 {
+		t.Fatalf("sticky/latest health=%+v", got)
 	}
 }
 

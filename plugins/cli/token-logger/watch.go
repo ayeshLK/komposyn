@@ -589,6 +589,7 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 	}
 	fmt.Fprintf(stdout, "watching %d source root(s) every %s instance=%s recovered_stale=%t; press Ctrl-C to stop\n", len(roots), interval, instanceID, recovered)
 	completedPoll := false
+	runHealth := collector.Health()
 	for {
 		stop, heartbeatErr := store.HeartbeatCollector(instanceID)
 		if heartbeatErr != nil {
@@ -597,7 +598,7 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 			return 2
 		}
 		if stop || (ctx.Err() != nil && completedPoll) {
-			writeStoppedWatchSummary(stdout, collector.Health())
+			writeStoppedWatchSummary(stdout, runHealth)
 			return 0
 		}
 		if registryBacked {
@@ -626,12 +627,13 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 			return 2
 		}
 		if stop || (ctx.Err() != nil && completedPoll) {
-			writeStoppedWatchSummary(stdout, collector.Health())
+			writeStoppedWatchSummary(stdout, runHealth)
 			return 0
 		}
 		result, pollErr, heartbeatErr, stop := pollWithLeaseHeartbeat(ctx, store, instanceID, collector, staleWindow(interval))
 		completedPoll = true
 		health := collector.Health()
+		runHealth = accumulateWatchHealth(runHealth, result, health)
 		if err := store.CompleteCollectorPoll(instanceID, result, health, pollErr); err != nil {
 			terminalState, terminalError = "failed", err.Error()
 			fmt.Fprintf(stderr, "complete foreground collector poll: %v\n", err)
@@ -652,7 +654,7 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 			return 2
 		}
 		if stop || ctx.Err() != nil {
-			writeStoppedWatchSummary(stdout, collector.Health())
+			writeStoppedWatchSummary(stdout, runHealth)
 			return 0
 		}
 		stop, heartbeatErr = waitWithLeaseHeartbeat(ctx, store, instanceID, interval, staleWindow(interval))
@@ -662,10 +664,31 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 			return 2
 		}
 		if stop || ctx.Err() != nil {
-			writeStoppedWatchSummary(stdout, collector.Health())
+			writeStoppedWatchSummary(stdout, runHealth)
 			return 0
 		}
 	}
+}
+
+func accumulateWatchHealth(run tokenlogger.CollectorHealth, result tokenlogger.ImportResult, latest tokenlogger.CollectorHealth) tokenlogger.CollectorHealth {
+	run.Status = latest.Status
+	run.Lifecycle = latest.Lifecycle
+	run.LastPollAt = latest.LastPollAt
+	run.LastCompletedAt = latest.LastCompletedAt
+	if !latest.LastSuccessAt.IsZero() {
+		run.LastSuccessAt = latest.LastSuccessAt
+	}
+	run.LastError = latest.LastError
+	run.Imported += result.Receipt.Imported
+	run.Duplicates += result.Receipt.Duplicates
+	run.Outcomes.Merge(result.Outcomes)
+	run.Pending = latest.Pending
+	run.Interrupted = run.Interrupted || latest.LatestInterrupted
+	run.LatestInterrupted = latest.LatestInterrupted
+	run.Sources = latest.Sources
+	run.DiscoveryFailures = latest.DiscoveryFailures
+	run.Roots = latest.Roots
+	return run
 }
 
 func enabledRegisteredWatchRoots(store *tokenlogger.Store) ([]tokenlogger.RegisteredSource, []string, error) {
