@@ -106,6 +106,29 @@ func TestCollectorLeaseIsSingletonAndCooperativelyStops(t *testing.T) {
 	}
 }
 
+func TestCollectorPollUpdatesPreserveStoppingState(t *testing.T) {
+	store := openTestStore(t)
+	if _, err := store.AcquireCollectorLease("stopping", 1, "v1", "foreground", time.Second, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCollectorReady("stopping"); err != nil {
+		t.Fatal(err)
+	}
+	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
+		t.Fatalf("request stop=%t err=%v", requested, err)
+	}
+	if err := store.BeginCollectorPoll("stopping", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteCollectorPoll("stopping", ImportResult{}, CollectorHealth{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.CollectorRuntimeStatus(time.Minute)
+	if err != nil || status.State != "stopping" || status.StopRequestedAt == nil {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+}
+
 func TestCollectorLeaseRecoversOnlyAfterStaleHeartbeat(t *testing.T) {
 	store := openTestStore(t)
 	if _, err := store.AcquireCollectorLease("old", 1, "v1", "background", time.Second, time.Minute); err != nil {

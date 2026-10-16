@@ -76,7 +76,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'release signature verification failed' }
     Expand-Archive -Path $archive -DestinationPath $temp -Force
     $installedBinary = Join-Path $installDir 'komposyn-lg.exe'
-    $restartCollector = $false
+    $restartBackgroundCollector = $false
+    $stoppedCollectorMode = $null
     if (Test-Path -LiteralPath $installedBinary -PathType Leaf) {
         $capability = $null
         $capabilityExit = -1
@@ -92,13 +93,14 @@ try {
                 $collectorStatusExit = $LASTEXITCODE
                 $collectorStatus = $collectorStatusJson | ConvertFrom-Json
             } catch {
-                throw 'unable to inspect the existing background collector; executable was not replaced'
+                throw 'unable to inspect the existing collector; executable was not replaced'
             }
-            if ($collectorStatusExit -ne 0 -or $null -eq $collectorStatus) { throw 'unable to inspect the existing background collector; executable was not replaced' }
+            if ($collectorStatusExit -ne 0 -or $null -eq $collectorStatus) { throw 'unable to inspect the existing collector; executable was not replaced' }
             if ($collectorStatus.state -in @('starting', 'running', 'degraded', 'stopping')) {
-                $restartCollector = $true
+                $stoppedCollectorMode = if ($collectorStatus.mode) { [string]$collectorStatus.mode } else { 'unknown' }
+                $restartBackgroundCollector = $stoppedCollectorMode -eq 'background'
                 & $installedBinary watch stop --timeout 30s
-                if ($LASTEXITCODE -ne 0) { throw 'background collector stop timed out' }
+                if ($LASTEXITCODE -ne 0) { throw 'collector stop timed out' }
             }
         }
     }
@@ -106,10 +108,16 @@ try {
     Move-Item -Path (Join-Path $temp 'komposyn-lg.exe') -Destination (Join-Path $installDir 'komposyn-lg.exe') -Force
     Write-Output "installed komposyn-lg $version at $(Join-Path $installDir 'komposyn-lg.exe')"
     Write-Output 'existing database, configuration, and consent settings were preserved'
-    if ($restartCollector) {
+    if ($restartBackgroundCollector) {
         & (Join-Path $installDir 'komposyn-lg.exe') watch start
         if ($LASTEXITCODE -ne 0) { throw "upgrade succeeded, but the background collector could not be restarted; run 'komposyn-lg watch start' after reviewing its registered sources" }
         Write-Output 'restarted the background collector after upgrade'
+    } elseif ($stoppedCollectorMode -eq 'foreground') {
+        Write-Output 'the previous foreground collector was stopped for upgrade; rerun its original komposyn-lg watch foreground command to resume collection'
+    } elseif ($stoppedCollectorMode -eq 'embedded') {
+        Write-Output 'the previous embedded collector was stopped for upgrade; restart the Komposyn REPL to resume collection according to its saved settings'
+    } elseif ($null -ne $stoppedCollectorMode) {
+        Write-Output 'the previous collector was stopped for upgrade but its mode was not recognized; restart the intended collection mode manually'
     }
 } finally {
     Remove-Item -Recurse -Force $temp -ErrorAction SilentlyContinue

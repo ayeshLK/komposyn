@@ -333,7 +333,8 @@ func leaseResult(result sql.Result, err error) error {
 }
 
 func (s *Store) BeginCollectorPoll(instanceID string, sourceCount int) error {
-	result, err := s.db.Exec(`UPDATE collector_runtime SET state = 'running', heartbeat_at = ?, last_poll_at = ?, source_count = ?
+	result, err := s.db.Exec(`UPDATE collector_runtime SET state = CASE WHEN stop_requested_at IS NULL THEN 'running' ELSE 'stopping' END,
+		heartbeat_at = ?, last_poll_at = ?, source_count = ?
 		WHERE singleton = 1 AND instance_id = ?`, formatStoredTime(time.Now()), formatStoredTime(time.Now()), sourceCount, instanceID)
 	return leaseResult(result, err)
 }
@@ -351,7 +352,8 @@ func (s *Store) CompleteCollectorPoll(instanceID string, result ImportResult, he
 	if pollAt.IsZero() {
 		pollAt = completedAt
 	}
-	updated, err := s.db.Exec(`UPDATE collector_runtime SET state = ?, heartbeat_at = ?, last_poll_at = ?, last_completed_at = ?,
+	updated, err := s.db.Exec(`UPDATE collector_runtime SET state = CASE WHEN stop_requested_at IS NULL THEN ? ELSE 'stopping' END,
+		heartbeat_at = ?, last_poll_at = ?, last_completed_at = ?,
 		imported = imported + ?, duplicates = duplicates + ?, ignored_non_usage = ignored_non_usage + ?,
 		unchanged_snapshot = unchanged_snapshot + ?, deferred_incomplete_tail = deferred_incomplete_tail + ?,
 		unsupported_usage = unsupported_usage + ?, malformed_record = malformed_record + ?, failed_source = failed_source + ?,

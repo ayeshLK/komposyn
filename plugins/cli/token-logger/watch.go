@@ -542,16 +542,14 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 		return 2
 	}
 	defer store.Close()
+	registryBacked := len(roots) == 0 && registryFallback
 	var registeredSources []tokenlogger.RegisteredSource
-	if len(roots) == 0 && registryFallback {
-		sources, listErr := store.ListCollectorSources(true)
+	if registryBacked {
+		registeredSources, roots, err = enabledRegisteredWatchRoots(store)
+		listErr := err
 		if listErr != nil {
 			fmt.Fprintf(stderr, "list enabled sources: %v\n", listErr)
 			return 2
-		}
-		registeredSources = sources
-		for _, source := range sources {
-			roots = append(roots, source.Path)
 		}
 	}
 	if len(roots) == 0 {
@@ -590,13 +588,49 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 		return 2
 	}
 	fmt.Fprintf(stdout, "watching %d source root(s) every %s instance=%s recovered_stale=%t; press Ctrl-C to stop\n", len(roots), interval, instanceID, recovered)
+	completedPoll := false
 	for {
+		stop, heartbeatErr := store.HeartbeatCollector(instanceID)
+		if heartbeatErr != nil {
+			terminalState, terminalError = "failed", heartbeatErr.Error()
+			fmt.Fprintf(stderr, "foreground collector heartbeat: %v\n", heartbeatErr)
+			return 2
+		}
+		if stop || (ctx.Err() != nil && completedPoll) {
+			writeStoppedWatchSummary(stdout, collector.Health())
+			return 0
+		}
+		if registryBacked {
+			registeredSources, roots, err = enabledRegisteredWatchRoots(store)
+			if err != nil {
+				terminalState, terminalError = "failed", err.Error()
+				fmt.Fprintf(stderr, "reload enabled sources: %v\n", err)
+				return 2
+			}
+			collector, err = tokenlogger.NewCollector(store, roots, interval)
+			if err != nil {
+				terminalState, terminalError = "failed", err.Error()
+				fmt.Fprintf(stderr, "create collector: %v\n", err)
+				return 2
+			}
+		}
 		if err := store.BeginCollectorPoll(instanceID, len(roots)); err != nil {
 			terminalState, terminalError = "failed", err.Error()
 			fmt.Fprintf(stderr, "begin foreground collector poll: %v\n", err)
 			return 2
 		}
+		stop, heartbeatErr = store.HeartbeatCollector(instanceID)
+		if heartbeatErr != nil {
+			terminalState, terminalError = "failed", heartbeatErr.Error()
+			fmt.Fprintf(stderr, "foreground collector heartbeat: %v\n", heartbeatErr)
+			return 2
+		}
+		if stop || (ctx.Err() != nil && completedPoll) {
+			writeStoppedWatchSummary(stdout, collector.Health())
+			return 0
+		}
 		result, pollErr, heartbeatErr, stop := pollWithLeaseHeartbeat(ctx, store, instanceID, collector, staleWindow(interval))
+		completedPoll = true
 		health := collector.Health()
 		if err := store.CompleteCollectorPoll(instanceID, result, health, pollErr); err != nil {
 			terminalState, terminalError = "failed", err.Error()
@@ -632,6 +666,18 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 			return 0
 		}
 	}
+}
+
+func enabledRegisteredWatchRoots(store *tokenlogger.Store) ([]tokenlogger.RegisteredSource, []string, error) {
+	sources, err := store.ListCollectorSources(true)
+	if err != nil {
+		return nil, nil, err
+	}
+	roots := make([]string, 0, len(sources))
+	for _, source := range sources {
+		roots = append(roots, source.Path)
+	}
+	return sources, roots, nil
 }
 
 func writeStoppedWatchSummary(output io.Writer, health tokenlogger.CollectorHealth) {

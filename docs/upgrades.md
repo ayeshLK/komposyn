@@ -21,8 +21,10 @@ In-CLI self-updating is deferred. Release installers verify checksums and Cosign
 signatures; do not bypass those checks by downloading an unverified binary.
 
 The installer checks the selected data directory for an active managed
-collector, requests cooperative stop before replacement, and restarts it after
-success only when it was previously active. It never terminates a persisted
-PID. Set `TOKEN_LOGGER_DATA_DIR` during upgrade for a non-default data
-directory. Uninstall follows the same stop-before-remove rule and leaves all
-SQLite/settings state intact.
+collector and requests cooperative stop before replacement. Only a previously
+detached background collector is restarted automatically. Foreground and
+embedded REPL collection remain stopped with explicit manual-resume guidance,
+so an upgrade cannot silently change collection mode or roots. The installer
+never terminates a persisted PID. Set `TOKEN_LOGGER_DATA_DIR` during upgrade
+for a non-default data directory. Uninstall follows the same stop-before-remove
+rule and leaves all SQLite/settings state intact.
