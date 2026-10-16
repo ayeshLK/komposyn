@@ -66,6 +66,18 @@ user profile); an existing legacy data directory is reused in place when
 detected. Schema migrations run when the new executable opens the database.
 In-CLI self-updating is intentionally deferred.
 
-The uninstall scripts remove the installed executable but preserve local data.
+If a managed collector is active, the installer requests graceful stop before
+executable replacement. It automatically restarts only a collector that was
+already running in detached `background` mode. Foreground and embedded REPL
+owners remain stopped and receive mode-specific manual-resume instructions; the
+installer never converts them into detached collection. A stop timeout aborts
+replacement. A background restart failure leaves the verified new executable
+installed but exits non-zero with an explicit `watch start` remediation. Set
+`TOKEN_LOGGER_DATA_DIR` while running the installer when collection uses a
+non-default data directory.
+
+The uninstall scripts stop a managed collector before removing the
+executable and preserve local data, registered sources, and runtime history. A
+stop timeout prevents removal.
 Back up the data directory before manually removing it; uninstall does not
 delete the database or settings for you. See [Upgrades](upgrades.md).

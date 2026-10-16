@@ -44,6 +44,22 @@ type cancelOnWriteBuffer struct {
 	cancel context.CancelFunc
 }
 
+type blockingWatchPoller struct {
+	started      chan struct{}
+	laterStarted bool
+}
+
+func (poller *blockingWatchPoller) PollOnceContext(ctx context.Context) (tokenlogger.ImportResult, error) {
+	close(poller.started)
+	select {
+	case <-ctx.Done():
+		return tokenlogger.ImportResult{}, ctx.Err()
+	case <-time.After(5 * time.Second):
+		poller.laterStarted = true
+		return tokenlogger.ImportResult{}, nil
+	}
+}
+
 func (buffer *cancelOnWriteBuffer) Write(value []byte) (int, error) {
 	written, err := buffer.Buffer.Write(value)
 	if strings.Contains(string(value), buffer.marker) {
@@ -75,6 +91,517 @@ func TestClaudeImportCommand(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Imported events: 2") {
 		t.Fatalf("unexpected Claude import output: %q", stdout.String())
+	}
+}
+
+func TestWatchRegistryCommandsAndMultiRootForeground(t *testing.T) {
+	dataDir := t.TempDir()
+	codex := filepath.Join("..", "..", "library", "token-logger", "testdata", "codex")
+	claude := filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"watch", "add", codex, claude, "--data-dir", dataDir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("watch add code=%d stderr=%q", code, stderr.String())
+	}
+	if strings.Count(stdout.String(), "registered source") != 2 {
+		t.Fatalf("watch add output=%q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"watch", "list", "--format", "json", "--data-dir", dataDir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("watch list code=%d stderr=%q", code, stderr.String())
+	}
+	var listed sourceListOutput
+	if err := json.Unmarshal(stdout.Bytes(), &listed); err != nil || listed.FormatVersion != 1 || len(listed.Sources) != 2 {
+		t.Fatalf("listed=%+v err=%v output=%q", listed, err, stdout.String())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	output := &cancelOnWriteBuffer{marker: "poll status=", cancel: cancel}
+	stderr.Reset()
+	code := runWatchWithContext([]string{"foreground", codex, claude, "--interval", "1ms", "--data-dir", dataDir}, output, &stderr, ctx)
+	if code != 0 {
+		t.Fatalf("foreground code=%d stderr=%q output=%q", code, stderr.String(), output.String())
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	report, err := store.Query(tokenlogger.UsageFilter{From: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil || report.Summary.RequestCount == 0 {
+		t.Fatalf("combined report=%+v err=%v", report.Summary, err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"watch", "remove", listed.Sources[0].ID, "--data-dir", dataDir}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "disabled source") {
+		t.Fatalf("remove code=%d out=%q err=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestWatchIntervalPersistsExactly(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := persistWatchInterval(dataDir, 1500*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := tokenlogger.LoadSettings(filepath.Join(dataDir, "settings.json"), dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.CollectorPollInterval(); got != 1500*time.Millisecond {
+		t.Fatalf("poll interval=%s, want 1.5s", got)
+	}
+}
+
+func TestWatchSubcommandsRejectIrrelevantOptions(t *testing.T) {
+	for _, args := range [][]string{
+		{"watch", "status", "--interval", "1s", "--data-dir", t.TempDir()},
+		{"watch", "stop", "--format", "json", "--data-dir", t.TempDir()},
+		{"watch", "list", "--defaults", "--data-dir", t.TempDir()},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "is not valid") {
+			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestForegroundWatchRejectsActiveCollectorLease(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireCollectorLease("background", 1, tokenlogger.Version, "background", time.Second, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCollectorReady("background"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl")
+	var stdout, stderr bytes.Buffer
+	code := runWatchWithContext([]string{"foreground", fixture, "--data-dir", dataDir}, &stdout, &stderr, context.Background())
+	if code != 2 || !strings.Contains(stderr.String(), "another collector is already active") {
+		t.Fatalf("foreground code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	store, err = tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	report, err := store.Query(tokenlogger.UsageFilter{From: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil || report.Summary.RequestCount != 0 {
+		t.Fatalf("foreground imported alongside active collector: summary=%+v err=%v", report.Summary, err)
+	}
+}
+
+func TestPollWithLeaseHeartbeatHonorsStopRequest(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.AcquireCollectorLease("poll-stop", 1, tokenlogger.Version, "background", time.Second, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCollectorReady("poll-stop"); err != nil {
+		t.Fatal(err)
+	}
+	poller := &blockingWatchPoller{started: make(chan struct{})}
+	type pollResult struct {
+		pollErr      error
+		heartbeatErr error
+		stop         bool
+	}
+	done := make(chan pollResult, 1)
+	go func() {
+		_, pollErr, heartbeatErr, stop := pollWithLeaseHeartbeat(context.Background(), store, "poll-stop", poller, 15*time.Second)
+		done <- pollResult{pollErr: pollErr, heartbeatErr: heartbeatErr, stop: stop}
+	}()
+	<-poller.started
+	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
+		t.Fatalf("request stop=%t err=%v", requested, err)
+	}
+	select {
+	case result := <-done:
+		if !result.stop || result.heartbeatErr != nil || !errors.Is(result.pollErr, context.Canceled) || poller.laterStarted {
+			t.Fatalf("poll result=%+v later_started=%t", result, poller.laterStarted)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stop request did not cancel the active poll")
+	}
+}
+
+func TestFastForegroundWatchHonorsCooperativeStop(t *testing.T) {
+	dataDir := t.TempDir()
+	fixture := filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		done <- runWatchWithContext([]string{"foreground", fixture, "--interval", "10ms", "--data-dir", dataDir}, &stdout, &stderr, ctx)
+	}()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		status, statusErr := store.CollectorRuntimeStatus(time.Second)
+		if statusErr == nil && status.LastCompletedAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("foreground did not complete an initial poll: status=%+v err=%v stderr=%q", status, statusErr, stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
+		t.Fatalf("request stop=%t err=%v", requested, err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("foreground code=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("fast foreground collector ignored cooperative stop")
+	}
+	status, err := store.CollectorRuntimeStatus(time.Second)
+	if err != nil || status.State != "stopped" {
+		t.Fatalf("stopped status=%+v err=%v", status, err)
+	}
+}
+
+func TestRegistryForegroundReloadsSourcesBeforeEachPoll(t *testing.T) {
+	dataDir := t.TempDir()
+	claude, err := filepath.Abs(filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	codex, err := filepath.Abs(filepath.Join("..", "..", "library", "token-logger", "testdata", "codex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeSource, err := store.RegisterCollectorSource(claude, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		done <- runWatchWithContext([]string{"foreground", "--interval", "20ms", "--data-dir", dataDir}, &stdout, &stderr, ctx)
+	}()
+	store, err = tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	waitForSourceStatus := func(path, description string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			sources, listErr := store.ListCollectorSources(false)
+			if listErr == nil {
+				for _, source := range sources {
+					if source.Path == path && source.Status != "unknown" {
+						return
+					}
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s; stderr=%q", description, stderr.String())
+	}
+	waitForSourceStatus(claude, "initial Claude poll")
+	if _, changed, err := store.RemoveCollectorSource(claudeSource.Source.ID); err != nil || !changed {
+		t.Fatalf("disable Claude changed=%t err=%v", changed, err)
+	}
+	if _, err := store.RegisterCollectorSource(codex, true); err != nil {
+		t.Fatal(err)
+	}
+	waitForSourceStatus(codex, "reloaded Codex poll")
+	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
+		t.Fatalf("request stop=%t err=%v", requested, err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("foreground code=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("registry-backed foreground did not stop")
+	}
+	status, err := store.CollectorRuntimeStatus(time.Second)
+	if err != nil || status.SourceCount != 1 || status.State != "stopped" {
+		t.Fatalf("final status=%+v err=%v", status, err)
+	}
+}
+
+func TestRegistryForegroundSummaryAccumulatesAcrossReloadedCollectors(t *testing.T) {
+	dataDir := t.TempDir()
+	root := filepath.Join(t.TempDir(), "registered")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterCollectorSource(root, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(root); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		done <- runWatchWithContext([]string{"foreground", "--interval", "20ms", "--data-dir", dataDir}, &stdout, &stderr, ctx)
+	}()
+	store, err = tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	waitForRuntime := func(description string, condition func(tokenlogger.CollectorRuntimeStatus) bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			status, statusErr := store.CollectorRuntimeStatus(time.Second)
+			if statusErr == nil && condition(status) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+		t.Fatalf("timed out waiting for %s; stderr=%q output=%q", description, stderr.String(), stdout.String())
+	}
+	waitForRuntime("missing-root failure", func(status tokenlogger.CollectorRuntimeStatus) bool {
+		return status.Outcomes.FailedSource > 0
+	})
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "normal.jsonl"), fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForRuntime("successful import and unchanged follow-up", func(status tokenlogger.CollectorRuntimeStatus) bool {
+		return status.Imported == 2 && status.Outcomes.FailedSource > 0 && status.Outcomes.UnchangedSnapshot > 0
+	})
+	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
+		t.Fatalf("request stop=%t err=%v", requested, err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("foreground code=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("registry-backed foreground did not stop")
+	}
+	output := stdout.String()
+	index := strings.LastIndex(output, "collector stopped:")
+	if index < 0 {
+		t.Fatalf("missing stopped summary: %q", output)
+	}
+	summary := output[index:]
+	for _, expected := range []string{"imported=2", "failed_source=1", "run_complete=false"} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("stopped summary omitted %q: %q", expected, summary)
+		}
+	}
+}
+
+func TestWatchServeReloadsRegistryAndStopsCooperatively(t *testing.T) {
+	dataDir := t.TempDir()
+	codex, err := filepath.Abs(filepath.Join("..", "..", "library", "token-logger", "testdata", "codex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude, err := filepath.Abs(filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexSource, err := store.RegisterCollectorSource(codex, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	var stderr bytes.Buffer
+	go func() {
+		done <- runWatchServe([]string{"--data-dir", dataDir, "--interval", "20ms", "--instance", "test-instance"}, &stderr, ctx)
+	}()
+
+	store, err = tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer store.Close()
+	waitFor := func(description string, condition func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if condition() {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+		t.Fatalf("timed out waiting for %s; stderr=%q", description, stderr.String())
+	}
+	waitFor("initial registered root", func() bool {
+		status, statusErr := store.CollectorRuntimeStatus(time.Second)
+		return statusErr == nil && (status.State == "running" || status.State == "degraded") && status.SourceCount == 1 && status.LastCompletedAt != nil
+	})
+	if _, err := store.RegisterCollectorSource(claude, true); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	waitFor("added root on next poll", func() bool {
+		status, statusErr := store.CollectorRuntimeStatus(time.Second)
+		return statusErr == nil && status.SourceCount == 2
+	})
+	if _, changed, err := store.RemoveCollectorSource(codexSource.Source.ID); err != nil || !changed {
+		cancel()
+		t.Fatalf("remove changed=%t err=%v", changed, err)
+	}
+	waitFor("removed root on next poll", func() bool {
+		status, statusErr := store.CollectorRuntimeStatus(time.Second)
+		return statusErr == nil && status.SourceCount == 1
+	})
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("serve code=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not stop after cancellation")
+	}
+	status, err := store.CollectorRuntimeStatus(time.Second)
+	if err != nil || status.State != "stopped" {
+		t.Fatalf("stopped status=%+v err=%v", status, err)
+	}
+}
+
+func TestRegisteredSourceHealthUsesCollectorOutcomes(t *testing.T) {
+	dataDir := t.TempDir()
+	healthyRoot := t.TempDir()
+	degradedRoot := t.TempDir()
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "library", "token-logger", "testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(healthyRoot, "normal.jsonl"), fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	malformed := append(append([]byte(nil), fixture...), []byte("{not-json}\n")...)
+	if err := os.WriteFile(filepath.Join(degradedRoot, "malformed.jsonl"), malformed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, root := range []string{healthyRoot, degradedRoot} {
+		if _, err := store.RegisterCollectorSource(root, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sources, err := store.ListCollectorSources(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err := tokenlogger.NewCollector(store, []string{healthyRoot, degradedRoot}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.PollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRegisteredSourceHealth(store, sources, collector.Health()); err != nil {
+		t.Fatal(err)
+	}
+	sources, err = store.ListCollectorSources(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusByPath := map[string]tokenlogger.RegisteredSource{}
+	for _, source := range sources {
+		statusByPath[source.Path] = source
+	}
+	if source := statusByPath[healthyRoot]; source.Status != "healthy" || source.LastError != "" {
+		t.Fatalf("healthy source=%+v", source)
+	}
+	if source := statusByPath[degradedRoot]; source.Status != "degraded" || !strings.Contains(source.LastError, "malformed_record=1") {
+		t.Fatalf("degraded source=%+v", source)
+	}
+}
+
+func TestInteractiveCollectorDoesNotDuplicateBackgroundLease(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.AcquireCollectorLease("background-instance", 99, tokenlogger.Version, "background", time.Second, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCollectorReady("background-instance"); err != nil {
+		t.Fatal(err)
+	}
+	defer store.ReleaseCollectorLease("background-instance", "stopped", "")
+	settings := tokenlogger.DefaultSettings(dataDir)
+	settings.OnboardingComplete, settings.CollectorEnabled, settings.AutoStart = true, true, true
+	var stdout, stderr bytes.Buffer
+	code := runInteractiveScanner(bufio.NewScanner(strings.NewReader("/quit\n")), &stdout, &stderr, store, dataDir, settings, false)
+	if code != 0 {
+		t.Fatalf("interactive code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "background collector already active") || !strings.Contains(stdout.String(), "mode=background") {
+		t.Fatalf("interactive output did not reuse background status: %q", stdout.String())
+	}
+	status, err := store.CollectorRuntimeStatus(time.Minute)
+	if err != nil || status.InstanceID != "background-instance" || status.State != "running" {
+		t.Fatalf("background lease changed: %+v err=%v", status, err)
 	}
 }
 
@@ -242,6 +769,29 @@ func TestWatchInterruptedStopNeverClaimsComplete(t *testing.T) {
 	})
 	if !strings.Contains(output.String(), "interrupted=true run_complete=false") {
 		t.Fatalf("interrupted watch claimed completion: %q", output.String())
+	}
+}
+
+func TestAccumulateWatchHealthPreservesRunTotalsAndInterruptedState(t *testing.T) {
+	run := tokenlogger.CollectorHealth{
+		Imported:    2,
+		Duplicates:  1,
+		Outcomes:    tokenlogger.OutcomeCounts{FailedSource: 1},
+		Interrupted: true,
+		Sources:     3,
+	}
+	result := tokenlogger.ImportResult{
+		Receipt:  tokenlogger.Receipt{Imported: 4, Duplicates: 2},
+		Outcomes: tokenlogger.OutcomeCounts{UnchangedSnapshot: 1},
+	}
+	latest := tokenlogger.CollectorHealth{Status: "healthy", Sources: 1}
+
+	got := accumulateWatchHealth(run, result, latest)
+	if got.Imported != 6 || got.Duplicates != 3 || got.Outcomes.FailedSource != 1 || got.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("cumulative health=%+v", got)
+	}
+	if !got.Interrupted || got.LatestInterrupted || got.Status != "healthy" || got.Sources != 1 {
+		t.Fatalf("sticky/latest health=%+v", got)
 	}
 }
 

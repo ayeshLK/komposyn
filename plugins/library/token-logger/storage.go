@@ -211,6 +211,14 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("record migration 10: %w", err)
 		}
 	}
+	if applied < 11 {
+		if _, err := tx.Exec(schemaMigrationEleven); err != nil {
+			return fmt.Errorf("apply migration 11: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 11, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 11: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
 	}

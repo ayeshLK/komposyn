@@ -29,7 +29,7 @@ import (
 // at link time.
 var Version = "0.0.0-dev"
 
-const currentSchemaVersion = 10
+const currentSchemaVersion = 11
 
 // TokenUsage contains normalized token counts. Cache-read and cache-write
 // tokens are input subsets; reasoning tokens are an output subset.

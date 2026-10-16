@@ -50,6 +50,41 @@ func TestCollectorPollsBothProviderShapesAndReportsHealth(t *testing.T) {
 	}
 }
 
+func TestCollectorReportsHealthForEachConfiguredRoot(t *testing.T) {
+	store := openTestStore(t)
+	healthyRoot := t.TempDir()
+	degradedRoot := t.TempDir()
+	claudeFixture, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(healthyRoot, "normal.jsonl"), claudeFixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	malformed := append(append([]byte(nil), claudeFixture...), []byte("{not-json}\n")...)
+	if err := os.WriteFile(filepath.Join(degradedRoot, "malformed.jsonl"), malformed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector, err := NewCollector(store, []string{healthyRoot, degradedRoot}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := collector.PollOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcomes.MalformedRecord != 1 {
+		t.Fatalf("poll outcomes=%+v", result.Outcomes)
+	}
+	health := collector.Health()
+	if root := health.Roots[healthyRoot]; root.Status != "healthy" || root.LastError != "" || root.Sources != 1 {
+		t.Fatalf("healthy root=%+v", root)
+	}
+	if root := health.Roots[degradedRoot]; root.Status != "degraded" || root.Outcomes.MalformedRecord != 1 || !strings.Contains(root.LastError, "malformed_record=1") {
+		t.Fatalf("degraded root=%+v", root)
+	}
+}
+
 func TestCollectorDetectsAdapterFromAuthoritativeSnapshot(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "growing.jsonl")
@@ -733,6 +768,20 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("settings=%+v want=%+v", got, want)
+	}
+}
+
+func TestLoadSettingsPreservesLegacyPollingInterval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"poll_interval_seconds":60}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := LoadSettings(path, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.PollIntervalMillis != 60000 || settings.CollectorPollInterval() != time.Minute {
+		t.Fatalf("legacy interval loaded as millis=%d duration=%s", settings.PollIntervalMillis, settings.CollectorPollInterval())
 	}
 }
 

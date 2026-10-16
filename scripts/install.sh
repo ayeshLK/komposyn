@@ -84,8 +84,49 @@ fi
 	--certificate-oidc-issuer "$cosign_issuer" \
 	"$tmp_dir/$asset"
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
+restart_background_collector=0
+stopped_collector_mode=""
+installed_binary="$install_dir/komposyn-lg"
+if [[ -x "$installed_binary" ]]; then
+	capability="$("$installed_binary" _watch-lifecycle 2>/dev/null || true)"
+	if [[ "$capability" == 1 ]]; then
+		collector_status="$("$installed_binary" watch status --format json)" || {
+			echo 'unable to inspect the existing collector; executable was not replaced' >&2
+			exit 1
+		}
+		if [[ "$collector_status" == *'"state":"running"'* || "$collector_status" == *'"state":"degraded"'* || "$collector_status" == *'"state":"starting"'* || "$collector_status" == *'"state":"stopping"'* ]]; then
+			if [[ "$collector_status" == *'"mode":"background"'* ]]; then
+				restart_background_collector=1
+			elif [[ "$collector_status" == *'"mode":"foreground"'* ]]; then
+				stopped_collector_mode="foreground"
+			elif [[ "$collector_status" == *'"mode":"embedded"'* ]]; then
+				stopped_collector_mode="embedded"
+			else
+				stopped_collector_mode="unknown"
+			fi
+			"$installed_binary" watch stop --timeout 30s || {
+				echo 'unable to stop the existing collector; executable was not replaced' >&2
+				exit 1
+			}
+		fi
+	fi
+fi
 mkdir -p "$install_dir"
 chmod 0755 "$tmp_dir/komposyn-lg"
 mv "$tmp_dir/komposyn-lg" "$install_dir/komposyn-lg"
 echo "installed komposyn-lg ${version} at ${install_dir}/komposyn-lg"
 echo "existing database, configuration, and consent settings were preserved"
+if (( restart_background_collector )); then
+	if "$install_dir/komposyn-lg" watch start; then
+		echo 'restarted the background collector after upgrade'
+	else
+		echo "upgrade succeeded, but the background collector could not be restarted; run 'komposyn-lg watch start' after reviewing its registered sources" >&2
+		exit 1
+	fi
+elif [[ "$stopped_collector_mode" == "foreground" ]]; then
+	echo 'the previous foreground collector was stopped for upgrade; rerun its original komposyn-lg watch foreground command to resume collection'
+elif [[ "$stopped_collector_mode" == "embedded" ]]; then
+	echo 'the previous embedded collector was stopped for upgrade; restart the Komposyn REPL to resume collection according to its saved settings'
+elif [[ -n "$stopped_collector_mode" ]]; then
+	echo 'the previous collector was stopped for upgrade but its mode was not recognized; restart the intended collection mode manually'
+fi

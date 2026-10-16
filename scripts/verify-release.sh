@@ -28,21 +28,31 @@ done
 install_dir="$tmp_dir/bin"
 data_dir="$tmp_dir/data"
 mkdir -p "$install_dir" "$data_dir"
+source_dir="$tmp_dir/source"
+mkdir -p "$source_dir"
 cp "$tmp_dir/komposyn-lg" "$install_dir/komposyn-lg"
 chmod 0755 "$install_dir/komposyn-lg"
 TOKEN_LOGGER_DATA_DIR="$data_dir" "$install_dir/komposyn-lg" settings --collector off --auto-start off >/dev/null
 TOKEN_LOGGER_DATA_DIR="$data_dir" "$install_dir/komposyn-lg" usage --format json >/dev/null
+TOKEN_LOGGER_DATA_DIR="$data_dir" "$install_dir/komposyn-lg" watch add "$source_dir" >/dev/null
+TOKEN_LOGGER_DATA_DIR="$data_dir" "$install_dir/komposyn-lg" watch start --interval 1s >/dev/null
+TOKEN_LOGGER_DATA_DIR="$data_dir" "$install_dir/komposyn-lg" watch status --format json | grep -Eq '"state":"(running|degraded)"' || {
+	echo "background collector did not start during release verification" >&2
+	exit 1
+}
 [[ -e "$data_dir/settings.json" ]] || { echo "settings were not created" >&2; exit 1; }
 [[ -e "$data_dir/token-logger.db" ]] || { echo "database was not created" >&2; exit 1; }
 
 # Replacing the executable is the initial-release upgrade operation.
+TOKEN_LOGGER_DATA_DIR="$data_dir" "$install_dir/komposyn-lg" watch stop --timeout 10s >/dev/null
 cp "$tmp_dir/komposyn-lg" "$install_dir/komposyn-lg"
+TOKEN_LOGGER_DATA_DIR="$data_dir" "$install_dir/komposyn-lg" watch start >/dev/null
 [[ -e "$data_dir/settings.json" && -e "$data_dir/token-logger.db" ]] || {
   echo "upgrade did not preserve local data" >&2
   exit 1
 }
 
-KOMPOSYN_INSTALL_DIR="$install_dir" bash "$root_dir/scripts/uninstall.sh" >/dev/null
+TOKEN_LOGGER_DATA_DIR="$data_dir" KOMPOSYN_INSTALL_DIR="$install_dir" bash "$root_dir/scripts/uninstall.sh" >/dev/null
 [[ ! -e "$install_dir/komposyn-lg" ]] || { echo "uninstall left executable behind" >&2; exit 1; }
 [[ -e "$data_dir/settings.json" && -e "$data_dir/token-logger.db" ]] || {
   echo "uninstall removed local data" >&2

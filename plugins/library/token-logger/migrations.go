@@ -225,3 +225,61 @@ CREATE TABLE collector_source_identities (
     UNIQUE(adapter, source_id)
 );
 `
+
+const schemaMigrationEleven = `
+CREATE TABLE collector_sources (
+    id TEXT PRIMARY KEY,
+    canonical_path TEXT NOT NULL UNIQUE,
+    display_path TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    latest_status TEXT NOT NULL DEFAULT 'unknown',
+    latest_error TEXT NOT NULL DEFAULT '',
+    last_checked_at TEXT
+);
+CREATE INDEX collector_sources_enabled_idx ON collector_sources(enabled, canonical_path);
+
+CREATE TABLE collector_runtime (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    instance_id TEXT NOT NULL DEFAULT '',
+    pid INTEGER NOT NULL DEFAULT 0,
+    executable_version TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'stopped',
+    interval_millis INTEGER NOT NULL DEFAULT 5000,
+    started_at TEXT,
+    heartbeat_at TEXT,
+    last_poll_at TEXT,
+    last_completed_at TEXT,
+    stopped_at TEXT,
+    stop_requested_at TEXT,
+    imported INTEGER NOT NULL DEFAULT 0,
+    duplicates INTEGER NOT NULL DEFAULT 0,
+    ignored_non_usage INTEGER NOT NULL DEFAULT 0,
+    unchanged_snapshot INTEGER NOT NULL DEFAULT 0,
+    deferred_incomplete_tail INTEGER NOT NULL DEFAULT 0,
+    unsupported_usage INTEGER NOT NULL DEFAULT 0,
+    malformed_record INTEGER NOT NULL DEFAULT 0,
+    failed_source INTEGER NOT NULL DEFAULT 0,
+    pending INTEGER NOT NULL DEFAULT 0,
+    source_count INTEGER NOT NULL DEFAULT 0,
+    discovered_sources INTEGER NOT NULL DEFAULT 0,
+    discovery_failures INTEGER NOT NULL DEFAULT 0,
+    recovered_from_stale INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO collector_runtime(singleton) VALUES (1);
+
+CREATE TABLE collector_runs (
+    instance_id TEXT PRIMARY KEY,
+    pid INTEGER NOT NULL DEFAULT 0,
+    executable_version TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT '',
+    interval_millis INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    stopped_at TEXT,
+    terminal_state TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT ''
+);
+`

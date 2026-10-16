@@ -157,14 +157,38 @@ empty group.
 
 ## Watch
 
-`watch` performs an initial poll and then continues at the requested interval:
+Register all long-lived roots and run one background collector per data
+directory:
 
 ```text
-komposyn-lg watch /path/to/transcripts --interval 10s --data-dir /path/to/data
+komposyn-lg watch add ~/.codex/sessions ~/.claude/projects
+komposyn-lg watch list
+komposyn-lg watch start
+komposyn-lg watch status
+komposyn-lg watch stop
 ```
 
-Use Ctrl-C or SIGTERM to stop it. The collector records health and sanitized
-diagnostics locally; it continues polling after an individual source failure.
+`watch add --defaults` registers both platform defaults even before they exist.
+Registry changes take effect by the next background poll. The registry,
+singleton lease, heartbeat, outcomes, and sanitized health are SQLite state.
+
+Foreground collection remains available with several ephemeral roots:
+
+```text
+komposyn-lg watch /path/to/codex /path/to/claude --interval 10s
+komposyn-lg watch foreground /path/to/codex /path/to/claude
+komposyn-lg watch foreground
+```
+
+The no-root `foreground` form uses the enabled registry; explicit roots do not
+change it. Use `watch foreground add` for a literal path named `add` (and the
+same pattern for other lifecycle words). Use Ctrl-C or SIGTERM to stop it. The
+collector records health and sanitized diagnostics locally; it continues
+polling after an individual source failure.
+Foreground collection owns the same per-data-directory lease as background and
+embedded collection, appears in `watch status`, and can be stopped with
+`watch stop` from another terminal. A second collector is rejected while that
+lease is healthy.
 Normal ignores and unchanged snapshots do not degrade health. A final partial
 record is visible as pending but remains healthy. Unsupported usage, malformed
 records, and failed sources degrade health; repeated polls deduplicate their
@@ -174,6 +198,11 @@ discovery counts. The stop summary retains cumulative warning counts and the
 latest pending state; `run_complete` covers the whole run, while
 `latest_status` covers only the latest poll. Ctrl-C/SIGTERM returns zero as a
 normal stop even after degraded polls.
+
+`watch start` returns after the detached child acquires the database lease and
+publishes readiness. Start and stop are idempotent. Status JSON is a versioned,
+path-free administrative contract. A stale heartbeat can be replaced by the
+next start. Stop is cooperative and never signals a persisted PID.
 
 ## Settings and interactive mode
 
@@ -196,6 +225,12 @@ exits interactive mode cleanly. Ctrl-L clears the visible terminal and keeps
 the prompt; it does not erase scrollback or application data. Commands are
 limited to 16,384 Unicode code points (runes), or at most 64 KiB of UTF-8;
 commands made from shorter UTF-8 characters have a lower byte limit.
+
+Interactive auto-start creates an embedded collector only when the singleton
+lease is free. If a background collector is active, the REPL reads its
+persisted status and does not stop it on exit. `collector_enabled` and
+`auto_start` govern embedded REPL collection only; only explicit `watch start`
+launches a detached process.
 
 Interactive navigation follows `Projects → Project → Sessions → Session →
 Models → Usage`:

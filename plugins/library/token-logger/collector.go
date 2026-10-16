@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +43,17 @@ type CollectorHealth struct {
 	LatestInterrupted bool
 	Sources           int
 	DiscoveryFailures int
+	Roots             map[string]CollectorRootHealth
+}
+
+// CollectorRootHealth associates the latest poll outcome with one configured
+// root. A deduplicated source discovered through overlapping roots contributes
+// to each owning root without being imported more than once.
+type CollectorRootHealth struct {
+	Status    string
+	LastError string
+	Outcomes  OutcomeCounts
+	Sources   int
 }
 
 // CollectorRoot identifies a configured source root. Required roots report a
@@ -89,7 +101,14 @@ func NewCollectorWithRoots(store *Store, roots []CollectorRoot, interval time.Du
 func (c *Collector) Health() CollectorHealth {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.health
+	health := c.health
+	if c.health.Roots != nil {
+		health.Roots = make(map[string]CollectorRootHealth, len(c.health.Roots))
+		for path, root := range c.health.Roots {
+			health.Roots[path] = root
+		}
+	}
+	return health
 }
 
 // PollOnce scans configured roots once and imports discovered records.
@@ -108,6 +127,10 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 	discovery := discoverCollectorSources(ctx, c.roots)
 	total := ImportResult{}
 	var pollErrors []error
+	rootHealth := make(map[string]CollectorRootHealth, len(c.roots))
+	for _, root := range c.roots {
+		rootHealth[root.Path] = CollectorRootHealth{Status: "healthy"}
+	}
 	for _, failure := range discovery.Failures {
 		if errors.Is(failure.Err, context.Canceled) || errors.Is(failure.Err, context.DeadlineExceeded) {
 			pollErrors = append(pollErrors, failure.Err)
@@ -116,6 +139,14 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		total.Outcomes.Add(OutcomeFailedSource)
 		pollErrors = append(pollErrors, failure.Err)
 		c.recordFailure(failure.Err)
+		root := rootHealth[failure.RootPath]
+		root.Status = "degraded"
+		if errors.Is(failure.Err, os.ErrNotExist) {
+			root.Status = "missing"
+		}
+		root.LastError = SanitizeDiagnostic(failure.Err.Error())
+		root.Outcomes.Add(OutcomeFailedSource)
+		rootHealth[failure.RootPath] = root
 	}
 	interrupted := false
 	for _, failure := range discovery.Failures {
@@ -125,6 +156,11 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 	}
 	for _, source := range discovery.Sources {
 		path := source.Path
+		for _, rootPath := range source.RootPaths {
+			root := rootHealth[rootPath]
+			root.Sources++
+			rootHealth[rootPath] = root
+		}
 		if err := ctx.Err(); err != nil {
 			pollErrors = append(pollErrors, err)
 			interrupted = true
@@ -143,6 +179,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			total.Outcomes.Add(OutcomeFailedSource)
 			pollErrors = append(pollErrors, readErr)
 			c.recordFailure(fmt.Errorf("read source: %w", readErr))
+			mergeCollectorRootFailure(rootHealth, source.RootPaths, readErr)
 			continue
 		}
 		adapter, detectErr := detectAdapterSnapshot(contents)
@@ -150,6 +187,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			total.Outcomes.Add(OutcomeFailedSource)
 			pollErrors = append(pollErrors, detectErr)
 			c.recordFailure(fmt.Errorf("detect source: %w", detectErr))
+			mergeCollectorRootFailure(rootHealth, source.RootPaths, detectErr)
 			continue
 		}
 		result, importedAdapter, importErr := importCollectorSource(ctx, path, c.store, adapter)
@@ -163,10 +201,20 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			total.Outcomes.Add(OutcomeFailedSource)
 			pollErrors = append(pollErrors, importErr)
 			c.recordFailure(fmt.Errorf("import %s source: %w", adapter, importErr))
+			mergeCollectorRootFailure(rootHealth, source.RootPaths, importErr)
 			continue
 		}
 		total.Merge(result)
 		c.recordOutcomeDiagnostics(adapter, result.Outcomes)
+		for _, rootPath := range source.RootPaths {
+			root := rootHealth[rootPath]
+			root.Outcomes.Merge(result.Outcomes)
+			if result.Outcomes.Incomplete() {
+				root.Status = "degraded"
+				root.LastError = collectorOutcomeSummary(result.Outcomes)
+			}
+			rootHealth[rootPath] = root
+		}
 	}
 	c.mu.Lock()
 	completedAt := time.Now().UTC()
@@ -188,8 +236,33 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 	c.health.LatestInterrupted = interrupted
 	c.health.Sources = len(discovery.Sources)
 	c.health.DiscoveryFailures = len(discovery.Failures)
+	c.health.Roots = rootHealth
 	c.mu.Unlock()
 	return total, errors.Join(pollErrors...)
+}
+
+func mergeCollectorRootFailure(health map[string]CollectorRootHealth, roots []string, err error) {
+	for _, rootPath := range roots {
+		root := health[rootPath]
+		root.Status = "degraded"
+		root.LastError = SanitizeDiagnostic(err.Error())
+		root.Outcomes.Add(OutcomeFailedSource)
+		health[rootPath] = root
+	}
+}
+
+func collectorOutcomeSummary(outcomes OutcomeCounts) string {
+	parts := []string{}
+	if outcomes.UnsupportedUsage > 0 {
+		parts = append(parts, fmt.Sprintf("unsupported_usage=%d", outcomes.UnsupportedUsage))
+	}
+	if outcomes.MalformedRecord > 0 {
+		parts = append(parts, fmt.Sprintf("malformed_record=%d", outcomes.MalformedRecord))
+	}
+	if outcomes.FailedSource > 0 {
+		parts = append(parts, fmt.Sprintf("failed_source=%d", outcomes.FailedSource))
+	}
+	return strings.Join(parts, " ")
 }
 
 func importCollectorSource(ctx context.Context, path string, store *Store, adapter string) (ImportResult, string, error) {
@@ -307,7 +380,8 @@ func (c *Collector) recordFailure(err error) {
 }
 
 type collectorDiscoveryFailure struct {
-	Err error
+	RootPath string
+	Err      error
 }
 
 type collectorDiscovery struct {
@@ -319,12 +393,13 @@ type collectorSource struct {
 	Path          string
 	CanonicalKey  string
 	IdentityPaths []string
+	RootPaths     []string
 }
 
 func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collectorDiscovery {
 	result := collectorDiscovery{}
 	seen := map[string]*collectorSource{}
-	addSource := func(canonicalPath, path string, identityPaths ...string) {
+	addSource := func(rootPath, canonicalPath, path string, identityPaths ...string) {
 		source, exists := seen[canonicalPath]
 		if !exists {
 			source = &collectorSource{Path: path, CanonicalKey: digest([]byte(canonicalPath))}
@@ -335,20 +410,23 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 				source.IdentityPaths = append(source.IdentityPaths, identityPath)
 			}
 		}
+		if !containsCollectorPath(source.RootPaths, rootPath) {
+			source.RootPaths = append(source.RootPaths, rootPath)
+		}
 	}
 	for _, root := range roots {
 		if err := ctx.Err(); err != nil {
-			result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: err})
+			result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: err})
 			break
 		}
 		absoluteRoot, err := absoluteCollectorPath(root.Path)
 		if err != nil {
-			result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: fmt.Errorf("resolve source root: %w", err)})
+			result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: fmt.Errorf("resolve source root: %w", err)})
 			continue
 		}
 		canonicalRoot, err := canonicalCollectorPath(absoluteRoot)
 		if err != nil {
-			result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: fmt.Errorf("resolve source root: %w", err)})
+			result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: fmt.Errorf("resolve source root: %w", err)})
 			continue
 		}
 		info, err := os.Stat(absoluteRoot)
@@ -356,12 +434,12 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 			if errors.Is(err, os.ErrNotExist) && !root.Required {
 				continue
 			}
-			result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: fmt.Errorf("inspect source root: %w", err)})
+			result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: fmt.Errorf("inspect source root: %w", err)})
 			continue
 		}
 		if !info.IsDir() {
 			resolvedRoot, _ := filepath.EvalSymlinks(absoluteRoot)
-			addSource(canonicalRoot, absoluteRoot, resolvedRoot)
+			addSource(root.Path, canonicalRoot, absoluteRoot, resolvedRoot)
 			continue
 		}
 		walkRoot := absoluteRoot
@@ -373,7 +451,7 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 				return err
 			}
 			if walkErr != nil {
-				result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: fmt.Errorf("inspect source subtree: %w", walkErr)})
+				result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: fmt.Errorf("inspect source subtree: %w", walkErr)})
 				if entry != nil && entry.IsDir() {
 					return filepath.SkipDir
 				}
@@ -382,7 +460,7 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 			if !entry.IsDir() && (filepath.Ext(path) == ".jsonl" || filepath.Ext(path) == ".json") {
 				canonicalPath, canonicalErr := canonicalCollectorPath(path)
 				if canonicalErr != nil {
-					result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: fmt.Errorf("resolve discovered source: %w", canonicalErr)})
+					result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: fmt.Errorf("resolve discovered source: %w", canonicalErr)})
 					return nil
 				}
 				resolvedPath, _ := filepath.EvalSymlinks(path)
@@ -392,12 +470,12 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 						logicalPath = filepath.Join(absoluteRoot, relativePath)
 					}
 				}
-				addSource(canonicalPath, path, logicalPath, resolvedPath)
+				addSource(root.Path, canonicalPath, path, logicalPath, resolvedPath)
 			}
 			return nil
 		})
 		if err != nil {
-			result.Failures = append(result.Failures, collectorDiscoveryFailure{Err: fmt.Errorf("walk source root: %w", err)})
+			result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: fmt.Errorf("walk source root: %w", err)})
 		}
 	}
 	for _, source := range seen {

@@ -74,6 +74,20 @@ owners cancel and join the worker before closing its Store. Lifecycle
 (`starting`, `running`, `stopped`) is separate from latest poll health. It never
 writes to provider-owned source files.
 
+Persistent roots, the singleton runtime lease, random instance identity,
+heartbeat, cooperative stop request, cumulative typed outcomes, and sanitized
+health are application-owned SQLite state. The detached child reloads enabled
+roots before each poll and canonical discovery deduplicates overlapping roots.
+Unix children start in a new session; Windows children use detached/new-process
+group flags without a console window. Terminal streams are not inherited and
+no network listener is opened.
+
+The REPL's embedded collector acquires the same lease. With a healthy
+background owner, the REPL reads persisted status instead and does not stop the
+background process on exit. A stored PID is informational: stop and stale
+recovery use instance identity and heartbeat, never a signal sent solely from
+that PID.
+
 ## Source replacement safety
 
 The cursor stores the last committed byte offset and source fingerprint. When a

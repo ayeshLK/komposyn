@@ -65,6 +65,19 @@ is the SQLite query time, not proof that provider sources were just scanned.
 `/refresh` redraws committed database data only. Use foreground `watch` when an
 explicit source scan is needed, and ensure it uses the same data directory.
 
+## Background collector is stopped or stale
+
+Run `komposyn-lg watch status --format json` with the same data directory used
+at start. `stale` means an active lease stopped heartbeating; no process is
+signalled because the stored PID may have been reused. Review the sanitized
+error and registered sources, then run `watch start` to recover the lease
+transactionally. `watch stop` waits for the current atomic import. If it times
+out, retry later; do not kill the recorded PID solely from status output.
+
+If the REPL says a background collector is active, it is intentionally reading
+persisted status instead of starting a duplicate embedded collector. REPL exit
+does not stop the independently started process.
+
 ## Import reports pending or incomplete accounting
 
 `deferred_incomplete_tail=1` means the source ended with a partial JSON record,

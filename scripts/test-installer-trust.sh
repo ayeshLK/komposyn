@@ -78,6 +78,92 @@ for identity in \
 	fi
 done
 
+# A lifecycle-capable installed binary must stop before replacement, and the
+# verified replacement must restart only after installation succeeds.
+lifecycle_install="$tmp_dir/lifecycle-install"
+lifecycle_stop="$tmp_dir/lifecycle-stop"
+lifecycle_restart="$tmp_dir/lifecycle-restart"
+mkdir -p "$lifecycle_install"
+cat > "$lifecycle_install/komposyn-lg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+	_watch-lifecycle) echo 1 ;;
+	watch)
+		case "${2:-}" in
+			status) echo '{"state":"running","mode":"background"}' ;;
+			stop) : > "$KOMPOSYN_TEST_STOP_MARKER" ;;
+		esac
+		;;
+esac
+EOF
+chmod 0755 "$lifecycle_install/komposyn-lg"
+cat > "$tmp_dir/komposyn-lg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+	_watch-lifecycle) echo 1 ;;
+	watch) [[ "${2:-}" == start ]] && : > "$KOMPOSYN_TEST_RESTART_MARKER" ;;
+esac
+EOF
+chmod 0755 "$tmp_dir/komposyn-lg"
+tar -C "$tmp_dir" -czf "$release_dir/$asset" komposyn-lg
+(
+	cd "$release_dir"
+	echo '# version=0.1.0'
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$asset"; else shasum -a 256 "$asset"; fi
+) > "$release_dir/SHA256SUMS"
+KOMPOSYN_VERSION=v0.1.0 \
+	KOMPOSYN_RELEASE_DIR="$release_dir" \
+	KOMPOSYN_INSTALL_DIR="$lifecycle_install" \
+	KOMPOSYN_COSIGN_BIN="$mock_cosign" \
+	KOMPOSYN_TEST_STOP_MARKER="$lifecycle_stop" \
+	KOMPOSYN_TEST_RESTART_MARKER="$lifecycle_restart" \
+	bash "$root_dir/scripts/install.sh" >/dev/null
+[[ -f "$lifecycle_stop" && -f "$lifecycle_restart" ]] || {
+	echo 'installer did not stop and restart a lifecycle-capable collector' >&2
+	exit 1
+}
+
+# Foreground and embedded owners are stopped for safe replacement but must not
+# be silently converted into detached background collection. Source counts
+# cover both empty and populated registries; mode remains the deciding field.
+for lifecycle_mode in foreground embedded; do
+	for source_count in 0 1; do
+		mode_install="$tmp_dir/lifecycle-${lifecycle_mode}-${source_count}"
+		mode_stop="$tmp_dir/lifecycle-${lifecycle_mode}-${source_count}-stop"
+		mode_restart="$tmp_dir/lifecycle-${lifecycle_mode}-${source_count}-restart"
+		mkdir -p "$mode_install"
+		cat > "$mode_install/komposyn-lg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+	_watch-lifecycle) echo 1 ;;
+	watch)
+		case "${2:-}" in
+			status) printf '{"state":"running","mode":"%s","source_count":%s}\n' "$KOMPOSYN_TEST_COLLECTOR_MODE" "$KOMPOSYN_TEST_SOURCE_COUNT" ;;
+			stop) : > "$KOMPOSYN_TEST_STOP_MARKER" ;;
+		esac
+		;;
+esac
+EOF
+		chmod 0755 "$mode_install/komposyn-lg"
+		mode_output="$(KOMPOSYN_VERSION=v0.1.0 \
+			KOMPOSYN_RELEASE_DIR="$release_dir" \
+			KOMPOSYN_INSTALL_DIR="$mode_install" \
+			KOMPOSYN_COSIGN_BIN="$mock_cosign" \
+			KOMPOSYN_TEST_COLLECTOR_MODE="$lifecycle_mode" \
+			KOMPOSYN_TEST_SOURCE_COUNT="$source_count" \
+			KOMPOSYN_TEST_STOP_MARKER="$mode_stop" \
+			KOMPOSYN_TEST_RESTART_MARKER="$mode_restart" \
+			bash "$root_dir/scripts/install.sh")"
+		[[ -f "$mode_stop" && ! -e "$mode_restart" && "$mode_output" == *"previous ${lifecycle_mode} collector was stopped"* ]] || {
+			echo "installer mishandled ${lifecycle_mode} collector with source_count=${source_count}" >&2
+			exit 1
+		}
+	done
+done
+
 ! grep -Fq 'refs/tags/' "$root_dir/scripts/install.sh"
 ! grep -Fq 'refs/tags/' "$root_dir/scripts/install.ps1"
 echo 'installer signing identity acceptance and rejection checks passed'

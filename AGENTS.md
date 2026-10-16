@@ -54,7 +54,7 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
 - Event ingestion is idempotent through stable ingestion keys. Preserve
   transactional behavior: an append and its source cursor advance together, or
   neither is committed.
-- The current SQLite schema version is 10. Migrations 1 and 2 create the core
+- The current SQLite schema version is 11. Migrations 1 and 2 create the core
   and diagnostics tables, migration 3 normalizes stored timestamps to fixed
   width UTC values, and migration 4 adds source-generation tracking for
   transcript replacement detection. Migration 5 adds rational pricing rates
@@ -67,7 +67,9 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   namespaces and remaps any older persisted collisions without losing
   references. Migration 9 records pending-tail and safe unchanged-snapshot
   reuse state on source cursors. Migration 10 stores path-safe mappings from a
-  canonical source digest to its established collector source ID. SQLite
+  canonical source digest to its established collector source ID. Migration 11
+  adds the persistent source registry, singleton lease, heartbeat/status,
+  cooperative stop request, and run history. SQLite
   schema changes require an explicit numbered migration in
   `plugins/library/token-logger/migrations.go`,
   a matching runner update, and an upgrade test covering the complete history.
