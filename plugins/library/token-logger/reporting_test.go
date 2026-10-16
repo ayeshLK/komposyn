@@ -227,7 +227,12 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if _, err := store.db.Exec("DROP TABLE collector_source_identities"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10)"); err != nil {
+	for _, table := range []string{"collector_runs", "collector_runtime", "collector_sources"} {
+		if _, err := store.db.Exec("DROP TABLE " + table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -250,8 +255,8 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if err := store.db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 10 || latestMigration != 10 {
-		t.Fatalf("migration history = count %d, latest %d; want ten migrations through version 10", migrationCount, latestMigration)
+	if migrationCount != 11 || latestMigration != 11 {
+		t.Fatalf("migration history = count %d, latest %d; want eleven migrations through version 11", migrationCount, latestMigration)
 	}
 	var sourceGenerationColumn string
 	if err := store.db.QueryRow("SELECT name FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&sourceGenerationColumn); err != nil {

@@ -24,9 +24,11 @@ not silently submit an issue.
 
 The local database may contain usage counts, timestamps, provider/model/client
 identifiers, project and session references, source provenance, source hashes,
-source cursors, pricing rules, and sanitized diagnostics. Settings are stored
-separately and include onboarding, collector, data-directory, and consent
-choices.
+source cursors, registered collector paths, local collector lease/health
+history, pricing rules, and sanitized diagnostics. Registered paths are local
+administrative metadata and are not copied into diagnostics or issue drafts.
+Settings are stored separately and include onboarding, collector,
+data-directory, and consent choices.
 
 By design, Komposyn does not intentionally persist prompts, model responses,
 full transcripts, API keys, or provider credentials. This is a design

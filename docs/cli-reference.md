@@ -153,10 +153,36 @@ compatibility report alias and keeps its existing output shape.
 ### `watch`
 
 ```text
-komposyn-lg watch <file-or-directory> [--interval <duration>] [--data-dir <path>]
+komposyn-lg watch add <source> [<source>...] [--defaults] [--data-dir <path>]
+komposyn-lg watch remove <source-or-id> [<source-or-id>...] [--data-dir <path>]
+komposyn-lg watch list [--format text|json] [--data-dir <path>]
+komposyn-lg watch start [--interval <duration>] [--data-dir <path>]
+komposyn-lg watch status [--format text|json] [--data-dir <path>]
+komposyn-lg watch stop [--timeout <duration>] [--data-dir <path>]
+komposyn-lg watch <source> [<source>...] [--interval <duration>] [--data-dir <path>]
+komposyn-lg watch foreground [<source>...] [--interval <duration>] [--data-dir <path>]
 ```
 
-Polls once immediately and continues until interrupted. The default interval is
+`add` validates ordinary paths, canonicalizes existing targets, and is
+idempotent across relative, absolute, and symlink forms. `--defaults` permits
+the default Codex and Claude roots to be registered before creation. `remove`
+disables a source without deleting provider data or history. `list` includes
+stable ID, explicit local path, enabled state, and latest health; JSON uses
+`format_version: 1`.
+
+`start` launches one detached process for the resolved data directory and
+returns after readiness. It requires an enabled source; repeated starts return
+the existing instance. `status` reports mode/state, instance identity, PID,
+version, interval, timestamps, source counts, cumulative imports/duplicates,
+typed outcomes, pending state, and sanitized error. JSON uses
+`format_version: 1`. `stop` is cooperative, idempotent, and waits ten seconds
+by default. Timeout exits 3 and does not signal the stored PID. A stale lease
+can be replaced transactionally by the next start.
+
+Foreground forms poll once immediately and continue until interrupted.
+Explicit roots are ephemeral; no-root `foreground` uses the enabled registry.
+Lifecycle words are reserved, so use `watch foreground add` to watch a literal
+path named `add`. The default interval is
 five seconds. Poll output uses the same typed outcomes as `import`. Ignored and
 unchanged records remain healthy; a deferred tail is visible as pending without
 degrading health; unsupported, malformed, and failed-source outcomes degrade
@@ -172,6 +198,9 @@ even if a later poll recovered. `latest_status` separately describes the most
 recent completed poll, while `lifecycle` reports whether the worker is running
 or stopped. Ctrl-C and SIGTERM are normal operator stops and return exit status
 zero; there is currently no strict non-zero-on-degraded watch mode.
+
+The internal `watch serve` child mode is not a user command. It opens no
+network listener or remote-control endpoint.
 
 ### `settings`
 

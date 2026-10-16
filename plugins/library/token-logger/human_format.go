@@ -117,6 +117,10 @@ func formatHumanDimension(value string) string {
 // original value instead.
 func FormatHumanLabel(value string) string { return formatHumanDimension(value) }
 
+// FormatHumanText escapes terminal controls without truncating path-explicit
+// local administrative output. Machine-readable output retains the original.
+func FormatHumanText(value string) string { return escapeHumanText(value) }
+
 func escapeHumanText(value string) string {
 	var escaped strings.Builder
 	for _, character := range value {

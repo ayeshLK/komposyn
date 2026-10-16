@@ -304,7 +304,7 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 }
 
-func TestMigrationsOneThroughTenPreserveLegacyData(t *testing.T) {
+func TestMigrationsOneThroughElevenPreserveLegacyData(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -353,8 +353,8 @@ func TestMigrationsOneThroughTenPreserveLegacyData(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 10 || latestMigration != 10 {
-		t.Fatalf("migration history = %d/%d, want all migrations 1 through 10", migrationCount, latestMigration)
+	if migrationCount != 11 || latestMigration != 11 {
+		t.Fatalf("migration history = %d/%d, want all migrations 1 through 11", migrationCount, latestMigration)
 	}
 	var identityTable string
 	if err := db.QueryRow("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'collector_source_identities'").Scan(&identityTable); err != nil {

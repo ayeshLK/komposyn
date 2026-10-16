@@ -13,8 +13,11 @@ platform default roots when enabled. Source files are read-only.
 
 The local SQLite database stores normalized usage events, timestamps, token
 counts, provider/model/client identifiers, project and session references,
-provenance, ingestion keys, source cursors, pricing rules, and sanitized local
-diagnostics. Settings are stored separately in the configured data directory.
+provenance, ingestion keys, source cursors, registered collector paths, local
+collector runtime/health, pricing rules, and sanitized local diagnostics.
+Settings are stored separately in the configured data directory. Registered
+paths are path-explicit local administrative data shown by `watch list`; they
+are excluded from diagnostics and issue drafts.
 
 ## What is not stored by default
 

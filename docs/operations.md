@@ -34,17 +34,28 @@ configured interval. The collector reads source files and never modifies them.
 
 ```sh
 komposyn-lg usage --format table
-komposyn-lg watch /path/to/source --data-dir /path/to/data
+komposyn-lg watch add /path/to/codex /path/to/claude --data-dir /path/to/data
+komposyn-lg watch start --data-dir /path/to/data
+komposyn-lg watch status --data-dir /path/to/data
 komposyn-lg settings --collector on --auto-start off
 ```
 
-For predictable collection scope, pass an explicit source path. The
+For temporary collection without persistence, use `watch foreground` with one
+or more explicit paths. The
 `TOKEN_LOGGER_CODEX_DIR` and `TOKEN_LOGGER_CLAUDE_DIR` variables configure only
 the interactive auto-start collector; see [configuration](configuration.md).
 
+The background runtime has no network listener. Coordination uses one SQLite
+lease per data directory, a random instance identity, and a heartbeat. Stop is
+cooperative and waits for an atomic import to commit or roll back. It never
+signals a PID read from storage. A stale heartbeat remains visible and the
+next start may replace it transactionally. Separate data directories have
+independent collectors.
+
 ## Backups and recovery
 
-Stop `komposyn-lg`, including any `watch` process, before taking a file copy.
+Run `komposyn-lg watch stop` and stop foreground/interactive instances before
+taking a file copy.
 Back up the complete data directory, including `settings.json`, the database,
 and any SQLite sidecars. See [Backups and recovery](backups.md) for a repeatable
 procedure.
@@ -56,6 +67,8 @@ or copy only the main `.db` file while a WAL database is active.
 ## Upgrades and uninstall
 
 The initial upgrade operation is to rerun the latest standalone installer. It
-replaces the executable and preserves the data directory. Uninstall removes the
-executable only; it preserves the database, settings, diagnostics, and consent
+stops a managed background collector before replacement and restarts it after
+success only when it was previously active. Uninstall stops the managed
+collector before removing the executable. Both preserve the database,
+registered sources, runtime history, settings, diagnostics, and consent
 choices. See [upgrades](upgrades.md) before changing versions.

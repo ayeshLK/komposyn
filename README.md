@@ -139,7 +139,11 @@ komposyn-lg sessions --data-dir <path> --format csv
 komposyn-lg projects list --data-dir <path> --format table
 komposyn-lg sessions list --project <project-id> --data-dir <path> --format json
 komposyn-lg sessions show <session-id> --group-by model --data-dir <path>
-komposyn-lg watch <file-or-directory> --data-dir <path>
+komposyn-lg watch add <codex-root> <claude-root> --data-dir <path>
+komposyn-lg watch start --data-dir <path>
+komposyn-lg watch status --data-dir <path>
+komposyn-lg watch stop --data-dir <path>
+komposyn-lg watch foreground <source> [<source>...] --data-dir <path>
 komposyn-lg settings --data-dir <path> --collector on
 komposyn-lg report-issue --output <path> --data-dir <path>
 komposyn-lg version

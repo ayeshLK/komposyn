@@ -17,6 +17,9 @@ that do not fit the common model may be retained in `usage_events.attributes_jso
 | `source_cursors` | The committed position, fingerprint, and generation for an imported source. |
 | `pricing_rules` | Time-bounded provider/model/token-category rates used for cost calculation. |
 | `diagnostics` | Deduplicated operational failures and their occurrence state. |
+| `collector_sources` | Stable enabled/disabled canonical roots and path-explicit local health. |
+| `collector_runtime` | Singleton lease, heartbeat, stop request, latest poll, and cumulative outcomes. |
+| `collector_runs` | Preserved start/stop state for background and embedded instances. |
 | `schema_migrations` | Applied schema migration versions and timestamps. |
 
 `usage_events` is the durable fact table. Its foreign keys to `projects` and
@@ -93,3 +96,8 @@ cursor from advancing past an unsuccessful import.
 Diagnostics are intentionally separate from usage facts. Repeated failures are
 folded by fingerprint and update occurrence counts and last-seen timestamps,
 while sanitized text is exposed to CLI surfaces.
+
+Collector paths are local administrative metadata. `watch list` may display
+them, but diagnostics and issue drafts do not. Lease acquisition, stale
+takeover, source changes, and status reads use bounded SQLite coordination and
+do not weaken event/reference/cursor transaction atomicity.

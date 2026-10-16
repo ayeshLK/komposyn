@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Settings stores explicit local collector preferences. It contains no
@@ -31,13 +32,14 @@ type Settings struct {
 	AutoStart           bool   `json:"auto_start"`
 	DataDir             string `json:"data_dir"`
 	PollIntervalSeconds int    `json:"poll_interval_seconds"`
+	PollIntervalMillis  int64  `json:"poll_interval_millis"`
 	FailureMode         string `json:"failure_mode"`
 }
 
 // DefaultSettings returns conservative first-run settings. Auto-start is
 // deliberately disabled until separately approved by the user.
 func DefaultSettings(dataDir string) Settings {
-	return Settings{Version: 1, DataDir: dataDir, PollIntervalSeconds: 5, FailureMode: "non-blocking"}
+	return Settings{Version: 1, DataDir: dataDir, PollIntervalSeconds: 5, PollIntervalMillis: 5000, FailureMode: "non-blocking"}
 }
 
 // LoadSettings loads settings or returns defaults when the file is absent.
@@ -62,6 +64,9 @@ func LoadSettings(path, dataDir string) (Settings, error) {
 	if settings.PollIntervalSeconds <= 0 {
 		settings.PollIntervalSeconds = 5
 	}
+	if settings.PollIntervalMillis <= 0 {
+		settings.PollIntervalMillis = int64(settings.PollIntervalSeconds) * 1000
+	}
 	if settings.FailureMode == "" {
 		settings.FailureMode = "non-blocking"
 	}
@@ -74,7 +79,13 @@ func SaveSettings(path string, settings Settings) error {
 		settings.Version = 1
 	}
 	if settings.PollIntervalSeconds <= 0 {
-		settings.PollIntervalSeconds = 5
+		settings.PollIntervalSeconds = int((settings.PollIntervalMillis + 999) / 1000)
+		if settings.PollIntervalSeconds <= 0 {
+			settings.PollIntervalSeconds = 5
+		}
+	}
+	if settings.PollIntervalMillis <= 0 {
+		settings.PollIntervalMillis = int64(settings.PollIntervalSeconds) * 1000
 	}
 	if settings.FailureMode == "" {
 		settings.FailureMode = "non-blocking"
@@ -111,4 +122,16 @@ func SaveSettings(path string, settings Settings) error {
 		return fmt.Errorf("replace settings: %w", err)
 	}
 	return nil
+}
+
+// CollectorPollInterval returns the exact persisted polling duration while
+// retaining compatibility with settings written before millisecond storage.
+func (settings Settings) CollectorPollInterval() time.Duration {
+	if settings.PollIntervalMillis > 0 {
+		return time.Duration(settings.PollIntervalMillis) * time.Millisecond
+	}
+	if settings.PollIntervalSeconds > 0 {
+		return time.Duration(settings.PollIntervalSeconds) * time.Second
+	}
+	return 5 * time.Second
 }

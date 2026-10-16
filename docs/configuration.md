@@ -53,11 +53,26 @@ komposyn-lg settings --data-dir /path/to/data --collector on --auto-start off
 ```
 
 The settings file contains the schema version, onboarding state, collector
-enabled/auto-start choices, data directory, polling interval, and diagnostic
-failure mode. Defaults are a five-second poll interval and non-blocking
-diagnostic handling. Settings writes are atomic.
+enabled/auto-start choices, data directory, exact millisecond polling interval
+(plus the legacy whole-second compatibility field), and diagnostic failure
+mode. Defaults are a five-second poll interval and non-blocking diagnostic
+handling. Settings writes are atomic.
 
 ## Collector source roots
+
+Persistent background sources belong to the selected data directory:
+
+```text
+komposyn-lg watch add /path/to/codex /path/to/claude
+komposyn-lg watch add --defaults
+komposyn-lg watch list
+```
+
+They are stored transactionally in SQLite with stable IDs, canonical paths,
+enabled state, and local health. Existing targets resolve symlinks for duplicate
+detection. Paths are local administrative metadata shown by `watch list`; they
+are never included in diagnostics or issue drafts. A background collector
+reloads enabled roots before every poll.
 
 The interactive auto-start collector reads, but never modifies, provider-owned
 source files. Set its roots with:
@@ -67,9 +82,9 @@ TOKEN_LOGGER_CODEX_DIR=/path/to/codex TOKEN_LOGGER_CLAUDE_DIR=/path/to/claude \
   komposyn-lg
 ```
 
-These environment variables configure interactive auto-start only. The
-explicit `watch` command uses its positional source argument and does not read
-these variables as additional roots. Configured environment roots augment the
+These environment variables configure embedded interactive auto-start only;
+they do not register background sources. Explicit foreground roots also do not
+change the registry. Configured environment roots augment the
 defaults below; they do not replace them. Environment roots are required and a
 missing/inaccessible one degrades collector health. Built-in defaults are
 optional and may be absent without creating a failure.
@@ -84,6 +99,10 @@ Use explicit `watch` paths when you need predictable scope:
 ```text
 komposyn-lg watch /path/to/source --data-dir /path/to/data
 ```
+
+`collector_enabled` and `auto_start` control embedded REPL collection only and
+never launch a detached process. A healthy background lease suppresses
+embedded startup for the same data directory.
 
 Directory discovery accepts provider JSON and JSONL files according to the
 adapter’s detection rules. Repeated, overlapping, relative/absolute, and

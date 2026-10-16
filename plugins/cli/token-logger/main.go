@@ -101,6 +101,12 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 		return runInteractiveLoop(&scannerLineReader{scanner: scanner, output: stdout}, stdout, stderr, store, dataDir, settings, startNow)
 	}
 	switch args[0] {
+	case "_watch-lifecycle":
+		if len(args) != 1 {
+			return 1
+		}
+		fmt.Fprintln(stdout, "1")
+		return 0
 	case "version", "--version":
 		if len(args) != 1 {
 			fmt.Fprintln(stderr, "usage: komposyn-lg version")
@@ -163,6 +169,8 @@ type interactiveModelSelection struct {
 
 type interactiveCollectorRuntime struct {
 	collector *tokenlogger.Collector
+	store     *tokenlogger.Store
+	instance  string
 	cancel    context.CancelFunc
 	done      chan struct{}
 }
@@ -172,11 +180,49 @@ func startInteractiveCollector(store *tokenlogger.Store, roots []tokenlogger.Col
 	if err != nil {
 		return nil, err
 	}
+	instance, err := tokenlogger.NewCollectorInstanceID()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := store.AcquireCollectorLease(instance, os.Getpid(), tokenlogger.Version, "embedded", interval, staleWindow(interval)); err != nil {
+		return nil, err
+	}
+	if err := store.MarkCollectorReady(instance); err != nil {
+		_ = store.ReleaseCollectorLease(instance, "failed", err.Error())
+		return nil, err
+	}
+	if err := store.BeginCollectorPoll(instance, len(roots)); err != nil {
+		_ = store.ReleaseCollectorLease(instance, "failed", err.Error())
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	runtime := &interactiveCollectorRuntime{collector: collector, cancel: cancel, done: make(chan struct{})}
+	runtime := &interactiveCollectorRuntime{collector: collector, store: store, instance: instance, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(runtime.done)
-		_ = collector.RunImmediate(ctx, nil)
+		defer store.ReleaseCollectorLease(instance, "stopped", "")
+		heartbeatDone := make(chan struct{})
+		go func() {
+			defer close(heartbeatDone)
+			ticker := time.NewTicker(leaseHeartbeatInterval(staleWindow(interval)))
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					stop, heartbeatErr := store.HeartbeatCollector(instance)
+					if stop || heartbeatErr != nil {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+		_ = collector.RunImmediate(ctx, func(result tokenlogger.ImportResult, pollErr error) {
+			_ = store.CompleteCollectorPoll(instance, result, collector.Health(), pollErr)
+		})
+		cancel()
+		<-heartbeatDone
 	}()
 	return runtime, nil
 }
@@ -198,6 +244,27 @@ func collectorStatusLine(collector *tokenlogger.Collector) string {
 		health.Lifecycle, health.Status, health.Sources, health.DiscoveryFailures,
 		collectorTime(health.LastCompletedAt), collectorTime(health.LastSuccessAt), health.Pending, health.Interrupted,
 		health.Outcomes.FailedSource, health.Outcomes.UnsupportedUsage, health.Outcomes.MalformedRecord)
+}
+
+func persistedCollectorStatusLine(store *tokenlogger.Store) string {
+	status, err := store.CollectorRuntimeStatus(0)
+	if err != nil {
+		return "collector runtime: state=unknown"
+	}
+	status, err = store.CollectorRuntimeStatus(staleWindow(status.Interval))
+	if err != nil {
+		return "collector runtime: state=unknown"
+	}
+	return fmt.Sprintf("collector runtime: state=%s mode=%s sources=%d discovery_failures=%d last_completed=%s pending=%t failed_source=%d unsupported_usage=%d malformed_record=%d",
+		status.State, status.Mode, status.DiscoveredSources, status.DiscoveryFailures, collectorTimePointer(status.LastCompletedAt), status.Pending,
+		status.Outcomes.FailedSource, status.Outcomes.UnsupportedUsage, status.Outcomes.MalformedRecord)
+}
+
+func collectorTimePointer(value *time.Time) string {
+	if value == nil {
+		return "unavailable"
+	}
+	return collectorTime(*value)
 }
 
 func collectorTime(value time.Time) string {
@@ -475,8 +542,10 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 	var collectorRuntime *interactiveCollectorRuntime
 	if startNow || (settings.CollectorEnabled && settings.AutoStart) {
 		var err error
-		collectorRuntime, err = startInteractiveCollector(store, defaultCollectorRoots(), time.Duration(settings.PollIntervalSeconds)*time.Second)
-		if err != nil {
+		collectorRuntime, err = startInteractiveCollector(store, defaultCollectorRoots(), settings.CollectorPollInterval())
+		if errors.Is(err, tokenlogger.ErrCollectorActive) {
+			fmt.Fprintln(stdout, "background collector already active for this data directory; this REPL will reuse its persisted status")
+		} else if err != nil {
 			fmt.Fprintf(stderr, "collector setup failed: %v\n", err)
 		} else {
 			defer collectorRuntime.stop()
@@ -507,10 +576,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 	}
 	lastCollectorStatus := ""
 	for {
-		currentCollectorStatus := collectorStatusLine(nil)
-		if collectorRuntime != nil {
-			currentCollectorStatus = collectorStatusLine(collectorRuntime.collector)
-		}
+		currentCollectorStatus := persistedCollectorStatusLine(store)
 		if currentCollectorStatus != lastCollectorStatus {
 			fmt.Fprintln(stdout, currentCollectorStatus)
 			lastCollectorStatus = currentCollectorStatus
@@ -705,12 +771,8 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 			fmt.Fprintf(stdout, "data directory: %s\n", dataDir)
 			fmt.Fprintf(stdout, "saved collector enabled preference: %t\n", settings.CollectorEnabled)
 			fmt.Fprintf(stdout, "saved collector auto-start on REPL launch: %t\n", settings.AutoStart)
-			fmt.Fprintf(stdout, "saved collector poll interval: %ds\n", settings.PollIntervalSeconds)
-			if collectorRuntime != nil {
-				fmt.Fprintln(stdout, collectorStatusLine(collectorRuntime.collector))
-			} else {
-				fmt.Fprintln(stdout, collectorStatusLine(nil))
-			}
+			fmt.Fprintf(stdout, "saved collector poll interval: %s\n", settings.CollectorPollInterval())
+			fmt.Fprintln(stdout, persistedCollectorStatusLine(store))
 			fmt.Fprintln(stdout, "diagnostic reporting: ask before any external action")
 			mode := "rolling"
 			if state.pinned {
@@ -1136,86 +1198,24 @@ func defaultCollectorRoots() []tokenlogger.CollectorRoot {
 	if configured := os.Getenv("TOKEN_LOGGER_CLAUDE_DIR"); configured != "" {
 		roots = append(roots, tokenlogger.CollectorRoot{Path: configured, Required: true})
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		roots = append(roots,
-			tokenlogger.CollectorRoot{Path: filepath.Join(home, ".codex", "sessions")},
-			tokenlogger.CollectorRoot{Path: filepath.Join(home, ".claude", "projects")})
-	}
+	roots = append(roots, platformDefaultCollectorRoots()...)
 	return roots
+}
+
+func platformDefaultCollectorRoots() []tokenlogger.CollectorRoot {
+	if home, err := os.UserHomeDir(); err == nil {
+		return []tokenlogger.CollectorRoot{
+			{Path: filepath.Join(home, ".codex", "sessions")},
+			{Path: filepath.Join(home, ".claude", "projects")},
+		}
+	}
+	return nil
 }
 
 func runWatch(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return runWatchWithContext(args, stdout, stderr, ctx)
-}
-
-func runWatchWithContext(args []string, stdout, stderr io.Writer, ctx context.Context) int {
-	if len(args) < 1 {
-		fmt.Fprintln(stderr, "usage: komposyn-lg watch <file-or-directory> [--interval <duration>] [--data-dir <path>]")
-		return 1
-	}
-	dataDir := ""
-	interval := 5 * time.Second
-	root := args[0]
-	for index := 1; index < len(args); index++ {
-		if index+1 >= len(args) {
-			fmt.Fprintln(stderr, "missing watch option value")
-			return 1
-		}
-		switch args[index] {
-		case "--data-dir":
-			dataDir = args[index+1]
-		case "--interval":
-			parsed, err := time.ParseDuration(args[index+1])
-			if err != nil || parsed <= 0 {
-				fmt.Fprintln(stderr, "interval must be a positive duration")
-				return 1
-			}
-			interval = parsed
-		default:
-			fmt.Fprintf(stderr, "unknown watch option %q\n", args[index])
-			return 1
-		}
-		index++
-	}
-	resolution, err := resolveDataDir(dataDir)
-	if err != nil {
-		fmt.Fprintf(stderr, "resolve token logger data directory: %v\n", err)
-		return 2
-	}
-	reportDataDirResolution(stderr, resolution)
-	dataDir = resolution.Path
-	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
-	if err != nil {
-		fmt.Fprintf(stderr, "open token logger database in %s: %v\n", dataDir, err)
-		return 2
-	}
-	defer store.Close()
-	collector, err := tokenlogger.NewCollector(store, []string{root}, interval)
-	if err != nil {
-		fmt.Fprintf(stderr, "create collector: %v\n", err)
-		return 2
-	}
-	fmt.Fprintf(stdout, "watching %s every %s; press Ctrl-C to stop\n", root, interval)
-	if result, pollErr := collector.PollOnceContext(ctx); pollErr != nil {
-		writeWatchPoll(stdout, result, collector.Health())
-		fmt.Fprintf(stderr, "initial collector poll: %v\n", pollErr)
-	} else {
-		writeWatchPoll(stdout, result, collector.Health())
-	}
-	if err := collector.RunWithResults(ctx, func(result tokenlogger.ImportResult, pollErr error) {
-		writeWatchPoll(stdout, result, collector.Health())
-		if pollErr != nil {
-			fmt.Fprintf(stderr, "collector poll: %v\n", pollErr)
-		}
-	}); err != nil {
-		fmt.Fprintf(stderr, "collector stopped: %v\n", err)
-		return 2
-	}
-	health := collector.Health()
-	writeWatchSummary(stdout, health)
-	return 0
 }
 
 func writeWatchSummary(output io.Writer, health tokenlogger.CollectorHealth) {
@@ -1291,7 +1291,7 @@ func runSettings(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "save settings: %v\n", err)
 		return 2
 	}
-	fmt.Fprintf(stdout, "data_dir=%s collector=%t auto_start=%t interval=%ds\n", dataDir, settings.CollectorEnabled, settings.AutoStart, settings.PollIntervalSeconds)
+	fmt.Fprintf(stdout, "data_dir=%s collector=%t auto_start=%t interval=%s\n", dataDir, settings.CollectorEnabled, settings.AutoStart, settings.CollectorPollInterval())
 	return 0
 }
 

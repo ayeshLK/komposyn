@@ -63,7 +63,9 @@ bash scripts/verify-release.sh /tmp/komposyn-release-test
 
 The verifier checks checksums, archive contents, initial settings/database
 creation, executable replacement, and uninstall. It confirms that upgrade and
-uninstall preserve local data.
+uninstall preserve local data. It also starts a registered background
+collector, stops/restarts it across replacement, and verifies uninstall stops
+it before removing the executable.
 
 For installer verification, `scripts/install.sh` verifies both SHA-256 and the
 Cosign blob certificate identity and OIDC issuer before replacing the binary.
@@ -77,6 +79,8 @@ Windows.
 - [ ] Checksums and Cosign signatures verify.
 - [ ] Certificate identity and OIDC issuer are enforced.
 - [ ] Installer replacement preserves database, settings, and consent state.
+- [ ] A running background collector stops before replacement and restarts
+      afterward; registry and runtime history remain intact.
 - [ ] Uninstall removes the executable but preserves local data.
 - [ ] No release path bypasses signature verification.
 - [ ] GitHub Actions permissions remain least-privilege and action references

@@ -75,10 +75,29 @@ try {
     & $cosign verify-blob --signature $signature --certificate $certificate --certificate-identity-regexp $cosignIdentity --certificate-oidc-issuer $cosignIssuer $archive
     if ($LASTEXITCODE -ne 0) { throw 'release signature verification failed' }
     Expand-Archive -Path $archive -DestinationPath $temp -Force
+    $installedBinary = Join-Path $installDir 'komposyn-lg.exe'
+    $restartCollector = $false
+    if (Test-Path -LiteralPath $installedBinary -PathType Leaf) {
+        $capability = (& $installedBinary _watch-lifecycle 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $capability -eq '1') {
+            $collectorStatus = (& $installedBinary watch status --format json 2>$null | ConvertFrom-Json)
+            if ($LASTEXITCODE -ne 0 -or $null -eq $collectorStatus) { throw 'unable to inspect the existing background collector; executable was not replaced' }
+            if ($collectorStatus.state -in @('starting', 'running', 'degraded', 'stopping')) {
+                $restartCollector = $true
+                & $installedBinary watch stop --timeout 30s
+                if ($LASTEXITCODE -ne 0) { throw 'background collector stop timed out' }
+            }
+        }
+    }
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
     Move-Item -Path (Join-Path $temp 'komposyn-lg.exe') -Destination (Join-Path $installDir 'komposyn-lg.exe') -Force
     Write-Output "installed komposyn-lg $version at $(Join-Path $installDir 'komposyn-lg.exe')"
     Write-Output 'existing database, configuration, and consent settings were preserved'
+    if ($restartCollector) {
+        & (Join-Path $installDir 'komposyn-lg.exe') watch start
+        if ($LASTEXITCODE -ne 0) { throw "upgrade succeeded, but the background collector could not be restarted; run 'komposyn-lg watch start' after reviewing its registered sources" }
+        Write-Output 'restarted the background collector after upgrade'
+    }
 } finally {
     Remove-Item -Recurse -Force $temp -ErrorAction SilentlyContinue
 }

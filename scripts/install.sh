@@ -84,8 +84,34 @@ fi
 	--certificate-oidc-issuer "$cosign_issuer" \
 	"$tmp_dir/$asset"
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
+restart_collector=0
+installed_binary="$install_dir/komposyn-lg"
+if [[ -x "$installed_binary" ]]; then
+	capability="$("$installed_binary" _watch-lifecycle 2>/dev/null || true)"
+	if [[ "$capability" == 1 ]]; then
+		collector_status="$("$installed_binary" watch status --format json)" || {
+			echo 'unable to inspect the existing background collector; executable was not replaced' >&2
+			exit 1
+		}
+		if [[ "$collector_status" == *'"state":"running"'* || "$collector_status" == *'"state":"degraded"'* || "$collector_status" == *'"state":"starting"'* || "$collector_status" == *'"state":"stopping"'* ]]; then
+			restart_collector=1
+			"$installed_binary" watch stop --timeout 30s || {
+				echo 'unable to stop the existing background collector; executable was not replaced' >&2
+				exit 1
+			}
+		fi
+	fi
+fi
 mkdir -p "$install_dir"
 chmod 0755 "$tmp_dir/komposyn-lg"
 mv "$tmp_dir/komposyn-lg" "$install_dir/komposyn-lg"
 echo "installed komposyn-lg ${version} at ${install_dir}/komposyn-lg"
 echo "existing database, configuration, and consent settings were preserved"
+if (( restart_collector )); then
+	if "$install_dir/komposyn-lg" watch start; then
+		echo 'restarted the background collector after upgrade'
+	else
+		echo "upgrade succeeded, but the background collector could not be restarted; run 'komposyn-lg watch start' after reviewing its registered sources" >&2
+		exit 1
+	fi
+fi

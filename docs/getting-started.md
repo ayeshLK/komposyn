@@ -62,16 +62,18 @@ to limit the time range, or use `--project`, `--session`, `--client`,
 
 ## Keep collecting new records
 
-Run the watcher against a file or directory:
+Register Codex and Claude roots and start one background collector:
 
 ```text
-bin/komposyn-lg watch /path/to/transcripts \
-  --data-dir "$HOME/.komposyn/token-logger/data" \
-  --interval 5s
+bin/komposyn-lg watch add /path/to/codex /path/to/claude
+bin/komposyn-lg watch start --interval 5s
+bin/komposyn-lg watch status
 ```
 
-The watcher performs one immediate poll, then polls on the configured interval.
-It never writes to provider-owned source files.
+The detached watcher combines all roots into one deduplicated poll and local
+database. Registry changes apply by the next poll. Stop it with `watch stop`.
+For terminal-bound collection, use `watch foreground <source>...`. Neither mode
+writes to provider-owned source files.
 
 ## Next steps
 

@@ -121,7 +121,7 @@ func TestResolveDataDirPreservesReadableLegacyState(t *testing.T) {
 	}
 	wantSettings := tokenlogger.Settings{
 		Version: 1, OnboardingComplete: true, CollectorEnabled: true,
-		AutoStart: false, DataDir: legacy, PollIntervalSeconds: 17, FailureMode: "non-blocking",
+		AutoStart: false, DataDir: legacy, PollIntervalSeconds: 17, PollIntervalMillis: 17000, FailureMode: "non-blocking",
 	}
 	if err := tokenlogger.SaveSettings(settingsPath, wantSettings); err != nil {
 		t.Fatal(err)
@@ -351,7 +351,7 @@ func seedLegacyState(t *testing.T, dataDir string) {
 	}
 	settings := tokenlogger.Settings{
 		Version: 1, OnboardingComplete: true, CollectorEnabled: false,
-		AutoStart: false, DataDir: dataDir, PollIntervalSeconds: 5, FailureMode: "non-blocking",
+		AutoStart: false, DataDir: dataDir, PollIntervalSeconds: 5, PollIntervalMillis: 5000, FailureMode: "non-blocking",
 	}
 	if err := tokenlogger.SaveSettings(filepath.Join(dataDir, "settings.json"), settings); err != nil {
 		t.Fatal(err)

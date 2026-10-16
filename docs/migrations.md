@@ -2,7 +2,7 @@
 
 Komposyn upgrades its SQLite schema automatically when `Store.Open` is called.
 Migrations are numbered, applied in order, and recorded in the
-`schema_migrations` table. The current schema version is 10.
+`schema_migrations` table. The current schema version is 11.
 
 ## Migration history
 
@@ -32,6 +32,9 @@ Migrations are numbered, applied in order, and recorded in the
 10. Adds a path-safe collector identity map from canonical source digests to
     established adapter source IDs, preserving idempotency when symlink or
     configured-root spellings are added, reordered, or removed.
+11. Adds the persistent source registry, singleton runtime lease and heartbeat,
+    cooperative stop request, cumulative typed outcomes, and collector-run
+    history.
 
 ## Compatibility rules
 

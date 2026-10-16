@@ -11,6 +11,7 @@ The following local state must survive an upgrade:
 - onboarding and collector preferences
 - local diagnostics and their review state
 - consent choices represented by local settings
+- registered collector sources and prior runtime history
 
 When the new binary opens the database, numbered SQLite migrations run inside
 the storage layer. Do not copy or edit database files while the CLI is running.
@@ -18,3 +19,10 @@ Create a backup before a major upgrade if the data is important.
 
 In-CLI self-updating is deferred. Release installers verify checksums and Cosign
 signatures; do not bypass those checks by downloading an unverified binary.
+
+The installer checks the selected data directory for an active managed
+collector, requests cooperative stop before replacement, and restarts it after
+success only when it was previously active. It never terminates a persisted
+PID. Set `TOKEN_LOGGER_DATA_DIR` during upgrade for a non-default data
+directory. Uninstall follows the same stop-before-remove rule and leaves all
+SQLite/settings state intact.

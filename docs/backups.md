@@ -1,12 +1,14 @@
 # Backups and recovery
 
 Back up the Komposyn data directory when usage history, settings, diagnostics,
-or consent choices must be recoverable. Provider transcript files are separate
+registered collector sources, runtime history, or consent choices must be
+recoverable. Provider transcript files are separate
 provider-owned data and are not included in a Komposyn data-directory backup.
 
 ## Create a consistent backup
 
-1. Stop `komposyn-lg` and any `watch` process using the data directory.
+1. Run `komposyn-lg watch stop` for the selected data directory, exit the REPL,
+   and stop any foreground watcher using it.
 2. Resolve the directory using [configuration](configuration.md). The
    `komposyn-lg settings` output shows the absolute `data_dir`; alternatively,
    set `TOKEN_LOGGER_DATA_DIR` explicitly for all commands and harness clients.
