@@ -126,10 +126,11 @@ type UsageRow struct {
 // are unavailable. It is used only by human reports; machine report schemas
 // remain unchanged.
 type PricingCoverageRow struct {
-	Provider string
-	Model    string
-	Requests int64
-	Reasons  map[string]int64
+	Provider   string
+	Model      string
+	Requests   int64
+	Reasons    map[string]int64
+	Categories map[string]int64
 }
 
 // UsageReport is the stable machine-readable report shape.
@@ -258,11 +259,14 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 			key := provider + "\x00" + model
 			entry := coverage[key]
 			if entry == nil {
-				entry = &PricingCoverageRow{Provider: provider, Model: model, Reasons: map[string]int64{}}
+				entry = &PricingCoverageRow{Provider: provider, Model: model, Reasons: map[string]int64{}, Categories: map[string]int64{}}
 				coverage[key] = entry
 			}
 			entry.Requests++
 			entry.Reasons[cost.Reason]++
+			for _, category := range cost.MissingCategories {
+				entry.Categories[category]++
+			}
 		}
 		if len(filter.GroupBy) == 0 {
 			continue
@@ -674,6 +678,18 @@ func WriteHumanPricingCoverage(w io.Writer, rows []PricingCoverageRow, width int
 			if err := writeWrappedHumanLine(w, fmt.Sprintf("%s / %s: %s requests; %s (%s)", provider, model, formatExactCount(row.Requests), humanPricingReason(reason), formatExactCount(row.Reasons[reason])), width, "  "); err != nil {
 				return err
 			}
+			if reason == "billing_context_missing" && len(row.Categories) > 0 {
+				categories := make([]string, 0, len(row.Categories))
+				for category := range row.Categories {
+					categories = append(categories, category)
+				}
+				sort.Strings(categories)
+				for _, category := range categories {
+					if err := writeWrappedHumanLine(w, fmt.Sprintf("Affected category: %s (%s)", category, formatExactCount(row.Categories[category])), width, "    "); err != nil {
+						return err
+					}
+				}
+			}
 		}
 		remediations := make([]string, 0, len(reasons))
 		seenRemediations := make(map[string]struct{}, len(reasons))
@@ -709,7 +725,7 @@ func humanPricingRemediation(reason string) string {
 	case "outside_effective_range":
 		return "Do not apply current prices retroactively; use a verified rate for the event dates or keep costs unknown."
 	case "billing_context_missing":
-		return "Required billing evidence is absent; keep unknown until source data can select the applicable rate."
+		return "Check for a verified rate for the affected token category. If rate selection needs billing evidence absent from the source, keep the estimate unknown until that evidence is available."
 	case "model_unresolved":
 		return "Check model extraction with a sanitized fixture; do not guess a model alias."
 	case "ambiguous_pricing_rule":

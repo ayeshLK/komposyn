@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 )
@@ -257,18 +258,19 @@ func modelPrecedence(selector, resolved, requested string) int {
 }
 
 type eventCost struct {
-	Status         string
-	Reason         string
-	AmountMicros   int64
-	Currency       string
-	Provider       string
-	PricingOrigin  string
-	PricingVersion string
-	SourceURL      string
-	Source         string
-	ModelSelector  string
-	EffectiveFrom  string
-	EffectiveTo    string
+	Status            string
+	Reason            string
+	AmountMicros      int64
+	Currency          string
+	Provider          string
+	PricingOrigin     string
+	PricingVersion    string
+	SourceURL         string
+	Source            string
+	ModelSelector     string
+	EffectiveFrom     string
+	EffectiveTo       string
+	MissingCategories []string
 }
 
 type pricingProvenance struct {
@@ -321,6 +323,7 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 	currency := ""
 	missing := false
 	reason := ""
+	missingCategories := map[string]struct{}{}
 	var provenance pricingProvenance
 	charge := func(category string, tokens int64) {
 		if tokens == 0 {
@@ -329,6 +332,7 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 		rule, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, category, event.OccurredAt)
 		if !ok {
 			missing = true
+			missingCategories[category] = struct{}{}
 			if ambiguous {
 				reason = "ambiguous_pricing_rule"
 			} else if reason == "" {
@@ -368,7 +372,12 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 		}
 	}
 	if missing {
-		cost := eventCost{Status: "unknown", Reason: reason, Currency: currency, Provider: event.Provider}
+		categories := make([]string, 0, len(missingCategories))
+		for category := range missingCategories {
+			categories = append(categories, category)
+		}
+		sort.Strings(categories)
+		cost := eventCost{Status: "unknown", Reason: reason, Currency: currency, Provider: event.Provider, MissingCategories: categories}
 		if currency != "" {
 			rounded, ok := roundRationalMicros(amount)
 			if !ok {

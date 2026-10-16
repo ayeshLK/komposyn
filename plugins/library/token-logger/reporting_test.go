@@ -697,10 +697,48 @@ func TestHumanPricingCoverageWrapsAndExplainsEachGap(t *testing.T) {
 		"unavailable (1)",
 		"Review exact-model catalog coverage",
 		"Do not apply current prices retroactively",
-		"Required billing evidence is absent",
+		"Check for a verified rate for the affected token category",
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Errorf("coverage output missing %q: %s", expected, output.String())
+		}
+	}
+}
+
+func TestKnownModelMissingTokenCategoryRateHasAccurateGuidance(t *testing.T) {
+	store := openTestStore(t)
+	date := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	event := testEvent("known-model-missing-cache-write")
+	event.EventID = "known-model-missing-cache-write"
+	event.OccurredAt = date
+	event.Provider = "openai"
+	event.RequestedModel = "gpt-5-codex"
+	event.ResolvedModel = "gpt-5-codex"
+	event.Usage = TokenUsage{InputTokens: 12, CacheWriteTokens: 2}
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Query(UsageFilter{From: date.Add(-time.Minute), To: date.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.UnknownCostRequests != 1 || report.Summary.CostUnknownReason != "billing_context_missing" {
+		t.Fatalf("summary unknown count/reason = %d/%q", report.Summary.UnknownCostRequests, report.Summary.CostUnknownReason)
+	}
+	if len(report.PricingCoverage) != 1 || report.PricingCoverage[0].Categories[TokenCategoryCacheWrite] != 1 {
+		t.Fatalf("coverage did not identify missing cache-write pricing: %+v", report.PricingCoverage)
+	}
+	var output bytes.Buffer
+	if err := WriteTable(&output, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Affected category: cache-write (1)",
+		"Check for a verified rate for the affected token category",
+		"If rate selection needs billing evidence absent from the source",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("human report missing %q: %s", expected, output.String())
 		}
 	}
 }

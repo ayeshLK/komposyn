@@ -1506,7 +1506,7 @@ func TestInteractiveModelTableShowsReasonSpecificPricingSteps(t *testing.T) {
 	for _, expected := range []string{
 		"Review exact-model catalog coverage",
 		"Do not apply current prices retroactively",
-		"Required billing evidence is absent",
+		"Check for a verified rate for the affected token category",
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Errorf("interactive report missing %q: %s", expected, output.String())
