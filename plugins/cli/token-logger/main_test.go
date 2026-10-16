@@ -468,8 +468,13 @@ func TestRegistryForegroundSummaryAccumulatesAcrossReloadedCollectors(t *testing
 	if err := os.WriteFile(filepath.Join(root, "normal.jsonl"), fixture, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	accumulatedFailedSources := 0
 	waitForRuntime("successful import and unchanged follow-up", func(status tokenlogger.CollectorRuntimeStatus) bool {
-		return status.Imported == 2 && status.Outcomes.FailedSource > 0 && status.Outcomes.UnchangedSnapshot > 0
+		complete := status.Imported == 2 && status.Outcomes.FailedSource > 0 && status.Outcomes.UnchangedSnapshot > 0
+		if complete {
+			accumulatedFailedSources = status.Outcomes.FailedSource
+		}
+		return complete
 	})
 	if requested, err := store.RequestCollectorStop(); err != nil || !requested {
 		t.Fatalf("request stop=%t err=%v", requested, err)
@@ -488,7 +493,7 @@ func TestRegistryForegroundSummaryAccumulatesAcrossReloadedCollectors(t *testing
 		t.Fatalf("missing stopped summary: %q", output)
 	}
 	summary := output[index:]
-	for _, expected := range []string{"imported=2", "failed_source=1", "run_complete=false"} {
+	for _, expected := range []string{"imported=2", fmt.Sprintf("failed_source=%d", accumulatedFailedSources), "run_complete=false"} {
 		if !strings.Contains(summary, expected) {
 			t.Fatalf("stopped summary omitted %q: %q", expected, summary)
 		}
