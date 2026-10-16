@@ -4,6 +4,13 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
+## Unreleased
+
+### Bug Fixes
+
+* accept Claude `fallback_credit` usage metadata and automatically recover
+  previously skipped events from unchanged transcripts
+
 ## [0.3.0](https://github.com/ayeshLK/komposyn/compare/v0.2.2...v0.3.0) (2026-10-15)
 
 

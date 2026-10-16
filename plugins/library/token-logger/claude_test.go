@@ -60,24 +60,203 @@ func TestClaudeImportAttributesAndNormalizesUsage(t *testing.T) {
 }
 
 func TestClaudeImportAcceptsNewerUsageFields(t *testing.T) {
+	tests := []struct {
+		name           string
+		model          string
+		fallbackCredit string
+	}{
+		{name: "absent", model: "claude-sonnet-5"},
+		{name: "null", model: "claude-sonnet-5-5", fallbackCredit: `,"fallback_credit":null`},
+		{name: "redeemed", model: "<synthetic>", fallbackCredit: `,"fallback_credit":{"status":{"type":"redeemed"}}`},
+		{name: "not applied", model: "claude-sonnet-5", fallbackCredit: `,"fallback_credit":{"status":{"type":"not_applied","reason":"unsupported","remove_to_redeem":[]}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "newer-usage-fields.jsonl")
+			record := claudeFallbackCreditRecord("u1", test.model, test.fallbackCredit, "")
+			if err := os.WriteFile(path, record, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := (ClaudeAdapter{}).Import(path, store)
+			if err != nil || result.Receipt.Imported != 1 || result.Outcomes != (OutcomeCounts{}) {
+				t.Fatalf("newer usage fields result = %+v, err = %v", result, err)
+			}
+			var model string
+			var input, cacheRead, cacheWrite, output, reasoning int64
+			if err := store.db.QueryRow(`SELECT resolved_model, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens FROM usage_events`).
+				Scan(&model, &input, &cacheRead, &cacheWrite, &output, &reasoning); err != nil {
+				t.Fatal(err)
+			}
+			if model != test.model || input != 13 || cacheRead != 1 || cacheWrite != 2 || output != 5 || reasoning != 0 {
+				t.Fatalf("normalized event = model %q, input %d, cache read %d, cache write %d, output %d, reasoning %d", model, input, cacheRead, cacheWrite, output, reasoning)
+			}
+		})
+	}
+}
+
+func TestClaudeFallbackCreditDoesNotRelaxUsageValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		extra    string
+		outcomes OutcomeCounts
+	}{
+		{name: "unknown field remains unsupported", extra: `,"future_token_units":1`, outcomes: OutcomeCounts{UnsupportedUsage: 1}},
+		{name: "negative count remains malformed", extra: `,"input_tokens":-11`, outcomes: OutcomeCounts{MalformedRecord: 1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "invalid.jsonl")
+			if err := os.WriteFile(path, claudeFallbackCreditRecord("u1", "claude-sonnet-5", `,"fallback_credit":{"status":{"type":"redeemed"}}`, test.extra), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (ClaudeAdapter{}).Import(path, store)
+			if err != nil || result.Receipt != (Receipt{}) || result.Outcomes != test.outcomes {
+				t.Fatalf("result = %+v, err = %v; want outcomes %+v", result, err, test.outcomes)
+			}
+		})
+	}
+}
+
+func TestClaudeFallbackCreditUpgradeRecoversUnchangedSource(t *testing.T) {
 	store := openTestStore(t)
-	path := filepath.Join(t.TempDir(), "newer-usage-fields.jsonl")
-	record := `{"type":"assistant","uuid":"u1","sessionId":"s1","timestamp":"2026-10-11T00:00:00Z","message":{"role":"assistant","model":"claude-x","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":2},"server_tool_use":{"web_search_requests":1},"output_tokens_details":{"reasoning_tokens":3},"iterations":1,"inference_geo":"us","speed":"fast"}}}` + "\n"
-	if err := os.WriteFile(path, []byte(record), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "upgrade.jsonl")
+	contents := append(
+		claudeFallbackCreditRecord("already-supported", "claude-sonnet-5", "", ""),
+		claudeFallbackCreditRecord("previously-skipped", "claude-sonnet-5-5", `,"fallback_credit":{"status":{"type":"redeemed"}}`, "")...,
+	)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := (ClaudeAdapter{}).Import(path, store)
-	if err != nil || result.Receipt.Imported != 1 || result.Outcomes != (OutcomeCounts{}) {
-		t.Fatalf("newer usage fields result = %+v, err = %v", result, err)
+	withoutClaudeFallbackCreditSupport(t, func() {
+		legacy, err := (ClaudeAdapter{}).Import(path, store)
+		if err != nil || legacy.Receipt.Imported != 1 || legacy.Outcomes.UnsupportedUsage != 1 {
+			t.Fatalf("legacy import = %+v, err = %v", legacy, err)
+		}
+	})
+	legacyCursor := claudeCursorForPath(t, store, path)
+	if legacyCursor.SnapshotReusable {
+		t.Fatalf("legacy cursor unexpectedly reusable: %+v", legacyCursor)
 	}
-	var input, output int64
-	if err := store.db.QueryRow(`SELECT input_tokens, output_tokens FROM usage_events`).Scan(&input, &output); err != nil {
+	var legacyEventID, legacyProjectID, legacySessionID string
+	if err := store.db.QueryRow(`SELECT event_id, project_id, session_id FROM usage_events WHERE source_record_id = 'already-supported'`).
+		Scan(&legacyEventID, &legacyProjectID, &legacySessionID); err != nil {
 		t.Fatal(err)
 	}
-	if input != 13 || output != 5 {
-		t.Fatalf("usage = input %d, output %d; want 13, 5", input, output)
+
+	recovered, err := (ClaudeAdapter{}).Import(path, store)
+	if err != nil || recovered.Receipt.Imported != 1 || recovered.Receipt.Duplicates != 1 || recovered.Outcomes != (OutcomeCounts{}) {
+		t.Fatalf("recovery import = %+v, err = %v", recovered, err)
 	}
+	recoveredCursor := claudeCursorForPath(t, store, path)
+	if recoveredCursor.SourceID != legacyCursor.SourceID || recoveredCursor.FileFingerprint != legacyCursor.FileFingerprint ||
+		recoveredCursor.ByteOffset != legacyCursor.ByteOffset || recoveredCursor.SourceGeneration != legacyCursor.SourceGeneration || !recoveredCursor.SnapshotReusable {
+		t.Fatalf("recovered cursor = %+v; legacy cursor = %+v", recoveredCursor, legacyCursor)
+	}
+	if count, err := store.EventCount(); err != nil || count != 2 {
+		t.Fatalf("event count = %d, err = %v; want 2", count, err)
+	}
+	var recoveredEventID, recoveredProjectID, recoveredSessionID string
+	if err := store.db.QueryRow(`SELECT event_id, project_id, session_id FROM usage_events WHERE source_record_id = 'already-supported'`).
+		Scan(&recoveredEventID, &recoveredProjectID, &recoveredSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredEventID != legacyEventID || recoveredProjectID != legacyProjectID || recoveredSessionID != legacySessionID {
+		t.Fatalf("existing event identity changed: before=(%q,%q,%q) after=(%q,%q,%q)", legacyEventID, legacyProjectID, legacySessionID, recoveredEventID, recoveredProjectID, recoveredSessionID)
+	}
+	var projectCount, sessionCount int
+	if err := store.db.QueryRow(`SELECT COUNT(DISTINCT project_id), COUNT(DISTINCT session_id) FROM usage_events`).Scan(&projectCount, &sessionCount); err != nil {
+		t.Fatal(err)
+	}
+	if projectCount != 1 || sessionCount != 1 {
+		t.Fatalf("references changed during recovery: projects=%d sessions=%d", projectCount, sessionCount)
+	}
+	if unchanged, err := (ClaudeAdapter{}).Import(path, store); err != nil || unchanged.Receipt != (Receipt{}) || unchanged.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("post-recovery import = %+v, err = %v", unchanged, err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(contents) {
+		t.Fatalf("provider source changed during recovery: err=%v", err)
+	}
+}
+
+func TestClaudeFallbackCreditUpgradeAffectedOnlyAndFutureUnknown(t *testing.T) {
+	tests := []struct {
+		name              string
+		extra             string
+		wantRecovered     int
+		wantUnsupported   int
+		wantReusableAfter bool
+	}{
+		{name: "affected only recovers", wantRecovered: 1, wantReusableAfter: true},
+		{name: "independent unknown remains unsupported", extra: `,"future_token_units":1`, wantUnsupported: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "upgrade.jsonl")
+			contents := claudeFallbackCreditRecord("affected", "claude-sonnet-5", `,"fallback_credit":null`, test.extra)
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			withoutClaudeFallbackCreditSupport(t, func() {
+				legacy, err := (ClaudeAdapter{}).Import(path, store)
+				if err != nil || legacy.Receipt.Imported != 0 || legacy.Outcomes.UnsupportedUsage != 1 {
+					t.Fatalf("legacy import = %+v, err = %v", legacy, err)
+				}
+			})
+			recovered, err := (ClaudeAdapter{}).Import(path, store)
+			if err != nil || recovered.Receipt.Imported != test.wantRecovered || recovered.Outcomes.UnsupportedUsage != test.wantUnsupported {
+				t.Fatalf("recovery import = %+v, err = %v", recovered, err)
+			}
+			cursor := claudeCursorForPath(t, store, path)
+			if cursor.SnapshotReusable != test.wantReusableAfter {
+				t.Fatalf("cursor reusable = %v, want %v: %+v", cursor.SnapshotReusable, test.wantReusableAfter, cursor)
+			}
+			if test.wantReusableAfter {
+				if unchanged, err := (ClaudeAdapter{}).Import(path, store); err != nil || unchanged.Outcomes.UnchangedSnapshot != 1 {
+					t.Fatalf("unchanged import = %+v, err = %v", unchanged, err)
+				}
+			} else if repeated, err := (ClaudeAdapter{}).Import(path, store); err != nil || repeated.Outcomes.UnsupportedUsage != 1 || repeated.Outcomes.UnchangedSnapshot != 0 {
+				t.Fatalf("unknown-field retry = %+v, err = %v", repeated, err)
+			}
+		})
+	}
+}
+
+func claudeFallbackCreditRecord(id, model, fallbackCredit, extraUsage string) []byte {
+	return []byte(fmt.Sprintf(`{"type":"assistant","uuid":%q,"sessionId":"fallback-session","cwd":"/sanitized/fallback-project","timestamp":"2026-10-11T00:00:00Z","message":{"role":"assistant","model":%q,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":2},"server_tool_use":{"web_search_requests":1},"output_tokens_details":{"reasoning_tokens":3},"iterations":1,"inference_geo":"us","speed":"fast"%s%s}}}`+"\n", id, model, fallbackCredit, extraUsage))
+}
+
+func withoutClaudeFallbackCreditSupport(t *testing.T, run func()) {
+	t.Helper()
+	_, existed := claudeUsageFields["fallback_credit"]
+	delete(claudeUsageFields, "fallback_credit")
+	defer func() {
+		if existed {
+			claudeUsageFields["fallback_credit"] = struct{}{}
+		}
+	}()
+	run()
+}
+
+func claudeCursorForPath(t *testing.T, store *Store, path string) Cursor {
+	t.Helper()
+	source, err := collectorSourceForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID, err := establishedCollectorSourceID(store, source, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := store.Cursor(sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cursor
 }
 
 func TestDetectClaudeAdapter(t *testing.T) {
