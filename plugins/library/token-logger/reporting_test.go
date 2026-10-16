@@ -143,6 +143,85 @@ func TestQueryUsesPersistedBillingContextSelectors(t *testing.T) {
 	}
 }
 
+func TestOpenAIPublicCatalogPricingRequiresExactModelAndObservedTier(t *testing.T) {
+	store := openTestStore(t)
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	makeEvent := func(id, model, tier string) UsageEvent {
+		event := testEvent(id)
+		event.EventID, event.Provider = id, "openai"
+		event.RequestedModel, event.ResolvedModel = model, model
+		event.OccurredAt = at
+		event.Usage = TokenUsage{InputTokens: 2_000_000, CacheReadTokens: 1_000_000, OutputTokens: 1_000_000, ReasoningTokens: 100_000}
+		if tier != "" {
+			event.BillingContext.ServiceTier = &BillingContextValue{Value: tier, Evidence: BillingEvidenceProviderResponse}
+		}
+		return event
+	}
+
+	known := makeEvent("openai-default", "gpt-5.3-codex", "default")
+	if _, err := store.Append([]UsageEvent{known}); err != nil {
+		t.Fatal(err)
+	}
+	filter := UsageFilter{From: at.Add(-time.Hour), To: at.Add(time.Hour)}
+	report, err := store.Query(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.CalculatedCostMicros != 15_925_000 || report.Summary.UnknownCostRequests != 0 {
+		t.Fatalf("default-tier report cost/unknown = %d/%d, want 15925000/0", report.Summary.CalculatedCostMicros, report.Summary.UnknownCostRequests)
+	}
+	if report.Summary.PricingVersion != "public-api-2026-10-16-v1" || report.Summary.CalculationBasis != "public_catalog_estimate" {
+		t.Fatalf("default-tier pricing provenance = version %q, basis %q", report.Summary.PricingVersion, report.Summary.CalculationBasis)
+	}
+	fastStore := openTestStore(t)
+	defer fastStore.Close()
+	fast := makeEvent("openai-fast", "gpt-5.3-codex", "priority")
+	if _, err := fastStore.Append([]UsageEvent{fast}); err != nil {
+		t.Fatal(err)
+	}
+	fastReport, err := fastStore.Query(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fastReport.Summary.CalculatedCostMicros != 31_850_000 || fastReport.Summary.UnknownCostRequests != 0 {
+		t.Fatalf("fast-tier report cost/unknown = %d/%d, want 31850000/0", fastReport.Summary.CalculatedCostMicros, fastReport.Summary.UnknownCostRequests)
+	}
+
+	for _, tc := range []struct {
+		name, model, tier, reason string
+		at                        time.Time
+	}{
+		{name: "tier absent", model: "gpt-5.3-codex", reason: "billing_context_missing"},
+		{name: "unsupported tier", model: "gpt-5.3-codex", tier: "flex", reason: "billing_context_missing"},
+		{name: "model alias", model: "codex-gpt-5.3", tier: "default", reason: "no_matching_rate"},
+		{name: "cache write", model: "gpt-5.3-codex", tier: "default", reason: "billing_context_missing"},
+		{name: "before reviewed interval", model: "gpt-5.3-codex", tier: "default", reason: "outside_effective_range", at: time.Date(2026, 10, 15, 23, 59, 59, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			separate := openTestStore(t)
+			defer separate.Close()
+			event := makeEvent("unknown-"+tc.name, tc.model, tc.tier)
+			if !tc.at.IsZero() {
+				event.OccurredAt = tc.at
+			}
+			if tc.name == "cache write" {
+				event.Usage = TokenUsage{InputTokens: 1, CacheWriteTokens: 1}
+			}
+			if _, err := separate.Append([]UsageEvent{event}); err != nil {
+				t.Fatal(err)
+			}
+			unknownFilter := UsageFilter{From: event.OccurredAt.Add(-time.Hour), To: event.OccurredAt.Add(time.Hour)}
+			unknown, err := separate.Query(unknownFilter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unknown.Summary.UnknownCostRequests != 1 || unknown.Summary.CostUnknownReason != tc.reason {
+				t.Fatalf("unknown report = %+v, want reason %q", unknown.Summary, tc.reason)
+			}
+		})
+	}
+}
+
 func TestContextMissingReasonIsNotMaskedByExpiredOtherTier(t *testing.T) {
 	store := openTestStore(t)
 	currentFrom := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
