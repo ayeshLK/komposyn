@@ -11,6 +11,16 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.5.0](https://github.com/ayeshLK/komposyn/compare/v0.4.0...v0.5.0) (2026-10-16)
+
+
+### Features
+
+* explain unavailable pricing in reports ([#103](https://github.com/ayeshLK/komposyn/issues/103)) ([1a11e49](https://github.com/ayeshLK/komposyn/commit/1a11e49fa6cc53e5e06e052344a33d0ffc2f85c5))
+* **pricing:** add evidence-based Anthropic coverage ([#106](https://github.com/ayeshLK/komposyn/issues/106)) ([8be83db](https://github.com/ayeshLK/komposyn/commit/8be83db949cfe89023bfbd7089a795685991688d))
+* **pricing:** add GPT-5.3 Codex API coverage ([#105](https://github.com/ayeshLK/komposyn/issues/105)) ([e7c8946](https://github.com/ayeshLK/komposyn/commit/e7c89467f4f87d11a35046d9df59eea7efd10241))
+* **pricing:** model billing context selectors ([#104](https://github.com/ayeshLK/komposyn/issues/104)) ([44e9add](https://github.com/ayeshLK/komposyn/commit/44e9add3231dbc82c3b9e6aa9579d469c932709c))
+
 ## [0.4.0](https://github.com/ayeshLK/komposyn/compare/v0.3.0...v0.4.0) (2026-10-16)
 
 
