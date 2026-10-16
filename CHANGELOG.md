@@ -11,6 +11,13 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.6.0](https://github.com/ayeshLK/komposyn/compare/v0.5.0...v0.6.0) (2026-10-16)
+
+
+### Features
+
+* **repl:** make pricing coverage opt-in ([#123](https://github.com/ayeshLK/komposyn/issues/123)) ([51e5bee](https://github.com/ayeshLK/komposyn/commit/51e5bee7619826ab115b16623e878092690a33a1))
+
 ## [0.5.0](https://github.com/ayeshLK/komposyn/compare/v0.4.0...v0.5.0) (2026-10-16)
 
 
