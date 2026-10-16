@@ -1475,7 +1475,7 @@ func TestInteractiveModelTablePreservesCostSemantics(t *testing.T) {
 	if err := writeInteractiveModelTable(&output, tokenlogger.UsageReport{Rows: []tokenlogger.UsageRow{reported, partial}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"ESTIMATE", "REPORTED", "STATUS", "2 USD", "reported only", "1 USD", "partial; 1 no matching rate"} {
+	for _, expected := range []string{"ESTIMATE", "REPORTED", "STATUS", "2 USD", "reported only", "1 USD", "partial; 1 no public catalog rate"} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("model table missing %q: %s", expected, output.String())
 		}
@@ -1626,7 +1626,7 @@ func TestInteractiveReportsUseHumanReadableTable(t *testing.T) {
 	if code := runInteractive(strings.NewReader("/by-client\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
-	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "no matching rate"} {
+	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "no public catalog rate"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("interactive output does not contain %q: %s", expected, stdout.String())
 		}

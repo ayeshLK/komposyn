@@ -313,9 +313,12 @@ func writeInteractiveModelTable(output io.Writer, report tokenlogger.UsageReport
 			provider = "(unattributed)"
 		}
 		estimate, reported, status := tokenlogger.FormatHumanCost(row.UsageMeasures)
-		rows = append(rows, []string{strconv.Itoa(index + 1), tokenlogger.FormatHumanLabel(model), tokenlogger.FormatHumanLabel(provider), strconv.FormatInt(row.RequestCount, 10), tokenlogger.FormatHumanTokens(row.InputTokens), tokenlogger.FormatHumanTokens(row.CachedInputTokens), tokenlogger.FormatHumanTokens(row.CacheWriteInputTokens), tokenlogger.FormatHumanTokens(row.OutputTokens), tokenlogger.FormatHumanTokens(row.ReasoningOutputTokens), tokenlogger.FormatHumanTokens(row.TotalTokens), tokenlogger.FormatHumanLabel(estimate), tokenlogger.FormatHumanLabel(reported), tokenlogger.FormatHumanLabel(status)})
+		rows = append(rows, []string{strconv.Itoa(index + 1), tokenlogger.FormatHumanLabel(model), tokenlogger.FormatHumanLabel(provider), strconv.FormatInt(row.RequestCount, 10), tokenlogger.FormatHumanTokens(row.InputTokens), tokenlogger.FormatHumanTokens(row.CachedInputTokens), tokenlogger.FormatHumanTokens(row.CacheWriteInputTokens), tokenlogger.FormatHumanTokens(row.OutputTokens), tokenlogger.FormatHumanTokens(row.ReasoningOutputTokens), tokenlogger.FormatHumanTokens(row.TotalTokens), tokenlogger.FormatHumanText(estimate), tokenlogger.FormatHumanText(reported), tokenlogger.FormatHumanText(status)})
 	}
-	return writeResourceRows(output, rows)
+	if err := writeResourceRows(output, rows); err != nil {
+		return err
+	}
+	return tokenlogger.WriteHumanPricingCoverage(output, report.PricingCoverage)
 }
 
 func writeResourceRows(output io.Writer, rows [][]string) error {

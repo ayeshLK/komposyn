@@ -45,3 +45,12 @@ Bundled values describe public API list-price equivalents, not invoices. They
 exclude taxes, credits, negotiated pricing, subscription entitlements, and
 provider resellers. If the source data lacks a required billing modifier, keep
 the result unknown and explain the missing context instead of guessing.
+
+Human reports translate unavailable-cost reason codes into explanatory labels
+and include a bounded provider/model breakdown of unpriced requests, regardless
+of the selected report grouping. JSON reason codes and CSV columns remain the
+machine-readable contract. A missing public catalog match means no reviewed
+bundled rate applies; it does not indicate a parser failure or justify a
+fallback price. The library exposes `Store.UpsertPricing` for applications
+that need custom rates; `komposyn-lg` does not currently provide a custom-rate
+editor.

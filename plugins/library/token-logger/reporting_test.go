@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"math"
 	"path/filepath"
 	"strings"
@@ -594,6 +595,7 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 		{name: "known fractional unit", measures: UsageMeasures{RequestCount: 1, CalculatedCostMicros: 240, CalculatedCurrency: "USD", EstimatedCostRequests: 1}, cost: "0.00024 USD", status: "estimated"},
 		{name: "fully unknown", measures: UsageMeasures{RequestCount: 2, UnknownCostRequests: 2}, cost: "unknown", status: "pricing unavailable (2)"},
 		{name: "unknown reason", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, CostUnknownReason: "model_unresolved"}, cost: "unknown", status: "model unresolved (1)"},
+		{name: "no matching rate", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, CostUnknownReason: "no_matching_rate"}, cost: "unknown", status: "no public catalog rate (1)"},
 		{name: "reported only", measures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, ProviderReportedCostMicros: 10, ProviderReportedCurrency: "USD"}, cost: "unknown", status: "reported only; estimate unavailable (pricing unavailable, 1)"},
 		{name: "partially known", measures: UsageMeasures{RequestCount: 3, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "USD", UnknownCostRequests: 1}, cost: "12.34 USD", status: "partial; 1 pricing unavailable"},
 		{name: "mixed currencies", measures: UsageMeasures{RequestCount: 2, CalculatedCostMicros: 12_340_000, CalculatedCurrency: "mixed"}, cost: "not comparable", status: "mixed currencies"},
@@ -606,6 +608,64 @@ func TestHumanCostStatesRemainDistinct(t *testing.T) {
 				t.Fatalf("cost/status = %q/%q, want %q/%q", cost, status, tc.cost, tc.status)
 			}
 		})
+	}
+}
+
+func TestPricingCoverageIsIndependentOfReportGroupingAndMachineShape(t *testing.T) {
+	store := openTestStore(t)
+	date := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	if err := store.UpsertProject(Project{ID: "same-project", DisplayName: "Same project"}); err != nil {
+		t.Fatal(err)
+	}
+	first, second := testEvent("coverage-first"), testEvent("coverage-second")
+	for index, event := range []*UsageEvent{&first, &second} {
+		event.EventID = fmt.Sprintf("coverage-%d", index)
+		event.OccurredAt = date
+		event.Provider = "unlisted-provider"
+		event.RequestedModel = fmt.Sprintf("unlisted-model-%d", index)
+		event.ResolvedModel = event.RequestedModel
+		event.ProjectID = "same-project"
+		event.Usage = TokenUsage{InputTokens: 10}
+	}
+	if _, err := store.Append([]UsageEvent{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Query(UsageFilter{From: date.Add(-time.Hour), To: date.Add(time.Hour), GroupBy: []string{GroupProject}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || len(report.PricingCoverage) != 2 {
+		t.Fatalf("grouped rows/coverage = %d/%d, want 1/2", len(report.Rows), len(report.PricingCoverage))
+	}
+	var human bytes.Buffer
+	if err := WriteTable(&human, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"PRICING COVERAGE GAPS", "unlisted-provider / unlisted-model-0: 1 requests", "no public catalog rate (1)"} {
+		if !strings.Contains(human.String(), expected) {
+			t.Fatalf("human report missing %q: %s", expected, human.String())
+		}
+	}
+	var machine bytes.Buffer
+	if err := WriteJSON(&machine, report); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(machine.String(), "pricing_coverage") || strings.Contains(machine.String(), "PRICING COVERAGE GAPS") {
+		t.Fatalf("human-only coverage leaked into JSON: %s", machine.String())
+	}
+}
+
+func TestHumanPricingCoverageIsBoundedAndSanitized(t *testing.T) {
+	rows := make([]PricingCoverageRow, maxHumanPricingCoverageRows+2)
+	for index := range rows {
+		rows[index] = PricingCoverageRow{Provider: "provider\n\x1b", Model: fmt.Sprintf("model-%d", index), Requests: 1, Reasons: map[string]int64{"no_matching_rate": 1}}
+	}
+	var output bytes.Buffer
+	if err := WriteHumanPricingCoverage(&output, rows); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(output.String(), "\t\r\x1b") || strings.Count(output.String(), "model-") != maxHumanPricingCoverageRows || !strings.Contains(output.String(), "and 2 more provider/model combinations") || !strings.Contains(output.String(), `provider\n\x1B`) {
+		t.Fatalf("coverage output is unbounded or unsafe: %q", output.String())
 	}
 }
 

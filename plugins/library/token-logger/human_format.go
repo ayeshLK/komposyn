@@ -154,7 +154,7 @@ func humanCostDisplay(measures UsageMeasures) (string, string) {
 	unknown := measures.UnknownCostRequests
 	unknownLabel := "pricing unavailable"
 	if measures.CostUnknownReason != "" {
-		unknownLabel = strings.ReplaceAll(measures.CostUnknownReason, "_", " ")
+		unknownLabel = humanPricingReason(measures.CostUnknownReason)
 	}
 	known := measures.RequestCount - unknown
 	if known < 0 {
@@ -192,6 +192,31 @@ func humanCostDisplay(measures UsageMeasures) (string, string) {
 		return "unknown", unknownLabel + " (" + formatExactCount(unknown) + ")"
 	}
 	return cost, "partial; " + formatExactCount(unknown) + " " + unknownLabel
+}
+
+func humanPricingReason(reason string) string {
+	switch reason {
+	case "no_matching_rate":
+		return "no public catalog rate"
+	case "model_unresolved":
+		return "model unresolved"
+	case "billing_context_missing":
+		return "billing context or rate unavailable"
+	case "outside_effective_range":
+		return "outside pricing dates"
+	case "ambiguous_pricing_rule":
+		return "ambiguous pricing rules"
+	case "currency_conflict":
+		return "pricing rules use different currencies"
+	case "arithmetic_overflow":
+		return "estimate exceeds supported range"
+	case "mixed":
+		return "multiple pricing gaps"
+	case "":
+		return "pricing unavailable"
+	default:
+		return formatHumanDimension(strings.ReplaceAll(reason, "_", " "))
+	}
 }
 
 func reportedCostDisplay(measures UsageMeasures) string {
