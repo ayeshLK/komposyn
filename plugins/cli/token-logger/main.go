@@ -397,6 +397,11 @@ func newTerminalLineReaderWithFactory(input io.Reader, stdout, stderr io.Writer,
 // terminalWidthOf reports the current terminal column width backing w, or 0
 // if w is not a real terminal or the size cannot be determined.
 func terminalWidthOf(w io.Writer) int {
+	if sized, ok := w.(interface{ TerminalWidth() int }); ok {
+		if width := sized.TerminalWidth(); width > 0 {
+			return width
+		}
+	}
 	file, ok := w.(*os.File)
 	if !ok {
 		return 0

@@ -2165,7 +2165,59 @@ func TestClaudePricingAcceptanceAcrossCLIReportsAndREPL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	commands := "/range 2026-10-16 2026-10-17\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/pricing\n/quit\n"
+	activeRange := tokenlogger.ResourceFilter{From: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)}
+	projectList, err := store.ListProjects(activeRange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pricingProject tokenlogger.ProjectResource
+	for _, project := range projectList.Projects {
+		if project.DisplayName == "Pricing Project" {
+			pricingProject = project
+			break
+		}
+	}
+	if pricingProject.ID == "" {
+		t.Fatalf("could not find imported pricing project: %+v", projectList.Projects)
+	}
+	sessionList, err := store.ListSessions(pricingProject.ID, activeRange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pricingSession tokenlogger.SessionResource
+	for _, session := range sessionList.Sessions {
+		for _, model := range session.Models {
+			if model == "claude-opus-5-5" {
+				pricingSession = session
+				break
+			}
+		}
+	}
+	if pricingSession.ID == "" {
+		t.Fatalf("could not find Claude pricing session: %+v", sessionList.Sessions)
+	}
+	otherProjectID, otherProjectSessionID, otherSessionID := "scope-other-project", "scope-other-project-session", "scope-other-session"
+	makeScopeEvent := func(id string, at time.Time, projectID, sessionID, model string) tokenlogger.UsageEvent {
+		event := cliReportEvent(id, at)
+		event.Provider, event.RequestedModel, event.ResolvedModel = "scope-check", model, model
+		event.ProjectID, event.SessionID = projectID, sessionID
+		return event
+	}
+	decoys := []tokenlogger.UsageEvent{
+		makeScopeEvent("outside-project", time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC), otherProjectID, otherProjectSessionID, "scope-out-project"),
+		makeScopeEvent("outside-session", time.Date(2026, 10, 16, 14, 1, 0, 0, time.UTC), pricingProject.ID, otherSessionID, "scope-out-session"),
+		makeScopeEvent("outside-model", time.Date(2026, 10, 16, 14, 2, 0, 0, time.UTC), pricingProject.ID, pricingSession.ID, "scope-out-model"),
+		makeScopeEvent("outside-date", time.Date(2026, 10, 8, 14, 3, 0, 0, time.UTC), pricingProject.ID, pricingSession.ID, "scope-out-date"),
+	}
+	if _, err := store.AppendWithReferences(decoys,
+		[]tokenlogger.Project{{ID: otherProjectID, DisplayName: "Other Project"}},
+		[]tokenlogger.Session{
+			{ID: otherProjectSessionID, ProjectID: otherProjectID, Client: decoys[0].Client},
+			{ID: otherSessionID, ProjectID: pricingProject.ID, Client: decoys[1].Client},
+		}); err != nil {
+		t.Fatalf("append pricing scope decoys: %v", err)
+	}
+	commands := "/range 2026-10-16 2026-10-17\n/projects\n/project Pricing Project\n/sessions\n/session " + pricingSession.ID + "\n/models\n/model claude-opus-5-5\n/pricing\n/refresh\n/quit\n"
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
 	var replOut, replErr bytes.Buffer
 	if code := runInteractiveLoopWithClock(reader, &replOut, &replErr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }); code != 0 {
@@ -2176,8 +2228,35 @@ func TestClaudePricingAcceptanceAcrossCLIReportsAndREPL(t *testing.T) {
 	if pricingIndex < 0 {
 		t.Fatalf("/pricing did not render coverage for the active scope: %s", output)
 	}
-	if !strings.Contains(output, "claude-opus-5-5") || !strings.Contains(output, "partial; 1 billing context or rate unavailable") || !strings.Contains(output, "20.7 USD") {
-		t.Fatalf("pricing REPL missing model estimate/concise status: %s", output)
+	nextReportOffset := strings.Index(output[pricingIndex:], "report queried_at:")
+	if nextReportOffset < 0 {
+		t.Fatalf("no report rendered after /pricing to verify navigation state: %s", output[pricingIndex:])
+	}
+	pricingOutput := output[pricingIndex : pricingIndex+nextReportOffset]
+	refreshBreadcrumbOffset := strings.Index(pricingOutput, "komposyn / project:")
+	if refreshBreadcrumbOffset < 0 {
+		t.Fatalf("no navigation breadcrumb rendered after /pricing: %s", pricingOutput)
+	}
+	postPricingOutput := output[pricingIndex+refreshBreadcrumbOffset:]
+	for _, expected := range []string{
+		"anthropic / claude-opus-5-5: 1 requests",
+		"billing context or rate unavailable (1)",
+		"Affected category: cache-write (1)",
+	} {
+		if !strings.Contains(pricingOutput, expected) {
+			t.Errorf("/pricing breakdown missing %q: %s", expected, pricingOutput)
+		}
+	}
+	for _, excluded := range []string{"scope-out-project", "scope-out-session", "scope-out-model", "scope-out-date"} {
+		if strings.Contains(pricingOutput, excluded) {
+			t.Errorf("/pricing included out-of-scope event %q: %s", excluded, pricingOutput)
+		}
+	}
+	if !strings.Contains(output[:pricingIndex], "partial; 1 billing context or rate unavailable") {
+		t.Fatalf("default model view missing concise partial status: %s", output[:pricingIndex])
+	}
+	if !strings.Contains(postPricingOutput, "model:claude-opus-5-5") || !strings.Contains(postPricingOutput, "20.7 USD") {
+		t.Fatalf("/pricing changed the navigation selection used by the next refresh: %s", postPricingOutput)
 	}
 	if strings.Contains(output[:pricingIndex], "PRICING COVERAGE GAPS") || strings.Contains(output[:pricingIndex], "Next:") {
 		t.Fatalf("default REPL views included opt-in pricing explanations: %s", output[:pricingIndex])
