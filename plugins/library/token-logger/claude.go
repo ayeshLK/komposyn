@@ -52,10 +52,19 @@ type claudeMessage struct {
 }
 
 type claudeUsage struct {
-	InputTokens              int64 `json:"input_tokens"`
-	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-	OutputTokens             int64 `json:"output_tokens"`
+	InputTokens              int64                `json:"input_tokens"`
+	CacheCreationInputTokens int64                `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64                `json:"cache_read_input_tokens"`
+	OutputTokens             int64                `json:"output_tokens"`
+	CacheCreation            *claudeCacheCreation `json:"cache_creation"`
+	ServiceTier              *string              `json:"service_tier"`
+	InferenceGeo             *string              `json:"inference_geo"`
+	Speed                    *string              `json:"speed"`
+}
+
+type claudeCacheCreation struct {
+	Ephemeral5mInputTokens *int64 `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens *int64 `json:"ephemeral_1h_input_tokens"`
 }
 
 type claudeSession struct {
@@ -223,7 +232,8 @@ func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *St
 				} else if !usageShapeSupported {
 					result.Outcomes.Add(OutcomeUnsupportedUsage)
 				} else if message.Usage == nil || message.Usage.InputTokens < 0 || message.Usage.OutputTokens < 0 ||
-					message.Usage.CacheCreationInputTokens < 0 || message.Usage.CacheReadInputTokens < 0 || session.Model == "" {
+					message.Usage.CacheCreationInputTokens < 0 || message.Usage.CacheReadInputTokens < 0 ||
+					!claudeCacheDurationBreakdownValid(*message.Usage) || session.Model == "" {
 					// Avoid double counting an assistant record whose message could not
 					// be decoded; that failure was classified immediately above.
 					if !messageDecodeFailed {
@@ -281,16 +291,17 @@ func claudeUsageBearingType(recordType string) bool {
 	return strings.Contains(recordType, "usage") || strings.Contains(recordType, "token")
 }
 
-// claudeUsageFields allowlists Claude usage field names, including newer
-// fields (cache_creation, fallback_credit, inference_geo, iterations,
-// output_tokens_details, server_tool_use, speed) that carry no additional
-// normalized token counts and are intentionally not captured beyond this
-// shape check. fallback_credit is billing metadata; its presence does not
-// alter the provider-reported top-level token counts.
+// claudeUsageFields allowlists Claude usage fields. Cache duration splits and
+// pricing selectors are normalized below; other recognized fields, including
+// fallback_credit, are not persisted or used to alter provider token counts.
 var claudeUsageFields = map[string]struct{}{
 	"input_tokens": {}, "cache_creation_input_tokens": {}, "cache_read_input_tokens": {},
 	"output_tokens": {}, "service_tier": {}, "cache_creation": {}, "inference_geo": {},
 	"fallback_credit": {}, "iterations": {}, "output_tokens_details": {}, "server_tool_use": {}, "speed": {},
+}
+
+var claudeCacheCreationFields = map[string]struct{}{
+	"ephemeral_5m_input_tokens": {}, "ephemeral_1h_input_tokens": {},
 }
 
 func claudeUsageShapeSupported(raw json.RawMessage) bool {
@@ -309,7 +320,43 @@ func claudeUsageShapeSupported(raw json.RawMessage) bool {
 	if len(usage) == 0 {
 		return false
 	}
-	return jsonObjectFieldsAllowed(usageRaw, claudeUsageFields)
+	if !jsonObjectFieldsAllowed(usageRaw, claudeUsageFields) {
+		return false
+	}
+	var usageShape struct {
+		CacheCreation json.RawMessage `json:"cache_creation"`
+	}
+	if err := json.Unmarshal(usageRaw, &usageShape); err != nil {
+		return false
+	}
+	if len(usageShape.CacheCreation) > 0 && string(usageShape.CacheCreation) != "null" && !jsonObjectFieldsAllowed(usageShape.CacheCreation, claudeCacheCreationFields) {
+		return false
+	}
+	return true
+}
+
+func claudeCacheDurationBreakdownValid(usage claudeUsage) bool {
+	if usage.CacheCreation == nil {
+		return true
+	}
+	fivePtr, onePtr := usage.CacheCreation.Ephemeral5mInputTokens, usage.CacheCreation.Ephemeral1hInputTokens
+	five, one := int64(0), int64(0)
+	if fivePtr != nil {
+		five = *fivePtr
+		if five < 0 || five > usage.CacheCreationInputTokens {
+			return false
+		}
+	}
+	if onePtr != nil {
+		one = *onePtr
+		if one < 0 || one > usage.CacheCreationInputTokens {
+			return false
+		}
+	}
+	if fivePtr == nil || onePtr == nil {
+		return true
+	}
+	return one <= usage.CacheCreationInputTokens-five && five+one == usage.CacheCreationInputTokens
 }
 
 func decodeClaudeMessage(raw json.RawMessage) (claudeMessage, error) {
@@ -372,13 +419,29 @@ func claudeTimestamp(value string) (time.Time, error) {
 func claudeEvent(sourceID, fingerprint string, offset int64, recordID string, session claudeSession, usage claudeUsage, occurredAt time.Time, line []byte) UsageEvent {
 	key := digest([]byte(sourceID + "\x00" + recordID))
 	offsetCopy := offset
+	var billing BillingContext
+	if usage.ServiceTier != nil && *usage.ServiceTier != "" {
+		billing.ServiceTier = &BillingContextValue{Value: *usage.ServiceTier, Evidence: BillingEvidenceProviderResponse}
+	}
+	if usage.InferenceGeo != nil && *usage.InferenceGeo != "" {
+		billing.Region = &BillingContextValue{Value: *usage.InferenceGeo, Evidence: BillingEvidenceProviderResponse}
+	}
+	if usage.Speed != nil && *usage.Speed != "" {
+		billing.Speed = &BillingContextValue{Value: *usage.Speed, Evidence: BillingEvidenceProviderResponse}
+	}
+	var cacheWrite5m, cacheWrite1h int64
+	if usage.CacheCreation != nil && usage.CacheCreation.Ephemeral5mInputTokens != nil && usage.CacheCreation.Ephemeral1hInputTokens != nil {
+		cacheWrite5m = *usage.CacheCreation.Ephemeral5mInputTokens
+		cacheWrite1h = *usage.CacheCreation.Ephemeral1hInputTokens
+	}
 	return UsageEvent{
 		EventID: "claude-event-" + key, SchemaVersion: 1, EventType: "model.request", OccurredAt: occurredAt,
 		Client: Client{Name: "claude-code"}, Provider: "anthropic", RequestedModel: session.Model,
 		ResolvedModel: session.Model,
 		Usage: TokenUsage{InputTokens: usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens,
 			OutputTokens: usage.OutputTokens, CacheReadTokens: usage.CacheReadInputTokens,
-			CacheWriteTokens: usage.CacheCreationInputTokens},
+			CacheWriteTokens: usage.CacheCreationInputTokens, CacheWrite5mTokens: cacheWrite5m, CacheWrite1hTokens: cacheWrite1h},
+		BillingContext: billing,
 		Provenance: Provenance{Adapter: "claude-code", SourceID: sourceID, SourceRecord: recordID,
 			SourceOffset: &offsetCopy, RecordHash: digest(line)},
 		IngestionKey: "claude:" + key,

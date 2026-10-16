@@ -222,6 +222,86 @@ func TestOpenAIPublicCatalogPricingRequiresExactModelAndObservedTier(t *testing.
 	}
 }
 
+func TestAnthropicCatalogRequiresCompleteObservedModifiers(t *testing.T) {
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name, model, tier, region, speed string
+		want                             int64
+	}{
+		{name: "Opus standard global", model: "claude-opus-5-5", tier: "standard", region: "global", speed: "standard", want: 10_660_000},
+		{name: "Opus batch global", model: "claude-opus-5-5", tier: "batch", region: "global", speed: "standard", want: 5_330_000},
+		{name: "Opus fast global", model: "claude-opus-5-5", tier: "standard", region: "global", speed: "fast", want: 21_320_000},
+		{name: "Opus standard US", model: "claude-opus-5-5", tier: "standard", region: "us", speed: "standard", want: 11_726_000},
+		{name: "Sonnet standard global", model: "claude-sonnet-5-5", tier: "standard", region: "global", speed: "standard", want: 5_330_000},
+		{name: "Sonnet batch US", model: "claude-sonnet-5-5", tier: "batch", region: "us", speed: "standard", want: 2_931_500},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			defer store.Close()
+			event := testEvent(tc.name)
+			event.EventID, event.Provider = tc.name, "anthropic"
+			event.RequestedModel, event.ResolvedModel = tc.model, tc.model
+			event.OccurredAt = at
+			event.Usage = TokenUsage{InputTokens: 1_300_000, CacheReadTokens: 200_000, CacheWriteTokens: 100_000, CacheWrite5mTokens: 60_000, CacheWrite1hTokens: 40_000, OutputTokens: 300_000}
+			event.BillingContext = BillingContext{
+				ServiceTier: &BillingContextValue{Value: tc.tier, Evidence: BillingEvidenceProviderResponse},
+				Region:      &BillingContextValue{Value: tc.region, Evidence: BillingEvidenceProviderResponse},
+				Speed:       &BillingContextValue{Value: tc.speed, Evidence: BillingEvidenceProviderResponse},
+			}
+			if _, err := store.Append([]UsageEvent{event}); err != nil {
+				t.Fatal(err)
+			}
+			report, err := store.Query(UsageFilter{From: at.Add(-time.Minute), To: at.Add(time.Minute)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Summary.CalculatedCostMicros != tc.want || report.Summary.UnknownCostRequests != 0 {
+				t.Fatalf("reported cost/unknown = %d/%d, want %d/0", report.Summary.CalculatedCostMicros, report.Summary.UnknownCostRequests, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name, tier, region, speed string
+	}{
+		{name: "missing service tier", region: "global", speed: "standard"},
+		{name: "missing geography", tier: "standard", speed: "standard"},
+		{name: "missing speed", tier: "standard", region: "global"},
+		{name: "unlisted priority tier", tier: "priority", region: "global", speed: "standard"},
+		{name: "fast unsupported for Sonnet", tier: "standard", region: "global", speed: "fast"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			defer store.Close()
+			event := testEvent(tc.name)
+			event.EventID, event.Provider = tc.name, "anthropic"
+			event.RequestedModel, event.ResolvedModel = "claude-sonnet-5-5", "claude-sonnet-5-5"
+			event.OccurredAt = at
+			event.Usage = TokenUsage{InputTokens: 1_300_000, CacheReadTokens: 200_000, CacheWriteTokens: 100_000, CacheWrite5mTokens: 60_000, CacheWrite1hTokens: 40_000, OutputTokens: 300_000}
+			if tc.tier != "" {
+				event.BillingContext.ServiceTier = &BillingContextValue{Value: tc.tier, Evidence: BillingEvidenceProviderResponse}
+			}
+			if tc.region != "" {
+				event.BillingContext.Region = &BillingContextValue{Value: tc.region, Evidence: BillingEvidenceProviderResponse}
+			}
+			if tc.speed != "" {
+				event.BillingContext.Speed = &BillingContextValue{Value: tc.speed, Evidence: BillingEvidenceProviderResponse}
+			}
+			if _, err := store.Append([]UsageEvent{event}); err != nil {
+				t.Fatal(err)
+			}
+			report, err := store.Query(UsageFilter{From: at.Add(-time.Minute), To: at.Add(time.Minute)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Summary.UnknownCostRequests != 1 || report.Summary.CalculatedCostMicros != 0 {
+				t.Fatalf("incomplete-context report = %+v, want an explicitly unknown request", report.Summary)
+			}
+		})
+	}
+}
+
 func TestContextMissingReasonIsNotMaskedByExpiredOtherTier(t *testing.T) {
 	store := openTestStore(t)
 	currentFrom := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
@@ -404,7 +484,7 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -427,8 +507,8 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if err := store.db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 12 || latestMigration != 12 {
-		t.Fatalf("migration history = count %d, latest %d; want twelve migrations through version 12", migrationCount, latestMigration)
+	if migrationCount != 14 || latestMigration != 14 {
+		t.Fatalf("migration history = count %d, latest %d; want fourteen migrations through version 14", migrationCount, latestMigration)
 	}
 	var sourceGenerationColumn string
 	if err := store.db.QueryRow("SELECT name FROM pragma_table_info('source_cursors') WHERE name = 'source_generation'").Scan(&sourceGenerationColumn); err != nil {

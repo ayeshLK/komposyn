@@ -107,8 +107,8 @@ const eventInsertSQL = `INSERT INTO usage_events (
     reasoning_tokens, cost_status, cost_amount_micros, cost_currency,
     pricing_version, provider_cost_amount_micros, provider_cost_currency,
     source_adapter, source_id, source_record_id, source_offset,
-    source_record_hash, ingestion_key, attributes_json, billing_context_json
-) VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    source_record_hash, ingestion_key, attributes_json, billing_context_json, cache_write_5m_tokens, cache_write_1h_tokens
+) VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(ingestion_key) DO NOTHING`
 
 const legacyEventInsertSQL = `INSERT INTO usage_events (
@@ -301,3 +301,7 @@ ALTER TABLE usage_events ADD COLUMN billing_context_json TEXT;
 ALTER TABLE pricing_rules ADD COLUMN service_tier_selector TEXT NOT NULL DEFAULT '';
 ALTER TABLE pricing_rules ADD COLUMN region_selector TEXT NOT NULL DEFAULT '';
 `
+
+const schemaMigrationThirteenCacheWrite5m = `ALTER TABLE usage_events ADD COLUMN cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0`
+const schemaMigrationThirteenCacheWrite1h = `ALTER TABLE usage_events ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0`
+const schemaMigrationFourteenSpeedSelector = `ALTER TABLE pricing_rules ADD COLUMN speed_selector TEXT NOT NULL DEFAULT ''`

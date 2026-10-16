@@ -30,8 +30,8 @@ func TestBundledPricingCatalogLoadsIdempotently(t *testing.T) {
 	if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE provider_name = 'anthropic' AND catalog_entry_id IS NOT NULL").Scan(&anthropicRates); err != nil {
 		t.Fatal(err)
 	}
-	if anthropicRates != 0 {
-		t.Fatalf("Anthropic rates loaded without billing-context support: %d", anthropicRates)
+	if anthropicRates != 50 {
+		t.Fatalf("bundled Anthropic rates = %d, want the reviewed Opus/Sonnet context matrix of 50 entries", anthropicRates)
 	}
 	catalog, err := store.pricingCatalog()
 	if err != nil {
@@ -409,7 +409,7 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 }
 
-func TestMigrationsOneThroughTwelvePreserveLegacyData(t *testing.T) {
+func TestMigrationsOneThroughFourteenPreserveLegacyData(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -458,8 +458,8 @@ func TestMigrationsOneThroughTwelvePreserveLegacyData(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 12 || latestMigration != 12 {
-		t.Fatalf("migration history = %d/%d, want all migrations 1 through 12", migrationCount, latestMigration)
+	if migrationCount != 14 || latestMigration != 14 {
+		t.Fatalf("migration history = %d/%d, want all migrations 1 through 14", migrationCount, latestMigration)
 	}
 	var identityTable string
 	if err := db.QueryRow("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'collector_source_identities'").Scan(&identityTable); err != nil {
@@ -542,6 +542,71 @@ func TestPartialPricingRetainsKnownSubtotal(t *testing.T) {
 	got := catalog.calculate(event)
 	if got.Status != "unknown" || got.Reason != "billing_context_missing" || got.AmountMicros != 56 || got.Currency != "USD" {
 		t.Fatalf("partial estimate = %+v, want retained 56 USD micros and unknown reason", got)
+	}
+}
+
+func TestSplitCacheWritesFallBackToAggregateCustomRule(t *testing.T) {
+	from := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	aggregate := PricingRule{Provider: "anthropic", ModelSelector: "claude-opus-5-5", TokenCategory: TokenCategoryCacheWrite,
+		RateMicros: 7, Currency: "USD", EffectiveFrom: from, PricingVersion: "custom-v1"}
+	event := reportEvent{OccurredAt: from, Provider: "anthropic", RequestedModel: "claude-opus-5-5", ResolvedModel: "claude-opus-5-5",
+		Usage: TokenUsage{InputTokens: 100, CacheWriteTokens: 100}}
+	catalog := pricingCatalog{rules: []PricingRule{aggregate}}
+	aggregateOnly := catalog.calculate(event)
+	if aggregateOnly.Status != "calculated" || aggregateOnly.AmountMicros != 700 || aggregateOnly.PricingVersion != "custom-v1" {
+		t.Fatalf("aggregate-only custom cache-write estimate = %+v", aggregateOnly)
+	}
+	event.Usage.CacheWrite5mTokens, event.Usage.CacheWrite1hTokens = 60, 40
+	split := catalog.calculate(event)
+	if split.Status != "calculated" || split.AmountMicros != aggregateOnly.AmountMicros || split.PricingVersion != "custom-v1" {
+		t.Fatalf("split custom cache-write estimate = %+v, want aggregate-compatible 700 micros", split)
+	}
+
+	// A duration-specific override takes precedence for its own subset while
+	// the other subset continues to use the legacy aggregate rule.
+	duration := aggregate
+	duration.TokenCategory = TokenCategoryCacheWrite5m
+	duration.RateMicros = 11
+	duration.PricingVersion = "custom-duration-v1"
+	catalog.rules = append(catalog.rules, duration)
+	withOverride := catalog.calculate(event)
+	if withOverride.Status != "calculated" || withOverride.AmountMicros != 940 {
+		t.Fatalf("duration override estimate = %+v, want 940 micros without double charging", withOverride)
+	}
+}
+
+func TestStoreQueryPrefersExactCustomAggregateOverBundledDurationRates(t *testing.T) {
+	store := openTestStore(t)
+	from := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	if err := store.UpsertPricing(PricingRule{Provider: "anthropic", ModelSelector: "claude-opus-5-5", TokenCategory: TokenCategoryCacheWrite,
+		RateMicros: 7, Currency: "USD", EffectiveFrom: from, PricingVersion: "custom-aggregate-v1"}); err != nil {
+		t.Fatal(err)
+	}
+	serviceTier := BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}
+	region := BillingContextValue{Value: "global", Evidence: BillingEvidenceProviderResponse}
+	speed := BillingContextValue{Value: "standard", Evidence: BillingEvidenceProviderResponse}
+	events := []UsageEvent{testEvent("aggregate-cache-write"), testEvent("split-cache-write")}
+	for i := range events {
+		events[i].EventID = events[i].IngestionKey
+		events[i].OccurredAt = from.Add(time.Duration(i) * time.Hour)
+		events[i].Provider = "anthropic"
+		events[i].RequestedModel = "claude-opus-5-5"
+		events[i].ResolvedModel = "claude-opus-5-5"
+		events[i].Usage = TokenUsage{InputTokens: 100, CacheWriteTokens: 100}
+		events[i].BillingContext = BillingContext{ServiceTier: &serviceTier, Region: &region, Speed: &speed}
+	}
+	events[1].Usage.CacheWrite5mTokens, events[1].Usage.CacheWrite1hTokens = 60, 40
+	if _, err := store.Append(events); err != nil {
+		t.Fatal(err)
+	}
+	for i, event := range events {
+		report, err := store.Query(UsageFilter{From: event.OccurredAt, To: event.OccurredAt.Add(time.Minute)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Summary.CalculatedCostMicros != 700 || report.Summary.UnknownCostRequests != 0 || report.Summary.CalculationBasis != "custom_pricing_estimate" {
+			t.Fatalf("store query %d cost = %+v; want 700 micros custom estimate", i, report.Summary)
+		}
 	}
 }
 

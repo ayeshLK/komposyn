@@ -15,13 +15,16 @@
 package tokenlogger
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestClaudeImportAttributesAndNormalizesUsage(t *testing.T) {
@@ -56,6 +59,131 @@ func TestClaudeImportAttributesAndNormalizesUsage(t *testing.T) {
 	}
 	if second.Receipt != (Receipt{}) || second.Outcomes.UnchangedSnapshot != 1 {
 		t.Fatalf("unexpected re-import result: %+v", second)
+	}
+}
+
+func TestClaudeImportPricesVerifiedContextAndCacheDurationSplits(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "priced-claude.jsonl")
+	contents := `{"type":"user","sessionId":"session-priced","cwd":"/sanitized/project","project_id":"project-priced"}
+{"type":"assistant","uuid":"response-priced","sessionId":"session-priced","timestamp":"2026-10-16T12:00:00Z","cwd":"/sanitized/project","message":{"role":"assistant","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"cache_creation_input_tokens":100000,"cache_read_input_tokens":200000,"output_tokens":300000,"cache_creation":{"ephemeral_5m_input_tokens":60000,"ephemeral_1h_input_tokens":40000},"service_tier":"standard","inference_geo":"global","speed":"standard","fallback_credit":{"status":{"type":"redeemed"}},"output_tokens_details":{"thinking_tokens":100000}}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (ClaudeAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 1 {
+		t.Fatalf("Claude import = %+v, err = %v", result, err)
+	}
+	var input, write5m, write1h int64
+	var billing string
+	if err := store.db.QueryRow("SELECT input_tokens, cache_write_5m_tokens, cache_write_1h_tokens, billing_context_json FROM usage_events").Scan(&input, &write5m, &write1h, &billing); err != nil {
+		t.Fatal(err)
+	}
+	if input != 1_300_000 || write5m != 60_000 || write1h != 40_000 {
+		t.Fatalf("persisted input/cache split = %d/%d/%d, want 1300000/60000/40000", input, write5m, write1h)
+	}
+	var context BillingContext
+	if err := json.Unmarshal([]byte(billing), &context); err != nil {
+		t.Fatal(err)
+	}
+	if context.ServiceTier == nil || context.ServiceTier.Value != "standard" || context.Region == nil || context.Region.Value != "global" || context.Speed == nil || context.Speed.Value != "standard" {
+		t.Fatalf("persisted billing evidence = %+v", context)
+	}
+	if strings.Contains(billing, "fallback_credit") {
+		t.Fatalf("fallback credit was persisted in pricing context: %s", billing)
+	}
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	report, err := store.Query(UsageFilter{From: at.Add(-time.Minute), To: at.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.CalculatedCostMicros != 10_660_000 || report.Summary.UnknownCostRequests != 0 || report.Summary.PricingVersion != "anthropic-api-2026-10-16-v1" {
+		t.Fatalf("priced Anthropic report = %+v, want 10660000 USD micros and catalog provenance", report.Summary)
+	}
+}
+
+func TestClaudeAggregateCacheWriteWithoutDurationSplitStaysUnknown(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "missing-cache-split.jsonl")
+	contents := `{"type":"user","sessionId":"session-missing-split","cwd":"/sanitized/project"}
+{"type":"assistant","uuid":"response-missing-split","sessionId":"session-missing-split","timestamp":"2026-10-16T12:00:00Z","cwd":"/sanitized/project","message":{"role":"assistant","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"cache_creation_input_tokens":100000,"cache_read_input_tokens":200000,"output_tokens":300000,"service_tier":"standard","inference_geo":"global","speed":"standard"}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, store); err != nil || result.Receipt.Imported != 1 {
+		t.Fatalf("Claude import = %+v, err = %v", result, err)
+	}
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	report, err := store.Query(UsageFilter{From: at.Add(-time.Minute), To: at.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.UnknownCostRequests != 1 || report.Summary.CalculatedCostMicros != 10_040_000 {
+		t.Fatalf("report with aggregate-only cache writes = %+v, want unknown with only the verified subtotal", report.Summary)
+	}
+}
+
+func TestClaudeUnknownCacheCreationFieldPreventsReusableSnapshot(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "unknown-cache-field.jsonl")
+	contents := `{"type":"user","sessionId":"session-unknown-cache","cwd":"/sanitized/project"}
+{"type":"assistant","uuid":"response-unknown-cache","sessionId":"session-unknown-cache","timestamp":"2026-10-16T12:00:00Z","cwd":"/sanitized/project","message":{"role":"assistant","model":"claude-opus-5-5","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0,"future_ttl_tokens":7}}}}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (ClaudeAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 0 || result.Outcomes.UnsupportedUsage != 1 {
+		t.Fatalf("unknown nested usage field import = %+v, err = %v", result, err)
+	}
+	canonicalPath, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := store.Cursor("claude-file-" + digest([]byte(canonicalPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.SnapshotReusable {
+		t.Fatal("snapshot with an unknown cache_creation field was marked reusable")
+	}
+}
+
+func TestClaudePartialCacheDurationCountsAreValidated(t *testing.T) {
+	tests := []struct {
+		name, breakdown string
+	}{
+		{"negative five-minute count", `"ephemeral_5m_input_tokens":-1`},
+		{"five-minute count exceeds aggregate", `"ephemeral_5m_input_tokens":3`},
+		{"negative one-hour count", `"ephemeral_1h_input_tokens":-1`},
+		{"one-hour count exceeds aggregate", `"ephemeral_1h_input_tokens":3`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "invalid-partial-split.jsonl")
+			contents := fmt.Sprintf(`{"type":"assistant","uuid":"bad-split","sessionId":"bad-session","timestamp":"2026-10-16T12:00:00Z","cwd":"/sanitized/project","message":{"role":"assistant","model":"claude-opus-5-5","usage":{"input_tokens":0,"cache_creation_input_tokens":2,"cache_read_input_tokens":0,"output_tokens":1,"cache_creation":{%s}}}}`+"\n", test.breakdown)
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (ClaudeAdapter{}).Import(path, store)
+			if err != nil || result.Receipt != (Receipt{}) || result.Outcomes.MalformedRecord != 1 {
+				t.Fatalf("invalid partial split result = %+v, err = %v", result, err)
+			}
+			canonicalPath, err := filepath.Abs(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cursor, err := store.Cursor("claude-file-" + digest([]byte(canonicalPath)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cursor.SnapshotReusable {
+				t.Fatal("snapshot with malformed partial duration count was marked reusable")
+			}
+		})
 	}
 }
 

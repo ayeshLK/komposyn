@@ -2,7 +2,7 @@
 
 Komposyn upgrades its SQLite schema automatically when `Store.Open` is called.
 Migrations are numbered, applied in order, and recorded in the
-`schema_migrations` table. The current schema version is 12.
+`schema_migrations` table. The current schema version is 14.
 
 ## Migration history
 
@@ -39,6 +39,11 @@ Migrations are numbered, applied in order, and recorded in the
     tier and region selectors to pricing rules. Existing events remain unknown
     for these fields and existing pricing rules retain their context-independent
     behavior.
+13. Adds optional 5-minute and 1-hour cache-write token counts to usage events.
+    Existing aggregate-only counts remain intact and cannot be split
+    retroactively.
+14. Adds exact speed selectors to pricing rules for provider billing modes
+    whose rates vary by inference speed.
 
 ## Compatibility rules
 

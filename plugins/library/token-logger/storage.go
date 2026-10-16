@@ -227,8 +227,44 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("record migration 12: %w", err)
 		}
 	}
+	if applied < 13 {
+		if err := applyMissingColumns(tx, []struct{ table, name, statement string }{
+			{"usage_events", "cache_write_5m_tokens", schemaMigrationThirteenCacheWrite5m},
+			{"usage_events", "cache_write_1h_tokens", schemaMigrationThirteenCacheWrite1h},
+		}); err != nil {
+			return fmt.Errorf("apply migration 13: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 13, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 13: %w", err)
+		}
+	}
+	if applied < 14 {
+		if err := applyMissingColumns(tx, []struct{ table, name, statement string }{
+			{"pricing_rules", "speed_selector", schemaMigrationFourteenSpeedSelector},
+		}); err != nil {
+			return fmt.Errorf("apply migration 14: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 14, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 14: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
+	}
+	return nil
+}
+
+func applyMissingColumns(tx *sql.Tx, columns []struct{ table, name, statement string }) error {
+	for _, column := range columns {
+		var present bool
+		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name = ?)", column.table, column.name).Scan(&present); err != nil {
+			return err
+		}
+		if !present {
+			if _, err := tx.Exec(column.statement); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -830,6 +866,7 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 			event.Provenance.RecordHash, event.IngestionKey, nullableJSON(event.Attributes)}
 		if hasBillingContext {
 			args = append(args, nullableJSON(billingContextJSON))
+			args = append(args, event.Usage.CacheWrite5mTokens, event.Usage.CacheWrite1hTokens)
 		}
 		result, err := tx.Exec(insertSQL, args...)
 		if err != nil {
