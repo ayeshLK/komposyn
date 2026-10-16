@@ -275,8 +275,14 @@ changes the rolling or pinned range. Models are computed from session events
 using resolved model with the existing requested-model fallback.
 
 Interactive reports also support `/total-usage`, `/by-client`, `/by-model`,
-`/cost`, `/range`, `/refresh`, `/clear`, `/settings`, `/report-issue`, and
-`/quit`. `/clear` clears the visible
+`/cost`, `/pricing`, `/range`, `/refresh`, `/clear`, `/settings`,
+`/report-issue`, and `/quit`. `/pricing` displays the bounded provider/model
+breakdown and reason-specific guidance for the active scope and date range.
+It reads committed database data and leaves navigation and collection state
+unchanged. Ordinary interactive report views keep pricing status concise; the
+detailed coverage explanation appears only when requested. Noninteractive
+human report output continues to include the detailed coverage explanation.
+`/clear` clears the visible
 terminal, returns the cursor home, and does not rerun the report; use
 `/refresh` when a redraw is wanted. It never deletes usage, settings, consent,
 diagnostics, or history. Multiline paste is folded into one command and is not

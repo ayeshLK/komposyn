@@ -1485,7 +1485,7 @@ func TestInteractiveModelTablePreservesCostSemantics(t *testing.T) {
 	}
 }
 
-func TestInteractiveModelTableShowsReasonSpecificPricingSteps(t *testing.T) {
+func TestInteractiveModelTableKeepsPricingDetailsOnDemand(t *testing.T) {
 	report := tokenlogger.UsageReport{
 		Rows: []tokenlogger.UsageRow{{Dimensions: map[string]string{tokenlogger.GroupModel: "model", tokenlogger.GroupProvider: "provider"}, UsageMeasures: tokenlogger.UsageMeasures{RequestCount: 3, UnknownCostRequests: 3}}},
 		PricingCoverage: []tokenlogger.PricingCoverageRow{{
@@ -1503,13 +1503,16 @@ func TestInteractiveModelTableShowsReasonSpecificPricingSteps(t *testing.T) {
 	if err := writeInteractiveModelTable(&output, report); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{
-		"Review exact-model catalog coverage",
-		"Do not apply current prices retroactively",
-		"Check for a verified rate for the affected token category",
-	} {
-		if !strings.Contains(output.String(), expected) {
-			t.Errorf("interactive report missing %q: %s", expected, output.String())
+	if strings.Contains(output.String(), "PRICING COVERAGE GAPS") || strings.Contains(output.String(), "Review exact-model catalog coverage") {
+		t.Fatalf("interactive model table included opt-in pricing details: %s", output.String())
+	}
+	var pricing bytes.Buffer
+	if err := tokenlogger.WriteHumanPricingCoverage(&pricing, report.PricingCoverage, 80); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Review exact-model catalog coverage", "Do not apply current prices retroactively", "Check for a verified rate for the affected token category"} {
+		if !strings.Contains(pricing.String(), expected) {
+			t.Errorf("pricing details missing %q: %s", expected, pricing.String())
 		}
 	}
 }
@@ -1652,13 +1655,16 @@ func TestInteractiveReportsUseHumanReadableTable(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if code := runInteractive(strings.NewReader("/by-client\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
+	if code := runInteractive(strings.NewReader("/by-client\n/refresh\n/refresh\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
-	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "no public catalog rate", "Review exact-model catalog coverage"} {
+	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "no public catalog rate"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("interactive output does not contain %q: %s", expected, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "PRICING COVERAGE GAPS") || strings.Contains(stdout.String(), "Next:") || strings.Count(stdout.String(), "no public catalog rate") < 3 {
+		t.Fatalf("interactive output included on-demand pricing details: %s", stdout.String())
 	}
 }
 
@@ -2158,16 +2164,30 @@ func TestClaudePricingAcceptanceAcrossCLIReportsAndREPL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands := "/range 2026-10-16 2026-10-17\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/quit\n"
+	defer store.Close()
+	commands := "/range 2026-10-16 2026-10-17\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/pricing\n/quit\n"
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
 	var replOut, replErr bytes.Buffer
 	if code := runInteractiveLoopWithClock(reader, &replOut, &replErr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }); code != 0 {
-		store.Close()
 		t.Fatalf("pricing REPL exit=%d stderr=%q output=%q", code, replErr.String(), replOut.String())
 	}
-	store.Close()
-	if !strings.Contains(replOut.String(), "claude-opus-5-5") || !strings.Contains(replOut.String(), "billing context or rate unavailable") || !strings.Contains(replOut.String(), "anthropic") || !strings.Contains(replOut.String(), "20.7 USD") {
-		t.Fatalf("pricing REPL missing model estimate/unknown explanation: %s", replOut.String())
+	output := replOut.String()
+	pricingIndex := strings.LastIndex(output, "pricing coverage for active scope")
+	if pricingIndex < 0 {
+		t.Fatalf("/pricing did not render coverage for the active scope: %s", output)
+	}
+	if !strings.Contains(output, "claude-opus-5-5") || !strings.Contains(output, "partial; 1 billing context or rate unavailable") || !strings.Contains(output, "20.7 USD") {
+		t.Fatalf("pricing REPL missing model estimate/concise status: %s", output)
+	}
+	if strings.Contains(output[:pricingIndex], "PRICING COVERAGE GAPS") || strings.Contains(output[:pricingIndex], "Next:") {
+		t.Fatalf("default REPL views included opt-in pricing explanations: %s", output[:pricingIndex])
+	}
+	pending, err := store.PendingDiagnostics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 || strings.Contains(output, "Pending diagnostic") {
+		t.Fatalf("pricing unknowns created or prompted for diagnostics: pending=%v output=%s", pending, output)
 	}
 }
 

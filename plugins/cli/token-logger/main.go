@@ -727,6 +727,19 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
 			}
+		case "/pricing":
+			state.resolveRange(now)
+			filter := interactiveUsageFilter(&state)
+			filter.GroupBy = []string{tokenlogger.GroupProvider, tokenlogger.GroupModel}
+			report, err := store.Query(filter)
+			if err != nil {
+				fmt.Fprintf(stderr, "query pricing coverage failed: %v\n", err)
+				continue
+			}
+			fmt.Fprintf(stdout, "pricing coverage for active scope (%s to %s UTC)\n", state.from.Format(time.RFC3339Nano), state.to.Format(time.RFC3339Nano))
+			if err := tokenlogger.WriteHumanPricingCoverage(stdout, report.PricingCoverage, terminalWidthOf(stdout)); err != nil {
+				fmt.Fprintf(stderr, "render pricing coverage failed: %v\n", err)
+			}
 		case "/refresh":
 			if interactiveRender(stdout, stderr, store, &state, reader, now) {
 				return 0
@@ -857,7 +870,7 @@ func renderInteractive(stdout, stderr io.Writer, store *tokenlogger.Store, state
 	if sized, ok := stdout.(interface{ TerminalWidth() int }); ok {
 		width = sized.TerminalWidth()
 	}
-	if err := tokenlogger.WriteTableWidth(stdout, report, width); err != nil {
+	if err := tokenlogger.WriteTableWidthWithoutPricingCoverage(stdout, report, width); err != nil {
 		fmt.Fprintf(stderr, "render report failed: %v\n", err)
 	}
 	return nil
@@ -1041,7 +1054,7 @@ func readerOutput(reader interactiveLineReader) io.Writer {
 
 func printInteractiveHelp(stdout io.Writer) {
 	fmt.Fprintln(stdout, "/projects /project <selector> /sessions /session <selector> /models /model <selector>")
-	fmt.Fprintln(stdout, "/back /home /total-usage /by-client /by-model /cost")
+	fmt.Fprintln(stdout, "/back /home /total-usage /by-client /by-model /cost /pricing")
 	fmt.Fprintln(stdout, "/range [<from> <to> | reset] /refresh /clear /settings /report-issue /help /quit")
 }
 
