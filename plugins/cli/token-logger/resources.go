@@ -284,7 +284,7 @@ func writeResourceJSON(output io.Writer, value any) error {
 func writeProjectTable(output io.Writer, projects []tokenlogger.ProjectResource) error {
 	rows := [][]string{{"#", "PROJECT", "LOCATION", "ID", "SESSIONS", "REQUESTS", "TOKENS", "WARNINGS", "LAST ACTIVE"}}
 	for index, project := range projects {
-		rows = append(rows, []string{strconv.Itoa(index + 1), tokenlogger.FormatHumanLabel(project.DisplayName), humanLocation(project.Location), shortResourceID(project.ID), strconv.FormatInt(project.Summary.SessionCount, 10), strconv.FormatInt(project.Summary.RequestCount, 10), strconv.FormatInt(project.Summary.TotalTokens, 10), strconv.FormatInt(project.Warnings, 10), resourceTime(project.LastActive)})
+		rows = append(rows, []string{strconv.Itoa(index + 1), tokenlogger.FormatHumanLabel(project.DisplayName), humanLocation(project.Location), shortResourceID(project.ID), strconv.FormatInt(project.Summary.SessionCount, 10), strconv.FormatInt(project.Summary.RequestCount, 10), tokenlogger.FormatHumanTokens(project.Summary.TotalTokens), strconv.FormatInt(project.Warnings, 10), resourceTime(project.LastActive)})
 	}
 	return writeResourceRows(output, rows)
 }
@@ -296,7 +296,7 @@ func writeSessionTable(output io.Writer, sessions []tokenlogger.SessionResource)
 		if started == nil {
 			started = session.FirstActive
 		}
-		rows = append(rows, []string{strconv.Itoa(index + 1), shortResourceID(session.ID), tokenlogger.FormatHumanLabel(session.Client), resourceTime(started), resourceTime(session.LastActive), strconv.Itoa(len(session.Models)), strconv.FormatInt(session.Summary.RequestCount, 10), strconv.FormatInt(session.Summary.TotalTokens, 10)})
+		rows = append(rows, []string{strconv.Itoa(index + 1), shortResourceID(session.ID), tokenlogger.FormatHumanLabel(session.Client), resourceTime(started), resourceTime(session.LastActive), strconv.Itoa(len(session.Models)), strconv.FormatInt(session.Summary.RequestCount, 10), tokenlogger.FormatHumanTokens(session.Summary.TotalTokens)})
 	}
 	return writeResourceRows(output, rows)
 }
@@ -313,7 +313,7 @@ func writeInteractiveModelTable(output io.Writer, report tokenlogger.UsageReport
 			provider = "(unattributed)"
 		}
 		estimate, reported, status := tokenlogger.FormatHumanCost(row.UsageMeasures)
-		rows = append(rows, []string{strconv.Itoa(index + 1), tokenlogger.FormatHumanLabel(model), tokenlogger.FormatHumanLabel(provider), strconv.FormatInt(row.RequestCount, 10), strconv.FormatInt(row.InputTokens, 10), strconv.FormatInt(row.CachedInputTokens, 10), strconv.FormatInt(row.CacheWriteInputTokens, 10), strconv.FormatInt(row.OutputTokens, 10), strconv.FormatInt(row.ReasoningOutputTokens, 10), strconv.FormatInt(row.TotalTokens, 10), tokenlogger.FormatHumanLabel(estimate), tokenlogger.FormatHumanLabel(reported), tokenlogger.FormatHumanLabel(status)})
+		rows = append(rows, []string{strconv.Itoa(index + 1), tokenlogger.FormatHumanLabel(model), tokenlogger.FormatHumanLabel(provider), strconv.FormatInt(row.RequestCount, 10), tokenlogger.FormatHumanTokens(row.InputTokens), tokenlogger.FormatHumanTokens(row.CachedInputTokens), tokenlogger.FormatHumanTokens(row.CacheWriteInputTokens), tokenlogger.FormatHumanTokens(row.OutputTokens), tokenlogger.FormatHumanTokens(row.ReasoningOutputTokens), tokenlogger.FormatHumanTokens(row.TotalTokens), tokenlogger.FormatHumanLabel(estimate), tokenlogger.FormatHumanLabel(reported), tokenlogger.FormatHumanLabel(status)})
 	}
 	return writeResourceRows(output, rows)
 }

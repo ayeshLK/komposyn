@@ -138,7 +138,10 @@ These commands browse stable local resources. List JSON and CSV have
 `format_version: 1`; selectors in non-interactive commands are full stable IDs,
 never row numbers. Project output includes the readable name, canonical local
 location when known, clients/models, activity bounds, and complete usage/cost
-summary. A missing path is displayed as `location unavailable`. Session
+summary. Human-facing project/session totals and per-model token columns use
+the same decimal `K`, `M`, `B`, and `T` abbreviations as usage reports. Rounded
+cells may not visibly sum to another rounded cell; JSON and CSV retain exact
+token integers. A missing path is displayed as `location unavailable`. Session
 selection with `--project` verifies ownership, and `sessions show` includes
 per-model usage. Its CSV output has one row per model/provider pair and includes
 `format_version`, stable resource IDs, all token categories, calculated and
@@ -280,7 +283,9 @@ waits for a source scan.
 Interactive row numbers select from the exact rows printed by the most recent
 render of that view. A refresh or another report command replaces that
 selection snapshot. Stable IDs can still be supplied directly for project and
-session selection.
+session selection. Project, session, and model navigation tables use compact
+decimal token counts consistently; use the corresponding JSON or CSV resource
+commands when exact integers are required.
 
 Use `/range` to show the mode and effective UTC bounds. `/range <from> <to>`
 pins an explicit half-open range (accepting ISO-8601 dates or timestamps),

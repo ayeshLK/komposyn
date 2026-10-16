@@ -1116,6 +1116,7 @@ func TestProjectAndSessionResourceCommands(t *testing.T) {
 	}
 	event := cliReportEvent("resource-command", time.Now().UTC().Add(-time.Hour))
 	event.ProjectID, event.SessionID = "local-project", "local-session"
+	event.Usage = tokenlogger.TokenUsage{InputTokens: 600_000, CacheReadTokens: 120_000, CacheWriteTokens: 30_000, OutputTokens: 400_000, ReasoningTokens: 250_000}
 	project := tokenlogger.Project{ID: event.ProjectID, Root: filepath.Join(t.TempDir(), "workspace"), DisplayName: "Readable Project"}
 	session := tokenlogger.Session{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}
 	if _, err := store.AppendWithReferences([]tokenlogger.UsageEvent{event}, []tokenlogger.Project{project}, []tokenlogger.Session{session}); err != nil {
@@ -1127,7 +1128,7 @@ func TestProjectAndSessionResourceCommands(t *testing.T) {
 	if code := run([]string{"projects", "list", "--data-dir", dataDir, "--format", "json"}, &projectsOut, &projectsErr); code != 0 {
 		t.Fatalf("projects list exit=%d stderr=%q", code, projectsErr.String())
 	}
-	if !strings.Contains(projectsOut.String(), `"format_version": 1`) || !strings.Contains(projectsOut.String(), `"display_name": "Readable Project"`) || !strings.Contains(projectsOut.String(), `"request_count": 1`) {
+	if !strings.Contains(projectsOut.String(), `"format_version": 1`) || !strings.Contains(projectsOut.String(), `"display_name": "Readable Project"`) || !strings.Contains(projectsOut.String(), `"request_count": 1`) || !strings.Contains(projectsOut.String(), `"total_tokens": 1000000`) {
 		t.Fatalf("unexpected projects JSON: %s", projectsOut.String())
 	}
 	var projectsCSVOut, projectsCSVErr bytes.Buffer
@@ -1138,7 +1139,7 @@ func TestProjectAndSessionResourceCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projectRecords) != 2 || projectRecords[0][0] != "format_version" || projectRecords[0][1] != "project_id" || projectRecords[1][0] != "1" || projectRecords[1][1] != "local-project" {
+	if len(projectRecords) != 2 || projectRecords[0][0] != "format_version" || projectRecords[0][1] != "project_id" || projectRecords[1][0] != "1" || projectRecords[1][1] != "local-project" || !reflect.DeepEqual(projectRecords[1][10:16], []string{"600000", "120000", "30000", "400000", "250000", "1000000"}) {
 		t.Fatalf("unexpected project-list CSV: %#v", projectRecords)
 	}
 
@@ -1146,7 +1147,7 @@ func TestProjectAndSessionResourceCommands(t *testing.T) {
 	if code := run([]string{"sessions", "list", "--project", "local-project", "--data-dir", dataDir, "--format", "json"}, &sessionsOut, &sessionsErr); code != 0 {
 		t.Fatalf("sessions list exit=%d stderr=%q", code, sessionsErr.String())
 	}
-	if !strings.Contains(sessionsOut.String(), `"format_version": 1`) || !strings.Contains(sessionsOut.String(), `"id": "local-session"`) || !strings.Contains(sessionsOut.String(), event.ResolvedModel) {
+	if !strings.Contains(sessionsOut.String(), `"format_version": 1`) || !strings.Contains(sessionsOut.String(), `"id": "local-session"`) || !strings.Contains(sessionsOut.String(), event.ResolvedModel) || !strings.Contains(sessionsOut.String(), `"total_tokens": 1000000`) {
 		t.Fatalf("unexpected sessions JSON: %s", sessionsOut.String())
 	}
 	var sessionsCSVOut, sessionsCSVErr bytes.Buffer
@@ -1157,7 +1158,7 @@ func TestProjectAndSessionResourceCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessionRecords) != 2 || sessionRecords[0][0] != "format_version" || sessionRecords[0][1] != "session_id" || sessionRecords[1][0] != "1" || sessionRecords[1][1] != "local-session" {
+	if len(sessionRecords) != 2 || sessionRecords[0][0] != "format_version" || sessionRecords[0][1] != "session_id" || sessionRecords[1][0] != "1" || sessionRecords[1][1] != "local-session" || !reflect.DeepEqual(sessionRecords[1][10:16], []string{"600000", "120000", "30000", "400000", "250000", "1000000"}) {
 		t.Fatalf("unexpected session-list CSV: %#v", sessionRecords)
 	}
 
@@ -1174,7 +1175,7 @@ func TestProjectAndSessionResourceCommands(t *testing.T) {
 	if wantModel == "" {
 		wantModel = event.RequestedModel
 	}
-	if len(records) != 2 || records[0][0] != "format_version" || records[0][1] != "session_id" || records[1][0] != "1" || records[1][1] != "local-session" || records[1][4] != wantModel {
+	if len(records) != 2 || records[0][0] != "format_version" || records[0][1] != "session_id" || records[1][0] != "1" || records[1][1] != "local-session" || records[1][4] != wantModel || !reflect.DeepEqual(records[1][8:14], []string{"600000", "120000", "30000", "400000", "250000", "1000000"}) {
 		t.Fatalf("unexpected session detail CSV: %#v", records)
 	}
 }
@@ -1189,6 +1190,7 @@ func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	event := cliReportEvent("navigation", now.Add(-time.Hour))
 	event.ProjectID, event.SessionID, event.ResolvedModel = "nav-project", "nav-session", "nav model"
+	event.Usage = tokenlogger.TokenUsage{InputTokens: 600_000, CacheReadTokens: 120_000, CacheWriteTokens: 30_000, OutputTokens: 400_000, ReasoningTokens: 250_000}
 	if _, err := store.AppendWithReferences([]tokenlogger.UsageEvent{event},
 		[]tokenlogger.Project{{ID: event.ProjectID, Root: "/workspace/navigation", DisplayName: "Navigation Project"}},
 		[]tokenlogger.Session{{ID: event.SessionID, ProjectID: event.ProjectID, Client: event.Client}}); err != nil {
@@ -1206,9 +1208,14 @@ func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
 		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, expected := range []string{"Navigation Project", expectedLocation, "nav-session", "nav model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav model", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
+	for _, expected := range []string{"Navigation Project", expectedLocation, "nav-session", "nav model", "komposyn / project:Navigation Project", "session:nav-session", "model:nav model", "600K", "120K", "30K", "400K", "250K", "1M", "active range (pinned): 2026-10-14T00:00:00Z to 2026-10-16T00:00:00Z"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("interactive navigation missing %q: %s", expected, output)
+		}
+	}
+	for _, raw := range []string{"600000", "120000", "30000", "400000", "250000", "1000000"} {
+		if strings.Contains(output, raw) {
+			t.Fatalf("interactive navigation exposed unformatted token count %q: %s", raw, output)
 		}
 	}
 }
@@ -1351,6 +1358,42 @@ func TestResourceHumanOutputEscapesUntrustedMetadataAndPreservesUnicode(t *testi
 	breadcrumb := interactiveBreadcrumb(&state)
 	if strings.ContainsAny(breadcrumb, "\n\t\r\x1b") || !strings.Contains(breadcrumb, `\n`) || !strings.Contains(breadcrumb, `\x1B`) {
 		t.Fatalf("unsafe breadcrumb: %q", breadcrumb)
+	}
+}
+
+func TestResourceTablesUseCompactTokenCounts(t *testing.T) {
+	var projectOutput bytes.Buffer
+	project := tokenlogger.ProjectResource{ID: "project", DisplayName: "Project", Location: "/workspace", Summary: tokenlogger.UsageMeasures{TotalTokens: 1_000_000}}
+	if err := writeProjectTable(&projectOutput, []tokenlogger.ProjectResource{project}); err != nil {
+		t.Fatal(err)
+	}
+	projectFields := strings.Fields(strings.Split(projectOutput.String(), "\n")[1])
+	if len(projectFields) < 7 || projectFields[6] != "1M" {
+		t.Fatalf("project token cell was not compact: %q", projectOutput.String())
+	}
+
+	var sessionOutput bytes.Buffer
+	session := tokenlogger.SessionResource{ID: "session", Client: "client", Summary: tokenlogger.UsageMeasures{TotalTokens: 1_000_000_000}}
+	if err := writeSessionTable(&sessionOutput, []tokenlogger.SessionResource{session}); err != nil {
+		t.Fatal(err)
+	}
+	sessionFields := strings.Fields(strings.Split(sessionOutput.String(), "\n")[1])
+	if len(sessionFields) < 8 || sessionFields[7] != "1B" {
+		t.Fatalf("session token cell was not compact: %q", sessionOutput.String())
+	}
+
+	row := tokenlogger.UsageRow{Dimensions: map[string]string{tokenlogger.GroupModel: "model", tokenlogger.GroupProvider: "provider"}, UsageMeasures: tokenlogger.UsageMeasures{
+		RequestCount: 7, InputTokens: 999, CachedInputTokens: 1_000, CacheWriteInputTokens: 1_050,
+		OutputTokens: 999_950, ReasoningOutputTokens: 1_000_000_000, TotalTokens: 1_000_000_000_000,
+	}}
+	var modelOutput bytes.Buffer
+	if err := writeInteractiveModelTable(&modelOutput, tokenlogger.UsageReport{Rows: []tokenlogger.UsageRow{row}}); err != nil {
+		t.Fatal(err)
+	}
+	modelFields := strings.Fields(strings.Split(modelOutput.String(), "\n")[1])
+	want := []string{"7", "999", "1K", "1.1K", "1M", "1B", "1T"}
+	if len(modelFields) < 10 || !reflect.DeepEqual(modelFields[3:10], want) {
+		t.Fatalf("granular token cells = %v, want %v; table=%q", modelFields[3:10], want, modelOutput.String())
 	}
 }
 

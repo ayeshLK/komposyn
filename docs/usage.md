@@ -141,7 +141,10 @@ dimension is shown as `(none)`.
 
 Token totals below 1,000 remain exact. Larger totals use decimal `K`, `M`, `B`,
 or `T` suffixes with at most one fractional digit; rounding carries into the
-next suffix. Request and session counts remain exact and use comma separators.
+next suffix. This applies consistently to project/session navigation and every
+token column in the session model list. Independently rounded cells may not
+visibly sum to a displayed total. Request and session counts remain exact and
+use comma separators.
 Dimension values are terminal-safe and bounded to 32 Unicode code points;
 truncated values include a visible marker and short distinguishing hash. A
 wide or untruncated table mode is not currently provided.
