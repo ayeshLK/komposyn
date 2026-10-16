@@ -118,11 +118,10 @@ func TestTerminalLineReaderWritesTableRowsStartingAtColumnZero(t *testing.T) {
 
 	command := exec.Command(os.Args[0], "-test.run=TestTerminalLineReaderWritesTableRowsStartingAtColumnZero", "--")
 	command.Env = append(os.Environ(), "KOMPOSYN_PTY_TABLE_HELPER=1")
-	master, err := pty.Start(command)
+	master, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 48})
 	if err != nil {
 		t.Fatal(err)
 	}
-	setPTYSizeColumns(t, master, 48)
 	output := newPTYOutputReader(master)
 	defer func() {
 		_ = master.Close()
