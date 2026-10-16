@@ -116,7 +116,8 @@ func (s *Store) UpsertPricing(rule PricingRule) error {
 		if err := rows.Scan(&existingSelector, &existingTier, &existingRegion); err != nil {
 			return err
 		}
-		if selectorsHaveEqualPrecedenceOverlap(existingSelector, rule.ModelSelector) && existingTier == rule.ServiceTierSelector && existingRegion == rule.RegionSelector {
+		if selectorsHaveEqualPrecedenceOverlap(existingSelector, rule.ModelSelector) &&
+			contextSelectorsHaveEqualPrecedenceOverlap(existingTier, existingRegion, rule.ServiceTierSelector, rule.RegionSelector) {
 			return errors.New("overlapping custom pricing rules with equal-precedence model selectors are ambiguous")
 		}
 	}
@@ -150,6 +151,30 @@ func selectorsHaveEqualPrecedenceOverlap(a, b string) bool {
 		return strings.HasPrefix(aPrefix, bPrefix) || strings.HasPrefix(bPrefix, aPrefix)
 	}
 	return !aWildcard && !bWildcard && a == b
+}
+
+// contextSelectorsHaveEqualPrecedenceOverlap reports whether two selector
+// pairs can match the same event at equal context specificity. Empty selector
+// dimensions are wildcards; a differing exact value makes the pairs disjoint.
+func contextSelectorsHaveEqualPrecedenceOverlap(aTier, aRegion, bTier, bRegion string) bool {
+	aSpecificity, bSpecificity := 0, 0
+	if aTier != "" {
+		aSpecificity++
+	}
+	if aRegion != "" {
+		aSpecificity++
+	}
+	if bTier != "" {
+		bSpecificity++
+	}
+	if bRegion != "" {
+		bSpecificity++
+	}
+	if aSpecificity != bSpecificity {
+		return false
+	}
+	return (aTier == "" || bTier == "" || aTier == bTier) &&
+		(aRegion == "" || bRegion == "" || aRegion == bRegion)
 }
 
 type pricingCatalog struct {
@@ -210,16 +235,13 @@ func (c pricingCatalog) find(provider, resolvedModel, requestedModel, category s
 		}
 		modelSpecificity := modelPrecedence(rule.ModelSelector, resolvedModel, requestedModel)
 		contextSpecificity := 0
+		if !billingContextMatchesRule(rule, billing) {
+			continue
+		}
 		if rule.ServiceTierSelector != "" {
-			if billing.ServiceTier == nil || billing.ServiceTier.Value != rule.ServiceTierSelector {
-				continue
-			}
 			contextSpecificity++
 		}
 		if rule.RegionSelector != "" {
-			if billing.Region == nil || billing.Region.Value != rule.RegionSelector {
-				continue
-			}
 			contextSpecificity++
 		}
 		custom := rule.CatalogEntryID == ""
@@ -237,11 +259,21 @@ func (c pricingCatalog) find(provider, resolvedModel, requestedModel, category s
 	return best.rule, best.modelPrecedence > 0 && !ambiguous, ambiguous
 }
 
+func billingContextMatchesRule(rule PricingRule, billing BillingContext) bool {
+	if rule.ServiceTierSelector != "" && (billing.ServiceTier == nil || billing.ServiceTier.Value != rule.ServiceTierSelector) {
+		return false
+	}
+	if rule.RegionSelector != "" && (billing.Region == nil || billing.Region.Value != rule.RegionSelector) {
+		return false
+	}
+	return true
+}
+
 func (c pricingCatalog) missingReason(provider, resolvedModel, requestedModel, category string, at time.Time, billing BillingContext) string {
 	if resolvedModel == "" && requestedModel == "" {
 		return "model_unresolved"
 	}
-	modelKnown, categoryKnown, contextRequired := false, false, false
+	modelKnown, categoryKnown, contextRequired, outsideEffectiveRange := false, false, false, false
 	for _, rule := range c.rules {
 		if rule.Provider != provider || modelPrecedence(rule.ModelSelector, resolvedModel, requestedModel) == 0 {
 			continue
@@ -249,17 +281,20 @@ func (c pricingCatalog) missingReason(provider, resolvedModel, requestedModel, c
 		modelKnown = true
 		if rule.TokenCategory == category {
 			categoryKnown = true
-			if (rule.ServiceTierSelector != "" && (billing.ServiceTier == nil || billing.ServiceTier.Value != rule.ServiceTierSelector)) ||
-				(rule.RegionSelector != "" && (billing.Region == nil || billing.Region.Value != rule.RegionSelector)) {
+			if !billingContextMatchesRule(rule, billing) {
 				contextRequired = true
+				continue
 			}
 			if at.Before(rule.EffectiveFrom) || (rule.EffectiveTo != nil && !at.Before(*rule.EffectiveTo)) {
-				return "outside_effective_range"
+				outsideEffectiveRange = true
 			}
 		}
 	}
 	if modelKnown && !categoryKnown {
 		return "billing_context_missing"
+	}
+	if outsideEffectiveRange {
+		return "outside_effective_range"
 	}
 	if contextRequired {
 		return "billing_context_missing"
@@ -454,8 +489,7 @@ func (c pricingCatalog) calculateZeroUsage(event reportEvent) eventCost {
 		reason := c.missingReason(event.Provider, event.ResolvedModel, event.RequestedModel, TokenCategoryInput, event.OccurredAt, event.BillingContext)
 		for _, rule := range c.rules {
 			if rule.Provider == event.Provider && modelPrecedence(rule.ModelSelector, event.ResolvedModel, event.RequestedModel) > 0 &&
-				(event.BillingContext.ServiceTier == nil || rule.ServiceTierSelector == "" || event.BillingContext.ServiceTier.Value == rule.ServiceTierSelector) &&
-				(event.BillingContext.Region == nil || rule.RegionSelector == "" || event.BillingContext.Region.Value == rule.RegionSelector) &&
+				billingContextMatchesRule(rule, event.BillingContext) &&
 				(event.OccurredAt.Before(rule.EffectiveFrom) || (rule.EffectiveTo != nil && !event.OccurredAt.Before(*rule.EffectiveTo))) {
 				reason = "outside_effective_range"
 				break

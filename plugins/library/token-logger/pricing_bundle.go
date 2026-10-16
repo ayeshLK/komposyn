@@ -193,7 +193,9 @@ func validateBundledIntervals(tx *sql.Tx) error {
 		for j := i + 1; j < len(rules); j++ {
 			a, b := rules[i], rules[j]
 			if a.Provider == b.Provider && a.TokenCategory == b.TokenCategory &&
-				selectorsHaveEqualPrecedenceOverlap(a.ModelSelector, b.ModelSelector) && a.ServiceTierSelector == b.ServiceTierSelector && a.RegionSelector == b.RegionSelector && intervalsOverlap(a, b) {
+				selectorsHaveEqualPrecedenceOverlap(a.ModelSelector, b.ModelSelector) &&
+				contextSelectorsHaveEqualPrecedenceOverlap(a.ServiceTierSelector, a.RegionSelector, b.ServiceTierSelector, b.RegionSelector) &&
+				intervalsOverlap(a, b) {
 				return fmt.Errorf("bundled pricing intervals overlap for %s/%s/%s", a.Provider, a.ModelSelector, a.TokenCategory)
 			}
 		}

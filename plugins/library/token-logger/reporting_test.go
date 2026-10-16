@@ -143,6 +143,50 @@ func TestQueryUsesPersistedBillingContextSelectors(t *testing.T) {
 	}
 }
 
+func TestContextMissingReasonIsNotMaskedByExpiredOtherTier(t *testing.T) {
+	store := openTestStore(t)
+	currentFrom := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	expiredFrom, expiredTo := currentFrom.AddDate(0, -1, 0), currentFrom
+	for _, rule := range []PricingRule{
+		{Provider: "openai", ModelSelector: "review-model", TokenCategory: TokenCategoryInput, RateMicros: 1, Currency: "USD", EffectiveFrom: currentFrom, PricingVersion: "tier-v1", ServiceTierSelector: "standard"},
+		{Provider: "openai", ModelSelector: "review-model", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: expiredFrom, EffectiveTo: &expiredTo, PricingVersion: "tier-v1", ServiceTierSelector: "priority"},
+	} {
+		if err := store.UpsertPricing(rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	missing := testEvent("review-missing-context")
+	missing.EventID, missing.RequestedModel, missing.ResolvedModel = "review-missing-context", "review-model", "review-model"
+	missing.OccurredAt, missing.Usage = at, TokenUsage{InputTokens: 1}
+	known := missing
+	known.EventID, known.IngestionKey = "review-known-priority", "review-known-priority"
+	known.BillingContext.ServiceTier = &BillingContextValue{Value: "priority", Evidence: BillingEvidenceProviderResponse}
+	if _, err := store.Append([]UsageEvent{missing, known}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Query(UsageFilter{From: at.Add(-time.Hour), To: at.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasons map[string]int64
+	if err := json.Unmarshal([]byte(report.Summary.CostUnknownReasons), &reasons); err != nil {
+		t.Fatal(err)
+	}
+	if reasons["billing_context_missing"] != 1 || reasons["outside_effective_range"] != 1 {
+		t.Fatalf("unknown-cost reason counts = %v", reasons)
+	}
+	var human strings.Builder
+	if err := WriteHumanPricingCoverage(&human, report.PricingCoverage, 100); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"billing context or rate", "outside pricing dates"} {
+		if !strings.Contains(human.String(), expected) {
+			t.Fatalf("human coverage %q omitted %q", human.String(), expected)
+		}
+	}
+}
+
 func TestQueryMarksMissingPricingAsUnknown(t *testing.T) {
 	store := openTestStore(t)
 	event := testEvent("unknown-price")
