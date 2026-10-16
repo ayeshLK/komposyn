@@ -443,8 +443,21 @@ func (c pricingCatalog) calculate(event reportEvent) eventCost {
 	}
 	charge(TokenCategoryInput, usage.InputTokens-usage.CacheReadTokens-usage.CacheWriteTokens)
 	charge(TokenCategoryCacheRead, usage.CacheReadTokens)
-	charge(TokenCategoryCacheWrite5m, usage.CacheWrite5mTokens)
-	charge(TokenCategoryCacheWrite1h, usage.CacheWrite1hTokens)
+	chargeCacheWrite := func(durationCategory string, tokens int64) {
+		if tokens == 0 {
+			return
+		}
+		_, ok, ambiguous := c.find(event.Provider, event.ResolvedModel, event.RequestedModel, durationCategory, event.OccurredAt, event.BillingContext)
+		if ok || ambiguous {
+			charge(durationCategory, tokens)
+			return
+		}
+		// A duration split adds precision, but existing aggregate cache-write
+		// rules remain applicable unless a duration-specific rule overrides them.
+		charge(TokenCategoryCacheWrite, tokens)
+	}
+	chargeCacheWrite(TokenCategoryCacheWrite5m, usage.CacheWrite5mTokens)
+	chargeCacheWrite(TokenCategoryCacheWrite1h, usage.CacheWrite1hTokens)
 	charge(TokenCategoryCacheWrite, usage.CacheWriteTokens-usage.CacheWrite5mTokens-usage.CacheWrite1hTokens)
 	charge(TokenCategoryOutput, usage.OutputTokens-usage.ReasoningTokens)
 	if usage.ReasoningTokens > 0 {

@@ -151,6 +151,42 @@ func TestClaudeUnknownCacheCreationFieldPreventsReusableSnapshot(t *testing.T) {
 	}
 }
 
+func TestClaudePartialCacheDurationCountsAreValidated(t *testing.T) {
+	tests := []struct {
+		name, breakdown string
+	}{
+		{"negative five-minute count", `"ephemeral_5m_input_tokens":-1`},
+		{"five-minute count exceeds aggregate", `"ephemeral_5m_input_tokens":3`},
+		{"negative one-hour count", `"ephemeral_1h_input_tokens":-1`},
+		{"one-hour count exceeds aggregate", `"ephemeral_1h_input_tokens":3`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "invalid-partial-split.jsonl")
+			contents := fmt.Sprintf(`{"type":"assistant","uuid":"bad-split","sessionId":"bad-session","timestamp":"2026-10-16T12:00:00Z","cwd":"/sanitized/project","message":{"role":"assistant","model":"claude-opus-5-5","usage":{"input_tokens":0,"cache_creation_input_tokens":2,"cache_read_input_tokens":0,"output_tokens":1,"cache_creation":{%s}}}}`+"\n", test.breakdown)
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (ClaudeAdapter{}).Import(path, store)
+			if err != nil || result.Receipt != (Receipt{}) || result.Outcomes.MalformedRecord != 1 {
+				t.Fatalf("invalid partial split result = %+v, err = %v", result, err)
+			}
+			canonicalPath, err := filepath.Abs(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cursor, err := store.Cursor("claude-file-" + digest([]byte(canonicalPath)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cursor.SnapshotReusable {
+				t.Fatal("snapshot with malformed partial duration count was marked reusable")
+			}
+		})
+	}
+}
+
 func TestClaudeImportAcceptsNewerUsageFields(t *testing.T) {
 	tests := []struct {
 		name           string

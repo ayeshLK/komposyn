@@ -340,11 +340,23 @@ func claudeCacheDurationBreakdownValid(usage claudeUsage) bool {
 		return true
 	}
 	fivePtr, onePtr := usage.CacheCreation.Ephemeral5mInputTokens, usage.CacheCreation.Ephemeral1hInputTokens
+	five, one := int64(0), int64(0)
+	if fivePtr != nil {
+		five = *fivePtr
+		if five < 0 || five > usage.CacheCreationInputTokens {
+			return false
+		}
+	}
+	if onePtr != nil {
+		one = *onePtr
+		if one < 0 || one > usage.CacheCreationInputTokens {
+			return false
+		}
+	}
 	if fivePtr == nil || onePtr == nil {
 		return true
 	}
-	five, one := *fivePtr, *onePtr
-	return five >= 0 && one >= 0 && five <= usage.CacheCreationInputTokens && one <= usage.CacheCreationInputTokens-five && five+one == usage.CacheCreationInputTokens
+	return one <= usage.CacheCreationInputTokens-five && five+one == usage.CacheCreationInputTokens
 }
 
 func decodeClaudeMessage(raw json.RawMessage) (claudeMessage, error) {

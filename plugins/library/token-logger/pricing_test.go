@@ -545,6 +545,36 @@ func TestPartialPricingRetainsKnownSubtotal(t *testing.T) {
 	}
 }
 
+func TestSplitCacheWritesFallBackToAggregateCustomRule(t *testing.T) {
+	from := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	aggregate := PricingRule{Provider: "anthropic", ModelSelector: "claude-opus-5-5", TokenCategory: TokenCategoryCacheWrite,
+		RateMicros: 7, Currency: "USD", EffectiveFrom: from, PricingVersion: "custom-v1"}
+	event := reportEvent{OccurredAt: from, Provider: "anthropic", RequestedModel: "claude-opus-5-5", ResolvedModel: "claude-opus-5-5",
+		Usage: TokenUsage{InputTokens: 100, CacheWriteTokens: 100}}
+	catalog := pricingCatalog{rules: []PricingRule{aggregate}}
+	aggregateOnly := catalog.calculate(event)
+	if aggregateOnly.Status != "calculated" || aggregateOnly.AmountMicros != 700 || aggregateOnly.PricingVersion != "custom-v1" {
+		t.Fatalf("aggregate-only custom cache-write estimate = %+v", aggregateOnly)
+	}
+	event.Usage.CacheWrite5mTokens, event.Usage.CacheWrite1hTokens = 60, 40
+	split := catalog.calculate(event)
+	if split.Status != "calculated" || split.AmountMicros != aggregateOnly.AmountMicros || split.PricingVersion != "custom-v1" {
+		t.Fatalf("split custom cache-write estimate = %+v, want aggregate-compatible 700 micros", split)
+	}
+
+	// A duration-specific override takes precedence for its own subset while
+	// the other subset continues to use the legacy aggregate rule.
+	duration := aggregate
+	duration.TokenCategory = TokenCategoryCacheWrite5m
+	duration.RateMicros = 11
+	duration.PricingVersion = "custom-duration-v1"
+	catalog.rules = append(catalog.rules, duration)
+	withOverride := catalog.calculate(event)
+	if withOverride.Status != "calculated" || withOverride.AmountMicros != 940 {
+		t.Fatalf("duration override estimate = %+v, want 940 micros without double charging", withOverride)
+	}
+}
+
 func TestPricingPrecedenceAndAmbiguousIntervals(t *testing.T) {
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	catalog := pricingCatalog{rules: []PricingRule{
