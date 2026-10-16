@@ -919,6 +919,21 @@ func TestHumanPricingCoverageIsBoundedAndSanitized(t *testing.T) {
 	}
 }
 
+func TestWriteTableWidthWithoutPricingCoverageKeepsTableOnly(t *testing.T) {
+	report := UsageReport{
+		Rows:            []UsageRow{{Dimensions: map[string]string{GroupModel: "unlisted-model"}, UsageMeasures: UsageMeasures{RequestCount: 1, UnknownCostRequests: 1, CostUnknownReason: "no_matching_rate"}}},
+		Summary:         UsageMeasures{RequestCount: 1, UnknownCostRequests: 1},
+		PricingCoverage: []PricingCoverageRow{{Provider: "unlisted-provider", Model: "unlisted-model", Requests: 1, Reasons: map[string]int64{"no_matching_rate": 1}}},
+	}
+	var output bytes.Buffer
+	if err := WriteTableWidthWithoutPricingCoverage(&output, report, 80); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "no public catalog rate") || strings.Contains(output.String(), "PRICING COVERAGE GAPS") || strings.Contains(output.String(), "Next:") {
+		t.Fatalf("table-only output lost concise status or included coverage guidance: %s", output.String())
+	}
+}
+
 func TestHumanPricingCoverageWrapsAndExplainsEachGap(t *testing.T) {
 	coverage := []PricingCoverageRow{{
 		Provider: "anthropic",

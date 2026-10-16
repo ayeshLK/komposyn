@@ -1485,7 +1485,7 @@ func TestInteractiveModelTablePreservesCostSemantics(t *testing.T) {
 	}
 }
 
-func TestInteractiveModelTableShowsReasonSpecificPricingSteps(t *testing.T) {
+func TestInteractiveModelTableKeepsPricingDetailsOnDemand(t *testing.T) {
 	report := tokenlogger.UsageReport{
 		Rows: []tokenlogger.UsageRow{{Dimensions: map[string]string{tokenlogger.GroupModel: "model", tokenlogger.GroupProvider: "provider"}, UsageMeasures: tokenlogger.UsageMeasures{RequestCount: 3, UnknownCostRequests: 3}}},
 		PricingCoverage: []tokenlogger.PricingCoverageRow{{
@@ -1503,13 +1503,16 @@ func TestInteractiveModelTableShowsReasonSpecificPricingSteps(t *testing.T) {
 	if err := writeInteractiveModelTable(&output, report); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{
-		"Review exact-model catalog coverage",
-		"Do not apply current prices retroactively",
-		"Check for a verified rate for the affected token category",
-	} {
-		if !strings.Contains(output.String(), expected) {
-			t.Errorf("interactive report missing %q: %s", expected, output.String())
+	if strings.Contains(output.String(), "PRICING COVERAGE GAPS") || strings.Contains(output.String(), "Review exact-model catalog coverage") {
+		t.Fatalf("interactive model table included opt-in pricing details: %s", output.String())
+	}
+	var pricing bytes.Buffer
+	if err := tokenlogger.WriteHumanPricingCoverage(&pricing, report.PricingCoverage, 80); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Review exact-model catalog coverage", "Do not apply current prices retroactively", "Check for a verified rate for the affected token category"} {
+		if !strings.Contains(pricing.String(), expected) {
+			t.Errorf("pricing details missing %q: %s", expected, pricing.String())
 		}
 	}
 }
@@ -1652,13 +1655,16 @@ func TestInteractiveReportsUseHumanReadableTable(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if code := runInteractive(strings.NewReader("/by-client\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
+	if code := runInteractive(strings.NewReader("/by-client\n/refresh\n/refresh\n/quit\n"), &stdout, &stderr, store, dataDir); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
-	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "no public catalog rate", "Review exact-model catalog coverage"} {
+	for _, expected := range []string{"CLIENT", "PROVIDER", "MODEL", "REQUESTS", "SESSIONS", "1.1K", "no public catalog rate"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("interactive output does not contain %q: %s", expected, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "PRICING COVERAGE GAPS") || strings.Contains(stdout.String(), "Next:") || strings.Count(stdout.String(), "no public catalog rate") < 3 {
+		t.Fatalf("interactive output included on-demand pricing details: %s", stdout.String())
 	}
 }
 
@@ -2158,16 +2164,139 @@ func TestClaudePricingAcceptanceAcrossCLIReportsAndREPL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands := "/range 2026-10-16 2026-10-17\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/quit\n"
+	defer store.Close()
+	activeRange := tokenlogger.ResourceFilter{From: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)}
+	projectList, err := store.ListProjects(activeRange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pricingProject tokenlogger.ProjectResource
+	for _, project := range projectList.Projects {
+		if project.DisplayName == "Pricing Project" {
+			pricingProject = project
+			break
+		}
+	}
+	if pricingProject.ID == "" {
+		t.Fatalf("could not find imported pricing project: %+v", projectList.Projects)
+	}
+	sessionList, err := store.ListSessions(pricingProject.ID, activeRange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pricingSession tokenlogger.SessionResource
+	for _, session := range sessionList.Sessions {
+		for _, model := range session.Models {
+			if model == "claude-opus-5-5" {
+				pricingSession = session
+				break
+			}
+		}
+	}
+	if pricingSession.ID == "" {
+		t.Fatalf("could not find Claude pricing session: %+v", sessionList.Sessions)
+	}
+	otherProjectID, otherProjectSessionID, otherSessionID := "scope-other-project", "scope-other-project-session", "scope-other-session"
+	makeScopeEvent := func(id string, at time.Time, projectID, sessionID, model string) tokenlogger.UsageEvent {
+		event := cliReportEvent(id, at)
+		event.Provider, event.RequestedModel, event.ResolvedModel = "anthropic", model, model
+		event.ProjectID, event.SessionID = projectID, sessionID
+		event.Usage = tokenlogger.TokenUsage{InputTokens: 1, CacheWriteTokens: 1}
+		return event
+	}
+	decoys := []tokenlogger.UsageEvent{
+		makeScopeEvent("outside-project", time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC), otherProjectID, otherProjectSessionID, "claude-opus-5-5"),
+		makeScopeEvent("outside-session", time.Date(2026, 10, 16, 14, 1, 0, 0, time.UTC), pricingProject.ID, otherSessionID, "claude-opus-5-5"),
+		makeScopeEvent("outside-model", time.Date(2026, 10, 16, 14, 2, 0, 0, time.UTC), pricingProject.ID, pricingSession.ID, "claude-unlisted-scope-test"),
+		makeScopeEvent("outside-date", time.Date(2026, 10, 8, 14, 3, 0, 0, time.UTC), pricingProject.ID, pricingSession.ID, "claude-opus-5-5"),
+	}
+	if _, err := store.AppendWithReferences(decoys,
+		[]tokenlogger.Project{{ID: otherProjectID, DisplayName: "Other Project"}},
+		[]tokenlogger.Session{
+			{ID: otherProjectSessionID, ProjectID: otherProjectID, Client: decoys[0].Client},
+			{ID: otherSessionID, ProjectID: pricingProject.ID, Client: decoys[1].Client},
+		}); err != nil {
+		t.Fatalf("append pricing scope decoys: %v", err)
+	}
+	commands := "/range 2026-10-16 2026-10-17\n/projects\n/project Pricing Project\n/pricing\n/sessions\n/session " + pricingSession.ID + "\n/pricing\n/models\n/model claude-opus-5-5\n/pricing\n/range 2026-10-07 2026-10-09\n/pricing\n/range 2026-10-16 2026-10-17\n/refresh\n/quit\n"
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
 	var replOut, replErr bytes.Buffer
 	if code := runInteractiveLoopWithClock(reader, &replOut, &replErr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }); code != 0 {
-		store.Close()
 		t.Fatalf("pricing REPL exit=%d stderr=%q output=%q", code, replErr.String(), replOut.String())
 	}
-	store.Close()
-	if !strings.Contains(replOut.String(), "claude-opus-5-5") || !strings.Contains(replOut.String(), "billing context or rate unavailable") || !strings.Contains(replOut.String(), "anthropic") || !strings.Contains(replOut.String(), "20.7 USD") {
-		t.Fatalf("pricing REPL missing model estimate/unknown explanation: %s", replOut.String())
+	output := replOut.String()
+	pricingIndex := strings.Index(output, "pricing coverage for active scope")
+	if pricingIndex < 0 {
+		t.Fatalf("/pricing did not render coverage for the active scope: %s", output)
+	}
+	pricingBlocks := make([]string, 0, 4)
+	for offset := pricingIndex; offset < len(output); {
+		nextHeader := strings.Index(output[offset:], "pricing coverage for active scope")
+		if nextHeader < 0 {
+			break
+		}
+		start := offset + nextHeader
+		nextReport := strings.Index(output[start:], "report queried_at:")
+		if nextReport < 0 {
+			t.Fatalf("pricing output has no following view boundary: %s", output[start:])
+		}
+		pricingBlocks = append(pricingBlocks, output[start:start+nextReport])
+		offset = start + nextReport
+	}
+	if len(pricingBlocks) != 4 {
+		t.Fatalf("got %d /pricing output blocks, want project/session/model/date scopes: %s", len(pricingBlocks), output[pricingIndex:])
+	}
+	for _, expected := range []string{"anthropic / claude-opus-5-5: 2 requests", "billing context or rate unavailable (2)", "Affected category: cache-write (2)", "claude-unlisted-scope-test"} {
+		if !strings.Contains(pricingBlocks[0], expected) {
+			t.Errorf("project-scope /pricing missing %q: %s", expected, pricingBlocks[0])
+		}
+	}
+	for _, excluded := range []string{"outside-date"} {
+		if strings.Contains(pricingBlocks[0], excluded) {
+			t.Errorf("project-scope /pricing included %q: %s", excluded, pricingBlocks[0])
+		}
+	}
+	for _, expected := range []string{"anthropic / claude-opus-5-5: 1 requests", "billing context or rate unavailable (1)", "Affected category: cache-write (1)", "claude-unlisted-scope-test"} {
+		if !strings.Contains(pricingBlocks[1], expected) {
+			t.Errorf("session-scope /pricing missing %q: %s", expected, pricingBlocks[1])
+		}
+	}
+	if strings.Contains(pricingBlocks[1], "outside-date") {
+		t.Errorf("session-scope /pricing included out-of-range event: %s", pricingBlocks[1])
+	}
+	for _, expected := range []string{"anthropic / claude-opus-5-5: 1 requests", "billing context or rate unavailable (1)", "Affected category: cache-write (1)"} {
+		if !strings.Contains(pricingBlocks[2], expected) {
+			t.Errorf("model-scope /pricing missing %q: %s", expected, pricingBlocks[2])
+		}
+	}
+	if strings.Contains(pricingBlocks[2], "claude-unlisted-scope-test") {
+		t.Errorf("model-scope /pricing included other model: %s", pricingBlocks[2])
+	}
+	for _, expected := range []string{"anthropic / claude-opus-5-5: 1 requests", "billing context or rate unavailable (1)", "Affected category: cache-write (1)"} {
+		if !strings.Contains(pricingBlocks[3], expected) {
+			t.Errorf("date-scope /pricing missing %q: %s", expected, pricingBlocks[3])
+		}
+	}
+	if strings.Contains(pricingBlocks[3], "2 requests") {
+		t.Errorf("date-scope /pricing did not isolate the out-of-range event: %s", pricingBlocks[3])
+	}
+	refreshBreadcrumbOffset := strings.LastIndex(output, "komposyn / project:")
+	postPricingOutput := output[refreshBreadcrumbOffset:]
+	if !strings.Contains(output[:pricingIndex], "partial; 1 billing context or rate unavailable") {
+		t.Fatalf("default model view missing concise partial status: %s", output[:pricingIndex])
+	}
+	if !strings.Contains(postPricingOutput, "model:claude-opus-5-5") || !strings.Contains(postPricingOutput, "20.7 USD") {
+		t.Fatalf("/pricing changed the navigation selection used by the next refresh: %s", postPricingOutput)
+	}
+	if strings.Contains(output[:pricingIndex], "PRICING COVERAGE GAPS") || strings.Contains(output[:pricingIndex], "Next:") {
+		t.Fatalf("default REPL views included opt-in pricing explanations: %s", output[:pricingIndex])
+	}
+	pending, err := store.PendingDiagnostics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 || strings.Contains(output, "Pending diagnostic") {
+		t.Fatalf("pricing unknowns created or prompted for diagnostics: pending=%v output=%s", pending, output)
 	}
 }
 

@@ -622,9 +622,27 @@ func WriteTable(w io.Writer, report UsageReport) error {
 // the first tier that fits the given width without dropping any usage or
 // cost information.
 func WriteTableWidth(w io.Writer, report UsageReport, width int) error {
+	return writeTableWidth(w, report, width, true)
+}
+
+// WriteTableWidthWithoutPricingCoverage writes the same human-readable usage
+// table as WriteTableWidth without the optional pricing coverage explanation.
+// It is intended for compact interactive views that offer pricing details on
+// demand. Exported table rendering defaults remain unchanged.
+func WriteTableWidthWithoutPricingCoverage(w io.Writer, report UsageReport, width int) error {
+	return writeTableWidth(w, report, width, false)
+}
+
+func writeTableWidth(w io.Writer, report UsageReport, width int, includePricingCoverage bool) error {
 	if len(report.Rows) == 0 && report.Summary.RequestCount == 0 {
 		_, err := fmt.Fprintln(w, "NO USAGE DATA")
 		return err
+	}
+	writeCoverage := func() error {
+		if includePricingCoverage {
+			return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
+		}
+		return nil
 	}
 	dimCount, headings, rows := tableRows(report)
 
@@ -633,7 +651,7 @@ func WriteTableWidth(w io.Writer, report UsageReport, width int) error {
 		if _, err := w.Write(full); err != nil {
 			return err
 		}
-		return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
+		return writeCoverage()
 	}
 
 	compact := renderCompactTable(dimCount, headings, rows)
@@ -641,13 +659,13 @@ func WriteTableWidth(w io.Writer, report UsageReport, width int) error {
 		if _, err := w.Write(compact); err != nil {
 			return err
 		}
-		return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
+		return writeCoverage()
 	}
 
 	if _, err := w.Write(renderVerticalTable(headings, rows)); err != nil {
 		return err
 	}
-	return WriteHumanPricingCoverage(w, report.PricingCoverage, width)
+	return writeCoverage()
 }
 
 const maxHumanPricingCoverageRows = 8

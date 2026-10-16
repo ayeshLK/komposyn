@@ -118,11 +118,10 @@ func TestTerminalLineReaderWritesTableRowsStartingAtColumnZero(t *testing.T) {
 
 	command := exec.Command(os.Args[0], "-test.run=TestTerminalLineReaderWritesTableRowsStartingAtColumnZero", "--")
 	command.Env = append(os.Environ(), "KOMPOSYN_PTY_TABLE_HELPER=1")
-	master, err := pty.Start(command)
+	master, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 48})
 	if err != nil {
 		t.Fatal(err)
 	}
-	setPTYSize(t, master)
 	output := newPTYOutputReader(master)
 	defer func() {
 		_ = master.Close()
@@ -145,7 +144,12 @@ func TestTerminalLineReaderWritesTableRowsStartingAtColumnZero(t *testing.T) {
 	output.waitForText(t, "claude-code")
 	output.waitForText(t, "\r\n")
 	output.waitForText(t, "codex-cli")
+	output.waitForText(t, "PRICING COVERAGE GAPS")
+	output.waitForText(t, "Next:")
 	output.waitForCommand(t, command)
+	if !strings.Contains(output.output.String(), "\r\n    ") {
+		t.Fatalf("pricing guidance did not wrap through the CRLF terminal writer: %q", output.output.String())
+	}
 }
 
 func TestTerminalLineReaderWritesStderrStartingAtColumnZero(t *testing.T) {
@@ -270,8 +274,12 @@ func runPTYExitCase(t *testing.T, mode, result, input string) {
 }
 
 func setPTYSize(t *testing.T, terminal *os.File) {
+	setPTYSizeColumns(t, terminal, 80)
+}
+
+func setPTYSizeColumns(t *testing.T, terminal *os.File, columns uint16) {
 	t.Helper()
-	if err := pty.Setsize(terminal, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+	if err := pty.Setsize(terminal, &pty.Winsize{Rows: 24, Cols: columns}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -302,6 +310,9 @@ func terminalEditorPTYTableHelper(t *testing.T) {
 	if !ok {
 		t.Fatal("pseudo-terminal was not recognized as an interactive terminal")
 	}
+	if width := terminalWidthOf(output); width != 48 {
+		t.Fatalf("wrapped terminal width = %d, want 48", width)
+	}
 	if _, err := reader.ReadLine("> "); err != nil {
 		t.Fatalf("read terminal line: %v", err)
 	}
@@ -319,6 +330,10 @@ func terminalEditorPTYTableHelper(t *testing.T) {
 		},
 	}
 	if err := tokenlogger.WriteTable(output, report); err != nil {
+		t.Fatal(err)
+	}
+	coverage := []tokenlogger.PricingCoverageRow{{Provider: "unlisted", Model: "unlisted-model", Requests: 1, Reasons: map[string]int64{"no_matching_rate": 1}}}
+	if err := tokenlogger.WriteHumanPricingCoverage(output, coverage, terminalWidthOf(output)); err != nil {
 		t.Fatal(err)
 	}
 	if err := reader.Close(); err != nil {
