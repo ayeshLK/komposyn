@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -86,7 +87,7 @@ func inspectSchemaReadOnly(path string) (version int, exists bool, err error) {
 			return 0, true, fmt.Errorf("copy database for read-only inspection: %w", err)
 		}
 	}
-	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(inspectionPath), RawQuery: "mode=ro"}).String()
+	uri := sqliteFileURI(inspectionPath, "mode=ro")
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return 0, true, fmt.Errorf("open database read-only: %w", err)
@@ -140,4 +141,16 @@ func copyRegularFile(sourcePath, destinationPath string) error {
 		return err
 	}
 	return destination.Close()
+}
+
+func sqliteFileURI(path, query string) string {
+	uriPath := filepath.ToSlash(path)
+	isWindowsDrivePath := len(path) >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\')
+	if isWindowsDrivePath {
+		uriPath = strings.ReplaceAll(path, "\\", "/")
+	}
+	if (filepath.VolumeName(path) != "" || isWindowsDrivePath) && !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: query}).String()
 }

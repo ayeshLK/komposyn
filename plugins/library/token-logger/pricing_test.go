@@ -459,7 +459,7 @@ func TestMigrationsOneThroughFifteenPreserveLegacyData(t *testing.T) {
 	if backupPath == "" {
 		t.Fatal("migration did not retain its verified pre-migration backup path")
 	}
-	backupDB, err := sql.Open("sqlite", "file:"+filepath.ToSlash(backupPath)+"?mode=ro")
+	backupDB, err := sql.Open("sqlite", sqliteFileURI(backupPath, "mode=ro"))
 	if err != nil {
 		t.Fatal(err)
 	}

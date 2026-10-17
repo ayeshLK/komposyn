@@ -115,7 +115,7 @@ func runOnlineBackup(sourcePath, destinationPath string) error {
 	if err != nil {
 		return fmt.Errorf("resolve backup source: %w", err)
 	}
-	uri := "file:" + filepath.ToSlash(sourceAbsolute) + "?mode=ro"
+	uri := sqliteFileURI(sourceAbsolute, "mode=ro")
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return fmt.Errorf("open migration backup source: %w", err)
@@ -195,7 +195,7 @@ func writeBackupMetadata(path string, metadata MigrationBackupMetadata) error {
 }
 
 func verifyMigrationBackup(path string, expected MigrationBackupMetadata) error {
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
+	db, err := sql.Open("sqlite", sqliteFileURI(path, "mode=ro"))
 	if err != nil {
 		return fmt.Errorf("open backup for verification: %w", err)
 	}

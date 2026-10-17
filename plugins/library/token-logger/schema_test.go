@@ -131,6 +131,13 @@ func TestOpenCreatesEmptyDatabaseAndReportsCompatibility(t *testing.T) {
 	}
 }
 
+func TestSQLiteFileURIEncodesWindowsDrivePath(t *testing.T) {
+	got := sqliteFileURI(`C:\Users\example\token-logger.db`, "mode=ro")
+	if got != "file:///C:/Users/example/token-logger.db?mode=ro" {
+		t.Fatalf("SQLite file URI = %q, want a triple-slash Windows drive URI", got)
+	}
+}
+
 func TestMigrationBackupFailureLeavesSchemaUnmigratedAndPreservesDestination(t *testing.T) {
 	tempDir := t.TempDir()
 	databasePath := filepath.Join(tempDir, "legacy.db")
@@ -167,7 +174,7 @@ func TestMigrationBackupFailureLeavesSchemaUnmigratedAndPreservesDestination(t *
 	if err != nil || !reflect.DeepEqual(backupContents, sentinel) {
 		t.Fatalf("existing backup destination changed: err=%v", err)
 	}
-	db, err = sql.Open("sqlite", "file:"+filepath.ToSlash(databasePath)+"?mode=ro")
+	db, err = sql.Open("sqlite", sqliteFileURI(databasePath, "mode=ro"))
 	if err != nil {
 		t.Fatal(err)
 	}
