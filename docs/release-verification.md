@@ -84,6 +84,30 @@ smoke-test path starts a registered background collector, stops/restarts it
 across replacement, and verifies uninstall stops it before removing the
 executable.
 
+To exercise an active historical collector across a real signed installer
+upgrade to a published release, run on native Linux or macOS:
+
+```sh
+bash scripts/verify-active-published-upgrade.sh v0.6.0 v0.7.0
+bash scripts/verify-active-published-upgrade.sh v0.5.0 v0.7.0
+```
+
+On native Windows amd64, use the PowerShell equivalent:
+
+```powershell
+./scripts/verify-active-published-upgrade.ps1 -OldTag v0.6.0 -NewTag v0.7.0
+./scripts/verify-active-published-upgrade.ps1 -OldTag v0.5.0 -NewTag v0.7.0
+```
+
+Both scripts verify the historical archive and checksum manifest signatures,
+start the old background collector, install the published target through the
+normal signature-verifying installer, and check that it restarts under a new
+process/instance with one running background lease owner. They compare durable
+usage totals and settings and stop the collector during cleanup. These tests
+must run on native platforms; cross-compilation is not runtime evidence.
+`.github/workflows/issue-46-historical-upgrade.yml` runs the v0.5.0 and v0.6.0
+cases on native macOS and Windows for pull requests that change this verifier.
+
 For installer verification, `scripts/install.sh` verifies both SHA-256 and the
 Cosign blob certificate identity and OIDC issuer before replacing the binary.
 The PowerShell installer follows the same release verification contract on
