@@ -9,6 +9,21 @@ try {
     New-Item -ItemType Directory -Path $payloadDir | Out-Null
     Set-Content -Path (Join-Path $payloadDir 'komposyn-lg.exe') -Value 'fixture-binary'
     Compress-Archive -Path (Join-Path $payloadDir 'komposyn-lg.exe') -DestinationPath (Join-Path $releaseDir $asset)
+
+    # Exercise the same PowerShell extraction helper used by verify-release.sh
+    # with caller-selected paths that contain spaces and apostrophes.
+    $quotedPathRoot = Join-Path $temp "O'Neil release paths"
+    $quotedArchiveDir = Join-Path $quotedPathRoot 'release assets'
+    $quotedDestination = Join-Path $quotedPathRoot "O'Neil extraction"
+    New-Item -ItemType Directory -Path $quotedArchiveDir, $quotedDestination -Force | Out-Null
+    $quotedArchive = Join-Path $quotedArchiveDir 'fixture archive.zip'
+    Compress-Archive -Path (Join-Path $payloadDir 'komposyn-lg.exe') -DestinationPath $quotedArchive
+    & (Join-Path $PSScriptRoot 'expand-release-archive.ps1') `
+        -ArchivePath $quotedArchive -DestinationPath $quotedDestination
+    if ((Get-Content -Raw (Join-Path $quotedDestination 'komposyn-lg.exe')) -ne 'fixture-binary') {
+        throw 'PowerShell archive extraction failed for a path containing spaces and apostrophes'
+    }
+
     $hash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $releaseDir $asset)).Hash.ToLowerInvariant()
     Set-Content -Path (Join-Path $releaseDir 'SHA256SUMS') -Value "# version=1.2.3`n$hash  $asset"
     Set-Content -Path (Join-Path $releaseDir "$asset.sig") -Value 'fixture-signature'

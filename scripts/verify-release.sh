@@ -50,7 +50,8 @@ trap 'rm -rf "$tmp_dir"' EXIT
 if [[ "$windows_host" == true ]]; then
   archive_path="$(cygpath -w "$dist_dir/$asset")"
   extraction_path="$(cygpath -w "$tmp_dir")"
-  powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '$archive_path' -DestinationPath '$extraction_path' -Force"
+  powershell.exe -NoProfile -File "$root_dir/scripts/expand-release-archive.ps1" \
+    -ArchivePath "$archive_path" -DestinationPath "$extraction_path"
   binary_name="komposyn-lg.exe"
 else
   tar -xzf "$dist_dir/$asset" -C "$tmp_dir"

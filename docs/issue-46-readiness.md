@@ -81,6 +81,11 @@ before counting those paths as verified.
 
 - [ ] Run the historical v0.6.0-to-v0.7.0 upgrade and rollback fixture on
   macOS and Windows; add representative historical binaries older than v0.6.0.
+- [ ] Exercise an active historical background collector during a cross-version
+  installer upgrade; verify cooperative stop, replacement, automatic restart,
+  and that only one lease owner is active. The current historical fixture
+  upgrades a stopped collector and manually restarts it afterward, so it does
+  not cover this installer path.
 - [ ] Run the published binaries on all six target platforms. Linux amd64
   historical lifecycle passed; the release workflow verified installer
   lifecycles on Linux, macOS, and Windows runner hosts.
