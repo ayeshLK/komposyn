@@ -79,5 +79,30 @@ non-default data directory.
 The uninstall scripts stop a managed collector before removing the
 executable and preserve local data, registered sources, and runtime history. A
 stop timeout prevents removal.
+
+## Shell completion
+
+Print a completion script with the installed executable, then save it in the
+shell's standard completion directory. Generation is local and makes no
+network requests:
+
+```bash
+mkdir -p ~/.local/share/bash-completion/completions ~/.zfunc ~/.config/fish/completions
+komposyn-lg completion bash > ~/.local/share/bash-completion/completions/komposyn-lg
+komposyn-lg completion zsh > ~/.zfunc/_komposyn-lg
+komposyn-lg completion fish > ~/.config/fish/completions/komposyn-lg.fish
+```
+
+For Zsh, ensure `~/.zfunc` is on `fpath` in `.zshrc` before `compinit`:
+`fpath=(~/.zfunc $fpath)`. For PowerShell, add the generated registration to the
+current user's profile:
+
+```powershell
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PROFILE) | Out-Null
+komposyn-lg completion powershell | Add-Content -Encoding utf8 $PROFILE
+```
+
+Run `komposyn-lg --help` for top-level discovery and
+`komposyn-lg help <command>` for command-specific syntax.
 Back up the data directory before manually removing it; uninstall does not
 delete the database or settings for you. See [Upgrades](upgrades.md).

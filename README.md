@@ -44,9 +44,10 @@ It is deliberately useful on its own. The component can evolve through real
 usage and community feedback before the architecture of a broader harness is
 decided.
 
-> **Release status:** KompoSyn is currently pre-release; GitHub Releases does
-> not yet contain a published signed release. Building from source is the
-> supported way to try the current repository state.
+> **Releases:** Signed stable releases are published on GitHub. The installers
+> select the latest stable release by default and verify its checksum and
+> Cosign signature. See [Installation](docs/installation.md) for release and
+> source-build options.
 
 ## Why KompoSyn
 
@@ -119,6 +120,10 @@ The implementation is split into an independent library and CLI surface:
 
 * `plugins/library/token-logger` — logger domain and integration library.
 * `plugins/cli/token-logger` — the `komposyn-lg` executable.
+
+Run `komposyn-lg --help` for command discovery, `komposyn-lg help <command>`
+for command details, and `komposyn-lg completion <bash|zsh|fish|powershell>`
+to print shell completion scripts.
 
 For contributor setup and future component proposals, see
 [CONTRIBUTING.md](CONTRIBUTING.md). The full documentation map is in

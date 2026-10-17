@@ -9,11 +9,40 @@ Commands that access stored data and document the option below use
 `--data-dir <path>`. `TOKEN_LOGGER_DATA_DIR` is the override for no-argument
 interactive mode, which does not accept a command-line option. Without an
 override, data is stored under `$HOME/.komposyn/token-logger/data`; legacy data
-is discovered as described in [Configuration](configuration.md). The `version`
-command does not use a data directory. Harness clients may select one through
+is discovered as described in [Configuration](configuration.md). The `version`,
+`help`, and `completion` commands do not use a data directory. Help and
+completion also work when the user's home directory cannot be resolved; they
+do not open the database, run onboarding, or start collection. Harness clients
+may select one through
 `initialize.params.data_dir`.
 
 ## Commands
+
+### `help`
+
+```text
+komposyn-lg --help
+komposyn-lg -h
+komposyn-lg help [command [subcommand]]
+komposyn-lg <command> --help
+komposyn-lg <command> <subcommand> --help
+```
+
+Help writes to stdout and exits 0. It works before onboarding and does not
+create the data directory. Invalid help topics write to stderr and exit 1.
+The top-level help includes a first-run import/report path, common data and
+format options, exit-status meanings, and links to these details.
+
+### `completion`
+
+```text
+komposyn-lg completion <bash|zsh|fish|powershell>
+```
+
+Prints deterministic completion source for public commands and options to
+stdout. Generation is offline and has no data-directory side effects. See
+[Installation](installation.md#shell-completion) for setup examples. Invalid
+shell names or syntax exit 1; output failures exit 2.
 
 ### `version`
 
@@ -74,6 +103,7 @@ not guess attribution from unrelated records.
 
 ```text
 komposyn-lg usage|cost|sessions [options]
+komposyn-lg cost [options]
 ```
 
 Supported options include:
@@ -294,8 +324,9 @@ returns to rolling mode and renders immediately. If `watch` and interactive
 mode should share a database, pass `--data-dir` to `watch` and set
 `TOKEN_LOGGER_DATA_DIR` for interactive mode to the same directory.
 For explicit session collection controls today, run or stop foreground
-`komposyn-lg watch` in another terminal. Detached registration and lifecycle
-controls are tracked in [issue #68](https://github.com/ayeshLK/komposyn/issues/68).
+`komposyn-lg watch` in another terminal, or register roots with `watch add`
+and manage the detached collector with `watch start`, `watch status`, and
+`watch stop`.
 
 For non-TTY input or output, the CLI keeps scanner-style behavior. `/clear`
 then prints `clear is available only in an interactive terminal` and emits no

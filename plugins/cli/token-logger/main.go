@@ -50,6 +50,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h" || containsHelpFlag(args)) {
+		return runHelp(args, stdout, stderr)
+	}
 	if len(args) == 0 {
 		resolution, err := resolveDataDir("")
 		if err != nil {
@@ -120,6 +123,8 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 			return 1
 		}
 		return runProtocol(input, stdout, stderr)
+	case "completion":
+		return runCompletion(args[1:], stdout, stderr)
 	case "import":
 		return runImport(args[1:], stdout, stderr)
 	case "projects":
@@ -138,7 +143,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 	case "report-issue":
 		return runReportIssue(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "usage: komposyn-lg {version|harness|import|usage|cost|projects|sessions|watch|settings|report-issue} ...")
+		fmt.Fprintf(stderr, "unknown command %q; run komposyn-lg --help for usage\n", args[0])
 		return 1
 	}
 }

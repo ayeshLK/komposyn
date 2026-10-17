@@ -12,10 +12,10 @@ importing or reporting.
 
 ## Install from a release
 
-No signed GitHub release is published yet. Once one is available, use the
-platform installer described in [Installation](installation.md); it verifies
-the release checksum and Cosign signature before replacing the executable.
-For the current pre-release repository state, use the source-build path below.
+Signed stable GitHub releases are available. Use the platform installer in
+[Installation](installation.md) to install the latest stable release; it
+verifies the release checksum and Cosign signature. Build from source below
+when you want to compile the current checkout yourself.
 
 ## Build from source
 
@@ -30,6 +30,10 @@ Confirm the binary and version:
 ```text
 bin/komposyn-lg version
 ```
+
+Run `komposyn-lg --help` to see supported commands, or
+`komposyn-lg help <command>` for options and examples. Shell completion is
+available with `komposyn-lg completion <bash|zsh|fish|powershell>`.
 
 ## Import a source
 
