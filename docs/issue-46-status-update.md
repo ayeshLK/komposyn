@@ -48,21 +48,26 @@ Windows amd64, and the full v0.6.0 migration, backup restoration, and
 uninstall fixture on both systems. See
 [workflow run 39037544184](https://github.com/ayeshLK/komposyn/actions/runs/39037544184).
 
-The following gates remain open:
+The six-target native runtime workflow is complete. The signed published
+binary passed its version and protocol-v1 checks on Linux amd64/arm64, macOS
+amd64/arm64, and Windows amd64/arm64. The Windows ARM64 retry builds the
+pinned Cosign verifier natively after its installer did not support that
+architecture. See [workflow run
+39038326152](https://github.com/ayeshLK/komposyn/actions/runs/39038326152).
 
-- Execute published binaries natively on Linux arm64, macOS amd64, and Windows
-  arm64. The six-target runtime workflow has passed on Linux amd64/arm64, macOS
-  amd64/arm64, and Windows amd64. Windows arm64 reached its native runner but
-  the pinned Cosign installer does not support that architecture; the workflow
-  now builds pinned Cosign natively, and the Windows arm64 runtime rerun is
-  pending.
-- Prepare the destination repository bootstrap and resolve access to
-  `ayeshLK/komposyn-lg`. GitHub currently returns “Could not resolve to a
-  Repository” for that name, so existence/access cannot yet be distinguished.
-  A reviewable root-file bootstrap template is prepared locally; it includes
-  Apache attribution, scoped policy, Go module pin, read-only CI, CodeQL,
-  Dependabot, and Release Please config, without CLI source or publication
-  workflow.
+The standalone bootstrap and extraction candidate are prepared locally. The
+candidate came from the recorded extraction commit with PR #130 verification
+fixes transferred, keeps the CLI layout, and pins core v0.7.0 without a
+permanent `replace`. Its CLI/core version output is 0.7.1/0.7.0. Local tests,
+build, release archive lifecycle checks, and trust tests passed before a final
+test-hardening edit; that last edit needs a rerun because the command sandbox
+began rejecting process startup.
+
+The remaining blocker is destination access. GitHub currently returns “Could
+not resolve to a Repository” for `ayeshLK/komposyn-lg`, so its existence and
+visibility cannot be distinguished. Destination CI and a reviewable PR cannot
+be prepared until access is available. The combined repository remains
+authoritative.
 
 Proposed first standalone CLI version: `v0.7.1`, requiring the published core
 tag `v0.7.0`; later CLI and core versions will advance independently. The

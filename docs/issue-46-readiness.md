@@ -142,28 +142,32 @@ repository permission or protection changes were attempted.
 
 Cross-platform follow-up tooling: the verifier now accepts macOS `shasum` and
 has a Windows Git Bash path for ZIP extraction, `.exe` invocation, and
-PowerShell uninstall. Native macOS/Windows historical runs are still required
-before counting those paths as verified.
+PowerShell uninstall. Native macOS/Windows historical runs are complete and
+passed as recorded below.
 
 The follow-up workflow also has a six-target native runtime matrix for Linux
 amd64/arm64, macOS amd64/arm64, and Windows amd64/arm64. It verifies the
 published checksum manifest and archive signatures, checks the target archive
 checksum, runs the executable's version command, and exchanges protocol-v1
 initialize/shutdown messages. Linux amd64 passed locally; PR #131 run
-39038168018 also passed on Linux arm64, macOS amd64/arm64, and Windows amd64.
+39038326152 passed on the other five targets.
 The first Windows arm64 attempt reached the native runner but the pinned
 Cosign installer rejected its `ARM64` architecture before running the
 verifier. The workflow now builds pinned Cosign v2.4.3 with Go 1.26.9 on that
-native runner; Windows arm64 runtime evidence is pending the rerun.
+native runner, and the retry passed on Windows arm64.
 
 The standalone destination bootstrap is prepared under
-`standalone-bootstrap/` as a reviewable root-file template. It includes the
-module pin, Apache attribution, scoped repository guidance, read-only CI,
-CodeQL, Dependabot, and Release Please configuration. It contains no CLI
-implementation or publication workflow; transfer the proven release machinery
-and validate its exact standalone signing identity only after the verification
-gates pass. GitHub still cannot resolve `ayeshLK/komposyn-lg`, so destination
-creation/access remains unresolved.
+`standalone-bootstrap/`. After all historical and six-target gates passed, a
+local extraction candidate was assembled at `/tmp/komposyn-lg-extraction`
+from the recorded extraction commit, with the required PR #130 verification
+fixes applied. It preserves the CLI layout and pins core v0.7.0 without a
+permanent `replace`; its build reports CLI 0.7.1 and core 0.7.0. Local Go
+tests, vet, module verification, build, shell checks, trust and release
+resolution tests, six-archive build, and lifecycle verifier passed before the
+final exact-certificate test hardening. That final test edit could not be
+rerun because the command sandbox began rejecting process startup with
+`bwrap: setting up uid map: Permission denied`; it remains pending. GitHub
+still cannot resolve `ayeshLK/komposyn-lg`, so no destination PR can be opened.
 
 ## Remaining verification gates
 
@@ -174,20 +178,21 @@ creation/access remains unresolved.
 - [x] Run full v0.6.0 historical migration, backup restoration, and uninstall
   verification on native macOS arm64 and Windows amd64. Linux amd64 evidence
   was already recorded above.
-- [x] Execute published binaries natively on Linux amd64/arm64, macOS
-  amd64/arm64, and Windows amd64. The published artifact signatures and
-  checksums, CLI/core version output, and protocol-v1 initialize/shutdown
-  passed on each target.
-- [ ] Execute the published Windows arm64 binary natively. The first attempt
-  failed while installing Cosign because the pinned installer lacks Windows
-  ARM64 support; the workflow now builds that pinned verification tool
-  natively, and the artifact execution remains pending.
+- [x] Execute published binaries natively on all six targets: Linux amd64 and
+  arm64, macOS amd64 and arm64, and Windows amd64 and arm64. The published
+  artifact signatures/checksums, CLI/core version output, and protocol-v1
+  initialize/shutdown passed on every target in
+  [workflow run 39038326152](https://github.com/ayeshLK/komposyn/actions/runs/39038326152).
 - [x] Retain direct-upgrade and collector-state evidence from v0.5.0 on Linux
   amd64 and full historical state-preservation evidence from v0.6.0 on Linux
   amd64, macOS arm64, and Windows amd64.
 - [x] Prepare reviewable standalone repository bootstrap files without
   copying CLI implementation. Destination existence/access remains blocked
   pending GitHub repository visibility or creation.
-- [ ] After the remaining lifecycle and six-platform runtime evidence is
-  complete: extract the CLI, verify and publish standalone, then remove legacy
-  ownership. All cutover work remains deferred.
+- [x] Assemble the standalone extraction candidate only after all historical
+  and six-target gates passed. It is local and reviewable, but its final trust
+  test rerun and destination CI are pending.
+- [ ] Resolve destination repository access, rerun candidate checks including
+  the final trust-test edit, open a destination PR, and complete standalone
+  publication and verification. Keep the combined repository authoritative
+  until then; legacy cleanup remains deferred.
