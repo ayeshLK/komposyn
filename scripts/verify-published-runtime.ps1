@@ -50,11 +50,34 @@ try {
     $binary = Join-Path $extract 'komposyn-lg.exe'
     $versionOutput = & $binary version | Out-String
     if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch "komposyn-lg $version \(core $version\)") { throw "unexpected native version output: $versionOutput" }
+    $callerDataDir = Join-Path $temp 'caller-data-probe'
+    New-Item -ItemType Directory -Path $callerDataDir | Out-Null
+    $sentinelPath = Join-Path $callerDataDir 'sentinel.txt'
+    [System.IO.File]::WriteAllText($sentinelPath, 'preserve this caller-owned sentinel')
+    $harnessDataDir = Join-Path $temp 'harness-data'
     $messages = @(
-        '{"protocol":"komposyn.token-logger","version":1,"id":"runtime-init","method":"initialize","params":{}}',
+        (@{ protocol = 'komposyn.token-logger'; version = 1; id = 'runtime-init'; method = 'initialize'; params = @{ data_dir = $harnessDataDir } } | ConvertTo-Json -Compress),
         '{"protocol":"komposyn.token-logger","version":1,"id":"runtime-shutdown","method":"shutdown"}'
     )
-    $protocolOutput = $messages | & $binary harness
+    $previousDataDir = $env:TOKEN_LOGGER_DATA_DIR
+    try {
+        $env:TOKEN_LOGGER_DATA_DIR = $callerDataDir
+        $protocolOutput = $messages | & $binary harness
+    } finally {
+        if ($null -eq $previousDataDir) {
+            Remove-Item Env:TOKEN_LOGGER_DATA_DIR -ErrorAction SilentlyContinue
+        } else {
+            $env:TOKEN_LOGGER_DATA_DIR = $previousDataDir
+        }
+    }
+    if ([System.IO.File]::ReadAllText($sentinelPath) -ne 'preserve this caller-owned sentinel') {
+        throw 'published runtime changed the caller-selected data directory'
+    }
+    foreach ($callerFile in @('settings.json', 'token-logger.db', 'token-logger.db-wal', 'token-logger.db-shm')) {
+        if (Test-Path (Join-Path $callerDataDir $callerFile)) {
+            throw "published runtime wrote $callerFile to the caller-selected data directory"
+        }
+    }
     if ($LASTEXITCODE -ne 0) { throw 'protocol-v1 harness process failed' }
     $responses = @($protocolOutput | ForEach-Object { $_ | ConvertFrom-Json })
     if ($responses.Count -ne 2 -or $responses[0].id -ne 'runtime-init' -or $responses[0].result.plugin_version -ne '0.7.0' -or $responses[0].result.cli_version -ne '0.7.0' -or $responses[1].id -ne 'runtime-shutdown') {

@@ -61,9 +61,23 @@ version_output="$("$binary" version)"
 	echo "unexpected version output on $target: $version_output" >&2
 	exit 1
 }
-protocol_output="$(printf '%s\n' \
-	'{"protocol":"komposyn.token-logger","version":1,"id":"runtime-init","method":"initialize","params":{}}' \
-	'{"protocol":"komposyn.token-logger","version":1,"id":"runtime-shutdown","method":"shutdown"}' | "$binary" harness)"
+caller_data_dir="$temp/caller-data-probe"
+harness_data_dir="$temp/harness-data"
+mkdir -p "$caller_data_dir"
+printf 'preserve this caller-owned sentinel\n' > "$caller_data_dir/sentinel.txt"
+initialize_request="$(jq -cn --arg data_dir "$harness_data_dir" '{protocol:"komposyn.token-logger",version:1,id:"runtime-init",method:"initialize",params:{data_dir:$data_dir}}')"
+shutdown_request='{"protocol":"komposyn.token-logger","version":1,"id":"runtime-shutdown","method":"shutdown"}'
+protocol_output="$(printf '%s\n' "$initialize_request" "$shutdown_request" | TOKEN_LOGGER_DATA_DIR="$caller_data_dir" "$binary" harness)"
+[[ "$(cat "$caller_data_dir/sentinel.txt")" == 'preserve this caller-owned sentinel' ]] || {
+	echo 'published runtime changed the caller-selected data directory' >&2
+	exit 1
+}
+for caller_file in settings.json token-logger.db token-logger.db-wal token-logger.db-shm; do
+	[[ ! -e "$caller_data_dir/$caller_file" ]] || {
+		echo "published runtime wrote $caller_file to the caller-selected data directory" >&2
+		exit 1
+	}
+done
 jq -se 'length == 2 and .[0].id == "runtime-init" and .[0].result.plugin_version == "0.7.0" and .[0].result.cli_version == "0.7.0" and .[1].id == "runtime-shutdown"' <<<"$protocol_output" >/dev/null || {
 	echo "protocol-v1 runtime exchange failed on $target: $protocol_output" >&2
 	exit 1
