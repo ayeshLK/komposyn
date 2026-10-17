@@ -31,6 +31,8 @@ final release was published or that post-publication verification is complete.
 - `go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...`: no known
   vulnerabilities on Go 1.26.9. The earlier Go 1.26.2 scan found standard
   library fixes, which drove the toolchain pin update.
+- PR #126 checks passed after the Windows SQLite file-URI fix: Analyze Go,
+  CodeQL, Linux/macOS/Windows test jobs, and race tests.
 - External consumer test importing the public core package with a temporary
   local module replacement: passed.
 - Six-platform candidate archives, license bundle, and SHA-256 manifest:
@@ -51,13 +53,11 @@ final release was published or that post-publication verification is complete.
 
 - [ ] Run upgrade and installer lifecycle on supported macOS and Windows
   environments; cover representative older release binaries beyond v0.6.0.
-- [ ] Run upgrade and installer lifecycle on supported macOS and Windows;
-  cover representative older released binaries beyond v0.6.0.
-- [ ] Add diagnostic review-state preservation to the actual released-binary
-  fixture and test collector restart of a previously active collector on the
-  historical candidate path. Migration tests cover legacy diagnostics,
-  pricing rules, reported costs, aliases and cursors; schema tests cover
-  write-free newer-schema refusal and restored-backup migration.
+- [ ] Extend the historical-binary fixture to cover diagnostic review state
+  and restart of a previously active collector. Migration tests verify legacy
+  reviewed diagnostics survive upgrades, and cover pricing rules, reported
+  costs, aliases and cursors; schema tests cover write-free newer-schema
+  refusal and restored-backup migration.
 - [ ] Sign and verify the actual final candidate, review its certificate
   identity, checksums, archive contents, and six-platform runtime evidence.
 - [ ] Repeat the external consumer test against the published combined release

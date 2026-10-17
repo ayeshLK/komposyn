@@ -70,6 +70,10 @@ func TestSchemaTwelveClaudeHistoryKeepsExistingEventsAndCursors(t *testing.T) {
 				db.Close()
 				t.Fatal(err)
 			}
+			if err := historical.MarkDiagnosticReviewed(diagnostic.Fingerprint, "reviewed"); err != nil {
+				db.Close()
+				t.Fatalf("mark historical diagnostic reviewed: %v", err)
+			}
 			occurredAt := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 			old := claudeEvent(sourceID, fingerprint, 0, "legacy-response",
 				claudeSession{ID: "stable-session", ProjectID: "stable-project", ProjectName: "Legacy Claude Project", Model: "claude-opus-5-5"},
@@ -113,7 +117,7 @@ func TestSchemaTwelveClaudeHistoryKeepsExistingEventsAndCursors(t *testing.T) {
 			if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&latest); err != nil || latest != CurrentSchemaVersion {
 				t.Fatalf("upgraded schema version = %d, err = %v; want %d", latest, err, CurrentSchemaVersion)
 			}
-			if got, err := store.Diagnostic(diagnostic.Fingerprint); err != nil || got.Message != diagnostic.Message || got.OccurrenceCount != 1 {
+			if got, err := store.Diagnostic(diagnostic.Fingerprint); err != nil || got.Message != diagnostic.Message || got.OccurrenceCount != 1 || got.Status != "reviewed" {
 				t.Fatalf("legacy diagnostic after upgrade = %+v, err = %v", got, err)
 			}
 			if err := store.db.QueryRow("SELECT COUNT(*) FROM pricing_rules WHERE provider_name = 'history-custom' AND pricing_version = 'legacy-custom-v1'").Scan(&latest); err != nil || latest != 1 {
