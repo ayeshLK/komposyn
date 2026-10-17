@@ -15,14 +15,17 @@
 package tokenlogger
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -57,7 +60,7 @@ func SchemaVersion() int { return CurrentSchemaVersion }
 // advertised by protocol initialization. It is not a SQLite schema range.
 func SupportedEventSchemaVersions() []int { return []int{1, 2, 3, 4} }
 
-func inspectSchemaReadOnly(path string) (version int, exists bool, err error) {
+func inspectSchemaSnapshot(path string) (version int, exists bool, err error) {
 	if path == ":memory:" {
 		return 0, false, nil
 	}
@@ -70,53 +73,134 @@ func inspectSchemaReadOnly(path string) (version int, exists bool, err error) {
 	} else if err != nil {
 		return 0, false, fmt.Errorf("inspect database: %w", err)
 	}
+	return inspectSchemaSnapshotWithCopier(absolute, copyRegularFile, 5*time.Second)
+}
+
+func inspectSchemaSnapshotWithCopier(path string, copyFile func(string, string) error, retryBudget time.Duration) (version int, exists bool, err error) {
+	// Copying multiple files is not atomic. Discard changing snapshots and
+	// allow collector bursts to settle within the same five-second wait budget
+	// used by the live SQLite connection. Backoff avoids repeated full copies
+	// in rapid succession; never open the source through SQLite as a fallback,
+	// because even a read-only WAL connection can modify its shared-memory file.
+	deadline := time.Now().Add(retryBudget)
+	delay := 10 * time.Millisecond
+	for {
+		version, err = inspectSchemaSnapshotAttempt(path, copyFile)
+		if err == nil {
+			return version, true, nil
+		}
+		if errors.Is(err, ErrInvalidSchema) || errors.Is(err, ErrUnsupportedSchema) {
+			return 0, true, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= delay {
+			return 0, true, fmt.Errorf("inspect private schema snapshot within %s retry budget: %w", retryBudget, err)
+		}
+		time.Sleep(delay)
+		delay = min(delay*2, 250*time.Millisecond)
+	}
+}
+
+var schemaSnapshotSuffixes = []string{"", "-wal", "-journal"}
+
+// schemaSnapshotDigests checks complete contents, including sidecar presence,
+// rather than relying on timestamps or sizes that can miss concurrent writes.
+func schemaSnapshotDigests(path string) (map[string][sha256.Size]byte, error) {
+	digests := make(map[string][sha256.Size]byte)
+	for _, suffix := range schemaSnapshotSuffixes {
+		file, err := os.Open(path + suffix)
+		if errors.Is(err, os.ErrNotExist) && suffix != "" {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			_ = file.Close()
+			return nil, fmt.Errorf("inspect snapshot source %s: not a regular file or stat failed: %v", filepath.Base(path+suffix), err)
+		}
+		hash := sha256.New()
+		_, err = io.Copy(hash, file)
+		closeErr := file.Close()
+		if err != nil {
+			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		digests[suffix] = [sha256.Size]byte(hash.Sum(nil))
+	}
+	return digests, nil
+}
+
+func inspectSchemaSnapshotAttempt(path string, copyFile func(string, string) error) (int, error) {
+	before, err := schemaSnapshotDigests(path)
+	if err != nil {
+		return 0, fmt.Errorf("fingerprint schema snapshot source: %w", err)
+	}
 	// SQLite can update lock/read-mark bytes in an existing -shm file during a
 	// read-only WAL open. Inspect a private temporary snapshot so even those
 	// bookkeeping writes cannot touch the application's database or sidecars.
 	inspectionDir, err := os.MkdirTemp("", "komposyn-schema-inspect-")
 	if err != nil {
-		return 0, true, fmt.Errorf("create private schema inspection snapshot: %w", err)
+		return 0, fmt.Errorf("create private schema inspection snapshot: %w", err)
 	}
 	defer os.RemoveAll(inspectionDir)
 	inspectionPath := filepath.Join(inspectionDir, "database.sqlite")
-	for _, suffix := range []string{"", "-wal", "-journal"} {
-		if err := copyRegularFile(absolute+suffix, inspectionPath+suffix); err != nil {
+	for _, suffix := range schemaSnapshotSuffixes {
+		if err := copyFile(path+suffix, inspectionPath+suffix); err != nil {
 			if errors.Is(err, os.ErrNotExist) && suffix != "" {
 				continue
 			}
-			return 0, true, fmt.Errorf("copy database for read-only inspection: %w", err)
+			return 0, fmt.Errorf("copy database for private schema inspection: %w", err)
 		}
 	}
-	uri := sqliteFileURI(inspectionPath, "mode=ro")
+	copied, err := schemaSnapshotDigests(inspectionPath)
+	if err != nil {
+		return 0, fmt.Errorf("fingerprint private schema snapshot: %w", err)
+	}
+	after, err := schemaSnapshotDigests(path)
+	if err != nil {
+		return 0, fmt.Errorf("verify schema snapshot source: %w", err)
+	}
+	if !maps.Equal(before, copied) || !maps.Equal(before, after) {
+		return 0, errors.New("schema snapshot source changed during copy")
+	}
+	// A journal copied during a writer's transaction can require rollback
+	// recovery once separated from the writer's locks. Allow SQLite to recover
+	// only this disposable private copy; the source remains untouched.
+	uri := sqliteFileURI(inspectionPath, "mode=rw")
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
-		return 0, true, fmt.Errorf("open database read-only: %w", err)
+		return 0, fmt.Errorf("open private schema snapshot: %w", err)
 	}
 	defer db.Close()
 	var tableCount int
 	if err := db.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").Scan(&tableCount); err != nil {
-		return 0, true, fmt.Errorf("inspect database schema read-only: %w", err)
+		return 0, fmt.Errorf("inspect private snapshot schema: %w", err)
 	}
 	var hasMigrations bool
 	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations')").Scan(&hasMigrations); err != nil {
-		return 0, true, fmt.Errorf("inspect migration metadata read-only: %w", err)
+		return 0, fmt.Errorf("inspect private snapshot migration metadata: %w", err)
 	}
 	if !hasMigrations {
 		if tableCount != 0 {
-			return 0, true, fmt.Errorf("%w: non-empty database has no migration history", ErrInvalidSchema)
+			return 0, fmt.Errorf("%w: non-empty database has no migration history", ErrInvalidSchema)
 		}
-		return 0, true, nil
+		return 0, nil
 	}
+	var version int
 	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&version); err != nil {
-		return 0, true, fmt.Errorf("read database schema version: %w", err)
+		return 0, fmt.Errorf("read private snapshot schema version: %w", err)
 	}
 	if version < 0 {
-		return 0, true, fmt.Errorf("%w: negative migration version %d", ErrInvalidSchema, version)
+		return 0, fmt.Errorf("%w: negative migration version %d", ErrInvalidSchema, version)
 	}
 	if version == 0 && tableCount > 1 {
-		return 0, true, fmt.Errorf("%w: non-empty database has no applied migration history", ErrInvalidSchema)
+		return 0, fmt.Errorf("%w: non-empty database has no applied migration history", ErrInvalidSchema)
 	}
-	return version, true, nil
+	return version, nil
 }
 
 // resolveDatabasePath gives schema preflight and SQLite the same physical
