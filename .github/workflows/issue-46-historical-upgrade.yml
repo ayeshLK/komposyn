@@ -125,7 +125,7 @@ jobs:
             --pattern "$old_asset" --pattern "$old_asset.sig" --pattern "$old_asset.pem" \
             --pattern SHA256SUMS --pattern SHA256SUMS.sig --pattern SHA256SUMS.pem
           gh release download v0.7.0 --repo ayeshLK/komposyn --dir "$release_dir" \
-            --pattern "$new_asset" --pattern "$new_asset.sig" --pattern "$new_asset.pem" \
+            --pattern 'komposyn-lg_0.7.0_*' \
             --pattern SHA256SUMS --pattern SHA256SUMS.sig --pattern SHA256SUMS.pem
           identity='^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master$'
           issuer='https://token.actions.githubusercontent.com'
