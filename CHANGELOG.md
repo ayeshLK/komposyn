@@ -11,6 +11,23 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.7.0](https://github.com/ayeshLK/komposyn/compare/v0.6.0...v0.7.0) (2026-10-17)
+
+
+### Features
+
+* **cli:** add public help and shell completion ([10dcda8](https://github.com/ayeshLK/komposyn/commit/10dcda83f817c7886d4e0592747bee2b17ba90b6))
+* **cli:** add public help and shell completion ([7a5d5fd](https://github.com/ayeshLK/komposyn/commit/7a5d5fdf15719fbf54b1e4e77e3904938bae7067)), closes [#110](https://github.com/ayeshLK/komposyn/issues/110)
+* prepare final combined release for issue [#46](https://github.com/ayeshLK/komposyn/issues/46) ([#126](https://github.com/ayeshLK/komposyn/issues/126)) ([43cb710](https://github.com/ayeshLK/komposyn/commit/43cb71014680abbe57011885a150604eef6b93a6))
+
+
+### Bug Fixes
+
+* **cli:** complete command and help targets accurately ([2990cdb](https://github.com/ayeshLK/komposyn/commit/2990cdb530bf2489365150511992941cebe5caa8))
+* **cli:** retain PowerShell options after values ([c3e334b](https://github.com/ayeshLK/komposyn/commit/c3e334b0fac8b6956796e3e04d10ae2ed4a0001b))
+* **cli:** scope shell completions to active command ([573e26f](https://github.com/ayeshLK/komposyn/commit/573e26fc6b524cbdf4fc8da97204603a40f46eef))
+* recover private schema inspection journals ([#127](https://github.com/ayeshLK/komposyn/issues/127)) ([0fd70e0](https://github.com/ayeshLK/komposyn/commit/0fd70e051268f7790cddf484ac969f77bf571953))
+
 ## [0.6.0](https://github.com/ayeshLK/komposyn/compare/v0.5.0...v0.6.0) (2026-10-16)
 
 
