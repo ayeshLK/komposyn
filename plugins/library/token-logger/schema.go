@@ -73,22 +73,32 @@ func inspectSchemaSnapshot(path string) (version int, exists bool, err error) {
 	} else if err != nil {
 		return 0, false, fmt.Errorf("inspect database: %w", err)
 	}
-	return inspectSchemaSnapshotWithCopier(absolute, copyRegularFile)
+	return inspectSchemaSnapshotWithCopier(absolute, copyRegularFile, 5*time.Second)
 }
 
-func inspectSchemaSnapshotWithCopier(path string, copyFile func(string, string) error) (version int, exists bool, err error) {
+func inspectSchemaSnapshotWithCopier(path string, copyFile func(string, string) error, retryBudget time.Duration) (version int, exists bool, err error) {
 	// Copying multiple files is not atomic. Discard changing snapshots and
-	// retry recovery/read failures, with a bound for continuously active writers.
-	for attempt := 0; attempt < 5; attempt++ {
-		if attempt > 0 {
-			time.Sleep(10 * time.Millisecond)
-		}
+	// allow collector bursts to settle within the same five-second wait budget
+	// used by the live SQLite connection. Backoff avoids repeated full copies
+	// in rapid succession; never open the source through SQLite as a fallback,
+	// because even a read-only WAL connection can modify its shared-memory file.
+	deadline := time.Now().Add(retryBudget)
+	delay := 10 * time.Millisecond
+	for {
 		version, err = inspectSchemaSnapshotAttempt(path, copyFile)
 		if err == nil {
 			return version, true, nil
 		}
+		if errors.Is(err, ErrInvalidSchema) || errors.Is(err, ErrUnsupportedSchema) {
+			return 0, true, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= delay {
+			return 0, true, fmt.Errorf("inspect private schema snapshot within %s retry budget: %w", retryBudget, err)
+		}
+		time.Sleep(delay)
+		delay = min(delay*2, 250*time.Millisecond)
 	}
-	return 0, true, fmt.Errorf("inspect private schema snapshot after 5 attempts: %w", err)
 }
 
 var schemaSnapshotSuffixes = []string{"", "-wal", "-journal"}

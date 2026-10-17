@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenRefusesNewerSchemaWithoutChangingDatabaseOrWAL(t *testing.T) {
@@ -224,7 +225,7 @@ func TestSchemaSnapshotRetriesConcurrentSourceChanges(t *testing.T) {
 					_, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 					return err
 				}
-			})
+			}, time.Second)
 			want := CurrentSchemaVersion + 1
 			if action == "rollback" {
 				want = CurrentSchemaVersion
@@ -254,9 +255,59 @@ func TestSchemaSnapshotBoundsRetriesForChangingSource(t *testing.T) {
 			return err
 		}
 		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "source changed during copy") || copies != 5 {
-		t.Fatalf("copies=%d err=%v; want bounded failure after 5 changed snapshots", copies, err)
+	}, 100*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "retry budget") || !strings.Contains(err.Error(), "source changed during copy") || copies < 1 {
+		t.Fatalf("copies=%d err=%v; want bounded failure for a changing snapshot", copies, err)
+	}
+}
+
+func TestSchemaSnapshotRetriesBeyondFiveCollectorCommits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "busy.db")
+	owner, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	copies := 0
+	version, _, err := inspectSchemaSnapshotWithCopier(path, func(source, destination string) error {
+		if err := copyRegularFile(source, destination); err != nil {
+			return err
+		}
+		if source == path {
+			copies++
+			if copies <= 6 {
+				_, err := owner.db.Exec("UPDATE schema_migrations SET version = version + 1 WHERE version = (SELECT MAX(version) FROM schema_migrations)")
+				return err
+			}
+		}
+		return nil
+	}, 5*time.Second)
+	if err != nil || version != CurrentSchemaVersion+6 || copies != 7 {
+		t.Fatalf("version=%d copies=%d err=%v; want successful inspection after six concurrent commits", version, copies, err)
+	}
+}
+
+func TestSchemaSnapshotDoesNotRetryInvalidSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE untracked(value TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	copies := 0
+	_, _, err = inspectSchemaSnapshotWithCopier(path, func(source, destination string) error {
+		if source == path {
+			copies++
+		}
+		return copyRegularFile(source, destination)
+	}, time.Second)
+	if !errors.Is(err, ErrInvalidSchema) || copies != 1 {
+		t.Fatalf("copies=%d err=%v; want ErrInvalidSchema after one snapshot", copies, err)
 	}
 }
 
