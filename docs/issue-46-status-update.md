@@ -51,9 +51,11 @@ uninstall fixture on both systems. See
 The following gates remain open:
 
 - Execute published binaries natively on Linux arm64, macOS amd64, and Windows
-  arm64. Current runtime evidence covers Linux amd64, macOS arm64, and Windows
-  amd64. A six-target native workflow now performs signature/checksum,
-  executable-version, and protocol-v1 checks; its new run is pending.
+  arm64. The six-target runtime workflow has passed on Linux amd64/arm64, macOS
+  amd64/arm64, and Windows amd64. Windows arm64 reached its native runner but
+  the pinned Cosign installer does not support that architecture; the workflow
+  now builds pinned Cosign natively, and the Windows arm64 runtime rerun is
+  pending.
 - Prepare the destination repository bootstrap and resolve access to
   `ayeshLK/komposyn-lg`. GitHub currently returns “Could not resolve to a
   Repository” for that name, so existence/access cannot yet be distinguished.

@@ -149,8 +149,12 @@ The follow-up workflow also has a six-target native runtime matrix for Linux
 amd64/arm64, macOS amd64/arm64, and Windows amd64/arm64. It verifies the
 published checksum manifest and archive signatures, checks the target archive
 checksum, runs the executable's version command, and exchanges protocol-v1
-initialize/shutdown messages. The verifier passed locally on Linux amd64;
-workflow results for the other targets are pending.
+initialize/shutdown messages. Linux amd64 passed locally; PR #131 run
+39038168018 also passed on Linux arm64, macOS amd64/arm64, and Windows amd64.
+The first Windows arm64 attempt reached the native runner but the pinned
+Cosign installer rejected its `ARM64` architecture before running the
+verifier. The workflow now builds pinned Cosign v2.4.3 with Go 1.26.9 on that
+native runner; Windows arm64 runtime evidence is pending the rerun.
 
 The standalone destination bootstrap is prepared under
 `standalone-bootstrap/` as a reviewable root-file template. It includes the
@@ -170,10 +174,14 @@ creation/access remains unresolved.
 - [x] Run full v0.6.0 historical migration, backup restoration, and uninstall
   verification on native macOS arm64 and Windows amd64. Linux amd64 evidence
   was already recorded above.
-- [ ] Execute published binaries natively on the remaining release targets:
-  Linux arm64, macOS amd64, and Windows arm64. Runtime evidence now covers
-  Linux amd64, macOS arm64, and Windows amd64. Cross-builds and other hosted
-  installer checks do not count as runtime execution for these pending targets.
+- [x] Execute published binaries natively on Linux amd64/arm64, macOS
+  amd64/arm64, and Windows amd64. The published artifact signatures and
+  checksums, CLI/core version output, and protocol-v1 initialize/shutdown
+  passed on each target.
+- [ ] Execute the published Windows arm64 binary natively. The first attempt
+  failed while installing Cosign because the pinned installer lacks Windows
+  ARM64 support; the workflow now builds that pinned verification tool
+  natively, and the artifact execution remains pending.
 - [x] Retain direct-upgrade and collector-state evidence from v0.5.0 on Linux
   amd64 and full historical state-preservation evidence from v0.6.0 on Linux
   amd64, macOS arm64, and Windows amd64.
