@@ -66,7 +66,7 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   synthetic Unattributed project/session resources so hierarchical totals
   reconcile with global reports. Resource selectors must remain scoped and
   reject ambiguous names or prefixes.
-- The current SQLite schema version is 11. Migrations 1 and 2 create the core
+- The current SQLite schema version is 15. Migrations 1 and 2 create the core
   and diagnostics tables, migration 3 normalizes stored timestamps to fixed
   width UTC values, and migration 4 adds source-generation tracking for
   transcript replacement detection. Migration 5 adds rational pricing rates
@@ -81,7 +81,10 @@ The repository is licensed under Apache-2.0; preserve the headers and consult
   reuse state on source cursors. Migration 10 stores path-safe mappings from a
   canonical source digest to its established collector source ID. Migration 11
   adds the persistent source registry, singleton lease, heartbeat/status,
-  cooperative stop request, and run history. SQLite
+  cooperative stop request, and run history. Migration 12 adds billing
+  context and service-tier/region pricing selectors; migration 13 splits
+  cache-write duration counts; migration 14 adds pricing speed selectors;
+  migration 15 adds diagnostic category and version metadata. SQLite
   schema changes require an explicit numbered migration in
   `plugins/library/token-logger/migrations.go`,
   a matching runner update, and an upgrade test covering the complete history.

@@ -17,7 +17,7 @@ fi
 output_dir="$(cd "$output_dir" && pwd)"
 bash "$root_dir/scripts/generate-third-party-licenses.sh" "$output_dir"
 
-ldflags="-s -w -X github.com/ayeshLK/komposyn/plugins/library/token-logger.Version=${version}"
+ldflags="-s -w -X github.com/ayeshLK/komposyn/plugins/library/token-logger.Version=${version} -X main.cliVersion=${version}"
 for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
 	IFS=/ read -r goos goarch <<< "$target"
 	asset="komposyn-lg_${version}_${goos}_${goarch}"

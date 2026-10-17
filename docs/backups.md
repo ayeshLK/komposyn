@@ -7,6 +7,23 @@ provider-owned data and are not included in a Komposyn data-directory backup.
 
 ## Create a consistent backup
 
+Before upgrading an existing database, `Store.Open` takes and verifies a
+SQLite online backup while holding the migration writer lock. The default
+backup is created beside `token-logger.db` with user-only permissions and a
+unique name. Its `komposyn_migration_backup` table records source schema,
+target schema, UTC creation time, and core version. The backup is checked with
+SQLite `integrity_check` and its recorded schema and metadata are verified
+before migrations begin. If creation or verification fails, the migration does
+not run. New, in-memory, and already-current databases do not get a migration
+backup.
+
+Library callers can select a destination with
+`tokenlogger.OpenWithOptions(path, tokenlogger.OpenOptions{BackupPath: path})`.
+The destination must not already exist; it is created with user-only
+permissions. The returned Store exposes `MigrationBackupPath()` when a backup
+was created. Backups contain sensitive local usage data and must be protected
+like the database.
+
 1. Run `komposyn-lg watch stop` for the selected data directory, exit the REPL,
    and stop any foreground watcher using it.
 2. Resolve the directory using [configuration](configuration.md). The
@@ -19,9 +36,10 @@ provider-owned data and are not included in a Komposyn data-directory backup.
 5. Protect the backup as local usage data; it may contain diagnostics and
    project/session metadata.
 
-For an application-managed backup, use SQLite's online backup tooling or a
+The automatic pre-migration backup is specifically for recovery from a failed
+schema upgrade. For general recovery, use SQLite's online backup tooling or a
 filesystem snapshot instead of copying a live database. A plain file copy is
-only the documented procedure after the application has stopped.
+only safe after the application has stopped.
 
 ## Restore
 
@@ -32,10 +50,13 @@ only the documented procedure after the application has stopped.
    `komposyn-lg usage --format json`.
 5. Confirm settings and expected historical totals before resuming collection.
 
-Keep the old directory until the restored database has been verified. If the
-restored database is older, opening it may apply numbered migrations; back up
-again before that upgrade. A database newer than the installed binary's
-supported schema is rejected and must be opened with a compatible newer binary.
+Keep the old directory until the restored database has been verified. A
+pre-migration backup has an additional metadata table ignored by Komposyn; open
+it with a compatible binary to apply its forward migrations. A database newer
+than the installed binary's supported schema is refused before the application
+changes the database or its WAL sidecars. Older published binaries predate this
+refusal and may modify a newer database; use only a compatible binary for
+rollback. Database restoration is separate from executable replacement.
 
 ## What is not backed up here
 

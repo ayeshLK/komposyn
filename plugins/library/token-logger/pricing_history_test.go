@@ -64,8 +64,9 @@ func TestSchemaTwelveClaudeHistoryKeepsExistingEventsAndCursors(t *testing.T) {
 				db.Close()
 				t.Fatal(err)
 			}
-			diagnostic, err := historical.RecordDiagnostic("legacy sanitized diagnostic")
-			if err != nil {
+			diagnostic := Diagnostic{Fingerprint: "legacy-history-diagnostic", Message: "legacy sanitized diagnostic", OccurrenceCount: 1, Status: "pending"}
+			if _, err := db.Exec(`INSERT INTO diagnostics(fingerprint, message, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?)`,
+				diagnostic.Fingerprint, diagnostic.Message, "2026-10-16T12:00:00.000000000Z", "2026-10-16T12:00:00.000000000Z"); err != nil {
 				db.Close()
 				t.Fatal(err)
 			}
@@ -109,8 +110,8 @@ func TestSchemaTwelveClaudeHistoryKeepsExistingEventsAndCursors(t *testing.T) {
 			}
 			defer store.Close()
 			var latest int
-			if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&latest); err != nil || latest != 14 {
-				t.Fatalf("upgraded schema version = %d, err = %v; want 14", latest, err)
+			if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&latest); err != nil || latest != CurrentSchemaVersion {
+				t.Fatalf("upgraded schema version = %d, err = %v; want %d", latest, err, CurrentSchemaVersion)
 			}
 			if got, err := store.Diagnostic(diagnostic.Fingerprint); err != nil || got.Message != diagnostic.Message || got.OccurrenceCount != 1 {
 				t.Fatalf("legacy diagnostic after upgrade = %+v, err = %v", got, err)

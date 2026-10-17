@@ -7,10 +7,12 @@ standalone executable, installers, release artifacts, SQLite data directory,
 settings, diagnostics, and the JSONL harness. Provider transcript files remain
 provider-owned inputs and should be treated as sensitive.
 
-The project is currently pre-release and has no published signed release. Until
-the first release, security fixes target the `master` branch. After release,
-only the latest released version receives security fixes. Development branches
-may contain incomplete behavior and should not be used for sensitive workloads.
+The combined repository has published signed releases. Security fixes target
+the latest released version and `master`; older releases are unsupported.
+Development branches may contain incomplete behavior and should not be used
+for sensitive workloads. During the issue #46 ownership transition, this
+repository remains the authoritative combined source until the final combined
+release is verified and the standalone CLI is published.
 
 ## Threat model and guarantees
 

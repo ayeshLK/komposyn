@@ -29,9 +29,12 @@ import (
 
 // Store is the library-owned SQLite persistence boundary.
 type Store struct {
-	db                 *sql.DB
-	beforeSnapshotRead func()
-	beforeAppend       func()
+	db                  *sql.DB
+	databasePath        string
+	backupPath          string
+	migrationBackupPath string
+	beforeSnapshotRead  func()
+	beforeAppend        func()
 }
 
 var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
@@ -44,12 +47,27 @@ func formatStoredTime(value time.Time) string {
 
 // Open opens or creates a SQLite database and applies all migrations.
 func Open(path string) (*Store, error) {
+	return OpenWithOptions(path, OpenOptions{})
+}
+
+// OpenWithOptions opens or creates a store and applies all migrations. If the
+// existing database needs migration, it first verifies a private online backup.
+func OpenWithOptions(path string, options OpenOptions) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("database path is required")
 	}
+	version, exists, err := inspectSchemaReadOnly(path)
+	if err != nil {
+		return nil, err
+	}
+	if version > currentSchemaVersion {
+		return nil, &UnsupportedSchemaError{DatabaseVersion: version, CurrentVersion: currentSchemaVersion}
+	}
 	if path != ":memory:" {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return nil, fmt.Errorf("create database directory: %w", err)
+		if !exists {
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return nil, fmt.Errorf("create database directory: %w", err)
+			}
 		}
 	}
 	// Install the wait policy as each driver connection is created. Setting it
@@ -64,12 +82,12 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open SQLite database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db}
+	store := &Store{db: db, databasePath: path, backupPath: options.BackupPath}
 	if err := store.configure(); err != nil {
 		db.Close()
 		return nil, err
 	}
-	if err := store.Migrate(); err != nil {
+	if err := store.migrate(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -111,25 +129,42 @@ func sqliteBusy(err error) bool {
 // Close releases the database connection.
 func (s *Store) Close() error { return s.db.Close() }
 
-// Migrate applies numbered schema migrations in order.
-func (s *Store) Migrate() error {
+// migrate applies numbered schema migrations in order after Open has completed
+// the read-only compatibility preflight.
+func (s *Store) migrate() error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin migrations: %w", err)
 	}
 	defer tx.Rollback()
+	var hasMigrations bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations')").Scan(&hasMigrations); err != nil {
+		return fmt.Errorf("inspect migration metadata: %w", err)
+	}
+	var applied int
+	if hasMigrations {
+		if err := tx.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
+			return fmt.Errorf("read schema version: %w", err)
+		}
+	}
+	if applied > currentSchemaVersion {
+		return &UnsupportedSchemaError{DatabaseVersion: applied, CurrentVersion: currentSchemaVersion}
+	}
+	if applied > 0 && applied < currentSchemaVersion && s.databasePath != ":memory:" {
+		backupPath, err := createMigrationBackup(s.databasePath, s.backupPath, applied, currentSchemaVersion)
+		if err != nil {
+			return fmt.Errorf("create verified pre-migration backup: %w", err)
+		}
+		s.migrationBackupPath = backupPath
+	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
 		applied_at TEXT NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("create migration table: %w", err)
 	}
-	var applied int
-	if err := tx.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
-	}
 	if applied > currentSchemaVersion {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", applied, currentSchemaVersion)
+		return &UnsupportedSchemaError{DatabaseVersion: applied, CurrentVersion: currentSchemaVersion}
 	}
 	if applied < 1 {
 		if _, err := tx.Exec(schemaMigrationOne); err != nil {
@@ -246,6 +281,20 @@ func (s *Store) Migrate() error {
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 14, formatStoredTime(time.Now())); err != nil {
 			return fmt.Errorf("record migration 14: %w", err)
+		}
+	}
+	if applied < 15 {
+		if err := applyMissingColumns(tx, []struct{ table, name, statement string }{
+			{"diagnostics", "category", "ALTER TABLE diagnostics ADD COLUMN category TEXT NOT NULL DEFAULT 'unknown'"},
+			{"diagnostics", "core_version", "ALTER TABLE diagnostics ADD COLUMN core_version TEXT NOT NULL DEFAULT ''"},
+			{"diagnostics", "cli_version", "ALTER TABLE diagnostics ADD COLUMN cli_version TEXT NOT NULL DEFAULT ''"},
+			{"diagnostics", "protocol_version", "ALTER TABLE diagnostics ADD COLUMN protocol_version INTEGER NOT NULL DEFAULT 0"},
+			{"diagnostics", "schema_version", "ALTER TABLE diagnostics ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0"},
+		}); err != nil {
+			return fmt.Errorf("apply migration 15: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 15, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 15: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_issue_46_gates:
-        description: Confirm issue #46 API, schema/backup, diagnostics, and version gates are complete
+        description: Confirm this final combined release passed issue #46 readiness gates and is ready for the post-release extraction phase
         required: true
         type: boolean
       release_commit:
@@ -75,7 +75,7 @@ jobs:
       - name: Confirm issue #46 release gates
         if: inputs.confirm_issue_46_gates != true
         run: |
-          echo 'Issue #46 API, schema/backup, diagnostics, and version gates must be complete before publication' >&2
+          echo 'The final combined release must pass issue #46 readiness gates before publication' >&2
           exit 1
 
       - name: Read and validate prepared version
@@ -134,7 +134,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go.mod
+          go-version: 1.26.9
           cache: true
 
       - name: Build release artifacts

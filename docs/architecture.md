@@ -26,8 +26,11 @@ flowchart LR
   numbered migrations, provider adapters, collector, pricing, diagnostics,
   and reporting.
 - `plugins/cli/token-logger/` contains command dispatch, interactive setup,
-  output formatting, and the versioned harness protocol. It calls library
-  APIs instead of querying SQLite directly.
+  output formatting, settings and consent policy, process lifecycle, and the
+  versioned harness protocol. It calls library APIs instead of querying
+  SQLite directly.
+- The supported reusable Go adapter surface and intentional pre-1.0 API
+  compatibility decisions are recorded in [core-api.md](core-api.md).
 - `docs/HARNESS_PROTOCOL.md` is the normative contract for machine-readable
   JSONL requests and responses. Changes to that contract require a protocol
   version decision and compatibility tests.

@@ -126,7 +126,7 @@ func TestClaudeFallbackCreditImportIsVisibleInReportsAndInteractiveMode(t *testi
 	commands := "/range 2026-10-11 2026-10-12\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/quit\n"
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
 	var interactiveOutput, interactiveErr bytes.Buffer
-	if code := runInteractiveLoopWithClock(reader, &interactiveOutput, &interactiveErr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time {
+	if code := runInteractiveLoopWithClock(reader, &interactiveOutput, &interactiveErr, store, dataDir, defaultSettings(dataDir), false, func() time.Time {
 		return time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	}); code != 0 {
 		t.Fatalf("interactive exit=%d stderr=%q", code, interactiveErr.String())
@@ -201,11 +201,11 @@ func TestWatchIntervalPersistsExactly(t *testing.T) {
 	if err := persistWatchInterval(dataDir, 1500*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := tokenlogger.LoadSettings(filepath.Join(dataDir, "settings.json"), dataDir)
+	settings, err := loadSettings(filepath.Join(dataDir, "settings.json"), dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := settings.CollectorPollInterval(); got != 1500*time.Millisecond {
+	if got := settings.collectorPollInterval(); got != 1500*time.Millisecond {
 		t.Fatalf("poll interval=%s, want 1.5s", got)
 	}
 }
@@ -658,7 +658,7 @@ func TestInteractiveCollectorDoesNotDuplicateBackgroundLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.ReleaseCollectorLease("background-instance", "stopped", "")
-	settings := tokenlogger.DefaultSettings(dataDir)
+	settings := defaultSettings(dataDir)
 	settings.OnboardingComplete, settings.CollectorEnabled, settings.AutoStart = true, true, true
 	var stdout, stderr bytes.Buffer
 	code := runInteractiveScanner(bufio.NewScanner(strings.NewReader("/quit\n")), &stdout, &stderr, store, dataDir, settings, false)
@@ -1273,7 +1273,7 @@ func TestInteractiveHierarchicalNavigationAndRangePersistence(t *testing.T) {
 	commands := "/range 2026-10-14 2026-10-16\n/projects\n/project Navigation Project\n/sessions\n/session nav-session\n/models\n/model nav model\n/back\n/home\n/range\n/quit\n"
 	var stdout, stderr bytes.Buffer
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
-	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return now }); code != 0 {
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, defaultSettings(dataDir), false, func() time.Time { return now }); code != 0 {
 		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
@@ -1398,7 +1398,7 @@ func TestModelsCommandClearsDescendantSelection(t *testing.T) {
 	commands := "/range 2026-10-14 2026-10-16\n/projects\n/project 1\n/sessions\n/session 1\n/models\n/model 1\n/models\n/quit\n"
 	var stdout, stderr bytes.Buffer
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
-	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, t.TempDir(), tokenlogger.DefaultSettings(t.TempDir()), false, func() time.Time { return now }); code != 0 {
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, t.TempDir(), defaultSettings(t.TempDir()), false, func() time.Time { return now }); code != 0 {
 		t.Fatalf("interactive exit=%d stderr=%q", code, stderr.String())
 	}
 	marker := "komposyn / project:Project / session:session\n"
@@ -1522,7 +1522,7 @@ func TestVersionCommand(t *testing.T) {
 	if code := run([]string{"version"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("version exit code = %d, stderr = %q", code, stderr.String())
 	}
-	if got, want := strings.TrimSpace(stdout.String()), "komposyn-lg "+tokenlogger.Version; got != want {
+	if got, want := strings.TrimSpace(stdout.String()), versionOutput(); got != want {
 		t.Fatalf("version output = %q, want %q", got, want)
 	}
 }
@@ -1532,8 +1532,45 @@ func TestVersionFlag(t *testing.T) {
 	if code := run([]string{"--version"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("--version exit code = %d, stderr = %q", code, stderr.String())
 	}
-	if got, want := strings.TrimSpace(stdout.String()), "komposyn-lg "+tokenlogger.Version; got != want {
+	if got, want := strings.TrimSpace(stdout.String()), versionOutput(); got != want {
 		t.Fatalf("--version output = %q, want %q", got, want)
+	}
+}
+
+func TestUnequalCLICoreVersionsRemainSeparateAcrossSurfaces(t *testing.T) {
+	oldCLI, oldCore := cliVersion, tokenlogger.Version
+	cliVersion, tokenlogger.Version = "0.7.0", "0.6.0"
+	defer func() { cliVersion, tokenlogger.Version = oldCLI, oldCore }()
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("version command exit=%d stderr=%q", code, stderr.String())
+	}
+	if got, want := strings.TrimSpace(stdout.String()), "komposyn-lg 0.7.0 (core 0.6.0)"; got != want {
+		t.Fatalf("version output=%q want=%q", got, want)
+	}
+
+	dataDir := t.TempDir()
+	params, err := json.Marshal(initializeParams{DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &protocolServer{}
+	response, _ := server.initialize(protocolRequest{ID: "version-check", Params: params}, io.Discard)
+	if !response.OK {
+		t.Fatalf("initialize failed: %+v", response.Error)
+	}
+	defer server.store.Close()
+	manifest := response.Result.(map[string]any)
+	if manifest["plugin_version"] != "0.6.0" || manifest["cli_version"] != "0.7.0" {
+		t.Fatalf("protocol versions = core %v, cli %v", manifest["plugin_version"], manifest["cli_version"])
+	}
+	diagnostic, err := recordDiagnostic(server.store, "test report", tokenlogger.DiagnosticCategoryReporting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diagnostic.CoreVersion != "0.6.0" || diagnostic.CLIVersion != "0.7.0" || diagnostic.ProtocolVersion != protocolVersion {
+		t.Fatalf("diagnostic version tuple = %+v", diagnostic)
 	}
 }
 
@@ -1765,7 +1802,7 @@ func (cancelledTerminalReader) EnableHistory()                  {}
 func (cancelledTerminalReader) IsTerminal() bool                { return true }
 
 func TestTerminalCancellationDoesNotCompleteOnboarding(t *testing.T) {
-	settings := tokenlogger.DefaultSettings(t.TempDir())
+	settings := defaultSettings(t.TempDir())
 	updated, startNow, err := runOnboarding(cancelledTerminalReader{}, settings.DataDir, settings)
 	if !errors.Is(err, readline.ErrInterrupt) {
 		t.Fatalf("onboarding error = %v", err)
@@ -1793,7 +1830,7 @@ func (reader *historyTrackingReader) IsTerminal() bool { return true }
 
 func TestOnboardingAnswersAreReadWithHistoryDisabled(t *testing.T) {
 	reader := &historyTrackingReader{answers: []string{"n", "y"}, history: true}
-	settings := tokenlogger.DefaultSettings(t.TempDir())
+	settings := defaultSettings(t.TempDir())
 	if _, _, err := runOnboardingWithoutHistory(reader, settings.DataDir, settings); err != nil {
 		t.Fatal(err)
 	}
@@ -1877,6 +1914,9 @@ func TestHarnessProtocolFixture(t *testing.T) {
 	versions, ok := manifest["schema_versions"].([]any)
 	if !ok || len(versions) != 4 {
 		t.Fatalf("schema versions = %#v, want four supported versions", manifest["schema_versions"])
+	}
+	if manifest["plugin_version"] != tokenlogger.CoreVersion() || manifest["cli_version"] != cliVersion {
+		t.Fatalf("initialize version tuple = core %v, cli %v; want core %s, cli %s", manifest["plugin_version"], manifest["cli_version"], tokenlogger.CoreVersion(), cliVersion)
 	}
 	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
 	if err != nil {
@@ -2221,7 +2261,7 @@ func TestClaudePricingAcceptanceAcrossCLIReportsAndREPL(t *testing.T) {
 	commands := "/range 2026-10-16 2026-10-17\n/projects\n/project Pricing Project\n/pricing\n/sessions\n/session " + pricingSession.ID + "\n/pricing\n/models\n/model claude-opus-5-5\n/pricing\n/range 2026-10-07 2026-10-09\n/pricing\n/range 2026-10-16 2026-10-17\n/refresh\n/quit\n"
 	reader := &scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}
 	var replOut, replErr bytes.Buffer
-	if code := runInteractiveLoopWithClock(reader, &replOut, &replErr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }); code != 0 {
+	if code := runInteractiveLoopWithClock(reader, &replOut, &replErr, store, dataDir, defaultSettings(dataDir), false, func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }); code != 0 {
 		t.Fatalf("pricing REPL exit=%d stderr=%q output=%q", code, replErr.String(), replOut.String())
 	}
 	output := replOut.String()
@@ -2405,7 +2445,7 @@ func TestInteractiveRollingRangeRefreshSeesCommittedEventFromSecondStore(t *test
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, readStore, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, readStore, dataDir, defaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "range: 2026-10-07T10:00:00Z to 2026-10-14T10:00:00Z (UTC)") {
@@ -2436,7 +2476,7 @@ func TestInteractiveRollingRangeDisplaysFractionalUpperBoundaryExactly(t *testin
 	}
 
 	var stdout, stderr bytes.Buffer
-	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader("/quit\n")), output: io.Discard}, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return to }); code != 0 {
+	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader("/quit\n")), output: io.Discard}, &stdout, &stderr, store, dataDir, defaultSettings(dataDir), false, func() time.Time { return to }); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	wantRange := "range: 2026-10-07T10:00:00.5Z to 2026-10-14T10:00:00.5Z (UTC)"
@@ -2476,7 +2516,7 @@ func TestInteractiveReportCommandsResolveFreshRollingRanges(t *testing.T) {
 			}
 		},
 	}
-	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, defaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	for minute := 0; minute <= len(commands)-1; minute++ {
@@ -2541,7 +2581,7 @@ func TestInteractivePinnedRangeAndResetUseHalfOpenBounds(t *testing.T) {
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+	if code := runInteractiveLoopWithClock(reader, &stdout, &stderr, store, dataDir, defaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	out := stdout.String()
@@ -2574,7 +2614,7 @@ func TestInteractiveRangeRejectsUnsupportedArguments(t *testing.T) {
 	commands := "/range nonsense\n/range reset extra\n/range\n/quit\n"
 	var stdout, stderr bytes.Buffer
 	current := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
-	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader(commands)), output: io.Discard}, &stdout, &stderr, store, dataDir, defaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	if strings.Count(stdout.String(), "usage: /range [reset | <from> <to>]") != 2 {
@@ -2604,7 +2644,7 @@ func TestInteractiveDoesNotSearchOtherDataDirectories(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	current := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
-	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader("/refresh\n/quit\n")), output: io.Discard}, &stdout, &stderr, readStore, readDir, tokenlogger.DefaultSettings(readDir), false, func() time.Time { return current }); code != 0 {
+	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(strings.NewReader("/refresh\n/quit\n")), output: io.Discard}, &stdout, &stderr, readStore, readDir, defaultSettings(readDir), false, func() time.Time { return current }); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	if strings.Contains(stdout.String(), "other-data-directory-only") {
@@ -2635,7 +2675,7 @@ func TestInteractiveReportQueryFailureSavesAndOffersSanitizedDiagnostic(t *testi
 	var stdout, stderr bytes.Buffer
 	input := strings.NewReader("view\nn\n/quit\n")
 	current := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
-	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(input), output: &stdout}, &stdout, &stderr, store, dataDir, tokenlogger.DefaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
+	if code := runInteractiveLoopWithClock(&scannerLineReader{scanner: bufio.NewScanner(input), output: &stdout}, &stdout, &stderr, store, dataDir, defaultSettings(dataDir), false, func() time.Time { return current }); code != 0 {
 		t.Fatalf("interactive exit code = %d, stderr = %q", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "usage query failed") || !strings.Contains(stdout.String(), "Sanitized diagnostic saved locally:") {

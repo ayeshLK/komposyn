@@ -5,9 +5,12 @@ request. The later publication workflow will validate that prepared version,
 build six platform artifacts, verify installation and data preservation, sign
 artifacts with Cosign, and publish only after the verification jobs pass.
 
-The initial unreleased baseline is `0.0.0`; the first release is expected to be
-`v0.1.0`. Development binaries report `0.0.0-dev`, while release binaries
-report the version injected from their tag.
+The combined repository has published signed releases. Use the current
+Release Please manifest and merged release PR as the version authority; do not
+reset the combined version history during issue #46 preparation. Development
+binaries report `0.0.0-dev`, while release binaries report the version
+injected from their tag. The core and CLI versions remain separate fields even
+when combined releases assign them the same tag.
 
 ## Publishing a release
 
@@ -16,8 +19,9 @@ Release publication is a two-step, manually dispatched GitHub Actions flow:
 1. Run **Prepare release** from the Actions tab. Release Please opens or updates
    the release pull request with the next version and changelog entry.
 2. Review and merge that pull request.
-3. Run **Publish release** from the Actions tab, confirming that the issue #46
-   API, schema/backup, diagnostics, and version gates are complete. The workflow
+3. Run **Publish release** from the Actions tab, confirming that this final
+   combined release passed the issue #46 readiness gates and is ready for the
+   post-release extraction phase. The workflow
    checks out the release pull request's merge commit, runs the test and
    lifecycle verification matrix, builds and signs the artifacts, creates a
    draft GitHub Release at that exact commit, uploads the explicit artifact
@@ -51,21 +55,34 @@ artifacts accompany the release.
 
 ## Local verification
 
-Use a fresh output directory:
+Use a fresh output directory and set `CANDIDATE_VERSION` to the reviewed
+candidate version. The local build does not create a tag.
 
 ```sh
 go vet ./...
 go test ./...
 go test -race ./...
-make release VERSION=v0.1.0 OUTPUT_DIR=/tmp/komposyn-release-test
+make release VERSION="$CANDIDATE_VERSION" OUTPUT_DIR=/tmp/komposyn-release-test
 bash scripts/verify-release.sh /tmp/komposyn-release-test
+# For an actual old-to-new migration, pass a verified released komposyn-lg binary:
+bash scripts/verify-release.sh /tmp/komposyn-release-test /path/to/verified-v0.6.0/komposyn-lg
 ```
 
 The verifier checks checksums, archive contents, initial settings/database
-creation, executable replacement, and uninstall. It confirms that upgrade and
-uninstall preserve local data. It also starts a registered background
-collector, stops/restarts it across replacement, and verifies uninstall stops
-it before removing the executable.
+creation, executable replacement, and uninstall. With a verified historical
+binary supplied, it imports a synthetic Codex event and records a second event
+with project/session references through protocol v1. It starts and cooperatively
+stops the old binary's collector, upgrades with the candidate, and checks
+integer usage totals, project/session identity, unchanged-source cursor reuse,
+collector registration and run history, exact settings preservation, unknown
+pricing evidence, and the retained automatic migration backup. It restores
+that backup into a separate data directory and checks the historical total
+again. This path requires Python 3 for its SQLite run-history assertion.
+Without a reference binary, upgrade coverage is a lifecycle smoke test only.
+The verifier also checks uninstall preserves local data and backups. The
+smoke-test path starts a registered background collector, stops/restarts it
+across replacement, and verifies uninstall stops it before removing the
+executable.
 
 For installer verification, `scripts/install.sh` verifies both SHA-256 and the
 Cosign blob certificate identity and OIDC issuer before replacing the binary.

@@ -409,8 +409,9 @@ func TestZeroUsageRequiresSupportedPricingContext(t *testing.T) {
 	}
 }
 
-func TestMigrationsOneThroughFourteenPreserveLegacyData(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
+func TestMigrationsOneThroughFifteenPreserveLegacyData(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +426,7 @@ func TestMigrationsOneThroughFourteenPreserveLegacyData(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)", "2026-01-01T00:00:00.5Z"); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db}
+	store := &Store{db: db, databasePath: databasePath}
 	event := testEvent("v1-legacy-event")
 	event.EventID = "v1-legacy-event"
 	event.ProjectID, event.SessionID = "legacy-project", "legacy-session"
@@ -451,15 +452,58 @@ func TestMigrationsOneThroughFourteenPreserveLegacyData(t *testing.T) {
 		effective_from, pricing_version) VALUES ('custom', 'model', 'input', 7, 'USD', ?, 'legacy-v1')`, from); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Migrate(); err != nil {
+	if err := store.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := store.MigrationBackupPath()
+	if backupPath == "" {
+		t.Fatal("migration did not retain its verified pre-migration backup path")
+	}
+	backupDB, err := sql.Open("sqlite", "file:"+filepath.ToSlash(backupPath)+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var backupSchema, sourceSchema, targetSchema, backupEventCount int
+	if err := backupDB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&backupSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := backupDB.QueryRow("SELECT source_schema, target_schema FROM komposyn_migration_backup").Scan(&sourceSchema, &targetSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := backupDB.QueryRow("SELECT COUNT(*) FROM usage_events WHERE event_id = ?", event.EventID).Scan(&backupEventCount); err != nil {
+		t.Fatal(err)
+	}
+	if backupSchema != 1 || sourceSchema != 1 || targetSchema != CurrentSchemaVersion || backupEventCount != 1 {
+		t.Fatalf("verified backup schema=%d metadata=%d->%d historical events=%d", backupSchema, sourceSchema, targetSchema, backupEventCount)
+	}
+	if err := backupDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Restoring a pre-migration backup that already has KompoSyn metadata must
+	// remain migratable and produce a fresh verified backup for the next attempt.
+	restoredPath := filepath.Join(t.TempDir(), "restored.db")
+	if err := copyRegularFile(backupPath, restoredPath); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Open(restoredPath)
+	if err != nil {
+		t.Fatalf("open restored pre-migration backup: %v", err)
+	}
+	if count, err := restored.EventCount(); err != nil || count != 1 {
+		t.Fatalf("restored historical event count = %d, %v; want 1", count, err)
+	}
+	if restored.MigrationBackupPath() == "" {
+		t.Fatal("restored backup migration did not create a new verified backup")
+	}
+	if err := restored.Close(); err != nil {
 		t.Fatal(err)
 	}
 	var migrationCount, latestMigration int
 	if err := db.QueryRow("SELECT COUNT(*), MAX(version) FROM schema_migrations").Scan(&migrationCount, &latestMigration); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 14 || latestMigration != 14 {
-		t.Fatalf("migration history = %d/%d, want all migrations 1 through 14", migrationCount, latestMigration)
+	if migrationCount != CurrentSchemaVersion || latestMigration != CurrentSchemaVersion {
+		t.Fatalf("migration history = %d/%d, want all migrations 1 through %d", migrationCount, latestMigration, CurrentSchemaVersion)
 	}
 	var identityTable string
 	if err := db.QueryRow("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'collector_source_identities'").Scan(&identityTable); err != nil {

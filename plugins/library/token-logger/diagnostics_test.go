@@ -39,7 +39,30 @@ func TestDiagnosticsAreSanitizedAndDeduplicated(t *testing.T) {
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("pending diagnostics = %d, err = %v", len(pending), err)
 	}
-	if !strings.Contains(GitHubIssueDraftURL(first), "issues/new") {
-		t.Fatal("missing issue draft URL")
+	if first.Category != DiagnosticCategoryUnknown {
+		t.Fatalf("legacy diagnostic category = %q", first.Category)
+	}
+	if _, err := store.DiagnosticReport(); err != nil {
+		t.Fatalf("build destination-neutral report: %v", err)
+	}
+}
+
+func TestDiagnosticMetadataIsSanitizedAndPersisted(t *testing.T) {
+	store := openTestStore(t)
+	want := DiagnosticMetadata{Category: DiagnosticCategoryMigration, CoreVersion: "0.6.0", CLIVersion: "0.7.0", ProtocolVersion: 1, SchemaVersion: CurrentSchemaVersion}
+	diagnostic, err := store.RecordDiagnosticWithMetadata("migration failed token=secret at /home/private/db", want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Diagnostic(diagnostic.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Category != want.Category || got.CoreVersion != want.CoreVersion || got.CLIVersion != want.CLIVersion ||
+		got.ProtocolVersion != want.ProtocolVersion || got.SchemaVersion != want.SchemaVersion {
+		t.Fatalf("persisted diagnostic metadata = %+v, want %+v", got, want)
+	}
+	if strings.Contains(got.Message, "secret") || strings.Contains(got.Message, "/home/private") {
+		t.Fatalf("diagnostic message was not sanitized: %q", got.Message)
 	}
 }

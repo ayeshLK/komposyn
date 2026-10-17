@@ -38,6 +38,8 @@ integration reference.
 
 - [Architecture](architecture.md) — current token logger boundaries, import
   flow, source replacement safety, and reporting semantics.
+- [Token Logger core API](core-api.md) — supported library contract, complete
+  exported declaration inventory, and pre-1.0 compatibility notes.
 - [Privacy and data handling](privacy.md) — what is read, stored, excluded,
   and sent externally.
 - [Security and privacy model](security-model.md) — trust boundaries, data

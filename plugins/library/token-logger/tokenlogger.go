@@ -24,12 +24,16 @@ import (
 	"time"
 )
 
-// Version is the current library version. Development builds use an explicit
-// pre-release marker; release builds replace this value from the release tag
-// at link time.
+// Version is the current core library version. Development builds use an
+// explicit pre-release marker; combined release builds inject the tag value.
+// Deprecated: the CLI has its own version; use CoreVersion when reporting the
+// reusable library version from an application.
 var Version = "0.0.0-dev"
 
-const currentSchemaVersion = 14
+// CoreVersion returns the version injected into this reusable core build.
+func CoreVersion() string { return Version }
+
+const currentSchemaVersion = CurrentSchemaVersion
 
 const (
 	BillingEvidenceProviderResponse = "provider_response"

@@ -13,9 +13,20 @@ The following local state must survive an upgrade:
 - consent choices represented by local settings
 - registered collector sources and prior runtime history
 
-When the new binary opens the database, numbered SQLite migrations run inside
-the storage layer. Do not copy or edit database files while the CLI is running.
-Create a backup before a major upgrade if the data is important.
+When the new binary opens an existing database that needs migration, it creates
+and verifies a private SQLite online backup before applying numbered
+migrations. A backup failure stops the migration. The default backup lives
+beside the database, contains source/target schema and core-version metadata,
+and is available through `Store.MigrationBackupPath` to library callers. Do not
+copy or edit database files while the CLI is running. Keep migration backups
+with the rest of the protected local data.
+
+A newer unsupported schema is inspected before writable configuration and is
+refused without changing database contents, timestamps, or existing WAL
+sidecars. Older published binaries do not have this protection; rollback to
+them may alter a newer database. Restore a verified pre-migration backup into a
+separate working directory and use a binary compatible with that backup's
+schema. Stop all collectors before restoring or replacing data.
 
 In-CLI self-updating is deferred. Release installers verify checksums and Cosign
 signatures; do not bypass those checks by downloading an unverified binary.

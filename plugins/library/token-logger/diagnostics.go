@@ -18,7 +18,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -28,10 +27,45 @@ import (
 type Diagnostic struct {
 	Fingerprint     string    `json:"fingerprint"`
 	Message         string    `json:"message"`
+	Category        string    `json:"category"`
+	CoreVersion     string    `json:"core_version,omitempty"`
+	CLIVersion      string    `json:"cli_version,omitempty"`
+	ProtocolVersion int       `json:"protocol_version,omitempty"`
+	SchemaVersion   int       `json:"schema_version,omitempty"`
 	OccurrenceCount int       `json:"occurrence_count"`
 	FirstSeenAt     time.Time `json:"first_seen_at"`
 	LastSeenAt      time.Time `json:"last_seen_at"`
 	Status          string    `json:"status"`
+}
+
+const (
+	DiagnosticCategoryCLI               = "cli"
+	DiagnosticCategoryProvider          = "provider"
+	DiagnosticCategoryIngestion         = "ingestion"
+	DiagnosticCategoryStorage           = "storage"
+	DiagnosticCategoryMigration         = "migration"
+	DiagnosticCategoryPricing           = "pricing"
+	DiagnosticCategoryReporting         = "reporting"
+	DiagnosticCategoryValidation        = "validation"
+	DiagnosticCategorySecuritySensitive = "security-sensitive"
+	DiagnosticCategoryUnknown           = "unknown"
+)
+
+// DiagnosticMetadata adds controlled source and version context without
+// capturing arbitrary source content.
+type DiagnosticMetadata struct {
+	Category        string
+	CoreVersion     string
+	CLIVersion      string
+	ProtocolVersion int
+	SchemaVersion   int
+}
+
+// DiagnosticReport is a destination-neutral snapshot of pending diagnostics.
+type DiagnosticReport struct {
+	FormatVersion int          `json:"format_version"`
+	CreatedAt     time.Time    `json:"created_at"`
+	Diagnostics   []Diagnostic `json:"diagnostics"`
 }
 
 var (
@@ -53,15 +87,26 @@ func SanitizeDiagnostic(message string) string {
 
 // RecordDiagnostic persists a deduplicated sanitized diagnostic.
 func (s *Store) RecordDiagnostic(message string) (Diagnostic, error) {
+	return s.RecordDiagnosticWithMetadata(message, DiagnosticMetadata{Category: DiagnosticCategoryUnknown})
+}
+
+// RecordDiagnosticWithMetadata persists a sanitized diagnostic and its
+// controlled classification/version metadata.
+func (s *Store) RecordDiagnosticWithMetadata(message string, metadata DiagnosticMetadata) (Diagnostic, error) {
 	sanitized := SanitizeDiagnostic(message)
+	if !validDiagnosticCategory(metadata.Category) {
+		metadata.Category = DiagnosticCategoryUnknown
+	}
 	sum := sha256.Sum256([]byte(sanitized))
 	fingerprint := hex.EncodeToString(sum[:])
 	now := time.Now().UTC()
-	_, err := s.db.Exec(`INSERT INTO diagnostics(fingerprint, message, first_seen_at, last_seen_at)
-		VALUES (?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO diagnostics(fingerprint, message, first_seen_at, last_seen_at, category,
+		core_version, cli_version, protocol_version, schema_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO UPDATE SET occurrence_count = occurrence_count + 1,
 		last_seen_at = excluded.last_seen_at`, fingerprint, sanitized,
-		formatStoredTime(now), formatStoredTime(now))
+		formatStoredTime(now), formatStoredTime(now), metadata.Category, metadata.CoreVersion,
+		metadata.CLIVersion, metadata.ProtocolVersion, metadata.SchemaVersion)
 	if err != nil {
 		return Diagnostic{}, fmt.Errorf("persist diagnostic: %w", err)
 	}
@@ -72,9 +117,11 @@ func (s *Store) RecordDiagnostic(message string) (Diagnostic, error) {
 func (s *Store) Diagnostic(fingerprint string) (Diagnostic, error) {
 	var diagnostic Diagnostic
 	var first, last string
-	err := s.db.QueryRow(`SELECT fingerprint, message, occurrence_count, first_seen_at, last_seen_at, status
+	err := s.db.QueryRow(`SELECT fingerprint, message, category, core_version, cli_version, protocol_version, schema_version,
+		occurrence_count, first_seen_at, last_seen_at, status
 		FROM diagnostics WHERE fingerprint = ?`, fingerprint).Scan(&diagnostic.Fingerprint, &diagnostic.Message,
-		&diagnostic.OccurrenceCount, &first, &last, &diagnostic.Status)
+		&diagnostic.Category, &diagnostic.CoreVersion, &diagnostic.CLIVersion, &diagnostic.ProtocolVersion,
+		&diagnostic.SchemaVersion, &diagnostic.OccurrenceCount, &first, &last, &diagnostic.Status)
 	if err != nil {
 		return Diagnostic{}, err
 	}
@@ -89,7 +136,8 @@ func (s *Store) Diagnostic(fingerprint string) (Diagnostic, error) {
 
 // PendingDiagnostics returns locally stored diagnostics awaiting user review.
 func (s *Store) PendingDiagnostics() ([]Diagnostic, error) {
-	rows, err := s.db.Query(`SELECT fingerprint, message, occurrence_count, first_seen_at, last_seen_at, status
+	rows, err := s.db.Query(`SELECT fingerprint, message, category, core_version, cli_version, protocol_version,
+		schema_version, occurrence_count, first_seen_at, last_seen_at, status
 		FROM diagnostics WHERE status = 'pending' ORDER BY last_seen_at`)
 	if err != nil {
 		return nil, err
@@ -99,7 +147,9 @@ func (s *Store) PendingDiagnostics() ([]Diagnostic, error) {
 	for rows.Next() {
 		var diagnostic Diagnostic
 		var first, last string
-		if err := rows.Scan(&diagnostic.Fingerprint, &diagnostic.Message, &diagnostic.OccurrenceCount, &first, &last, &diagnostic.Status); err != nil {
+		if err := rows.Scan(&diagnostic.Fingerprint, &diagnostic.Message, &diagnostic.Category, &diagnostic.CoreVersion,
+			&diagnostic.CLIVersion, &diagnostic.ProtocolVersion, &diagnostic.SchemaVersion,
+			&diagnostic.OccurrenceCount, &first, &last, &diagnostic.Status); err != nil {
 			return nil, err
 		}
 		var err error
@@ -116,6 +166,16 @@ func (s *Store) PendingDiagnostics() ([]Diagnostic, error) {
 	return diagnostics, rows.Err()
 }
 
+// DiagnosticReport returns a destination-neutral snapshot of diagnostics
+// awaiting local review.
+func (s *Store) DiagnosticReport() (DiagnosticReport, error) {
+	diagnostics, err := s.PendingDiagnostics()
+	if err != nil {
+		return DiagnosticReport{}, err
+	}
+	return DiagnosticReport{FormatVersion: 1, CreatedAt: time.Now().UTC(), Diagnostics: diagnostics}, nil
+}
+
 // MarkDiagnosticReviewed suppresses repeated prompts after the user has
 // explicitly reviewed or skipped a diagnostic.
 func (s *Store) MarkDiagnosticReviewed(fingerprint, status string) error {
@@ -126,17 +186,14 @@ func (s *Store) MarkDiagnosticReviewed(fingerprint, status string) error {
 	return err
 }
 
-// GitHubIssueDraftURL returns a prefilled issue draft without sending a
-// request or including local paths, credentials, or source content.
-func GitHubIssueDraftURL(diagnostic Diagnostic) string {
-	shortFingerprint := diagnostic.Fingerprint
-	if len(shortFingerprint) > 12 {
-		shortFingerprint = shortFingerprint[:12]
+func validDiagnosticCategory(category string) bool {
+	switch category {
+	case DiagnosticCategoryCLI, DiagnosticCategoryProvider, DiagnosticCategoryIngestion,
+		DiagnosticCategoryStorage, DiagnosticCategoryMigration, DiagnosticCategoryPricing,
+		DiagnosticCategoryReporting, DiagnosticCategoryValidation, DiagnosticCategorySecuritySensitive,
+		DiagnosticCategoryUnknown:
+		return true
+	default:
+		return false
 	}
-	title := "Komposyn Token Logger diagnostic: " + shortFingerprint
-	body := fmt.Sprintf("Sanitized diagnostic fingerprint: %s\n\nMessage:\n%s\n\nOccurrences: %d", diagnostic.Fingerprint, diagnostic.Message, diagnostic.OccurrenceCount)
-	return "https://github.com/ayeshLK/komposyn/issues/new?" + url.Values{
-		"title": {title},
-		"body":  {body},
-	}.Encode()
 }
