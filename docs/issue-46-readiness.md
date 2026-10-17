@@ -129,6 +129,16 @@ repository permission or protection changes were attempted.
   one running background lease owner. Usage totals and settings were
   preserved. Both historical archive and checksum manifest signatures were
   checked against the release identity and issuer above.
+- PR #131's native workflow passed all four signed active-collector upgrades:
+  v0.5.0 and v0.6.0 to v0.7.0 on macOS arm64 and Windows amd64. The old
+  collector stopped cooperatively, the installer replaced it and restarted a
+  new healthy background lease owner, and usage/settings were preserved. This
+  also executes the published v0.7.0 binary natively on those two targets.
+- PR #131's full v0.6.0-to-v0.7.0 fixture passed on macOS arm64 and Windows
+  amd64. It verified migration, preserved usage and settings/consent, restored
+  the migration backup with the compatible historical executable, and
+  completed data-preserving uninstall. The completed native evidence is in
+  [workflow run 39037544184](https://github.com/ayeshLK/komposyn/actions/runs/39037544184).
 
 Cross-platform follow-up tooling: the verifier now accepts macOS `shasum` and
 has a Windows Git Bash path for ZIP extraction, `.exe` invocation, and
@@ -146,21 +156,20 @@ creation/access remains unresolved.
 
 ## Remaining verification gates
 
-- [ ] Run the v0.5.0 and v0.6.0 historical active-collector upgrade fixtures
-  on native macOS and Windows. A new four-job workflow covers both old tags on
-  those native hosts; its PR run is pending.
-- [ ] Run full v0.6.0 historical migration, restoration, and uninstall
-  verification on native macOS and Windows. The follow-up workflow will run
-  the existing fixture using the published v0.7.0 archive and verified v0.6.0
-  binary; existing release-process installer checks are not historical-binary
-  evidence.
-- [ ] Execute the published binaries natively on the remaining release
-  targets: Linux arm64, macOS amd64, macOS arm64, Windows amd64, and Windows
-  arm64. Current local runtime evidence covers Linux amd64. Hosted installer
-  checks and cross-builds do not count as runtime execution for other targets.
-- [ ] Retain direct-upgrade and collector-state evidence from v0.5.0 on Linux
-  amd64; retain the full state-preservation evidence from v0.6.0 on Linux
-  amd64. These do not replace the pending native platform runs.
+- [x] Run the v0.5.0 and v0.6.0 historical active-collector upgrade fixtures
+  on native macOS arm64 and Windows amd64, with signed historical archives,
+  cooperative stop/restart, usage/settings preservation, and one healthy
+  background lease owner.
+- [x] Run full v0.6.0 historical migration, backup restoration, and uninstall
+  verification on native macOS arm64 and Windows amd64. Linux amd64 evidence
+  was already recorded above.
+- [ ] Execute published binaries natively on the remaining release targets:
+  Linux arm64, macOS amd64, and Windows arm64. Runtime evidence now covers
+  Linux amd64, macOS arm64, and Windows amd64. Cross-builds and other hosted
+  installer checks do not count as runtime execution for these pending targets.
+- [x] Retain direct-upgrade and collector-state evidence from v0.5.0 on Linux
+  amd64 and full historical state-preservation evidence from v0.6.0 on Linux
+  amd64, macOS arm64, and Windows amd64.
 - [x] Prepare reviewable standalone repository bootstrap files without
   copying CLI implementation. Destination existence/access remains blocked
   pending GitHub repository visibility or creation.

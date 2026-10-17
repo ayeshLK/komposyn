@@ -42,14 +42,17 @@ signed v0.7.0 release also passed: the installer stopped the old collector,
 replaced the executable, restarted under a new process and instance, preserved
 usage and settings, and left one running background lease owner.
 
+The native historical lifecycle gates are now complete. PR #131's workflow
+passed all four v0.5.0/v0.6.0 active-collector upgrades on macOS arm64 and
+Windows amd64, and the full v0.6.0 migration, backup restoration, and
+uninstall fixture on both systems. See
+[workflow run 39037544184](https://github.com/ayeshLK/komposyn/actions/runs/39037544184).
+
 The following gates remain open:
 
-- Run the v0.5.0 and v0.6.0 active-collector upgrades natively on macOS and
-  Windows. A four-job PR workflow has been prepared for those runs.
-- Run the full v0.6.0 migration, restore, and uninstall fixture natively on
-  macOS and Windows.
-- Execute published binaries natively on Linux arm64, macOS amd64/arm64, and
-  Windows amd64/arm64. Cross-builds and installer-only checks do not count.
+- Execute published binaries natively on Linux arm64, macOS amd64, and Windows
+  arm64. Current runtime evidence covers Linux amd64, macOS arm64, and Windows
+  amd64. Cross-builds and installer-only checks do not count.
 - Prepare the destination repository bootstrap and resolve access to
   `ayeshLK/komposyn-lg`. GitHub currently returns “Could not resolve to a
   Repository” for that name, so existence/access cannot yet be distinguished.
