@@ -1,0 +1,193 @@
+name: Issue 46 historical upgrade verification
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/issue-46-historical-upgrade.yml
+      - plugins/library/token-logger/testdata/codex/normal.jsonl
+      - scripts/install.ps1
+      - scripts/install.sh
+      - scripts/uninstall.ps1
+      - scripts/uninstall.sh
+      - scripts/verify-active-published-upgrade.ps1
+      - scripts/verify-active-published-upgrade.sh
+      - scripts/verify-published-runtime.ps1
+      - scripts/verify-published-runtime.sh
+      - scripts/verify-release.sh
+      - scripts/expand-release-archive.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  published-runtime:
+    name: v0.7.0 native runtime (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux_amd64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+          - runner: macos-15-intel
+            target: darwin_amd64
+          - runner: macos-latest
+            target: darwin_arm64
+          - runner: windows-latest
+            target: windows_amd64
+          - runner: windows-11-arm
+            target: windows_arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Cosign
+        if: matrix.target != 'windows_arm64'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Set up Go for native Windows ARM64 Cosign build
+        if: matrix.target == 'windows_arm64'
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version: 1.26.9
+
+      - name: Install pinned Cosign natively on Windows ARM64
+        if: matrix.target == 'windows_arm64'
+        run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3
+
+      - name: Run native Linux/macOS binary and protocol checks
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/verify-published-runtime.sh v0.7.0 "${{ matrix.target }}"
+
+      - name: Run native Windows binary and protocol checks
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify-published-runtime.ps1 -Tag v0.7.0 -Target "${{ matrix.target }}"
+
+  historical-migration:
+    name: v0.6.0 migration, restoration, and uninstall (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Install historical fixture tools
+        if: runner.os != 'Windows'
+        run: |
+          gh --version
+          python3 --version
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Run historical migration fixture
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/published-v070"
+          old_dir="$RUNNER_TEMP/historical-v060"
+          mkdir -p "$release_dir" "$old_dir"
+          case "$(uname -s):$(uname -m)" in
+            Darwin:x86_64)
+              old_asset=komposyn-lg_0.6.0_darwin_amd64.tar.gz
+              new_asset=komposyn-lg_0.7.0_darwin_amd64.tar.gz
+              ;;
+            Darwin:arm64)
+              old_asset=komposyn-lg_0.6.0_darwin_arm64.tar.gz
+              new_asset=komposyn-lg_0.7.0_darwin_arm64.tar.gz
+              ;;
+            MINGW64_NT*:x86_64|MSYS_NT*:x86_64|CYGWIN_NT*:x86_64)
+              old_asset=komposyn-lg_0.6.0_windows_amd64.zip
+              new_asset=komposyn-lg_0.7.0_windows_amd64.zip
+              ;;
+            *) echo "unsupported native historical fixture host: $(uname -s)/$(uname -m)" >&2; exit 1 ;;
+          esac
+          gh release download v0.6.0 --repo ayeshLK/komposyn --dir "$old_dir" \
+            --pattern "$old_asset" --pattern "$old_asset.sig" --pattern "$old_asset.pem" \
+            --pattern SHA256SUMS --pattern SHA256SUMS.sig --pattern SHA256SUMS.pem
+          gh release download v0.7.0 --repo ayeshLK/komposyn --dir "$release_dir" \
+            --pattern 'komposyn-lg_0.7.0_*' \
+            --pattern SHA256SUMS --pattern SHA256SUMS.sig --pattern SHA256SUMS.pem
+          identity='^https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master$'
+          issuer='https://token.actions.githubusercontent.com'
+          verify_manifest() {
+            local directory="$1"
+            cosign verify-blob --signature "$directory/SHA256SUMS.sig" \
+              --certificate "$directory/SHA256SUMS.pem" \
+              --certificate-identity-regexp "$identity" \
+              --certificate-oidc-issuer "$issuer" "$directory/SHA256SUMS"
+          }
+          verify_archive() {
+            local directory="$1"
+            local archive="$2"
+            cosign verify-blob --signature "$directory/$archive.sig" \
+              --certificate "$directory/$archive.pem" \
+              --certificate-identity-regexp "$identity" \
+              --certificate-oidc-issuer "$issuer" "$directory/$archive"
+            if command -v sha256sum >/dev/null 2>&1; then
+              (cd "$directory" && grep -F "  $archive" SHA256SUMS | sha256sum -c -)
+            else
+              (cd "$directory" && grep -F "  $archive" SHA256SUMS | shasum -a 256 -c -)
+            fi
+          }
+          verify_manifest "$old_dir"
+          verify_archive "$old_dir" "$old_asset"
+          verify_manifest "$release_dir"
+          verify_archive "$release_dir" "$new_asset"
+          if [[ "$old_asset" == *.zip ]]; then
+            unzip -q "$old_dir/$old_asset" -d "$old_dir/extracted"
+            old_binary="$old_dir/extracted/komposyn-lg.exe"
+          else
+            tar -xzf "$old_dir/$old_asset" -C "$old_dir"
+            old_binary="$old_dir/komposyn-lg"
+          fi
+          bash scripts/verify-release.sh "$release_dir" "$old_binary"
+
+  verify:
+    name: ${{ matrix.old_tag }} to v0.7.0 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        old_tag: [v0.5.0, v0.6.0]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Verify historical active-collector upgrade on Unix
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/verify-active-published-upgrade.sh "${{ matrix.old_tag }}" v0.7.0
+
+      - name: Verify historical active-collector upgrade on Windows
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: ./scripts/verify-active-published-upgrade.ps1 -OldTag "${{ matrix.old_tag }}" -NewTag v0.7.0

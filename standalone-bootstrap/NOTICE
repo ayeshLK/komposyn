@@ -1,0 +1,7 @@
+KompoSyn Token Logger CLI
+Copyright 2026 Ayesh Almeida
+
+This product includes software developed by Ayesh Almeida.
+The CLI uses the separately distributed KompoSyn core module
+github.com/ayeshLK/komposyn. Third-party notices and license texts must be
+included in release archives after dependency-license collection is transferred.
