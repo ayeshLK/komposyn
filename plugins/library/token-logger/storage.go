@@ -63,7 +63,7 @@ func OpenWithOptions(path string, options OpenOptions) (*Store, error) {
 		}
 		path = resolved
 	}
-	version, exists, err := inspectSchemaReadOnly(path)
+	version, exists, err := inspectSchemaSnapshot(path)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +137,8 @@ func sqliteBusy(err error) bool {
 func (s *Store) Close() error { return s.db.Close() }
 
 // migrate applies numbered schema migrations in order after Open has completed
-// the read-only compatibility preflight.
+// the compatibility preflight on a private snapshot. The live schema version
+// is checked again under the migration transaction's write lock.
 func (s *Store) migrate() error {
 	tx, err := s.db.Begin()
 	if err != nil {

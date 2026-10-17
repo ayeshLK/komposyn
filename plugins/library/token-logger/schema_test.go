@@ -15,11 +15,13 @@
 package tokenlogger
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -122,6 +124,15 @@ func TestOpenRefusesNewerSchemaWithHotJournalWithoutChangingSource(t *testing.T)
 	if _, err := tx.Exec("INSERT INTO pending VALUES (zeroblob(65536))"); err != nil {
 		t.Fatal(err)
 	}
+	journal, err := os.ReadFile(path + "-journal")
+	if err != nil {
+		t.Fatalf("read spilled rollback journal required for recovery coverage: %v", err)
+	}
+	// SQLite's hot-journal header begins with this eight-byte magic. An
+	// allocated but unflushed journal does not exercise rollback recovery.
+	if len(journal) <= 512 || !bytes.Equal(journal[:8], []byte{0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7}) {
+		t.Fatalf("expected a flushed hot rollback journal larger than 512 bytes; size=%d", len(journal))
+	}
 	paths := []string{path, path + "-journal"}
 	before := make(map[string][]byte)
 	for _, path := range paths {
@@ -144,6 +155,127 @@ func TestOpenRefusesNewerSchemaWithHotJournalWithoutChangingSource(t *testing.T)
 		if err != nil || !reflect.DeepEqual(after, before[path]) {
 			t.Errorf("source %s changed on refusal: %v", filepath.Base(path), err)
 		}
+	}
+}
+
+func TestSchemaSnapshotRetriesConcurrentSourceChanges(t *testing.T) {
+	for _, action := range []string{"commit", "rollback", "checkpoint"} {
+		t.Run(action, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "changing.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			mode := "DELETE"
+			if action == "checkpoint" {
+				mode = "WAL"
+			}
+			for _, statement := range []string{
+				"PRAGMA journal_mode = " + mode,
+				"PRAGMA cache_size = 1",
+				"CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY)",
+				"CREATE TABLE pending(value BLOB)",
+			} {
+				if _, err := db.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.Exec("INSERT INTO schema_migrations VALUES (?)", CurrentSchemaVersion); err != nil {
+				t.Fatal(err)
+			}
+			var tx *sql.Tx
+			if action != "checkpoint" {
+				tx, err = db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if _, err := tx.Exec("UPDATE schema_migrations SET version = ?", CurrentSchemaVersion+1); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.Exec("INSERT INTO pending VALUES (zeroblob(65536))"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			copies := 0
+			version, exists, err := inspectSchemaSnapshotWithCopier(path, func(source, destination string) error {
+				if err := copyRegularFile(source, destination); err != nil {
+					return err
+				}
+				if source != path {
+					return nil
+				}
+				copies++
+				if copies != 1 {
+					return nil
+				}
+				// Change the source between the main-file and sidecar copies.
+				switch action {
+				case "commit":
+					return tx.Commit()
+				case "rollback":
+					return tx.Rollback()
+				default:
+					if _, err := db.Exec("UPDATE schema_migrations SET version = ?", CurrentSchemaVersion+1); err != nil {
+						return err
+					}
+					_, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+					return err
+				}
+			})
+			want := CurrentSchemaVersion + 1
+			if action == "rollback" {
+				want = CurrentSchemaVersion
+			}
+			if err != nil || !exists || version != want || copies < 2 {
+				t.Fatalf("snapshot version=%d exists=%t copies=%d err=%v; want version=%d after retry", version, exists, copies, err, want)
+			}
+		})
+	}
+}
+
+func TestSchemaSnapshotBoundsRetriesForChangingSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "changing.db")
+	owner, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	copies := 0
+	_, _, err = inspectSchemaSnapshotWithCopier(path, func(source, destination string) error {
+		if err := copyRegularFile(source, destination); err != nil {
+			return err
+		}
+		if source == path {
+			copies++
+			_, err := owner.db.Exec("UPDATE schema_migrations SET version = version + 1 WHERE version = (SELECT MAX(version) FROM schema_migrations)")
+			return err
+		}
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "source changed during copy") || copies != 5 {
+		t.Fatalf("copies=%d err=%v; want bounded failure after 5 changed snapshots", copies, err)
+	}
+}
+
+func TestMigrateRechecksLiveVersionAfterSnapshotPreflight(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "changed-version.db")
+	owner, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	version, _, err := inspectSchemaSnapshot(path)
+	if err != nil || version != CurrentSchemaVersion {
+		t.Fatalf("preflight version=%d err=%v", version, err)
+	}
+	if _, err := owner.db.Exec("UPDATE schema_migrations SET version = ? WHERE version = ?", CurrentSchemaVersion+1, CurrentSchemaVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.migrate(); !errors.Is(err, ErrUnsupportedSchema) {
+		t.Fatalf("live migration error=%v; want ErrUnsupportedSchema", err)
 	}
 }
 
