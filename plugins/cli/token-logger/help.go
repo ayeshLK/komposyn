@@ -395,12 +395,28 @@ _komposyn_lg() {
     else
       COMPREPLY=( $(compgen -W "add remove list start status stop foreground" -- "$cur") )
     fi
+  elif [[ "$cmd" == "help" && ${COMP_CWORD} -eq 2 ]]; then
+    if [[ "$cur" == -* ]]; then
+      COMPREPLY=( $(compgen -W "--help -h" -- "$cur") )
+    else
+      COMPREPLY=( $(compgen -W "help version import usage cost projects sessions watch settings report-issue harness completion" -- "$cur") )
+    fi
+  elif [[ "$cmd" == "help" && ${COMP_CWORD} -eq 3 ]]; then
+    case "${COMP_WORDS[2]}" in
+      watch) COMPREPLY=( $(compgen -W "add remove list start status stop foreground" -- "$cur") ) ;;
+      projects|sessions) COMPREPLY=( $(compgen -W "list show" -- "$cur") ) ;;
+      *) COMPREPLY=( $(compgen -W "--help -h" -- "$cur") ) ;;
+    esac
   elif [[ "$cmd" == "projects" && ${COMP_CWORD} -eq 2 ]]; then
-    COMPREPLY=( $(compgen -W "list show" -- "$cur") )
+    if [[ "$cur" == -* ]]; then COMPREPLY=( $(compgen -W "--help -h" -- "$cur") ); else COMPREPLY=( $(compgen -W "list show" -- "$cur") ); fi
   elif [[ "$cmd" == "sessions" && ${COMP_CWORD} -eq 2 ]]; then
-    COMPREPLY=( $(compgen -W "list show" -- "$cur") )
+    if [[ "$cur" == -* ]]; then
+      COMPREPLY=( $(compgen -W "--help -h --data-dir --format --from --to --project --session --client --provider --model --group-by --timezone" -- "$cur") )
+    else
+      COMPREPLY=( $(compgen -W "list show" -- "$cur") )
+    fi
   elif [[ "$cmd" == "completion" && ${COMP_CWORD} -eq 2 ]]; then
-    COMPREPLY=( $(compgen -W "bash zsh fish powershell" -- "$cur") )
+    if [[ "$cur" == -* ]]; then COMPREPLY=( $(compgen -W "--help -h" -- "$cur") ); else COMPREPLY=( $(compgen -W "bash zsh fish powershell" -- "$cur") ); fi
   elif [[ "$cmd" == "version" ]]; then
     options="--help -h --version"
     COMPREPLY=( $(compgen -W "$options" -- "$cur") )
@@ -479,10 +495,18 @@ _komposyn-lg() {
     else
       compadd add remove list start status stop foreground
     fi
-  elif [[ ${words[2]} == projects || ${words[2]} == sessions ]] && (( CURRENT == 3 )); then
-    compadd list show
+  elif [[ ${words[2]} == help ]] && (( CURRENT == 3 )); then
+    if [[ ${words[CURRENT]} == -* ]]; then compadd -- --help -h; else compadd help version import usage cost projects sessions watch settings report-issue harness completion; fi
+  elif [[ ${words[2]} == help && ${words[3]} == watch ]] && (( CURRENT == 4 )); then
+    if [[ ${words[CURRENT]} == -* ]]; then compadd -- --help -h; else compadd add remove list start status stop foreground; fi
+  elif [[ ${words[2]} == help && ( ${words[3]} == projects || ${words[3]} == sessions ) ]] && (( CURRENT == 4 )); then
+    if [[ ${words[CURRENT]} == -* ]]; then compadd -- --help -h; else compadd list show; fi
+  elif [[ ${words[2]} == projects ]] && (( CURRENT == 3 )); then
+    if [[ ${words[CURRENT]} == -* ]]; then compadd -- --help -h; else compadd list show; fi
+  elif [[ ${words[2]} == sessions ]] && (( CURRENT == 3 )); then
+    if [[ ${words[CURRENT]} == -* ]]; then compadd -- --help -h --data-dir --format --from --to --project --session --client --provider --model --group-by --timezone; else compadd list show; fi
   elif [[ ${words[2]} == completion ]] && (( CURRENT == 3 )); then
-    compadd bash zsh fish powershell
+    if [[ ${words[CURRENT]} == -* ]]; then compadd -- --help -h; else compadd bash zsh fish powershell; fi
   elif [[ ${words[CURRENT-1]} == --format ]]; then
     case "$command:$subcommand" in
       import:*) compadd text json ;;
@@ -518,6 +542,7 @@ _komposyn-lg() {
 
 const fishCompletion = `# komposyn-lg completion for Fish
 complete -c komposyn-lg -f -n '__fish_use_subcommand' -a 'help version import usage cost projects sessions watch settings report-issue harness completion'
+complete -c komposyn-lg -f -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from version import usage cost projects sessions watch settings report-issue harness completion' -a 'help version import usage cost projects sessions watch settings report-issue harness completion'
 complete -c komposyn-lg -f -n '__fish_seen_subcommand_from watch; and not __fish_seen_subcommand_from add remove list start status stop foreground' -a 'add remove list start status stop foreground'
 complete -c komposyn-lg -f -n '__fish_seen_subcommand_from projects sessions; and not __fish_seen_subcommand_from list show' -a 'list show'
 complete -c komposyn-lg -f -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish powershell'
@@ -583,11 +608,28 @@ Register-ArgumentCompleter -Native -CommandName komposyn-lg,komposyn-lg.exe -Scr
   }
   elseif ($previous -eq '--collector' -or $previous -eq '--auto-start') { $candidates = @('on','off') }
   elseif ($previous -in @('--data-dir','--from','--to','--project','--session','--client','--provider','--model','--group-by','--timezone','--interval','--timeout','--output')) { $candidates = @() }
-  elseif ($command -eq 'completion' -and $elements.Count -le 2) { $candidates = @('bash','zsh','fish','powershell') }
+  elseif ($command -eq 'help' -and $elements.Count -eq 2) {
+    if ($wordToComplete -like '-*') { $candidates = @('--help','-h') }
+    else { $candidates = $commands }
+  }
+  elseif ($command -eq 'help' -and $elements.Count -eq 3 -and $subcommand -eq 'watch') { $candidates = $watch }
+  elseif ($command -eq 'help' -and $elements.Count -eq 3 -and ($subcommand -eq 'projects' -or $subcommand -eq 'sessions')) { $candidates = $resources }
+  elseif ($command -eq 'completion' -and $elements.Count -eq 2) {
+    if ($wordToComplete -like '-*') { $candidates = @('--help','-h') }
+    else { $candidates = @('bash','zsh','fish','powershell') }
+  }
   elseif ($command -eq 'watch' -and $elements.Count -eq 2 -and $wordToComplete -like '-*') { $candidates = @('--help','-h','--data-dir','--interval') }
+  elseif ($command -eq 'help' -and $elements.Count -eq 3) { $candidates = @('--help','-h') }
   elseif ($elements.Count -le 1) { $candidates = $commands + @('--help','-h','--version') }
   elseif ($elements.Count -eq 2 -and $command -eq 'watch') { $candidates = $watch }
-  elseif ($elements.Count -eq 2 -and ($command -eq 'projects' -or $command -eq 'sessions')) { $candidates = $resources }
+  elseif ($elements.Count -eq 2 -and $command -eq 'projects') {
+    if ($wordToComplete -like '-*') { $candidates = @('--help','-h') }
+    else { $candidates = $resources }
+  }
+  elseif ($elements.Count -eq 2 -and $command -eq 'sessions') {
+    if ($wordToComplete -like '-*') { $candidates = @('--help','-h','--data-dir','--format','--from','--to','--project','--session','--client','--provider','--model','--group-by','--timezone') }
+    else { $candidates = $resources }
+  }
   elseif ($elements.Count -eq 2 -and $command -notin $commands) { $candidates = $commands + @('--help','-h','--version') }
   else {
     switch ("${command}:${subcommand}") {

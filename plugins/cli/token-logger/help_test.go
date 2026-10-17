@@ -144,6 +144,26 @@ func TestBashAndZshCompletionResultsMatchCommandParsers(t *testing.T) {
 		check func(*testing.T, []string)
 	}{
 		{
+			name: "help command targets",
+			bash: `COMP_WORDS=(komposyn-lg help ""); COMP_CWORD=2; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg help ""); CURRENT=3; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				for _, candidate := range publicCLICommands {
+					assertContains(t, candidates, candidate)
+				}
+			},
+		},
+		{
+			name: "nested help watch targets",
+			bash: `COMP_WORDS=(komposyn-lg help watch ""); COMP_CWORD=3; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg help watch ""); CURRENT=4; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				for _, candidate := range publicWatchCommands {
+					assertContains(t, candidates, candidate)
+				}
+			},
+		},
+		{
 			name: "watch subcommands",
 			bash: `COMP_WORDS=(komposyn-lg watch ""); COMP_CWORD=2; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
 			zsh:  `words=(komposyn-lg watch ""); CURRENT=3; _komposyn-lg`,
@@ -225,6 +245,73 @@ func TestBashAndZshCompletionResultsMatchCommandParsers(t *testing.T) {
 					}
 					if err != nil {
 						t.Errorf("completion suggested rejected watch stop option %q: %v", candidate, err)
+					}
+				}
+			},
+		},
+		{
+			name: "watch shorthand options",
+			bash: `COMP_WORDS=(komposyn-lg watch --); COMP_CWORD=2; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg watch --); CURRENT=3; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				assertContains(t, candidates, "--data-dir")
+				assertContains(t, candidates, "--interval")
+				assertNotContains(t, candidates, "--defaults")
+				assertNotContains(t, candidates, "--format")
+				for _, candidate := range candidates {
+					if candidate == "--help" || candidate == "-h" {
+						continue
+					}
+					value := t.TempDir()
+					if candidate == "--interval" {
+						value = "1s"
+					}
+					_, options, err := parseWatchOptions([]string{candidate, value}, false)
+					if err == nil {
+						err = validateWatchOptions(options, "interval")
+					}
+					if err != nil {
+						t.Errorf("completion suggested rejected watch shorthand option %q: %v", candidate, err)
+					}
+				}
+			},
+		},
+		{
+			name: "sessions report options",
+			bash: `COMP_WORDS=(komposyn-lg sessions --); COMP_CWORD=2; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg sessions --); CURRENT=3; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				assertContains(t, candidates, "--format")
+				assertContains(t, candidates, "--timezone")
+				assertNotContains(t, candidates, "--timeout")
+				assertNotContains(t, candidates, "--interval")
+				for _, candidate := range candidates {
+					if candidate == "--help" || candidate == "-h" {
+						continue
+					}
+					value := "probe"
+					switch candidate {
+					case "--data-dir":
+						value = t.TempDir()
+					case "--format":
+						value = "table"
+					case "--from":
+						value = "2026-01-01"
+					case "--to":
+						value = "2026-01-02"
+					case "--group-by":
+						value = "model"
+					case "--timezone":
+						value = "UTC"
+					}
+					args := []string{candidate, value}
+					if candidate == "--from" {
+						args = append(args, "--to", "2026-01-02")
+					} else if candidate == "--to" {
+						args = append(args, "--from", "2026-01-01")
+					}
+					if _, _, _, err := parseReportArgs("sessions", args); err != nil {
+						t.Errorf("completion suggested rejected sessions report option %q: %v", candidate, err)
 					}
 				}
 			},
