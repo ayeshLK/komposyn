@@ -55,22 +55,27 @@ pinned Cosign verifier natively after its installer did not support that
 architecture. See [workflow run
 39038326152](https://github.com/ayeshLK/komposyn/actions/runs/39038326152).
 
-The standalone bootstrap and extraction candidate are prepared locally. The
-candidate came from the recorded extraction commit with PR #130 verification
-fixes transferred, keeps the CLI layout, and pins core v0.7.0 without a
-permanent `replace`. Its CLI/core version output is 0.7.1/0.7.0. Local tests,
-build, release archive lifecycle checks, and trust tests passed before a final
-test-hardening edit; that last edit needs a rerun because the command sandbox
-began rejecting process startup.
+The destination is now public and initialized. The standalone extraction is
+under review in [draft PR #1](https://github.com/ayeshLK/komposyn-lg/pull/1).
+It came from the recorded extraction commit with PR #130 verification fixes
+transferred, keeps the CLI layout, and pins core v0.7.0 without a permanent
+`replace`. Its CLI/core version output is 0.7.1/0.7.0. Local tests, race,
+build, release archive lifecycle checks, and exact signer acceptance/rejection
+tests passed. Destination CI and CodeQL also pass on Linux, macOS, Windows
+amd64, and Windows ARM64; see [CI run
+39047984391](https://github.com/ayeshLK/komposyn-lg/actions/runs/39047984391)
+and [CodeQL run
+39047984349](https://github.com/ayeshLK/komposyn-lg/actions/runs/39047984349).
 
-The remaining blocker is destination access. GitHub currently returns “Could
-not resolve to a Repository” for `ayeshLK/komposyn-lg`, so its existence and
-visibility cannot be distinguished. Destination CI and a reviewable PR cannot
-be prepared until access is available. The combined repository remains
-authoritative.
+Standalone release readiness remains open. Native standalone historical
+upgrades from v0.7.0 and earlier, real signed artifact verification under the
+new workflow identity, and install/restore/uninstall checks across all six
+release targets remain to be demonstrated. The combined repository remains
+authoritative until those gates pass and a signed standalone release is
+published and verified.
 
 Proposed first standalone CLI version: `v0.7.1`, requiring the published core
 tag `v0.7.0`; later CLI and core versions will advance independently. The
-combined repository remains authoritative. No CLI extraction, standalone
-publication, legacy removal, tag operation, or repository permission change
-has happened.
+extracted CLI is in a draft PR, and the combined repository remains
+authoritative. No standalone publication, legacy removal, tag operation, or
+repository permission change has happened.

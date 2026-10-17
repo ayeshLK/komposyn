@@ -22,10 +22,12 @@ after the recorded extraction commit. Its historical-verifier and Windows
 archive fixes must be transferred with the CLI. The current checkout fetched
 `origin/master` at that PR #130 merge commit before follow-up work.
 
-The destination `ayeshLK/komposyn-lg` did not resolve through the current
-GitHub credentials (`Could not resolve to a Repository`). This does not
-distinguish a nonexistent repository from one hidden from this account; no
-repository permission or protection changes were attempted.
+The destination `ayeshLK/komposyn-lg` is public and was empty when access was
+revalidated. Its initial `master` branch is commit
+`5f2956468cdc3ad634997552c984f6408f06c704`; the extracted CLI review is
+[draft PR #1](https://github.com/ayeshLK/komposyn-lg/pull/1), currently at
+`a4394df877f7e4173296ba7ae4e4d8b7830f37b0`. No repository permission or
+protection settings were changed.
 
 ## Preparation increments
 
@@ -156,18 +158,18 @@ Cosign installer rejected its `ARM64` architecture before running the
 verifier. The workflow now builds pinned Cosign v2.4.3 with Go 1.26.9 on that
 native runner, and the retry passed on Windows arm64.
 
-The standalone destination bootstrap is prepared under
-`standalone-bootstrap/`. After all historical and six-target gates passed, a
-local extraction candidate was assembled at `/tmp/komposyn-lg-extraction`
-from the recorded extraction commit, with the required PR #130 verification
-fixes applied. It preserves the CLI layout and pins core v0.7.0 without a
-permanent `replace`; its build reports CLI 0.7.1 and core 0.7.0. Local Go
-tests, vet, module verification, build, shell checks, trust and release
-resolution tests, six-archive build, and lifecycle verifier passed before the
-final exact-certificate test hardening. That final test edit could not be
-rerun because the command sandbox began rejecting process startup with
-`bwrap: setting up uid map: Permission denied`; it remains pending. GitHub
-still cannot resolve `ayeshLK/komposyn-lg`, so no destination PR can be opened.
+The standalone bootstrap is prepared under `standalone-bootstrap/`; the
+extracted CLI is under review in destination PR #1. It preserves the CLI
+layout, transfers PR #130 verification fixes, and pins core v0.7.0 without a
+permanent `replace`; the build reports CLI 0.7.1 and core 0.7.0. Local tests,
+vet, module verification, race tests, `make check`, shell syntax, exact signer
+acceptance/rejection tests, and a fresh six-archive build plus install/upgrade/
+uninstall verifier passed. Destination CI, CodeQL, and native Go test/build
+jobs passed on Linux amd64, macOS, Windows amd64, and Windows ARM64 in
+[run 39047984391](https://github.com/ayeshLK/komposyn-lg/actions/runs/39047984391)
+and [CodeQL run 39047984349](https://github.com/ayeshLK/komposyn-lg/actions/runs/39047984349).
+The first Windows run exposed CRLF checkout behavior in `gofmt`; `.gitattributes`
+now keeps Go sources LF and the rerun passed.
 
 ## Remaining verification gates
 
@@ -186,13 +188,18 @@ still cannot resolve `ayeshLK/komposyn-lg`, so no destination PR can be opened.
 - [x] Retain direct-upgrade and collector-state evidence from v0.5.0 on Linux
   amd64 and full historical state-preservation evidence from v0.6.0 on Linux
   amd64, macOS arm64, and Windows amd64.
-- [x] Prepare reviewable standalone repository bootstrap files without
-  copying CLI implementation. Destination existence/access remains blocked
-  pending GitHub repository visibility or creation.
-- [x] Assemble the standalone extraction candidate only after all historical
-  and six-target gates passed. It is local and reviewable, but its final trust
-  test rerun and destination CI are pending.
-- [ ] Resolve destination repository access, rerun candidate checks including
-  the final trust-test edit, open a destination PR, and complete standalone
-  publication and verification. Keep the combined repository authoritative
-  until then; legacy cleanup remains deferred.
+- [x] Prepare destination bootstrap and standalone extraction, then open
+  [draft PR #1](https://github.com/ayeshLK/komposyn-lg/pull/1). All destination
+  CI and CodeQL checks pass on its current head.
+- [x] Rerun exact signer trust tests, the six-archive build, and the
+  host-native install/upgrade/uninstall verifier after final trust-test
+  hardening.
+- [ ] Run standalone historical upgrades from v0.7.0 and earlier supported
+  versions, including a still-active background collector, on native
+  platforms. Combined-repository lifecycle evidence does not substitute for
+  this destination evidence.
+- [ ] Verify standalone signed release artifacts and exact new-workflow
+  identity on all six targets; exercise install, restore, upgrade, and
+  data-preserving uninstall. No standalone release has been published.
+- [ ] Keep the combined repository authoritative until signed standalone
+  publication and verification pass; prepare legacy cleanup separately.
