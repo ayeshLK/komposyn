@@ -87,7 +87,10 @@ func inspectSchemaReadOnly(path string) (version int, exists bool, err error) {
 			return 0, true, fmt.Errorf("copy database for read-only inspection: %w", err)
 		}
 	}
-	uri := sqliteFileURI(inspectionPath, "mode=ro")
+	// A journal copied during a writer's transaction can require rollback
+	// recovery once separated from the writer's locks. Allow SQLite to recover
+	// only this disposable private copy; the source remains untouched.
+	uri := sqliteFileURI(inspectionPath, "mode=rw")
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return 0, true, fmt.Errorf("open database read-only: %w", err)

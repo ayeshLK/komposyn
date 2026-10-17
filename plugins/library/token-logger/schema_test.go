@@ -91,6 +91,62 @@ func TestOpenRefusesNewerSchemaWithoutChangingDatabaseOrWAL(t *testing.T) {
 	_ = owner.Close()
 }
 
+func TestOpenRefusesNewerSchemaWithHotJournalWithoutChangingSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "newer.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	for _, statement := range []string{
+		"PRAGMA journal_mode = DELETE",
+		"PRAGMA cache_size = 1",
+		"CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY)",
+		"CREATE TABLE pending(value BLOB)",
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec("INSERT INTO schema_migrations VALUES (?)", CurrentSchemaVersion+1); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	// Spill uncommitted pages to disk. The private inspection copy has no
+	// writer lock, so SQLite must recover its copied rollback journal.
+	if _, err := tx.Exec("INSERT INTO pending VALUES (zeroblob(65536))"); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{path, path + "-journal"}
+	before := make(map[string][]byte)
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[path] = contents
+	}
+	store, err := Open(path)
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("Open accepted a database from a newer schema")
+	}
+	if !errors.Is(err, ErrUnsupportedSchema) {
+		t.Fatalf("Open error = %v, want ErrUnsupportedSchema", err)
+	}
+	for _, path := range paths {
+		after, err := os.ReadFile(path)
+		if err != nil || !reflect.DeepEqual(after, before[path]) {
+			t.Errorf("source %s changed on refusal: %v", filepath.Base(path), err)
+		}
+	}
+}
+
 func TestOpenRefusesNewerSchemaThroughSymlinkWithoutChangingTargetSidecars(t *testing.T) {
 	directory := t.TempDir()
 	target := filepath.Join(directory, "target.db")
