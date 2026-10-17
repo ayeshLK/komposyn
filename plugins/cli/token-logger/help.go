@@ -644,8 +644,8 @@ Register-ArgumentCompleter -Native -CommandName komposyn-lg,komposyn-lg.exe -Scr
       { $_ -eq 'watch:list' -or $_ -eq 'watch:status' } { $candidates = @('--help','-h','--data-dir','--format'); break }
       'watch:stop' { $candidates = @('--help','-h','--data-dir','--timeout'); break }
       { $_ -eq 'watch:start' -or $_ -eq 'watch:foreground' -or $_ -like 'watch:*' } { $candidates = @('--help','-h','--data-dir','--interval'); break }
-      'settings:' { $candidates = @('--help','-h','--data-dir','--collector','--auto-start'); break }
-      'report-issue:' { $candidates = @('--help','-h','--data-dir','--output'); break }
+      { $_ -like 'settings:*' } { $candidates = @('--help','-h','--data-dir','--collector','--auto-start'); break }
+      { $_ -like 'report-issue:*' } { $candidates = @('--help','-h','--data-dir','--output'); break }
       { $_ -like 'version:*' } { $candidates = @('--help','-h','--version'); break }
       default { $candidates = @('--help','-h') }
     }

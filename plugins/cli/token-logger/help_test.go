@@ -439,6 +439,19 @@ func TestPowerShellCompletionResultsMatchCommandParsers(t *testing.T) {
 				assertNotContains(t, candidates, "--format")
 			},
 		},
+		{
+			name: "settings options after value", word: "--", elements: []string{"komposyn-lg", "settings", "--collector", "on"},
+			check: func(t *testing.T, candidates []string) {
+				assertContains(t, candidates, "--auto-start")
+				assertContains(t, candidates, "--data-dir")
+			},
+		},
+		{
+			name: "report issue options after value", word: "--d", elements: []string{"komposyn-lg", "report-issue", "--output", "archive.zip"},
+			check: func(t *testing.T, candidates []string) {
+				assertContains(t, candidates, "--data-dir")
+			},
+		},
 	}
 
 	for _, test := range tests {
