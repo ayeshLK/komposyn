@@ -16,7 +16,9 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -132,6 +134,279 @@ func TestShellCompletionIsDeterministicAndPublicOnly(t *testing.T) {
 	if code := run([]string{"completion", "unknown"}, &stdout, &stderr); code != 1 || stdout.Len() != 0 {
 		t.Fatalf("invalid shell exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
+}
+
+func TestBashAndZshCompletionResultsMatchCommandParsers(t *testing.T) {
+	tests := []struct {
+		name  string
+		bash  string
+		zsh   string
+		check func(*testing.T, []string)
+	}{
+		{
+			name: "watch subcommands",
+			bash: `COMP_WORDS=(komposyn-lg watch ""); COMP_CWORD=2; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg watch ""); CURRENT=3; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				for _, candidate := range publicWatchCommands {
+					assertContains(t, candidates, candidate)
+				}
+			},
+		},
+		{
+			name: "completion shells",
+			bash: `COMP_WORDS=(komposyn-lg completion ""); COMP_CWORD=2; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg completion ""); CURRENT=3; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				for _, candidate := range []string{"bash", "zsh", "fish", "powershell"} {
+					assertContains(t, candidates, candidate)
+				}
+			},
+		},
+		{
+			name: "usage formats",
+			bash: `COMP_WORDS=(komposyn-lg usage --format ""); COMP_CWORD=3; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg usage --format ""); CURRENT=4; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				if len(candidates) == 0 {
+					t.Fatal("no report format candidates")
+				}
+				for _, candidate := range candidates {
+					if _, _, _, err := parseReportArgs("usage", []string{"--format", candidate}); err != nil {
+						t.Errorf("completion suggested rejected usage format %q: %v", candidate, err)
+					}
+				}
+			},
+		},
+		{
+			name: "watch status formats",
+			bash: `COMP_WORDS=(komposyn-lg watch status --format ""); COMP_CWORD=4; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg watch status --format ""); CURRENT=5; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				if len(candidates) == 0 {
+					t.Fatal("no watch format candidates")
+				}
+				for _, candidate := range candidates {
+					_, options, err := parseWatchOptions([]string{"--format", candidate}, false)
+					if err == nil {
+						err = validateWatchOptions(options, "format")
+					}
+					if err != nil {
+						t.Errorf("completion suggested rejected watch format %q: %v", candidate, err)
+					}
+				}
+			},
+		},
+		{
+			name: "watch stop options",
+			bash: `COMP_WORDS=(komposyn-lg watch stop --); COMP_CWORD=3; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg watch stop --); CURRENT=4; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				assertContains(t, candidates, "--timeout")
+				assertContains(t, candidates, "--data-dir")
+				assertNotContains(t, candidates, "--defaults")
+				assertNotContains(t, candidates, "--collector")
+				assertNotContains(t, candidates, "--format")
+				for _, candidate := range candidates {
+					if candidate == "--help" || candidate == "-h" {
+						var out, stderr bytes.Buffer
+						if code := runWithInput([]string{"watch", "stop", candidate}, strings.NewReader(""), &out, &stderr); code != 0 {
+							t.Errorf("help candidate %q rejected: exit=%d stderr=%q", candidate, code, stderr.String())
+						}
+						continue
+					}
+					value := t.TempDir()
+					if candidate == "--timeout" {
+						value = "1s"
+					}
+					_, options, err := parseWatchOptions([]string{candidate, value}, false)
+					if err == nil {
+						err = validateWatchOptions(options, "timeout")
+					}
+					if err != nil {
+						t.Errorf("completion suggested rejected watch stop option %q: %v", candidate, err)
+					}
+				}
+			},
+		},
+		{
+			name: "session list options",
+			bash: `COMP_WORDS=(komposyn-lg sessions list --); COMP_CWORD=3; _komposyn_lg; printf '%s\n' "${COMPREPLY[@]}"`,
+			zsh:  `words=(komposyn-lg sessions list --); CURRENT=4; _komposyn-lg`,
+			check: func(t *testing.T, candidates []string) {
+				assertNotContains(t, candidates, "--session")
+				assertNotContains(t, candidates, "--timezone")
+				assertNotContains(t, candidates, "--group-by")
+				for _, candidate := range candidates {
+					if candidate == "--help" || candidate == "-h" {
+						continue
+					}
+					value := "probe"
+					switch candidate {
+					case "--data-dir":
+						value = t.TempDir()
+					case "--format":
+						value = "csv"
+					case "--from":
+						value = "2026-01-01"
+					case "--to":
+						value = "2026-01-02"
+					}
+					args := []string{candidate, value}
+					if candidate == "--from" {
+						args = append(args, "--to", "2026-01-02")
+					} else if candidate == "--to" {
+						args = append(args, "--from", "2026-01-01")
+					}
+					_, err := parseResourceOptions(args, true)
+					if err != nil {
+						t.Errorf("completion suggested rejected session-list option %q: %v", candidate, err)
+					}
+				}
+			},
+		},
+	}
+
+	for _, shell := range []string{"bash", "zsh"} {
+		shell := shell
+		t.Run(shell, func(t *testing.T) {
+			if _, err := exec.LookPath(shell); err != nil {
+				t.Skipf("%s is not installed", shell)
+			}
+			for _, test := range tests {
+				test := test
+				t.Run(test.name, func(t *testing.T) {
+					var script string
+					if shell == "bash" {
+						script = bashCompletion + "\n" + test.bash
+					} else {
+						script = zshCompletion + "\ncompadd() { printf '%s\\n' \"$@\"; }\n" + test.zsh
+					}
+					output, err := exec.Command(shell, "-c", script).CombinedOutput()
+					if err != nil {
+						t.Fatalf("run %s completion probe: %v: %s", shell, err, output)
+					}
+					candidates := strings.Fields(string(output))
+					candidates = withoutCandidate(candidates, "--")
+					if len(candidates) == 0 {
+						t.Fatalf("%s returned no candidates", shell)
+					}
+					test.check(t, candidates)
+				})
+			}
+		})
+	}
+}
+
+func TestPowerShellCompletionResultsMatchCommandParsers(t *testing.T) {
+	shell, err := exec.LookPath("pwsh")
+	if err != nil {
+		shell, err = exec.LookPath("powershell")
+	}
+	if err != nil {
+		t.Skip("PowerShell is not installed")
+	}
+	tests := []struct {
+		name     string
+		word     string
+		elements []string
+		check    func(*testing.T, []string)
+	}{
+		{
+			name: "usage formats", elements: []string{"komposyn-lg", "usage", "--format"},
+			check: func(t *testing.T, candidates []string) {
+				if len(candidates) == 0 {
+					t.Fatal("no report format candidates")
+				}
+				for _, candidate := range candidates {
+					if _, _, _, err := parseReportArgs("usage", []string{"--format", candidate}); err != nil {
+						t.Errorf("completion suggested rejected usage format %q: %v", candidate, err)
+					}
+				}
+			},
+		},
+		{
+			name: "watch status formats", elements: []string{"komposyn-lg", "watch", "status", "--format"},
+			check: func(t *testing.T, candidates []string) {
+				if len(candidates) == 0 {
+					t.Fatal("no watch format candidates")
+				}
+				for _, candidate := range candidates {
+					_, options, err := parseWatchOptions([]string{"--format", candidate}, false)
+					if err == nil {
+						err = validateWatchOptions(options, "format")
+					}
+					if err != nil {
+						t.Errorf("completion suggested rejected watch format %q: %v", candidate, err)
+					}
+				}
+			},
+		},
+		{
+			name: "watch stop options", word: "--", elements: []string{"komposyn-lg", "watch", "stop"},
+			check: func(t *testing.T, candidates []string) {
+				assertContains(t, candidates, "--timeout")
+				assertContains(t, candidates, "--data-dir")
+				assertNotContains(t, candidates, "--defaults")
+				assertNotContains(t, candidates, "--collector")
+				assertNotContains(t, candidates, "--format")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			psElements := "@('" + strings.Join(test.elements, "','") + "')"
+			script := `function Register-ArgumentCompleter {
+  param([switch]$Native, [string[]]$CommandName, [scriptblock]$ScriptBlock)
+  $global:KomposynCompleter = $ScriptBlock
+}
+` + powershellCompletion + fmt.Sprintf(`
+$ast = [pscustomobject]@{ CommandElements = %s }
+& $global:KomposynCompleter '%s' $ast 0 | ForEach-Object { $_.CompletionText }
+`, psElements, test.word)
+			output, err := exec.Command(shell, "-NoProfile", "-Command", script).CombinedOutput()
+			if err != nil {
+				t.Fatalf("run PowerShell completion probe: %v: %s", err, output)
+			}
+			candidates := strings.Fields(string(output))
+			if len(candidates) == 0 {
+				t.Fatalf("PowerShell returned no candidates: %s", output)
+			}
+			test.check(t, candidates)
+		})
+	}
+}
+
+func assertContains(t *testing.T, values []string, target string) {
+	t.Helper()
+	for _, value := range values {
+		if value == target {
+			return
+		}
+	}
+	t.Errorf("candidates %q omit %q", values, target)
+}
+
+func assertNotContains(t *testing.T, values []string, target string) {
+	t.Helper()
+	for _, value := range values {
+		if value == target {
+			t.Errorf("candidates %q include unsupported %q", values, target)
+			return
+		}
+	}
+}
+
+func withoutCandidate(values []string, target string) []string {
+	filtered := values[:0]
+	for _, value := range values {
+		if value != target {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
 }
 
 func TestCLIReferenceMatchesPublicCommandsAndCurrentReleaseState(t *testing.T) {

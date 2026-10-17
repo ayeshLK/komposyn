@@ -380,34 +380,80 @@ func runCompletion(args []string, stdout, stderr io.Writer) int {
 
 const bashCompletion = `# komposyn-lg completion for Bash
 _komposyn_lg() {
-  local cur prev cmd
+  local cur prev cmd subcmd formats options
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   cmd="${COMP_WORDS[1]}"
+  subcmd="${COMP_WORDS[2]}"
+  if [[ "$cmd" == "sessions" && "$subcmd" != "list" && "$subcmd" != "show" ]]; then subcmd=""; fi
   if [[ ${COMP_CWORD} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "help version import usage cost projects sessions watch settings report-issue harness completion --help -h --version" -- "$cur") )
-  elif [[ "$prev" == "--format" ]]; then
-    COMPREPLY=( $(compgen -W "table text json csv" -- "$cur") )
   elif [[ "$cmd" == "watch" && ${COMP_CWORD} -eq 2 ]]; then
-    COMPREPLY=( $(compgen -W "add remove list start status stop foreground" -- "$cur") )
+    if [[ "$cur" == -* ]]; then
+      COMPREPLY=( $(compgen -W "--help -h --data-dir --interval" -- "$cur") )
+    else
+      COMPREPLY=( $(compgen -W "add remove list start status stop foreground" -- "$cur") )
+    fi
   elif [[ "$cmd" == "projects" && ${COMP_CWORD} -eq 2 ]]; then
     COMPREPLY=( $(compgen -W "list show" -- "$cur") )
   elif [[ "$cmd" == "sessions" && ${COMP_CWORD} -eq 2 ]]; then
     COMPREPLY=( $(compgen -W "list show" -- "$cur") )
   elif [[ "$cmd" == "completion" && ${COMP_CWORD} -eq 2 ]]; then
     COMPREPLY=( $(compgen -W "bash zsh fish powershell" -- "$cur") )
+  elif [[ "$cmd" == "version" ]]; then
+    options="--help -h --version"
+    COMPREPLY=( $(compgen -W "$options" -- "$cur") )
+  elif [[ "$prev" == "--format" ]]; then
+    case "$cmd:$subcmd" in
+      import:*) formats="text json" ;;
+      usage:*|cost:*|sessions:*) formats="table json csv" ;;
+      projects:list) formats="table json csv" ;;
+      projects:show) formats="table json" ;;
+      watch:list|watch:status) formats="text json" ;;
+      *) formats="" ;;
+    esac
+    COMPREPLY=( $(compgen -W "$formats" -- "$cur") )
+  elif [[ "$prev" == "--collector" || "$prev" == "--auto-start" ]]; then
+    COMPREPLY=( $(compgen -W "on off" -- "$cur") )
   else
-    COMPREPLY=( $(compgen -W "--help -h --version --data-dir --format --from --to --project --session --client --provider --model --group-by --timezone --interval --timeout --defaults --collector --auto-start --output" -- "$cur") )
+    case "$cmd:$subcmd" in
+      import:*) options="--help -h --data-dir --format" ;;
+      usage:*|cost:*|sessions:) options="--help -h --data-dir --format --from --to --project --session --client --provider --model --group-by --timezone" ;;
+      projects:list) options="--help -h --data-dir --format --from --to --client --provider --model" ;;
+      projects:show) options="--help -h --data-dir --format --from --to --client --provider --model" ;;
+      sessions:list) options="--help -h --data-dir --format --from --to --project --client --provider --model" ;;
+      sessions:show) options="--help -h --data-dir --format --from --to --project --client --provider --model --group-by" ;;
+      watch:add) options="--help -h --data-dir --defaults" ;;
+      watch:remove) options="--help -h --data-dir" ;;
+      watch:list|watch:status) options="--help -h --data-dir --format" ;;
+      watch:stop) options="--help -h --data-dir --timeout" ;;
+      watch:start|watch:foreground|watch:*) options="--help -h --data-dir --interval" ;;
+      settings:*) options="--help -h --data-dir --collector --auto-start" ;;
+      report-issue:*) options="--help -h --data-dir --output" ;;
+      version:*) options="--help -h --version" ;;
+      *) options="--help -h" ;;
+    esac
+    if [[ "$cmd" == "version" || "$cmd" == "help" || "$cmd" == "harness" || "$cmd" == "completion" ]]; then
+      options="--help -h"
+    fi
+    case "$prev" in
+      --data-dir|--from|--to|--project|--session|--client|--provider|--model|--group-by|--timezone|--interval|--timeout|--output) options="" ;;
+    esac
+    COMPREPLY=( $(compgen -W "$options" -- "$cur") )
   fi
 }
-complete -F _komposyn_lg komposyn-lg
+complete -o default -F _komposyn_lg komposyn-lg
 `
 
 const zshCompletion = `#compdef komposyn-lg
 
 _komposyn-lg() {
   local -a commands
+  local command subcommand
+  command="${words[2]}"
+  subcommand="${words[3]}"
+  if [[ $command == sessions && $subcommand != list && $subcommand != show ]]; then subcommand=""; fi
   commands=(
     'help:Show help'
     'version:Print version'
@@ -421,17 +467,51 @@ _komposyn-lg() {
     'report-issue:Export sanitized diagnostics'
     'harness:Run JSONL protocol'
     'completion:Print shell completion'
+    '--help:Show help'
+    '-h:Show help'
+    '--version:Print version'
   )
   if (( CURRENT == 2 )); then
     _describe 'command' commands
-  elif [[ ${words[2]} == watch && CURRENT == 3 ]]; then
-    compadd add remove list start status stop foreground
+  elif [[ ${words[2]} == watch ]] && (( CURRENT == 3 )); then
+    if [[ ${words[CURRENT]} == -* ]]; then
+      compadd -- --help -h --data-dir --interval
+    else
+      compadd add remove list start status stop foreground
+    fi
   elif [[ ${words[2]} == projects || ${words[2]} == sessions ]] && (( CURRENT == 3 )); then
     compadd list show
-  elif [[ ${words[2]} == completion && CURRENT == 3 ]]; then
+  elif [[ ${words[2]} == completion ]] && (( CURRENT == 3 )); then
     compadd bash zsh fish powershell
+  elif [[ ${words[CURRENT-1]} == --format ]]; then
+    case "$command:$subcommand" in
+      import:*) compadd text json ;;
+      usage:*|cost:*|sessions:*) compadd table json csv ;;
+      projects:list) compadd table json csv ;;
+      projects:show) compadd table json ;;
+      watch:list|watch:status) compadd text json ;;
+    esac
+  elif [[ ${words[CURRENT-1]} == --collector || ${words[CURRENT-1]} == --auto-start ]]; then
+    compadd on off
+  elif [[ ${words[CURRENT-1]} == --data-dir || ${words[CURRENT-1]} == --from || ${words[CURRENT-1]} == --to || ${words[CURRENT-1]} == --project || ${words[CURRENT-1]} == --session || ${words[CURRENT-1]} == --client || ${words[CURRENT-1]} == --provider || ${words[CURRENT-1]} == --model || ${words[CURRENT-1]} == --group-by || ${words[CURRENT-1]} == --timezone || ${words[CURRENT-1]} == --interval || ${words[CURRENT-1]} == --timeout || ${words[CURRENT-1]} == --output ]]; then
+    return
   else
-    compadd -- --help -h --version --data-dir --format --from --to --project --session --client --provider --model --group-by --timezone --interval --timeout --defaults --collector --auto-start --output
+    case "$command:$subcommand" in
+      import:*) compadd -- --help -h --data-dir --format ;;
+      usage:*|cost:*|sessions:) compadd -- --help -h --data-dir --format --from --to --project --session --client --provider --model --group-by --timezone ;;
+      projects:list|projects:show) compadd -- --help -h --data-dir --format --from --to --client --provider --model ;;
+      sessions:list) compadd -- --help -h --data-dir --format --from --to --project --client --provider --model ;;
+      sessions:show) compadd -- --help -h --data-dir --format --from --to --project --client --provider --model --group-by ;;
+      watch:add) compadd -- --help -h --data-dir --defaults ;;
+      watch:remove) compadd -- --help -h --data-dir ;;
+      watch:list|watch:status) compadd -- --help -h --data-dir --format ;;
+      watch:stop) compadd -- --help -h --data-dir --timeout ;;
+      watch:start|watch:foreground|watch:*) compadd -- --help -h --data-dir --interval ;;
+      version:*) compadd -- --help -h --version ;;
+      settings:*) compadd -- --help -h --data-dir --collector --auto-start ;;
+      report-issue:*) compadd -- --help -h --data-dir --output ;;
+      *) compadd -- --help -h ;;
+    esac
   fi
 }
 `
@@ -442,24 +522,38 @@ complete -c komposyn-lg -f -n '__fish_seen_subcommand_from watch; and not __fish
 complete -c komposyn-lg -f -n '__fish_seen_subcommand_from projects sessions; and not __fish_seen_subcommand_from list show' -a 'list show'
 complete -c komposyn-lg -f -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish powershell'
 complete -c komposyn-lg -l help -s h -d 'Show help'
-complete -c komposyn-lg -l version -d 'Print version'
-complete -c komposyn-lg -l data-dir -r -d 'Database directory'
-complete -c komposyn-lg -l format -r -a 'table text json csv' -d 'Output format'
-complete -c komposyn-lg -l from -r -d 'Inclusive start time'
-complete -c komposyn-lg -l to -r -d 'Exclusive end time'
-complete -c komposyn-lg -l project -r -d 'Project ID'
-complete -c komposyn-lg -l session -r -d 'Session ID'
-complete -c komposyn-lg -l client -r -d 'Client filter'
-complete -c komposyn-lg -l provider -r -d 'Provider filter'
-complete -c komposyn-lg -l model -r -d 'Model filter'
-complete -c komposyn-lg -l group-by -r -d 'Grouping dimensions'
-complete -c komposyn-lg -l timezone -r -d 'IANA timezone'
-complete -c komposyn-lg -l interval -r -d 'Polling interval'
-complete -c komposyn-lg -l timeout -r -d 'Stop timeout'
-complete -c komposyn-lg -l defaults -d 'Register platform defaults'
-complete -c komposyn-lg -l collector -r -a 'on off' -d 'Embedded collector preference'
-complete -c komposyn-lg -l auto-start -r -a 'on off' -d 'REPL collector auto-start preference'
-complete -c komposyn-lg -l output -r -d 'Output archive path'
+complete -c komposyn-lg -l version -n '__fish_use_subcommand' -d 'Print version'
+complete -c komposyn-lg -l version -n '__fish_seen_subcommand_from version' -d 'Print version'
+complete -c komposyn-lg -l data-dir -r -n '__fish_seen_subcommand_from import usage cost sessions projects watch settings report-issue' -d 'Database directory'
+complete -c komposyn-lg -l format -r -a 'text json' -n '__fish_seen_subcommand_from import' -d 'Import result format'
+complete -c komposyn-lg -l format -r -a 'table json csv' -n '__fish_seen_subcommand_from usage cost sessions' -d 'Report format'
+complete -c komposyn-lg -l format -r -a 'table json csv' -n '__fish_seen_subcommand_from projects; and __fish_seen_subcommand_from list' -d 'Project list format'
+complete -c komposyn-lg -l format -r -a 'table json' -n '__fish_seen_subcommand_from projects; and __fish_seen_subcommand_from show' -d 'Project detail format'
+complete -c komposyn-lg -l format -r -a 'table json csv' -n '__fish_seen_subcommand_from sessions; and __fish_seen_subcommand_from list show' -d 'Session format'
+complete -c komposyn-lg -l format -r -a 'table json csv' -n '__fish_seen_subcommand_from sessions; and __fish_seen_subcommand_from show' -d 'Session detail format'
+complete -c komposyn-lg -l format -r -a 'text json' -n '__fish_seen_subcommand_from watch; and __fish_seen_subcommand_from list status' -d 'Watch output format'
+complete -c komposyn-lg -l from -r -n '__fish_seen_subcommand_from usage cost sessions projects' -d 'Inclusive start time'
+complete -c komposyn-lg -l to -r -n '__fish_seen_subcommand_from usage cost sessions projects' -d 'Exclusive end time'
+complete -c komposyn-lg -l project -r -n '__fish_seen_subcommand_from usage cost' -d 'Project ID'
+complete -c komposyn-lg -l project -r -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from list show' -d 'Project ID'
+complete -c komposyn-lg -l project -r -n '__fish_seen_subcommand_from sessions; and __fish_seen_subcommand_from list show' -d 'Project ID'
+complete -c komposyn-lg -l session -r -n '__fish_seen_subcommand_from usage cost' -d 'Session ID'
+complete -c komposyn-lg -l session -r -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from list show' -d 'Session ID'
+complete -c komposyn-lg -l client -r -n '__fish_seen_subcommand_from usage cost sessions projects' -d 'Client filter'
+complete -c komposyn-lg -l provider -r -n '__fish_seen_subcommand_from usage cost sessions projects' -d 'Provider filter'
+complete -c komposyn-lg -l model -r -n '__fish_seen_subcommand_from usage cost sessions projects' -d 'Model filter'
+complete -c komposyn-lg -l group-by -r -n '__fish_seen_subcommand_from usage cost' -d 'Grouping dimensions'
+complete -c komposyn-lg -l group-by -r -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from list show' -d 'Grouping dimensions'
+complete -c komposyn-lg -l group-by -r -a 'model' -n '__fish_seen_subcommand_from sessions; and __fish_seen_subcommand_from show' -d 'Session grouping'
+complete -c komposyn-lg -l timezone -r -n '__fish_seen_subcommand_from usage cost' -d 'IANA timezone'
+complete -c komposyn-lg -l timezone -r -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from list show' -d 'IANA timezone'
+complete -c komposyn-lg -l interval -r -n '__fish_seen_subcommand_from watch; and __fish_seen_subcommand_from start foreground' -d 'Polling interval'
+complete -c komposyn-lg -l interval -r -n '__fish_seen_subcommand_from watch; and not __fish_seen_subcommand_from add remove list start status stop foreground' -d 'Polling interval'
+complete -c komposyn-lg -l timeout -r -n '__fish_seen_subcommand_from watch; and __fish_seen_subcommand_from stop' -d 'Stop timeout'
+complete -c komposyn-lg -l defaults -n '__fish_seen_subcommand_from watch; and __fish_seen_subcommand_from add' -d 'Register platform defaults'
+complete -c komposyn-lg -l collector -r -a 'on off' -n '__fish_seen_subcommand_from settings' -d 'Embedded collector preference'
+complete -c komposyn-lg -l auto-start -r -a 'on off' -n '__fish_seen_subcommand_from settings' -d 'REPL collector auto-start preference'
+complete -c komposyn-lg -l output -r -n '__fish_seen_subcommand_from report-issue' -d 'Output archive path'
 `
 
 const powershellCompletion = `# komposyn-lg completion for PowerShell
@@ -469,18 +563,51 @@ Register-ArgumentCompleter -Native -CommandName komposyn-lg,komposyn-lg.exe -Scr
   $commands = @('help','version','import','usage','cost','projects','sessions','watch','settings','report-issue','harness','completion')
   $watch = @('add','remove','list','start','status','stop','foreground')
   $resources = @('list','show')
-  $options = @('--help','-h','--version','--data-dir','--format','--from','--to','--project','--session','--client','--provider','--model','--group-by','--timezone','--interval','--timeout','--defaults','--collector','--auto-start','--output')
-  $candidates = $options
-  if ($words.Count -le 1) { $candidates = $commands }
-  elseif ($words.Count -eq 2) {
-    if ($words[1] -eq 'watch') { $candidates = $watch }
-    elseif ($words[1] -eq 'projects' -or $words[1] -eq 'sessions') { $candidates = $resources }
-    elseif ($words[1] -eq 'completion') { $candidates = @('bash','zsh','fish','powershell') }
-    elseif ($words[1] -notin $commands) { $candidates = $commands }
+  $elements = [System.Collections.Generic.List[string]]::new()
+  foreach ($element in $words) { $elements.Add($element) }
+  if ($wordToComplete -and $elements.Count -gt 1 -and $elements[$elements.Count - 1] -eq $wordToComplete) { $elements.RemoveAt($elements.Count - 1) }
+  $previous = if ($elements.Count -gt 1) { $elements[$elements.Count - 1] } else { '' }
+  $command = if ($elements.Count -gt 1) { $elements[1] } else { '' }
+  $subcommand = if ($elements.Count -gt 2) { $elements[2] } else { '' }
+  if ($command -eq 'sessions' -and $subcommand -notin $resources) { $subcommand = '' }
+  $candidates = @('--help','-h')
+  if ($previous -eq '--format') {
+    switch ("${command}:${subcommand}") {
+      { $_ -like 'import:*' } { $candidates = @('text','json'); break }
+      { $_ -like 'usage:*' -or $_ -like 'cost:*' -or $_ -like 'sessions:*' } { $candidates = @('table','json','csv'); break }
+      'projects:list' { $candidates = @('table','json','csv'); break }
+      'projects:show' { $candidates = @('table','json'); break }
+      { $_ -eq 'watch:list' -or $_ -eq 'watch:status' } { $candidates = @('text','json'); break }
+      default { $candidates = @() }
+    }
   }
-  elseif ($words.Count -eq 3 -and $words[1] -eq 'watch' -and $words[2] -notin $watch) { $candidates = $watch }
-  elseif ($words.Count -eq 3 -and ($words[1] -eq 'projects' -or $words[1] -eq 'sessions') -and $words[2] -notin $resources) { $candidates = $resources }
-  elseif ($words.Count -eq 3 -and $words[1] -eq 'completion') { $candidates = @('bash','zsh','fish','powershell') }
+  elseif ($previous -eq '--collector' -or $previous -eq '--auto-start') { $candidates = @('on','off') }
+  elseif ($previous -in @('--data-dir','--from','--to','--project','--session','--client','--provider','--model','--group-by','--timezone','--interval','--timeout','--output')) { $candidates = @() }
+  elseif ($command -eq 'completion' -and $elements.Count -le 2) { $candidates = @('bash','zsh','fish','powershell') }
+  elseif ($command -eq 'watch' -and $elements.Count -eq 2 -and $wordToComplete -like '-*') { $candidates = @('--help','-h','--data-dir','--interval') }
+  elseif ($elements.Count -le 1) { $candidates = $commands + @('--help','-h','--version') }
+  elseif ($elements.Count -eq 2 -and $command -eq 'watch') { $candidates = $watch }
+  elseif ($elements.Count -eq 2 -and ($command -eq 'projects' -or $command -eq 'sessions')) { $candidates = $resources }
+  elseif ($elements.Count -eq 2 -and $command -notin $commands) { $candidates = $commands + @('--help','-h','--version') }
+  else {
+    switch ("${command}:${subcommand}") {
+      { $_ -like 'import:*' } { $candidates = @('--help','-h','--data-dir','--format'); break }
+      { $_ -like 'usage:*' -or $_ -like 'cost:*' -or $_ -eq 'sessions:' } { $candidates = @('--help','-h','--data-dir','--format','--from','--to','--project','--session','--client','--provider','--model','--group-by','--timezone'); break }
+      'projects:list' { $candidates = @('--help','-h','--data-dir','--format','--from','--to','--client','--provider','--model'); break }
+      'projects:show' { $candidates = @('--help','-h','--data-dir','--format','--from','--to','--client','--provider','--model'); break }
+      'sessions:list' { $candidates = @('--help','-h','--data-dir','--format','--from','--to','--project','--client','--provider','--model'); break }
+      'sessions:show' { $candidates = @('--help','-h','--data-dir','--format','--from','--to','--project','--client','--provider','--model','--group-by'); break }
+      'watch:add' { $candidates = @('--help','-h','--data-dir','--defaults'); break }
+      'watch:remove' { $candidates = @('--help','-h','--data-dir'); break }
+      { $_ -eq 'watch:list' -or $_ -eq 'watch:status' } { $candidates = @('--help','-h','--data-dir','--format'); break }
+      'watch:stop' { $candidates = @('--help','-h','--data-dir','--timeout'); break }
+      { $_ -eq 'watch:start' -or $_ -eq 'watch:foreground' -or $_ -like 'watch:*' } { $candidates = @('--help','-h','--data-dir','--interval'); break }
+      'settings:' { $candidates = @('--help','-h','--data-dir','--collector','--auto-start'); break }
+      'report-issue:' { $candidates = @('--help','-h','--data-dir','--output'); break }
+      { $_ -like 'version:*' } { $candidates = @('--help','-h','--version'); break }
+      default { $candidates = @('--help','-h') }
+    }
+  }
   $candidates | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
 }
 `
