@@ -71,9 +71,11 @@ request, update `CHANGELOG.md`, and calculate the next semantic version. Do not
 manually edit a released version or create a release tag as part of an ordinary
 feature pull request.
 
-The repository's initial unreleased baseline is `0.0.0`; the first prepared
-release is expected to be `0.1.0`. Development binaries report `0.0.0-dev`.
-Release builds receive their exact tag version through linker flags.
+The combined repository has published signed releases. Release Please's
+manifest and reviewed pull request remain authoritative; do not reset the
+combined version history. Development binaries report `0.0.0-dev`. Release
+builds receive separate CLI and core versions through linker flags (currently
+the same tag in combined releases).
 
 To publish a release, run **Prepare release** in GitHub Actions, review and
 merge the Release Please pull request, and then run **Publish release** after

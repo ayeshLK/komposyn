@@ -76,6 +76,13 @@ func TestCollectorReportsHealthForEachConfiguredRoot(t *testing.T) {
 	if result.Outcomes.MalformedRecord != 1 {
 		t.Fatalf("poll outcomes=%+v", result.Outcomes)
 	}
+	diagnostics, err := store.PendingDiagnostics()
+	if err != nil || len(diagnostics) != 1 {
+		t.Fatalf("collector diagnostics = %+v, err=%v; want one diagnostic", diagnostics, err)
+	}
+	if diagnostics[0].Category != DiagnosticCategoryIngestion || diagnostics[0].CoreVersion != CoreVersion() || diagnostics[0].SchemaVersion != SchemaVersion() {
+		t.Fatalf("collector diagnostic metadata = %+v", diagnostics[0])
+	}
 	health := collector.Health()
 	if root := health.Roots[healthyRoot]; root.Status != "healthy" || root.LastError != "" || root.Sources != 1 {
 		t.Fatalf("healthy root=%+v", root)
@@ -793,84 +800,5 @@ func TestCollectorRunReportsSubsequentWarningPolls(t *testing.T) {
 	}
 	if health := collector.Health(); health.Outcomes.UnsupportedUsage == 0 {
 		t.Fatalf("final health omitted warning outcome: %+v", health)
-	}
-}
-
-func TestSettingsRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	want := DefaultSettings("/tmp/token-logger")
-	want.OnboardingComplete = true
-	want.CollectorEnabled = true
-	want.AutoStart = false
-	if err := SaveSettings(path, want); err != nil {
-		t.Fatal(err)
-	}
-	got, err := LoadSettings(path, "fallback")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("settings=%+v want=%+v", got, want)
-	}
-}
-
-func TestLoadSettingsPreservesLegacyPollingInterval(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(path, []byte(`{"version":1,"poll_interval_seconds":60}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	settings, err := LoadSettings(path, "fallback")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if settings.PollIntervalMillis != 60000 || settings.CollectorPollInterval() != time.Minute {
-		t.Fatalf("legacy interval loaded as millis=%d duration=%s", settings.PollIntervalMillis, settings.CollectorPollInterval())
-	}
-}
-
-func TestSaveSettingsReplacesPermissiveFilePrivately(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(path, []byte(`{"collector_enabled":false}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	want := DefaultSettings("/tmp/token-logger")
-	want.CollectorEnabled = true
-	if err := SaveSettings(path, want); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runtime.GOOS != "windows" {
-		if mode := info.Mode().Perm(); mode != 0o600 {
-			t.Fatalf("settings mode = %o, want 600", mode)
-		}
-	}
-	got, err := LoadSettings(path, "fallback")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("settings=%+v want=%+v", got, want)
-	}
-}
-
-func TestSaveSettingsPreservesPreviousFileWhenPreparationFails(t *testing.T) {
-	tempDir := t.TempDir()
-	path := filepath.Join(tempDir, "settings.json")
-	previous := []byte("previous settings\n")
-	if err := os.WriteFile(path, previous, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := SaveSettings(filepath.Join(path, "nested.json"), DefaultSettings("/tmp/token-logger")); err == nil {
-		t.Fatal("SaveSettings succeeded with a file as its parent")
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(previous) {
-		t.Fatalf("previous settings changed to %q", got)
 	}
 }

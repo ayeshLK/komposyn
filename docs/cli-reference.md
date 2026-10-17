@@ -1,7 +1,7 @@
 # CLI reference
 
-The executable is `komposyn-lg`. Run `komposyn-lg version` to print the
-embedded release version.
+The executable is `komposyn-lg`. Run `komposyn-lg version` to print the CLI
+version and the reusable core version embedded in this build.
 
 ## Data directory
 
@@ -51,7 +51,9 @@ komposyn-lg version
 komposyn-lg --version
 ```
 
-Prints `komposyn-lg <version>`.
+Prints `komposyn-lg <cli-version> (core <core-version>)`. Combined release
+builds currently assign both fields the same release tag; they remain separate
+so a standalone CLI can identify its pinned core version.
 
 ### `import`
 

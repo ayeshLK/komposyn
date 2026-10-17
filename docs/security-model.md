@@ -17,8 +17,12 @@ Provider-owned files --read--> adapters --normalize--> local SQLite
 The default import, collection, reporting, and harness paths are local. Release
 installation explicitly downloads and verifies release artifacts. The only
 documented external reporting path is an explicitly reviewed GitHub issue
-draft, which places sanitized diagnostic text in a URL. The application does
-not silently submit an issue.
+draft, which places sanitized diagnostic text in a URL. CLI/process diagnostics
+route to the CLI tracker; provider, ingestion, storage, migration, pricing,
+reporting, and validation diagnostics route to the core tracker. Unknown
+categories default to the CLI tracker. Security-sensitive diagnostics never
+create a public draft and direct users to private vulnerability reporting.
+The application does not silently submit an issue.
 
 ## Data inventory
 

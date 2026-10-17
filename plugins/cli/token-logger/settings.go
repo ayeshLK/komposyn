@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tokenlogger
+package main
 
 import (
 	"encoding/json"
@@ -23,9 +23,9 @@ import (
 	"time"
 )
 
-// Settings stores explicit local collector preferences. It contains no
+// appSettings stores explicit local collector preferences. It contains no
 // provider credentials.
-type Settings struct {
+type appSettings struct {
 	Version             int    `json:"version"`
 	OnboardingComplete  bool   `json:"onboarding_complete"`
 	CollectorEnabled    bool   `json:"collector_enabled"`
@@ -38,25 +38,25 @@ type Settings struct {
 
 // DefaultSettings returns conservative first-run settings. Auto-start is
 // deliberately disabled until separately approved by the user.
-func DefaultSettings(dataDir string) Settings {
-	return Settings{Version: 1, DataDir: dataDir, PollIntervalSeconds: 5, PollIntervalMillis: 5000, FailureMode: "non-blocking"}
+func defaultSettings(dataDir string) appSettings {
+	return appSettings{Version: 1, DataDir: dataDir, PollIntervalSeconds: 5, PollIntervalMillis: 5000, FailureMode: "non-blocking"}
 }
 
 // LoadSettings loads settings or returns defaults when the file is absent.
-func LoadSettings(path, dataDir string) (Settings, error) {
-	settings := DefaultSettings(dataDir)
+func loadSettings(path, dataDir string) (appSettings, error) {
+	settings := defaultSettings(dataDir)
 	contents, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return settings, nil
 	}
 	if err != nil {
-		return Settings{}, fmt.Errorf("read settings: %w", err)
+		return appSettings{}, fmt.Errorf("read settings: %w", err)
 	}
 	// Leave the newer field unset while decoding an existing file so a legacy
 	// poll_interval_seconds value is not shadowed by the current default.
 	settings.PollIntervalMillis = 0
 	if err := json.Unmarshal(contents, &settings); err != nil {
-		return Settings{}, fmt.Errorf("parse settings: %w", err)
+		return appSettings{}, fmt.Errorf("parse settings: %w", err)
 	}
 	if settings.Version == 0 {
 		settings.Version = 1
@@ -77,7 +77,7 @@ func LoadSettings(path, dataDir string) (Settings, error) {
 }
 
 // SaveSettings writes settings with user-only permissions where supported.
-func SaveSettings(path string, settings Settings) error {
+func saveSettings(path string, settings appSettings) error {
 	if settings.Version == 0 {
 		settings.Version = 1
 	}
@@ -129,7 +129,7 @@ func SaveSettings(path string, settings Settings) error {
 
 // CollectorPollInterval returns the exact persisted polling duration while
 // retaining compatibility with settings written before millisecond storage.
-func (settings Settings) CollectorPollInterval() time.Duration {
+func (settings appSettings) collectorPollInterval() time.Duration {
 	if settings.PollIntervalMillis > 0 {
 		return time.Duration(settings.PollIntervalMillis) * time.Millisecond
 	}

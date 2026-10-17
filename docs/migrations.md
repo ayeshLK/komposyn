@@ -2,7 +2,11 @@
 
 Komposyn upgrades its SQLite schema automatically when `Store.Open` is called.
 Migrations are numbered, applied in order, and recorded in the
-`schema_migrations` table. The current schema version is 14.
+`schema_migrations` table. The current schema version is 15. Core consumers
+can read `tokenlogger.CurrentSchemaVersion`; the oldest numbered schema with a
+complete forward migration path is `tokenlogger.OldestMigratableSchemaVersion`
+(1). The protocol-v1 `schema_versions` field describes event-format versions
+and does not describe this SQLite migration range.
 
 ## Migration history
 
@@ -44,14 +48,23 @@ Migrations are numbered, applied in order, and recorded in the
     retroactively.
 14. Adds exact speed selectors to pricing rules for provider billing modes
     whose rates vary by inference speed.
+15. Adds diagnostic category and core/CLI/protocol/schema version metadata.
+    Existing diagnostics use category `unknown` and empty/zero version fields.
 
 ## Compatibility rules
 
 - Opening an older database applies each missing migration in sequence.
 - Each migration is committed transactionally and is safe to observe only
   after its schema and migration record are both committed.
-- Opening a database with a schema version newer than the binary supports
-  fails explicitly. Komposyn does not downgrade or delete unknown schema.
+- An existing database is inspected read-only before WAL configuration or any
+  migration DDL. Opening a database with a newer schema returns a typed
+  `tokenlogger.UnsupportedSchemaError` matching `tokenlogger.ErrUnsupportedSchema`.
+  The refusal does not alter the database, its timestamps, or WAL sidecars.
+- A nonempty database without migration history is rejected as
+  `tokenlogger.ErrInvalidSchema`; KompoSyn will not guess how to migrate an
+  untracked schema. An empty database without migration history is treated as
+  a new database.
+- Komposyn does not downgrade or delete unknown schema.
 - Migrations must preserve existing usage, configuration, consent, and
   diagnostic data. They must not modify provider-owned source files.
 

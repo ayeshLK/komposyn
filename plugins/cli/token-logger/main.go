@@ -68,7 +68,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 		}
 		defer store.Close()
 		settingsPath := filepath.Join(dataDir, "settings.json")
-		settings, err := tokenlogger.LoadSettings(settingsPath, dataDir)
+		settings, err := loadSettings(settingsPath, dataDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "load settings from %s: %v\n", settingsPath, err)
 			return 2
@@ -82,7 +82,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 				if onboardingErr != nil {
 					return 0
 				}
-				if err := tokenlogger.SaveSettings(settingsPath, settings); err != nil {
+				if err := saveSettings(settingsPath, settings); err != nil {
 					fmt.Fprintf(interactiveStderr, "save settings to %s: %v\n", settingsPath, err)
 					return 2
 				}
@@ -96,7 +96,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 			if onboardingErr != nil {
 				return 0
 			}
-			if err := tokenlogger.SaveSettings(settingsPath, settings); err != nil {
+			if err := saveSettings(settingsPath, settings); err != nil {
 				fmt.Fprintf(stderr, "save settings to %s: %v\n", settingsPath, err)
 				return 2
 			}
@@ -115,7 +115,7 @@ func runWithInput(args []string, input io.Reader, stdout, stderr io.Writer) int 
 			fmt.Fprintln(stderr, "usage: komposyn-lg version")
 			return 1
 		}
-		fmt.Fprintf(stdout, "komposyn-lg %s\n", tokenlogger.Version)
+		fmt.Fprintln(stdout, versionOutput())
 		return 0
 	case "harness":
 		if len(args) != 1 {
@@ -189,7 +189,7 @@ func startInteractiveCollector(store *tokenlogger.Store, roots []tokenlogger.Col
 	if err != nil {
 		return nil, err
 	}
-	if _, err := store.AcquireCollectorLease(instance, os.Getpid(), tokenlogger.Version, "embedded", interval, staleWindow(interval)); err != nil {
+	if _, err := store.AcquireCollectorLease(instance, os.Getpid(), cliVersion, "embedded", interval, staleWindow(interval)); err != nil {
 		return nil, err
 	}
 	if err := store.MarkCollectorReady(instance); err != nil {
@@ -280,12 +280,12 @@ func collectorTime(value time.Time) string {
 }
 
 func runInteractive(input io.Reader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string) int {
-	settings := tokenlogger.DefaultSettings(dataDir)
+	settings := defaultSettings(dataDir)
 	settings.OnboardingComplete = true
 	return runInteractiveScanner(bufio.NewScanner(input), stdout, stderr, store, dataDir, settings, false)
 }
 
-func runInteractiveScanner(scanner *bufio.Scanner, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool) int {
+func runInteractiveScanner(scanner *bufio.Scanner, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings appSettings, startNow bool) int {
 	return runInteractiveLoop(&scannerLineReader{scanner: scanner, output: stdout}, stdout, stderr, store, dataDir, settings, startNow)
 }
 
@@ -543,16 +543,16 @@ func normalizePaste(input []byte) []byte {
 	return output
 }
 
-func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool) int {
+func runInteractiveLoop(reader interactiveLineReader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings appSettings, startNow bool) int {
 	return runInteractiveLoopWithClock(reader, stdout, stderr, store, dataDir, settings, startNow, time.Now)
 }
 
-func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings tokenlogger.Settings, startNow bool, now func() time.Time) int {
+func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io.Writer, store *tokenlogger.Store, dataDir string, settings appSettings, startNow bool, now func() time.Time) int {
 	state := interactiveState{groupBy: []string{tokenlogger.GroupClient, tokenlogger.GroupProvider, tokenlogger.GroupModel}}
 	var collectorRuntime *interactiveCollectorRuntime
 	if startNow || (settings.CollectorEnabled && settings.AutoStart) {
 		var err error
-		collectorRuntime, err = startInteractiveCollector(store, defaultCollectorRoots(), settings.CollectorPollInterval())
+		collectorRuntime, err = startInteractiveCollector(store, defaultCollectorRoots(), settings.collectorPollInterval())
 		if errors.Is(err, tokenlogger.ErrCollectorActive) {
 			fmt.Fprintln(stdout, "background collector already active for this data directory; this REPL will reuse its persisted status")
 		} else if err != nil {
@@ -566,7 +566,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 	} else {
 		fmt.Fprintln(stdout, "local collector off for this session: collection is disabled")
 	}
-	fmt.Fprintf(stdout, "komposyn-lg %s interactive\n", tokenlogger.Version)
+	fmt.Fprintf(stdout, "%s interactive\n", versionOutput())
 	fmt.Fprintf(stdout, "data directory: %s\n", dataDir)
 	fmt.Fprintln(stdout, "Type /help for commands; /quit to exit.")
 	if hint := interactiveInputHint(); hint != "" && reader.IsTerminal() {
@@ -794,7 +794,7 @@ func runInteractiveLoopWithClock(reader interactiveLineReader, stdout, stderr io
 			fmt.Fprintf(stdout, "data directory: %s\n", dataDir)
 			fmt.Fprintf(stdout, "saved collector enabled preference: %t\n", settings.CollectorEnabled)
 			fmt.Fprintf(stdout, "saved collector auto-start on REPL launch: %t\n", settings.AutoStart)
-			fmt.Fprintf(stdout, "saved collector poll interval: %s\n", settings.CollectorPollInterval())
+			fmt.Fprintf(stdout, "saved collector poll interval: %s\n", settings.collectorPollInterval())
 			fmt.Fprintln(stdout, persistedCollectorStatusLine(store))
 			fmt.Fprintln(stdout, "diagnostic reporting: ask before any external action")
 			mode := "rolling"
@@ -903,7 +903,7 @@ func interactiveUsageFilter(state *interactiveState) tokenlogger.UsageFilter {
 
 func renderInteractiveError(stdout, stderr io.Writer, store *tokenlogger.Store, reader interactiveLineReader, err error) error {
 	fmt.Fprintf(stderr, "usage query failed: %v\n", err)
-	if diagnostic, diagnosticErr := store.RecordDiagnostic(err.Error()); diagnosticErr == nil {
+	if diagnostic, diagnosticErr := recordDiagnostic(store, err.Error(), tokenlogger.DiagnosticCategoryReporting); diagnosticErr == nil {
 		fmt.Fprintf(stdout, "Sanitized diagnostic saved locally: %s\n", diagnostic.Fingerprint)
 		return offerDiagnostic(reader, store, diagnostic)
 	}
@@ -1014,6 +1014,21 @@ func interactiveRender(stdout, stderr io.Writer, store *tokenlogger.Store, state
 func offerDiagnostic(reader interactiveLineReader, store *tokenlogger.Store, diagnostic tokenlogger.Diagnostic) error {
 	reader.DisableHistory()
 	defer reader.EnableHistory()
+	if isSecuritySensitiveDiagnostic(diagnostic) {
+		output := readerOutput(reader)
+		fmt.Fprintln(output, "This may involve a security issue. KompoSyn will not create a public issue draft.")
+		fmt.Fprintln(output, "Use the private vulnerability reporting instructions in SECURITY.md.")
+		choice, err := reader.ReadLine("Mark this diagnostic reviewed? [y/N] ")
+		if err != nil {
+			return err
+		}
+		status := "skipped"
+		if strings.EqualFold(strings.TrimSpace(choice), "y") {
+			status = "reviewed"
+		}
+		_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, status)
+		return nil
+	}
 	choiceLine, err := reader.ReadLine("Send sanitized diagnostic report? [y/N/view] ")
 	if err != nil {
 		if reader.IsTerminal() {
@@ -1034,7 +1049,9 @@ func offerDiagnostic(reader interactiveLineReader, store *tokenlogger.Store, dia
 			}
 		}
 		if answerErr == nil && strings.EqualFold(strings.TrimSpace(answer), "y") {
-			fmt.Fprintf(output, "draft (not sent): %s\n", tokenlogger.GitHubIssueDraftURL(diagnostic))
+			if draft, ok := diagnosticIssueDraftURL(diagnostic); ok {
+				fmt.Fprintf(output, "draft (not sent): %s\n", draft)
+			}
 			_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "reviewed")
 		} else {
 			fmt.Fprintln(output, "skipped")
@@ -1043,7 +1060,9 @@ func offerDiagnostic(reader interactiveLineReader, store *tokenlogger.Store, dia
 		return nil
 	}
 	if choice == "y" {
-		fmt.Fprintf(readerOutput(reader), "draft (not sent): %s\n", tokenlogger.GitHubIssueDraftURL(diagnostic))
+		if draft, ok := diagnosticIssueDraftURL(diagnostic); ok {
+			fmt.Fprintf(readerOutput(reader), "draft (not sent): %s\n", draft)
+		}
 		_ = store.MarkDiagnosticReviewed(diagnostic.Fingerprint, "reviewed")
 		return nil
 	}
@@ -1083,11 +1102,7 @@ func printPendingDiagnostics(stdout io.Writer, store *tokenlogger.Store) {
 	}
 }
 
-type diagnosticReport struct {
-	FormatVersion int                      `json:"format_version"`
-	CreatedAt     time.Time                `json:"created_at"`
-	Diagnostics   []tokenlogger.Diagnostic `json:"diagnostics"`
-}
+type diagnosticReport = tokenlogger.DiagnosticReport
 
 func runReportIssue(args []string, stdout, stderr io.Writer) int {
 	dataDir := ""
@@ -1126,17 +1141,16 @@ func runReportIssue(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	defer store.Close()
-	diagnostics, err := store.PendingDiagnostics()
+	report, err := store.DiagnosticReport()
 	if err != nil {
 		fmt.Fprintf(stderr, "load diagnostics: %v\n", err)
 		return 2
 	}
-	report := diagnosticReport{FormatVersion: 1, CreatedAt: time.Now().UTC(), Diagnostics: diagnostics}
 	if err := writeDiagnosticReport(outputPath, report); err != nil {
 		fmt.Fprintf(stderr, "write diagnostic report: %v\n", err)
 		return 2
 	}
-	fmt.Fprintf(stdout, "wrote %d pending diagnostic(s) to %s\n", len(diagnostics), outputPath)
+	fmt.Fprintf(stdout, "wrote %d pending diagnostic(s) to %s\n", len(report.Diagnostics), outputPath)
 	return 0
 }
 
@@ -1172,7 +1186,7 @@ func writeDiagnosticReport(outputPath string, report diagnosticReport) error {
 	return nil
 }
 
-func runOnboarding(reader interactiveLineReader, dataDir string, settings tokenlogger.Settings) (tokenlogger.Settings, bool, error) {
+func runOnboarding(reader interactiveLineReader, dataDir string, settings appSettings) (appSettings, bool, error) {
 	fmt.Fprintln(readerOutput(reader), "First-run setup")
 	startNow, err := askYesNo(reader, "Start the local collector now?", true)
 	if err != nil {
@@ -1188,7 +1202,7 @@ func runOnboarding(reader interactiveLineReader, dataDir string, settings tokenl
 	return settings, startNow, nil
 }
 
-func runOnboardingWithoutHistory(reader interactiveLineReader, dataDir string, settings tokenlogger.Settings) (tokenlogger.Settings, bool, error) {
+func runOnboardingWithoutHistory(reader interactiveLineReader, dataDir string, settings appSettings) (appSettings, bool, error) {
 	reader.DisableHistory()
 	defer reader.EnableHistory()
 	return runOnboarding(reader, dataDir, settings)
@@ -1288,7 +1302,7 @@ func runSettings(args []string, stdout, stderr io.Writer) int {
 	reportDataDirResolution(stderr, resolution)
 	dataDir = resolution.Path
 	path := filepath.Join(dataDir, "settings.json")
-	settings, err := tokenlogger.LoadSettings(path, dataDir)
+	settings, err := loadSettings(path, dataDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "load settings from %s: %v\n", path, err)
 		return 2
@@ -1310,11 +1324,11 @@ func runSettings(args []string, stdout, stderr io.Writer) int {
 		settings.AutoStart = value
 	}
 	settings.OnboardingComplete = true
-	if err := tokenlogger.SaveSettings(path, settings); err != nil {
+	if err := saveSettings(path, settings); err != nil {
 		fmt.Fprintf(stderr, "save settings: %v\n", err)
 		return 2
 	}
-	fmt.Fprintf(stdout, "data_dir=%s collector=%t auto_start=%t interval=%s\n", dataDir, settings.CollectorEnabled, settings.AutoStart, settings.CollectorPollInterval())
+	fmt.Fprintf(stdout, "data_dir=%s collector=%t auto_start=%t interval=%s\n", dataDir, settings.CollectorEnabled, settings.AutoStart, settings.collectorPollInterval())
 	return 0
 }
 

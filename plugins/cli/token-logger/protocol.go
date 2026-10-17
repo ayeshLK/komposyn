@@ -165,8 +165,9 @@ func (s *protocolServer) initialize(request protocolRequest, stderr io.Writer) (
 	return successResponse(request.ID, map[string]any{
 		"plugin_id":       "token-logger",
 		"display_name":    "Komposyn Token Logger",
-		"plugin_version":  tokenlogger.Version,
-		"schema_versions": []int{1, 2, 3, 4},
+		"plugin_version":  tokenlogger.CoreVersion(),
+		"cli_version":     cliVersion,
+		"schema_versions": tokenlogger.SupportedEventSchemaVersions(),
 		"capabilities":    []string{"usage-events", "local-reports"},
 		"data_dir":        s.dataDir,
 	}), false

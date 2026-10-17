@@ -118,16 +118,24 @@ the result is:
   "plugin_id":"token-logger",
   "display_name":"Komposyn Token Logger",
   "plugin_version":"0.1.0",
+  "cli_version":"0.1.0",
   "schema_versions":[1,2,3,4],
   "capabilities":["usage-events","local-reports"],
   "data_dir":"/var/lib/komposyn"
 }
 ```
 
-`plugin_version` is the running library version and can change between
-releases. The current schema manifest reports every supported schema version,
-1 through 4. Initialization errors return `invalid_params` for malformed
-parameters or `initialize_failed` when the store cannot be opened.
+`plugin_version` is the running core library version and can change between
+releases. The additive `cli_version` field identifies the executable; older
+protocol-v1 clients can ignore it. Combined release builds currently assign
+the same tag to both versions. `schema_versions` lists event-format versions advertised by the
+core's stable protocol contract; it is not the SQLite schema version. The
+event's `schema_version` remains a positive producer-supplied value and the
+core continues to accept positive values beyond the advertised list for
+forward compatibility. The current SQLite schema version is exposed separately
+by the core API and is not sent in protocol-v1 initialization, preserving the
+existing response shape. Initialization errors return `invalid_params` for
+malformed parameters or `initialize_failed` when the store cannot be opened.
 
 ### `record`
 

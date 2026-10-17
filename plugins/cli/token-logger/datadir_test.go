@@ -119,11 +119,11 @@ func TestResolveDataDirPreservesReadableLegacyState(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	wantSettings := tokenlogger.Settings{
+	wantSettings := appSettings{
 		Version: 1, OnboardingComplete: true, CollectorEnabled: true,
 		AutoStart: false, DataDir: legacy, PollIntervalSeconds: 17, PollIntervalMillis: 17000, FailureMode: "non-blocking",
 	}
-	if err := tokenlogger.SaveSettings(settingsPath, wantSettings); err != nil {
+	if err := saveSettings(settingsPath, wantSettings); err != nil {
 		t.Fatal(err)
 	}
 
@@ -131,7 +131,7 @@ func TestResolveDataDirPreservesReadableLegacyState(t *testing.T) {
 	if err != nil || resolution.Path != legacy {
 		t.Fatalf("resolution = %+v, err = %v; want legacy %q", resolution, err, legacy)
 	}
-	gotSettings, err := tokenlogger.LoadSettings(settingsPath, resolution.Path)
+	gotSettings, err := loadSettings(settingsPath, resolution.Path)
 	if err != nil || gotSettings != wantSettings {
 		t.Fatalf("settings = %+v, err = %v; want %+v", gotSettings, err, wantSettings)
 	}
@@ -349,11 +349,11 @@ func seedLegacyState(t *testing.T, dataDir string) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	settings := tokenlogger.Settings{
+	settings := appSettings{
 		Version: 1, OnboardingComplete: true, CollectorEnabled: false,
 		AutoStart: false, DataDir: dataDir, PollIntervalSeconds: 5, PollIntervalMillis: 5000, FailureMode: "non-blocking",
 	}
-	if err := tokenlogger.SaveSettings(filepath.Join(dataDir, "settings.json"), settings); err != nil {
+	if err := saveSettings(filepath.Join(dataDir, "settings.json"), settings); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -306,22 +306,22 @@ func runWatchList(args []string, stdout, stderr io.Writer) int {
 }
 
 func configuredWatchInterval(dataDir string) time.Duration {
-	settings, err := tokenlogger.LoadSettings(filepath.Join(dataDir, "settings.json"), dataDir)
+	settings, err := loadSettings(filepath.Join(dataDir, "settings.json"), dataDir)
 	if err != nil {
 		return 5 * time.Second
 	}
-	return settings.CollectorPollInterval()
+	return settings.collectorPollInterval()
 }
 
 func persistWatchInterval(dataDir string, interval time.Duration) error {
 	path := filepath.Join(dataDir, "settings.json")
-	settings, err := tokenlogger.LoadSettings(path, dataDir)
+	settings, err := loadSettings(path, dataDir)
 	if err != nil {
 		return err
 	}
 	settings.PollIntervalMillis = interval.Milliseconds()
 	settings.PollIntervalSeconds = int((interval + time.Second - 1) / time.Second)
-	return tokenlogger.SaveSettings(path, settings)
+	return saveSettings(path, settings)
 }
 
 func staleWindow(interval time.Duration) time.Duration {
@@ -565,7 +565,7 @@ func runForegroundWatch(args []string, stdout, stderr io.Writer, ctx context.Con
 		fmt.Fprintf(stderr, "create collector identity: %v\n", err)
 		return 2
 	}
-	recovered, err := store.AcquireCollectorLease(instanceID, os.Getpid(), tokenlogger.Version, "foreground", interval, staleWindow(interval))
+	recovered, err := store.AcquireCollectorLease(instanceID, os.Getpid(), cliVersion, "foreground", interval, staleWindow(interval))
 	if errors.Is(err, tokenlogger.ErrCollectorActive) {
 		fmt.Fprintln(stderr, "another collector is already active for this data directory; stop it before starting foreground watch")
 		return 2
@@ -723,7 +723,7 @@ func runWatchServe(args []string, stderr io.Writer, ctx context.Context) int {
 		return 2
 	}
 	defer store.Close()
-	recovered, err := store.AcquireCollectorLease(options.instanceID, os.Getpid(), tokenlogger.Version, "background", options.interval, staleWindow(options.interval))
+	recovered, err := store.AcquireCollectorLease(options.instanceID, os.Getpid(), cliVersion, "background", options.interval, staleWindow(options.interval))
 	if errors.Is(err, tokenlogger.ErrCollectorActive) {
 		return 0
 	}
@@ -738,7 +738,7 @@ func runWatchServe(args []string, stderr io.Writer, ctx context.Context) int {
 		return 2
 	}
 	if recovered {
-		_, _ = store.RecordDiagnostic("reason=stale_collector_recovered")
+		_, _ = recordDiagnostic(store, "reason=stale_collector_recovered", tokenlogger.DiagnosticCategoryCLI)
 	}
 	for {
 		stop, heartbeatErr := store.HeartbeatCollector(options.instanceID)
