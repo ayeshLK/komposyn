@@ -33,6 +33,11 @@ final release was published or that post-publication verification is complete.
   library fixes, which drove the toolchain pin update.
 - PR #126 checks passed after the Windows SQLite file-URI fix: Analyze Go,
   CodeQL, Linux/macOS/Windows test jobs, and race tests.
+- Local PR-review regressions: `go test ./...`, `go test -race ./...`,
+  `go vet ./...`, `make check`, and `bash -n scripts/*.sh` passed. This
+  includes refusal through a symlink to a newer WAL-backed database without
+  changing the target database or sidecars, diagnostic category escalation
+  and collector metadata/routing, and compatible-binary backup restoration.
 - External consumer test importing the public core package with a temporary
   local module replacement: passed.
 - Six-platform candidate archives, license bundle, and SHA-256 manifest:
@@ -48,6 +53,11 @@ final release was published or that post-publication verification is complete.
   database and backup. This covers Linux amd64 only. The six local candidate
   archives were rebuilt after the recovery fix at
   `/tmp/komposyn-issue46-final.BZ9kaW`.
+- Updated release lifecycle verifier: built six candidate archives at
+  `/tmp/komposyn-pr126-review-release`, restored the verified migration backup
+  with the supplied v0.6.0 executable, and confirmed uninstall preserved the
+  backup digest and local data. This remains Linux amd64 historical-binary
+  evidence.
 
 ## Remaining release gates
 

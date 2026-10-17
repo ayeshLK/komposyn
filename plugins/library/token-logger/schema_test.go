@@ -91,6 +91,56 @@ func TestOpenRefusesNewerSchemaWithoutChangingDatabaseOrWAL(t *testing.T) {
 	_ = owner.Close()
 }
 
+func TestOpenRefusesNewerSchemaThroughSymlinkWithoutChangingTargetSidecars(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "target.db")
+	link := filepath.Join(directory, "link.db")
+	owner, err := Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.db.Exec("PRAGMA wal_autocheckpoint = 0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.db.Exec("UPDATE schema_migrations SET version = ? WHERE version = ?", CurrentSchemaVersion+1, CurrentSchemaVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		_ = owner.Close()
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+	paths := []string{target, target + "-wal", target + "-shm"}
+	before := make(map[string][]byte, len(paths))
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			_ = owner.Close()
+			t.Fatalf("read %s: %v", filepath.Base(path), err)
+		}
+		before[path] = contents
+	}
+
+	opened, err := Open(link)
+	if opened != nil {
+		_ = opened.Close()
+		_ = owner.Close()
+		t.Fatal("Open accepted a symlink to a database from a newer schema")
+	}
+	if !errors.Is(err, ErrUnsupportedSchema) {
+		_ = owner.Close()
+		t.Fatalf("Open error = %v, want ErrUnsupportedSchema", err)
+	}
+	for _, path := range paths {
+		after, readErr := os.ReadFile(path)
+		if readErr != nil || !reflect.DeepEqual(after, before[path]) {
+			t.Errorf("target %s changed on refusal: read err=%v", filepath.Base(path), readErr)
+		}
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOpenRejectsNonemptyDatabaseWithoutMigrationHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-untracked.db")
 	db, err := sql.Open("sqlite", path)

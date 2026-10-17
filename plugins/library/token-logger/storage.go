@@ -56,6 +56,13 @@ func OpenWithOptions(path string, options OpenOptions) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("database path is required")
 	}
+	if path != ":memory:" {
+		resolved, err := resolveDatabasePath(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve database path: %w", err)
+		}
+		path = resolved
+	}
 	version, exists, err := inspectSchemaReadOnly(path)
 	if err != nil {
 		return nil, err

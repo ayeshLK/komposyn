@@ -16,8 +16,11 @@ package main
 
 import (
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
 )
@@ -46,5 +49,40 @@ func TestDiagnosticIssueRoutingUsesCategoryAndBlocksSecurityDrafts(t *testing.T)
 	}
 	if draft, ok := diagnosticIssueDraftURL(tokenlogger.Diagnostic{Category: tokenlogger.DiagnosticCategorySecuritySensitive}); ok || draft != "" {
 		t.Fatalf("security-sensitive diagnostic produced public draft %q", draft)
+	}
+}
+
+func TestCollectorDiagnosticRoutesToCoreTracker(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := tokenlogger.Open(filepath.Join(dataDir, "token-logger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sourceDir := t.TempDir()
+	sourcePath := filepath.Join(sourceDir, "malformed.jsonl")
+	fixture := `{"type":"assistant","uuid":"diagnostic-fixture","sessionId":"diagnostic-session","cwd":"/sanitized/project","timestamp":"2026-10-11T12:00:00Z","message":{"role":"assistant","model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":5}}}` + "\n{not-json}\n"
+	if err := os.WriteFile(sourcePath, []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector, err := tokenlogger.NewCollector(store, []string{sourceDir}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.PollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := store.PendingDiagnostics()
+	if err != nil || len(diagnostics) != 1 {
+		t.Fatalf("pending collector diagnostics = %+v, err=%v", diagnostics, err)
+	}
+	diagnostic := diagnostics[0]
+	if diagnostic.Category != tokenlogger.DiagnosticCategoryIngestion || diagnostic.CoreVersion == "" || diagnostic.SchemaVersion == 0 {
+		t.Fatalf("collector diagnostic omitted core metadata: %+v", diagnostic)
+	}
+	draft, ok := diagnosticIssueDraftURL(diagnostic)
+	parsed, parseErr := url.Parse(draft)
+	if !ok || parseErr != nil || !strings.Contains(parsed.Path, "/ayeshLK/komposyn/issues/new") {
+		t.Fatalf("collector diagnostic routed to %q, ok=%v err=%v", draft, ok, parseErr)
 	}
 }

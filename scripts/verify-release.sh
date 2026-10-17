@@ -142,9 +142,10 @@ PY
   recovery_dir="$tmp_dir/restored-data"
   mkdir -p "$recovery_dir"
   cp "$migration_backup" "$recovery_dir/token-logger.db"
-  restored_report="$(TOKEN_LOGGER_DATA_DIR="$recovery_dir" "$install_dir/komposyn-lg" usage --format json)"
+  backup_digest="$(sha256sum "$migration_backup" | awk '{print $1}')"
+  restored_report="$(TOKEN_LOGGER_DATA_DIR="$recovery_dir" "$reference_binary" usage --format json)"
   grep -Eq '"total_tokens"[[:space:]]*:[[:space:]]*123' <<<"$restored_report" || {
-    echo "restored pre-migration backup did not recover historical usage" >&2
+    echo "compatible reference binary could not read the restored pre-migration backup" >&2
     exit 1
   }
 else
@@ -154,15 +155,20 @@ fi
   echo "upgrade did not preserve local data" >&2
   exit 1
 }
-if [[ -n "$reference_binary" && ! -f "$migration_backup" ]]; then
-  echo "uninstall removed the migration backup" >&2
-  exit 1
-fi
-
 TOKEN_LOGGER_DATA_DIR="$data_dir" KOMPOSYN_INSTALL_DIR="$install_dir" bash "$root_dir/scripts/uninstall.sh" >/dev/null
 [[ ! -e "$install_dir/komposyn-lg" ]] || { echo "uninstall left executable behind" >&2; exit 1; }
 [[ -e "$data_dir/settings.json" && -e "$data_dir/token-logger.db" ]] || {
   echo "uninstall removed local data" >&2
   exit 1
 }
+if [[ -n "$reference_binary" ]]; then
+  [[ -f "$migration_backup" ]] || {
+    echo "uninstall removed the migration backup" >&2
+    exit 1
+  }
+  [[ "$(sha256sum "$migration_backup" | awk '{print $1}')" == "$backup_digest" ]] || {
+    echo "uninstall changed the migration backup" >&2
+    exit 1
+  }
+fi
 echo "release install, upgrade, and data-preserving uninstall checks passed"

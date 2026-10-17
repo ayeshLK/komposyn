@@ -61,7 +61,7 @@ func inspectSchemaReadOnly(path string) (version int, exists bool, err error) {
 	if path == ":memory:" {
 		return 0, false, nil
 	}
-	absolute, err := filepath.Abs(path)
+	absolute, err := resolveDatabasePath(path)
 	if err != nil {
 		return 0, false, fmt.Errorf("resolve database path: %w", err)
 	}
@@ -117,6 +117,24 @@ func inspectSchemaReadOnly(path string) (version int, exists bool, err error) {
 		return 0, true, fmt.Errorf("%w: non-empty database has no applied migration history", ErrInvalidSchema)
 	}
 	return version, true, nil
+}
+
+// resolveDatabasePath gives schema preflight and SQLite the same physical
+// database identity, including when callers open the database through a file
+// symlink. For a new database, retain the absolute requested path.
+func resolveDatabasePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err == nil {
+		return resolved, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return absolute, nil
+	}
+	return "", err
 }
 
 func copyRegularFile(sourcePath, destinationPath string) error {

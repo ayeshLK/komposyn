@@ -104,7 +104,15 @@ func (s *Store) RecordDiagnosticWithMetadata(message string, metadata Diagnostic
 		core_version, cli_version, protocol_version, schema_version)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO UPDATE SET occurrence_count = occurrence_count + 1,
-		last_seen_at = excluded.last_seen_at`, fingerprint, sanitized,
+		last_seen_at = excluded.last_seen_at,
+		category = CASE
+			WHEN diagnostics.category = 'security-sensitive' OR excluded.category = 'security-sensitive' THEN 'security-sensitive'
+			WHEN diagnostics.category = 'unknown' THEN excluded.category
+			ELSE diagnostics.category END,
+		core_version = CASE WHEN diagnostics.core_version = '' THEN excluded.core_version ELSE diagnostics.core_version END,
+		cli_version = CASE WHEN diagnostics.cli_version = '' THEN excluded.cli_version ELSE diagnostics.cli_version END,
+		protocol_version = CASE WHEN diagnostics.protocol_version = 0 THEN excluded.protocol_version ELSE diagnostics.protocol_version END,
+		schema_version = CASE WHEN diagnostics.schema_version = 0 THEN excluded.schema_version ELSE diagnostics.schema_version END`, fingerprint, sanitized,
 		formatStoredTime(now), formatStoredTime(now), metadata.Category, metadata.CoreVersion,
 		metadata.CLIVersion, metadata.ProtocolVersion, metadata.SchemaVersion)
 	if err != nil {

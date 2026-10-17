@@ -138,7 +138,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		}
 		total.Outcomes.Add(OutcomeFailedSource)
 		pollErrors = append(pollErrors, failure.Err)
-		c.recordFailure(failure.Err)
+		c.recordFailure(failure.Err, DiagnosticCategoryIngestion)
 		root := rootHealth[failure.RootPath]
 		root.Status = "degraded"
 		if errors.Is(failure.Err, os.ErrNotExist) {
@@ -178,7 +178,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		if readErr != nil {
 			total.Outcomes.Add(OutcomeFailedSource)
 			pollErrors = append(pollErrors, readErr)
-			c.recordFailure(fmt.Errorf("read source: %w", readErr))
+			c.recordFailure(fmt.Errorf("read source: %w", readErr), DiagnosticCategoryIngestion)
 			mergeCollectorRootFailure(rootHealth, source.RootPaths, readErr)
 			continue
 		}
@@ -186,7 +186,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 		if detectErr != nil {
 			total.Outcomes.Add(OutcomeFailedSource)
 			pollErrors = append(pollErrors, detectErr)
-			c.recordFailure(fmt.Errorf("detect source: %w", detectErr))
+			c.recordFailure(fmt.Errorf("detect source: %w", detectErr), DiagnosticCategoryProvider)
 			mergeCollectorRootFailure(rootHealth, source.RootPaths, detectErr)
 			continue
 		}
@@ -200,7 +200,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			}
 			total.Outcomes.Add(OutcomeFailedSource)
 			pollErrors = append(pollErrors, importErr)
-			c.recordFailure(fmt.Errorf("import %s source: %w", adapter, importErr))
+			c.recordFailure(fmt.Errorf("import %s source: %w", adapter, importErr), DiagnosticCategoryIngestion)
 			mergeCollectorRootFailure(rootHealth, source.RootPaths, importErr)
 			continue
 		}
@@ -296,7 +296,11 @@ func (c *Collector) recordOutcomeDiagnostics(adapter string, outcomes OutcomeCou
 		}
 		// The stable, path-free message lets RecordDiagnostic deduplicate
 		// repeated polls without retaining transcript contents.
-		if _, err := c.store.RecordDiagnostic(fmt.Sprintf("adapter=%s reason=%s", adapter, item.outcome)); err != nil {
+		category := DiagnosticCategoryIngestion
+		if item.outcome == OutcomeUnsupportedUsage {
+			category = DiagnosticCategoryProvider
+		}
+		if _, err := c.recordDiagnostic(fmt.Sprintf("adapter=%s reason=%s", adapter, item.outcome), category); err != nil {
 			c.mu.Lock()
 			c.health.LastError = SanitizeDiagnostic(err.Error())
 			c.mu.Unlock()
@@ -366,7 +370,7 @@ func (c *Collector) RunWithResults(ctx context.Context, observer func(ImportResu
 	}
 }
 
-func (c *Collector) recordFailure(err error) {
+func (c *Collector) recordFailure(err error, category string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.health.Status = "degraded"
@@ -374,9 +378,15 @@ func (c *Collector) recordFailure(err error) {
 	// Persist only a stable category. The local health view may retain the
 	// sanitized operational error, but diagnostics never retain source paths,
 	// provider record identifiers, or transcript fragments.
-	if _, diagnosticErr := c.store.RecordDiagnostic("reason=failed_source"); diagnosticErr != nil && c.health.LastError == "" {
+	if _, diagnosticErr := c.recordDiagnostic("reason=failed_source", category); diagnosticErr != nil && c.health.LastError == "" {
 		c.health.LastError = diagnosticErr.Error()
 	}
+}
+
+func (c *Collector) recordDiagnostic(message, category string) (Diagnostic, error) {
+	return c.store.RecordDiagnosticWithMetadata(message, DiagnosticMetadata{
+		Category: category, CoreVersion: CoreVersion(), SchemaVersion: SchemaVersion(),
+	})
 }
 
 type collectorDiscoveryFailure struct {

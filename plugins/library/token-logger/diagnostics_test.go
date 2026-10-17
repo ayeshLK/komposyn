@@ -66,3 +66,30 @@ func TestDiagnosticMetadataIsSanitizedAndPersisted(t *testing.T) {
 		t.Fatalf("diagnostic message was not sanitized: %q", got.Message)
 	}
 }
+
+func TestDiagnosticRecurrencePromotesAndKeepsSecurityClassification(t *testing.T) {
+	store := openTestStore(t)
+	first, err := store.RecordDiagnostic("same failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	security, err := store.RecordDiagnosticWithMetadata("same failure", DiagnosticMetadata{
+		Category: DiagnosticCategorySecuritySensitive, CoreVersion: "1.2.3", SchemaVersion: CurrentSchemaVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if security.Fingerprint != first.Fingerprint || security.Category != DiagnosticCategorySecuritySensitive || security.OccurrenceCount != 2 {
+		t.Fatalf("security recurrence = %+v; wanted promoted, deduplicated security diagnostic", security)
+	}
+
+	repeated, err := store.RecordDiagnosticWithMetadata("same failure", DiagnosticMetadata{
+		Category: DiagnosticCategoryIngestion, CoreVersion: "9.9.9", SchemaVersion: CurrentSchemaVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.Category != DiagnosticCategorySecuritySensitive || repeated.OccurrenceCount != 3 || repeated.CoreVersion != "1.2.3" {
+		t.Fatalf("ordinary recurrence downgraded or overwrote diagnostic metadata: %+v", repeated)
+	}
+}

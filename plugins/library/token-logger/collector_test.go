@@ -76,6 +76,13 @@ func TestCollectorReportsHealthForEachConfiguredRoot(t *testing.T) {
 	if result.Outcomes.MalformedRecord != 1 {
 		t.Fatalf("poll outcomes=%+v", result.Outcomes)
 	}
+	diagnostics, err := store.PendingDiagnostics()
+	if err != nil || len(diagnostics) != 1 {
+		t.Fatalf("collector diagnostics = %+v, err=%v; want one diagnostic", diagnostics, err)
+	}
+	if diagnostics[0].Category != DiagnosticCategoryIngestion || diagnostics[0].CoreVersion != CoreVersion() || diagnostics[0].SchemaVersion != SchemaVersion() {
+		t.Fatalf("collector diagnostic metadata = %+v", diagnostics[0])
+	}
 	health := collector.Health()
 	if root := health.Roots[healthyRoot]; root.Status != "healthy" || root.LastError != "" || root.Sources != 1 {
 		t.Fatalf("healthy root=%+v", root)
