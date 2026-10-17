@@ -145,6 +145,13 @@ has a Windows Git Bash path for ZIP extraction, `.exe` invocation, and
 PowerShell uninstall. Native macOS/Windows historical runs are still required
 before counting those paths as verified.
 
+The follow-up workflow also has a six-target native runtime matrix for Linux
+amd64/arm64, macOS amd64/arm64, and Windows amd64/arm64. It verifies the
+published checksum manifest and archive signatures, checks the target archive
+checksum, runs the executable's version command, and exchanges protocol-v1
+initialize/shutdown messages. The verifier passed locally on Linux amd64;
+workflow results for the other targets are pending.
+
 The standalone destination bootstrap is prepared under
 `standalone-bootstrap/` as a reviewable root-file template. It includes the
 module pin, Apache attribution, scoped repository guidance, read-only CI,

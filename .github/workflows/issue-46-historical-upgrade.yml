@@ -12,6 +12,8 @@ on:
       - scripts/uninstall.sh
       - scripts/verify-active-published-upgrade.ps1
       - scripts/verify-active-published-upgrade.sh
+      - scripts/verify-published-runtime.ps1
+      - scripts/verify-published-runtime.sh
       - scripts/verify-release.sh
       - scripts/expand-release-archive.ps1
   workflow_dispatch:
@@ -20,6 +22,47 @@ permissions:
   contents: read
 
 jobs:
+  published-runtime:
+    name: v0.7.0 native runtime (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux_amd64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+          - runner: macos-15-intel
+            target: darwin_amd64
+          - runner: macos-latest
+            target: darwin_arm64
+          - runner: windows-latest
+            target: windows_amd64
+          - runner: windows-11-arm
+            target: windows_arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Run native Linux/macOS binary and protocol checks
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/verify-published-runtime.sh v0.7.0 "${{ matrix.target }}"
+
+      - name: Run native Windows binary and protocol checks
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify-published-runtime.ps1 -Tag v0.7.0 -Target "${{ matrix.target }}"
+
   historical-migration:
     name: v0.6.0 migration, restoration, and uninstall (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

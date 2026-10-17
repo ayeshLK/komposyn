@@ -108,6 +108,14 @@ must run on native platforms; cross-compilation is not runtime evidence.
 `.github/workflows/issue-46-historical-upgrade.yml` runs the v0.5.0 and v0.6.0
 cases on native macOS and Windows for pull requests that change this verifier.
 
+The same workflow runs a six-target native runtime check against published
+v0.7.0 artifacts. `scripts/verify-published-runtime.sh` covers Linux and
+macOS; `scripts/verify-published-runtime.ps1` covers Windows. Each verifies the
+signed checksum manifest and archive with the exact combined release identity,
+checks the archive digest, executes `version`, and checks protocol-v1
+initialize/shutdown. These checks require native hosts for all six target
+architectures; cross-compilation does not count.
+
 For installer verification, `scripts/install.sh` verifies both SHA-256 and the
 Cosign blob certificate identity and OIDC issuer before replacing the binary.
 The PowerShell installer follows the same release verification contract on

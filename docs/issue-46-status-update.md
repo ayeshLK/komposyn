@@ -52,7 +52,8 @@ The following gates remain open:
 
 - Execute published binaries natively on Linux arm64, macOS amd64, and Windows
   arm64. Current runtime evidence covers Linux amd64, macOS arm64, and Windows
-  amd64. Cross-builds and installer-only checks do not count.
+  amd64. A six-target native workflow now performs signature/checksum,
+  executable-version, and protocol-v1 checks; its new run is pending.
 - Prepare the destination repository bootstrap and resolve access to
   `ayeshLK/komposyn-lg`. GitHub currently returns “Could not resolve to a
   Repository” for that name, so existence/access cannot yet be distinguished.
