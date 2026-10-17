@@ -20,7 +20,7 @@ try {
     Compress-Archive -Path (Join-Path $payloadDir 'komposyn-lg.exe') -DestinationPath $quotedArchive
     & (Join-Path $PSScriptRoot 'expand-release-archive.ps1') `
         -ArchivePath $quotedArchive -DestinationPath $quotedDestination
-    if ((Get-Content -Raw (Join-Path $quotedDestination 'komposyn-lg.exe')) -ne 'fixture-binary') {
+    if ((Get-Content -Raw (Join-Path $quotedDestination 'komposyn-lg.exe')).TrimEnd() -ne 'fixture-binary') {
         throw 'PowerShell archive extraction failed for a path containing spaces and apostrophes'
     }
 
