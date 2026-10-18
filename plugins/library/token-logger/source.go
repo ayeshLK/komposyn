@@ -27,29 +27,91 @@ const sourceCursorRetryLimit = 3
 
 var errSourceCursorRetryExhausted = errors.New("source cursor kept changing while snapshot was being imported")
 
-type sourceAdapterChangedError struct {
-	adapter string
-}
-
-func (err *sourceAdapterChangedError) Error() string {
-	return fmt.Sprintf("authoritative source snapshot uses %s adapter", err.adapter)
-}
-
-func validateSourceSnapshotAdapter(contents []byte, expected string, observer *collectorBenchmarkObserver) error {
-	adapter, err := detectAdapterSnapshotObserved(contents, observer)
-	if err != nil {
-		return fmt.Errorf("detect authoritative source snapshot: %w", err)
-	}
-	if adapter != expected {
-		return &sourceAdapterChangedError{adapter: adapter}
-	}
-	return nil
-}
-
 type sourceSnapshot struct {
 	contents       []byte
 	baseSourceID   string
 	expectedCursor sourceCursorExpectation
+}
+
+// acquireDetectedSourceSnapshot reads one immutable source snapshot, chooses
+// its adapter from those bytes, then captures that adapter's source identity
+// and cursor. Collector imports use this path so adapter detection and import
+// never depend on separate file reads.
+func acquireDetectedSourceSnapshot(ctx context.Context, path string, store *Store) (sourceSnapshot, string, error) {
+	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return sourceSnapshot{}, "", err
+		}
+		source, err := collectorSourceForPath(path)
+		if err != nil {
+			return sourceSnapshot{}, "", fmt.Errorf("resolve source: %w", err)
+		}
+		cursorExpectations, err := collectorSourceCursorExpectations(store, source)
+		if err != nil {
+			return sourceSnapshot{}, "", fmt.Errorf("capture source cursors: %w", err)
+		}
+		if store.beforeSnapshotRead != nil {
+			store.beforeSnapshotRead()
+		}
+		file, err := os.Open(source.Path)
+		if err != nil {
+			return sourceSnapshot{}, "", err
+		}
+		openedInfo, statErr := file.Stat()
+		contents, readErr := io.ReadAll(file)
+		closeErr := file.Close()
+		if statErr != nil {
+			return sourceSnapshot{}, "", statErr
+		}
+		if readErr != nil {
+			return sourceSnapshot{}, "", readErr
+		}
+		if closeErr != nil {
+			return sourceSnapshot{}, "", closeErr
+		}
+		if err := ctx.Err(); err != nil {
+			return sourceSnapshot{}, "", err
+		}
+		if store.benchmarkObserver != nil {
+			store.benchmarkObserver.sourceBytesRead += int64(len(contents))
+		}
+		adapter, err := detectAdapterSnapshotObserved(contents, store.benchmarkObserver)
+		if err != nil {
+			return sourceSnapshot{}, "", fmt.Errorf("detect source adapter: %w", err)
+		}
+		current, err := collectorSourceMatchesOpenFile(path, source, openedInfo)
+		if err != nil {
+			return sourceSnapshot{}, "", fmt.Errorf("revalidate source after acquisition: %w", err)
+		}
+		if !current {
+			continue
+		}
+		baseSourceID, err := establishedCollectorSourceID(store, source, adapter)
+		if err != nil {
+			return sourceSnapshot{}, "", fmt.Errorf("resolve source identity: %w", err)
+		}
+		expectedCursor, captured := cursorExpectations[baseSourceID]
+		if !captured {
+			// Another import may have claimed an alias or canonical fallback
+			// identity while these bytes were being acquired. Retry so its
+			// cursor is captured before the next source read.
+			continue
+		}
+		return sourceSnapshot{contents: contents, baseSourceID: baseSourceID, expectedCursor: expectedCursor}, adapter, nil
+	}
+	return sourceSnapshot{}, "", fmt.Errorf("source identity kept changing during acquisition after %d attempts", sourceCursorRetryLimit)
+}
+
+func collectorSourceMatchesOpenFile(path string, source collectorSource, openedInfo os.FileInfo) (bool, error) {
+	currentSource, err := collectorSourceForPath(path)
+	if err != nil {
+		return false, err
+	}
+	currentInfo, err := os.Stat(currentSource.Path)
+	if err != nil {
+		return false, err
+	}
+	return source.CanonicalKey == currentSource.CanonicalKey && os.SameFile(openedInfo, currentInfo), nil
 }
 
 func acquireSourceSnapshot(ctx context.Context, path string, store *Store, adapter string) (sourceSnapshot, error) {

@@ -157,20 +157,15 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	return importClaudeSource(context.Background(), path, store, false)
+	return importClaudeSource(context.Background(), path, store)
 }
 
-func importClaudeSource(ctx context.Context, path string, store *Store, validateAdapter bool) (ImportResult, error) {
+func importClaudeSource(ctx context.Context, path string, store *Store) (ImportResult, error) {
 	snapshot, err := acquireSourceSnapshot(ctx, path, store, "claude")
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("acquire Claude source: %w", err)
 	}
 	for attempt := 1; ; attempt++ {
-		if validateAdapter {
-			if err := validateSourceSnapshotAdapter(snapshot.contents, "claude", store.benchmarkObserver); err != nil {
-				return ImportResult{}, err
-			}
-		}
 		result, retry, err := importClaudeSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
 		if err != nil || !retry {
 			return result, err
