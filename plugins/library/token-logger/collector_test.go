@@ -17,12 +17,14 @@ package tokenlogger
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -217,13 +219,13 @@ func TestGeneratedCollectorMatchesDirectImportOracle(t *testing.T) {
 	}
 }
 
-func TestUnchangedCollectorCountsBothAdapterDetectionPasses(t *testing.T) {
+func TestUnchangedCollectorUsesOneAuthoritativeSnapshot(t *testing.T) {
 	for _, provider := range []struct {
 		name        string
 		wantRecords int64
 	}{
-		{name: "claude", wantRecords: 4}, // detection and authoritative detection each decode the first two lines
-		{name: "codex", wantRecords: 2},  // session_meta is recognized on the first line in each pass
+		{name: "claude", wantRecords: 2}, // detection decodes the user record and first assistant record
+		{name: "codex", wantRecords: 1},  // session_meta is recognized on the first line
 	} {
 		t.Run(provider.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "history.jsonl")
@@ -245,7 +247,10 @@ func TestUnchangedCollectorCountsBothAdapterDetectionPasses(t *testing.T) {
 				t.Fatal(err)
 			}
 			if observer.recordsDecoded != provider.wantRecords {
-				t.Fatalf("decoded records=%d, want %d across both adapter detection passes", observer.recordsDecoded, provider.wantRecords)
+				t.Fatalf("decoded records=%d, want %d from one authoritative adapter detection", observer.recordsDecoded, provider.wantRecords)
+			}
+			if observer.sourceBytesRead != int64(len(contents)) {
+				t.Fatalf("source bytes read=%d, want exactly one snapshot (%d bytes)", observer.sourceBytesRead, len(contents))
 			}
 		})
 	}
@@ -375,7 +380,7 @@ func TestCollectorImportsClaudeFallbackCreditWithoutMaskingOtherFailures(t *test
 	}
 }
 
-func TestCollectorDetectsAdapterFromAuthoritativeSnapshot(t *testing.T) {
+func TestCollectorDetectsAdapterFromAcquiredSnapshot(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "growing.jsonl")
 	if err := os.WriteFile(path, []byte(`{"type":"summary","summary":"preview without usage"}`+"\n"), 0o600); err != nil {
@@ -426,6 +431,161 @@ func TestCollectorDetectsAdapterFromAuthoritativeSnapshot(t *testing.T) {
 	}
 	if health := collector.Health(); health.Status != "healthy" || health.Imported != 2 {
 		t.Fatalf("collector health=%+v", health)
+	}
+}
+
+func TestCollectorRetriesRetargetedSourceBeforeClaimingIdentity(t *testing.T) {
+	claudeContents, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexContents, err := os.ReadFile(filepath.Join("testdata", "codex", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	claudePath := filepath.Join(root, "claude.jsonl")
+	codexPath := filepath.Join(root, "codex.jsonl")
+	if err := os.WriteFile(claudePath, claudeContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codexPath, codexContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "current.jsonl")
+	if err := os.Symlink(claudePath, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("source symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	store := openTestStore(t)
+	collector, err := NewCollector(store, []string{link}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retarget sync.Once
+	store.beforeSnapshotRead = func() {
+		retarget.Do(func() {
+			if err := os.Remove(link); err != nil {
+				t.Errorf("remove source alias: %v", err)
+				return
+			}
+			if err := os.Symlink(codexPath, link); err != nil {
+				t.Errorf("retarget source alias: %v", err)
+			}
+		})
+	}
+	observer := &collectorBenchmarkObserver{}
+	store.benchmarkObserver = observer
+	result, err := collector.PollOnce()
+	if err != nil || result.Receipt.Imported != 2 {
+		t.Fatalf("retargeted acquisition result=%+v err=%v", result, err)
+	}
+	if observer.sourceBytesRead != int64(2*len(codexContents)) {
+		t.Fatalf("source bytes read=%d, want two visible Codex reads across identity retry (%d)", observer.sourceBytesRead, 2*len(codexContents))
+	}
+	var claudeIdentities, codexIdentities int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM collector_source_identities WHERE adapter = 'claude'`).Scan(&claudeIdentities); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM collector_source_identities WHERE adapter = 'codex'`).Scan(&codexIdentities); err != nil {
+		t.Fatal(err)
+	}
+	if claudeIdentities != 0 || codexIdentities != 1 {
+		t.Fatalf("adapter identities after retarget retry: Claude=%d Codex=%d; want 0, 1", claudeIdentities, codexIdentities)
+	}
+	if count, err := store.EventCount(); err != nil || count != 2 {
+		t.Fatalf("events after retarget retry=%d err=%v; want 2", count, err)
+	}
+}
+
+func TestCollectorBoundsCursorConflictRetries(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "shared.db")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	competitor, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer competitor.Close()
+	contents, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := collectorSourceForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSourceID, err := establishedCollectorSourceID(store, source, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &collectorBenchmarkObserver{}
+	store.benchmarkObserver = observer
+	attempts := 0
+	store.beforeAppend = func() {
+		attempts++
+		cursor := Cursor{SourceID: baseSourceID, FileFingerprint: fmt.Sprintf("competing-fingerprint-%d", attempts),
+			SourceGeneration: int64(attempts), SnapshotReusable: false}
+		if _, err := competitor.AppendWithCursor(nil, cursor); err != nil {
+			t.Errorf("advance competing cursor: %v", err)
+		}
+	}
+	result, err := collector.PollOnce()
+	if !errors.Is(err, errSourceCursorRetryExhausted) {
+		t.Fatalf("collector result=%+v err=%v; want bounded cursor retry exhaustion", result, err)
+	}
+	if attempts != sourceCursorRetryLimit {
+		t.Fatalf("append attempts=%d, want %d", attempts, sourceCursorRetryLimit)
+	}
+	if observer.sourceBytesRead != int64(sourceCursorRetryLimit)*int64(len(contents)) {
+		t.Fatalf("source bytes read=%d, want one authoritative read per bounded attempt", observer.sourceBytesRead)
+	}
+	if count, err := store.EventCount(); err != nil || count != 0 {
+		t.Fatalf("events after exhausted retries=%d err=%v; want 0", count, err)
+	}
+}
+
+func TestCollectorUsesMappedIdentityWithoutExistingCursor(t *testing.T) {
+	store := openTestStore(t)
+	contents, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := collectorSourceForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mappedSourceID = "existing-mapped-source-id"
+	if _, claimed, err := store.rememberCollectorSourceIdentity(source.CanonicalKey, "claude", mappedSourceID); err != nil || !claimed {
+		t.Fatalf("seed source identity claimed=%v err=%v", claimed, err)
+	}
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := collector.PollOnce()
+	if err != nil || result.Receipt.Imported != 2 {
+		t.Fatalf("collector result=%+v err=%v", result, err)
+	}
+	if cursor, err := store.Cursor(mappedSourceID); err != nil || cursor.ByteOffset != int64(len(contents)) {
+		t.Fatalf("mapped cursor=%+v err=%v", cursor, err)
 	}
 }
 

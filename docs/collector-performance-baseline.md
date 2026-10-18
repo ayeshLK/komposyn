@@ -167,3 +167,39 @@ ranges. Run correctness tests before claiming an improvement.
 Do not claim a stable improvement from this single-host baseline alone. A
 candidate must publish new repeated results and explain any workload that
 misses its target before merge.
+
+## Issue #137 acquisition comparison
+
+The collector acquisition candidate is based on merged baseline
+`0943bc8d3ef63eef98e907c856211af6d93424a7` and implemented at
+`55ec3e177cfd7840877ada2fe07bc1e7dbb4fd86`. Before and candidate runs used
+Go 1.26.9 on the same Linux amd64 host (Intel Core i7-10510U); each sample ran
+ten operations, repeated five times. Reproduce both sides with:
+
+```sh
+go test ./plugins/library/token-logger -run '^$' \
+  -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' \
+  -benchtime=10x -count=5
+```
+
+| Provider / workload | Time/op before → candidate (median; range) | Source bytes/op before → candidate | Hashed bytes/op before → candidate | Parser records/op before → candidate | Insert attempts/op before → candidate | Allocated bytes/op before → candidate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Claude / unchanged, 1,000 | 1.20 ms (1.08–1.51) → 1.24 ms (1.09–1.64) | 364,040 → 182,020 | 182,020 → 182,020 | 4 → 2 | 0 → 0 | 656,072 → 465,459 |
+| Codex / unchanged, 1,000 | 1.40 ms (1.25–1.55) → 1.49 ms (1.39–2.13) | 440,648 → 220,324 | 220,324 → 220,324 | 2 → 1 | 0 → 0 | 720,168 → 497,411 |
+| Claude / usage append, 1,000 | 96.76 ms (91.43–113.73) → 105.84 ms (95.79–124.41) | 364,406 → 182,203 | 545,298 → 545,298 | 1,006 → 1,004 | 1,001 → 1,001 | 11,534,589 → 11,344,246 |
+| Codex / usage append, 1,000 | 108.09 ms (102.14–113.49) → 119.54 ms (108.93–139.45) | 441,096 → 220,548 | 660,222 → 660,222 | 1,004 → 1,003 | 1,001 → 1,001 | 13,624,624 → 13,401,800 |
+| Claude / non-usage append, 1,000 | 96.37 ms (93.75–107.64) → 119.52 ms (100.26–125.86) | 364,218 → 182,109 | 545,022 → 545,022 | 1,006 → 1,004 | 1,000 → 1,000 | 11,526,977 → 11,336,332 |
+| Codex / non-usage append, 1,000 | 111.35 ms (106.42–136.72) → 111.47 ms (107.06–120.51) | 440,878 → 220,439 | 659,890 → 659,890 | 1,004 → 1,003 | 1,000 → 1,000 | 13,615,757 → 13,392,223 |
+
+Read bytes fell by exactly half in every listed workload, while hashed bytes
+and SQLite insert attempts stayed constant. Allocated bytes fell 29–31% for
+unchanged histories and about 1.6–1.7% for appends. Allocation counts rose
+slightly on unchanged polls (Claude 249→261, Codex 227→250) because the
+collector captures cursor expectations for both possible adapters before it
+reads the snapshot; append allocation counts changed by at most 22 across
+roughly 114k–152k allocations. Historical insert attempts stayed at 1,000
+for all append workloads. Timing ranges overlap and medians vary by workload,
+so these observations establish lower read/allocation volume rather
+than a general latency improvement. Malformed and unsupported unchanged
+scenarios also read exactly half as many source bytes and decode one fewer
+adapter-detection pass.
