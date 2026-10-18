@@ -90,14 +90,20 @@ host was not reserved from other work; timings are observations, not gates.
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Claude / unchanged, 1,000 | 364,040 | 182,020 | 4 | 0 | 0 |
 | Codex / unchanged, 1,000 | 440,648 | 220,324 | 2 | 0 | 0 |
-| Claude / usage append, 1,000 | 364,406 | 545,298 | 1,004 | 1,001 | 1,000 |
-| Codex / usage append, 1,000 | 441,096 | 660,222 | 1,003 | 1,001 | 1,000 |
-| Claude / non-usage append, 1,000 | 364,218 | 545,022 | 1,004 | 1,000 | 1,000 |
-| Codex / non-usage append, 1,000 | 440,878 | 659,890 | 1,003 | 1,000 | 1,000 |
-| Claude / malformed unchanged, 50 | 18,370 | 27,361 | 54 | 50 | 50 |
-| Codex / malformed unchanged, 50 | 21,968 | 32,688 | 53 | 50 | 50 |
-| Claude / unsupported unchanged, 50 | 18,740 | 27,731 | 54 | 50 | 50 |
-| Codex / unsupported unchanged, 50 | 22,366 | 33,086 | 53 | 50 | 50 |
+| Claude / usage append, 1,000 | 364,406 | 545,298 | 1,006 | 1,001 | 1,000 |
+| Codex / usage append, 1,000 | 441,096 | 660,222 | 1,004 | 1,001 | 1,000 |
+| Claude / non-usage append, 1,000 | 364,218 | 545,022 | 1,006 | 1,000 | 1,000 |
+| Codex / non-usage append, 1,000 | 440,878 | 659,890 | 1,004 | 1,000 | 1,000 |
+| Claude / malformed unchanged, 50 | 18,370 | 27,361 | 56 | 50 | 50 |
+| Codex / malformed unchanged, 50 | 21,968 | 32,688 | 54 | 50 | 50 |
+| Claude / unsupported unchanged, 50 | 18,740 | 27,731 | 56 | 50 | 50 |
+| Codex / unsupported unchanged, 50 | 22,366 | 33,086 | 54 | 50 | 50 |
+
+Parser-record counters in this table were revalidated at commit
+`0260e6a66c72d5ff923c9091126394f447d175ae` with the generated-fixture benchmark
+using `-benchtime=1x -count=1`. This refresh corrects deterministic work
+counters only; it does not replace the timing, allocation, or scaling samples
+above with one-iteration measurements.
 
 An unchanged poll reads each source once for collector adapter detection and
 again for the adapter's authoritative snapshot. Each snapshot is decoded once
