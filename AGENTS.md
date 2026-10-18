@@ -1,251 +1,90 @@
-# AGENTS.md
+# Agent instructions
 
-## Product direction and repository overview
+## Repository ownership
 
-KompoSyn is intended to become a modular, composable harness for AI agent
-workflows. This repository currently implements one independently useful
-component: KompoSyn Token Logger, a local-first Go application that normalizes
-usage events from AI coding clients, stores them in SQLite, and produces usage
-and cost reports. The standalone executable is named `komposyn-lg`.
+This repository is the single Go module `github.com/ayeshLK/komposyn`. It owns
+the reusable token-logger API: domain models and validation, SQLite storage
+and numbered migrations, provider adapters, collector behavior, pricing,
+diagnostics, and report queries/formatting. The standalone executable,
+interactive onboarding, settings and consent policy, data-directory selection,
+process lifecycle, JSONL harness transport, installers, and binary releases are
+owned by [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
 
-Do not assume that a general harness, plugin runtime, plugin marketplace, or
-universal plugin API exists. The current token logger has three concrete
-surfaces: its reusable Go library, the `komposyn-lg` CLI, and the token
-logger's versioned JSONL `harness` sidecar. The sidecar is a token-logger
-integration contract, not a general KompoSyn plugin standard. For product
-intent and undecided questions, read [docs/vision.md](docs/vision.md); for the
-implemented component boundaries, read [docs/architecture.md](docs/architecture.md).
+Do not add a nested module or independently version core packages. Core and CLI
+versions are independent; the CLI depends on a tagged core release. Keep the
+dependency one-way. Do not assume a general harness runtime, plugin
+marketplace, or universal plugin API exists; read [docs/vision.md](docs/vision.md)
+and [docs/architecture.md](docs/architecture.md) for implemented boundaries.
 
-The module is `github.com/ayeshLK/komposyn` and requires Go 1.26 or newer.
-The repository is licensed under Apache-2.0; preserve the headers and consult
-`LICENSE`, `NOTICE`, `CONTRIBUTING.md`, and `SECURITY.md` before making changes.
+Read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md),
+[LICENSE](LICENSE), and [NOTICE](NOTICE) before changes. Inspect the worktree
+before editing and preserve unrelated changes.
 
-## Repository layout
+## Core invariants
 
-- `plugins/library/token-logger/` — domain model, validation, SQLite storage,
-  migrations, provider adapters, collector, pricing, diagnostics, and report
-  formatting. This package must remain usable independently of the CLI.
-- `plugins/cli/token-logger/` — the `komposyn-lg` command, interactive mode,
-  project/session resource navigation, import/report/settings/watch commands,
-  and the `harness` JSONL sidecar protocol.
-- `docs/README.md` — documentation map for installation, configuration,
-  operation, CLI usage, data handling, migrations, and release verification.
-- `docs/HARNESS_PROTOCOL.md` — versioned protocol contract. Keep stdout clean:
-  protocol responses only; diagnostics go to stderr.
-- `docs/pricing-catalog.md` — pricing catalog provenance, interval update,
-  validation, and estimate/reporting rules.
-- `scripts/` — release archive creation, dependency-license collection,
-  installers/uninstallers, and release lifecycle verification.
-- `.github/workflows/ci.yml` — formatting, module verification, vet, tests,
-  builds, and race tests on GitHub Actions.
-- `.github/workflows/codeql.yml` — scheduled and pull-request CodeQL analysis
-  with read-only repository access and narrowly scoped security-events access.
-- `.github/workflows/release-please.yml` — manually dispatched Release Please
-  preparation of the next version and reviewed changelog pull request.
-- `.github/workflows/release.yml` — manually dispatched publication of a
-  merged release PR: validation, build, Cosign signing, installer lifecycle
-  checks, protected-environment approval, and GitHub Release publication.
-- `Makefile` — the preferred local entry points for development and releases.
-- `docs/vision.md` — maintained product direction and explicitly open harness
-  and plugin questions.
+- Keep provider source files read-only. Do not capture prompts, responses,
+  credentials, or other source content by default.
+- Ingestion remains idempotent through stable keys. An event append and source
+  cursor advance commit together or neither commits.
+- Projects and sessions use stable KompoSyn-owned identities. Provider IDs are
+  scoped aliases; display names do not merge projects. Preserve path-free
+  reconciliation warnings and synthetic Unattributed resources.
+- SQLite schema is version 15. Any schema change needs a new immutable,
+  numbered transactional migration, runner update, and complete upgrade tests.
+  Do not add automatic down-migrations.
+- Migration backups use SQLite's online backup API, represent a consistent
+  pre-migration state, and are verified before migration. Backup failure must
+  prevent migration; failed migration must leave the original and backup
+  usable.
+- Provider adapters parse one immutable snapshot for fingerprinting and event
+  offsets. Preserve cursor generation, pending-tail visibility, and full-digest
+  unchanged checks.
+- Usage-shape allowlists remain strict. Preserve billing provenance and avoid
+  inferring unsupported pricing modifiers. Keep provider-reported cost apart
+  from estimates.
+- Persistent collector roots, lease, heartbeat, stop request, and run history
+  remain library-owned state. Foreground/embedded collection must not mutate
+  registered roots. Preserve one healthy lease owner per data directory.
+- Reports preserve exact JSON/CSV values, local civil-hour grouping, UTC
+  offsets, fractional offsets, and DST-fold distinctions.
+- Harness protocol transport is owned by the standalone CLI. Core changes that
+  affect event or schema compatibility must preserve its published protocol-v1
+  semantics and be reviewed with the CLI compatibility checks.
+- Diagnostics remain sanitized, deduplicated, locally persisted, and
+  destination-neutral. Public issue drafts require explicit review in the CLI;
+  security-sensitive reports use private disclosure.
+- Preserve existing databases and backups. Never silently copy or merge data
+  directories.
 
-## Core design invariants
+## Development and validation
 
-- Keep the library/CLI boundary intact. Domain behavior belongs in the library;
-  CLI code should adapt arguments, input/output, and process lifecycle.
-- Keep provider source files read-only by default. The logger ingests local
-  source data and must not modify provider logs.
-- Do not capture prompts, responses, credentials, or other source content by
-  default. Persist normalized usage and provenance fields only.
-- Event ingestion is idempotent through stable ingestion keys. Preserve
-  transactional behavior: an append and its source cursor advance together, or
-  neither is committed.
-- Projects and sessions use KompoSyn-owned stable identities. Provider IDs are
-  scoped aliases; canonical locations may reconcile projects, but display
-  names must never merge them. Preserve path-free reconciliation warnings and
-  synthetic Unattributed project/session resources so hierarchical totals
-  reconcile with global reports. Resource selectors must remain scoped and
-  reject ambiguous names or prefixes.
-- The current SQLite schema version is 15. Migrations 1 and 2 create the core
-  and diagnostics tables, migration 3 normalizes stored timestamps to fixed
-  width UTC values, and migration 4 adds source-generation tracking for
-  transcript replacement detection. Migration 5 adds rational pricing rates
-  and catalog identity/source provenance while preserving the legacy
-  `rate_micros` meaning. Migration 6 adds KompoSyn-owned project identity,
-  canonical locations, scoped provider aliases, and reconciliation warnings
-  without rewriting historical event references. Migration 7 normalizes and
-  deduplicates nullable reconciliation-warning keys. Migration 8 reserves both
-  synthetic Unattributed navigation ID strings across the project and session
-  namespaces and remaps any older persisted collisions without losing
-  references. Migration 9 records pending-tail and safe unchanged-snapshot
-  reuse state on source cursors. Migration 10 stores path-safe mappings from a
-  canonical source digest to its established collector source ID. Migration 11
-  adds the persistent source registry, singleton lease, heartbeat/status,
-  cooperative stop request, and run history. Migration 12 adds billing
-  context and service-tier/region pricing selectors; migration 13 splits
-  cache-write duration counts; migration 14 adds pricing speed selectors;
-  migration 15 adds diagnostic category and version metadata. SQLite
-  schema changes require an explicit numbered migration in
-  `plugins/library/token-logger/migrations.go`,
-  a matching runner update, and an upgrade test covering the complete history.
-- Provider adapters parse one immutable source snapshot for both fingerprinting
-  and event offsets; collector detection uses the same snapshot. Preserve
-  source-cursor generation, pending-tail visibility, and full-digest unchanged
-  checks when handling replacements, and do not reintroduce separate
-  file-descriptor parsing or mtime/size-only shortcuts.
-- Usage-shape allowlists remain strict. Claude `fallback_credit` is recognized
-  as optional billing metadata but is not persisted, interpreted as tokens, or
-  used to infer a discount. A non-reusable cursor from an incomplete older
-  import must let an upgraded parser recover skipped events from unchanged
-  bytes while already imported events remain duplicates; independent unknown
-  fields must still keep the snapshot non-reusable.
-- Persistent collection is configured through the SQLite source registry.
-  Background, foreground-registry, and embedded REPL collectors share one
-  healthy lease per data directory, use cooperative stop requests, and retain
-  cumulative run outcomes separately from latest-poll/root health. Registered
-  roots reload before each background poll; explicit foreground roots and
-  embedded environment/default roots must not mutate the registry. Required
-  missing roots degrade health, optional missing defaults do not, and
-  overlapping/symlinked sources are deduplicated by canonical identity.
-- Interactive collector startup remains consent-driven. `collector_enabled`
-  and `auto_start` govern embedded REPL collection only; only `watch start`
-  launches a detached process. `/refresh` queries committed SQLite data and
-  never initiates source collection. Do not start competing collectors to make
-  a report appear fresh.
-- Reports group hourly data by local civil hour while retaining the event's
-  numeric UTC offset, including fractional offsets and DST folds.
-- Human report/resource tables are terminal-width-aware, sanitize untrusted
-  dimensions, and compact token counts with decimal suffixes. JSON and CSV are
-  the exact, untruncated machine-readable surfaces; do not change their integer
-  token values to match human display formatting. Empty human reports show
-  `NO USAGE DATA`.
-- Pricing is calculated offline from time-bounded rules. The embedded public
-  API catalog is synchronized locally and transactionally; released entry
-  rates/provenance are immutable, with only a one-time `effective_to` closure
-  allowed when a replacement rate is added. Validate catalog provenance,
-  rational denominators, and overlapping equal-precedence selectors/intervals.
-  Keep unsupported or ambiguous billing contexts unknown; never infer
-  subscription or provider-specific pricing modifiers. See
-  [docs/pricing-catalog.md](docs/pricing-catalog.md).
-- Keep provider-reported cost separate from calculated estimates. Machine
-  reports expose `pricing_provider` and `calculation_basis` alongside pricing
-  version/source/model/effective interval; distinguish public-catalog,
-  custom, mixed, partial, known-zero, and unavailable bases. When grouping
-  combines different provenance, report `mixed` rather than implying one rule.
-- Harness reference metadata and its event must be persisted atomically. A
-  session that names a project requires matching project metadata in the same
-  record request; preserve stable protocol error codes and protocol version 1.
-- Preserve existing database, configuration, consent, and local diagnostic
-  data during upgrades and uninstall. The initial upgrade strategy is to rerun
-  the latest standalone installer; in-CLI self-updating is deferred.
-- Resolve the data directory consistently: explicit command/harness input,
-  then `TOKEN_LOGGER_DATA_DIR`, then the platform default with documented
-  legacy-directory compatibility. Never silently copy or merge two data
-  directories, and never fall back to the current working directory when the
-  user home cannot be resolved.
-- The harness protocol is versioned. Maintain stable error codes and the
-  `initialize`, `record`, `flush`, `health`, and `shutdown` method semantics.
-  Keep the per-message input limit and never write logs to protocol stdout.
-- Diagnostics must be sanitized, deduplicated, stored locally, and explicitly
-  reviewed before an issue draft is opened. Never include sensitive source
-  content in diagnostics or issue reports.
-
-## Development workflow
-
-Run the focused checks while iterating:
+Requires Go 1.26 or newer. Run focused checks while iterating and, before
+submitting, run:
 
 ```sh
+go mod verify
+go vet ./...
 go test ./...
 go test -race ./...
-go vet ./...
 make check
 ```
 
-`make check` runs formatting, vet, tests, and a CLI build. The CI workflow also
-verifies `go mod verify`, Go formatting, and builds on Linux, macOS, and
-Windows; the race job runs `go test -race ./...`, and CodeQL runs separately.
-Note that `make fmt` and the `fmt` phase of `make check` modify Go files;
-review the resulting diff afterward. Add or update tests alongside behavior
-changes, especially for provider normalization, immutable snapshots,
-idempotency, migrations, reporting, protocol errors, and data preservation.
-For asynchronous collector tests, assert persisted/final state and monotonic
-outcomes instead of assuming an exact number of timer polls; runner scheduling
-differs substantially across Linux, macOS, and Windows.
+`make check` verifies formatting, modules, vet, and tests. CI also runs the
+public standalone CLI test suite against candidate core using an isolated,
+temporary module replacement; it uses read-only access, no cross-repository
+credentials, and never commits a `replace` directive. Review any generated
+diffs from formatting. Keep binaries, databases, WAL files, archives, and
+agent metadata out of commits.
 
-Useful local commands:
+## Core releases
 
-```sh
-make build
-go test ./plugins/library/token-logger -run TestName
-go test ./plugins/cli/token-logger -run TestName
-```
+Release Please prepares and reviews core version/changelog changes. Merging a
+release PR on `master` creates the source tag and GitHub release notes through
+the pinned Release Please workflow. Core releases contain the Go module source;
+they do not build or publish `komposyn-lg` binaries. Never create or move tags
+manually. Historical combined releases through v0.7.0 remain available; see
+[historical combined release verification](docs/historical-combined-releases.md).
 
-Keep generated binaries under ignored `bin/`; do not commit local databases,
-WAL files, release archives, or agent metadata.
-
-## Release workflow
-
-Build a release with a dedicated empty directory:
-
-```sh
-make release VERSION=v0.1.0 OUTPUT_DIR=dist
-```
-
-`scripts/build-release.sh` creates the output directory if absent, rejects
-unsafe/symlinked paths, and refuses non-empty directories. It must never delete
-or overwrite caller-owned files. The release contains six Go targets:
-Linux/macOS amd64 and arm64, plus Windows amd64 and arm64. It also includes
-third-party license attribution and `SHA256SUMS`.
-
-Release publication is a two-stage, manually dispatched GitHub Actions flow.
-Run **Prepare release** so Release Please opens or updates the version/changelog
-PR, review and merge that PR, then run **Publish release** with the required
-release-gate confirmation. The publish workflow resolves the one merged
-`autorelease: pending` PR and tests, tags, signs, and publishes that exact
-commit. A post-release-PR recovery commit may be selected only through the
-validated `release_commit` input and must descend from the prepared commit and
-remain reachable from `master`. Do not create or move release tags manually.
-
-Installers verify both checksums and Cosign blob signatures, including the
-expected GitHub Actions certificate identity and OIDC issuer. Do not weaken
-those checks or introduce an installer path that bypasses signature
-verification. Keep Release Please manifest/config changes coordinated with the
-generated release PR; conventional commit types determine the proposed version
-and changelog entries.
-
-The release workflows keep permissions least-privilege: preparation receives
-only the contents/pull-request writes needed to maintain the release PR, the
-build job receives OIDC signing access, installer verification is read-only,
-and only publication receives `contents: write`. Keep third-party Actions
-pinned to immutable commit SHAs when changing workflows.
-
-Before changing release scripts, run shell syntax checks and the lifecycle
-verifier:
-
-```sh
-bash -n scripts/*.sh
-make release VERSION=v0.1.0 OUTPUT_DIR=/tmp/komposyn-release-test
-bash scripts/verify-release.sh /tmp/komposyn-release-test
-```
-
-Use a fresh temporary or dedicated output path for each build. Do not point the
-release builder at a home directory, repository root, parent directory, or a
-directory containing unrelated files.
-
-The release verifier exercises install, upgrade-by-replacement, and
-data-preserving uninstall. The initial upgrade contract is executable
-replacement by the latest standalone installer; it must preserve the database,
-settings, and consent/data directory.
-
-## Change and safety guidelines
-
-- Inspect the worktree before editing and preserve unrelated user changes.
-- Prefer `apply_patch` for tracked-file edits.
-- Avoid destructive commands. Never recursively remove broad or unresolved
-  paths. Confirm exact targets before deleting temporary artifacts.
-- Keep changes scoped to the requested behavior and update documentation when
-  contracts, commands, protocol behavior, or release assumptions change.
-- Do not add network calls, telemetry, provider credentials, or external data
-  transmission without an explicit design change and user consent.
-- For security-sensitive changes, explain the threat model, add a regression
-  test where practical, and run the relevant release or lifecycle checks.
+Keep Actions permissions least-privilege and third-party actions pinned to
+immutable commit SHAs. The standalone CLI suite in core CI runs untrusted
+public code without secrets or write permissions.

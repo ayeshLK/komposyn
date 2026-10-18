@@ -2,10 +2,11 @@
 
 ## Implemented today
 
-KompoSyn currently implements the Token Logger component. Provider-owned
+KompoSyn Core implements the reusable Token Logger library. Provider-owned
 transcript files are read by adapters, normalized into the library event model,
-and persisted in SQLite. The CLI is an orchestration and presentation layer; it
-does not own the database schema or provider parsing rules.
+and persisted in SQLite. The independently versioned `komposyn-lg` executable
+is maintained in [its standalone repository](https://github.com/ayeshLK/komposyn-lg)
+and consumes this module.
 
 This architecture is implemented in this repository. It is not a description
 of a general harness runtime or a universal plugin API.
@@ -15,9 +16,9 @@ flowchart LR
   A[Codex / Claude local transcripts] --> B[Provider adapter]
   B --> C[Normalized UsageEvent]
   C --> D[SQLite Store]
-  D --> E[Reports and settings]
+  D --> E[Report queries]
   D --> F[Diagnostics]
-  G[CLI import / watch / harness] --> B
+  G[Standalone CLI] --> B
 ```
 
 ## Component boundaries
@@ -25,15 +26,15 @@ flowchart LR
 - `plugins/library/token-logger/` contains the domain model, SQLite store,
   numbered migrations, provider adapters, collector, pricing, diagnostics,
   and reporting.
-- `plugins/cli/token-logger/` contains command dispatch, interactive setup,
+- The standalone CLI repository contains command dispatch, interactive setup,
   output formatting, settings and consent policy, process lifecycle, and the
-  versioned harness protocol. It calls library APIs instead of querying
+  versioned JSONL harness transport. It calls library APIs instead of querying
   SQLite directly.
 - The supported reusable Go adapter surface and intentional pre-1.0 API
   compatibility decisions are recorded in [core-api.md](core-api.md).
-- `docs/HARNESS_PROTOCOL.md` is the normative contract for machine-readable
-  JSONL requests and responses. Changes to that contract require a protocol
-  version decision and compatibility tests.
+- The protocol-v1 contract is maintained by the standalone CLI repository.
+  Core API or schema changes that affect it are validated against the public
+  CLI suite in core CI.
 
 ## Relationship to the future harness
 
@@ -41,7 +42,7 @@ The intended KompoSyn direction is to compose independently useful components
 into a broader agent harness. That composition layer does not exist yet. Its
 plugin lifecycle, discovery and distribution model, trust boundary, and the
 question of whether every component needs a standalone CLI remain open design
-questions. Do not treat the Token Logger library, CLI, or sidecar as a
+questions. Do not treat the Token Logger library or CLI integration as a
 completed general plugin contract.
 
 ## Import and collection flow
@@ -81,17 +82,9 @@ writes to provider-owned source files.
 
 Persistent roots, the singleton runtime lease, random instance identity,
 heartbeat, cooperative stop request, cumulative typed outcomes, and sanitized
-health are application-owned SQLite state. The detached child reloads enabled
-roots before each poll and canonical discovery deduplicates overlapping roots.
-Unix children start in a new session; Windows children use detached/new-process
-group flags without a console window. Terminal streams are not inherited and
-no network listener is opened.
-
-The REPL's embedded collector acquires the same lease. With a healthy
-background owner, the REPL reads persisted status instead and does not stop the
-background process on exit. A stored PID is informational: stop and stale
-recovery use instance identity and heartbeat, never a signal sent solely from
-that PID.
+health are application-owned SQLite state. The standalone CLI's background,
+foreground, and embedded modes use this shared library behavior; process
+launch and interactive lifecycle policy belong to the CLI repository.
 
 ## Source replacement safety
 
@@ -134,6 +127,5 @@ offset zones and repeated hours during daylight-saving folds remain distinct.
 
 Resource queries expose a stable hierarchy over the same facts: projects own
 sessions, while models remain an event aggregation dimension rather than a
-persistent child table. New resource-list JSON uses `format_version: 1`.
-Legacy `sessions` report syntax remains available; `sessions list/show` is the
-resource-browser surface.
+persistent child table. The public resource API keeps stable project/session
+identities; presentation and command syntax are owned by the standalone CLI.

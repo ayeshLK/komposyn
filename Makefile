@@ -1,10 +1,10 @@
-.PHONY: fmt lint test build installer-trust check release licenses clean
-
-VERSION ?= v0.1.0
-OUTPUT_DIR ?= dist
+.PHONY: fmt verify-modules lint test check
 
 fmt:
 	go fmt ./...
+
+verify-modules:
+	go mod verify
 
 lint:
 	go vet ./...
@@ -12,19 +12,4 @@ lint:
 test:
 	go test ./...
 
-build:
-	go build -o bin/komposyn-lg ./plugins/cli/token-logger
-
-installer-trust:
-	bash scripts/test-installer-trust.sh
-
-check: fmt lint test build installer-trust
-
-release:
-	bash scripts/build-release.sh $(VERSION) $(OUTPUT_DIR)
-
-licenses:
-	bash scripts/generate-third-party-licenses.sh $(OUTPUT_DIR)
-
-clean:
-	rm -rf bin
+check: fmt verify-modules lint test

@@ -1,45 +1,33 @@
 # Testing guide
 
-The required baseline for behavior changes is:
+The required baseline for core behavior changes is:
 
 ```sh
-go test ./...
+go mod verify
 go vet ./...
+go test ./...
 go test -race ./...
 make check
 ```
 
-Run focused package tests first, then the smallest applicable matrix below. CI
-remains the final cross-platform check.
+Core CI also runs the public standalone CLI test suite against the candidate
+core source. It clones the public CLI without credentials or write permissions
+and applies a temporary replacement in the runner's disposable checkout only.
+It never edits or commits the core module's `go.mod`.
 
 | Change area | Required coverage |
 | --- | --- |
-| Domain model or validation | Focused library tests, full tests, and vet |
+| Domain model or validation | Focused library tests, full tests, vet, and standalone CLI compatibility job |
 | SQLite storage | Idempotency, rollback, cursor, and race tests |
-| Migrations | Fresh database, historical upgrade, complete migration history, and newer-schema rejection |
-| Provider adapters | Shared conformance suite: initial/re-import, append, replacement/path reuse, malformed interior input, retryable tail completion, unsupported usage, missing attribution, storage failure, source immutability, and provider-specific normalization |
-| Collector | Polling, cancellation, unavailable source, and health behavior |
-| Reporting and time | Ordering, output formats, fractional offsets, DST folds, and local civil-hour buckets |
-| Settings | Round-trip, permissions, replacement failure, and platform behavior |
-| Diagnostics | Sanitization, deduplication, persistence, and disclosure boundaries |
-| Harness protocol | Lifecycle, malformed input, unknown methods, stable errors, message limits, stdout/stderr, metadata atomicity, and duplicates |
-| CLI | Focused command tests, stable import JSON/exit behavior, CLI-versus-harness canonical differential fixture, plus the full suite |
-| Release or installer | Shell syntax, release build, signature/checksum verification, lifecycle verifier, and platform-specific behavior |
-| Workflow or security | YAML review, least-privilege permissions, immutable action references, and relevant checks |
-| Documentation | Local links, command accuracy, examples, and consistency with implementation |
-
-## Windows console integration
-
-The hosted Windows job uses redirected standard streams, so its native
-console-record unit tests are not an attached-console end-to-end test. For
-manual cursor editing/history, Enter-key behavior, `/clear`/Ctrl-L, and console
-mode restoration checks, follow the
-[Windows console integration procedure](windows-console-testing.md). Report
-manual evidence separately from automated CI results.
-
-## Evidence
+| Migrations | Fresh database, historical upgrade, complete migration history, backup failure, migration failure, restoration, and newer-schema rejection |
+| Provider adapters | Initial/re-import, append, replacement/path reuse, malformed input, retryable tail completion, unsupported usage, attribution, storage failure, source immutability, and normalization |
+| Collector | Polling, cancellation, unavailable source, lease, registry, and health behavior |
+| Reporting and time | Ordering, machine-output precision, provenance, fractional offsets, DST folds, and local civil-hour buckets |
+| Diagnostics | Sanitization, deduplication, persistence, category/version metadata, and disclosure boundaries |
+| Core compatibility | Candidate core CI runs the standalone CLI suite without cross-repository secrets or write permissions |
+| Workflow or security | YAML review, least-privilege permissions, immutable Action references, and relevant checks |
+| Documentation | Local links, command ownership, examples, and consistency with implementation |
 
 PRs should list exact commands and whether each passed. If a check cannot be
-run locally, say why and identify the GitHub Actions job that will cover it.
-Never use real provider transcripts or include prompts, responses, credentials,
-or unsanitized diagnostics in fixtures or evidence.
+run locally, identify the GitHub Actions job that will cover it. Use only
+sanitized synthetic data in tests and evidence.

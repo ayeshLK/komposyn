@@ -7,18 +7,17 @@ before the first release.
 
 ## Available now
 
-This repository currently implements KompoSyn Token Logger:
+This repository currently provides KompoSyn Token Logger Core:
 
 - A reusable Go library normalizes provider-owned local usage records into a
   versioned event model and stores them in SQLite.
-- The standalone `komposyn-lg` CLI imports, watches, and reports on that local
-  data.
-- The token logger exposes a versioned JSONL `harness` sidecar for machine
-  integration.
+- The independently versioned `komposyn-lg` executable and its versioned
+  JSONL sidecar are maintained in the
+  [standalone CLI repository](https://github.com/ayeshLK/komposyn-lg).
 
-These are three surfaces of the current token logger component. The sidecar is
-not a general KompoSyn plugin protocol, and the repository does not currently
-provide a general harness runtime or plugin marketplace.
+The sidecar is a token-logger integration contract, not a general KompoSyn
+plugin protocol. The project does not currently provide a general harness
+runtime or plugin marketplace.
 
 ## Proposed direction
 

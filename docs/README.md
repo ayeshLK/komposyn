@@ -1,78 +1,40 @@
-# KompoSyn documentation
+# KompoSyn Core documentation
 
-Use this page to choose the right guide. The repository README is the short
-product overview; these pages are the maintained project, operational, and
-integration reference.
+This repository documents the reusable `github.com/ayeshLK/komposyn` module.
+The executable, user configuration, JSONL harness transport, installers, and
+binary release process are maintained in the
+[standalone CLI repository](https://github.com/ayeshLK/komposyn-lg).
 
-## Start here
+## Core API and operation
 
-- [Project vision](vision.md) — KompoSyn's proposed direction, current
-  component, and open harness questions.
-- [Getting started](getting-started.md) — install or build the CLI, import a
-  first source, and verify a report.
-- [Installation](installation.md) — release installers, platform paths,
-  signatures, upgrades, and uninstall behavior.
-- [Usage guide](usage.md) — imports, reports, watching, settings, and the
-  interactive mode.
-- [CLI reference](cli-reference.md) — command syntax, options, exit behavior,
-  and output formats.
-- [Configuration and data locations](configuration.md) — data directories,
-  settings, collector roots, and ownership boundaries.
+- [Project vision](vision.md) — implemented module and open product questions.
+- [Architecture](architecture.md) — core ownership, provider ingestion,
+  persistence, collector, and report semantics.
+- [Token Logger core API](core-api.md) — supported exports and compatibility.
+- [Data model](data-model.md) — events, identity, provenance, and transactions.
+- [Database migrations](migrations.md) — schema history and migration policy.
+- [Migration backups and recovery](migration-backups.md) — the library's
+  verified backup API, metadata, failure behavior, and recovery contract.
+- [Pricing catalog](pricing-catalog.md) — offline rules, provenance, and review.
+- [Privacy](privacy.md) and [security model](security-model.md) — data
+  handling, boundaries, and disclosure.
+- [OpenTelemetry alignment](otel-alignment.md) — correspondences, gaps, and
+  current non-interoperability boundary.
 
-## Choose by audience
+## Contributing and releases
 
-- **New to KompoSyn:** read the [project vision](vision.md), then follow
-  [getting started](getting-started.md) to use Token Logger today.
-- **Using Token Logger:** use the [usage guide](usage.md),
-  [CLI reference](cli-reference.md), and [privacy guide](privacy.md).
-- **Integrating the current component:** read the
-  [token logger harness protocol](HARNESS_PROTOCOL.md); it is a token-logger
-  integration contract, not a general KompoSyn plugin API.
-- **Contributing or proposing a component:** read
-  [CONTRIBUTING.md](../CONTRIBUTING.md), [AGENTS.md](../AGENTS.md), and the
-  [architecture](architecture.md).
-- **Reviewing operations and releases:** use the security, operations, backup,
-  upgrade, troubleshooting, and release guides below.
+- [Development](contributing/development.md) and
+  [testing](contributing/testing.md) — local checks and regression coverage.
+- [Pull requests](contributing/pull-requests.md) — evidence and review guidance.
+- [Contributing](../CONTRIBUTING.md), [agent instructions](../AGENTS.md), and
+  [security policy](../SECURITY.md).
+- [Core release verification](release-verification.md) — reviewed source tags
+  and module release notes.
+- [Historical combined releases](historical-combined-releases.md) — retained
+  v0.7.0-and-earlier CLI artifact provenance and signer verification.
+- [Standalone CLI compatibility and coordinated security](standalone-compatibility-security.md)
+  — cross-repository review, dependency, and private-release procedures.
 
-## Understand the system
-
-- [Architecture](architecture.md) — current token logger boundaries, import
-  flow, source replacement safety, and reporting semantics.
-- [Token Logger core API](core-api.md) — supported library contract, complete
-  exported declaration inventory, and pre-1.0 compatibility notes.
-- [Privacy and data handling](privacy.md) — what is read, stored, excluded,
-  and sent externally.
-- [Security and privacy model](security-model.md) — trust boundaries, data
-  inventory, disclosure review, and security-sensitive change checks.
-- [Data model](data-model.md) — tables, event identity, provenance, time, and
-  transaction guarantees.
-- [OpenTelemetry alignment audit](otel-alignment.md) — field-level
-  correspondences, semantic gaps, and the current non-interoperability boundary.
-- [Database migrations](migrations.md) — schema history, compatibility rules,
-  and the procedure for adding a migration.
-- [Development guide](contributing/development.md) — local setup, validation,
-  release checks, and final inspection.
-- [Testing guide](contributing/testing.md) — baseline checks and change-area
-  coverage expectations.
-- [Windows console integration test](contributing/windows-console-testing.md)
-  — manual validation of native interactive input, clearing, and terminal
-  state restoration on an attached Windows console.
-- [Pull request guide](contributing/pull-requests.md) — readable descriptions,
-  evidence, compatibility impact, and review handoff.
-- [Operations](operations.md) — data locations, collection health, backups,
-  recovery, upgrades, and uninstall boundaries.
-- [Backups and recovery](backups.md) — consistent backup and restore
-  procedures for local state.
-- [Troubleshooting](troubleshooting.md) — common installation, import,
-  reporting, migration, and release issues.
-- [Release verification](release-verification.md) — artifact, signature,
-  installer, and lifecycle checks.
-- [Upgrades and data preservation](upgrades.md) — installer replacement,
-  migrations, and uninstall boundaries.
-- [Harness protocol](HARNESS_PROTOCOL.md) — the normative versioned JSONL wire
-  contract.
-
-Security-sensitive maintenance remains governed by the repository
-[AGENTS.md](../AGENTS.md), [CONTRIBUTING.md](../CONTRIBUTING.md), and
-[SECURITY.md](../SECURITY.md). These guides complement those authoritative
-project-maintenance references.
+For executable installation, upgrades, commands, settings, or the protocol-v1
+transport contract, use the
+[standalone CLI documentation](https://github.com/ayeshLK/komposyn-lg/tree/master/docs).

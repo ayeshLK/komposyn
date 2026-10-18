@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -49,17 +51,41 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Build CLI
-        run: go build -trimpath ./plugins/cli/token-logger
+  standalone-cli-compatibility:
+    name: Standalone CLI compatibility
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate core
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Verify Windows release resolution
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: ./scripts/test-release-resolution.ps1
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.9
+          cache: false
 
-      - name: Verify Unix installer resolution and trust
-        if: runner.os != 'Windows'
-        run: bash scripts/test-installer-trust.sh
+      - name: Check out public standalone CLI
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: git clone --depth 1 https://github.com/ayeshLK/komposyn-lg.git "$RUNNER_TEMP/komposyn-lg"
+
+      - name: Test standalone CLI against candidate core
+        shell: bash
+        env:
+          CLI_DIR: ${{ runner.temp }}/komposyn-lg
+        run: |
+          cd "$CLI_DIR"
+          GOWORK=off go mod edit -replace="github.com/ayeshLK/komposyn=$GITHUB_WORKSPACE"
+          replacement_dir="$(GOWORK=off go list -m -f '{{if .Replace}}{{.Replace.Dir}}{{end}}' github.com/ayeshLK/komposyn)"
+          [[ "$replacement_dir" == "$GITHUB_WORKSPACE" ]] || {
+            echo "CLI test is not using candidate core: $replacement_dir" >&2
+            exit 1
+          }
+          GOWORK=off go test ./...
 
   race:
     name: Race tests
@@ -69,6 +95,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5

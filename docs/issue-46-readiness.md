@@ -1,5 +1,12 @@
 # Issue #46 release and extraction readiness
 
+> **Archived preparation ledger.** Its proposed v0.7.1 baseline and unchecked
+> pre-publication items are historical. Standalone CLI v0.8.0 was published
+> and verified at source commit `9369bc327e70928c69b332a4aa54ad38de5a226c`;
+> current release evidence is maintained in the
+> [standalone evidence ledger](https://github.com/ayeshLK/komposyn-lg/blob/master/docs/issue-46-release-evidence.md).
+> The current post-release cutover checklist is issue #46 itself.
+
 This checklist tracks implementation and local readiness evidence. A checked
 item records a completed code/documentation task; it does not imply that
 standalone extraction or publication is ready.

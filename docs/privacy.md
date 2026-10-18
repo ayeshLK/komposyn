@@ -1,7 +1,9 @@
 # Privacy and data handling
 
-Komposyn is designed for local usage accounting. It does not require provider
-credentials to import local transcripts or generate reports.
+KompoSyn Core is designed for local usage accounting. It does not require
+provider credentials to normalize local transcripts or query reports. The
+standalone CLI owns command, settings, consent, and process policy; its user
+documentation is maintained in [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
 
 ## What Komposyn reads
 
@@ -15,9 +17,8 @@ The local SQLite database stores normalized usage events, timestamps, token
 counts, provider/model/client identifiers, project and session references,
 provenance, ingestion keys, source cursors, registered collector paths, local
 collector runtime/health, pricing rules, and sanitized local diagnostics.
-Settings are stored separately in the configured data directory. Registered
-paths are path-explicit local administrative data shown by `watch list`; they
-are excluded from diagnostics and issue drafts.
+Settings and consent are managed by the standalone CLI. Registered paths are
+local administrative data and are excluded from core diagnostic reports.
 
 ## What is not stored by default
 
@@ -28,9 +29,9 @@ detection; they are not a transcript archive.
 
 ## External communication
 
-Importing and reporting are local operations. Release installation downloads
-artifacts and verifies their signatures. Diagnostic issue reporting is
-interactive and produces a draft for review; it is not silently submitted.
+Core normalization and report queries are local operations. The standalone
+CLI downloads and verifies its signed release artifacts. Diagnostic issue
+review and routing are CLI-owned; no issue is submitted automatically.
 The public pricing catalog is bundled with the application; routine catalog
 loading, import, and reporting do not contact providers or send usage/model
 data over the network.
@@ -46,6 +47,8 @@ content in public issues or diagnostic reports.
 
 ## Data preservation
 
-Rerunning the latest standalone installer preserves the existing database,
-settings, consent choices, diagnostics, and data directory. Uninstall removes
-the executable but intentionally preserves local data.
+The standalone CLI installer replaces the executable while preserving the
+existing database, settings, consent choices, diagnostics, backups, and data
+directory. Uninstall removes the executable but intentionally preserves local
+data. See the standalone repository's
+[installation and upgrade guide](https://github.com/ayeshLK/komposyn-lg/blob/master/docs/installation.md).

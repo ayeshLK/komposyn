@@ -1,5 +1,11 @@
 # Issue #46: final combined release implementation handoff
 
+> **Historical handoff.** The combined v0.7.0 release and standalone CLI
+> v0.8.0 publication/verification are complete. The active ownership cleanup
+> and remaining compatibility procedures are tracked in
+> [issue #46](https://github.com/ayeshLK/komposyn/issues/46); current core
+> source release guidance is [release-verification.md](release-verification.md).
+
 Status: the final combined release was published as `v0.7.0`. Continue from
 that accepted baseline, and use `docs/issue-46-readiness.md` for the current
 verification ledger. PR #126 is included in the release ancestry; PR #130
@@ -17,8 +23,7 @@ handoff record. PR #126 and the v0.7.0 release completed the preparation work;
 PR #130 extended verification afterward. Use
 [issue-46-readiness.md](issue-46-readiness.md) as the current gate ledger and
 do not treat the old unchecked boxes below as current status.
-The [review](issue-46-review.md) records source evidence and rationale.
-[Issue #46](https://github.com/ayeshLK/komposyn/issues/46) contains the accepted
+The [issue #46 record](https://github.com/ayeshLK/komposyn/issues/46) contains the accepted
 architecture and original migration gates. The release-first-then-prepare
 alternative discussed earlier has been superseded by the sequence above.
 

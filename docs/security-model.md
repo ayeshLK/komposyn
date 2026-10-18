@@ -2,27 +2,25 @@
 
 This page describes the boundary a reviewer should use when evaluating a
 change. It complements [Privacy and data handling](privacy.md),
-[SECURITY.md](../SECURITY.md), and the [harness protocol](HARNESS_PROTOCOL.md).
+[SECURITY.md](../SECURITY.md), and the standalone CLI's protocol and release
+guidance.
 
 ## Data-flow boundary
 
 ```text
 Provider-owned files --read--> adapters --normalize--> local SQLite
                                                           |
-                                      reports / harness --+--> local output
+                                      report queries --------> local output
                                                           |
                                       reviewed issue draft --> GitHub URL
 ```
 
-The default import, collection, reporting, and harness paths are local. Release
-installation explicitly downloads and verifies release artifacts. The only
-documented external reporting path is an explicitly reviewed GitHub issue
-draft, which places sanitized diagnostic text in a URL. CLI/process diagnostics
-route to the CLI tracker; provider, ingestion, storage, migration, pricing,
-reporting, and validation diagnostics route to the core tracker. Unknown
-categories default to the CLI tracker. Security-sensitive diagnostics never
-create a public draft and direct users to private vulnerability reporting.
-The application does not silently submit an issue.
+Core normalization and report queries are local. Release installation and
+protocol transport are owned by the standalone CLI. The CLI owns explicit
+review and routing of public issue drafts; core diagnostic output is
+destination-neutral. Security-sensitive diagnostics never create a public
+draft and direct users to private vulnerability reporting. No issue is
+submitted automatically.
 
 ## Data inventory
 
@@ -31,8 +29,8 @@ identifiers, project and session references, source provenance, source hashes,
 source cursors, registered collector paths, local collector lease/health
 history, pricing rules, and sanitized diagnostics. Registered paths are local
 administrative metadata and are not copied into diagnostics or issue drafts.
-Settings are stored separately and include onboarding, collector,
-data-directory, and consent choices.
+Settings are stored separately by the standalone CLI and include onboarding,
+collector, data-directory, and consent choices.
 
 By design, Komposyn does not intentionally persist prompts, model responses,
 full transcripts, API keys, or provider credentials. This is a design
@@ -62,7 +60,8 @@ the result yourself.
 For changes affecting data, diagnostics, network behavior, installers, or CI:
 
 - Does the change add a new data field, persistence path, or external request?
-- Does it preserve provider source immutability and the library/CLI boundary?
+- Does it preserve provider source immutability and the one-way dependency
+  from the standalone CLI to core?
 - Could prompts, responses, credentials, or source content reach storage,
   stdout, stderr, issue URLs, artifacts, or logs?
 - Are existing checksum, signature, certificate, least-privilege, and

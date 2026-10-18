@@ -1,5 +1,10 @@
 # Issue #46 status update
 
+> **Historical draft.** This pre-extraction status text is retained as an
+> audit artifact, not current guidance. The standalone CLI is published and
+> verified at v0.8.0. See the current [issue #46 checklist](https://github.com/ayeshLK/komposyn/issues/46)
+> and [standalone evidence ledger](https://github.com/ayeshLK/komposyn-lg/blob/master/docs/issue-46-release-evidence.md).
+
 **Draft for review; not posted to GitHub.**
 
 The accepted extraction baseline is the published `komposyn` v0.7.0 release:
