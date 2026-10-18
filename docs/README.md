@@ -13,6 +13,8 @@ binary release process are maintained in the
 - [Token Logger core API](core-api.md) — supported exports and compatibility.
 - [Data model](data-model.md) — events, identity, provenance, and transactions.
 - [Database migrations](migrations.md) — schema history and migration policy.
+- [Migration backups and recovery](migration-backups.md) — the library's
+  verified backup API, metadata, failure behavior, and recovery contract.
 - [Pricing catalog](pricing-catalog.md) — offline rules, provenance, and review.
 - [Privacy](privacy.md) and [security model](security-model.md) — data
   handling, boundaries, and disclosure.
