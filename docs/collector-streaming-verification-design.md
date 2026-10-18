@@ -133,9 +133,24 @@ same-size/same-mtime rewrite, mutation during parser reads, path replacement,
 adapter changes, cancellation, late provider recognition beyond 64 KiB, and
 Codex EOF fallback. The mutation tests verify discarded attempts do not
 persist events or advance cursors. Existing tests retain large-record,
-partial-tail, cursor-conflict, concurrent-import, and generated full-replay
-oracle coverage. The oracle checks the established collector behavior against
-fixed expected receipts, outcomes, reports, and stored data.
+partial-tail, cursor-conflict, and concurrent-import coverage.
+
+An independent differential runner is provided by
+[`scripts/verify-collector-baseline.sh`](../scripts/verify-collector-baseline.sh).
+It checks out merged #141 (`36fea986b18d2c5ad32f4876b50412a03f9d933f`), injects
+the same scenario harness into that worktree, and runs it against both the
+baseline and candidate. It compares initial import, unchanged polling,
+append, pending-tail completion, truncate/rewrite generation, malformed and
+interior records, a large non-usage record, late classification beyond 64 KiB,
+and Codex EOF fallback for both providers. Snapshots include complete
+normalized usage-event rows (provenance fingerprints and offsets), project and
+session references, source cursors and generations, identity mappings,
+receipts/outcomes, health, diagnostics, and exact JSON/CSV reports. The only
+normalized time fields are cursor update timestamps and volatile health and
+diagnostic timestamps; source paths are stable within the runner. Candidate
+mutation tests separately assert that discarded attempts expose no partial
+events or cursor changes, while the differential runner confirms the accepted
+final source states match #141.
 
 The read hooks and benchmark observer are private test instrumentation. No
 exported API or on-disk protocol changed. Parsing still holds normalized
@@ -180,11 +195,12 @@ Local validation for the implementation: `go mod verify`, `go vet ./...`,
 runs Linux, macOS, and Windows tests, Race tests, CodeQL, and the
 Standalone CLI compatibility job, which runs the public CLI suite against the
 candidate core via a temporary module replacement. The replacement remains
-uncommitted. PR checks must pass on the implementation revision before this
-issue is ready to close. The checked-in generated-history benchmarks include
-unchanged, usage append, non-usage append, malformed, and unsupported records
-with source bytes read, bytes hashed, parser/classifier records, event insert
-attempts, B/op, and allocs/op. This PR records matched 1k/10k unchanged and
-append results; the expanded large-record, many-small-file, and few-large-file
-performance matrix remains useful follow-up evidence rather than a latency
-claim for this change.
+uncommitted. The Collector baseline compatibility CI job runs the differential
+runner against merged #141. PR checks must pass on the implementation revision
+before this issue is ready to close. The checked-in generated-history
+benchmarks include unchanged, usage append, non-usage append, malformed, and
+unsupported records with source bytes read, bytes hashed, parser/classifier
+records, event insert attempts, B/op, and allocs/op. This PR records matched
+1k/10k unchanged and append results; the expanded large-record, many-small-file,
+and few-large-file performance matrix remains useful follow-up evidence rather
+than a latency claim for this change.
