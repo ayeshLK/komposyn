@@ -249,26 +249,7 @@ func collectorOutcomeSummary(outcomes OutcomeCounts) string {
 }
 
 func importCollectorSource(ctx context.Context, path string, store *Store) (ImportResult, string, error) {
-	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
-		snapshot, adapter, err := acquireDetectedSourceSnapshot(ctx, path, store)
-		if err != nil {
-			return ImportResult{}, "", fmt.Errorf("acquire collector source: %w", err)
-		}
-		var result ImportResult
-		var retry bool
-		if adapter == "claude" {
-			result, retry, err = importClaudeSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
-		} else {
-			result, retry, err = importCodexSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
-		}
-		if err != nil {
-			return result, adapter, err
-		}
-		if !retry {
-			return result, adapter, nil
-		}
-	}
-	return ImportResult{}, "", fmt.Errorf("%w after %d attempts", errSourceCursorRetryExhausted, sourceCursorRetryLimit)
+	return importStreamingSource(ctx, path, store, "")
 }
 
 func (c *Collector) recordOutcomeDiagnostics(adapter string, outcomes OutcomeCounts) {

@@ -442,6 +442,8 @@ func addBenchmarkWork(total, current *collectorBenchmarkObserver) {
 	total.sourceBytesRead += current.sourceBytesRead
 	total.sourceBytesHashed += current.sourceBytesHashed
 	total.recordsDecoded += current.recordsDecoded
+	total.parserRecordsDecoded += current.parserRecordsDecoded
+	total.classificationRecordsDecoded += current.classificationRecordsDecoded
 	total.eventInsertAttempts += current.eventInsertAttempts
 	total.historicalInsertAttempts += current.historicalInsertAttempts
 }
@@ -453,7 +455,8 @@ func reportBenchmarkWork(b *testing.B, work *collectorBenchmarkObserver) {
 	}
 	b.ReportMetric(float64(work.sourceBytesRead)/float64(b.N), "source_bytes/op")
 	b.ReportMetric(float64(work.sourceBytesHashed)/float64(b.N), "source_bytes_hashed/op")
-	b.ReportMetric(float64(work.recordsDecoded)/float64(b.N), "parser_records/op")
+	b.ReportMetric(float64(work.parserRecordsDecoded)/float64(b.N), "parser_records/op")
+	b.ReportMetric(float64(work.classificationRecordsDecoded)/float64(b.N), "classification_records/op")
 	b.ReportMetric(float64(work.eventInsertAttempts)/float64(b.N), "event_insert_attempts/op")
 	b.ReportMetric(float64(work.historicalInsertAttempts)/float64(b.N), "historical_insert_attempts/op")
 }

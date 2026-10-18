@@ -1,13 +1,13 @@
 # Collector bounded source verification design
 
-Status: proposal for issue [#138](https://github.com/ayeshLK/komposyn/issues/138).
-This document is a design gate, not an implementation or a claim of measured
-improvement. It is based on the acquisition path merged in core PR #141 at
+Status: approved design and implementation under review in core PR #143 for
+[issue #138](https://github.com/ayeshLK/komposyn/issues/138). The design is
+implemented on top of the acquisition path merged in core PR #141 at
 `36fea986b18d2c5ad32f4876b50412a03f9d933f`, with the baseline and accounting
 oracle from #136 retained in
 [`collector-performance-baseline.md`](collector-performance-baseline.md).
 
-## Proposed approach
+## Implemented approach
 
 Replace the collector and explicit adapter import paths' whole-file byte
 slice with a two-pass stream over one opened file descriptor. The first pass
@@ -117,38 +117,74 @@ silently drop the second-pass validation or substitute metadata-only checks.
 Return to design review with a different bounded mechanism and the same
 correctness obligations.
 
-## Implementation and validation gate
+## Implementation and validation
 
-The implementation should keep the public `ClaudeAdapter.Import`,
-`CodexAdapter.Import`, and collector behavior compatible. A private reader
-interface may be introduced for deterministic mutation injection; it must not
-become a general exported API. The streaming JSONL reader must preserve current
-line offsets, CRLF handling, blank-line behavior, malformed/interior records,
-incomplete final records, strict usage-shape allowlists, and unlimited record
-size. Codex cumulative baselines, response deduplication, and session metadata
-must be kept exactly as full replay currently computes them.
+The implementation keeps the public `ClaudeAdapter.Import`,
+`CodexAdapter.Import`, and collector APIs unchanged. Private read hooks support
+deterministic mutation injection and are not exported. The streaming JSONL
+reader preserves current line offsets, CRLF handling, blank-line behavior,
+malformed/interior records, incomplete final records, strict usage-shape
+allowlists, and unlimited record size. Existing Codex tests cover cumulative
+baselines, response deduplication, and session metadata.
 
-Before implementation is considered complete, tests must deterministically
-mutate sources between passes and during parser reads for append, truncation,
-same-size/same-mtime rewrite, path replacement, adapter change, and repeated
-change exhaustion. They must assert no events, references, receipt, outcome,
-diagnostic, or cursor leak from discarded attempts. Include a prefix larger
-than the verification buffer with late provider recognition, plus EOF fallback
-with no recognized shape. Assert prefix offsets, malformed/ignored outcomes,
-and final fingerprints match full replay, while retained raw bytes do not grow
-with prefix length. Also retain cancellation, large record, partial-tail,
-cursor conflict, and concurrent explicit-import coverage. Differential tests
-compare canonical events, references, full fingerprints, generations, offsets,
-receipts/outcomes, diagnostics, collector health, and exact JSON/CSV reports
-with the frozen full-replay oracle.
+The implementation streams collector and explicit adapter imports through one
+opened descriptor. Deterministic tests cover append, truncation,
+same-size/same-mtime rewrite, mutation during parser reads, path replacement,
+adapter changes, cancellation, late provider recognition beyond 64 KiB, and
+Codex EOF fallback. The mutation tests verify discarded attempts do not
+persist events or advance cursors. Existing tests retain large-record,
+partial-tail, cursor-conflict, concurrent-import, and generated full-replay
+oracle coverage. The oracle checks the established collector behavior against
+fixed expected receipts, outcomes, reports, and stored data.
 
-Benchmark unchanged and changed workloads at 1,000 and 10,000 records for both
-providers, plus malformed/unsupported input, pending tails, large records,
-many small files, and a small number of large files. Report source bytes read,
-bytes hashed, parser records, event insert attempts, B/op, allocs/op, and
-repeated timing ranges on the same host as the #137 comparison where possible.
-The acceptance target is no source-sized allocation for unchanged polling;
-report the expected second read on changed input separately. Do not claim a
-latency win unless the repeated evidence supports it. Run `go mod verify`,
-`go vet ./...`, `go test ./...`, `go test -race ./...`, `make check`, and the
-standalone candidate compatibility workflow before merge.
+The read hooks and benchmark observer are private test instrumentation. No
+exported API or on-disk protocol changed. Parsing still holds normalized
+events and provider state needed for a full replay; only raw source retention
+is removed.
+
+## Matched measurement evidence
+
+Baseline was measured at merged #141 (`36fea986b18d2c5ad32f4876b50412a03f9d933f`)
+and candidate measurements were taken from this PR before documentation-only
+evidence updates. Both used Go 1.26.9 on Linux/amd64, Intel Core i7-10510U, with
+five repetitions (`-benchtime=10x -count=5`) for generated 1,000-record
+workloads and three repetitions (`-benchtime=1x -count=3`) for 1,000- and
+10,000-record scale workloads. The unchanged numbers below use the retained
+collector case; changed workloads append one complete generated history.
+
+| Provider / history | Unchanged B/op baseline → candidate | Changed B/op baseline → candidate | Median changed time baseline → candidate | Source bytes read baseline → candidate |
+| --- | ---: | ---: | ---: | ---: |
+| Claude, 1k | 465,459 → 88,455 | 11,343,970 → 11,041,744 | 143.5 ms → 138.1 ms | 182,203 → 364,406 |
+| Codex, 1k | 497,507 → 87,749 | 13,401,676 → 13,066,228 | 158.6 ms → 182.6 ms | 220,548 → 441,096 |
+| Claude, 10k | 4,505,080 → 96,016 | 121,189,808 → 116,850,088 | 1,325.5 ms → 1,863.3 ms | 1,869,213 → 3,738,426 |
+| Codex, 10k | 4,913,912 → 95,376 | 142,431,752 → 137,680,320 | 1,563.1 ms → 1,629.2 ms | 2,281,564 → 4,563,128 |
+
+Unchanged source reads and hash input remain one source length; unchanged
+polling no longer allocates a source-sized byte slice. Changed input is read
+twice as designed. Changed-workload allocation falls modestly because event
+and provider state still dominate. Timing is mixed: Claude 10k changed replay
+is slower, Codex 1k changed replay is slower, while other cases are close or
+improved. These measurements establish the allocation tradeoff, not a general
+latency improvement. Re-run them after any runtime changes and review the
+changed-source cost before merge.
+
+Reproduction commands (run from the module root):
+
+```sh
+go test ./plugins/library/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' -benchtime=10x -count=5
+go test ./plugins/library/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedHistoryScale$' -benchtime=1x -count=3
+```
+
+Local validation for the implementation: `go mod verify`, `go vet ./...`,
+`go test ./...`, `go test -race ./...`, and `make check`. GitHub CI additionally
+runs Linux, macOS, and Windows tests, Race tests, CodeQL, and the
+Standalone CLI compatibility job, which runs the public CLI suite against the
+candidate core via a temporary module replacement. The replacement remains
+uncommitted. PR checks must pass on the implementation revision before this
+issue is ready to close. The checked-in generated-history benchmarks include
+unchanged, usage append, non-usage append, malformed, and unsupported records
+with source bytes read, bytes hashed, parser/classifier records, event insert
+attempts, B/op, and allocs/op. This PR records matched 1k/10k unchanged and
+append results; the expanded large-record, many-small-file, and few-large-file
+performance matrix remains useful follow-up evidence rather than a latency
+claim for this change.

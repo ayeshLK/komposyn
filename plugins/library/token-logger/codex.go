@@ -153,20 +153,11 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 }
 
 func importCodexSource(ctx context.Context, path string, store *Store) (ImportResult, error) {
-	snapshot, err := acquireSourceSnapshot(ctx, path, store, "codex")
+	result, _, err := importStreamingSource(ctx, path, store, "codex")
 	if err != nil {
-		return ImportResult{}, fmt.Errorf("acquire Codex source: %w", err)
+		return result, fmt.Errorf("import Codex source: %w", err)
 	}
-	for attempt := 1; ; attempt++ {
-		result, retry, err := importCodexSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
-		if err != nil || !retry {
-			return result, err
-		}
-		snapshot, err = retrySourceSnapshotAfterCursorConflict(ctx, path, store, "codex", attempt)
-		if err != nil {
-			return ImportResult{}, fmt.Errorf("retry Codex source: %w", err)
-		}
-	}
+	return result, nil
 }
 
 func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
@@ -175,6 +166,12 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 	}
 	fingerprint := digestSourceBytes(contents, store.benchmarkObserver)
 	generation := sourceGenerationObserved(expectedCursor, contents, store.benchmarkObserver)
+	return importCodexReaderAttempt(ctx, bytes.NewReader(contents), store, baseSourceID, expectedCursor,
+		fingerprint, generation, nil, nil)
+}
+
+func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
+	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
@@ -192,13 +189,16 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 	var events []UsageEvent
 	var lastRecordID string
 
-	reader := bufio.NewReader(bytes.NewReader(contents))
+	reader := bufio.NewReaderSize(source, sourceVerificationBufferSize)
 	for {
 		if err := ctx.Err(); err != nil {
 			return result, false, err
 		}
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
+		if classifier != nil {
+			classifier.observe(line, store.benchmarkObserver)
+		}
 		offset += int64(len(line))
 		if len(line) > 0 {
 			line = []byte(strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r"))
@@ -206,6 +206,7 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 		if len(strings.TrimSpace(string(line))) > 0 {
 			if store.benchmarkObserver != nil {
 				store.benchmarkObserver.recordsDecoded++
+				store.benchmarkObserver.parserRecordsDecoded++
 			}
 			recordID := "offset-" + fmt.Sprint(lineOffset)
 			var envelope codexEnvelope
@@ -406,6 +407,11 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 	}
 	if err := ctx.Err(); err != nil {
 		return result, false, err
+	}
+	if verify != nil {
+		if err := verify(offset); err != nil {
+			return result, true, err
+		}
 	}
 
 	if current.ID == "" {
