@@ -47,6 +47,9 @@ protection settings were changed.
   and inject independent CLI/core build versions.
 - [x] 6. Add the old-binary upgrade verifier, run a signed v0.6.0 Linux
   binary-to-candidate upgrade, and correct release/security/contributor docs.
+- [x] 7. Distinguish backup-creation failure from migration-transaction
+  failure. The regression proves a failed migration rolls back schema changes
+  and preserves the original database and verified pre-migration backup.
 
 ## Verified evidence
 
@@ -63,6 +66,13 @@ protection settings were changed.
   includes refusal through a symlink to a newer WAL-backed database without
   changing the target database or sidecars, diagnostic category escalation
   and collector metadata/routing, and compatible-binary backup restoration.
+- `TestMigrationFailureLeavesOriginalAndVerifiedBackupUsable` injects a
+  failure while recording migration 2 after the online backup succeeds. It
+  verifies the original and backup remain integrity-check clean at schema 1
+  with the seeded project intact and no partial diagnostics table, then proves
+  both snapshots can migrate after removing only the injected test trigger.
+  `TestMigrationBackupFailureLeavesSchemaUnmigratedAndPreservesDestination`
+  separately covers backup-creation failure before migration starts.
 - External consumer test importing the public core package with a temporary
   local module replacement: passed.
 - Published consumer test importing `github.com/ayeshLK/komposyn@v0.7.0`
