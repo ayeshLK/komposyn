@@ -473,3 +473,112 @@ func TestMigrationBackupFailureLeavesSchemaUnmigratedAndPreservesDestination(t *
 		t.Fatalf("schema version after backup failure = %d, %v; want 1", version, err)
 	}
 }
+
+func TestMigrationFailureLeavesOriginalAndVerifiedBackupUsable(t *testing.T) {
+	tempDir := t.TempDir()
+	databasePath := filepath.Join(tempDir, "legacy.db")
+	backupPath := filepath.Join(tempDir, "legacy-backup.sqlite")
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(schemaMigrationOne); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2026-01-01T00:00:00Z')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('preserved-project', '/legacy', 'Preserved Project', '2026-01-01T00:00:00Z')"); err != nil {
+		t.Fatal(err)
+	}
+	// Fail when migration 2 records completion. The migration transaction must
+	// roll back its DDL and version changes after the online backup succeeds.
+	if _, err := db.Exec(`CREATE TRIGGER reject_migration_two BEFORE INSERT ON schema_migrations
+		WHEN NEW.version = 2 BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenWithOptions(databasePath, OpenOptions{BackupPath: backupPath})
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("OpenWithOptions succeeded although migration 2 was rejected")
+	}
+	if err == nil || !strings.Contains(err.Error(), "injected migration failure") {
+		t.Fatalf("migration error = %v, want injected migration failure", err)
+	}
+
+	assertPreMigrationDatabase := func(path string, hasBackupMetadata bool) {
+		t.Helper()
+		readOnly, err := sql.Open("sqlite", sqliteFileURI(path, "mode=ro"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer readOnly.Close()
+		var integrity string
+		if err := readOnly.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+			t.Fatalf("integrity_check for %s = %q, %v", filepath.Base(path), integrity, err)
+		}
+		var version int
+		if err := readOnly.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 1 {
+			t.Fatalf("schema version for %s = %d, %v; want 1", filepath.Base(path), version, err)
+		}
+		var projectName string
+		if err := readOnly.QueryRow("SELECT display_name FROM projects WHERE id = 'preserved-project'").Scan(&projectName); err != nil || projectName != "Preserved Project" {
+			t.Fatalf("preserved project in %s = %q, %v", filepath.Base(path), projectName, err)
+		}
+		var diagnosticsExists bool
+		if err := readOnly.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'diagnostics')").Scan(&diagnosticsExists); err != nil || diagnosticsExists {
+			t.Fatalf("migration 2 DDL was not rolled back for %s: exists=%v err=%v", filepath.Base(path), diagnosticsExists, err)
+		}
+		if hasBackupMetadata {
+			var sourceSchema, targetSchema int
+			if err := readOnly.QueryRow("SELECT source_schema, target_schema FROM komposyn_migration_backup").Scan(&sourceSchema, &targetSchema); err != nil || sourceSchema != 1 || targetSchema != CurrentSchemaVersion {
+				t.Fatalf("backup metadata = %d -> %d, %v", sourceSchema, targetSchema, err)
+			}
+		}
+	}
+	assertPreMigrationDatabase(databasePath, false)
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("verified pre-migration backup missing after migration failure: %v", err)
+	}
+	assertPreMigrationDatabase(backupPath, true)
+
+	// The injected trigger is outside the historical schema. Removing it from
+	// separate recovery copies demonstrates both snapshots remain migratable.
+	for _, recoveryPath := range []string{databasePath, filepath.Join(tempDir, "restored.db")} {
+		if recoveryPath != databasePath {
+			if err := copyRegularFile(backupPath, recoveryPath); err != nil {
+				t.Fatal(err)
+			}
+		}
+		recovery, err := sql.Open("sqlite", recoveryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recovery.Exec("DROP TRIGGER reject_migration_two"); err != nil {
+			_ = recovery.Close()
+			t.Fatal(err)
+		}
+		if err := recovery.Close(); err != nil {
+			t.Fatal(err)
+		}
+		migrated, err := Open(recoveryPath)
+		if err != nil {
+			t.Fatalf("reopen recovered %s: %v", filepath.Base(recoveryPath), err)
+		}
+		var projectCount int
+		if err := migrated.db.QueryRow("SELECT COUNT(*) FROM projects WHERE id = 'preserved-project'").Scan(&projectCount); err != nil || projectCount != 1 {
+			_ = migrated.Close()
+			t.Fatalf("preserved project after recovering %s = %d, %v", filepath.Base(recoveryPath), projectCount, err)
+		}
+		if err := migrated.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
