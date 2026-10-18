@@ -26,14 +26,24 @@ during each pass.
 
 For a changed source, rewind the same descriptor and run the selected adapter
 parser as a stream. The parser pass computes its own full and committed-prefix
-digests from the exact bytes it consumes. Adapter classification is repeated
-from the parser pass's leading records, and those same buffered records are
-then fed to the selected parser. Thus the provider decision, normalized
-records, byte offsets, event fingerprints, and generation all refer to the
-parser pass's single ordered byte sequence. Event fingerprints use the
-first-pass full digest only after the parser-pass digest and byte length match
-it. The parser must not persist events, references, receipts, outcomes, or
-cursors while either pass or the comparison is incomplete.
+digests from the exact bytes it consumes. The adapter found on pass one is
+provisional for pass two: feed each record immediately to that adapter while
+independently running the existing adapter classifier over the same record.
+Do not wait for classification before parsing and do not retain an
+unclassified prefix. At EOF, compare the pass-two classification with pass one
+along with the digests and lengths. Existing classification semantics remain
+unchanged: skip unrecognized or malformed records until a recognized shape is
+found, and use the Codex fallback only at EOF. Thus even a late classification
+or EOF fallback retains at most the fixed read buffer and current record as
+raw source bytes; the parser's normalized state remains separately accounted
+below.
+
+The provisional provider decision, normalized records, byte offsets, event
+fingerprints, and generation are accepted only if they refer to the same
+ordered byte stream. Event fingerprints use the first-pass full digest only
+after the parser-pass digest and byte length match it. The parser must not
+persist events, references, receipts, outcomes, or cursors while either pass
+or the comparison is incomplete.
 
 The first and second pass must agree on full digest, total length, prefix
 digest, adapter result, and opened-file identity. A mismatch discards all
@@ -122,11 +132,15 @@ Before implementation is considered complete, tests must deterministically
 mutate sources between passes and during parser reads for append, truncation,
 same-size/same-mtime rewrite, path replacement, adapter change, and repeated
 change exhaustion. They must assert no events, references, receipt, outcome,
-diagnostic, or cursor leak from discarded attempts. Also retain cancellation,
-large record, partial-tail, cursor conflict, and concurrent explicit-import
-coverage. Differential tests compare canonical events, references, full
-fingerprints, generations, offsets, receipts/outcomes, diagnostics, collector
-health, and exact JSON/CSV reports with the frozen full-replay oracle.
+diagnostic, or cursor leak from discarded attempts. Include a prefix larger
+than the verification buffer with late provider recognition, plus EOF fallback
+with no recognized shape. Assert prefix offsets, malformed/ignored outcomes,
+and final fingerprints match full replay, while retained raw bytes do not grow
+with prefix length. Also retain cancellation, large record, partial-tail,
+cursor conflict, and concurrent explicit-import coverage. Differential tests
+compare canonical events, references, full fingerprints, generations, offsets,
+receipts/outcomes, diagnostics, collector health, and exact JSON/CSV reports
+with the frozen full-replay oracle.
 
 Benchmark unchanged and changed workloads at 1,000 and 10,000 records for both
 providers, plus malformed/unsupported input, pending tails, large records,
