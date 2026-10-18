@@ -1,70 +1,52 @@
 # Security Policy
 
-## Scope and supported versions
+## Scope and support
 
-Komposyn is a local-first application. The security boundary includes the
-standalone executable, installers, release artifacts, SQLite data directory,
-settings, diagnostics, and the JSONL harness. Provider transcript files remain
-provider-owned inputs and should be treated as sensitive.
+This repository owns the reusable KompoSyn Go module, including provider
+adapters, collection, SQLite storage and migrations, pricing, diagnostics, and
+reports. The standalone [komposyn-lg repository](https://github.com/ayeshLK/komposyn-lg)
+owns executable behavior, settings and consent policy, data-directory choice,
+process lifecycle, JSONL harness transport, installers, and binary releases.
 
-The combined repository has published signed releases. Security fixes target
-the latest released version and `master`; older releases are unsupported.
-Development branches may contain incomplete behavior and should not be used
-for sensitive workloads. During the issue #46 ownership transition, this
-repository remains the authoritative combined source until the final combined
-release is verified and the standalone CLI is published.
+Core security fixes target the latest released core version and `master`.
+Historical combined releases through v0.7.0 remain available but are not the
+current CLI distribution path. The CLI has an independent version and declares
+its exact core dependency; see [compatibility and coordinated security releases](docs/standalone-compatibility-security.md).
 
 ## Threat model and guarantees
 
-Komposyn is designed not to require provider credentials and not to send
-provider transcripts, prompts, responses, or credentials to a hosted Komposyn
-service. Imports, reports, and collection are local operations. The tool reads
-provider source files but does not modify them.
+KompoSyn is local-first. It reads provider-owned source files but does not
+modify them or intentionally store prompts, responses, full transcripts, API
+keys, or provider credentials. Normalization and reporting operate locally.
+The database may contain usage counts, timestamps, provider/model/client
+identifiers, project/session references, provenance, source hashes, cursors,
+collector state, pricing rules, and sanitized diagnostics. The host filesystem
+protects this data; KompoSyn does not encrypt it for you.
 
-The database and settings are local files protected by the host filesystem.
-Komposyn does not replace operating-system access controls or encrypt the data
-directory for you. Anyone who can read the data directory may be able to read
-usage metadata, project/session identifiers, diagnostics, and provenance.
-Protect backups and shared machines accordingly.
-
-Diagnostics are sanitized and deduplicated before local persistence. Sanitizing
-is best effort, not a guarantee that arbitrary secrets are removed. Review a
-diagnostic before opening its GitHub issue draft; opening that URL is an
-external action that sends the sanitized text to GitHub and may expose it in
-browser or URL logs.
-
-Release installers verify SHA-256 checksums and Cosign certificates before
-replacing the executable. Do not bypass those checks or install artifacts from
-an untrusted source.
-
-See [the security and privacy model](docs/security-model.md) for detailed
-data-flow and disclosure review guidance.
+Diagnostics are best-effort sanitized and locally persisted. The standalone
+CLI owns review and routing of public issue drafts. A suspected vulnerability
+or sensitive-data exposure must use private reporting and must never be routed
+to a public issue draft.
 
 ## Reporting a vulnerability
 
-Please do not report security vulnerabilities in public issues, pull requests,
-or discussions. Use the repository's [private vulnerability reporting
-form](https://github.com/ayeshLK/komposyn/security/advisories/new). If the form
-is unavailable, contact the maintainers privately before disclosure rather than
-using a public channel.
+Do not report vulnerabilities in public issues, pull requests, or discussions.
+Use the private [KompoSyn Core vulnerability reporting form](https://github.com/ayeshLK/komposyn/security/advisories/new).
+If it is unavailable, contact the maintainers privately before disclosure.
+Include affected/fixed versions, operating system, reproduction steps, impact,
+and prerequisites. Redact credentials, provider transcripts, prompts,
+responses, private paths, and unsanitized diagnostics. Do not attach raw
+production databases or release credentials.
 
-Include the affected version or commit, operating system, reproduction steps,
-impact, attack prerequisites, and any suggested mitigation. Keep the report
-minimal and redact credentials, provider transcripts, prompts, responses,
-private paths, and other sensitive source content. Do not attach a raw
-database, diagnostic dump, or release credential.
-
-If the issue concerns a release artifact or installer, include the artifact
-name and verification result without sharing private signing material. If it
-concerns the harness, include the protocol method and sanitized request shape,
-not sensitive event values.
-
-The token logger is local-first and should never require provider credentials
-for ingestion or reporting.
+The repository that contains the vulnerable code owns the advisory. If a core
+report affects standalone CLI releases, coordinate privately with the CLI
+maintainers before disclosure so a fixed core tag and compatible signed CLI
+release are ready together. The procedure and version mapping requirements are
+documented in [standalone compatibility and security](docs/standalone-compatibility-security.md).
 
 ## Security-sensitive changes
 
-Security-sensitive changes should document the threat model, preserve least
-privilege in GitHub Actions, keep action references pinned to immutable commit
-SHAs, add regression coverage where practical, and include reproducible
-validation in the pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Describe the threat model, preserve least-privilege CI and immutable Action
+pins, add regression coverage where practical, and include reproducible
+validation. Never use secrets or writable cross-repository access in normal
+candidate validation. See [CONTRIBUTING.md](CONTRIBUTING.md).

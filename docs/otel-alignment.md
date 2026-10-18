@@ -10,7 +10,7 @@ This audit compares the current [library event model](../plugins/library/token-l
 [Codex adapter](../plugins/library/token-logger/codex.go),
 [Claude Code adapter](../plugins/library/token-logger/claude.go),
 [SQLite schema](../plugins/library/token-logger/migrations.go), and
-[sidecar contract](HARNESS_PROTOCOL.md) with the OpenTelemetry GenAI
+[sidecar contract](https://github.com/ayeshLK/komposyn-lg/blob/master/docs/HARNESS_PROTOCOL.md) with the OpenTelemetry GenAI
 [client-inference conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/6fd0d763a092db245a54104fc1124031eb3c51d2/docs/gen-ai/client-inference.md)
 at revision `6fd0d763a092db245a54104fc1124031eb3c51d2` (2026-10-09).
 Those conventions are marked *Development*; this is a point-in-time comparison,
@@ -56,7 +56,8 @@ message usage. Neither adapter observes the duration of the model call.
 - The adapters do not retain prompt or response content. This is an intentional
   privacy boundary, not an incomplete content-export feature.
 - The versioned JSONL sidecar is named `komposyn.token-logger`; it is not OTLP
-  or a general KompoSyn plugin protocol. See its [normative contract](HARNESS_PROTOCOL.md).
+  or a general KompoSyn plugin protocol. See the standalone CLI's
+  [protocol-v1 contract](https://github.com/ayeshLK/komposyn-lg/blob/master/docs/HARNESS_PROTOCOL.md).
 
 ## Before claiming interoperability
 

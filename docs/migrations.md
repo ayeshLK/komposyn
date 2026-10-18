@@ -80,8 +80,10 @@ When a schema change is required:
 4. Add tests for a fresh database, upgrade from the immediately previous
    version, rollback/failure behavior where relevant, and preservation of
    representative existing rows.
-5. Update this history and the upgrade guidance in [Upgrades and data
-   preservation](upgrades.md).
+5. Update this history and run the public standalone CLI compatibility suite
+   against the candidate core. The user-facing executable upgrade procedure
+   is maintained in the standalone CLI's
+   [installation guide](https://github.com/ayeshLK/komposyn-lg/blob/master/docs/installation.md).
 
 Do not rewrite an already released migration. Later migrations should detect
 state that may already exist when compatibility requires it, as migration 4
