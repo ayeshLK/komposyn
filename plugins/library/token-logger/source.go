@@ -88,6 +88,9 @@ func acquireSourceSnapshot(ctx context.Context, path string, store *Store, adapt
 		if closeErr != nil {
 			return sourceSnapshot{}, closeErr
 		}
+		if store.benchmarkObserver != nil {
+			store.benchmarkObserver.sourceBytesRead += int64(len(contents))
+		}
 		currentSource, err := collectorSourceForPath(path)
 		if err != nil {
 			return sourceSnapshot{}, fmt.Errorf("revalidate source: %w", err)
@@ -136,6 +139,10 @@ func currentSourceCursorExpectation(store *Store, sourceID string) (sourceCursor
 // offset still hash to the previous full-file fingerprint. Otherwise it is a
 // replacement and receives a new generation so reused offsets cannot collide.
 func sourceGeneration(expectation sourceCursorExpectation, contents []byte) int64 {
+	return sourceGenerationObserved(expectation, contents, nil)
+}
+
+func sourceGenerationObserved(expectation sourceCursorExpectation, contents []byte, observer *collectorBenchmarkObserver) int64 {
 	if !expectation.exists {
 		return 0
 	}
@@ -143,18 +150,22 @@ func sourceGeneration(expectation sourceCursorExpectation, contents []byte) int6
 	if cursor.ByteOffset < 0 || cursor.ByteOffset > int64(len(contents)) {
 		return cursor.SourceGeneration + 1
 	}
-	if digest(contents[:cursor.ByteOffset]) != cursor.FileFingerprint {
+	if digestSourceBytes(contents[:cursor.ByteOffset], observer) != cursor.FileFingerprint {
 		return cursor.SourceGeneration + 1
 	}
 	return cursor.SourceGeneration
 }
 
 func unchangedExpectedSourceSnapshot(expectation sourceCursorExpectation, contents []byte) (ImportResult, bool) {
+	return unchangedExpectedSourceSnapshotObserved(expectation, contents, nil)
+}
+
+func unchangedExpectedSourceSnapshotObserved(expectation sourceCursorExpectation, contents []byte, observer *collectorBenchmarkObserver) (ImportResult, bool) {
 	if !expectation.exists {
 		return ImportResult{}, false
 	}
 	cursor := expectation.cursor
-	if !cursor.SnapshotReusable || cursor.ByteOffset != int64(len(contents)) || cursor.FileFingerprint != digest(contents) {
+	if !cursor.SnapshotReusable || cursor.ByteOffset != int64(len(contents)) || cursor.FileFingerprint != digestSourceBytes(contents, observer) {
 		return ImportResult{}, false
 	}
 	result := ImportResult{}

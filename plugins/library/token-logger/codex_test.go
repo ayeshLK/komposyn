@@ -172,6 +172,59 @@ func TestCodexImportDetectsReplacementAndPreservesAppendIdempotency(t *testing.T
 	}
 }
 
+func TestCodexImportDetectsSameSizeSameMtimeReplacement(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	metadata := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}` + "\n"
+	token := func(input int) string {
+		return `{"type":"event_msg","id":"usage-1","timestamp":"2026-10-11T00:00:00Z","payload":{"type":"token_count","session_id":"session-1","info":{"total_token_usage":{"input_tokens":` + string(rune('0'+input)) + `,"output_tokens":1,"total_tokens":` + string(rune('1'+input)) + `}}}}` + "\n"
+	}
+	initial := []byte(metadata + token(1))
+	if err := os.WriteFile(path, initial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || first.Receipt.Imported != 1 {
+		t.Fatalf("initial import = %+v, err = %v", first, err)
+	}
+	initialInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte(metadata + token(2))
+	if len(replacement) != len(initial) {
+		t.Fatalf("fixture replacement size=%d, initial size=%d", len(replacement), len(initial))
+	}
+	if err := os.WriteFile(path, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, initialInfo.ModTime(), initialInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacementInfo.Size() != initialInfo.Size() || !replacementInfo.ModTime().Equal(initialInfo.ModTime()) {
+		t.Fatalf("replacement metadata size=%d mtime=%s; initial size=%d mtime=%s", replacementInfo.Size(), replacementInfo.ModTime(), initialInfo.Size(), initialInfo.ModTime())
+	}
+	result, err := (CodexAdapter{}).Import(path, store)
+	if err != nil || result.Receipt != (Receipt{Imported: 1}) {
+		t.Fatalf("same-size replacement = %+v, err = %v", result, err)
+	}
+	canonicalPath, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := store.Cursor("codex-file-" + digest([]byte(canonicalPath)))
+	if err != nil || cursor.SourceGeneration != 1 || cursor.FileFingerprint != digest(replacement) {
+		t.Fatalf("replacement cursor=%+v err=%v", cursor, err)
+	}
+	if count, err := store.EventCount(); err != nil || count != 2 {
+		t.Fatalf("replacement event count=%d err=%v; want 2", count, err)
+	}
+}
+
 func TestCodexImportUsesTokenUsageRecordsOnceAndIgnoresMirroredSnapshots(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "usage-records.jsonl")

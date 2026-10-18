@@ -175,11 +175,11 @@ func importCodexSource(ctx context.Context, path string, store *Store, validateA
 }
 
 func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
-	if unchanged, ok := unchangedExpectedSourceSnapshot(expectedCursor, contents); ok {
+	if unchanged, ok := unchangedExpectedSourceSnapshotObserved(expectedCursor, contents, store.benchmarkObserver); ok {
 		return unchanged, false, nil
 	}
-	fingerprint := digest(contents)
-	generation := sourceGeneration(expectedCursor, contents)
+	fingerprint := digestSourceBytes(contents, store.benchmarkObserver)
+	generation := sourceGenerationObserved(expectedCursor, contents, store.benchmarkObserver)
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
@@ -209,6 +209,9 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 			line = []byte(strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r"))
 		}
 		if len(strings.TrimSpace(string(line))) > 0 {
+			if store.benchmarkObserver != nil {
+				store.benchmarkObserver.recordsDecoded++
+			}
 			recordID := "offset-" + fmt.Sprint(lineOffset)
 			var envelope codexEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
@@ -252,7 +255,7 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 									result.Outcomes.Add(OutcomeMalformedRecord)
 								} else {
 									newStreamSessions[session.ID] = true
-									events = append(events, codexUsageEvent(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line))
+									events = append(events, codexUsageEventObserved(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line, store.benchmarkObserver))
 								}
 								continue
 							}
@@ -276,7 +279,7 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 									turnCumulative[session.ID+"\x00"+record.TurnID] = turnUsage
 								}
 								seenResponses[responseIdentity] = codexUsageRecordSeen{usage: usage, turnUsage: turnUsage, threadUsage: threadUsage, hasTurn: hasTurn, hasThread: hasThread}
-								events = append(events, codexUsageEvent(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line))
+								events = append(events, codexUsageEventObserved(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line, store.benchmarkObserver))
 							}
 						}
 					}
@@ -387,7 +390,7 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 								result.Outcomes.Add(OutcomeMalformedRecord)
 								break
 							}
-							events = append(events, codexEvent(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line))
+							events = append(events, codexEventObserved(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line, store.benchmarkObserver))
 						default:
 							if codexUsageBearingType(codexRecordType(envelope, payload)) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
@@ -639,6 +642,10 @@ func codexResetCumulativeBaselines(record codexUsageRecordPayload, turnUsage, th
 }
 
 func codexUsageEvent(sourceID, fingerprint string, offset int64, record codexUsageRecordPayload, session codexSession, usage codexUsage, occurredAt time.Time, line []byte) UsageEvent {
+	return codexUsageEventObserved(sourceID, fingerprint, offset, record, session, usage, occurredAt, line, nil)
+}
+
+func codexUsageEventObserved(sourceID, fingerprint string, offset int64, record codexUsageRecordPayload, session codexSession, usage codexUsage, occurredAt time.Time, line []byte, observer *collectorBenchmarkObserver) UsageEvent {
 	scope := codexLogicalScope(record.SessionID, record.ThreadID)
 	identity := digest([]byte("codex-response\x00" + scope + "\x00" + record.ResponseID))
 	offsetCopy := offset
@@ -651,7 +658,7 @@ func codexUsageEvent(sourceID, fingerprint string, offset int64, record codexUsa
 			CacheReadTokens:  usage.CachedInputTokens + usage.CacheReadInputTokens,
 			CacheWriteTokens: usage.CacheWriteTokens, ReasoningTokens: usage.ReasoningOutputTokens},
 		Provenance: Provenance{Adapter: "codex", SourceID: sourceID, SourceRecord: record.ResponseID,
-			SourceOffset: &offsetCopy, RecordHash: digest(line)},
+			SourceOffset: &offsetCopy, RecordHash: digestRecordBytes(line, observer)},
 		IngestionKey: "codex:response:" + identity,
 		Attributes:   json.RawMessage(fmt.Sprintf(`{"source_fingerprint":%q}`, fingerprint)),
 	}
@@ -846,6 +853,10 @@ func codexTimestamp(value string) (time.Time, error) {
 }
 
 func codexEvent(sourceID, fingerprint string, offset int64, recordID string, session codexSession, usage codexUsage, occurredAt time.Time, line []byte) UsageEvent {
+	return codexEventObserved(sourceID, fingerprint, offset, recordID, session, usage, occurredAt, line, nil)
+}
+
+func codexEventObserved(sourceID, fingerprint string, offset int64, recordID string, session codexSession, usage codexUsage, occurredAt time.Time, line []byte, observer *collectorBenchmarkObserver) UsageEvent {
 	key := digest([]byte(sourceID + "\x00" + recordID))
 	offsetCopy := offset
 	return UsageEvent{
@@ -857,7 +868,7 @@ func codexEvent(sourceID, fingerprint string, offset int64, recordID string, ses
 			CacheReadTokens:  usage.CachedInputTokens + usage.CacheReadInputTokens,
 			CacheWriteTokens: usage.CacheWriteTokens, ReasoningTokens: usage.ReasoningOutputTokens},
 		Provenance: Provenance{Adapter: "codex", SourceID: sourceID, SourceRecord: recordID,
-			SourceOffset: &offsetCopy, RecordHash: digest(line)},
+			SourceOffset: &offsetCopy, RecordHash: digestRecordBytes(line, observer)},
 		IngestionKey: "codex:" + key,
 		Attributes:   json.RawMessage(fmt.Sprintf(`{"source_fingerprint":%q}`, fingerprint)),
 	}

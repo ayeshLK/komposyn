@@ -35,6 +35,7 @@ type Store struct {
 	migrationBackupPath string
 	beforeSnapshotRead  func()
 	beforeAppend        func()
+	benchmarkObserver   *collectorBenchmarkObserver
 }
 
 var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
@@ -924,6 +925,12 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 		if hasBillingContext {
 			args = append(args, nullableJSON(billingContextJSON))
 			args = append(args, event.Usage.CacheWrite5mTokens, event.Usage.CacheWrite1hTokens)
+		}
+		if s.benchmarkObserver != nil {
+			s.benchmarkObserver.eventInsertAttempts++
+			if _, historical := s.benchmarkObserver.historicalEventIDs[event.EventID]; historical {
+				s.benchmarkObserver.historicalInsertAttempts++
+			}
 		}
 		result, err := tx.Exec(insertSQL, args...)
 		if err != nil {

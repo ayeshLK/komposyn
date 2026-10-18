@@ -15,9 +15,12 @@
 package tokenlogger
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -48,6 +51,151 @@ func TestCollectorPollsBothProviderShapesAndReportsHealth(t *testing.T) {
 	if health := collector.Health(); health.Status != "healthy" || health.Lifecycle != "stopped" || health.Imported != 4 || health.Duplicates != 0 {
 		t.Fatalf("collector did not stop: %+v", collector.Health())
 	}
+}
+
+func TestGeneratedCollectorMatchesDirectImportOracle(t *testing.T) {
+	for _, provider := range []struct {
+		name     string
+		importer func(string, *Store) (ImportResult, error)
+	}{
+		{name: "claude", importer: (ClaudeAdapter{}).Import},
+		{name: "codex", importer: (CodexAdapter{}).Import},
+	} {
+		t.Run(provider.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "oracle.jsonl")
+			contents := benchmarkGeneratedHistory(provider.name, "oracle-session", 3)
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			directStore := openTestStore(t)
+			collectorStore := openTestStore(t)
+			direct, err := provider.importer(path, directStore)
+			if err != nil {
+				t.Fatal(err)
+			}
+			collector, err := NewCollector(collectorStore, []string{path}, time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			collected, err := collector.PollOnce()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if direct.Receipt != (Receipt{Imported: 3}) || direct.Receipt != collected.Receipt || direct.Outcomes != collected.Outcomes {
+				t.Fatalf("direct=%+v; collector=%+v; want same three-event import", direct, collected)
+			}
+			for _, query := range []string{
+				"SELECT * FROM usage_events ORDER BY event_id",
+				"SELECT id, root, display_name FROM projects ORDER BY id",
+				"SELECT * FROM sessions ORDER BY id",
+				"SELECT scope, alias, project_id, provenance FROM project_aliases ORDER BY scope, alias",
+				"SELECT scope, alias, session_id, project_id, provenance FROM session_aliases ORDER BY scope, alias",
+			} {
+				if left, right := benchmarkOracleRows(t, directStore, query), benchmarkOracleRows(t, collectorStore, query); !reflect.DeepEqual(left, right) {
+					t.Errorf("direct and collector differ for %s:\n%v\n%v", query, left, right)
+				}
+			}
+			canonicalPath, err := filepath.Abs(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := provider.name
+			if adapter == "claude" {
+				adapter = "claude-file"
+			} else {
+				adapter = "codex-file"
+			}
+			directCursor, directErr := directStore.Cursor(adapter + "-" + digest([]byte(canonicalPath)))
+			collectorCursor, collectorErr := collectorStore.Cursor(adapter + "-" + digest([]byte(canonicalPath)))
+			if directErr != nil || collectorErr != nil || directCursor != collectorCursor || directCursor.FileFingerprint != digest(contents) || directCursor.SourceGeneration != 0 || directCursor.ByteOffset != int64(len(contents)) {
+				t.Fatalf("direct cursor=%+v err=%v; collector cursor=%+v err=%v", directCursor, directErr, collectorCursor, collectorErr)
+			}
+			health := collector.Health()
+			if health.Status != "healthy" || health.Sources != 1 || health.Imported != 3 || health.Pending {
+				t.Fatalf("collector health=%+v", health)
+			}
+			if diagnostics, err := collectorStore.PendingDiagnostics(); err != nil || len(diagnostics) != 0 {
+				t.Fatalf("unexpected diagnostics=%+v err=%v", diagnostics, err)
+			}
+
+			filter := UsageFilter{From: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)}
+			directReport, err := directStore.Query(filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			collectorReport, err := collectorStore.Query(filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var directJSON, collectorJSON, directCSV, collectorCSV bytes.Buffer
+			if err := WriteJSON(&directJSON, directReport); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteJSON(&collectorJSON, collectorReport); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteCSV(&directCSV, directReport); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteCSV(&collectorCSV, collectorReport); err != nil {
+				t.Fatal(err)
+			}
+			if directJSON.String() != collectorJSON.String() || directCSV.String() != collectorCSV.String() {
+				t.Fatalf("direct and collector machine reports differ:\nJSON %s / %s\nCSV %s / %s", directJSON.String(), collectorJSON.String(), directCSV.String(), collectorCSV.String())
+			}
+
+			directRepeat, err := provider.importer(path, directStore)
+			if err != nil {
+				t.Fatal(err)
+			}
+			collectorRepeat, err := collector.PollOnce()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if directRepeat.Receipt != (Receipt{}) || collectorRepeat.Receipt != directRepeat.Receipt || directRepeat.Outcomes != collectorRepeat.Outcomes || directRepeat.Outcomes.UnchangedSnapshot != 1 {
+				t.Fatalf("direct unchanged=%+v; collector unchanged=%+v", directRepeat, collectorRepeat)
+			}
+		})
+	}
+}
+
+func benchmarkOracleRows(t *testing.T, store *Store, query string) [][]string {
+	t.Helper()
+	rows, err := store.db.Query(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make([][]string, 0)
+	for rows.Next() {
+		values := make([]any, len(columns))
+		destinations := make([]any, len(columns))
+		for index := range values {
+			destinations[index] = &values[index]
+		}
+		if err := rows.Scan(destinations...); err != nil {
+			t.Fatal(err)
+		}
+		row := make([]string, len(values))
+		for index, value := range values {
+			if value == nil {
+				row[index] = "<null>"
+			} else if bytes, ok := value.([]byte); ok {
+				row[index] = string(bytes)
+			} else {
+				row[index] = fmt.Sprint(value)
+			}
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func TestCollectorReportsHealthForEachConfiguredRoot(t *testing.T) {

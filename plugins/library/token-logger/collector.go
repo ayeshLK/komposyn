@@ -182,7 +182,10 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			mergeCollectorRootFailure(rootHealth, source.RootPaths, readErr)
 			continue
 		}
-		adapter, detectErr := detectAdapterSnapshot(contents)
+		if c.store.benchmarkObserver != nil {
+			c.store.benchmarkObserver.sourceBytesRead += int64(len(contents))
+		}
+		adapter, detectErr := detectAdapterSnapshotObserved(contents, c.store.benchmarkObserver)
 		if detectErr != nil {
 			total.Outcomes.Add(OutcomeFailedSource)
 			pollErrors = append(pollErrors, detectErr)
