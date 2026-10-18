@@ -108,6 +108,10 @@ func DetectAdapter(path string) (string, error) {
 }
 
 func detectAdapterSnapshot(contents []byte) (string, error) {
+	return detectAdapterSnapshotObserved(contents, nil)
+}
+
+func detectAdapterSnapshotObserved(contents []byte, observer *collectorBenchmarkObserver) (string, error) {
 	reader := bufio.NewReader(bytes.NewReader(contents))
 	for {
 		lineBytes, readErr := reader.ReadBytes('\n')
@@ -120,6 +124,9 @@ func detectAdapterSnapshot(contents []byte) (string, error) {
 				return "", readErr
 			}
 			continue
+		}
+		if observer != nil {
+			observer.recordsDecoded++
 		}
 		var raw struct {
 			Type    string          `json:"type"`
@@ -160,7 +167,7 @@ func importClaudeSource(ctx context.Context, path string, store *Store, validate
 	}
 	for attempt := 1; ; attempt++ {
 		if validateAdapter {
-			if err := validateSourceSnapshotAdapter(snapshot.contents, "claude"); err != nil {
+			if err := validateSourceSnapshotAdapter(snapshot.contents, "claude", store.benchmarkObserver); err != nil {
 				return ImportResult{}, err
 			}
 		}
@@ -176,11 +183,11 @@ func importClaudeSource(ctx context.Context, path string, store *Store, validate
 }
 
 func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
-	if unchanged, ok := unchangedExpectedSourceSnapshot(expectedCursor, contents); ok {
+	if unchanged, ok := unchangedExpectedSourceSnapshotObserved(expectedCursor, contents, store.benchmarkObserver); ok {
 		return unchanged, false, nil
 	}
-	fingerprint := digest(contents)
-	generation := sourceGeneration(expectedCursor, contents)
+	fingerprint := digestSourceBytes(contents, store.benchmarkObserver)
+	generation := sourceGenerationObserved(expectedCursor, contents, store.benchmarkObserver)
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
@@ -197,6 +204,9 @@ func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *St
 		offset += int64(len(line))
 		line = []byte(strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r"))
 		if len(strings.TrimSpace(string(line))) > 0 {
+			if store.benchmarkObserver != nil {
+				store.benchmarkObserver.recordsDecoded++
+			}
 			var envelope claudeEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
 				if errors.Is(readErr, io.EOF) && len(line) > 0 && isTruncatedJSON(err) {
@@ -249,7 +259,7 @@ func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *St
 					if timeErr != nil {
 						result.Outcomes.Add(OutcomeMalformedRecord)
 					} else {
-						events = append(events, claudeEvent(sourceID, fingerprint, lineOffset, recordID, session, *message.Usage, occurredAt, line))
+						events = append(events, claudeEventObserved(sourceID, fingerprint, lineOffset, recordID, session, *message.Usage, occurredAt, line, store.benchmarkObserver))
 					}
 				}
 			}
@@ -417,6 +427,10 @@ func claudeTimestamp(value string) (time.Time, error) {
 }
 
 func claudeEvent(sourceID, fingerprint string, offset int64, recordID string, session claudeSession, usage claudeUsage, occurredAt time.Time, line []byte) UsageEvent {
+	return claudeEventObserved(sourceID, fingerprint, offset, recordID, session, usage, occurredAt, line, nil)
+}
+
+func claudeEventObserved(sourceID, fingerprint string, offset int64, recordID string, session claudeSession, usage claudeUsage, occurredAt time.Time, line []byte, observer *collectorBenchmarkObserver) UsageEvent {
 	key := digest([]byte(sourceID + "\x00" + recordID))
 	offsetCopy := offset
 	var billing BillingContext
@@ -443,7 +457,7 @@ func claudeEvent(sourceID, fingerprint string, offset int64, recordID string, se
 			CacheWriteTokens: usage.CacheCreationInputTokens, CacheWrite5mTokens: cacheWrite5m, CacheWrite1hTokens: cacheWrite1h},
 		BillingContext: billing,
 		Provenance: Provenance{Adapter: "claude-code", SourceID: sourceID, SourceRecord: recordID,
-			SourceOffset: &offsetCopy, RecordHash: digest(line)},
+			SourceOffset: &offsetCopy, RecordHash: digestRecordBytes(line, observer)},
 		IngestionKey: "claude:" + key,
 		Attributes:   json.RawMessage(fmt.Sprintf(`{"source_fingerprint":%q}`, fingerprint)),
 	}

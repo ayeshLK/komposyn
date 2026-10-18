@@ -408,8 +408,22 @@ func TestClaudeImportDetectsReplacementWithProviderID(t *testing.T) {
 	if err != nil || first.Receipt.Imported != 1 {
 		t.Fatalf("initial import = %+v, err = %v", first, err)
 	}
+	initialInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(message(2)), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, initialInfo.ModTime(), initialInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacementInfo.Size() != initialInfo.Size() || !replacementInfo.ModTime().Equal(initialInfo.ModTime()) {
+		t.Fatalf("replacement metadata size=%d mtime=%s; initial size=%d mtime=%s", replacementInfo.Size(), replacementInfo.ModTime(), initialInfo.Size(), initialInfo.ModTime())
 	}
 	replacement, err := (ClaudeAdapter{}).Import(path, store)
 	if err != nil || replacement.Receipt.Imported != 1 || replacement.Receipt.Duplicates != 0 {

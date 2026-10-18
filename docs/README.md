@@ -10,6 +10,9 @@ binary release process are maintained in the
 - [Project vision](vision.md) — implemented module and open product questions.
 - [Architecture](architecture.md) — core ownership, provider ingestion,
   persistence, collector, and report semantics.
+- [Collector performance baseline](collector-performance-baseline.md) —
+  repeatable generated workloads, correctness oracle, measured Linux baseline,
+  and proposed workload-specific improvement budgets.
 - [Token Logger core API](core-api.md) — supported exports and compatibility.
 - [Data model](data-model.md) — events, identity, provenance, and transactions.
 - [Database migrations](migrations.md) — schema history and migration policy.

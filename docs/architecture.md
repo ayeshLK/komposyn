@@ -114,13 +114,13 @@ related metadata, events, and cursors use one transaction.
 The database is application-owned; source transcripts remain provider-owned and
 read-only from KompoSyn's perspective.
 
-Unchanged-poll benchmarks cover small and 10,000-record histories and report
-time, allocations, bytes, and historical events resubmitted. On the issue #90
-Linux review host, the 10,000-record unchanged case resubmitted zero events and
-took about 2.5 ms. Append polls still parse history to preserve cumulative
-provider context: the 1,000-record case resubmitted 1,000 historical events and
-took about 130 ms. Incremental append parsing remains a measured limitation,
-not part of the unchanged-snapshot optimization.
+Generated collector benchmarks cover both providers, cold imports, healthy
+unchanged polls, append and incomplete-source cases, and file-size
+distributions. See the [collector performance baseline](collector-performance-baseline.md)
+for repeatable commands, work counters, correctness coverage, and proposed
+improvement budgets. Healthy unchanged snapshots skip parser history and event
+insertion; append polls still parse cumulative provider history, which remains
+a measured limitation rather than an implemented optimization.
 
 ## Reporting semantics
 
