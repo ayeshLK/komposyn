@@ -1,5 +1,12 @@
 # Architecture
 
+## Component-first direction
+
+KompoSyn develops useful components before defining how they will compose into
+a broader harness. This is a project philosophy, not an implemented plugin
+runtime or universal API. The questions that remain open are recorded in the
+[project vision](vision.md).
+
 ## Implemented today
 
 KompoSyn Core implements the reusable Token Logger library. Provider-owned
@@ -18,7 +25,9 @@ flowchart LR
   C --> D[SQLite Store]
   D --> E[Report queries]
   D --> F[Diagnostics]
-  G[Standalone CLI] --> B
+  G[Standalone CLI] --> H[Core library API]
+  H --> B
+  H --> D
 ```
 
 ## Component boundaries

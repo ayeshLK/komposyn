@@ -18,6 +18,17 @@ CLI. Core and CLI versions advance independently. Preserve provider-source
 privacy, data paths and schema compatibility, protocol-v1 semantics where
 core changes affect the contract, and exact machine-readable report values.
 
+## Project direction
+
+KompoSyn follows a component-first approach: contributions should solve a
+concrete problem and remain useful and testable on their own. The future
+harness, common plugin API, and plugin distribution model remain open. A
+proposal should explain the developer need, component boundary, contract, and
+whether independent distribution is useful; no component is required to have
+a CLI for consistency alone. Read the [project vision](docs/vision.md) and
+founding [issue #41](https://github.com/ayeshLK/komposyn/issues/41) before
+proposing broader platform architecture.
+
 ## Development and validation
 
 Requires Go 1.26.9 or newer. The normal gate is:
