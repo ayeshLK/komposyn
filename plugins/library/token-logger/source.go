@@ -35,8 +35,8 @@ func (err *sourceAdapterChangedError) Error() string {
 	return fmt.Sprintf("authoritative source snapshot uses %s adapter", err.adapter)
 }
 
-func validateSourceSnapshotAdapter(contents []byte, expected string) error {
-	adapter, err := detectAdapterSnapshot(contents)
+func validateSourceSnapshotAdapter(contents []byte, expected string, observer *collectorBenchmarkObserver) error {
+	adapter, err := detectAdapterSnapshotObserved(contents, observer)
 	if err != nil {
 		return fmt.Errorf("detect authoritative source snapshot: %w", err)
 	}

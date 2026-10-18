@@ -167,7 +167,7 @@ func importClaudeSource(ctx context.Context, path string, store *Store, validate
 	}
 	for attempt := 1; ; attempt++ {
 		if validateAdapter {
-			if err := validateSourceSnapshotAdapter(snapshot.contents, "claude"); err != nil {
+			if err := validateSourceSnapshotAdapter(snapshot.contents, "claude", store.benchmarkObserver); err != nil {
 				return ImportResult{}, err
 			}
 		}

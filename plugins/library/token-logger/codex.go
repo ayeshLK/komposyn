@@ -159,7 +159,7 @@ func importCodexSource(ctx context.Context, path string, store *Store, validateA
 	}
 	for attempt := 1; ; attempt++ {
 		if validateAdapter {
-			if err := validateSourceSnapshotAdapter(snapshot.contents, "codex"); err != nil {
+			if err := validateSourceSnapshotAdapter(snapshot.contents, "codex", store.benchmarkObserver); err != nil {
 				return ImportResult{}, err
 			}
 		}

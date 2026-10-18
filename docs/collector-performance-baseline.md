@@ -88,8 +88,8 @@ host was not reserved from other work; timings are observations, not gates.
 
 | Provider / scenario | Source bytes read/op | Source bytes hashed/op | Parser records/op | Event insert attempts/op | Historical attempts/op |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Claude / unchanged, 1,000 | 364,040 | 182,020 | 2 | 0 | 0 |
-| Codex / unchanged, 1,000 | 440,648 | 220,324 | 1 | 0 | 0 |
+| Claude / unchanged, 1,000 | 364,040 | 182,020 | 4 | 0 | 0 |
+| Codex / unchanged, 1,000 | 440,648 | 220,324 | 2 | 0 | 0 |
 | Claude / usage append, 1,000 | 364,406 | 545,298 | 1,004 | 1,001 | 1,000 |
 | Codex / usage append, 1,000 | 441,096 | 660,222 | 1,003 | 1,001 | 1,000 |
 | Claude / non-usage append, 1,000 | 364,218 | 545,022 | 1,004 | 1,000 | 1,000 |
@@ -100,10 +100,12 @@ host was not reserved from other work; timings are observations, not gates.
 | Codex / unsupported unchanged, 50 | 22,366 | 33,086 | 53 | 50 | 50 |
 
 An unchanged poll reads each source once for collector adapter detection and
-again for the adapter's authoritative snapshot. Healthy reusable snapshots
-avoid parsing history and issue no event insert attempts. Appends reparse
-history to preserve cumulative provider context. These counters explain work;
-they do not replace correctness checks.
+again for the adapter's authoritative snapshot. Each snapshot is decoded once
+for each detection pass, so the parser-record counter includes both detection
+passes as well as adapter parsing. Healthy reusable snapshots avoid parsing
+history and issue no event insert attempts. Appends reparse history to preserve
+cumulative provider context. These counters explain work; they do not replace
+correctness checks.
 
 ## Correctness oracle
 
@@ -111,7 +113,13 @@ they do not replace correctness checks.
 and Codex histories imported directly and through `Collector`: full event rows,
 project/session references and aliases, cursor fingerprint/generation/offset,
 receipts, outcomes, collector health, diagnostics, and byte-for-byte JSON/CSV
-reports. It also verifies both paths classify the next poll as unchanged.
+reports. Independently frozen event accounting verifies three canonical events
+at one input and one output token each, while JSON/CSV expectations check the
+three-request aggregate, provider pricing provenance, unavailable-cost basis,
+and report shape. It also verifies both paths classify the next poll as
+unchanged. `TestUnchangedCollectorCountsBothAdapterDetectionPasses` protects
+the observer's accounting for the initial collector detection and authoritative
+snapshot validation.
 
 Existing focused tests cover same-size/same-mtime rewrites
 (`TestClaudeImportDetectsReplacementWithProviderID`,
