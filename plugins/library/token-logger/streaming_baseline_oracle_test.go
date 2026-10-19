@@ -151,6 +151,38 @@ func runStreamingOracleProvider(t *testing.T, provider string) []streamingOracle
 	}
 	eofResult, eofErr := eofCollector.PollOnce()
 	steps = append(steps, captureStreamingOracleStep(t, "codex-eof-fallback", store, eofCollector, eofResult, eofErr))
+
+	if provider == "claude" {
+		lateAttributionPath := filepath.Join(root, "late-attribution.jsonl")
+		initial := []byte(`{"type":"assistant","uuid":"oracle-late-1","timestamp":"2026-10-11T00:00:01Z","message":{"model":"claude-sonnet-5","usage":{"input_tokens":3,"output_tokens":1}}}` + "\n")
+		if err := os.WriteFile(lateAttributionPath, initial, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		lateAttributionCollector, err := NewCollector(store, []string{lateAttributionPath}, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, pollErr := lateAttributionCollector.PollOnce()
+		steps = append(steps, captureStreamingOracleStep(t, "late-attribution-before", store, lateAttributionCollector, result, pollErr))
+		appendStreamingOracleFile(t, lateAttributionPath, []byte(`{"type":"user","sessionId":"oracle-late-session","cwd":"/oracle/late","project_id":"oracle-late-project","project_name":"Oracle Late"}`+"\n"))
+		result, pollErr = lateAttributionCollector.PollOnce()
+		steps = append(steps, captureStreamingOracleStep(t, "late-attribution-after", store, lateAttributionCollector, result, pollErr))
+	} else {
+		transitionPath := filepath.Join(root, "session-transition.jsonl")
+		initial := benchmarkGeneratedHistory("codex", "oracle-session-1", 1)
+		if err := os.WriteFile(transitionPath, initial, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		transitionCollector, err := NewCollector(store, []string{transitionPath}, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, pollErr := transitionCollector.PollOnce()
+		steps = append(steps, captureStreamingOracleStep(t, "session-transition-before", store, transitionCollector, result, pollErr))
+		appendStreamingOracleFile(t, transitionPath, benchmarkGeneratedHistory("codex", "oracle-session-2", 1))
+		result, pollErr = transitionCollector.PollOnce()
+		steps = append(steps, captureStreamingOracleStep(t, "session-transition-after", store, transitionCollector, result, pollErr))
+	}
 	return steps
 }
 
@@ -197,6 +229,10 @@ func captureStreamingOracleStep(t *testing.T, name string, store *Store, collect
 	for index := range step.Diagnostics {
 		step.Diagnostics[index].FirstSeenAt = time.Time{}
 		step.Diagnostics[index].LastSeenAt = time.Time{}
+		// The independent v0.7.1 oracle uses schema 15; candidate schema 16
+		// changes only this metadata field. Compare all behavioral diagnostic
+		// fields while accounting explicitly for that intentional difference.
+		step.Diagnostics[index].SchemaVersion = 0
 	}
 	report, err := store.Query(UsageFilter{From: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)})
 	if err != nil {

@@ -305,3 +305,18 @@ ALTER TABLE pricing_rules ADD COLUMN region_selector TEXT NOT NULL DEFAULT '';
 const schemaMigrationThirteenCacheWrite5m = `ALTER TABLE usage_events ADD COLUMN cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0`
 const schemaMigrationThirteenCacheWrite1h = `ALTER TABLE usage_events ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0`
 const schemaMigrationFourteenSpeedSelector = `ALTER TABLE pricing_rules ADD COLUMN speed_selector TEXT NOT NULL DEFAULT ''`
+
+const schemaMigrationSixteenParserCheckpoints = `
+CREATE TABLE parser_checkpoints (
+    source_id TEXT PRIMARY KEY,
+    adapter TEXT NOT NULL,
+    parser_revision INTEGER NOT NULL,
+    format_version INTEGER NOT NULL,
+    source_generation INTEGER NOT NULL,
+    boundary_offset INTEGER NOT NULL,
+    prefix_fingerprint TEXT NOT NULL,
+    state_json BLOB NOT NULL,
+    state_digest TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+`

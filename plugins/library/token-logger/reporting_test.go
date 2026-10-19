@@ -479,12 +479,15 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 	if _, err := store.db.Exec("DROP TABLE collector_source_identities"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.db.Exec("DROP TABLE parser_checkpoints"); err != nil {
+		t.Fatal(err)
+	}
 	for _, table := range []string{"collector_runs", "collector_runtime", "collector_sources"} {
 		if _, err := store.db.Exec("DROP TABLE " + table); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
