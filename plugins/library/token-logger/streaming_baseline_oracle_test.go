@@ -182,6 +182,71 @@ func runStreamingOracleProvider(t *testing.T, provider string) []streamingOracle
 		appendStreamingOracleFile(t, transitionPath, benchmarkGeneratedHistory("codex", "oracle-session-2", 1))
 		result, pollErr = transitionCollector.PollOnce()
 		steps = append(steps, captureStreamingOracleStep(t, "session-transition-after", store, transitionCollector, result, pollErr))
+
+		steps = append(steps, runCodexBoundaryOracleCases(t, store, root)...)
+	}
+	return steps
+}
+
+func runCodexBoundaryOracleCases(t *testing.T, store *Store, root string) []streamingOracleStep {
+	t.Helper()
+	var steps []streamingOracleStep
+	for _, scenario := range []string{"duplicate", "conflict", "reset"} {
+		for _, mode := range []string{"initial", "continuation"} {
+			for _, tailKind := range []string{"valid-unterminated", "incomplete"} {
+				name := scenario + "-" + mode + "-" + tailKind
+				path := filepath.Join(root, "boundary-"+name+".jsonl")
+				session := "oracle-boundary-" + name
+				header := `{"type":"session_meta","payload":{"id":"` + session + `","project_id":"` + session + `-project","project_name":"Boundary","cwd":"/oracle/boundary","model":"gpt-test"}}` + "\n"
+				first := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"` + session + `","response_id":"response-1","usage":{"input_tokens":10,"output_tokens":1},"turn_token_usage":{"input_tokens":10,"output_tokens":1},"thread_token_usage":{"input_tokens":10,"output_tokens":1}}}` + "\n"
+				special := first
+				if scenario == "conflict" {
+					special = `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:02Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"` + session + `","response_id":"response-1","usage":{"input_tokens":11,"output_tokens":1},"turn_token_usage":{"input_tokens":11,"output_tokens":1},"thread_token_usage":{"input_tokens":11,"output_tokens":1}}}` + "\n"
+				} else if scenario == "reset" {
+					special = `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:02Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"` + session + `","response_id":"response-2","usage":{"input_tokens":1,"output_tokens":1},"turn_token_usage":{"input_tokens":9,"output_tokens":1},"thread_token_usage":{"input_tokens":9,"output_tokens":1}}}` + "\n"
+				}
+				cumulative := `"input_tokens":20,"output_tokens":2`
+				usage := `"input_tokens":10,"output_tokens":1`
+				if scenario == "reset" {
+					cumulative, usage = `"input_tokens":10,"output_tokens":2`, `"input_tokens":1,"output_tokens":1`
+				}
+				tail := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:03Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"` + session + `","response_id":"response-3","usage":{` + usage + `},"turn_token_usage":{` + cumulative + `},"thread_token_usage":{` + cumulative + `}}}`
+				tailRemainder := ""
+				if tailKind == "incomplete" {
+					tailRemainder = tail[len(tail)-7:]
+					tail = tail[:len(tail)-7]
+				}
+				prefix := []byte(header + first)
+				if mode == "initial" {
+					if err := os.WriteFile(path, append(append(append([]byte(nil), prefix...), []byte(special)...), []byte(tail)...), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if err := os.WriteFile(path, prefix, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				collector, err := NewCollector(store, []string{path}, time.Hour)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "continuation" {
+					result, pollErr := collector.PollOnce()
+					steps = append(steps, captureStreamingOracleStep(t, name+"-prefix", store, collector, result, pollErr))
+					appendStreamingOracleFile(t, path, append([]byte(special), []byte(tail)...))
+				}
+				result, pollErr := collector.PollOnce()
+				steps = append(steps, captureStreamingOracleStep(t, name+"-boundary", store, collector, result, pollErr))
+				laterUsage := `"input_tokens":10,"output_tokens":1`
+				if scenario == "reset" {
+					laterUsage = `"input_tokens":20,"output_tokens":1`
+				}
+				later := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:04Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"` + session + `","response_id":"response-4","usage":{` + laterUsage + `},"turn_token_usage":{"input_tokens":30,"output_tokens":3},"thread_token_usage":{"input_tokens":30,"output_tokens":3}}}` + "\n"
+				appendStreamingOracleFile(t, path, []byte(tailRemainder+"\n"+later))
+				result, pollErr = collector.PollOnce()
+				steps = append(steps, captureStreamingOracleStep(t, name+"-completed-and-appended", store, collector, result, pollErr))
+			}
+		}
 	}
 	return steps
 }

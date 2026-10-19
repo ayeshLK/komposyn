@@ -16,6 +16,7 @@ package tokenlogger
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -276,6 +277,116 @@ func TestCodexCheckpointPreservesResponseAndCumulativeState(t *testing.T) {
 				t.Fatalf("continuation work historical=%d parser=%d insert=%d", observer.historicalInsertAttempts, observer.parserRecordsDecoded, observer.eventInsertAttempts)
 			}
 		})
+	}
+}
+
+func TestCodexCheckpointCapturesEveryProcessedBoundaryBeforeTail(t *testing.T) {
+	for _, scenario := range []string{"duplicate-response", "conflicting-response", "cumulative-reset"} {
+		for _, tailKind := range []string{"valid-unterminated", "incomplete"} {
+			t.Run(scenario+"/"+tailKind, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "codex.jsonl")
+				header := `{"type":"session_meta","payload":{"id":"session-1","project_id":"project-1","project_name":"Project","cwd":"/tmp/project","model":"gpt-test"}}` + "\n"
+				firstRecord := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:01Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":10,"output_tokens":1},"turn_token_usage":{"input_tokens":10,"output_tokens":1},"thread_token_usage":{"input_tokens":10,"output_tokens":1}}}` + "\n"
+				base := []byte(header + firstRecord)
+				if err := os.WriteFile(path, base, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				store := openTestStore(t)
+				defer store.Close()
+				collector, err := NewCollector(store, []string{path}, time.Hour)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result, err := collector.PollOnce(); err != nil || result.Receipt.Imported != 1 {
+					t.Fatalf("initial import=%+v err=%v", result, err)
+				}
+				var initialCheckpointCount int
+				if err := store.db.QueryRow("SELECT COUNT(*) FROM parser_checkpoints").Scan(&initialCheckpointCount); err != nil || initialCheckpointCount != 1 {
+					t.Fatalf("initial checkpoint count=%d err=%v", initialCheckpointCount, err)
+				}
+
+				var boundaryRecord string
+				switch scenario {
+				case "duplicate-response":
+					boundaryRecord = firstRecord
+				case "conflicting-response":
+					boundaryRecord = `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:02Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-1","usage":{"input_tokens":11,"output_tokens":1},"turn_token_usage":{"input_tokens":11,"output_tokens":1},"thread_token_usage":{"input_tokens":11,"output_tokens":1}}}` + "\n"
+				case "cumulative-reset":
+					boundaryRecord = `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:02Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-2","usage":{"input_tokens":1,"output_tokens":1},"turn_token_usage":{"input_tokens":9,"output_tokens":1},"thread_token_usage":{"input_tokens":9,"output_tokens":1}}}` + "\n"
+				}
+				tailTokens := `"input_tokens":20,"output_tokens":2`
+				tailUsage := `"input_tokens":10,"output_tokens":1`
+				if scenario == "cumulative-reset" {
+					tailTokens = `"input_tokens":10,"output_tokens":2`
+					tailUsage = `"input_tokens":1,"output_tokens":1`
+				}
+				tail := `{"type":"token_usage_record","timestamp":"2026-10-11T00:00:03Z","payload":{"thread_id":"thread-1","turn_id":"turn-1","session_id":"session-1","response_id":"response-3","usage":{` + tailUsage + `},"turn_token_usage":{` + tailTokens + `},"thread_token_usage":{` + tailTokens + `}}}`
+				tailRemainder := ""
+				if tailKind == "incomplete" {
+					tailRemainder = tail[len(tail)-7:]
+					tail = tail[:len(tail)-7]
+				}
+				appended := append(append(append([]byte(nil), base...), []byte(boundaryRecord)...), []byte(tail)...)
+				if err := os.WriteFile(path, appended, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				result, err := collector.PollOnce()
+				if err != nil {
+					t.Fatalf("poll with trailing %s: result=%+v err=%v", tailKind, result, err)
+				}
+				var boundary int64
+				var stateJSON []byte
+				if scenario == "duplicate-response" {
+					if err := store.db.QueryRow("SELECT boundary_offset, state_json FROM parser_checkpoints").Scan(&boundary, &stateJSON); err != nil {
+						t.Fatal(err)
+					}
+					wantBoundary := int64(len(base) + len(boundaryRecord))
+					if boundary != wantBoundary {
+						t.Fatalf("checkpoint boundary=%d want=%d", boundary, wantBoundary)
+					}
+					var state parserCheckpointState
+					if err := json.Unmarshal(stateJSON, &state); err != nil {
+						t.Fatal(err)
+					}
+					wantAttempts := 1
+					if scenario == "duplicate-response" {
+						wantAttempts++
+					}
+					if state.HistoricalEventAttempts != wantAttempts {
+						t.Fatalf("checkpoint historical attempts=%d want=%d state=%+v", state.HistoricalEventAttempts, wantAttempts, state)
+					}
+					if state.Outcomes.DeferredIncompleteTail != 0 {
+						t.Fatalf("checkpoint carried EOF tail outcome into prefix: %+v", state.Outcomes)
+					}
+				} else {
+					var count int
+					if err := store.db.QueryRow("SELECT COUNT(*) FROM parser_checkpoints").Scan(&count); err != nil {
+						t.Fatal(err)
+					}
+					if count != 0 {
+						t.Fatalf("unsafe %s/%s result retained a checkpoint", scenario, tailKind)
+					}
+				}
+
+				// Complete the pending tail and append another record. The next
+				// poll must resume from the state captured at the exact prior LF.
+				completion := []byte(tailRemainder + "\n" + `{"type":"event_msg","timestamp":"2026-10-11T00:00:04Z","payload":{"type":"token_count","session_id":"session-1","info":{"total_token_usage":{"input_tokens":21,"output_tokens":3}}}}` + "\n")
+				file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.Write(completion); err != nil {
+					_ = file.Close()
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if result, err := collector.PollOnce(); err != nil {
+					t.Fatalf("tail completion and later append: result=%+v err=%v", result, err)
+				}
+			})
+		}
 	}
 }
 

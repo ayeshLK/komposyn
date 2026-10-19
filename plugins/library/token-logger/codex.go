@@ -294,7 +294,7 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 								if seen.usage != usage || seen.hasTurn != hasTurn || seen.hasThread != hasThread ||
 									(hasTurn && seen.turnUsage != turnUsage) || (hasThread && seen.threadUsage != threadUsage) {
 									result.Outcomes.Add(OutcomeUnsupportedUsage)
-									continue
+									goto codexRecordProcessed
 								}
 								occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 								if timeErr != nil {
@@ -303,12 +303,12 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 									newStreamSessions[session.ID] = true
 									events = append(events, codexUsageEventObserved(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line, store.benchmarkObserver))
 								}
-								continue
+								goto codexRecordProcessed
 							}
 							if !codexCumulativeValid(record, usage, turnUsage, threadUsage, turnCumulative, threadCumulative) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
 								codexResetCumulativeBaselines(record, turnUsage, threadUsage, turnCumulative, threadCumulative)
-								continue
+								goto codexRecordProcessed
 							}
 							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 							if timeErr != nil {
@@ -448,6 +448,7 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 				}
 			}
 		}
+	codexRecordProcessed:
 		if offset == boundaryOffset {
 			prefixEvents := historicalAttempts + len(events)
 			boundaryState = parserCheckpointState{Outcomes: result.Outcomes, HistoricalEventAttempts: prefixEvents,
