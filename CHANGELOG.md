@@ -11,6 +11,13 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.8.0](https://github.com/ayeshLK/komposyn/compare/v0.7.1...v0.8.0) (2026-10-19)
+
+
+### Features
+
+* **core:** add validated append checkpoints for Claude and Codex ([#145](https://github.com/ayeshLK/komposyn/issues/145)) ([e5d396a](https://github.com/ayeshLK/komposyn/commit/e5d396a61a6222610d3f8e43772d5861692a01a9))
+
 ## [0.7.1](https://github.com/ayeshLK/komposyn/compare/v0.7.0...v0.7.1) (2026-10-19)
 
 
