@@ -172,6 +172,18 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 
 func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
 	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
+	return importCodexReaderAttemptWithCheckpoint(ctx, source, store, baseSourceID, expectedCursor, fingerprint, generation, classifier, verify, nil)
+}
+
+func importCodexReaderContinuation(ctx context.Context, source io.Reader, store *Store, snapshot sourceSnapshot,
+	classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
+	options := &parserContinuationOptions{snapshot: snapshot, allowResume: snapshot.checkpointUsable}
+	return importCodexReaderAttemptWithCheckpoint(ctx, source, store, snapshot.baseSourceID, snapshot.expectedCursor,
+		snapshot.fingerprint, snapshot.generation, classifier, verify, options)
+}
+
+func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
+	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error, options *parserContinuationOptions) (ImportResult, bool, error) {
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
@@ -188,6 +200,35 @@ func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Stor
 	seenResponses := map[string]codexUsageRecordSeen{}
 	var events []UsageEvent
 	var lastRecordID string
+	historicalAttempts := 0
+	boundaryOffset := int64(0)
+	var boundaryState parserCheckpointState
+	boundaryCaptured := false
+	if options != nil {
+		boundaryOffset = options.snapshot.checkpointBoundaryOffset
+		if options.allowResume {
+			checkpoint := options.snapshot.checkpoint
+			if checkpoint.Adapter != "codex" {
+				return ImportResult{}, false, errors.New("incompatible Codex parser checkpoint")
+			}
+			state := checkpoint.State
+			result.Outcomes = state.Outcomes
+			historicalAttempts = state.HistoricalEventAttempts
+			lastRecordID = state.LastRecordID
+			current, activeSessionID, sessions, metadataCurrent, metadataSessions, legacyPrevious, legacyHasPrevious,
+				newStreamSessions, threadCumulative, turnCumulative, seenResponses = restoreCodexCheckpoint(state.Codex)
+			boundaryState = state
+			boundaryCaptured = true
+			if boundaryOffset < checkpoint.BoundaryOffset {
+				boundaryOffset = checkpoint.BoundaryOffset
+			}
+		} else if boundaryOffset == 0 {
+			boundaryState = parserCheckpointState{Codex: codexCheckpointSnapshot(current, activeSessionID, sessions,
+				metadataCurrent, metadataSessions, legacyPrevious, legacyHasPrevious, newStreamSessions,
+				threadCumulative, turnCumulative, seenResponses, 0)}
+			boundaryCaptured = true
+		}
+	}
 
 	reader := bufio.NewReaderSize(source, sourceVerificationBufferSize)
 	for {
@@ -200,6 +241,15 @@ func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Stor
 			classifier.observe(line, store.benchmarkObserver)
 		}
 		offset += int64(len(line))
+		if options != nil && options.allowResume && offset <= options.snapshot.checkpoint.BoundaryOffset {
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					return result, false, fmt.Errorf("read Codex source prefix: %w", readErr)
+				}
+				break
+			}
+			continue
+		}
 		if len(line) > 0 {
 			line = []byte(strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r"))
 		}
@@ -244,7 +294,7 @@ func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Stor
 								if seen.usage != usage || seen.hasTurn != hasTurn || seen.hasThread != hasThread ||
 									(hasTurn && seen.turnUsage != turnUsage) || (hasThread && seen.threadUsage != threadUsage) {
 									result.Outcomes.Add(OutcomeUnsupportedUsage)
-									continue
+									goto codexRecordProcessed
 								}
 								occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 								if timeErr != nil {
@@ -253,12 +303,12 @@ func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Stor
 									newStreamSessions[session.ID] = true
 									events = append(events, codexUsageEventObserved(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line, store.benchmarkObserver))
 								}
-								continue
+								goto codexRecordProcessed
 							}
 							if !codexCumulativeValid(record, usage, turnUsage, threadUsage, turnCumulative, threadCumulative) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
 								codexResetCumulativeBaselines(record, turnUsage, threadUsage, turnCumulative, threadCumulative)
-								continue
+								goto codexRecordProcessed
 							}
 							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 							if timeErr != nil {
@@ -398,6 +448,15 @@ func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Stor
 				}
 			}
 		}
+	codexRecordProcessed:
+		if offset == boundaryOffset {
+			prefixEvents := historicalAttempts + len(events)
+			boundaryState = parserCheckpointState{Outcomes: result.Outcomes, HistoricalEventAttempts: prefixEvents,
+				LastRecordID: lastRecordID, Codex: codexCheckpointSnapshot(current, activeSessionID, sessions,
+					metadataCurrent, metadataSessions, legacyPrevious, legacyHasPrevious, newStreamSessions,
+					threadCumulative, turnCumulative, seenResponses, prefixEvents)}
+			boundaryCaptured = true
+		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
 				return result, false, fmt.Errorf("read Codex source: %w", readErr)
@@ -413,9 +472,23 @@ func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Stor
 			return result, true, err
 		}
 	}
+	if options != nil && !boundaryCaptured {
+		return ImportResult{}, true, errSourceSnapshotChanged
+	}
+	preFinalState := codexCheckpointSnapshot(current, activeSessionID, sessions, metadataCurrent, metadataSessions,
+		legacyPrevious, legacyHasPrevious, newStreamSessions, threadCumulative, turnCumulative, seenResponses,
+		historicalAttempts+len(events))
+	if options != nil && options.allowResume && !codexAttributionCompatible(options.snapshot.checkpoint.State.Codex, preFinalState) {
+		return ImportResult{}, false, errParserCheckpointFallback
+	}
+	checkpointSafe := options == nil || boundaryCaptured
+	if options != nil && !codexAttributionCompatible(boundaryState.Codex, preFinalState) {
+		checkpointSafe = false
+	}
 
 	if current.ID == "" {
 		current = updateCodexSession(current, codexPayload{}, sourceID)
+		checkpointSafe = false
 	}
 	if current.ID != "" {
 		if _, hasMetadata := metadataSessions[current.ID]; !hasMetadata {
@@ -439,11 +512,37 @@ func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Stor
 	for _, session := range sessionsByID {
 		knownSessions = append(knownSessions, session)
 	}
-	receipt, err := store.appendWithReferencesAndCursorIfCurrent(events,
-		projects,
-		knownSessions,
-		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
-			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	var receipt Receipt
+	var err error
+	if options == nil {
+		receipt, err = store.appendWithReferencesAndCursorIfCurrent(events,
+			projects,
+			knownSessions,
+			Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	} else {
+		var checkpoint *parserCheckpoint
+		if checkpointSafe && !result.Outcomes.Incomplete() && boundaryState.Codex != nil {
+			boundaryFingerprint := options.snapshot.boundaryFingerprint
+			if stream, ok := source.(*sourceStreamReader); ok {
+				boundaryFingerprint, _ = stream.prefixFingerprint(boundaryOffset)
+			}
+			if boundaryFingerprint != "" {
+				candidate := parserCheckpoint{SourceID: baseSourceID, Adapter: "codex", SourceGeneration: generation,
+					BoundaryOffset: boundaryOffset, PrefixFingerprint: boundaryFingerprint, State: boundaryState}
+				if encoded, ok := encodeParserCheckpoint(candidate); ok {
+					checkpoint = &encoded
+				}
+			}
+		}
+		receipt, err = store.appendWithParserStateIfCurrent(events, projects, knownSessions,
+			Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor,
+			options.snapshot.expectedCheckpoint, checkpoint, options.snapshot.identityExpectation, ctx)
+		if options.allowResume {
+			receipt.Duplicates += options.snapshot.checkpoint.State.HistoricalEventAttempts
+		}
+	}
 	if errors.Is(err, errSourceCursorChanged) {
 		return ImportResult{}, true, nil
 	}

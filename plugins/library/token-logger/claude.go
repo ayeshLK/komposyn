@@ -195,12 +195,51 @@ func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *St
 
 func importClaudeReaderAttempt(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
 	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
+	return importClaudeReaderAttemptWithCheckpoint(ctx, source, store, baseSourceID, expectedCursor, fingerprint, generation, classifier, verify, nil)
+}
+
+func importClaudeReaderContinuation(ctx context.Context, source io.Reader, store *Store, snapshot sourceSnapshot,
+	classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
+	options := &parserContinuationOptions{snapshot: snapshot, allowResume: snapshot.checkpointUsable}
+	return importClaudeReaderAttemptWithCheckpoint(ctx, source, store, snapshot.baseSourceID, snapshot.expectedCursor,
+		snapshot.fingerprint, snapshot.generation, classifier, verify, options)
+}
+
+func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
+	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error, options *parserContinuationOptions) (ImportResult, bool, error) {
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
 	var session claudeSession
 	var events []UsageEvent
 	var lastRecordID string
+	historicalAttempts := 0
+	var boundaryState parserCheckpointState
+	var boundaryCaptured bool
+	if options != nil && options.allowResume {
+		checkpoint := options.snapshot.checkpoint
+		if checkpoint.Adapter != "claude" || checkpoint.BoundaryOffset > int64(^uint64(0)>>1) {
+			return ImportResult{}, false, errors.New("incompatible Claude parser checkpoint")
+		}
+		state := checkpoint.State
+		result.Outcomes = state.Outcomes
+		session = state.Claude.Session
+		lastRecordID = state.LastRecordID
+		historicalAttempts = state.HistoricalEventAttempts
+		boundaryState = state
+		boundaryCaptured = true
+	}
+	boundaryOffset := int64(0)
+	if options != nil {
+		boundaryOffset = options.snapshot.checkpointBoundaryOffset
+		if options.allowResume && boundaryOffset < options.snapshot.checkpoint.BoundaryOffset {
+			boundaryOffset = options.snapshot.checkpoint.BoundaryOffset
+		}
+	}
+	if options != nil && !options.allowResume && boundaryOffset == 0 {
+		boundaryState = parserCheckpointState{Claude: &claudeCheckpointState{Session: session}}
+		boundaryCaptured = true
+	}
 	reader := bufio.NewReaderSize(source, sourceVerificationBufferSize)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -212,6 +251,15 @@ func importClaudeReaderAttempt(ctx context.Context, source io.Reader, store *Sto
 			classifier.observe(line, store.benchmarkObserver)
 		}
 		offset += int64(len(line))
+		if options != nil && options.allowResume && offset <= options.snapshot.checkpoint.BoundaryOffset {
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					return result, false, fmt.Errorf("read Claude source prefix: %w", readErr)
+				}
+				break
+			}
+			continue
+		}
 		line = []byte(strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r"))
 		if len(strings.TrimSpace(string(line))) > 0 {
 			if store.benchmarkObserver != nil {
@@ -275,6 +323,11 @@ func importClaudeReaderAttempt(ctx context.Context, source io.Reader, store *Sto
 				}
 			}
 		}
+		if offset == boundaryOffset {
+			boundaryState = parserCheckpointState{Outcomes: result.Outcomes, LastRecordID: lastRecordID,
+				HistoricalEventAttempts: historicalAttempts + len(events), Claude: &claudeCheckpointState{Session: session, PrefixEvents: historicalAttempts + len(events)}}
+			boundaryCaptured = true
+		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
 				return result, false, fmt.Errorf("read Claude source: %w", readErr)
@@ -290,18 +343,55 @@ func importClaudeReaderAttempt(ctx context.Context, source io.Reader, store *Sto
 			return result, true, err
 		}
 	}
+	if options != nil && !boundaryCaptured {
+		return ImportResult{}, true, errSourceSnapshotChanged
+	}
+	if options != nil && options.allowResume && !sameClaudeAttribution(options.snapshot.checkpoint.State.Claude.Session, session) {
+		return ImportResult{}, false, errParserCheckpointFallback
+	}
 	if session.ID == "" {
 		session = updateClaudeSession(session, claudeEnvelope{}, claudeMessage{}, sourceID)
+	}
+	if options != nil && !sameClaudeAttribution(boundaryState.Claude.Session, session) {
+		boundaryCaptured = false
 	}
 	for index := range events {
 		events[index].ProjectID = session.ProjectID
 		events[index].SessionID = session.ID
 	}
-	receipt, err := store.appendWithReferencesAndCursorIfCurrent(events,
-		[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "claude-code", ProviderAlias: session.ProjectID, AliasProvenance: "claude-code metadata"}},
-		[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`), SourceAdapter: "claude-code", ProviderAlias: session.ID}},
-		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
-			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	var receipt Receipt
+	var err error
+	if options == nil {
+		receipt, err = store.appendWithReferencesAndCursorIfCurrent(events,
+			[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "claude-code", ProviderAlias: session.ProjectID, AliasProvenance: "claude-code metadata"}},
+			[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`), SourceAdapter: "claude-code", ProviderAlias: session.ID}},
+			Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	} else {
+		var checkpoint *parserCheckpoint
+		if boundaryCaptured && !result.Outcomes.Incomplete() && boundaryState.Claude != nil {
+			boundaryFingerprint := options.snapshot.boundaryFingerprint
+			if stream, ok := source.(*sourceStreamReader); ok {
+				boundaryFingerprint, _ = stream.prefixFingerprint(boundaryOffset)
+			}
+			if boundaryFingerprint != "" {
+				candidate := parserCheckpoint{SourceID: baseSourceID, Adapter: "claude", SourceGeneration: generation,
+					BoundaryOffset: boundaryOffset, PrefixFingerprint: boundaryFingerprint, State: boundaryState}
+				if encoded, ok := encodeParserCheckpoint(candidate); ok {
+					checkpoint = &encoded
+				}
+			}
+		}
+		receipt, err = store.appendWithParserStateIfCurrent(events,
+			[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "claude-code", ProviderAlias: session.ProjectID, AliasProvenance: "claude-code metadata"}},
+			[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`), SourceAdapter: "claude-code", ProviderAlias: session.ID}},
+			Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor,
+			options.snapshot.expectedCheckpoint, checkpoint, options.snapshot.identityExpectation, ctx)
+	}
+	if options != nil && options.allowResume {
+		receipt.Duplicates += options.snapshot.checkpoint.State.HistoricalEventAttempts
+	}
 	if errors.Is(err, errSourceCursorChanged) {
 		return ImportResult{}, true, nil
 	}
@@ -310,6 +400,10 @@ func importClaudeReaderAttempt(ctx context.Context, source io.Reader, store *Sto
 	}
 	result.Receipt = receipt
 	return result, false, nil
+}
+
+func sameClaudeAttribution(a, b claudeSession) bool {
+	return a.ID == b.ID && a.ProjectID == b.ProjectID && a.ProjectName == b.ProjectName && a.Root == b.Root && a.Model == b.Model
 }
 
 func claudeUsageBearingType(recordType string) bool {

@@ -182,8 +182,98 @@ func BenchmarkCollectorGeneratedHistoryScale(b *testing.B) {
 				initial := benchmarkGeneratedHistory(provider, "scale-session", count)
 				benchmarkGeneratedAppend(b, initial, benchmarkGeneratedUsage(provider, "scale-session", count+1), 1)
 			})
+			for _, stateLimit := range []bool{false, true} {
+				name := "corrupt-checkpoint-fallback"
+				if stateLimit {
+					name = "state-limit-fallback"
+				}
+				b.Run(fmt.Sprintf("%s/%d/%s", provider, count, name), func(b *testing.B) {
+					benchmarkGeneratedCheckpointFallback(b, provider, count, stateLimit)
+				})
+			}
 		}
 	}
+}
+
+func benchmarkGeneratedCheckpointFallback(b *testing.B, provider string, count int, oversized bool) {
+	b.Helper()
+	directory := b.TempDir()
+	path := filepath.Join(directory, "source.jsonl")
+	initial := benchmarkGeneratedHistory(provider, "scale-session", count)
+	updated := append(append([]byte(nil), initial...), benchmarkGeneratedUsage(provider, "scale-session", count+1)...)
+	b.SetBytes(int64(len(updated)))
+	b.ReportAllocs()
+	var total collectorBenchmarkObserver
+	for iteration := 0; iteration < b.N; iteration++ {
+		b.StopTimer()
+		if err := os.WriteFile(path, initial, 0o600); err != nil {
+			b.Fatal(err)
+		}
+		store, err := Open(":memory:")
+		if err != nil {
+			b.Fatal(err)
+		}
+		collector, err := NewCollector(store, []string{path}, time.Hour)
+		if err != nil {
+			store.Close()
+			b.Fatal(err)
+		}
+		if _, err := collector.PollOnce(); err != nil {
+			store.Close()
+			b.Fatal(err)
+		}
+		var hasCheckpoints bool
+		if err := store.db.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='parser_checkpoints')").Scan(&hasCheckpoints); err != nil {
+			store.Close()
+			b.Fatal(err)
+		}
+		if hasCheckpoints {
+			var sourceID string
+			if err := store.db.QueryRow("SELECT source_id FROM parser_checkpoints LIMIT 1").Scan(&sourceID); err != nil {
+				store.Close()
+				b.Fatal(err)
+			}
+			if oversized {
+				_, err = store.db.Exec("UPDATE parser_checkpoints SET state_json = zeroblob(?) WHERE source_id = ?", 1<<20+1, sourceID)
+			} else {
+				_, err = store.db.Exec("UPDATE parser_checkpoints SET state_json = ? WHERE source_id = ?", []byte("{corrupt"), sourceID)
+			}
+			if err != nil {
+				store.Close()
+				b.Fatal(err)
+			}
+		}
+		observer := &collectorBenchmarkObserver{historicalEventIDs: benchmarkStoredEventIDs(b, store)}
+		store.benchmarkObserver = observer
+		if err := os.WriteFile(path, updated, 0o600); err != nil {
+			store.Close()
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		result, err := collector.PollOnce()
+		b.StopTimer()
+		if err != nil {
+			store.Close()
+			b.Fatal(err)
+		}
+		if result.Receipt.Imported != 1 || observer.parserRecordsDecoded <= int64(count) || observer.historicalInsertAttempts != int64(count) {
+			store.Close()
+			b.Fatalf("fallback result=%+v parser=%d historical=%d", result, observer.parserRecordsDecoded, observer.historicalInsertAttempts)
+		}
+		if hasCheckpoints {
+			if err := store.db.QueryRow("SELECT COALESCE(SUM(length(state_json)), 0) FROM parser_checkpoints").Scan(&observer.checkpointStateBytes); err != nil {
+				store.Close()
+				b.Fatal(err)
+			}
+		}
+		addBenchmarkWork(&total, observer)
+		if err := store.Close(); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+	}
+	b.StopTimer()
+	reportBenchmarkWork(b, &total)
 }
 
 func benchmarkGeneratedHistory(provider, session string, count int) []byte {
@@ -391,6 +481,17 @@ func benchmarkGeneratedAppend(b *testing.B, initial, suffix []byte, expectedImpo
 			store.Close()
 			b.Fatalf("append imported %d events; want %d (outcomes=%+v)", result.Receipt.Imported, expectedImported, result.Outcomes)
 		}
+		var hasCheckpoints bool
+		if err := store.db.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='parser_checkpoints')").Scan(&hasCheckpoints); err != nil {
+			store.Close()
+			b.Fatal(err)
+		}
+		if hasCheckpoints {
+			if err := store.db.QueryRow("SELECT COALESCE(SUM(length(state_json)), 0) FROM parser_checkpoints").Scan(&observer.checkpointStateBytes); err != nil {
+				store.Close()
+				b.Fatal(err)
+			}
+		}
 		addBenchmarkWork(&total, observer)
 		if err := store.Close(); err != nil {
 			b.Fatal(err)
@@ -446,6 +547,7 @@ func addBenchmarkWork(total, current *collectorBenchmarkObserver) {
 	total.classificationRecordsDecoded += current.classificationRecordsDecoded
 	total.eventInsertAttempts += current.eventInsertAttempts
 	total.historicalInsertAttempts += current.historicalInsertAttempts
+	total.checkpointStateBytes += current.checkpointStateBytes
 }
 
 func reportBenchmarkWork(b *testing.B, work *collectorBenchmarkObserver) {
@@ -459,6 +561,7 @@ func reportBenchmarkWork(b *testing.B, work *collectorBenchmarkObserver) {
 	b.ReportMetric(float64(work.classificationRecordsDecoded)/float64(b.N), "classification_records/op")
 	b.ReportMetric(float64(work.eventInsertAttempts)/float64(b.N), "event_insert_attempts/op")
 	b.ReportMetric(float64(work.historicalInsertAttempts)/float64(b.N), "historical_insert_attempts/op")
+	b.ReportMetric(float64(work.checkpointStateBytes)/float64(b.N), "checkpoint_state_bytes/op")
 }
 
 func benchmarkStoredEventIDs(b *testing.B, store *Store) map[string]struct{} {

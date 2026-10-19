@@ -26,17 +26,23 @@ const sourceCursorRetryLimit = 3
 var errSourceCursorRetryExhausted = errors.New("source cursor kept changing while snapshot was being imported")
 
 type sourceSnapshot struct {
-	file              *os.File
-	source            collectorSource
-	openedInfo        os.FileInfo
-	baseSourceID      string
-	expectedCursor    sourceCursorExpectation
-	fingerprint       string
-	prefixFingerprint string
-	generation        int64
-	byteLength        int64
-	adapter           string
-	unchanged         bool
+	file                     *os.File
+	source                   collectorSource
+	openedInfo               os.FileInfo
+	baseSourceID             string
+	expectedCursor           sourceCursorExpectation
+	fingerprint              string
+	prefixFingerprint        string
+	generation               int64
+	byteLength               int64
+	adapter                  string
+	unchanged                bool
+	expectedCheckpoint       sourceCheckpointExpectation
+	checkpoint               parserCheckpoint
+	checkpointUsable         bool
+	checkpointBoundaryOffset int64
+	boundaryFingerprint      string
+	identityExpectation      collectorIdentityExpectation
 }
 
 func (snapshot sourceSnapshot) close() error {
@@ -59,9 +65,10 @@ func collectorSourceMatchesOpenFile(path string, source collectorSource, openedI
 }
 
 type sourceCursorExpectation struct {
-	sourceID string
-	cursor   Cursor
-	exists   bool
+	sourceID   string
+	cursor     Cursor
+	exists     bool
+	checkpoint sourceCheckpointExpectation
 }
 
 func currentSourceCursorExpectation(store *Store, sourceID string) (sourceCursorExpectation, error) {

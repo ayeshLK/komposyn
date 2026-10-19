@@ -25,6 +25,7 @@ type collectorBenchmarkObserver struct {
 	classificationRecordsDecoded int64
 	eventInsertAttempts          int64
 	historicalInsertAttempts     int64
+	checkpointStateBytes         int64
 	historicalEventIDs           map[string]struct{}
 }
 

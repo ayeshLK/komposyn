@@ -569,6 +569,14 @@ func collectorSourceCursorExpectations(store *Store, source collectorSource) (ma
 	if err := cursorRows.Err(); err != nil {
 		return nil, err
 	}
+	for sourceID, expectation := range expectations {
+		checkpoint, err := parserCheckpointExpectation(store, sourceID)
+		if err != nil {
+			return nil, fmt.Errorf("read parser checkpoint %q: %w", sourceID, err)
+		}
+		expectation.checkpoint = checkpoint
+		expectations[sourceID] = expectation
+	}
 	return expectations, nil
 }
 
