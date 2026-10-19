@@ -18,12 +18,14 @@ package tokenlogger
 // generated collector benchmarks. It is nil in normal application stores and
 // is not part of the public API or runtime telemetry.
 type collectorBenchmarkObserver struct {
-	sourceBytesRead          int64
-	sourceBytesHashed        int64
-	recordsDecoded           int64
-	eventInsertAttempts      int64
-	historicalInsertAttempts int64
-	historicalEventIDs       map[string]struct{}
+	sourceBytesRead              int64
+	sourceBytesHashed            int64
+	recordsDecoded               int64
+	parserRecordsDecoded         int64
+	classificationRecordsDecoded int64
+	eventInsertAttempts          int64
+	historicalInsertAttempts     int64
+	historicalEventIDs           map[string]struct{}
 }
 
 func digestSourceBytes(value []byte, observer *collectorBenchmarkObserver) string {

@@ -113,33 +113,12 @@ func detectAdapterSnapshot(contents []byte) (string, error) {
 
 func detectAdapterSnapshotObserved(contents []byte, observer *collectorBenchmarkObserver) (string, error) {
 	reader := bufio.NewReader(bytes.NewReader(contents))
+	classifier := &adapterClassifier{}
 	for {
 		lineBytes, readErr := reader.ReadBytes('\n')
-		line := strings.TrimSpace(string(lineBytes))
-		if line == "" {
-			if readErr != nil {
-				if errors.Is(readErr, io.EOF) {
-					break
-				}
-				return "", readErr
-			}
-			continue
-		}
-		if observer != nil {
-			observer.recordsDecoded++
-		}
-		var raw struct {
-			Type    string          `json:"type"`
-			Message json.RawMessage `json:"message"`
-		}
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			continue
-		}
-		if raw.Type == "assistant" || len(raw.Message) > 0 {
-			return "claude", nil
-		}
-		if raw.Type == "session_meta" || raw.Type == "event_msg" || raw.Type == "token_count" || raw.Type == "token_usage_record" {
-			return "codex", nil
+		classifier.observe(lineBytes, observer)
+		if classifier.done {
+			return classifier.adapter, nil
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
@@ -148,7 +127,43 @@ func detectAdapterSnapshotObserved(contents []byte, observer *collectorBenchmark
 			return "", readErr
 		}
 	}
-	return "codex", nil
+	return classifier.adapterName(), nil
+}
+
+type adapterClassifier struct {
+	adapter string
+	done    bool
+}
+
+func (c *adapterClassifier) observe(lineBytes []byte, observer *collectorBenchmarkObserver) {
+	if c.done || len(strings.TrimSpace(string(lineBytes))) == 0 {
+		return
+	}
+	if observer != nil {
+		observer.recordsDecoded++
+		observer.classificationRecordsDecoded++
+	}
+	var raw struct {
+		Type    string          `json:"type"`
+		Message json.RawMessage `json:"message"`
+	}
+	if json.Unmarshal(lineBytes, &raw) != nil {
+		return
+	}
+	if raw.Type == "assistant" || len(raw.Message) > 0 {
+		c.adapter, c.done = "claude", true
+		return
+	}
+	if raw.Type == "session_meta" || raw.Type == "event_msg" || raw.Type == "token_count" || raw.Type == "token_usage_record" {
+		c.adapter, c.done = "codex", true
+	}
+}
+
+func (c *adapterClassifier) adapterName() string {
+	if c.adapter != "" {
+		return c.adapter
+	}
+	return "codex"
 }
 
 // Import reads a single Claude transcript and atomically persists its events
@@ -161,20 +176,11 @@ func (ClaudeAdapter) Import(path string, store *Store) (ImportResult, error) {
 }
 
 func importClaudeSource(ctx context.Context, path string, store *Store) (ImportResult, error) {
-	snapshot, err := acquireSourceSnapshot(ctx, path, store, "claude")
+	result, _, err := importStreamingSource(ctx, path, store, "claude")
 	if err != nil {
-		return ImportResult{}, fmt.Errorf("acquire Claude source: %w", err)
+		return result, fmt.Errorf("import Claude source: %w", err)
 	}
-	for attempt := 1; ; attempt++ {
-		result, retry, err := importClaudeSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
-		if err != nil || !retry {
-			return result, err
-		}
-		snapshot, err = retrySourceSnapshotAfterCursorConflict(ctx, path, store, "claude", attempt)
-		if err != nil {
-			return ImportResult{}, fmt.Errorf("retry Claude source: %w", err)
-		}
-	}
+	return result, nil
 }
 
 func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
@@ -183,24 +189,34 @@ func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *St
 	}
 	fingerprint := digestSourceBytes(contents, store.benchmarkObserver)
 	generation := sourceGenerationObserved(expectedCursor, contents, store.benchmarkObserver)
+	return importClaudeReaderAttempt(ctx, bytes.NewReader(contents), store, baseSourceID, expectedCursor,
+		fingerprint, generation, nil, nil)
+}
+
+func importClaudeReaderAttempt(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
+	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
 	var session claudeSession
 	var events []UsageEvent
 	var lastRecordID string
-	reader := bufio.NewReader(bytes.NewReader(contents))
+	reader := bufio.NewReaderSize(source, sourceVerificationBufferSize)
 	for {
 		if err := ctx.Err(); err != nil {
 			return result, false, err
 		}
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
+		if classifier != nil {
+			classifier.observe(line, store.benchmarkObserver)
+		}
 		offset += int64(len(line))
 		line = []byte(strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r"))
 		if len(strings.TrimSpace(string(line))) > 0 {
 			if store.benchmarkObserver != nil {
 				store.benchmarkObserver.recordsDecoded++
+				store.benchmarkObserver.parserRecordsDecoded++
 			}
 			var envelope claudeEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
@@ -268,6 +284,11 @@ func importClaudeSnapshotAttempt(ctx context.Context, contents []byte, store *St
 	}
 	if err := ctx.Err(); err != nil {
 		return result, false, err
+	}
+	if verify != nil {
+		if err := verify(offset); err != nil {
+			return result, true, err
+		}
 	}
 	if session.ID == "" {
 		session = updateClaudeSession(session, claudeEnvelope{}, claudeMessage{}, sourceID)

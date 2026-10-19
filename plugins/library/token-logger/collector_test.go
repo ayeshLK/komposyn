@@ -482,8 +482,8 @@ func TestCollectorRetriesRetargetedSourceBeforeClaimingIdentity(t *testing.T) {
 	if err != nil || result.Receipt.Imported != 2 {
 		t.Fatalf("retargeted acquisition result=%+v err=%v", result, err)
 	}
-	if observer.sourceBytesRead != int64(2*len(codexContents)) {
-		t.Fatalf("source bytes read=%d, want two visible Codex reads across identity retry (%d)", observer.sourceBytesRead, 2*len(codexContents))
+	if observer.sourceBytesRead != int64(3*len(codexContents)) {
+		t.Fatalf("source bytes read=%d, want one discarded verification pass and two verified passes (%d)", observer.sourceBytesRead, 3*len(codexContents))
 	}
 	var claudeIdentities, codexIdentities int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM collector_source_identities WHERE adapter = 'claude'`).Scan(&claudeIdentities); err != nil {
@@ -550,8 +550,8 @@ func TestCollectorBoundsCursorConflictRetries(t *testing.T) {
 	if attempts != sourceCursorRetryLimit {
 		t.Fatalf("append attempts=%d, want %d", attempts, sourceCursorRetryLimit)
 	}
-	if observer.sourceBytesRead != int64(sourceCursorRetryLimit)*int64(len(contents)) {
-		t.Fatalf("source bytes read=%d, want one authoritative read per bounded attempt", observer.sourceBytesRead)
+	if observer.sourceBytesRead != int64(2*sourceCursorRetryLimit)*int64(len(contents)) {
+		t.Fatalf("source bytes read=%d, want verification and parse passes per bounded attempt", observer.sourceBytesRead)
 	}
 	if count, err := store.EventCount(); err != nil || count != 0 {
 		t.Fatalf("events after exhausted retries=%d err=%v; want 0", count, err)

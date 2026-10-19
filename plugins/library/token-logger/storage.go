@@ -34,6 +34,8 @@ type Store struct {
 	backupPath          string
 	migrationBackupPath string
 	beforeSnapshotRead  func()
+	beforeSnapshotParse func()
+	sourceReadHook      func(pass int, bytesRead int64)
 	beforeAppend        func()
 	benchmarkObserver   *collectorBenchmarkObserver
 }
