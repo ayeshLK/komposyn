@@ -175,10 +175,12 @@ Cosign installer rejected its `ARM64` architecture before running the
 verifier. The workflow now builds pinned Cosign v2.4.3 with Go 1.26.9 on that
 native runner, and the retry passed on Windows arm64.
 
-The standalone bootstrap is prepared under `standalone-bootstrap/`; the
-extracted CLI is under review in destination PR #1. It preserves the CLI
-layout, transfers PR #130 verification fixes, and pins core v0.7.0 without a
-permanent `replace`; the build reports CLI 0.7.1 and core 0.7.0. Local tests,
+The temporary standalone repository bootstrap was prepared in this repository
+for extraction; it was not CLI source and is no longer needed now that the
+standalone repository owns the executable and its release lifecycle. The
+extracted CLI was reviewed in destination PR #1. It preserves the CLI layout,
+transfers PR #130 verification fixes, and pins core v0.7.0 without a permanent
+`replace`; the build reports CLI 0.7.1 and core 0.7.0. Local tests,
 vet, module verification, race tests, `make check`, shell syntax, exact signer
 acceptance/rejection tests, and a fresh six-archive build plus install/upgrade/
 uninstall verifier passed. Destination CI, CodeQL, and native Go test/build
