@@ -15,11 +15,9 @@
 package tokenlogger
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 )
 
@@ -27,97 +25,50 @@ const sourceCursorRetryLimit = 3
 
 var errSourceCursorRetryExhausted = errors.New("source cursor kept changing while snapshot was being imported")
 
-type sourceAdapterChangedError struct {
-	adapter string
-}
-
-func (err *sourceAdapterChangedError) Error() string {
-	return fmt.Sprintf("authoritative source snapshot uses %s adapter", err.adapter)
-}
-
-func validateSourceSnapshotAdapter(contents []byte, expected string) error {
-	adapter, err := detectAdapterSnapshot(contents)
-	if err != nil {
-		return fmt.Errorf("detect authoritative source snapshot: %w", err)
-	}
-	if adapter != expected {
-		return &sourceAdapterChangedError{adapter: adapter}
-	}
-	return nil
-}
-
 type sourceSnapshot struct {
-	contents       []byte
-	baseSourceID   string
-	expectedCursor sourceCursorExpectation
+	file                     *os.File
+	source                   collectorSource
+	openedInfo               os.FileInfo
+	baseSourceID             string
+	expectedCursor           sourceCursorExpectation
+	fingerprint              string
+	prefixFingerprint        string
+	generation               int64
+	byteLength               int64
+	adapter                  string
+	unchanged                bool
+	expectedCheckpoint       sourceCheckpointExpectation
+	checkpoint               parserCheckpoint
+	checkpointUsable         bool
+	checkpointBoundaryOffset int64
+	boundaryFingerprint      string
+	identityExpectation      collectorIdentityExpectation
 }
 
-func acquireSourceSnapshot(ctx context.Context, path string, store *Store, adapter string) (sourceSnapshot, error) {
-	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return sourceSnapshot{}, err
-		}
-		source, err := collectorSourceForPath(path)
-		if err != nil {
-			return sourceSnapshot{}, fmt.Errorf("resolve source: %w", err)
-		}
-		baseSourceID, err := establishedCollectorSourceID(store, source, adapter)
-		if err != nil {
-			return sourceSnapshot{}, fmt.Errorf("resolve source identity: %w", err)
-		}
-		expectedCursor, err := currentSourceCursorExpectation(store, baseSourceID)
-		if err != nil {
-			return sourceSnapshot{}, fmt.Errorf("read source cursor: %w", err)
-		}
-		if store.beforeSnapshotRead != nil {
-			store.beforeSnapshotRead()
-		}
-		file, err := os.Open(source.Path)
-		if err != nil {
-			return sourceSnapshot{}, err
-		}
-		openedInfo, statErr := file.Stat()
-		contents, readErr := io.ReadAll(file)
-		closeErr := file.Close()
-		if statErr != nil {
-			return sourceSnapshot{}, statErr
-		}
-		if readErr != nil {
-			return sourceSnapshot{}, readErr
-		}
-		if closeErr != nil {
-			return sourceSnapshot{}, closeErr
-		}
-		currentSource, err := collectorSourceForPath(path)
-		if err != nil {
-			return sourceSnapshot{}, fmt.Errorf("revalidate source: %w", err)
-		}
-		currentInfo, err := os.Stat(currentSource.Path)
-		if err != nil {
-			return sourceSnapshot{}, fmt.Errorf("revalidate opened source: %w", err)
-		}
-		if source.CanonicalKey == currentSource.CanonicalKey && os.SameFile(openedInfo, currentInfo) {
-			return sourceSnapshot{contents: contents, baseSourceID: baseSourceID, expectedCursor: expectedCursor}, nil
-		}
+func (snapshot sourceSnapshot) close() error {
+	if snapshot.file == nil {
+		return nil
 	}
-	return sourceSnapshot{}, fmt.Errorf("source identity kept changing during acquisition after %d attempts", sourceCursorRetryLimit)
+	return snapshot.file.Close()
 }
 
-func retrySourceSnapshotAfterCursorConflict(ctx context.Context, path string, store *Store, adapter string, attempt int) (sourceSnapshot, error) {
-	if attempt >= sourceCursorRetryLimit {
-		return sourceSnapshot{}, fmt.Errorf("%w after %d attempts", errSourceCursorRetryExhausted, sourceCursorRetryLimit)
-	}
-	snapshot, err := acquireSourceSnapshot(ctx, path, store, adapter)
+func collectorSourceMatchesOpenFile(path string, source collectorSource, openedInfo os.FileInfo) (bool, error) {
+	currentSource, err := collectorSourceForPath(path)
 	if err != nil {
-		return sourceSnapshot{}, fmt.Errorf("refresh source after cursor conflict: %w", err)
+		return false, err
 	}
-	return snapshot, nil
+	currentInfo, err := os.Stat(currentSource.Path)
+	if err != nil {
+		return false, err
+	}
+	return source.CanonicalKey == currentSource.CanonicalKey && os.SameFile(openedInfo, currentInfo), nil
 }
 
 type sourceCursorExpectation struct {
-	sourceID string
-	cursor   Cursor
-	exists   bool
+	sourceID   string
+	cursor     Cursor
+	exists     bool
+	checkpoint sourceCheckpointExpectation
 }
 
 func currentSourceCursorExpectation(store *Store, sourceID string) (sourceCursorExpectation, error) {
@@ -136,6 +87,10 @@ func currentSourceCursorExpectation(store *Store, sourceID string) (sourceCursor
 // offset still hash to the previous full-file fingerprint. Otherwise it is a
 // replacement and receives a new generation so reused offsets cannot collide.
 func sourceGeneration(expectation sourceCursorExpectation, contents []byte) int64 {
+	return sourceGenerationObserved(expectation, contents, nil)
+}
+
+func sourceGenerationObserved(expectation sourceCursorExpectation, contents []byte, observer *collectorBenchmarkObserver) int64 {
 	if !expectation.exists {
 		return 0
 	}
@@ -143,18 +98,22 @@ func sourceGeneration(expectation sourceCursorExpectation, contents []byte) int6
 	if cursor.ByteOffset < 0 || cursor.ByteOffset > int64(len(contents)) {
 		return cursor.SourceGeneration + 1
 	}
-	if digest(contents[:cursor.ByteOffset]) != cursor.FileFingerprint {
+	if digestSourceBytes(contents[:cursor.ByteOffset], observer) != cursor.FileFingerprint {
 		return cursor.SourceGeneration + 1
 	}
 	return cursor.SourceGeneration
 }
 
 func unchangedExpectedSourceSnapshot(expectation sourceCursorExpectation, contents []byte) (ImportResult, bool) {
+	return unchangedExpectedSourceSnapshotObserved(expectation, contents, nil)
+}
+
+func unchangedExpectedSourceSnapshotObserved(expectation sourceCursorExpectation, contents []byte, observer *collectorBenchmarkObserver) (ImportResult, bool) {
 	if !expectation.exists {
 		return ImportResult{}, false
 	}
 	cursor := expectation.cursor
-	if !cursor.SnapshotReusable || cursor.ByteOffset != int64(len(contents)) || cursor.FileFingerprint != digest(contents) {
+	if !cursor.SnapshotReusable || cursor.ByteOffset != int64(len(contents)) || cursor.FileFingerprint != digestSourceBytes(contents, observer) {
 		return ImportResult{}, false
 	}
 	result := ImportResult{}

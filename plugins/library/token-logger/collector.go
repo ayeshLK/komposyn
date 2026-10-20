@@ -174,24 +174,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			interrupted = true
 			break
 		}
-		contents, readErr := os.ReadFile(path)
-		if readErr != nil {
-			total.Outcomes.Add(OutcomeFailedSource)
-			pollErrors = append(pollErrors, readErr)
-			c.recordFailure(fmt.Errorf("read source: %w", readErr), DiagnosticCategoryIngestion)
-			mergeCollectorRootFailure(rootHealth, source.RootPaths, readErr)
-			continue
-		}
-		adapter, detectErr := detectAdapterSnapshot(contents)
-		if detectErr != nil {
-			total.Outcomes.Add(OutcomeFailedSource)
-			pollErrors = append(pollErrors, detectErr)
-			c.recordFailure(fmt.Errorf("detect source: %w", detectErr), DiagnosticCategoryProvider)
-			mergeCollectorRootFailure(rootHealth, source.RootPaths, detectErr)
-			continue
-		}
-		result, importedAdapter, importErr := importCollectorSource(ctx, path, c.store, adapter)
-		adapter = importedAdapter
+		result, adapter, importErr := importCollectorSource(ctx, path, c.store)
 		if importErr != nil {
 			if errors.Is(importErr, context.Canceled) || errors.Is(importErr, context.DeadlineExceeded) {
 				pollErrors = append(pollErrors, importErr)
@@ -265,22 +248,8 @@ func collectorOutcomeSummary(outcomes OutcomeCounts) string {
 	return strings.Join(parts, " ")
 }
 
-func importCollectorSource(ctx context.Context, path string, store *Store, adapter string) (ImportResult, string, error) {
-	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
-		var result ImportResult
-		var err error
-		if adapter == "claude" {
-			result, err = importClaudeSource(ctx, path, store, true)
-		} else {
-			result, err = importCodexSource(ctx, path, store, true)
-		}
-		var changed *sourceAdapterChangedError
-		if !errors.As(err, &changed) {
-			return result, adapter, err
-		}
-		adapter = changed.adapter
-	}
-	return ImportResult{}, adapter, fmt.Errorf("source adapter kept changing during acquisition after %d attempts", sourceCursorRetryLimit)
+func importCollectorSource(ctx context.Context, path string, store *Store) (ImportResult, string, error) {
+	return importStreamingSource(ctx, path, store, "")
 }
 
 func (c *Collector) recordOutcomeDiagnostics(adapter string, outcomes OutcomeCounts) {
@@ -545,6 +514,95 @@ func establishedCollectorSourceID(store *Store, source collectorSource, adapter 
 		return storedSourceID, nil
 	}
 	return "", errors.New("could not allocate a distinct source identity")
+}
+
+// collectorSourceCursorExpectations captures every cursor identity resolution
+// can select without claiming a mapping. These expectations are read before
+// source bytes so a concurrent import cannot make its newer cursor look like
+// the starting point for this snapshot.
+func collectorSourceCursorExpectations(store *Store, source collectorSource) (map[string]sourceCursorExpectation, error) {
+	ids := make([]string, 0, (len(source.IdentityPaths)+1)*2)
+	for _, adapter := range []string{"claude", "codex"} {
+		ids = append(ids, collectorSourceIDCandidates(source, adapter)...)
+	}
+	expectations := make(map[string]sourceCursorExpectation, len(ids))
+	for _, sourceID := range ids {
+		expectations[sourceID] = sourceCursorExpectation{sourceID: sourceID}
+	}
+	if len(ids) == 0 {
+		return expectations, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for index, sourceID := range ids {
+		args[index] = sourceID
+	}
+	args = append(args, source.CanonicalKey)
+	cursorRows, err := store.db.Query(`SELECT source_id, file_fingerprint, byte_offset,
+		last_provider_record_id, source_generation, pending_tail, snapshot_reusable, 1
+		FROM source_cursors WHERE source_id IN (`+placeholders+`)
+		UNION ALL
+		SELECT identity.source_id, COALESCE(cursor.file_fingerprint, ''), COALESCE(cursor.byte_offset, 0),
+			COALESCE(cursor.last_provider_record_id, ''), COALESCE(cursor.source_generation, 0),
+			COALESCE(cursor.pending_tail, 0), COALESCE(cursor.snapshot_reusable, 0),
+			CASE WHEN cursor.source_id IS NULL THEN 0 ELSE 1 END
+		FROM collector_source_identities AS identity
+		LEFT JOIN source_cursors AS cursor ON cursor.source_id = identity.source_id
+		WHERE identity.canonical_key = ? AND identity.adapter IN ('claude', 'codex')`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read collector source cursors: %w", err)
+	}
+	defer cursorRows.Close()
+	for cursorRows.Next() {
+		var cursor Cursor
+		var exists int
+		if err := cursorRows.Scan(&cursor.SourceID, &cursor.FileFingerprint, &cursor.ByteOffset,
+			&cursor.LastProviderRecordID, &cursor.SourceGeneration, &cursor.PendingTail, &cursor.SnapshotReusable, &exists); err != nil {
+			return nil, err
+		}
+		expectation := sourceCursorExpectation{sourceID: cursor.SourceID, exists: exists != 0}
+		if expectation.exists {
+			expectation.cursor = cursor
+		}
+		expectations[cursor.SourceID] = expectation
+	}
+	if err := cursorRows.Err(); err != nil {
+		return nil, err
+	}
+	for sourceID, expectation := range expectations {
+		checkpoint, err := parserCheckpointExpectation(store, sourceID)
+		if err != nil {
+			return nil, fmt.Errorf("read parser checkpoint %q: %w", sourceID, err)
+		}
+		expectation.checkpoint = checkpoint
+		expectations[sourceID] = expectation
+	}
+	return expectations, nil
+}
+
+func collectorSourceIDCandidates(source collectorSource, adapter string) []string {
+	ids := make([]string, 0, len(source.IdentityPaths)+1)
+	prefix := adapter + "-file-"
+	for _, path := range source.IdentityPaths {
+		sourceID := prefix + digest([]byte(path))
+		if !containsString(ids, sourceID) {
+			ids = append(ids, sourceID)
+		}
+	}
+	fallback := prefix + digest([]byte("canonical\x00"+source.CanonicalKey))
+	if !containsString(ids, fallback) {
+		ids = append(ids, fallback)
+	}
+	return ids
+}
+
+func containsString(values []string, candidate string) bool {
+	for _, value := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func collectorSourceForPath(path string) (collectorSource, error) {

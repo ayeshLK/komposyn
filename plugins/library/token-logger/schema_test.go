@@ -582,3 +582,63 @@ func TestMigrationFailureLeavesOriginalAndVerifiedBackupUsable(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrationSixteenFailurePreservesSchemaFifteenAndBackup(t *testing.T) {
+	tempDir := t.TempDir()
+	databasePath := filepath.Join(tempDir, "schema15.db")
+	backupPath := filepath.Join(tempDir, "schema15-backup.sqlite")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP TABLE parser_checkpoints"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DELETE FROM schema_migrations WHERE version = 16"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_migration_sixteen BEFORE INSERT ON schema_migrations
+		WHEN NEW.version = 16 BEGIN SELECT RAISE(ABORT, 'injected migration 16 failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenWithOptions(databasePath, OpenOptions{BackupPath: backupPath})
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("OpenWithOptions succeeded although migration 16 was rejected")
+	}
+	if err == nil || !strings.Contains(err.Error(), "injected migration 16 failure") {
+		t.Fatalf("migration error=%v; want injected migration 16 failure", err)
+	}
+	for _, path := range []string{databasePath, backupPath} {
+		readOnly, err := sql.Open("sqlite", sqliteFileURI(path, "mode=ro"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var integrity string
+		if err := readOnly.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+			readOnly.Close()
+			t.Fatalf("integrity_check for %s=%q, %v", filepath.Base(path), integrity, err)
+		}
+		var version int
+		if err := readOnly.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 15 {
+			readOnly.Close()
+			t.Fatalf("schema version for %s=%d, %v; want 15", filepath.Base(path), version, err)
+		}
+		var exists bool
+		if err := readOnly.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='parser_checkpoints')").Scan(&exists); err != nil || exists {
+			readOnly.Close()
+			t.Fatalf("checkpoint table after rollback for %s exists=%v err=%v", filepath.Base(path), exists, err)
+		}
+		readOnly.Close()
+	}
+}

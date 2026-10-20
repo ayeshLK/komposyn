@@ -167,10 +167,11 @@ func TestMigrationEightRemapsCrossNamespaceSyntheticIDCollisions(t *testing.T) {
 		`ALTER TABLE source_cursors DROP COLUMN snapshot_reusable`,
 		`ALTER TABLE source_cursors DROP COLUMN pending_tail`,
 		`DROP TABLE collector_source_identities`,
+		`DROP TABLE parser_checkpoints`,
 		`DROP TABLE collector_runs`,
 		`DROP TABLE collector_runtime`,
 		`DROP TABLE collector_sources`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15)`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -258,10 +259,11 @@ func TestMigrationEightRemapsSyntheticIDCollisions(t *testing.T) {
 		`ALTER TABLE source_cursors DROP COLUMN snapshot_reusable`,
 		`ALTER TABLE source_cursors DROP COLUMN pending_tail`,
 		`DROP TABLE collector_source_identities`,
+		`DROP TABLE parser_checkpoints`,
 		`DROP TABLE collector_runs`,
 		`DROP TABLE collector_runtime`,
 		`DROP TABLE collector_sources`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15)`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -453,7 +455,10 @@ func TestMigrationTenAddsCollectorIdentityMapWithoutChangingCursors(t *testing.T
 	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 11"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (12, 13, 14, 15)"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (12, 13, 14, 15, 16)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE parser_checkpoints"); err != nil {
 		t.Fatal(err)
 	}
 	for _, table := range []string{"collector_runs", "collector_runtime", "collector_sources"} {

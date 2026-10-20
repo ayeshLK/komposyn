@@ -149,37 +149,41 @@ func (CodexAdapter) Import(path string, store *Store) (ImportResult, error) {
 	if store == nil {
 		return ImportResult{}, errors.New("store is required")
 	}
-	return importCodexSource(context.Background(), path, store, false)
+	return importCodexSource(context.Background(), path, store)
 }
 
-func importCodexSource(ctx context.Context, path string, store *Store, validateAdapter bool) (ImportResult, error) {
-	snapshot, err := acquireSourceSnapshot(ctx, path, store, "codex")
+func importCodexSource(ctx context.Context, path string, store *Store) (ImportResult, error) {
+	result, _, err := importStreamingSource(ctx, path, store, "codex")
 	if err != nil {
-		return ImportResult{}, fmt.Errorf("acquire Codex source: %w", err)
+		return result, fmt.Errorf("import Codex source: %w", err)
 	}
-	for attempt := 1; ; attempt++ {
-		if validateAdapter {
-			if err := validateSourceSnapshotAdapter(snapshot.contents, "codex"); err != nil {
-				return ImportResult{}, err
-			}
-		}
-		result, retry, err := importCodexSnapshotAttempt(ctx, snapshot.contents, store, snapshot.baseSourceID, snapshot.expectedCursor)
-		if err != nil || !retry {
-			return result, err
-		}
-		snapshot, err = retrySourceSnapshotAfterCursorConflict(ctx, path, store, "codex", attempt)
-		if err != nil {
-			return ImportResult{}, fmt.Errorf("retry Codex source: %w", err)
-		}
-	}
+	return result, nil
 }
 
 func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation) (ImportResult, bool, error) {
-	if unchanged, ok := unchangedExpectedSourceSnapshot(expectedCursor, contents); ok {
+	if unchanged, ok := unchangedExpectedSourceSnapshotObserved(expectedCursor, contents, store.benchmarkObserver); ok {
 		return unchanged, false, nil
 	}
-	fingerprint := digest(contents)
-	generation := sourceGeneration(expectedCursor, contents)
+	fingerprint := digestSourceBytes(contents, store.benchmarkObserver)
+	generation := sourceGenerationObserved(expectedCursor, contents, store.benchmarkObserver)
+	return importCodexReaderAttempt(ctx, bytes.NewReader(contents), store, baseSourceID, expectedCursor,
+		fingerprint, generation, nil, nil)
+}
+
+func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
+	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
+	return importCodexReaderAttemptWithCheckpoint(ctx, source, store, baseSourceID, expectedCursor, fingerprint, generation, classifier, verify, nil)
+}
+
+func importCodexReaderContinuation(ctx context.Context, source io.Reader, store *Store, snapshot sourceSnapshot,
+	classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
+	options := &parserContinuationOptions{snapshot: snapshot, allowResume: snapshot.checkpointUsable}
+	return importCodexReaderAttemptWithCheckpoint(ctx, source, store, snapshot.baseSourceID, snapshot.expectedCursor,
+		snapshot.fingerprint, snapshot.generation, classifier, verify, options)
+}
+
+func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
+	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error, options *parserContinuationOptions) (ImportResult, bool, error) {
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
@@ -196,19 +200,64 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 	seenResponses := map[string]codexUsageRecordSeen{}
 	var events []UsageEvent
 	var lastRecordID string
+	historicalAttempts := 0
+	boundaryOffset := int64(0)
+	var boundaryState parserCheckpointState
+	boundaryCaptured := false
+	if options != nil {
+		boundaryOffset = options.snapshot.checkpointBoundaryOffset
+		if options.allowResume {
+			checkpoint := options.snapshot.checkpoint
+			if checkpoint.Adapter != "codex" {
+				return ImportResult{}, false, errors.New("incompatible Codex parser checkpoint")
+			}
+			state := checkpoint.State
+			result.Outcomes = state.Outcomes
+			historicalAttempts = state.HistoricalEventAttempts
+			lastRecordID = state.LastRecordID
+			current, activeSessionID, sessions, metadataCurrent, metadataSessions, legacyPrevious, legacyHasPrevious,
+				newStreamSessions, threadCumulative, turnCumulative, seenResponses = restoreCodexCheckpoint(state.Codex)
+			boundaryState = state
+			boundaryCaptured = true
+			if boundaryOffset < checkpoint.BoundaryOffset {
+				boundaryOffset = checkpoint.BoundaryOffset
+			}
+		} else if boundaryOffset == 0 {
+			boundaryState = parserCheckpointState{Codex: codexCheckpointSnapshot(current, activeSessionID, sessions,
+				metadataCurrent, metadataSessions, legacyPrevious, legacyHasPrevious, newStreamSessions,
+				threadCumulative, turnCumulative, seenResponses, 0)}
+			boundaryCaptured = true
+		}
+	}
 
-	reader := bufio.NewReader(bytes.NewReader(contents))
+	reader := bufio.NewReaderSize(source, sourceVerificationBufferSize)
 	for {
 		if err := ctx.Err(); err != nil {
 			return result, false, err
 		}
 		lineOffset := offset
 		line, readErr := reader.ReadBytes('\n')
+		if classifier != nil {
+			classifier.observe(line, store.benchmarkObserver)
+		}
 		offset += int64(len(line))
+		if options != nil && options.allowResume && offset <= options.snapshot.checkpoint.BoundaryOffset {
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					return result, false, fmt.Errorf("read Codex source prefix: %w", readErr)
+				}
+				break
+			}
+			continue
+		}
 		if len(line) > 0 {
 			line = []byte(strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r"))
 		}
 		if len(strings.TrimSpace(string(line))) > 0 {
+			if store.benchmarkObserver != nil {
+				store.benchmarkObserver.recordsDecoded++
+				store.benchmarkObserver.parserRecordsDecoded++
+			}
 			recordID := "offset-" + fmt.Sprint(lineOffset)
 			var envelope codexEnvelope
 			if err := json.Unmarshal(line, &envelope); err != nil {
@@ -245,21 +294,21 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 								if seen.usage != usage || seen.hasTurn != hasTurn || seen.hasThread != hasThread ||
 									(hasTurn && seen.turnUsage != turnUsage) || (hasThread && seen.threadUsage != threadUsage) {
 									result.Outcomes.Add(OutcomeUnsupportedUsage)
-									continue
+									goto codexRecordProcessed
 								}
 								occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 								if timeErr != nil {
 									result.Outcomes.Add(OutcomeMalformedRecord)
 								} else {
 									newStreamSessions[session.ID] = true
-									events = append(events, codexUsageEvent(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line))
+									events = append(events, codexUsageEventObserved(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line, store.benchmarkObserver))
 								}
-								continue
+								goto codexRecordProcessed
 							}
 							if !codexCumulativeValid(record, usage, turnUsage, threadUsage, turnCumulative, threadCumulative) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
 								codexResetCumulativeBaselines(record, turnUsage, threadUsage, turnCumulative, threadCumulative)
-								continue
+								goto codexRecordProcessed
 							}
 							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 							if timeErr != nil {
@@ -276,7 +325,7 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 									turnCumulative[session.ID+"\x00"+record.TurnID] = turnUsage
 								}
 								seenResponses[responseIdentity] = codexUsageRecordSeen{usage: usage, turnUsage: turnUsage, threadUsage: threadUsage, hasTurn: hasTurn, hasThread: hasThread}
-								events = append(events, codexUsageEvent(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line))
+								events = append(events, codexUsageEventObserved(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line, store.benchmarkObserver))
 							}
 						}
 					}
@@ -387,7 +436,7 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 								result.Outcomes.Add(OutcomeMalformedRecord)
 								break
 							}
-							events = append(events, codexEvent(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line))
+							events = append(events, codexEventObserved(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line, store.benchmarkObserver))
 						default:
 							if codexUsageBearingType(codexRecordType(envelope, payload)) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
@@ -399,6 +448,15 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 				}
 			}
 		}
+	codexRecordProcessed:
+		if offset == boundaryOffset {
+			prefixEvents := historicalAttempts + len(events)
+			boundaryState = parserCheckpointState{Outcomes: result.Outcomes, HistoricalEventAttempts: prefixEvents,
+				LastRecordID: lastRecordID, Codex: codexCheckpointSnapshot(current, activeSessionID, sessions,
+					metadataCurrent, metadataSessions, legacyPrevious, legacyHasPrevious, newStreamSessions,
+					threadCumulative, turnCumulative, seenResponses, prefixEvents)}
+			boundaryCaptured = true
+		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
 				return result, false, fmt.Errorf("read Codex source: %w", readErr)
@@ -409,9 +467,28 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 	if err := ctx.Err(); err != nil {
 		return result, false, err
 	}
+	if verify != nil {
+		if err := verify(offset); err != nil {
+			return result, true, err
+		}
+	}
+	if options != nil && !boundaryCaptured {
+		return ImportResult{}, true, errSourceSnapshotChanged
+	}
+	preFinalState := codexCheckpointSnapshot(current, activeSessionID, sessions, metadataCurrent, metadataSessions,
+		legacyPrevious, legacyHasPrevious, newStreamSessions, threadCumulative, turnCumulative, seenResponses,
+		historicalAttempts+len(events))
+	if options != nil && options.allowResume && !codexAttributionCompatible(options.snapshot.checkpoint.State.Codex, preFinalState) {
+		return ImportResult{}, false, errParserCheckpointFallback
+	}
+	checkpointSafe := options == nil || boundaryCaptured
+	if options != nil && !codexAttributionCompatible(boundaryState.Codex, preFinalState) {
+		checkpointSafe = false
+	}
 
 	if current.ID == "" {
 		current = updateCodexSession(current, codexPayload{}, sourceID)
+		checkpointSafe = false
 	}
 	if current.ID != "" {
 		if _, hasMetadata := metadataSessions[current.ID]; !hasMetadata {
@@ -435,11 +512,37 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 	for _, session := range sessionsByID {
 		knownSessions = append(knownSessions, session)
 	}
-	receipt, err := store.appendWithReferencesAndCursorIfCurrent(events,
-		projects,
-		knownSessions,
-		Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
-			PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	var receipt Receipt
+	var err error
+	if options == nil {
+		receipt, err = store.appendWithReferencesAndCursorIfCurrent(events,
+			projects,
+			knownSessions,
+			Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+	} else {
+		var checkpoint *parserCheckpoint
+		if checkpointSafe && !result.Outcomes.Incomplete() && boundaryState.Codex != nil {
+			boundaryFingerprint := options.snapshot.boundaryFingerprint
+			if stream, ok := source.(*sourceStreamReader); ok {
+				boundaryFingerprint, _ = stream.prefixFingerprint(boundaryOffset)
+			}
+			if boundaryFingerprint != "" {
+				candidate := parserCheckpoint{SourceID: baseSourceID, Adapter: "codex", SourceGeneration: generation,
+					BoundaryOffset: boundaryOffset, PrefixFingerprint: boundaryFingerprint, State: boundaryState}
+				if encoded, ok := encodeParserCheckpoint(candidate); ok {
+					checkpoint = &encoded
+				}
+			}
+		}
+		receipt, err = store.appendWithParserStateIfCurrent(events, projects, knownSessions,
+			Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
+				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor,
+			options.snapshot.expectedCheckpoint, checkpoint, options.snapshot.identityExpectation, ctx)
+		if options.allowResume {
+			receipt.Duplicates += options.snapshot.checkpoint.State.HistoricalEventAttempts
+		}
+	}
 	if errors.Is(err, errSourceCursorChanged) {
 		return ImportResult{}, true, nil
 	}
@@ -639,6 +742,10 @@ func codexResetCumulativeBaselines(record codexUsageRecordPayload, turnUsage, th
 }
 
 func codexUsageEvent(sourceID, fingerprint string, offset int64, record codexUsageRecordPayload, session codexSession, usage codexUsage, occurredAt time.Time, line []byte) UsageEvent {
+	return codexUsageEventObserved(sourceID, fingerprint, offset, record, session, usage, occurredAt, line, nil)
+}
+
+func codexUsageEventObserved(sourceID, fingerprint string, offset int64, record codexUsageRecordPayload, session codexSession, usage codexUsage, occurredAt time.Time, line []byte, observer *collectorBenchmarkObserver) UsageEvent {
 	scope := codexLogicalScope(record.SessionID, record.ThreadID)
 	identity := digest([]byte("codex-response\x00" + scope + "\x00" + record.ResponseID))
 	offsetCopy := offset
@@ -651,7 +758,7 @@ func codexUsageEvent(sourceID, fingerprint string, offset int64, record codexUsa
 			CacheReadTokens:  usage.CachedInputTokens + usage.CacheReadInputTokens,
 			CacheWriteTokens: usage.CacheWriteTokens, ReasoningTokens: usage.ReasoningOutputTokens},
 		Provenance: Provenance{Adapter: "codex", SourceID: sourceID, SourceRecord: record.ResponseID,
-			SourceOffset: &offsetCopy, RecordHash: digest(line)},
+			SourceOffset: &offsetCopy, RecordHash: digestRecordBytes(line, observer)},
 		IngestionKey: "codex:response:" + identity,
 		Attributes:   json.RawMessage(fmt.Sprintf(`{"source_fingerprint":%q}`, fingerprint)),
 	}
@@ -846,6 +953,10 @@ func codexTimestamp(value string) (time.Time, error) {
 }
 
 func codexEvent(sourceID, fingerprint string, offset int64, recordID string, session codexSession, usage codexUsage, occurredAt time.Time, line []byte) UsageEvent {
+	return codexEventObserved(sourceID, fingerprint, offset, recordID, session, usage, occurredAt, line, nil)
+}
+
+func codexEventObserved(sourceID, fingerprint string, offset int64, recordID string, session codexSession, usage codexUsage, occurredAt time.Time, line []byte, observer *collectorBenchmarkObserver) UsageEvent {
 	key := digest([]byte(sourceID + "\x00" + recordID))
 	offsetCopy := offset
 	return UsageEvent{
@@ -857,7 +968,7 @@ func codexEvent(sourceID, fingerprint string, offset int64, recordID string, ses
 			CacheReadTokens:  usage.CachedInputTokens + usage.CacheReadInputTokens,
 			CacheWriteTokens: usage.CacheWriteTokens, ReasoningTokens: usage.ReasoningOutputTokens},
 		Provenance: Provenance{Adapter: "codex", SourceID: sourceID, SourceRecord: recordID,
-			SourceOffset: &offsetCopy, RecordHash: digest(line)},
+			SourceOffset: &offsetCopy, RecordHash: digestRecordBytes(line, observer)},
 		IngestionKey: "codex:" + key,
 		Attributes:   json.RawMessage(fmt.Sprintf(`{"source_fingerprint":%q}`, fingerprint)),
 	}

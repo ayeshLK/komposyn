@@ -10,6 +10,15 @@ binary release process are maintained in the
 - [Project vision](vision.md) — implemented module and open product questions.
 - [Architecture](architecture.md) — core ownership, provider ingestion,
   persistence, collector, and report semantics.
+- [Collector performance baseline](collector-performance-baseline.md) —
+  repeatable generated workloads, correctness oracle, measured Linux baseline,
+  and proposed workload-specific improvement budgets.
+- [Collector bounded source verification design](collector-streaming-verification-design.md) —
+  proposed streaming verification protocol and mutation-safety gate for
+  follow-on collector optimization.
+- [Collector validated append continuation design](collector-append-checkpoint-design.md) —
+  proposed durable parser checkpoints, safe record boundaries, replay
+  equivalence, fallback rules, and acceptance evidence for issue #139.
 - [Token Logger core API](core-api.md) — supported exports and compatibility.
 - [Data model](data-model.md) — events, identity, provenance, and transactions.
 - [Database migrations](migrations.md) — schema history and migration policy.

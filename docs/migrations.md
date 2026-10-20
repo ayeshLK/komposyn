@@ -2,7 +2,7 @@
 
 Komposyn upgrades its SQLite schema automatically when `Store.Open` is called.
 Migrations are numbered, applied in order, and recorded in the
-`schema_migrations` table. The current schema version is 15. Core consumers
+`schema_migrations` table. The current schema version is 16. Core consumers
 can read `tokenlogger.CurrentSchemaVersion`; the oldest numbered schema with a
 complete forward migration path is `tokenlogger.OldestMigratableSchemaVersion`
 (1). The protocol-v1 `schema_versions` field describes event-format versions
@@ -50,6 +50,10 @@ and does not describe this SQLite migration range.
     whose rates vary by inference speed.
 15. Adds diagnostic category and core/CLI/protocol/schema version metadata.
     Existing diagnostics use category `unknown` and empty/zero version fields.
+16. Adds a private per-source parser checkpoint table for validated append
+    continuation. It stores bounded normalized parser state, parser/format
+    revisions, source generation, complete-record boundary, verified prefix
+    fingerprint, and a state digest. It contains no provider source text.
 
 ## Compatibility rules
 
@@ -72,8 +76,8 @@ and does not describe this SQLite migration range.
 
 When a schema change is required:
 
-1. Increment `currentSchemaVersion` in
-   `plugins/library/token-logger/tokenlogger.go`.
+1. Increment `CurrentSchemaVersion` in
+   `plugins/library/token-logger/schema.go`.
 2. Add one immutable migration statement and an ordered application block in
    `plugins/library/token-logger/migrations.go` and `storage.go`.
 3. Use a transaction and record the new version only after the change succeeds.

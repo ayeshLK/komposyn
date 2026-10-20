@@ -15,6 +15,7 @@
 package tokenlogger
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,10 @@ type Store struct {
 	backupPath          string
 	migrationBackupPath string
 	beforeSnapshotRead  func()
+	beforeSnapshotParse func()
+	sourceReadHook      func(pass int, bytesRead int64)
 	beforeAppend        func()
+	benchmarkObserver   *collectorBenchmarkObserver
 }
 
 var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
@@ -303,6 +307,14 @@ func (s *Store) migrate() error {
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 15, formatStoredTime(time.Now())); err != nil {
 			return fmt.Errorf("record migration 15: %w", err)
+		}
+	}
+	if applied < 16 {
+		if _, err := tx.Exec(schemaMigrationSixteenParserCheckpoints); err != nil {
+			return fmt.Errorf("apply migration 16: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 16, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 16: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -786,6 +798,26 @@ func (s *Store) appendWithReferencesAndCursorIfCurrent(events []UsageEvent, proj
 	return s.append(events, &cursor, projects, sessions, &expected)
 }
 
+func (s *Store) appendWithParserStateIfCurrent(events []UsageEvent, projects []Project, sessions []Session, cursor Cursor,
+	expected sourceCursorExpectation, checkpointExpected sourceCheckpointExpectation, checkpoint *parserCheckpoint,
+	identity collectorIdentityExpectation, ctx context.Context) (Receipt, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Receipt{}, err
+	}
+	if err := cursor.validate(); err != nil {
+		return Receipt{}, err
+	}
+	if cursor.SourceID != expected.sourceID {
+		return Receipt{}, errors.New("cursor expectation source ID does not match committed cursor")
+	}
+	return s.appendInternal(events, &cursor, projects, sessions, &expected, &parserStateCommit{
+		checkpointExpected: checkpointExpected, checkpoint: checkpoint, identity: identity, ctx: ctx,
+	})
+}
+
 // AppendWithCursor persists events and advances the source cursor atomically.
 // A failed event insert cannot leave the cursor advanced.
 func (s *Store) AppendWithCursor(events []UsageEvent, cursor Cursor) (Receipt, error) {
@@ -796,6 +828,17 @@ func (s *Store) AppendWithCursor(events []UsageEvent, cursor Cursor) (Receipt, e
 }
 
 func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session, expected *sourceCursorExpectation) (Receipt, error) {
+	return s.appendInternal(events, cursor, projects, sessions, expected, nil)
+}
+
+type parserStateCommit struct {
+	checkpointExpected sourceCheckpointExpectation
+	checkpoint         *parserCheckpoint
+	identity           collectorIdentityExpectation
+	ctx                context.Context
+}
+
+func (s *Store) appendInternal(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session, expected *sourceCursorExpectation, parserState *parserStateCommit) (Receipt, error) {
 	events = append([]UsageEvent(nil), events...)
 	projects = append([]Project(nil), projects...)
 	sessions = append([]Session(nil), sessions...)
@@ -824,6 +867,12 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 	if err != nil {
 		return Receipt{}, fmt.Errorf("begin append: %w", err)
 	}
+	if parserState != nil {
+		if err := parserState.ctx.Err(); err != nil {
+			tx.Rollback()
+			return Receipt{}, err
+		}
+	}
 	var hasBillingContext bool
 	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_events') WHERE name = 'billing_context_json')").Scan(&hasBillingContext); err != nil {
 		tx.Rollback()
@@ -846,6 +895,32 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 		} else if !expected.exists || current != expected.cursor {
 			tx.Rollback()
 			return Receipt{}, errSourceCursorChanged
+		}
+	}
+	if parserState != nil {
+		if expected == nil {
+			tx.Rollback()
+			return Receipt{}, errors.New("parser checkpoint requires a cursor expectation")
+		}
+		actual, actualErr := parserCheckpointExpectationInTransaction(tx, expected.sourceID)
+		if errors.Is(actualErr, sql.ErrNoRows) {
+			actualErr = nil
+		} else if actualErr == nil && !checkpointEqual(actual, parserState.checkpointExpected) {
+			actualErr = errParserCheckpointChanged
+		}
+		if actualErr != nil || !checkpointEqual(actual, parserState.checkpointExpected) {
+			tx.Rollback()
+			if actualErr != nil && !errors.Is(actualErr, errParserCheckpointChanged) {
+				return Receipt{}, fmt.Errorf("revalidate parser checkpoint: %w", actualErr)
+			}
+			return Receipt{}, errSourceCursorChanged
+		}
+		if err := claimCollectorIdentityInTransaction(tx, parserState.identity, cursor.SourceID); err != nil {
+			tx.Rollback()
+			if errors.Is(err, errCollectorIdentityChanged) {
+				return Receipt{}, errSourceCursorChanged
+			}
+			return Receipt{}, fmt.Errorf("claim collector source identity: %w", err)
 		}
 	}
 	events, projects, sessions, err = reconcileImportedReferences(tx, events, projects, sessions)
@@ -925,6 +1000,12 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 			args = append(args, nullableJSON(billingContextJSON))
 			args = append(args, event.Usage.CacheWrite5mTokens, event.Usage.CacheWrite1hTokens)
 		}
+		if s.benchmarkObserver != nil {
+			s.benchmarkObserver.eventInsertAttempts++
+			if _, historical := s.benchmarkObserver.historicalEventIDs[event.EventID]; historical {
+				s.benchmarkObserver.historicalInsertAttempts++
+			}
+		}
 		result, err := tx.Exec(insertSQL, args...)
 		if err != nil {
 			tx.Rollback()
@@ -953,10 +1034,106 @@ func (s *Store) append(events []UsageEvent, cursor *Cursor, projects []Project, 
 			return Receipt{}, fmt.Errorf("persist source cursor: %w", err)
 		}
 	}
+	if parserState != nil {
+		if parserState.checkpoint == nil {
+			if _, err := tx.Exec(`DELETE FROM parser_checkpoints WHERE source_id = ?`, cursor.SourceID); err != nil {
+				tx.Rollback()
+				return Receipt{}, fmt.Errorf("invalidate parser checkpoint: %w", err)
+			}
+		} else {
+			checkpoint := parserState.checkpoint
+			if checkpoint.SourceID != cursor.SourceID {
+				tx.Rollback()
+				return Receipt{}, errors.New("parser checkpoint source ID does not match cursor")
+			}
+			if _, err := tx.Exec(`INSERT INTO parser_checkpoints(source_id, adapter, parser_revision, format_version,
+				source_generation, boundary_offset, prefix_fingerprint, state_json, state_digest, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(source_id) DO UPDATE SET adapter = excluded.adapter,
+				parser_revision = excluded.parser_revision, format_version = excluded.format_version,
+				source_generation = excluded.source_generation, boundary_offset = excluded.boundary_offset,
+				prefix_fingerprint = excluded.prefix_fingerprint, state_json = excluded.state_json,
+				state_digest = excluded.state_digest, updated_at = excluded.updated_at`,
+				checkpoint.SourceID, checkpoint.Adapter, checkpoint.ParserRevision, checkpoint.FormatVersion,
+				checkpoint.SourceGeneration, checkpoint.BoundaryOffset, checkpoint.PrefixFingerprint,
+				checkpoint.StateJSON, checkpoint.StateDigest, formatStoredTime(time.Now())); err != nil {
+				tx.Rollback()
+				return Receipt{}, fmt.Errorf("persist parser checkpoint: %w", err)
+			}
+		}
+	}
+	if parserState != nil {
+		if err := parserState.ctx.Err(); err != nil {
+			tx.Rollback()
+			return Receipt{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return Receipt{}, fmt.Errorf("commit append: %w", err)
 	}
 	return receipt, nil
+}
+
+var errCollectorIdentityChanged = errors.New("collector source identity changed while snapshot was being imported")
+
+func claimCollectorIdentityInTransaction(tx *sql.Tx, expected collectorIdentityExpectation, sourceID string) error {
+	if expected.CanonicalKey == "" || expected.Adapter == "" || sourceID == "" {
+		return errors.New("collector source identity claim is incomplete")
+	}
+	var actual string
+	err := tx.QueryRow(`SELECT source_id FROM collector_source_identities WHERE canonical_key = ? AND adapter = ?`, expected.CanonicalKey, expected.Adapter).Scan(&actual)
+	if errors.Is(err, sql.ErrNoRows) {
+		if expected.Exists {
+			return errCollectorIdentityChanged
+		}
+		var owner string
+		ownerErr := tx.QueryRow(`SELECT canonical_key FROM collector_source_identities WHERE adapter = ? AND source_id = ?`, expected.Adapter, sourceID).Scan(&owner)
+		if ownerErr == nil || !errors.Is(ownerErr, sql.ErrNoRows) {
+			if ownerErr != nil {
+				return ownerErr
+			}
+			return errCollectorIdentityChanged
+		}
+		_, err = tx.Exec(`INSERT INTO collector_source_identities(canonical_key, adapter, source_id, created_at)
+			VALUES (?, ?, ?, ?)`, expected.CanonicalKey, expected.Adapter, sourceID, formatStoredTime(time.Now()))
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if !expected.Exists || expected.SourceID != actual || actual != sourceID {
+		return errCollectorIdentityChanged
+	}
+	return nil
+}
+
+func parserCheckpointExpectationInTransaction(tx *sql.Tx, sourceID string) (sourceCheckpointExpectation, error) {
+	row, err := scanParserCheckpoint(tx.QueryRow(`SELECT source_id, adapter, parser_revision, format_version,
+		source_generation, boundary_offset, prefix_fingerprint, state_json, state_digest
+		FROM parser_checkpoints WHERE source_id = ?`, sourceID))
+	if err != nil {
+		return sourceCheckpointExpectation{}, err
+	}
+	return sourceCheckpointExpectation{exists: true, token: checkpointRowToken(row), row: row}, nil
+}
+
+func (s *Store) parserCheckpoint(sourceID string) (parserCheckpoint, error) {
+	return scanParserCheckpoint(s.db.QueryRow(`SELECT source_id, adapter, parser_revision, format_version,
+		source_generation, boundary_offset, prefix_fingerprint, state_json, state_digest
+		FROM parser_checkpoints WHERE source_id = ?`, sourceID))
+}
+
+type checkpointRowScanner interface{ Scan(...any) error }
+
+func scanParserCheckpoint(scanner checkpointRowScanner) (parserCheckpoint, error) {
+	var row parserCheckpoint
+	err := scanner.Scan(&row.SourceID, &row.Adapter, &row.ParserRevision, &row.FormatVersion,
+		&row.SourceGeneration, &row.BoundaryOffset, &row.PrefixFingerprint, &row.StateJSON, &row.StateDigest)
+	if err != nil {
+		return parserCheckpoint{}, err
+	}
+	row.StateJSON = append([]byte(nil), row.StateJSON...)
+	return row, nil
 }
 
 func cursorInTransaction(tx *sql.Tx, sourceID string) (Cursor, error) {
