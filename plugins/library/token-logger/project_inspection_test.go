@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +162,117 @@ func TestInspectProjectSeparatesSelectedAndStoredHistory(t *testing.T) {
 	}
 	if len(last.Locations) != 1 || last.LocationsPage.HasMore || last.Locations[0].Digest == next.Locations[0].Digest {
 		t.Fatalf("last location page = %+v / %+v", last.LocationsPage, last.Locations)
+	}
+}
+
+func TestInspectProjectNormalizesClaudeProducerProvenance(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	if _, err := (ClaudeAdapter{}).Import(filepath.Join("testdata", "claude-code", "normal.jsonl"), store); err != nil {
+		t.Fatal(err)
+	}
+	var projectID string
+	if err := store.db.QueryRow("SELECT id FROM projects LIMIT 1").Scan(&projectID); err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	result, err := store.InspectProject(ProjectInspectionRequest{ProjectID: projectID, From: from, To: from.AddDate(100, 0, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Sources) == 0 {
+		t.Fatal("real Claude import produced no inspectable event provenance")
+	}
+	for _, source := range result.Sources {
+		if source.Adapter != "claude" {
+			t.Errorf("real Claude adapter %q normalized as %q", "claude-code", source.Adapter)
+		}
+	}
+	if len(result.Aliases) == 0 {
+		t.Fatal("real Claude import produced no inspectable aliases")
+	}
+	for _, alias := range result.Aliases {
+		if alias.Provenance == "unknown" {
+			t.Errorf("known Claude producer provenance was discarded: %+v", alias)
+		}
+	}
+}
+
+func TestInspectProjectBoundsAndRedactsFreeFormText(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	const privateSource = "/synthetic-private/rates.json"
+	const privateFingerprint = "/synthetic-private/non-digest"
+	f := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.UpsertProject(Project{ID: "bounded-project", DisplayName: strings.Repeat("n", 2<<20)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertPricing(PricingRule{Provider: "review-provider", ModelSelector: "review-model", TokenCategory: TokenCategoryInput,
+		RateMicros: 1, Currency: "USD", EffectiveFrom: f, PricingVersion: "review-v1", Source: privateSource}); err != nil {
+		t.Fatal(err)
+	}
+	event := UsageEvent{
+		EventID: "bounded-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: f.Add(time.Hour),
+		ProjectID: "bounded-project", Client: Client{Name: "review-client"}, Provider: "review-provider",
+		RequestedModel: "review-model", ResolvedModel: "review-model", Usage: TokenUsage{InputTokens: 10},
+		Provenance: Provenance{Adapter: "codex", SourceID: "bounded-source", SourceRecord: "record"}, IngestionKey: "bounded-event",
+	}
+	if _, err := store.AppendWithCursor([]UsageEvent{event}, Cursor{SourceID: "bounded-source", FileFingerprint: privateFingerprint, ByteOffset: 1}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.InspectProject(ProjectInspectionRequest{ProjectID: "bounded-project", From: f, To: f.AddDate(10, 0, 0), Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.DisplayName) > MaxInspectionTextBytes || !result.TextTruncated {
+		t.Fatalf("display name bytes=%d text_truncated=%v; want <=%d and marked", len(result.DisplayName), result.TextTruncated, MaxInspectionTextBytes)
+	}
+	if result.SelectedUsage.PricingSource != "recorded" {
+		t.Fatalf("custom pricing source label=%q; want safe presence marker", result.SelectedUsage.PricingSource)
+	}
+	if len(result.Sources) != 1 || result.Sources[0].CursorFingerprintDigest != digest([]byte(privateFingerprint)) {
+		t.Fatalf("cursor fingerprint projection=%+v; want only digest", result.Sources)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{privateSource, privateFingerprint, strings.Repeat("n", 2<<20)} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("inspection leaked private or unbounded data %q", private[:min(len(private), 64)])
+		}
+	}
+	if len(encoded) > 16<<10 {
+		t.Fatalf("bounded inspection response is unexpectedly large: %d bytes", len(encoded))
+	}
+}
+
+func TestInspectionCostReasonProjectionHasFixedBounds(t *testing.T) {
+	counts := make(map[string]int64)
+	for index := range 100 {
+		counts[fmt.Sprintf("reason-%03d-%s", index, strings.Repeat("x", 512))] = int64(index + 1)
+	}
+	raw, err := json.Marshal(counts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounded, truncated := boundInspectionCostReasons(CostReasonCounts(raw), false)
+	if !truncated || len(bounded) > MaxInspectionCostReasonBytes {
+		t.Fatalf("reason projection bytes=%d truncated=%t; want bounded and marked", len(bounded), truncated)
+	}
+	var projected map[string]int64
+	if err := json.Unmarshal([]byte(bounded), &projected); err != nil {
+		t.Fatal(err)
+	}
+	if len(projected) > MaxInspectionCostReasonEntries {
+		t.Fatalf("reason projection has %d entries; want <=%d", len(projected), MaxInspectionCostReasonEntries)
+	}
+	var total int64
+	for _, count := range projected {
+		total += count
+	}
+	if total != 5050 {
+		t.Fatalf("reason counts sum=%d; want exact numeric total 5050", total)
 	}
 }
 

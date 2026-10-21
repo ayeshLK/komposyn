@@ -17,10 +17,13 @@ package tokenlogger
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -28,6 +31,10 @@ const (
 	DefaultInspectionPageSize      = 20
 	MaxInspectionPageSize          = 50
 	MaxInspectionOffset            = 100000
+	MaxInspectionTextBytes         = 256
+	MaxInspectionCostReasonBytes   = 4096
+	MaxInspectionCostReasonEntries = 16
+	maxInspectionReasonLabelBytes  = 128
 
 	InspectionEvidenceAvailable   = "available"
 	InspectionEvidenceNotRecorded = "not_recorded"
@@ -114,17 +121,17 @@ type ProjectInspectionWarning struct {
 // ProjectInspectionSource reports persisted event provenance and an exact
 // source-cursor join when one exists.
 type ProjectInspectionSource struct {
-	SourceIDDigest    string     `json:"source_id_digest"`
-	Adapter           string     `json:"adapter"`
-	EventCount        int64      `json:"event_count"`
-	FirstEventAt      *time.Time `json:"first_event_at,omitempty"`
-	LastEventAt       *time.Time `json:"last_event_at,omitempty"`
-	CursorStatus      string     `json:"cursor_status"`
-	CursorFingerprint string     `json:"cursor_fingerprint,omitempty"`
-	CursorByteOffset  *int64     `json:"cursor_byte_offset,omitempty"`
-	CursorGeneration  *int64     `json:"cursor_generation,omitempty"`
-	PendingTail       *bool      `json:"pending_tail,omitempty"`
-	SnapshotReusable  *bool      `json:"snapshot_reusable,omitempty"`
+	SourceIDDigest          string     `json:"source_id_digest"`
+	Adapter                 string     `json:"adapter"`
+	EventCount              int64      `json:"event_count"`
+	FirstEventAt            *time.Time `json:"first_event_at,omitempty"`
+	LastEventAt             *time.Time `json:"last_event_at,omitempty"`
+	CursorStatus            string     `json:"cursor_status"`
+	CursorFingerprintDigest string     `json:"cursor_fingerprint_digest,omitempty"`
+	CursorByteOffset        *int64     `json:"cursor_byte_offset,omitempty"`
+	CursorGeneration        *int64     `json:"cursor_generation,omitempty"`
+	PendingTail             *bool      `json:"pending_tail,omitempty"`
+	SnapshotReusable        *bool      `json:"snapshot_reusable,omitempty"`
 }
 
 // ProjectInspection is a bounded view of persisted attribution and activity
@@ -135,6 +142,7 @@ type ProjectInspection struct {
 	Exists                      bool                        `json:"exists"`
 	Synthetic                   bool                        `json:"synthetic"`
 	DisplayName                 string                      `json:"display_name,omitempty"`
+	TextTruncated               bool                        `json:"text_truncated"`
 	NameOrigin                  string                      `json:"name_origin"`
 	ClassificationEvidence      InspectionEvidenceStatus    `json:"classification_evidence"`
 	LocationEvidence            InspectionEvidenceStatus    `json:"location_evidence"`
@@ -231,8 +239,12 @@ func (s *Store) InspectProject(request ProjectInspectionRequest) (ProjectInspect
 			OR EXISTS(SELECT 1 FROM usage_events WHERE project_id IS NULL)`).Scan(&exists)
 		result.Exists = exists != 0
 	} else {
-		err = tx.QueryRow("SELECT display_name FROM projects WHERE id = ?", request.ProjectID).Scan(&result.DisplayName)
+		var rawName string
+		err = tx.QueryRow("SELECT display_name FROM projects WHERE id = ?", request.ProjectID).Scan(&rawName)
 		result.Exists = err == nil
+		if err == nil {
+			result.DisplayName, result.TextTruncated = boundedInspectionText(rawName)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			err = nil
 		}
@@ -256,7 +268,8 @@ func (s *Store) InspectProject(request ProjectInspectionRequest) (ProjectInspect
 	if err != nil {
 		return ProjectInspection{}, err
 	}
-	result.SelectedUsage = selected.Summary
+	result.SelectedUsage, result.TextTruncated = boundInspectionUsage(selected.Summary, result.TextTruncated)
+	result.SelectedUsage, result.TextTruncated = boundInspectionUsage(result.SelectedUsage, result.TextTruncated)
 	result.SelectedUsageSessionCount = selected.Summary.SessionCount
 	result.SelectedActivity, err = inspectionActivity(tx, request.ProjectID, result.Synthetic, request.From, request.To)
 	if err != nil {
@@ -561,7 +574,7 @@ func inspectSources(tx *sql.Tx, projectID string, synthetic bool, offset, limit 
 		}
 		if fingerprint.Valid {
 			source.CursorStatus = InspectionEvidenceAvailable
-			source.CursorFingerprint = fingerprint.String
+			source.CursorFingerprintDigest = digest([]byte(fingerprint.String))
 			offsetValue, generationValue := byteOffset.Int64, generation.Int64
 			pendingValue, reusableValue := pending.Bool, reusable.Bool
 			source.CursorByteOffset, source.CursorGeneration = &offsetValue, &generationValue
@@ -612,7 +625,7 @@ func classifyProjectRecovery(result ProjectInspection) (string, string) {
 
 func safeInspectionAdapter(adapter string) string {
 	switch strings.ToLower(strings.TrimSpace(adapter)) {
-	case "claude":
+	case "claude", "claude-code":
 		return "claude"
 	case "codex":
 		return "codex"
@@ -629,8 +642,10 @@ func safeInspectionProvenance(provenance string) string {
 		return "provider_metadata"
 	case "codex metadata":
 		return "codex_metadata"
-	case "claude metadata":
+	case "claude metadata", "claude-code metadata":
 		return "claude_metadata"
+	case "claude-code":
+		return "claude"
 	case "codex":
 		return "codex"
 	case "claude":
@@ -638,6 +653,110 @@ func safeInspectionProvenance(provenance string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func boundedInspectionText(value string) (string, bool) {
+	if len(value) <= MaxInspectionTextBytes && utf8.ValidString(value) {
+		return value, false
+	}
+	const marker = "…"
+	limit := MaxInspectionTextBytes - len(marker)
+	var output strings.Builder
+	output.Grow(MaxInspectionTextBytes)
+	for _, character := range value {
+		text := string(character)
+		if output.Len()+len(text) > limit {
+			break
+		}
+		output.WriteString(text)
+	}
+	output.WriteString(marker)
+	return output.String(), true
+}
+
+func boundInspectionUsage(usage UsageMeasures, wasTruncated bool) (UsageMeasures, bool) {
+	bound := func(value string) string {
+		limited, truncated := boundedInspectionText(value)
+		wasTruncated = wasTruncated || truncated
+		return limited
+	}
+	usage.CalculatedCurrency = bound(usage.CalculatedCurrency)
+	usage.ProviderReportedCurrency = bound(usage.ProviderReportedCurrency)
+	usage.CostUnknownReason = bound(usage.CostUnknownReason)
+	usage.PricingProvider = bound(usage.PricingProvider)
+	usage.CalculationBasis = bound(usage.CalculationBasis)
+	usage.PricingVersion = bound(usage.PricingVersion)
+	usage.PricingModelSelector = bound(usage.PricingModelSelector)
+	usage.PricingEffectiveFrom = bound(usage.PricingEffectiveFrom)
+	usage.PricingEffectiveTo = bound(usage.PricingEffectiveTo)
+	if usage.PricingSource != "" {
+		// A custom pricing source may contain a private URL or filesystem path.
+		// Inspection reports that provenance exists without returning its value.
+		usage.PricingSource = "recorded"
+		wasTruncated = true
+	}
+	usage.CostUnknownReasons, wasTruncated = boundInspectionCostReasons(usage.CostUnknownReasons, wasTruncated)
+	return usage, wasTruncated
+}
+
+func boundInspectionCostReasons(raw CostReasonCounts, wasTruncated bool) (CostReasonCounts, bool) {
+	if raw == "" {
+		return raw, wasTruncated
+	}
+	var counts map[string]int64
+	if err := json.Unmarshal([]byte(raw), &counts); err != nil {
+		return "", true
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	bounded := make(map[string]int64, min(len(keys), MaxInspectionCostReasonEntries))
+	var omitted int64
+	for _, key := range keys {
+		label, truncated := boundedInspectionTextLimit(key, maxInspectionReasonLabelBytes)
+		wasTruncated = wasTruncated || truncated
+		if len(bounded) >= MaxInspectionCostReasonEntries-1 {
+			omitted, _ = checkedCostAdd(omitted, counts[key])
+			continue
+		}
+		bounded[label], _ = checkedCostAdd(bounded[label], counts[key])
+		encoded, err := json.Marshal(bounded)
+		if err != nil || len(encoded) > MaxInspectionCostReasonBytes {
+			delete(bounded, label)
+			omitted, _ = checkedCostAdd(omitted, counts[key])
+			wasTruncated = true
+		}
+	}
+	if omitted > 0 {
+		bounded["additional_reasons_omitted"], _ = checkedCostAdd(bounded["additional_reasons_omitted"], omitted)
+		wasTruncated = true
+	}
+	encoded, err := json.Marshal(bounded)
+	if err != nil || len(encoded) > MaxInspectionCostReasonBytes {
+		return "", true
+	}
+	return CostReasonCounts(encoded), wasTruncated
+}
+
+func boundedInspectionTextLimit(value string, limit int) (string, bool) {
+	if len(value) <= limit && utf8.ValidString(value) {
+		return value, false
+	}
+	const marker = "…"
+	maxBytes := limit - len(marker)
+	var output strings.Builder
+	output.Grow(limit)
+	for _, character := range value {
+		text := string(character)
+		if output.Len()+len(text) > maxBytes {
+			break
+		}
+		output.WriteString(text)
+	}
+	output.WriteString(marker)
+	return output.String(), true
 }
 
 func safeInspectionWarningKind(kind string) string {

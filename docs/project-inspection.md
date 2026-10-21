@@ -31,6 +31,14 @@ selected/history aggregates scale with the project's stored events, and
 evidence total counts scale with persisted references. Each returned page is
 limited to at most 50 items. Offset has a hard ceiling; if a page reports
 truncated=true, additional records exist beyond the accessible page range.
+Free-form returned text is limited to 256 UTF-8 bytes and the response-level
+`text_truncated` flag indicates when any text was shortened or summarized.
+Cost-reason detail is capped at 16 entries and 4 KiB; additional categories
+are grouped under `additional_reasons_omitted` without changing the numeric
+usage totals. Custom pricing source text is never returned; `pricing_source`
+uses the safe `recorded` marker when a source was present. Cursor fingerprints
+are returned only as a digest of the stored fingerprint value, so malformed
+or caller-supplied fingerprint strings cannot expose paths or arbitrary text.
 
 The query itself performs only SQL reads. It does not open provider files,
 start or stop collection, refresh report ranges, call the network, write
@@ -71,8 +79,8 @@ opened Store when the caller needs the query's no-write guarantee.
   file. The query joins a cursor only when the complete persisted event
   source_id exactly equals source_cursors.source_id. It does not infer
   prefix, generation, path, or source-directory relationships. source_id is
-  returned only as a digest. The cursor fingerprint, when present, is a digest
-  of source bytes, not source content.
+  returned only as a digest. A cursor fingerprint is returned as a digest of
+  the stored fingerprint value, not as the value itself.
 - Missing projects return exists=false. The reserved
   komposyn:unattributed-project selector describes a synthetic bucket over
   rows whose project reference is null; it is not a persisted project row.
