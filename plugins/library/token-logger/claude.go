@@ -165,6 +165,10 @@ func (c *adapterClassifier) observe(lineBytes []byte, observer *collectorBenchma
 		c.outcomes.Add(OutcomeMalformedRecord)
 		return
 	}
+	if header.Type == "user" && claudeMetadataOnlyRecord(lineBytes) {
+		c.adapter, c.done = "claude", true
+		return
+	}
 	if header.Type == "session_meta" || header.Type == "event_msg" || header.Type == "token_count" || header.Type == "token_usage_record" {
 		c.candidateAdapter = "codex"
 	}
@@ -172,9 +176,13 @@ func (c *adapterClassifier) observe(lineBytes []byte, observer *collectorBenchma
 		c.adapter, c.done = "codex", true
 		return
 	}
-	if header.Type == "token_usage_record" || header.Type == "token_count" ||
+	if header.Type == "token_usage_record" ||
 		(header.Type == "event_msg" && codexRecordTypeFromRaw(lineBytes) == "token_count") {
 		c.outcomes.Add(OutcomeUnsupportedUsage)
+		return
+	}
+	if header.Type == "token_count" {
+		c.outcomes.Add(OutcomeMalformedRecord)
 		return
 	}
 	c.outcomes.Add(OutcomeIgnoredNonUsage)
@@ -202,6 +210,19 @@ func claudeClassifierRecord(record []byte) bool {
 	// synthetic identity for model-only auxiliary records.
 	return (message.Role == "assistant" || message.Model != "") &&
 		(envelope.SessionID != "" || envelope.SessionIDAlt != "")
+}
+
+// claudeMetadataOnlyRecord accepts a narrowly provider-shaped user record
+// when it carries a real Claude session ID and the expected message role.
+// A generic message object or session ID alone is not sufficient.
+func claudeMetadataOnlyRecord(record []byte) bool {
+	var envelope claudeEnvelope
+	if err := json.Unmarshal(record, &envelope); err != nil || envelope.Type != "user" ||
+		(envelope.SessionID == "" && envelope.SessionIDAlt == "") {
+		return false
+	}
+	message, err := decodeClaudeMessage(envelope.Message)
+	return err == nil && message.Role == "user"
 }
 
 func codexClassifierRecord(recordType string, record []byte) bool {

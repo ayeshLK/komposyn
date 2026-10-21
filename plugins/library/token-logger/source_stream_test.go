@@ -256,22 +256,11 @@ func TestCollectorDoesNotReuseUnrecognizedFallbackAndReplaysLateCodexRecognition
 	if err := os.WriteFile(path, prefix, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Seed the exact persistent shape an older fallback classifier produced:
-	// a Codex cursor/checkpoint despite no recognized source record.
-	if result, err := (CodexAdapter{}).Import(path, store); err != nil || result.Receipt != (Receipt{}) {
-		t.Fatalf("seed fallback import=%+v err=%v", result, err)
-	}
 	source, err := collectorSourceForPath(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceID, err := establishedCollectorSourceID(store, source, "codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`UPDATE parser_checkpoints SET parser_revision = 1 WHERE source_id = ?`, sourceID); err != nil {
-		t.Fatal(err)
-	}
+	sourceID := seedLegacyUnrecognizedCodexState(t, store, source, prefix)
 	var beforeProjects, beforeSessions, beforeCursors int
 	for query, target := range map[string]*int{
 		"SELECT COUNT(*) FROM projects":       &beforeProjects,
@@ -343,6 +332,68 @@ func TestCollectorDoesNotReuseUnrecognizedFallbackAndReplaysLateCodexRecognition
 	}
 }
 
+func seedLegacyUnrecognizedCodexState(t *testing.T, store *Store, source collectorSource, contents []byte) string {
+	t.Helper()
+	// Before positive classification, the source path itself could establish a
+	// Codex cursor and checkpoint even when its records were only summaries.
+	sourceID := "codex-file-" + digest([]byte(source.Path))
+	fingerprint := digest(contents)
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.db.Exec(`INSERT INTO source_cursors
+		(source_id, file_fingerprint, byte_offset, last_provider_record_id, updated_at, source_generation, pending_tail, snapshot_reusable)
+		VALUES (?, ?, ?, '', ?, 0, 0, 1)`, sourceID, fingerprint, len(contents), updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	state := parserCheckpointState{Outcomes: OutcomeCounts{IgnoredNonUsage: 1}, Codex: &codexCheckpointState{}}
+	checkpoint, ok := encodeParserCheckpoint(parserCheckpoint{SourceID: sourceID, Adapter: "codex", SourceGeneration: 0,
+		BoundaryOffset: int64(len(contents)), PrefixFingerprint: fingerprint, State: state})
+	if !ok {
+		t.Fatal("could not encode historical Codex checkpoint fixture")
+	}
+	if _, err := store.db.Exec(`INSERT INTO parser_checkpoints
+		(source_id, adapter, parser_revision, format_version, source_generation, boundary_offset, prefix_fingerprint, state_json, state_digest, updated_at)
+		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`, checkpoint.SourceID, checkpoint.Adapter,
+		checkpoint.FormatVersion, checkpoint.SourceGeneration, checkpoint.BoundaryOffset,
+		checkpoint.PrefixFingerprint, checkpoint.StateJSON, checkpoint.StateDigest, updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	return sourceID
+}
+
+func TestDirectAdapterImportsRequirePositiveClassification(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		importer func(string, *Store) (ImportResult, error)
+	}{
+		{name: "Claude", importer: (ClaudeAdapter{}).Import},
+		{name: "Codex", importer: (CodexAdapter{}).Import},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			defer store.Close()
+			path := filepath.Join(t.TempDir(), "summary.jsonl")
+			if err := os.WriteFile(path, []byte(`{"type":"summary","summary":"auxiliary"}`+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if result, err := test.importer(path, store); err != nil || result.Receipt != (Receipt{}) {
+				t.Fatalf("direct import=%+v err=%v", result, err)
+			}
+			for table, want := range map[string]int{
+				"projects": 0, "sessions": 0, "source_cursors": 0,
+				"parser_checkpoints": 0, "collector_source_identities": 0,
+			} {
+				var count int
+				if err := store.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != want {
+					t.Errorf("%s rows=%d after direct import of an unrecognized source; want %d", table, count, want)
+				}
+			}
+		})
+	}
+}
+
 func TestDetectAdapterRequiresPositiveProviderEvidence(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -353,6 +404,8 @@ func TestDetectAdapterRequiresPositiveProviderEvidence(t *testing.T) {
 		{name: "unknown object", data: `{"type":"summary","summary":"synthetic"}` + "\n"},
 		{name: "generic message key", data: `{"message":{"text":"synthetic"}}` + "\n"},
 		{name: "model-only assistant auxiliary", data: `{"type":"assistant","message":{"model":"claude-model"}}` + "\n"},
+		{name: "user session ID without Claude shape", data: `{"type":"user","sessionId":"session"}` + "\n"},
+		{name: "generic user message with CWD but no session ID", data: `{"type":"user","cwd":"/synthetic/project","message":{"role":"user"}}` + "\n"},
 		{name: "auxiliary Codex event", data: `{"type":"event_msg","payload":{"type":"agent_message","text":"synthetic"}}` + "\n"},
 		{name: "Codex location without session identity", data: `{"type":"session_meta","payload":{"project_id":"project","cwd":"/synthetic/project"}}` + "\n"},
 		{name: "malformed", data: "not-json\n"},
@@ -367,6 +420,39 @@ func TestDetectAdapterRequiresPositiveProviderEvidence(t *testing.T) {
 				t.Fatalf("adapter=%q err=%v; want no adapter without positive evidence", adapter, err)
 			}
 		})
+	}
+}
+
+func TestCollectorPreservesClaudeMetadataOnlySessionAndLaterUsage(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	path := filepath.Join(t.TempDir(), "metadata-only-claude.jsonl")
+	metadata := []byte(`{"type":"user","sessionId":"real-session","cwd":"/synthetic/project","message":{"role":"user"}}` + "\n")
+	if err := os.WriteFile(path, metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if adapter, err := DetectAdapter(path); err != nil || adapter != "claude" {
+		t.Fatalf("metadata-only detection=%q err=%v; want Claude", adapter, err)
+	}
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := collector.PollOnce()
+	if err != nil || first.Receipt != (Receipt{}) || first.Outcomes.IgnoredNonUsage != 1 {
+		t.Fatalf("metadata-only import=%+v err=%v", first, err)
+	}
+	var sessions int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM session_aliases WHERE scope = 'claude-code:claude-code' AND alias = 'real-session'`).Scan(&sessions); err != nil || sessions != 1 {
+		t.Fatalf("metadata-only Claude session count=%d err=%v; want 1", sessions, err)
+	}
+	appended := append(append([]byte(nil), metadata...), benchmarkGeneratedUsage("claude", "real-session", 1)...)
+	if err := os.WriteFile(path, appended, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := collector.PollOnce()
+	if err != nil || second.Receipt.Imported != 1 {
+		t.Fatalf("metadata-only usage append=%+v err=%v; want one imported event", second, err)
 	}
 }
 

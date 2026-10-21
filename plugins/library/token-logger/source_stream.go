@@ -232,18 +232,21 @@ func acquireStreamingSourceSnapshot(ctx context.Context, path string, store *Sto
 		adapter := knownAdapter
 		var classificationOutcomes OutcomeCounts
 		var classificationAdapter string
-		if adapter == "" {
-			classifier := &adapterClassifier{}
-			if err := classifyAndDrainSource(ctx, reader, classifier, store.benchmarkObserver); err != nil {
-				_ = file.Close()
-				return sourceSnapshot{}, fmt.Errorf("read source for adapter detection: %w", err)
-			}
-			adapter = classifier.adapterName()
-			classificationOutcomes = classifier.outcomes
-			classificationAdapter = classifier.candidateAdapter
-		} else if _, err := io.Copy(io.Discard, reader); err != nil {
+		classifier := &adapterClassifier{}
+		if err := classifyAndDrainSource(ctx, reader, classifier, store.benchmarkObserver); err != nil {
 			_ = file.Close()
-			return sourceSnapshot{}, fmt.Errorf("read source for verification: %w", err)
+			return sourceSnapshot{}, fmt.Errorf("read source for adapter detection: %w", err)
+		}
+		classificationOutcomes = classifier.outcomes
+		classificationAdapter = classifier.candidateAdapter
+		detectedAdapter := classifier.adapterName()
+		if knownAdapter == "" {
+			adapter = detectedAdapter
+		} else if detectedAdapter != knownAdapter {
+			// Direct adapter imports use the same positive-evidence gate as
+			// automatic discovery. A caller choosing an adapter is not evidence
+			// that an arbitrary JSONL file belongs to that provider.
+			adapter = ""
 		}
 		if err := ctx.Err(); err != nil {
 			_ = file.Close()
