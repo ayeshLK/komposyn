@@ -140,8 +140,8 @@ func runStreamingOracleProvider(t *testing.T, provider string) []streamingOracle
 	lateResult, lateErr := lateCollector.PollOnce()
 	steps = append(steps, captureStreamingOracleStep(t, "late-classification-over-64k", store, lateCollector, lateResult, lateErr))
 
-	eofPath := filepath.Join(root, "eof-fallback.jsonl")
-	eof := append([]byte(strings.Repeat(`{"type":"summary","summary":"generated"}`+"\n", 2048)), []byte("{malformed eof record}\n")...)
+	eofPath := filepath.Join(root, "metadata-only-incomplete-tail.jsonl")
+	eof := append([]byte(`{"type":"session_meta","payload":{"id":"oracle-eof-session","project_id":"oracle-eof-project","cwd":"/oracle/eof"}}`+"\n"), []byte(`{"type":"summary"}`)...)
 	if err := os.WriteFile(eofPath, eof, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func runStreamingOracleProvider(t *testing.T, provider string) []streamingOracle
 		t.Fatal(err)
 	}
 	eofResult, eofErr := eofCollector.PollOnce()
-	steps = append(steps, captureStreamingOracleStep(t, "codex-eof-fallback", store, eofCollector, eofResult, eofErr))
+	steps = append(steps, captureStreamingOracleStep(t, "codex-metadata-only-incomplete-tail", store, eofCollector, eofResult, eofErr))
 
 	if provider == "claude" {
 		lateAttributionPath := filepath.Join(root, "late-attribution.jsonl")
