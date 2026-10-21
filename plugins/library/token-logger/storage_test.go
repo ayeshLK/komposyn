@@ -171,7 +171,8 @@ func TestMigrationEightRemapsCrossNamespaceSyntheticIDCollisions(t *testing.T) {
 		`DROP TABLE collector_runs`,
 		`DROP TABLE collector_runtime`,
 		`DROP TABLE collector_sources`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16)`,
+		`ALTER TABLE projects DROP COLUMN display_name_source`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -263,7 +264,8 @@ func TestMigrationEightRemapsSyntheticIDCollisions(t *testing.T) {
 		`DROP TABLE collector_runs`,
 		`DROP TABLE collector_runtime`,
 		`DROP TABLE collector_sources`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16)`,
+		`ALTER TABLE projects DROP COLUMN display_name_source`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -455,10 +457,13 @@ func TestMigrationTenAddsCollectorIdentityMapWithoutChangingCursors(t *testing.T
 	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 11"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (12, 13, 14, 15, 16)"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (12, 13, 14, 15, 16, 17)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec("DROP TABLE parser_checkpoints"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("ALTER TABLE projects DROP COLUMN display_name_source"); err != nil {
 		t.Fatal(err)
 	}
 	for _, table := range []string{"collector_runs", "collector_runtime", "collector_sources"} {
@@ -499,6 +504,20 @@ func TestAppendWithReferencesRollsBackReferencesOnEventFailure(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("failed append left %d project rows", count)
+	}
+}
+
+func TestAppendWithReferencesRejectsBlankProjectNameWithoutPinningOrigin(t *testing.T) {
+	store := openTestStore(t)
+	if _, err := store.AppendWithReferences(nil, []Project{{ID: "blank-project-name", DisplayName: "   "}}, nil); err == nil {
+		t.Fatal("append accepted a whitespace-only project name")
+	}
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM projects WHERE id = 'blank-project-name'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("blank project row count = %d, want 0", count)
 	}
 }
 

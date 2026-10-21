@@ -317,6 +317,14 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("record migration 16: %w", err)
 		}
 	}
+	if applied < 17 {
+		if _, err := tx.Exec(schemaMigrationSeventeenProjectNameSource); err != nil {
+			return fmt.Errorf("apply migration 17: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 17, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 17: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
 	}
@@ -730,9 +738,23 @@ func (s *Store) UpsertProject(project Project) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO projects(id, root, display_name, created_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET root = excluded.root, display_name = excluded.display_name`,
+	hasNameSource, err := projectNameSourceColumnExists(tx)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	if !hasNameSource {
+		if _, err = tx.Exec(`INSERT INTO projects(id, root, display_name, created_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET root = excluded.root, display_name = excluded.display_name`,
+			project.ID, project.Root, project.DisplayName, formatStoredTime(time.Now())); err != nil {
+			tx.Rollback()
+			return err
+		}
+	} else if _, err = tx.Exec(`INSERT INTO projects(id, root, display_name, created_at, display_name_source)
+		VALUES (?, ?, ?, ?, 'explicit')
+		ON CONFLICT(id) DO UPDATE SET root = excluded.root, display_name = excluded.display_name,
+		display_name_source = 'explicit'`,
 		project.ID, project.Root, project.DisplayName, formatStoredTime(time.Now())); err != nil {
 		tx.Rollback()
 		return err
@@ -798,9 +820,27 @@ func (s *Store) appendWithReferencesAndCursorIfCurrent(events []UsageEvent, proj
 	return s.append(events, &cursor, projects, sessions, &expected)
 }
 
+func (s *Store) appendWithReferencesAndCursorIfCurrentWithProjectNameSources(events []UsageEvent, projects []Project, sessions []Session,
+	cursor Cursor, expected sourceCursorExpectation, projectNameSources map[string]projectNameSource) (Receipt, error) {
+	if err := cursor.validate(); err != nil {
+		return Receipt{}, err
+	}
+	if cursor.SourceID != expected.sourceID {
+		return Receipt{}, errors.New("cursor expectation source ID does not match committed cursor")
+	}
+	return s.appendInternalWithProjectNameSources(events, &cursor, projects, sessions, &expected, nil, projectNameSources)
+}
+
 func (s *Store) appendWithParserStateIfCurrent(events []UsageEvent, projects []Project, sessions []Session, cursor Cursor,
 	expected sourceCursorExpectation, checkpointExpected sourceCheckpointExpectation, checkpoint *parserCheckpoint,
 	identity collectorIdentityExpectation, ctx context.Context) (Receipt, error) {
+	return s.appendWithParserStateAndProjectNameSourcesIfCurrent(events, projects, sessions, cursor, expected,
+		checkpointExpected, checkpoint, identity, ctx, nil)
+}
+
+func (s *Store) appendWithParserStateAndProjectNameSourcesIfCurrent(events []UsageEvent, projects []Project, sessions []Session, cursor Cursor,
+	expected sourceCursorExpectation, checkpointExpected sourceCheckpointExpectation, checkpoint *parserCheckpoint,
+	identity collectorIdentityExpectation, ctx context.Context, projectNameSources map[string]projectNameSource) (Receipt, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -813,9 +853,9 @@ func (s *Store) appendWithParserStateIfCurrent(events []UsageEvent, projects []P
 	if cursor.SourceID != expected.sourceID {
 		return Receipt{}, errors.New("cursor expectation source ID does not match committed cursor")
 	}
-	return s.appendInternal(events, &cursor, projects, sessions, &expected, &parserStateCommit{
+	return s.appendInternalWithProjectNameSources(events, &cursor, projects, sessions, &expected, &parserStateCommit{
 		checkpointExpected: checkpointExpected, checkpoint: checkpoint, identity: identity, ctx: ctx,
-	})
+	}, projectNameSources)
 }
 
 // AppendWithCursor persists events and advances the source cursor atomically.
@@ -839,6 +879,11 @@ type parserStateCommit struct {
 }
 
 func (s *Store) appendInternal(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session, expected *sourceCursorExpectation, parserState *parserStateCommit) (Receipt, error) {
+	return s.appendInternalWithProjectNameSources(events, cursor, projects, sessions, expected, parserState, nil)
+}
+
+func (s *Store) appendInternalWithProjectNameSources(events []UsageEvent, cursor *Cursor, projects []Project, sessions []Session,
+	expected *sourceCursorExpectation, parserState *parserStateCommit, projectNameSources map[string]projectNameSource) (Receipt, error) {
 	events = append([]UsageEvent(nil), events...)
 	projects = append([]Project(nil), projects...)
 	sessions = append([]Session(nil), sessions...)
@@ -874,6 +919,11 @@ func (s *Store) appendInternal(events []UsageEvent, cursor *Cursor, projects []P
 		}
 	}
 	var hasBillingContext bool
+	var hasNameSource bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('projects') WHERE name = 'display_name_source')").Scan(&hasNameSource); err != nil {
+		tx.Rollback()
+		return Receipt{}, fmt.Errorf("inspect project name source schema: %w", err)
+	}
 	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_events') WHERE name = 'billing_context_json')").Scan(&hasBillingContext); err != nil {
 		tx.Rollback()
 		return Receipt{}, fmt.Errorf("inspect usage event schema: %w", err)
@@ -923,7 +973,7 @@ func (s *Store) appendInternal(events []UsageEvent, cursor *Cursor, projects []P
 			return Receipt{}, fmt.Errorf("claim collector source identity: %w", err)
 		}
 	}
-	events, projects, sessions, err = reconcileImportedReferences(tx, events, projects, sessions)
+	events, projects, sessions, err = reconcileImportedReferencesWithProjectNameSources(tx, events, projects, sessions, projectNameSources)
 	if err != nil {
 		tx.Rollback()
 		return Receipt{}, fmt.Errorf("reconcile imported references: %w", err)
@@ -948,12 +998,28 @@ func (s *Store) appendInternal(events []UsageEvent, cursor *Cursor, projects []P
 	}
 	receipt := Receipt{}
 	for _, project := range projects {
-		if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at)
-			VALUES (?, ?, ?, ?)
+		nameSource := projectNameSourceUnknown
+		updateName := strings.TrimSpace(project.SourceAdapter) == "" && strings.TrimSpace(project.DisplayName) != ""
+		if updateName {
+			nameSource = projectNameSourceExplicit
+		}
+		if !hasNameSource {
+			if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at)
+				VALUES (?, ?, ?, ?)
+				ON CONFLICT(id) DO UPDATE SET
+				root = CASE WHEN excluded.root = '' THEN projects.root ELSE excluded.root END,
+				display_name = CASE WHEN ? = 1 AND excluded.display_name <> '' THEN excluded.display_name ELSE projects.display_name END`,
+				project.ID, project.Root, project.DisplayName, time.Now().UTC().Format(time.RFC3339Nano), updateName); err != nil {
+				tx.Rollback()
+				return Receipt{}, fmt.Errorf("persist project %q: %w", project.ID, err)
+			}
+		} else if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at, display_name_source)
+			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 			root = CASE WHEN excluded.root = '' THEN projects.root ELSE excluded.root END,
-			display_name = CASE WHEN excluded.display_name = '' THEN projects.display_name ELSE excluded.display_name END`,
-			project.ID, project.Root, project.DisplayName, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			display_name = CASE WHEN ? = 1 AND excluded.display_name <> '' THEN excluded.display_name ELSE projects.display_name END,
+			display_name_source = CASE WHEN ? = 1 THEN excluded.display_name_source ELSE projects.display_name_source END`,
+			project.ID, project.Root, project.DisplayName, time.Now().UTC().Format(time.RFC3339Nano), nameSource, updateName, updateName); err != nil {
 			tx.Rollback()
 			return Receipt{}, fmt.Errorf("persist project %q: %w", project.ID, err)
 		}

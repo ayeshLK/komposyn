@@ -358,6 +358,231 @@ func claudeFallbackCreditRecord(id, model, fallbackCredit, extraUsage string) []
 	return []byte(fmt.Sprintf(`{"type":"assistant","uuid":%q,"sessionId":"fallback-session","cwd":"/sanitized/fallback-project","timestamp":"2026-10-11T00:00:00Z","message":{"role":"assistant","model":%q,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":2},"server_tool_use":{"web_search_requests":1},"output_tokens_details":{"reasoning_tokens":3},"iterations":1,"inference_geo":"us","speed":"fast"%s%s}}}`+"\n", id, model, fallbackCredit, extraUsage))
 }
 
+func TestClaudeProjectNameMetadataPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		records    []claudeEnvelope
+		wantName   string
+		wantSource projectNameSource
+		wantRoot   string
+	}{
+		{
+			name:     "fallback upgrades when cwd arrives",
+			records:  []claudeEnvelope{{}, {CWD: "/Users/ayesh/Studio Ledger"}},
+			wantName: "Studio Ledger", wantSource: projectNameSourceCWD, wantRoot: "/Users/ayesh/Studio Ledger",
+		},
+		{
+			name:     "provider name after cwd wins",
+			records:  []claudeEnvelope{{CWD: "/Users/ayesh/Studio Ledger"}, {CWD: "/Users/ayesh/Studio Ledger", ProjectName: "Ledger Studio"}},
+			wantName: "Ledger Studio", wantSource: projectNameSourceProvider, wantRoot: "/Users/ayesh/Studio Ledger",
+		},
+		{
+			name:     "cwd after provider name only updates root",
+			records:  []claudeEnvelope{{ProjectName: "Ledger Studio"}, {CWD: "/Users/ayesh/別の場所"}},
+			wantName: "Ledger Studio", wantSource: projectNameSourceProvider, wantRoot: "/Users/ayesh/別の場所",
+		},
+		{
+			name:    "no cwd remains provisional",
+			records: []claudeEnvelope{{}}, wantName: "Unattributed", wantSource: projectNameSourceFallback,
+		},
+		{
+			name:     "filesystem root does not become a project label",
+			records:  []claudeEnvelope{{CWD: string(filepath.Separator)}},
+			wantName: "Imported Claude Code project", wantSource: projectNameSourceFallback, wantRoot: string(filepath.Separator),
+		},
+		{
+			name:    "blank explicit name is not evidence",
+			records: []claudeEnvelope{{ProjectName: "   "}}, wantName: "Unattributed", wantSource: projectNameSourceFallback,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var session claudeSession
+			for _, record := range test.records {
+				session = updateClaudeSession(session, record, claudeMessage{}, "source")
+			}
+			if session.ProjectName != test.wantName || session.ProjectNameSource != test.wantSource || session.Root != test.wantRoot {
+				t.Fatalf("session = %+v; want name %q source %q root %q", session, test.wantName, test.wantSource, test.wantRoot)
+			}
+		})
+	}
+}
+
+func TestClaudeProjectNameSourcePersistsAcrossCheckpointRestart(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "names.db")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "claude.jsonl")
+	first := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\"}\n")
+	if err := os.WriteFile(path, first, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, store); err != nil || result.Outcomes.IgnoredNonUsage != 1 {
+		t.Fatalf("initial import = %+v, err = %v", result, err)
+	}
+	projectID, nameSource := claudeProjectForPath(t, store, path)
+	if nameSource != string(projectNameSourceFallback) {
+		t.Fatalf("initial project source = %q; want fallback", nameSource)
+	}
+	checkpointExpectation, err := parserCheckpointExpectation(store, "claude-file-"+digest([]byte(mustCanonicalPath(t, path))))
+	if err != nil || !checkpointExpectation.exists {
+		t.Fatalf("initial checkpoint = %+v, err = %v", checkpointExpectation, err)
+	}
+	checkpoint, valid := decodeParserCheckpoint(checkpointExpectation.row)
+	if !valid || checkpoint.State.Claude.Session.ProjectNameSource != projectNameSourceFallback {
+		t.Fatalf("initial checkpoint = %+v, valid=%v; want fallback name source", checkpoint, valid)
+	}
+	if checkpoint.ParserRevision != claudeParserRevision {
+		t.Fatalf("initial Claude checkpoint parser revision = %d, want %d", checkpoint.ParserRevision, claudeParserRevision)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	appendix := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"cwd\":\"/Users/ayesh/Studio Ledger\"}\n")
+	if err := os.WriteFile(path, append(first, appendix...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, store); err != nil || result.Outcomes.UnchangedSnapshot != 0 {
+		t.Fatalf("append import = %+v, err = %v", result, err)
+	}
+	var gotID, name, root, source string
+	if err := store.db.QueryRow(`SELECT id, display_name, root, display_name_source
+		FROM projects WHERE id = ?`, projectID).Scan(&gotID, &name, &root, &source); err != nil {
+		t.Fatal(err)
+	}
+	if gotID != projectID || name != "Studio Ledger" || root != "/Users/ayesh/Studio Ledger" || source != string(projectNameSourceCWD) {
+		t.Fatalf("project after resumed append = id %q name %q root %q source %q", gotID, name, root, source)
+	}
+	if result, err := (ClaudeAdapter{}).Import(path, store); err != nil || result.Outcomes.UnchangedSnapshot != 1 {
+		t.Fatalf("unchanged reimport = %+v, err = %v", result, err)
+	}
+	if err := store.db.QueryRow("SELECT display_name FROM projects WHERE id = ?", projectID).Scan(&name); err != nil || name != "Studio Ledger" {
+		t.Fatalf("project name after unchanged reimport = %q, err = %v", name, err)
+	}
+}
+
+func TestClaudeProjectNamePromotionRespectsLegacyUnknownAndExplicitNames(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		prepare        func(*testing.T, *Store, string)
+		wantName       string
+		wantNameSource string
+	}{
+		{
+			name: "legacy unknown remains unchanged", wantName: "Unattributed", wantNameSource: "unknown",
+			prepare: func(t *testing.T, store *Store, projectID string) {
+				if _, err := store.db.Exec("UPDATE projects SET display_name_source = 'unknown' WHERE id = ?", projectID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "explicit API label remains pinned", wantName: "Pinned by caller", wantNameSource: "explicit",
+			prepare: func(t *testing.T, store *Store, projectID string) {
+				if err := store.UpsertProject(Project{ID: projectID, DisplayName: "Pinned by caller"}); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "claude.jsonl")
+			first := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\"}\n")
+			if err := os.WriteFile(path, first, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (ClaudeAdapter{}).Import(path, store); err != nil {
+				t.Fatal(err)
+			}
+			projectID, _ := claudeProjectForPath(t, store, path)
+			test.prepare(t, store, projectID)
+			if result, err := (ClaudeAdapter{}).Import(path, store); err != nil || result.Outcomes.UnchangedSnapshot != 1 {
+				t.Fatalf("unchanged import = %+v, err = %v", result, err)
+			}
+			appendix := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"cwd\":\"/Users/ayesh/Studio Ledger\"}\n")
+			if err := os.WriteFile(path, append(first, appendix...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (ClaudeAdapter{}).Import(path, store); err != nil {
+				t.Fatal(err)
+			}
+			var name, source string
+			if err := store.db.QueryRow("SELECT display_name, display_name_source FROM projects WHERE id = ?", projectID).Scan(&name, &source); err != nil {
+				t.Fatal(err)
+			}
+			if name != test.wantName || source != test.wantNameSource {
+				t.Fatalf("name/source = %q/%q, want %q/%q", name, source, test.wantName, test.wantNameSource)
+			}
+		})
+	}
+}
+
+func TestClaudeProjectNameDoesNotOscillateAcrossAliases(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "claude.jsonl")
+	contents := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"cwd\":\"/Users/ayesh/Studio Ledger\",\"project_name\":\"Ledger Studio\"}\n")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (ClaudeAdapter{}).Import(path, store); err != nil {
+		t.Fatal(err)
+	}
+	projectID, source := claudeProjectForPath(t, store, path)
+	if source != string(projectNameSourceProvider) {
+		t.Fatalf("Claude name source = %q, want provider", source)
+	}
+	if _, err := store.AppendWithReferences(nil, []Project{{ID: "codex-project", Root: "/Users/ayesh/Studio Ledger",
+		DisplayName: "Different Codex label", SourceAdapter: "codex", ProviderAlias: "codex-project"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var reconciledID, name, nameSource string
+	if err := store.db.QueryRow(`SELECT p.id, p.display_name, p.display_name_source FROM projects p
+		JOIN project_aliases a ON a.project_id = p.id WHERE a.scope = 'codex' AND a.alias = 'codex-project'`).
+		Scan(&reconciledID, &name, &nameSource); err != nil {
+		t.Fatal(err)
+	}
+	if reconciledID != projectID || name != "Ledger Studio" || nameSource != string(projectNameSourceProvider) {
+		t.Fatalf("cross-alias project = id %q name %q source %q; want %q / Ledger Studio / provider", reconciledID, name, nameSource, projectID)
+	}
+}
+
+func claudeProjectForPath(t *testing.T, store *Store, path string) (string, string) {
+	t.Helper()
+	source, err := collectorSourceForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSourceID, err := establishedCollectorSourceID(store, source, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := baseSourceID + "-project"
+	var id, nameSource string
+	if err := store.db.QueryRow(`SELECT p.id, p.display_name_source FROM projects p
+		JOIN project_aliases a ON a.project_id = p.id WHERE a.scope = 'claude-code' AND a.alias = ?`, alias).Scan(&id, &nameSource); err != nil {
+		t.Fatal(err)
+	}
+	return id, nameSource
+}
+
+func mustCanonicalPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := canonicalCollectorPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
+}
+
 func withoutClaudeFallbackCreditSupport(t *testing.T, run func()) {
 	t.Helper()
 	_, existed := claudeUsageFields["fallback_credit"]

@@ -73,6 +73,10 @@ An explicit `import` and the background collector use the same adapters:
    references to KompoSyn-owned project/session IDs. Existing aliases win;
    unique location matches may connect clients, while ambiguous or conflicting
    evidence remains isolated and produces a path-free local warning.
+   Project display names retain a bounded origin (`fallback`, `cwd`, provider
+   name, explicit API input, or unknown). Reliable metadata may promote a
+   known provisional name without changing identity; unknown historical names
+   remain unchanged because their original name source was not recorded.
 5. Identity mappings, project and session references, events, and the source
    cursor are committed atomically.
 6. A full digest plus committed cursor flags can classify an exactly unchanged,
