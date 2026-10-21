@@ -32,11 +32,11 @@ const (
 	// Codex. Invalidate checkpoints produced while that fallback was active so
 	// a later recognized append gets a verified full replay under the new
 	// classification contract.
-	codexParserRevision           = 2
-	maxCheckpointStateBytes       = 1 << 20
-	maxCheckpointScopes           = 4096
-	maxCheckpointResponses        = 16384
-	maxCheckpointIdentifierBytes  = 1024
+	codexParserRevision          = 2
+	maxCheckpointStateBytes      = 1 << 20
+	maxCheckpointScopes          = 4096
+	maxCheckpointResponses       = 16384
+	maxCheckpointIdentifierBytes = 1024
 )
 
 var errParserCheckpointChanged = errors.New("parser checkpoint changed while source was being imported")

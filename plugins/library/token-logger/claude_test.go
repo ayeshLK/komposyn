@@ -581,7 +581,7 @@ func TestClaudeProjectNamePromotionRespectsLegacyUnknownAndExplicitNames(t *test
 		t.Run(test.name, func(t *testing.T) {
 			store := openTestStore(t)
 			path := filepath.Join(t.TempDir(), "claude.jsonl")
-			first := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\"}\n")
+			first := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"message\":{\"role\":\"user\"}}\n")
 			if err := os.WriteFile(path, first, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -593,7 +593,7 @@ func TestClaudeProjectNamePromotionRespectsLegacyUnknownAndExplicitNames(t *test
 			if result, err := (ClaudeAdapter{}).Import(path, store); err != nil || result.Outcomes.UnchangedSnapshot != 1 {
 				t.Fatalf("unchanged import = %+v, err = %v", result, err)
 			}
-			appendix := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"cwd\":\"/Users/ayesh/Studio Ledger\"}\n")
+			appendix := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"cwd\":\"/Users/ayesh/Studio Ledger\",\"message\":{\"role\":\"user\"}}\n")
 			if err := os.WriteFile(path, append(first, appendix...), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -614,7 +614,7 @@ func TestClaudeProjectNamePromotionRespectsLegacyUnknownAndExplicitNames(t *test
 func TestClaudeProjectNameDoesNotOscillateAcrossAliases(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "claude.jsonl")
-	contents := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"cwd\":\"/Users/ayesh/Studio Ledger\",\"project_name\":\"Ledger Studio\"}\n")
+	contents := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"cwd\":\"/Users/ayesh/Studio Ledger\",\"project_name\":\"Ledger Studio\",\"message\":{\"role\":\"user\"}}\n")
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
