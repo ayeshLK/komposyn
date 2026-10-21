@@ -90,8 +90,27 @@ the package remains independently usable by other consumers.
 `Store.ListProjects`, `Store.ProjectResource`, `Store.ListSessions`,
 `Store.SessionResource`, `Store.Query`, `WriteJSON`, `WriteCSV`, `WriteTable`,
 `WriteTableWidth`, `WriteTableWidthWithoutPricingCoverage`,
-`FormatHumanCost`, `FormatHumanLabel`, `FormatHumanText`, and
-`FormatHumanTokens`.
+`FormatHumanCost`, `FormatHumanLabel`, `FormatHumanText`,
+`FormatHumanTokens`, `ProjectInspectionRequest`, `ProjectInspection`,
+`ProjectInspectionActivity`, `ProjectInspectionAlias`,
+`ProjectInspectionLocation`, `ProjectInspectionWarning`,
+`ProjectInspectionSource`, `UsageInspectionRange`,
+`InspectionEvidenceStatus`, `ProjectInspectionFormatVersion`,
+`DefaultInspectionPageSize`, `MaxInspectionPageSize`,
+`MaxInspectionOffset`, `InspectionPage`, `InspectionEvidenceAvailable`,
+`InspectionEvidenceNotRecorded`, `InspectionEvidenceUnavailable`,
+`InspectionRecoveryNotFound`, `InspectionRecoveryRetainMetadataOnly`,
+`InspectionRecoveryInactiveInSelectedRange`,
+`InspectionRecoveryReviewReconciliation`,
+`InspectionRecoveryCandidateNameReview`,
+`InspectionRecoveryInsufficientEvidence`,
+`InspectionRecoveryNoRepairIndicated`, and `Store.InspectProject`.
+
+The separate `ProjectInspection` response is a versioned, bounded evidence
+contract. It does not alter the established JSON/CSV report or protocol
+contracts. See [project inspection evidence](project-inspection.md) for
+range/history semantics, privacy rules, schema limitations, and recovery
+classification.
 
 The remaining exported constants are the report groups `GroupHour`, `GroupDay`,
 `GroupWeek`, `GroupMonth`, `GroupProject`, `GroupSession`, `GroupClient`,
