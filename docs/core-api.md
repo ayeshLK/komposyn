@@ -95,7 +95,7 @@ the package remains independently usable by other consumers.
 `ProjectInspectionActivity`, `ProjectInspectionAlias`,
 `ProjectInspectionLocation`, `ProjectInspectionWarning`,
 `ProjectInspectionSource`, `UsageInspectionRange`,
-`InspectionEvidenceStatus`, `ProjectInspectionFormatVersion`,
+`InspectionEvidenceStatus`, `InspectionUsage`, `ProjectInspectionFormatVersion`,
 `DefaultInspectionPageSize`, `MaxInspectionPageSize`,
 `MaxInspectionOffset`, `InspectionPage`, `InspectionEvidenceAvailable`,
 `InspectionEvidenceNotRecorded`, `InspectionEvidenceUnavailable`,

@@ -85,7 +85,7 @@ func TestInspectProjectSeparatesSelectedAndStoredHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.FormatVersion != 1 || !result.Exists || result.Synthetic {
+	if result.FormatVersion != 2 || !result.Exists || result.Synthetic {
 		t.Fatalf("identity = %+v", result)
 	}
 	wantNameOrigin := InspectionEvidenceUnavailable
@@ -128,6 +128,9 @@ func TestInspectProjectSeparatesSelectedAndStoredHistory(t *testing.T) {
 		result.Sources[0].CursorStatus != InspectionEvidenceAvailable || result.Sources[0].CursorGeneration == nil ||
 		*result.Sources[0].CursorGeneration != 2 {
 		t.Fatalf("source evidence = %+v", result.Sources)
+	}
+	if result.Sources[0].CursorFingerprintDigest != digest([]byte(strings.Repeat("a", 64))) {
+		t.Fatalf("valid cursor fingerprint was not represented by its digest: %+v", result.Sources[0])
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -198,52 +201,253 @@ func TestInspectProjectNormalizesClaudeProducerProvenance(t *testing.T) {
 	}
 }
 
+func TestInspectProjectNormalizesCodexProducerProvenance(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	if _, err := (CodexAdapter{}).Import(filepath.Join("testdata", "codex", "normal.jsonl"), store); err != nil {
+		t.Fatal(err)
+	}
+	var projectID string
+	if err := store.db.QueryRow("SELECT id FROM projects LIMIT 1").Scan(&projectID); err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	result, err := store.InspectProject(ProjectInspectionRequest{ProjectID: projectID, From: from, To: from.AddDate(100, 0, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Sources) == 0 || len(result.Aliases) == 0 {
+		t.Fatalf("real Codex import produced incomplete inspection evidence: sources=%d aliases=%d", len(result.Sources), len(result.Aliases))
+	}
+	for _, source := range result.Sources {
+		if source.Adapter != "codex" {
+			t.Errorf("real Codex adapter normalized as %q", source.Adapter)
+		}
+	}
+}
+
 func TestInspectProjectBoundsAndRedactsFreeFormText(t *testing.T) {
 	store := openTestStore(t)
 	defer store.Close()
 	const privateSource = "/synthetic-private/rates.json"
 	const privateFingerprint = "/synthetic-private/non-digest"
 	f := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	if err := store.UpsertProject(Project{ID: "bounded-project", DisplayName: strings.Repeat("n", 2<<20)}); err != nil {
+	const privateMarker = "/synthetic-private/home/alice"
+	if err := store.UpsertProject(Project{ID: privateMarker, DisplayName: privateMarker + "\x00秘密" + strings.Repeat("n", 2<<20)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertPricing(PricingRule{Provider: "review-provider", ModelSelector: "review-model", TokenCategory: TokenCategoryInput,
-		RateMicros: 1, Currency: "USD", EffectiveFrom: f, PricingVersion: "review-v1", Source: privateSource}); err != nil {
+	if err := store.UpsertPricing(PricingRule{Provider: "provider token=synthetic-secret", ModelSelector: privateSource, TokenCategory: TokenCategoryInput,
+		RateMicros: 1, Currency: "USD", EffectiveFrom: f, PricingVersion: privateSource,
+		Source: privateSource, SourceURL: "https://user:password@private.invalid/key", Notes: "credential=synthetic-secret"}); err != nil {
 		t.Fatal(err)
 	}
 	event := UsageEvent{
 		EventID: "bounded-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: f.Add(time.Hour),
-		ProjectID: "bounded-project", Client: Client{Name: "review-client"}, Provider: "review-provider",
-		RequestedModel: "review-model", ResolvedModel: "review-model", Usage: TokenUsage{InputTokens: 10},
+		ProjectID: privateMarker, Client: Client{Name: "user:password@private.invalid"}, Provider: "provider token=synthetic-secret",
+		RequestedModel: privateSource, ResolvedModel: privateSource, Usage: TokenUsage{InputTokens: 10},
 		Provenance: Provenance{Adapter: "codex", SourceID: "bounded-source", SourceRecord: "record"}, IngestionKey: "bounded-event",
 	}
 	if _, err := store.AppendWithCursor([]UsageEvent{event}, Cursor{SourceID: "bounded-source", FileFingerprint: privateFingerprint, ByteOffset: 1}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := store.InspectProject(ProjectInspectionRequest{ProjectID: "bounded-project", From: f, To: f.AddDate(10, 0, 0), Limit: 1})
+	result, err := store.InspectProject(ProjectInspectionRequest{ProjectID: privateMarker, From: f, To: f.AddDate(10, 0, 0), Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.DisplayName) > MaxInspectionTextBytes || !result.TextTruncated {
-		t.Fatalf("display name bytes=%d text_truncated=%v; want <=%d and marked", len(result.DisplayName), result.TextTruncated, MaxInspectionTextBytes)
+	if result.DisplayNameDigest == "" || !result.TextOmitted || result.ProjectIDDigest != digest([]byte(privateMarker)) {
+		t.Fatalf("project identity projection=%+v; raw name and ID must be omitted", result)
 	}
 	if result.SelectedUsage.PricingSource != "recorded" {
 		t.Fatalf("custom pricing source label=%q; want safe presence marker", result.SelectedUsage.PricingSource)
 	}
-	if len(result.Sources) != 1 || result.Sources[0].CursorFingerprintDigest != digest([]byte(privateFingerprint)) {
-		t.Fatalf("cursor fingerprint projection=%+v; want only digest", result.Sources)
+	if result.SelectedUsage.InputTokens != 10 || result.SelectedUsage.CalculatedCostMicros != 10 || result.SelectedUsage.CalculatedCurrency != "USD" {
+		t.Fatalf("safe usage projection changed numeric values: %+v", result.SelectedUsage)
+	}
+	if len(result.Sources) != 1 || result.Sources[0].CursorStatus != InspectionEvidenceUnavailable || result.Sources[0].CursorFingerprintDigest != "" {
+		t.Fatalf("malformed cursor fingerprint projection=%+v; want unavailable without a digest", result.Sources)
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, private := range []string{privateSource, privateFingerprint, strings.Repeat("n", 2<<20)} {
+	for _, private := range []string{privateSource, privateFingerprint, privateMarker, "password", "synthetic-secret", "private.invalid", "credential=", "秘密", strings.Repeat("n", 2<<20)} {
 		if strings.Contains(string(encoded), private) {
 			t.Fatalf("inspection leaked private or unbounded data %q", private[:min(len(private), 64)])
 		}
 	}
 	if len(encoded) > 16<<10 {
 		t.Fatalf("bounded inspection response is unexpectedly large: %d bytes", len(encoded))
+	}
+}
+
+func TestInspectionCursorFingerprintRequiresSupportedDigest(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.UpsertProject(Project{ID: "fingerprint-project", DisplayName: "Fingerprint project"}); err != nil {
+		t.Fatal(err)
+	}
+	values := []struct {
+		name        string
+		fingerprint string
+		available   bool
+	}{
+		{name: "valid", fingerprint: strings.Repeat("a", 64), available: true},
+		{name: "empty", fingerprint: ""},
+		{name: "malformed", fingerprint: "not-a-digest"},
+		{name: "path", fingerprint: "/synthetic-private/cursor"},
+		{name: "oversized", fingerprint: strings.Repeat("x", 1<<20)},
+	}
+	for index, test := range values {
+		sourceID := fmt.Sprintf("fingerprint-source-%d", index)
+		event := UsageEvent{
+			EventID: fmt.Sprintf("fingerprint-event-%d", index), SchemaVersion: 1, EventType: "model.request",
+			OccurredAt: from.Add(time.Duration(index) * time.Minute), ProjectID: "fingerprint-project", Client: Client{Name: "codex-cli"},
+			Provider: "openai", RequestedModel: "gpt-5", Usage: TokenUsage{InputTokens: 1},
+			Provenance:   Provenance{Adapter: "codex", SourceID: sourceID, SourceRecord: "record"},
+			IngestionKey: fmt.Sprintf("fingerprint-ingestion-%d", index),
+		}
+		if _, err := store.AppendWithCursor([]UsageEvent{event}, Cursor{SourceID: sourceID, FileFingerprint: test.fingerprint, ByteOffset: 1}); err != nil {
+			t.Fatalf("append %s cursor: %v", test.name, err)
+		}
+	}
+	inspection, err := store.InspectProject(ProjectInspectionRequest{ProjectID: "fingerprint-project", From: from, To: from.Add(time.Hour), Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inspection.Sources) != len(values) {
+		t.Fatalf("source count=%d; want %d", len(inspection.Sources), len(values))
+	}
+	for _, source := range inspection.Sources {
+		var sourceIndex int
+		if _, err := fmt.Sscanf(source.SourceIDDigest, "fingerprint-source-%d", &sourceIndex); err == nil {
+			t.Fatalf("raw source ID unexpectedly returned: %+v", source)
+		}
+		found := false
+		for index, test := range values {
+			if source.SourceIDDigest != digest([]byte(fmt.Sprintf("fingerprint-source-%d", index))) {
+				continue
+			}
+			found = true
+			wantStatus := InspectionEvidenceUnavailable
+			if test.available {
+				wantStatus = InspectionEvidenceAvailable
+			}
+			if source.CursorStatus != wantStatus {
+				t.Errorf("%s cursor status=%q; want %q", test.name, source.CursorStatus, wantStatus)
+			}
+			if test.available && source.CursorFingerprintDigest != digest([]byte(test.fingerprint)) {
+				t.Errorf("valid cursor digest=%q; want digest of supported fingerprint", source.CursorFingerprintDigest)
+			}
+			if !test.available && (source.CursorFingerprintDigest != "" || source.CursorByteOffset != nil || source.CursorGeneration != nil) {
+				t.Errorf("%s invalid cursor evidence was exposed: %+v", test.name, source)
+			}
+		}
+		if !found {
+			t.Errorf("unknown source digest in response: %q", source.SourceIDDigest)
+		}
+	}
+	encoded, err := json.Marshal(inspection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "/synthetic-private/cursor") || strings.Contains(string(encoded), strings.Repeat("x", 1024)) {
+		t.Fatal("inspection returned malformed cursor fingerprint contents")
+	}
+}
+
+func TestInspectProjectOmitsMalformedWarningAliasDigests(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	const projectID = "warning-digest-project"
+	const privateDigest = "/synthetic-private/legacy-alias-digest"
+	if err := store.UpsertProject(Project{ID: projectID, DisplayName: "Warning digest project"}); err != nil {
+		t.Fatal(err)
+	}
+	first := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for index, aliasDigest := range []string{privateDigest, strings.Repeat("sensitive", 1<<16)} {
+		_, err := store.db.Exec(`INSERT INTO reconciliation_warnings(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at, occurrence_count)
+			VALUES ('alias-location-conflict', 'codex', ?, ?, '', 'established alias retained; location belongs to another local project', ?, ?, 1)`,
+			aliasDigest, projectID, formatStoredTime(first.Add(time.Duration(index)*time.Minute)), formatStoredTime(first.Add(time.Duration(index)*time.Minute)))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	inspection, err := store.InspectProject(ProjectInspectionRequest{ProjectID: projectID, From: first, To: first.Add(time.Hour), Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inspection.Warnings) != 2 {
+		t.Fatalf("warnings=%d; want both rows with invalid digests retained", len(inspection.Warnings))
+	}
+	for _, warning := range inspection.Warnings {
+		if warning.AliasDigest != "" {
+			t.Errorf("invalid alias digest was returned: %q", warning.AliasDigest)
+		}
+	}
+	encoded, err := json.Marshal(inspection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{privateDigest, strings.Repeat("sensitive", 32)} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("inspection leaked malformed warning digest %q", private[:min(len(private), 48)])
+		}
+	}
+	if len(encoded) > 16<<10 {
+		t.Fatalf("malformed legacy digests made response unbounded: %d bytes", len(encoded))
+	}
+}
+
+func TestInspectProjectPreservesControlledPricingLabels(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	const projectID = "pricing-label-project"
+	if err := store.UpsertProject(Project{ID: projectID, DisplayName: "Pricing labels"}); err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC)
+	for _, rule := range []PricingRule{
+		{Provider: "openai", ModelSelector: "gpt-5-codex", TokenCategory: TokenCategoryReasoning, RateMicros: 4, Currency: "USD", EffectiveFrom: from, PricingVersion: "test-v1"},
+		{Provider: "openai", ModelSelector: "gpt-5.3-codex", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "test-v1", ServiceTierSelector: "priority"},
+		{Provider: "openai", ModelSelector: "custom-only-model", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "test-v1"},
+	} {
+		if err := store.UpsertPricing(rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events := []UsageEvent{
+		{EventID: "mixed-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex", Usage: TokenUsage{InputTokens: 1, OutputTokens: 1, ReasoningTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "mixed"}, IngestionKey: "mixed-event"},
+		{EventID: "custom-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(2 * time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "custom-only-model", ResolvedModel: "custom-only-model", Usage: TokenUsage{InputTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "custom"}, IngestionKey: "custom-event"},
+		{EventID: "billing-context-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(3 * time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5.3-codex", ResolvedModel: "gpt-5.3-codex", Usage: TokenUsage{InputTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "billing-context"}, IngestionKey: "billing-context-event"},
+		{EventID: "partial-mixed-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(4 * time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex", Usage: TokenUsage{InputTokens: 2, CacheWriteTokens: 1, OutputTokens: 1, ReasoningTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "partial-mixed"}, IngestionKey: "partial-mixed-event"},
+	}
+	if _, err := store.Append(events); err != nil {
+		t.Fatal(err)
+	}
+	inspect := func(start, end time.Time) ProjectInspection {
+		t.Helper()
+		result, err := store.InspectProject(ProjectInspectionRequest{ProjectID: projectID, From: start, To: end})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	mixedEvent := inspect(from, from.Add(90*time.Second))
+	if mixedEvent.SelectedUsage.CalculationBasis != "mixed_estimate" {
+		t.Fatalf("single-event mixed pricing basis=%q; want mixed_estimate", mixedEvent.SelectedUsage.CalculationBasis)
+	}
+	partialMixedEvent := inspect(from.Add(210*time.Second), from.Add(270*time.Second))
+	if partialMixedEvent.SelectedUsage.CalculationBasis != "partial_mixed_estimate" {
+		t.Fatalf("partial mixed pricing basis=%q; want partial_mixed_estimate", partialMixedEvent.SelectedUsage.CalculationBasis)
+	}
+	aggregate := inspect(from, from.Add(time.Hour))
+	if aggregate.SelectedUsage.CalculationBasis != "mixed" {
+		t.Fatalf("aggregate pricing basis=%q; want mixed", aggregate.SelectedUsage.CalculationBasis)
+	}
+	billingContext := inspect(from.Add(150*time.Second), from.Add(210*time.Second))
+	if billingContext.SelectedUsage.CostUnknownReason != "billing_context_missing" {
+		t.Fatalf("billing-context reason=%q; want billing_context_missing", billingContext.SelectedUsage.CostUnknownReason)
 	}
 }
 
@@ -256,23 +460,18 @@ func TestInspectionCostReasonProjectionHasFixedBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bounded, truncated := boundInspectionCostReasons(CostReasonCounts(raw), false)
-	if !truncated || len(bounded) > MaxInspectionCostReasonBytes {
-		t.Fatalf("reason projection bytes=%d truncated=%t; want bounded and marked", len(bounded), truncated)
+	var source UsageMeasures
+	source.CostUnknownReasons = CostReasonCounts(raw)
+	bounded := projectInspectionUsage(source).CostUnknownReasons
+	if len(bounded) > MaxInspectionCostReasonBytes {
+		t.Fatalf("reason projection bytes=%d; want bounded", len(bounded))
 	}
 	var projected map[string]int64
 	if err := json.Unmarshal([]byte(bounded), &projected); err != nil {
 		t.Fatal(err)
 	}
-	if len(projected) > MaxInspectionCostReasonEntries {
-		t.Fatalf("reason projection has %d entries; want <=%d", len(projected), MaxInspectionCostReasonEntries)
-	}
-	var total int64
-	for _, count := range projected {
-		total += count
-	}
-	if total != 5050 {
-		t.Fatalf("reason counts sum=%d; want exact numeric total 5050", total)
+	if len(projected) != 1 || projected["other"] != 5050 {
+		t.Fatalf("free-form reasons were not safely aggregated: %v", projected)
 	}
 }
 
@@ -303,7 +502,7 @@ func TestInspectProjectMissingAndSyntheticUnattributed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !synthetic.Exists || !synthetic.Synthetic || synthetic.StoredSessionCount != 1 ||
-		synthetic.DisplayName != "Unattributed" || synthetic.HistoricalCoverage != "stored_events_only" {
+		synthetic.DisplayNameDigest != digest([]byte("Unattributed")) || synthetic.HistoricalCoverage != "stored_events_only" {
 		t.Fatalf("synthetic project = %+v", synthetic)
 	}
 	if synthetic.RecoveryClassification != InspectionRecoveryRetainMetadataOnly {
