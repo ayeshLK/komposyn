@@ -168,6 +168,15 @@ type reportAccumulator struct {
 
 // Query returns token usage, grouping, and cost for the supplied filter.
 func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
+	return queryUsage(s.db, filter)
+}
+
+type reportQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func queryUsage(reader reportQueryer, filter UsageFilter) (UsageReport, error) {
 	if filter.From.IsZero() || filter.To.IsZero() || !filter.To.After(filter.From) {
 		return UsageReport{}, fmt.Errorf("query requires a non-empty half-open time range")
 	}
@@ -190,7 +199,7 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 	if location == nil {
 		location = time.UTC
 	}
-	catalog, err := s.pricingCatalog()
+	catalog, err := loadPricingCatalog(reader)
 	if err != nil {
 		return UsageReport{}, fmt.Errorf("load pricing catalog: %w", err)
 	}
@@ -230,7 +239,7 @@ func (s *Store) Query(filter UsageFilter) (UsageReport, error) {
 		query += " AND resolved_model = '' AND requested_model = ''"
 	}
 	query += " ORDER BY occurred_at, event_id"
-	rows, err := s.db.Query(query, args...)
+	rows, err := reader.Query(query, args...)
 	if err != nil {
 		return UsageReport{}, fmt.Errorf("query usage events: %w", err)
 	}

@@ -193,7 +193,11 @@ type pricingCatalog struct {
 }
 
 func (s *Store) pricingCatalog() (pricingCatalog, error) {
-	rows, err := s.db.Query(`SELECT provider_name, model_selector, token_category,
+	return loadPricingCatalog(s.db)
+}
+
+func loadPricingCatalog(reader reportQueryer) (pricingCatalog, error) {
+	rows, err := reader.Query(`SELECT provider_name, model_selector, token_category,
 		rate_micros, currency, effective_from, effective_to, pricing_version, source, notes,
 		rate_numerator_micros, rate_denominator_tokens, COALESCE(catalog_entry_id, ''), source_url, source_reviewed_at
 		, service_tier_selector, region_selector, speed_selector FROM pricing_rules ORDER BY effective_from DESC, id DESC`)

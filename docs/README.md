@@ -20,6 +20,9 @@ binary release process are maintained in the
   proposed durable parser checkpoints, safe record boundaries, replay
   equivalence, fallback rules, and acceptance evidence for issue #139.
 - [Token Logger core API](core-api.md) — supported exports and compatibility.
+- [Project inspection evidence](project-inspection.md) — bounded read-only
+  identity evidence, selected versus stored-history semantics, schema gaps,
+  and conservative recovery classifications.
 - [Data model](data-model.md) — events, identity, provenance, and transactions.
 - [Database migrations](migrations.md) — schema history and migration policy.
 - [Migration backups and recovery](migration-backups.md) — the library's
