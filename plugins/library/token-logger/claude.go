@@ -629,7 +629,7 @@ func updateClaudeSession(session claudeSession, envelope claudeEnvelope, message
 	}
 	if envelope.CWD != "" {
 		session.Root = envelope.CWD
-		if cwdName := claudeCWDProjectName(envelope.CWD); cwdName != "" && projectNameSourceRank(session.ProjectNameSource) < projectNameSourceRank(projectNameSourceCWD) {
+		if cwdName := claudeCWDProjectName(envelope.CWD); cwdName != "" && projectNameSourceRank(session.ProjectNameSource) <= projectNameSourceRank(projectNameSourceCWD) {
 			session.ProjectName = cwdName
 			session.ProjectNameSource = projectNameSourceCWD
 		}

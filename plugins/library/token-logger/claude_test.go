@@ -416,7 +416,7 @@ func TestClaudeProjectNameSourcePersistsAcrossCheckpointRestart(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	path := filepath.Join(t.TempDir(), "claude.jsonl")
-	first := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\"}\n")
+	first := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"message\":{\"role\":\"user\"}}\n")
 	if err := os.WriteFile(path, first, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -475,6 +475,83 @@ func TestClaudeProjectNameSourcePersistsAcrossCheckpointRestart(t *testing.T) {
 	if err := store.db.QueryRow("SELECT display_name FROM projects WHERE id = ?", projectID).Scan(&name); err != nil || name != "Studio Ledger" {
 		t.Fatalf("project name after unchanged reimport = %q, err = %v", name, err)
 	}
+}
+
+func TestClaudeRejectedCWDNameCannotBePromotedByLaterLocation(t *testing.T) {
+	for _, fullReplay := range []bool{false, true} {
+		name := "checkpoint append"
+		if fullReplay {
+			name = "verified full replay"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := openTestStore(t)
+			defer store.Close()
+			root := t.TempDir()
+			conflict := filepath.Join(root, "OtherProject")
+			accepted := filepath.Join(root, "ActualProject")
+			for _, path := range []string{conflict, accepted} {
+				if err := os.MkdirAll(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := store.UpsertProject(Project{ID: "other-project", DisplayName: "Other", Root: conflict}); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "claude.jsonl")
+			initial := []byte(`{"type":"user","sessionId":"session-a","message":{"role":"user"}}` + "\n")
+			if err := os.WriteFile(path, initial, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (ClaudeAdapter{}).Import(path, store); err != nil {
+				t.Fatal(err)
+			}
+			projectID, source := claudeProjectForPath(t, store, path)
+			if source != string(projectNameSourceFallback) {
+				t.Fatalf("initial project source=%q; want fallback", source)
+			}
+			contents := append(append([]byte(nil), initial...), claudeUserMetadataRecord(t, "session-a", conflict)...)
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (ClaudeAdapter{}).Import(path, store); err != nil {
+				t.Fatal(err)
+			}
+			var displayName, nameSource string
+			if err := store.db.QueryRow("SELECT display_name, display_name_source FROM projects WHERE id = ?", projectID).Scan(&displayName, &nameSource); err != nil {
+				t.Fatal(err)
+			}
+			if nameSource != string(projectNameSourceFallback) {
+				t.Fatalf("conflicting CWD promoted project name early: name=%q source=%q", displayName, nameSource)
+			}
+			if fullReplay {
+				if _, err := store.db.Exec("DELETE FROM parser_checkpoints"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			contents = append(contents, claudeUserMetadataRecord(t, "session-a", accepted)...)
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (ClaudeAdapter{}).Import(path, store); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.db.QueryRow("SELECT display_name, display_name_source FROM projects WHERE id = ?", projectID).Scan(&displayName, &nameSource); err != nil {
+				t.Fatal(err)
+			}
+			if displayName != "ActualProject" || nameSource != string(projectNameSourceCWD) {
+				t.Fatalf("final project name=%q source=%q; want ActualProject/cwd", displayName, nameSource)
+			}
+		})
+	}
+}
+
+func claudeUserMetadataRecord(t *testing.T, sessionID, cwd string) []byte {
+	t.Helper()
+	data, err := json.Marshal(claudeEnvelope{Type: "user", SessionID: sessionID, CWD: cwd, Message: json.RawMessage(`{"role":"user"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(data, '\n')
 }
 
 func TestClaudeProjectNamePromotionRespectsLegacyUnknownAndExplicitNames(t *testing.T) {
