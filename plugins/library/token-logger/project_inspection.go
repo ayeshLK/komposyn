@@ -540,6 +540,9 @@ func inspectWarnings(tx *sql.Tx, projectID string, synthetic bool, offset, limit
 			return InspectionPage{}, nil, err
 		}
 		warning.Kind = safeInspectionWarningKind(storedKind)
+		if !isSupportedFingerprint(warning.AliasDigest) {
+			warning.AliasDigest = ""
+		}
 		warning.ScopeKind = "adapter"
 		if strings.Contains(scope, ":") {
 			warning.ScopeKind = "adapter_client"
@@ -738,7 +741,7 @@ func safeInspectionPricingProvider(value string) string {
 
 func safeInspectionCalculationBasis(value string) string {
 	switch value {
-	case "public_catalog_estimate", "partial_public_catalog_estimate", "custom_pricing_estimate", "partial_custom_pricing_estimate", "mixed_pricing_estimate", "partial_mixed_pricing_estimate", "provider_reported", "known_zero", "unavailable":
+	case "public_catalog_estimate", "partial_public_catalog_estimate", "custom_pricing_estimate", "partial_custom_pricing_estimate", "mixed_estimate", "partial_mixed_estimate", "mixed", "provider_reported", "known_zero", "unavailable":
 		return value
 	case "":
 		return ""
@@ -749,7 +752,7 @@ func safeInspectionCalculationBasis(value string) string {
 
 func safeInspectionCostReason(value string) string {
 	switch value {
-	case "model_unresolved", "no_matching_rate", "outside_effective_range", "ambiguous_pricing_rule", "arithmetic_overflow", "currency_conflict":
+	case "model_unresolved", "no_matching_rate", "outside_effective_range", "ambiguous_pricing_rule", "arithmetic_overflow", "currency_conflict", "billing_context_missing":
 		return value
 	case "":
 		return ""

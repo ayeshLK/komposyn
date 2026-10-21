@@ -356,6 +356,96 @@ func TestInspectionCursorFingerprintRequiresSupportedDigest(t *testing.T) {
 	}
 }
 
+func TestInspectProjectOmitsMalformedWarningAliasDigests(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	const projectID = "warning-digest-project"
+	const privateDigest = "/synthetic-private/legacy-alias-digest"
+	if err := store.UpsertProject(Project{ID: projectID, DisplayName: "Warning digest project"}); err != nil {
+		t.Fatal(err)
+	}
+	first := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for index, aliasDigest := range []string{privateDigest, strings.Repeat("sensitive", 1<<16)} {
+		_, err := store.db.Exec(`INSERT INTO reconciliation_warnings(kind, scope, alias_digest, project_id, session_id, message, first_seen_at, last_seen_at, occurrence_count)
+			VALUES ('alias-location-conflict', 'codex', ?, ?, '', 'established alias retained; location belongs to another local project', ?, ?, 1)`,
+			aliasDigest, projectID, formatStoredTime(first.Add(time.Duration(index)*time.Minute)), formatStoredTime(first.Add(time.Duration(index)*time.Minute)))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	inspection, err := store.InspectProject(ProjectInspectionRequest{ProjectID: projectID, From: first, To: first.Add(time.Hour), Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inspection.Warnings) != 2 {
+		t.Fatalf("warnings=%d; want both rows with invalid digests retained", len(inspection.Warnings))
+	}
+	for _, warning := range inspection.Warnings {
+		if warning.AliasDigest != "" {
+			t.Errorf("invalid alias digest was returned: %q", warning.AliasDigest)
+		}
+	}
+	encoded, err := json.Marshal(inspection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{privateDigest, strings.Repeat("sensitive", 32)} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("inspection leaked malformed warning digest %q", private[:min(len(private), 48)])
+		}
+	}
+	if len(encoded) > 16<<10 {
+		t.Fatalf("malformed legacy digests made response unbounded: %d bytes", len(encoded))
+	}
+}
+
+func TestInspectProjectPreservesControlledPricingLabels(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	const projectID = "pricing-label-project"
+	if err := store.UpsertProject(Project{ID: projectID, DisplayName: "Pricing labels"}); err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC)
+	for _, rule := range []PricingRule{
+		{Provider: "openai", ModelSelector: "gpt-5-codex", TokenCategory: TokenCategoryReasoning, RateMicros: 4, Currency: "USD", EffectiveFrom: from, PricingVersion: "test-v1"},
+		{Provider: "openai", ModelSelector: "gpt-5.3-codex", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "test-v1", ServiceTierSelector: "priority"},
+		{Provider: "openai", ModelSelector: "custom-only-model", TokenCategory: TokenCategoryInput, RateMicros: 2, Currency: "USD", EffectiveFrom: from, PricingVersion: "test-v1"},
+	} {
+		if err := store.UpsertPricing(rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events := []UsageEvent{
+		{EventID: "mixed-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex", Usage: TokenUsage{InputTokens: 1, OutputTokens: 1, ReasoningTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "mixed"}, IngestionKey: "mixed-event"},
+		{EventID: "custom-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(2 * time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "custom-only-model", ResolvedModel: "custom-only-model", Usage: TokenUsage{InputTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "custom"}, IngestionKey: "custom-event"},
+		{EventID: "billing-context-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(3 * time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5.3-codex", ResolvedModel: "gpt-5.3-codex", Usage: TokenUsage{InputTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "billing-context"}, IngestionKey: "billing-context-event"},
+	}
+	if _, err := store.Append(events); err != nil {
+		t.Fatal(err)
+	}
+	inspect := func(start, end time.Time) ProjectInspection {
+		t.Helper()
+		result, err := store.InspectProject(ProjectInspectionRequest{ProjectID: projectID, From: start, To: end})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	mixedEvent := inspect(from, from.Add(90*time.Second))
+	if mixedEvent.SelectedUsage.CalculationBasis != "mixed_estimate" {
+		t.Fatalf("single-event mixed pricing basis=%q; want mixed_estimate", mixedEvent.SelectedUsage.CalculationBasis)
+	}
+	aggregate := inspect(from, from.Add(time.Hour))
+	if aggregate.SelectedUsage.CalculationBasis != "mixed" {
+		t.Fatalf("aggregate pricing basis=%q; want mixed", aggregate.SelectedUsage.CalculationBasis)
+	}
+	billingContext := inspect(from.Add(150*time.Second), from.Add(210*time.Second))
+	if billingContext.SelectedUsage.CostUnknownReason != "billing_context_missing" {
+		t.Fatalf("billing-context reason=%q; want billing_context_missing", billingContext.SelectedUsage.CostUnknownReason)
+	}
+}
+
 func TestInspectionCostReasonProjectionHasFixedBounds(t *testing.T) {
 	counts := make(map[string]int64)
 	for index := range 100 {
