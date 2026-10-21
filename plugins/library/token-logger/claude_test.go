@@ -414,6 +414,7 @@ func TestClaudeProjectNameSourcePersistsAcrossCheckpointRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = store.Close() }()
 	path := filepath.Join(t.TempDir(), "claude.jsonl")
 	first := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\"}\n")
 	if err := os.WriteFile(path, first, 0o600); err != nil {
@@ -426,7 +427,15 @@ func TestClaudeProjectNameSourcePersistsAcrossCheckpointRestart(t *testing.T) {
 	if nameSource != string(projectNameSourceFallback) {
 		t.Fatalf("initial project source = %q; want fallback", nameSource)
 	}
-	checkpointExpectation, err := parserCheckpointExpectation(store, "claude-file-"+digest([]byte(mustCanonicalPath(t, path))))
+	collectorSource, err := collectorSourceForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID, err := collectorSourceIDForRead(store, collectorSource, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointExpectation, err := parserCheckpointExpectation(store, sourceID)
 	if err != nil || !checkpointExpectation.exists {
 		t.Fatalf("initial checkpoint = %+v, err = %v", checkpointExpectation, err)
 	}
@@ -445,7 +454,6 @@ func TestClaudeProjectNameSourcePersistsAcrossCheckpointRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	appendix := []byte("{\"type\":\"user\",\"sessionId\":\"name-session\",\"cwd\":\"/Users/ayesh/Studio Ledger\"}\n")
 	if err := os.WriteFile(path, append(first, appendix...), 0o600); err != nil {
 		t.Fatal(err)
