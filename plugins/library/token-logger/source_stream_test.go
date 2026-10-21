@@ -175,7 +175,7 @@ func TestCollectorRetriesChangesBetweenVerificationAndParse(t *testing.T) {
 	}
 }
 
-func TestCollectorStreamsLateClassificationAndEOFFallback(t *testing.T) {
+func TestCollectorStreamsLateClassificationAndRejectsUnknownFallback(t *testing.T) {
 	claude, err := os.ReadFile(filepath.Join("testdata", "claude-code", "normal.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -185,15 +185,18 @@ func TestCollectorStreamsLateClassificationAndEOFFallback(t *testing.T) {
 		t.Fatal("classification prefix must exceed the verification buffer")
 	}
 	cases := []struct {
-		name       string
-		contents   []byte
-		adapter    string
-		wantEvents int
-		wantIgnore int
-		wantBad    int
+		name            string
+		contents        []byte
+		adapter         string
+		wantEvents      int
+		wantIgnore      int
+		wantBad         int
+		wantUnsupported int
 	}{
 		{name: "late-claude", contents: []byte(prefix + string(claude)), adapter: "claude", wantEvents: 2, wantIgnore: 2050},
-		{name: "codex-eof-fallback", contents: []byte(prefix + "not-json\n"), adapter: "codex", wantIgnore: 2048, wantBad: 1},
+		{name: "unrecognized-summary-and-malformed", contents: []byte(prefix + "not-json\n"), wantIgnore: 2048, wantBad: 1},
+		{name: "codex-auxiliary-only", contents: []byte(`{"type":"event_msg","payload":{"type":"agent_message","text":"synthetic"}}` + "\n"), wantIgnore: 1},
+		{name: "codex-invalid-usage-only", contents: []byte(`{"type":"token_usage_record","input_tokens":1}` + "\n"), wantUnsupported: 1},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -211,24 +214,282 @@ func TestCollectorStreamsLateClassificationAndEOFFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Receipt.Imported != test.wantEvents || result.Outcomes.IgnoredNonUsage != test.wantIgnore || result.Outcomes.MalformedRecord != test.wantBad {
-				t.Fatalf("result=%+v; want events=%d ignored=%d malformed=%d", result, test.wantEvents, test.wantIgnore, test.wantBad)
+			if result.Receipt.Imported != test.wantEvents || result.Outcomes.IgnoredNonUsage != test.wantIgnore ||
+				result.Outcomes.MalformedRecord != test.wantBad || result.Outcomes.UnsupportedUsage != test.wantUnsupported {
+				t.Fatalf("result=%+v; want events=%d ignored=%d malformed=%d unsupported=%d", result, test.wantEvents, test.wantIgnore, test.wantBad, test.wantUnsupported)
 			}
-			baseID := test.adapter + "-file-" + digest([]byte(path))
-			cursor, err := store.Cursor(baseID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cursor.ByteOffset != int64(len(test.contents)) || cursor.FileFingerprint != digest(test.contents) {
-				t.Fatalf("cursor=%+v; want full source offset and fingerprint", cursor)
+			if test.adapter != "" {
+				baseID := test.adapter + "-file-" + digest([]byte(path))
+				cursor, err := store.Cursor(baseID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cursor.ByteOffset != int64(len(test.contents)) || cursor.FileFingerprint != digest(test.contents) {
+					t.Fatalf("cursor=%+v; want full source offset and fingerprint", cursor)
+				}
+			} else {
+				var cursors, identities, projects, sessions, checkpoints int
+				for query, target := range map[string]*int{
+					"SELECT COUNT(*) FROM source_cursors":              &cursors,
+					"SELECT COUNT(*) FROM collector_source_identities": &identities,
+					"SELECT COUNT(*) FROM projects":                    &projects,
+					"SELECT COUNT(*) FROM sessions":                    &sessions,
+					"SELECT COUNT(*) FROM parser_checkpoints":          &checkpoints,
+				} {
+					if err := store.db.QueryRow(query).Scan(target); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if cursors+identities+projects+sessions+checkpoints != 0 {
+					t.Fatalf("unrecognized source created persistent state: cursors=%d identities=%d projects=%d sessions=%d checkpoints=%d", cursors, identities, projects, sessions, checkpoints)
+				}
 			}
 		})
 	}
 }
 
+func TestCollectorDoesNotReuseUnrecognizedFallbackAndReplaysLateCodexRecognition(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	prefix := []byte(`{"type":"summary","summary":"synthetic"}` + "\n")
+	if err := os.WriteFile(path, prefix, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := collectorSourceForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := seedLegacyUnrecognizedCodexState(t, store, source, prefix)
+	var beforeProjects, beforeSessions, beforeCursors int
+	for query, target := range map[string]*int{
+		"SELECT COUNT(*) FROM projects":       &beforeProjects,
+		"SELECT COUNT(*) FROM sessions":       &beforeSessions,
+		"SELECT COUNT(*) FROM source_cursors": &beforeCursors,
+	} {
+		if err := store.db.QueryRow(query).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &collectorBenchmarkObserver{}
+	store.benchmarkObserver = observer
+	for range 2 {
+		unchanged, err := collector.PollOnce()
+		if err != nil || unchanged.Outcomes.UnchangedSnapshot != 0 || unchanged.Outcomes.IgnoredNonUsage != 1 {
+			t.Fatalf("unrecognized cached source result=%+v err=%v; want ignored, not validated unchanged Codex", unchanged, err)
+		}
+	}
+	if observer.sourceBytesRead != int64(2*len(prefix)) {
+		t.Fatalf("unrecognized repeated polls read %d source bytes; want one full classification read per poll (%d)", observer.sourceBytesRead, 2*len(prefix))
+	}
+	var afterProjects, afterSessions, afterCursors int
+	for query, target := range map[string]*int{
+		"SELECT COUNT(*) FROM projects":       &afterProjects,
+		"SELECT COUNT(*) FROM sessions":       &afterSessions,
+		"SELECT COUNT(*) FROM source_cursors": &afterCursors,
+	} {
+		if err := store.db.QueryRow(query).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if beforeProjects != afterProjects || beforeSessions != afterSessions || beforeCursors != afterCursors {
+		t.Fatalf("re-poll changed persisted fallback state: projects %d->%d sessions %d->%d cursors %d->%d",
+			beforeProjects, afterProjects, beforeSessions, afterSessions, beforeCursors, afterCursors)
+	}
+
+	appended := benchmarkGeneratedHistory("codex", "late-recognized-session", 2)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(appended); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	observer = &collectorBenchmarkObserver{}
+	store.benchmarkObserver = observer
+	result, err := collector.PollOnce()
+	if err != nil || result.Receipt.Imported != 2 {
+		t.Fatalf("late Codex recognition result=%+v err=%v", result, err)
+	}
+	wantRecords := strings.Count(string(prefix)+string(appended), "\n")
+	if observer.parserRecordsDecoded != int64(wantRecords) {
+		t.Fatalf("parser decoded %d records; want full replay of %d after old fallback checkpoint invalidation", observer.parserRecordsDecoded, wantRecords)
+	}
+	var revision int
+	if err := store.db.QueryRow(`SELECT parser_revision FROM parser_checkpoints WHERE source_id = ?`, sourceID).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	if revision != codexParserRevision {
+		t.Fatalf("checkpoint revision=%d; want current Codex parser revision %d", revision, codexParserRevision)
+	}
+}
+
+func seedLegacyUnrecognizedCodexState(t *testing.T, store *Store, source collectorSource, contents []byte) string {
+	t.Helper()
+	// Before positive classification, the source path itself could establish a
+	// Codex cursor and checkpoint even when its records were only summaries.
+	sourceID := "codex-file-" + digest([]byte(source.Path))
+	fingerprint := digest(contents)
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.db.Exec(`INSERT INTO source_cursors
+		(source_id, file_fingerprint, byte_offset, last_provider_record_id, updated_at, source_generation, pending_tail, snapshot_reusable)
+		VALUES (?, ?, ?, '', ?, 0, 0, 1)`, sourceID, fingerprint, len(contents), updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	state := parserCheckpointState{Outcomes: OutcomeCounts{IgnoredNonUsage: 1}, Codex: &codexCheckpointState{}}
+	checkpoint, ok := encodeParserCheckpoint(parserCheckpoint{SourceID: sourceID, Adapter: "codex", SourceGeneration: 0,
+		BoundaryOffset: int64(len(contents)), PrefixFingerprint: fingerprint, State: state})
+	if !ok {
+		t.Fatal("could not encode historical Codex checkpoint fixture")
+	}
+	if _, err := store.db.Exec(`INSERT INTO parser_checkpoints
+		(source_id, adapter, parser_revision, format_version, source_generation, boundary_offset, prefix_fingerprint, state_json, state_digest, updated_at)
+		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`, checkpoint.SourceID, checkpoint.Adapter,
+		checkpoint.FormatVersion, checkpoint.SourceGeneration, checkpoint.BoundaryOffset,
+		checkpoint.PrefixFingerprint, checkpoint.StateJSON, checkpoint.StateDigest, updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	return sourceID
+}
+
+func TestDirectAdapterImportsRequirePositiveClassification(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		importer func(string, *Store) (ImportResult, error)
+	}{
+		{name: "Claude", importer: (ClaudeAdapter{}).Import},
+		{name: "Codex", importer: (CodexAdapter{}).Import},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			defer store.Close()
+			path := filepath.Join(t.TempDir(), "summary.jsonl")
+			if err := os.WriteFile(path, []byte(`{"type":"summary","summary":"auxiliary"}`+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if result, err := test.importer(path, store); err != nil || result.Receipt != (Receipt{}) {
+				t.Fatalf("direct import=%+v err=%v", result, err)
+			}
+			for table, want := range map[string]int{
+				"projects": 0, "sessions": 0, "source_cursors": 0,
+				"parser_checkpoints": 0, "collector_source_identities": 0,
+			} {
+				var count int
+				if err := store.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != want {
+					t.Errorf("%s rows=%d after direct import of an unrecognized source; want %d", table, count, want)
+				}
+			}
+		})
+	}
+}
+
+func TestDetectAdapterRequiresPositiveProviderEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data string
+	}{
+		{name: "empty"},
+		{name: "whitespace", data: " \n\t\n"},
+		{name: "unknown object", data: `{"type":"summary","summary":"synthetic"}` + "\n"},
+		{name: "generic message key", data: `{"message":{"text":"synthetic"}}` + "\n"},
+		{name: "model-only assistant auxiliary", data: `{"type":"assistant","message":{"model":"claude-model"}}` + "\n"},
+		{name: "user session ID without Claude shape", data: `{"type":"user","sessionId":"session"}` + "\n"},
+		{name: "generic user message with CWD but no session ID", data: `{"type":"user","cwd":"/synthetic/project","message":{"role":"user"}}` + "\n"},
+		{name: "auxiliary Codex event", data: `{"type":"event_msg","payload":{"type":"agent_message","text":"synthetic"}}` + "\n"},
+		{name: "Codex location without session identity", data: `{"type":"session_meta","payload":{"project_id":"project","cwd":"/synthetic/project"}}` + "\n"},
+		{name: "malformed", data: "not-json\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "source.jsonl")
+			if err := os.WriteFile(path, []byte(test.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			adapter, err := DetectAdapter(path)
+			if err != nil || adapter != "" {
+				t.Fatalf("adapter=%q err=%v; want no adapter without positive evidence", adapter, err)
+			}
+		})
+	}
+}
+
+func TestCollectorPreservesClaudeMetadataOnlySessionAndLaterUsage(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	path := filepath.Join(t.TempDir(), "metadata-only-claude.jsonl")
+	metadata := []byte(`{"type":"user","sessionId":"real-session","cwd":"/synthetic/project","message":{"role":"user"}}` + "\n")
+	if err := os.WriteFile(path, metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if adapter, err := DetectAdapter(path); err != nil || adapter != "claude" {
+		t.Fatalf("metadata-only detection=%q err=%v; want Claude", adapter, err)
+	}
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := collector.PollOnce()
+	if err != nil || first.Receipt != (Receipt{}) || first.Outcomes.IgnoredNonUsage != 1 {
+		t.Fatalf("metadata-only import=%+v err=%v", first, err)
+	}
+	var sessions int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM session_aliases WHERE scope = 'claude-code:claude-code' AND alias = 'real-session'`).Scan(&sessions); err != nil || sessions != 1 {
+		t.Fatalf("metadata-only Claude session count=%d err=%v; want 1", sessions, err)
+	}
+	appended := append(append([]byte(nil), metadata...), benchmarkGeneratedUsage("claude", "real-session", 1)...)
+	if err := os.WriteFile(path, appended, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := collector.PollOnce()
+	if err != nil || second.Receipt.Imported != 1 {
+		t.Fatalf("metadata-only usage append=%+v err=%v; want one imported event", second, err)
+	}
+}
+
+func TestCollectorPreservesCodexMetadataOnlySession(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+	path := filepath.Join(t.TempDir(), "metadata-only.jsonl")
+	contents := []byte(`{"type":"session_meta","payload":{"id":"provider-session","project_id":"provider-project","cwd":"/synthetic/project"}}` + "\n")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := collector.PollOnce()
+	if err != nil || result.Receipt != (Receipt{}) || result.Outcomes.IgnoredNonUsage != 1 {
+		t.Fatalf("metadata-only result=%+v err=%v", result, err)
+	}
+	var projects, sessions, events int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM project_aliases WHERE scope = 'codex' AND alias = 'provider-project'`).Scan(&projects); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM session_aliases WHERE alias = 'provider-session' AND scope = 'codex:codex-cli'`).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if projects != 1 || sessions != 1 || events != 0 {
+		t.Fatalf("metadata-only evidence: projects=%d sessions=%d events=%d; want 1, 1, 0", projects, sessions, events)
+	}
+}
+
 func TestCollectorRetriesMutationDuringParserRead(t *testing.T) {
 	line := []byte(`{"type":"summary","summary":"generated"}` + "\n")
-	contents := []byte(strings.Repeat(string(line), 4096))
+	contents := append([]byte(strings.Repeat(string(line), 4096)), benchmarkGeneratedHistory("codex", "mutation-session", 2)...)
 	path := filepath.Join(t.TempDir(), "large-source.jsonl")
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)

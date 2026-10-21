@@ -28,11 +28,15 @@ import (
 const (
 	parserCheckpointFormatVersion = 1
 	claudeParserRevision          = 1
-	codexParserRevision           = 1
-	maxCheckpointStateBytes       = 1 << 20
-	maxCheckpointScopes           = 4096
-	maxCheckpointResponses        = 16384
-	maxCheckpointIdentifierBytes  = 1024
+	// The Codex source classifier no longer treats an unrecognized source as
+	// Codex. Invalidate checkpoints produced while that fallback was active so
+	// a later recognized append gets a verified full replay under the new
+	// classification contract.
+	codexParserRevision          = 2
+	maxCheckpointStateBytes      = 1 << 20
+	maxCheckpointScopes          = 4096
+	maxCheckpointResponses       = 16384
+	maxCheckpointIdentifierBytes = 1024
 )
 
 var errParserCheckpointChanged = errors.New("parser checkpoint changed while source was being imported")

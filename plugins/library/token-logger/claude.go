@@ -131,8 +131,10 @@ func detectAdapterSnapshotObserved(contents []byte, observer *collectorBenchmark
 }
 
 type adapterClassifier struct {
-	adapter string
-	done    bool
+	adapter          string
+	candidateAdapter string
+	done             bool
+	outcomes         OutcomeCounts
 }
 
 func (c *adapterClassifier) observe(lineBytes []byte, observer *collectorBenchmarkObserver) {
@@ -143,27 +145,139 @@ func (c *adapterClassifier) observe(lineBytes []byte, observer *collectorBenchma
 		observer.recordsDecoded++
 		observer.classificationRecordsDecoded++
 	}
-	var raw struct {
-		Type    string          `json:"type"`
-		Message json.RawMessage `json:"message"`
+	var header struct {
+		Type string `json:"type"`
 	}
-	if json.Unmarshal(lineBytes, &raw) != nil {
+	if err := json.Unmarshal(lineBytes, &header); err != nil {
+		if len(lineBytes) > 0 && lineBytes[len(lineBytes)-1] != '\n' && isTruncatedJSON(err) {
+			c.outcomes.Add(OutcomeDeferredIncompleteTail)
+		} else {
+			c.outcomes.Add(OutcomeMalformedRecord)
+		}
 		return
 	}
-	if raw.Type == "assistant" || len(raw.Message) > 0 {
+	if header.Type == "assistant" && claudeClassifierRecord(lineBytes) {
 		c.adapter, c.done = "claude", true
 		return
 	}
-	if raw.Type == "session_meta" || raw.Type == "event_msg" || raw.Type == "token_count" || raw.Type == "token_usage_record" {
-		c.adapter, c.done = "codex", true
+	if header.Type == "assistant" {
+		c.candidateAdapter = "claude"
+		c.outcomes.Add(OutcomeMalformedRecord)
+		return
 	}
+	if header.Type == "user" && claudeMetadataOnlyRecord(lineBytes) {
+		c.adapter, c.done = "claude", true
+		return
+	}
+	if header.Type == "session_meta" || header.Type == "event_msg" || header.Type == "token_count" || header.Type == "token_usage_record" {
+		c.candidateAdapter = "codex"
+	}
+	if codexClassifierRecord(header.Type, lineBytes) {
+		c.adapter, c.done = "codex", true
+		return
+	}
+	if header.Type == "token_usage_record" ||
+		(header.Type == "event_msg" && codexRecordTypeFromRaw(lineBytes) == "token_count") {
+		c.outcomes.Add(OutcomeUnsupportedUsage)
+		return
+	}
+	if header.Type == "token_count" {
+		c.outcomes.Add(OutcomeMalformedRecord)
+		return
+	}
+	c.outcomes.Add(OutcomeIgnoredNonUsage)
+}
+
+// claudeClassifierRecord requires an assistant transcript record with actual
+// Claude message or attribution fields. A generic "message" key alone is not
+// enough evidence to route a discovered file into the Claude parser.
+func claudeClassifierRecord(record []byte) bool {
+	var envelope claudeEnvelope
+	if err := json.Unmarshal(record, &envelope); err != nil {
+		return false
+	}
+	message, err := decodeClaudeMessage(envelope.Message)
+	if err != nil {
+		return false
+	}
+	if message.Usage != nil {
+		// Usage-bearing messages are enough source evidence when a model is
+		// present; the parser still validates the complete usage allowlist.
+		return message.Model != ""
+	}
+	// Claude has no separate session metadata record in this adapter. Keep a
+	// real assistant record tied to its provider session, but don't create a
+	// synthetic identity for model-only auxiliary records.
+	return (message.Role == "assistant" || message.Model != "") &&
+		(envelope.SessionID != "" || envelope.SessionIDAlt != "")
+}
+
+// claudeMetadataOnlyRecord accepts a narrowly provider-shaped user record
+// when it carries a real Claude session ID and the expected message role.
+// A generic message object or session ID alone is not sufficient.
+func claudeMetadataOnlyRecord(record []byte) bool {
+	var envelope claudeEnvelope
+	if err := json.Unmarshal(record, &envelope); err != nil || envelope.Type != "user" ||
+		(envelope.SessionID == "" && envelope.SessionIDAlt == "") {
+		return false
+	}
+	message, err := decodeClaudeMessage(envelope.Message)
+	return err == nil && message.Role == "user"
+}
+
+func codexClassifierRecord(recordType string, record []byte) bool {
+	var envelope codexEnvelope
+	if err := json.Unmarshal(record, &envelope); err != nil {
+		return false
+	}
+	payload, err := decodeCodexPayload(envelope.Payload)
+	if err != nil {
+		return false
+	}
+	switch recordType {
+	case "session_meta":
+		// A metadata-only session is valid provider evidence. Require its
+		// provider-controlled session ID; project/location metadata alone can
+		// describe an auxiliary record and must not manufacture a session.
+		return payload.SessionID != "" || payload.ID != ""
+	case "token_count":
+		return codexUsageShapeSupported(envelope) && codexPayloadHasAttribution(payload)
+	case "event_msg":
+		// Codex's legacy usage snapshots are token_count records inside
+		// event_msg envelopes; unrelated event messages are auxiliary data.
+		return codexRecordType(envelope, payload) == "token_count" &&
+			codexUsageShapeSupported(envelope) && codexPayloadHasAttribution(payload)
+	case "token_usage_record":
+		// Newer response records depend on session metadata for trustworthy
+		// attribution. The classifier will continue scanning and accept a later
+		// session_meta record; a record by itself is insufficient.
+		return false
+	default:
+		return false
+	}
+}
+
+func codexPayloadHasAttribution(payload codexPayload) bool {
+	return payload.SessionID != "" || payload.ProjectID != "" || payload.CWD != ""
+}
+
+func codexRecordTypeFromRaw(record []byte) string {
+	var envelope codexEnvelope
+	if json.Unmarshal(record, &envelope) != nil {
+		return ""
+	}
+	payload, err := decodeCodexPayload(envelope.Payload)
+	if err != nil {
+		return ""
+	}
+	return codexRecordType(envelope, payload)
 }
 
 func (c *adapterClassifier) adapterName() string {
 	if c.adapter != "" {
 		return c.adapter
 	}
-	return "codex"
+	return ""
 }
 
 // Import reads a single Claude transcript and atomically persists its events
