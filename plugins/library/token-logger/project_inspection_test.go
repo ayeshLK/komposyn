@@ -420,6 +420,7 @@ func TestInspectProjectPreservesControlledPricingLabels(t *testing.T) {
 		{EventID: "mixed-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex", Usage: TokenUsage{InputTokens: 1, OutputTokens: 1, ReasoningTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "mixed"}, IngestionKey: "mixed-event"},
 		{EventID: "custom-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(2 * time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "custom-only-model", ResolvedModel: "custom-only-model", Usage: TokenUsage{InputTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "custom"}, IngestionKey: "custom-event"},
 		{EventID: "billing-context-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(3 * time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5.3-codex", ResolvedModel: "gpt-5.3-codex", Usage: TokenUsage{InputTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "billing-context"}, IngestionKey: "billing-context-event"},
+		{EventID: "partial-mixed-event", SchemaVersion: 1, EventType: "model.request", OccurredAt: from.Add(4 * time.Minute), ProjectID: projectID, Client: Client{Name: "codex-cli"}, Provider: "openai", RequestedModel: "gpt-5-codex", ResolvedModel: "gpt-5-codex", Usage: TokenUsage{InputTokens: 2, CacheWriteTokens: 1, OutputTokens: 1, ReasoningTokens: 1}, Provenance: Provenance{Adapter: "codex", SourceID: "pricing-test", SourceRecord: "partial-mixed"}, IngestionKey: "partial-mixed-event"},
 	}
 	if _, err := store.Append(events); err != nil {
 		t.Fatal(err)
@@ -435,6 +436,10 @@ func TestInspectProjectPreservesControlledPricingLabels(t *testing.T) {
 	mixedEvent := inspect(from, from.Add(90*time.Second))
 	if mixedEvent.SelectedUsage.CalculationBasis != "mixed_estimate" {
 		t.Fatalf("single-event mixed pricing basis=%q; want mixed_estimate", mixedEvent.SelectedUsage.CalculationBasis)
+	}
+	partialMixedEvent := inspect(from.Add(210*time.Second), from.Add(270*time.Second))
+	if partialMixedEvent.SelectedUsage.CalculationBasis != "partial_mixed_estimate" {
+		t.Fatalf("partial mixed pricing basis=%q; want partial_mixed_estimate", partialMixedEvent.SelectedUsage.CalculationBasis)
 	}
 	aggregate := inspect(from, from.Add(time.Hour))
 	if aggregate.SelectedUsage.CalculationBasis != "mixed" {
