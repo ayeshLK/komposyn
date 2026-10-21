@@ -68,11 +68,12 @@ type claudeCacheCreation struct {
 }
 
 type claudeSession struct {
-	ID          string
-	ProjectID   string
-	ProjectName string
-	Root        string
-	Model       string
+	ID                string
+	ProjectID         string
+	ProjectName       string
+	ProjectNameSource projectNameSource `json:"project_name_source,omitempty"`
+	Root              string
+	Model             string
 }
 
 // Discover returns Claude transcript JSONL files beneath a file or directory.
@@ -476,11 +477,11 @@ func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Read
 	var receipt Receipt
 	var err error
 	if options == nil {
-		receipt, err = store.appendWithReferencesAndCursorIfCurrent(events,
+		receipt, err = store.appendWithReferencesAndCursorIfCurrentWithProjectNameSources(events,
 			[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "claude-code", ProviderAlias: session.ProjectID, AliasProvenance: "claude-code metadata"}},
 			[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`), SourceAdapter: "claude-code", ProviderAlias: session.ID}},
 			Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
-				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor)
+				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor, claudeProjectNameSources(session))
 	} else {
 		var checkpoint *parserCheckpoint
 		if boundaryCaptured && !result.Outcomes.Incomplete() && boundaryState.Claude != nil {
@@ -496,12 +497,12 @@ func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Read
 				}
 			}
 		}
-		receipt, err = store.appendWithParserStateIfCurrent(events,
+		receipt, err = store.appendWithParserStateAndProjectNameSourcesIfCurrent(events,
 			[]Project{{ID: session.ProjectID, Root: session.Root, DisplayName: session.ProjectName, SourceAdapter: "claude-code", ProviderAlias: session.ProjectID, AliasProvenance: "claude-code metadata"}},
 			[]Session{{ID: session.ID, ProjectID: session.ProjectID, Client: Client{Name: "claude-code"}, SourceMetadata: json.RawMessage(`{"adapter":"claude-code"}`), SourceAdapter: "claude-code", ProviderAlias: session.ID}},
 			Cursor{SourceID: baseSourceID, FileFingerprint: fingerprint, ByteOffset: offset, LastProviderRecordID: lastRecordID, SourceGeneration: generation,
 				PendingTail: result.Outcomes.Pending(), SnapshotReusable: !result.Outcomes.Incomplete()}, expectedCursor,
-			options.snapshot.expectedCheckpoint, checkpoint, options.snapshot.identityExpectation, ctx)
+			options.snapshot.expectedCheckpoint, checkpoint, options.snapshot.identityExpectation, ctx, claudeProjectNameSources(session))
 	}
 	if options != nil && options.allowResume {
 		receipt.Duplicates += options.snapshot.checkpoint.State.HistoricalEventAttempts
@@ -517,7 +518,12 @@ func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Read
 }
 
 func sameClaudeAttribution(a, b claudeSession) bool {
-	return a.ID == b.ID && a.ProjectID == b.ProjectID && a.ProjectName == b.ProjectName && a.Root == b.Root && a.Model == b.Model
+	return a.ID == b.ID && a.ProjectID == b.ProjectID && a.ProjectName == b.ProjectName &&
+		a.ProjectNameSource == b.ProjectNameSource && a.Root == b.Root && a.Model == b.Model
+}
+
+func claudeProjectNameSources(session claudeSession) map[string]projectNameSource {
+	return map[string]projectNameSource{projectNameSourceKey("claude-code", session.ProjectID): session.ProjectNameSource}
 }
 
 func claudeUsageBearingType(recordType string) bool {
@@ -617,13 +623,15 @@ func updateClaudeSession(session claudeSession, envelope claudeEnvelope, message
 	if session.ProjectID == "" {
 		session.ProjectID = sourceID + "-project"
 	}
-	if envelope.ProjectName != "" {
-		session.ProjectName = envelope.ProjectName
+	if projectName := strings.TrimSpace(envelope.ProjectName); projectName != "" {
+		session.ProjectName = projectName
+		session.ProjectNameSource = projectNameSourceProvider
 	}
 	if envelope.CWD != "" {
 		session.Root = envelope.CWD
-		if session.ProjectName == "" && filepath.Base(envelope.CWD) != "." {
-			session.ProjectName = filepath.Base(envelope.CWD)
+		if cwdName := claudeCWDProjectName(envelope.CWD); cwdName != "" && projectNameSourceRank(session.ProjectNameSource) <= projectNameSourceRank(projectNameSourceCWD) {
+			session.ProjectName = cwdName
+			session.ProjectNameSource = projectNameSourceCWD
 		}
 	}
 	if session.ProjectName == "" {
@@ -632,11 +640,20 @@ func updateClaudeSession(session claudeSession, envelope claudeEnvelope, message
 		} else {
 			session.ProjectName = "Imported Claude Code project"
 		}
+		session.ProjectNameSource = projectNameSourceFallback
 	}
 	if message.Model != "" {
 		session.Model = message.Model
 	}
 	return session
+}
+
+func claudeCWDProjectName(cwd string) string {
+	name := filepath.Base(cwd)
+	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	return name
 }
 
 func claudeTimestamp(value string) (time.Time, error) {

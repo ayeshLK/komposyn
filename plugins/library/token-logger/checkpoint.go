@@ -27,7 +27,7 @@ import (
 
 const (
 	parserCheckpointFormatVersion = 1
-	claudeParserRevision          = 1
+	claudeParserRevision          = 2
 	// The Codex source classifier no longer treats an unrecognized source as
 	// Codex. Invalidate checkpoints produced while that fallback was active so
 	// a later recognized append gets a verified full replay under the new
@@ -226,7 +226,12 @@ func validCodexUsage(usage codexUsage) bool {
 func validClaudeSession(session claudeSession) bool {
 	return len(session.ID) <= maxCheckpointIdentifierBytes && len(session.ProjectID) <= maxCheckpointIdentifierBytes &&
 		len(session.ProjectName) <= maxCheckpointIdentifierBytes && len(session.Root) <= 4*maxCheckpointIdentifierBytes &&
-		len(session.Model) <= maxCheckpointIdentifierBytes
+		len(session.Model) <= maxCheckpointIdentifierBytes && validProjectNameSource(session.ProjectNameSource)
+}
+
+func validProjectNameSource(source projectNameSource) bool {
+	return source == "" || source == projectNameSourceUnknown || source == projectNameSourceFallback ||
+		source == projectNameSourceCWD || source == projectNameSourceProvider || source == projectNameSourceExplicit
 }
 
 func validCodexSession(session codexSession) bool {

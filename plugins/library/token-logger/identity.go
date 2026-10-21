@@ -24,6 +24,43 @@ import (
 	"time"
 )
 
+type projectNameSource string
+
+const (
+	projectNameSourceUnknown  projectNameSource = "unknown"
+	projectNameSourceFallback projectNameSource = "fallback"
+	projectNameSourceCWD      projectNameSource = "cwd"
+	projectNameSourceProvider projectNameSource = "provider"
+	projectNameSourceExplicit projectNameSource = "explicit"
+)
+
+func projectNameSourceRank(source projectNameSource) int {
+	switch source {
+	case projectNameSourceFallback:
+		return 1
+	case projectNameSourceCWD:
+		return 2
+	case projectNameSourceProvider:
+		return 3
+	case projectNameSourceExplicit:
+		return 4
+	default:
+		return 0
+	}
+}
+
+func projectNameSourceKey(adapter, alias string) string {
+	return identityScope(adapter, "") + "\x00" + strings.TrimSpace(alias)
+}
+
+func projectNameSourceColumnExists(tx *sql.Tx) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('projects') WHERE name = 'display_name_source')").Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
 func canonicalProjectLocation(location string) (string, error) {
 	location = strings.TrimSpace(location)
 	if location == "" {
@@ -71,6 +108,15 @@ func stableLocalID(kind, scope, alias string) string {
 }
 
 func reconcileImportedReferences(tx *sql.Tx, events []UsageEvent, projects []Project, sessions []Session) ([]UsageEvent, []Project, []Session, error) {
+	return reconcileImportedReferencesWithProjectNameSources(tx, events, projects, sessions, nil)
+}
+
+func reconcileImportedReferencesWithProjectNameSources(tx *sql.Tx, events []UsageEvent, projects []Project, sessions []Session,
+	projectNameSources map[string]projectNameSource) ([]UsageEvent, []Project, []Session, error) {
+	hasNameSource, err := projectNameSourceColumnExists(tx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	projectIDs := make(map[string]string)
 	sessionIDs := make(map[string]string)
 	now := formatStoredTime(time.Now())
@@ -85,7 +131,8 @@ func reconcileImportedReferences(tx *sql.Tx, events []UsageEvent, projects []Pro
 		if scope == "" || alias == "" {
 			continue
 		}
-		localID, locationAccepted, err := resolveProject(tx, *project, scope, alias, now)
+		nameSource := projectNameSources[projectNameSourceKey(project.SourceAdapter, alias)]
+		localID, locationAccepted, err := resolveProject(tx, *project, scope, alias, now, nameSource, hasNameSource)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -140,7 +187,7 @@ func reconcileImportedReferences(tx *sql.Tx, events []UsageEvent, projects []Pro
 	return events, projects, sessions, nil
 }
 
-func resolveProject(tx *sql.Tx, project Project, scope, alias, now string) (string, bool, error) {
+func resolveProject(tx *sql.Tx, project Project, scope, alias, now string, nameSource projectNameSource, hasNameSource bool) (string, bool, error) {
 	var localID string
 	err := tx.QueryRow("SELECT project_id FROM project_aliases WHERE scope = ? AND alias = ?", scope, alias).Scan(&localID)
 	canonical, canonicalErr := canonicalProjectLocation(project.Root)
@@ -188,11 +235,34 @@ func resolveProject(tx *sql.Tx, project Project, scope, alias, now string) (stri
 	if name == "" {
 		name = "Unnamed project"
 	}
-	if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at) VALUES (?, ?, ?, ?)
+	if !hasNameSource {
+		if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+			root = CASE WHEN projects.root = '' THEN excluded.root ELSE projects.root END,
+			display_name = CASE WHEN projects.display_name = '' THEN excluded.display_name ELSE projects.display_name END`,
+			localID, project.Root, name, now); err != nil {
+			return "", false, err
+		}
+	} else {
+		if nameSource == "" {
+			nameSource = projectNameSourceUnknown
+		}
+		if nameSource == projectNameSourceCWD && !locationAccepted {
+			nameSource = projectNameSourceUnknown
+		}
+		incomingRank := projectNameSourceRank(nameSource)
+		if _, err := tx.Exec(`INSERT INTO projects(id, root, display_name, created_at, display_name_source) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		root = CASE WHEN projects.root = '' THEN excluded.root ELSE projects.root END,
-		display_name = CASE WHEN projects.display_name = '' THEN excluded.display_name ELSE projects.display_name END`, localID, project.Root, name, now); err != nil {
-		return "", false, err
+		display_name = CASE WHEN projects.display_name_source IN ('fallback', 'cwd', 'provider') AND ? >
+			CASE projects.display_name_source WHEN 'fallback' THEN 1 WHEN 'cwd' THEN 2 WHEN 'provider' THEN 3 ELSE 0 END
+			THEN excluded.display_name ELSE projects.display_name END,
+		display_name_source = CASE WHEN projects.display_name_source IN ('fallback', 'cwd', 'provider') AND ? >
+			CASE projects.display_name_source WHEN 'fallback' THEN 1 WHEN 'cwd' THEN 2 WHEN 'provider' THEN 3 ELSE 0 END
+			THEN excluded.display_name_source ELSE projects.display_name_source END`,
+			localID, project.Root, name, now, nameSource, incomingRank, incomingRank); err != nil {
+			return "", false, err
+		}
 	}
 	if canonical != "" && locationAccepted {
 		preferred := 0

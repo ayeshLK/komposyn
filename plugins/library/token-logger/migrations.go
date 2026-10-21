@@ -320,3 +320,10 @@ CREATE TABLE parser_checkpoints (
     updated_at TEXT NOT NULL
 );
 `
+
+// Schema migration 17 records only name provenance demonstrated by the
+// current import path. Historical rows deliberately remain unknown.
+const schemaMigrationSeventeenProjectNameSource = `
+ALTER TABLE projects ADD COLUMN display_name_source TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (display_name_source IN ('unknown', 'fallback', 'cwd', 'provider', 'explicit'));
+`

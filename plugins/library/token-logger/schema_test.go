@@ -601,7 +601,10 @@ func TestMigrationSixteenFailurePreservesSchemaFifteenAndBackup(t *testing.T) {
 	if _, err := db.Exec("DROP TABLE parser_checkpoints"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("DELETE FROM schema_migrations WHERE version = 16"); err != nil {
+	if _, err := db.Exec("DELETE FROM schema_migrations WHERE version IN (16, 17)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("ALTER TABLE projects DROP COLUMN display_name_source"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`CREATE TRIGGER reject_migration_sixteen BEFORE INSERT ON schema_migrations
@@ -640,5 +643,111 @@ func TestMigrationSixteenFailurePreservesSchemaFifteenAndBackup(t *testing.T) {
 			t.Fatalf("checkpoint table after rollback for %s exists=%v err=%v", filepath.Base(path), exists, err)
 		}
 		readOnly.Close()
+	}
+}
+
+func TestMigrationSeventeenNameSourceDefaultsLegacyRowsToUnknown(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "schema16-name-source.db")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-name', '/legacy', 'Unattributed', '2026-01-01T00:00:00Z')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 17"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("ALTER TABLE projects DROP COLUMN display_name_source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(databasePath)
+	if err != nil {
+		t.Fatalf("upgrade schema 16: %v", err)
+	}
+	defer upgraded.Close()
+	var source string
+	if err := upgraded.db.QueryRow("SELECT display_name_source FROM projects WHERE id = 'legacy-name'").Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != "unknown" {
+		t.Fatalf("legacy display name source = %q, want unknown", source)
+	}
+	var version int
+	if err := upgraded.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 17 {
+		t.Fatalf("schema version = %d, err = %v; want 17", version, err)
+	}
+}
+
+func TestMigrationSeventeenFailurePreservesSchemaSixteenAndBackup(t *testing.T) {
+	tempDir := t.TempDir()
+	databasePath := filepath.Join(tempDir, "schema16.db")
+	backupPath := filepath.Join(tempDir, "schema16-backup.sqlite")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-name', '/legacy', 'Unattributed', '2026-01-01T00:00:00Z')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 17"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("ALTER TABLE projects DROP COLUMN display_name_source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_migration_seventeen BEFORE INSERT ON schema_migrations
+		WHEN NEW.version = 17 BEGIN SELECT RAISE(ABORT, 'injected migration 17 failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenWithOptions(databasePath, OpenOptions{BackupPath: backupPath})
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("OpenWithOptions succeeded although migration 17 was rejected")
+	}
+	if err == nil || !strings.Contains(err.Error(), "injected migration 17 failure") {
+		t.Fatalf("migration error=%v; want injected migration 17 failure", err)
+	}
+	for _, path := range []string{databasePath, backupPath} {
+		readOnly, err := sql.Open("sqlite", sqliteFileURI(path, "mode=ro"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var integrity string
+		if err := readOnly.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+			readOnly.Close()
+			t.Fatalf("integrity_check for %s=%q, %v", filepath.Base(path), integrity, err)
+		}
+		var version int
+		if err := readOnly.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 16 {
+			readOnly.Close()
+			t.Fatalf("schema version for %s=%d, %v; want 16", filepath.Base(path), version, err)
+		}
+		var hasColumn bool
+		if err := readOnly.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('projects') WHERE name='display_name_source')").Scan(&hasColumn); err != nil || hasColumn {
+			readOnly.Close()
+			t.Fatalf("name-source column for %s exists=%v err=%v; want absent", filepath.Base(path), hasColumn, err)
+		}
+		var name string
+		if err := readOnly.QueryRow("SELECT display_name FROM projects WHERE id='legacy-name'").Scan(&name); err != nil || name != "Unattributed" {
+			readOnly.Close()
+			t.Fatalf("legacy name for %s = %q err=%v", filepath.Base(path), name, err)
+		}
+		if err := readOnly.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
