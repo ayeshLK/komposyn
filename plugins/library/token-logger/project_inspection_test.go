@@ -87,8 +87,18 @@ func TestInspectProjectSeparatesSelectedAndStoredHistory(t *testing.T) {
 	if result.FormatVersion != 1 || !result.Exists || result.Synthetic {
 		t.Fatalf("identity = %+v", result)
 	}
-	if result.NameOrigin != InspectionEvidenceUnavailable {
-		t.Fatalf("name origin = %q; must not infer from the label", result.NameOrigin)
+	wantNameOrigin := InspectionEvidenceUnavailable
+	var hasNameSource int
+	if err := store.db.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('projects') WHERE name = 'display_name_source')").Scan(&hasNameSource); err != nil {
+		t.Fatal(err)
+	}
+	if hasNameSource != 0 {
+		// UpsertProject explicitly supplied this name, so schema 17 records its
+		// origin as explicit. The literal label itself never implies fallback.
+		wantNameOrigin = "explicit"
+	}
+	if result.NameOrigin != wantNameOrigin {
+		t.Fatalf("name origin = %q; want persisted origin %q, without inferring from the label", result.NameOrigin, wantNameOrigin)
 	}
 	if result.ClassificationEvidence.Status != InspectionEvidenceUnavailable {
 		t.Fatalf("classification evidence = %+v; adapter labels cannot establish the original decision", result.ClassificationEvidence)
