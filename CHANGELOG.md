@@ -11,6 +11,25 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.9.0](https://github.com/ayeshLK/komposyn/compare/v0.8.0...v0.9.0) (2026-10-21)
+
+
+### Features
+
+* add read-only project inspection ([b257175](https://github.com/ayeshLK/komposyn/commit/b25717555cd462ba3e86633edb35dcc2ac112d56))
+* **identity:** add read-only project inspection evidence ([732b497](https://github.com/ayeshLK/komposyn/commit/732b49756f5872bb563ff28696055df0e08d9d73))
+
+
+### Bug Fixes
+
+* **core:** bound and sanitize project inspection ([167cebf](https://github.com/ayeshLK/komposyn/commit/167cebfc4239ecc3fbfd869c272db3ebb9a48b89))
+* **core:** close direct import classification gaps ([1471b6a](https://github.com/ayeshLK/komposyn/commit/1471b6ab7fad85f875e2dd36a53f5da0c02153e8))
+* **core:** keep Claude CWD name evidence paired ([334ceda](https://github.com/ayeshLK/komposyn/commit/334ceda1c7762c72da1d5d75eb03b5d2b719c300))
+* **identity:** preserve trusted Claude project name provenance ([6028a7a](https://github.com/ayeshLK/komposyn/commit/6028a7a68abc604920904bcfc9d1612e8baf5e6a))
+* **ingestion:** require positive adapter evidence ([4718aea](https://github.com/ayeshLK/komposyn/commit/4718aea0662b123d572a73bc02fec6a43a9a795a))
+* **ingestion:** require positive adapter evidence ([d7625a5](https://github.com/ayeshLK/komposyn/commit/d7625a57d22135adcca3b409bcbf3f938e1a0a35))
+* sanitize project inspection privacy output ([#154](https://github.com/ayeshLK/komposyn/issues/154)) ([e8a4288](https://github.com/ayeshLK/komposyn/commit/e8a4288f8a2c0e6262bf7c19936d61e956e78081))
+
 ## [0.8.0](https://github.com/ayeshLK/komposyn/compare/v0.7.1...v0.8.0) (2026-10-19)
 
 
