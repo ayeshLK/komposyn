@@ -26,24 +26,36 @@ deterministic ordering. Each call reads one SQLite transaction snapshot.
 Separate page calls do not share a snapshot token, so a concurrent import
 between calls can change the offsets represented by later pages.
 
-The response is bounded, but SQLite work is not a fixed-cost operation:
+The response format is version 2. Consumers of version 1 must update for the
+renamed identity fields and inspection-specific selected-usage type. The
+response is bounded, but SQLite work is not a fixed-cost operation:
 selected/history aggregates scale with the project's stored events, and
 evidence total counts scale with persisted references. Each returned page is
 limited to at most 50 items. Offset has a hard ceiling; if a page reports
 truncated=true, additional records exist beyond the accessible page range.
-Free-form returned text is limited to 256 UTF-8 bytes and the response-level
-`text_truncated` flag indicates when any text was shortened or summarized.
-Cost-reason detail is capped at 16 entries and 4 KiB; additional categories
-are grouped under `additional_reasons_omitted` without changing the numeric
-usage totals. Custom pricing source text is never returned; `pricing_source`
-uses the safe `recorded` marker when a source was present. Cursor fingerprints
-are returned only as a digest of the stored fingerprint value, so malformed
-or caller-supplied fingerprint strings cannot expose paths or arbitrary text.
+Raw project IDs and display names are not returned; the response carries stable
+SHA-256 digests and sets `text_omitted` when a name was present. These digests
+remain identifying and should be treated as sensitive. `selected_usage` uses
+an inspection-specific type: exact numeric measures and costs are preserved,
+currency/provider/basis labels are allowlisted, arbitrary cost reasons are
+aggregated under `other`, and pricing version, selector, effective-date text,
+notes, source, and source URL are omitted. A present custom source is reported
+as `pricing_source: "recorded"`. Existing report JSON/CSV continues to expose
+its established values and is not sanitized by this projection.
+
+Cursor fingerprints are returned as a digest only when the stored cursor value
+is a lowercase 64-character SHA-256 hex digest. Missing or malformed values
+produce `cursor_status: "unavailable"` and omit cursor details; arbitrary
+caller-supplied text is never represented as verified fingerprint evidence.
+Exact event counts, time bounds, stable digests, and page totals can still be
+identifying. This API is privacy-reduced, not anonymous or automatically safe
+to publish. Returned errors are outside the serialized inspection projection
+and require separate review before sharing.
 
 The query itself performs only SQL reads. It does not open provider files,
 start or stop collection, refresh report ranges, call the network, write
 diagnostics, or mutate project/session identities. It returns hashes instead
-of raw filesystem locations, aliases, scopes, or source IDs. Warning kinds,
+of raw project IDs, names, filesystem locations, aliases, scopes, or source IDs. Warning kinds,
 messages, adapters, and provenance labels are allowlisted before returning.
 
 This does not make opening the database read-only. Store.Open retains its

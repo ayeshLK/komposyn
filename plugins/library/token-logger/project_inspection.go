@@ -17,17 +17,16 @@ package tokenlogger
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 const (
-	ProjectInspectionFormatVersion = 1
+	ProjectInspectionFormatVersion = 2
 	DefaultInspectionPageSize      = 20
 	MaxInspectionPageSize          = 50
 	MaxInspectionOffset            = 100000
@@ -134,15 +133,42 @@ type ProjectInspectionSource struct {
 	SnapshotReusable        *bool      `json:"snapshot_reusable,omitempty"`
 }
 
+// InspectionUsage is the inspection-only projection of report measures. It
+// preserves numeric values while replacing caller-controlled provenance text
+// with controlled labels or omitting it. The regular UsageMeasures/report
+// formats remain unchanged.
+type InspectionUsage struct {
+	RequestCount               int64            `json:"request_count"`
+	SessionCount               int64            `json:"session_count"`
+	InputTokens                int64            `json:"input_tokens"`
+	CachedInputTokens          int64            `json:"cached_input_tokens"`
+	CacheWriteInputTokens      int64            `json:"cache_write_input_tokens"`
+	OutputTokens               int64            `json:"output_tokens"`
+	ReasoningOutputTokens      int64            `json:"reasoning_output_tokens"`
+	TotalTokens                int64            `json:"total_tokens"`
+	CalculatedCostMicros       int64            `json:"calculated_cost_micros"`
+	CalculatedCurrency         string           `json:"calculated_currency,omitempty"`
+	ProviderReportedCostMicros int64            `json:"provider_reported_cost_micros"`
+	ProviderReportedCurrency   string           `json:"provider_reported_currency,omitempty"`
+	UnknownCostRequests        int64            `json:"unknown_cost_requests"`
+	EstimatedCostRequests      int64            `json:"estimated_cost_requests"`
+	KnownZeroCostRequests      int64            `json:"known_zero_cost_requests"`
+	CostUnknownReason          string           `json:"cost_unknown_reason,omitempty"`
+	CostUnknownReasons         CostReasonCounts `json:"cost_unknown_reasons,omitempty"`
+	PricingProvider            string           `json:"pricing_provider,omitempty"`
+	CalculationBasis           string           `json:"calculation_basis,omitempty"`
+	PricingSource              string           `json:"pricing_source,omitempty"`
+}
+
 // ProjectInspection is a bounded view of persisted attribution and activity
 // evidence. NameOrigin is "unavailable" if label provenance is not persisted.
 type ProjectInspection struct {
 	FormatVersion               int                         `json:"format_version"`
-	ProjectID                   string                      `json:"project_id"`
+	ProjectIDDigest             string                      `json:"project_id_digest"`
 	Exists                      bool                        `json:"exists"`
 	Synthetic                   bool                        `json:"synthetic"`
-	DisplayName                 string                      `json:"display_name,omitempty"`
-	TextTruncated               bool                        `json:"text_truncated"`
+	DisplayNameDigest           string                      `json:"display_name_digest,omitempty"`
+	TextOmitted                 bool                        `json:"text_omitted"`
 	NameOrigin                  string                      `json:"name_origin"`
 	ClassificationEvidence      InspectionEvidenceStatus    `json:"classification_evidence"`
 	LocationEvidence            InspectionEvidenceStatus    `json:"location_evidence"`
@@ -153,7 +179,7 @@ type ProjectInspection struct {
 	HistoricalUsageSessionCount int64                       `json:"historical_usage_session_count"`
 	SelectedRange               UsageInspectionRange        `json:"selected_range"`
 	SelectedActivity            ProjectInspectionActivity   `json:"selected_activity"`
-	SelectedUsage               UsageMeasures               `json:"selected_usage"`
+	SelectedUsage               InspectionUsage             `json:"selected_usage"`
 	HistoricalCoverage          string                      `json:"historical_coverage"`
 	HistoricalActivity          ProjectInspectionActivity   `json:"historical_activity"`
 	Locations                   []ProjectInspectionLocation `json:"locations"`
@@ -214,9 +240,9 @@ func (s *Store) InspectProject(request ProjectInspectionRequest) (ProjectInspect
 	}
 	defer tx.Rollback()
 	result := ProjectInspection{
-		FormatVersion: ProjectInspectionFormatVersion,
-		ProjectID:     request.ProjectID,
-		NameOrigin:    InspectionEvidenceUnavailable,
+		FormatVersion:   ProjectInspectionFormatVersion,
+		ProjectIDDigest: digest([]byte(request.ProjectID)),
+		NameOrigin:      InspectionEvidenceUnavailable,
 		ClassificationEvidence: InspectionEvidenceStatus{
 			Status: InspectionEvidenceUnavailable,
 			Reason: "the original source-classification decision is not persisted",
@@ -233,7 +259,7 @@ func (s *Store) InspectProject(request ProjectInspectionRequest) (ProjectInspect
 	}
 	result.Synthetic = request.ProjectID == UnattributedProjectID
 	if result.Synthetic {
-		result.DisplayName = "Unattributed"
+		result.DisplayNameDigest = digest([]byte("Unattributed"))
 		var exists int
 		err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id IS NULL)
 			OR EXISTS(SELECT 1 FROM usage_events WHERE project_id IS NULL)`).Scan(&exists)
@@ -243,7 +269,8 @@ func (s *Store) InspectProject(request ProjectInspectionRequest) (ProjectInspect
 		err = tx.QueryRow("SELECT display_name FROM projects WHERE id = ?", request.ProjectID).Scan(&rawName)
 		result.Exists = err == nil
 		if err == nil {
-			result.DisplayName, result.TextTruncated = boundedInspectionText(rawName)
+			result.DisplayNameDigest = digest([]byte(rawName))
+			result.TextOmitted = rawName != ""
 		}
 		if errors.Is(err, sql.ErrNoRows) {
 			err = nil
@@ -268,8 +295,7 @@ func (s *Store) InspectProject(request ProjectInspectionRequest) (ProjectInspect
 	if err != nil {
 		return ProjectInspection{}, err
 	}
-	result.SelectedUsage, result.TextTruncated = boundInspectionUsage(selected.Summary, result.TextTruncated)
-	result.SelectedUsage, result.TextTruncated = boundInspectionUsage(result.SelectedUsage, result.TextTruncated)
+	result.SelectedUsage = projectInspectionUsage(selected.Summary)
 	result.SelectedUsageSessionCount = selected.Summary.SessionCount
 	result.SelectedActivity, err = inspectionActivity(tx, request.ProjectID, result.Synthetic, request.From, request.To)
 	if err != nil {
@@ -572,7 +598,7 @@ func inspectSources(tx *sql.Tx, projectID string, synthetic bool, offset, limit 
 		if err != nil {
 			return InspectionPage{}, nil, err
 		}
-		if fingerprint.Valid {
+		if fingerprint.Valid && isSupportedFingerprint(fingerprint.String) {
 			source.CursorStatus = InspectionEvidenceAvailable
 			source.CursorFingerprintDigest = digest([]byte(fingerprint.String))
 			offsetValue, generationValue := byteOffset.Int64, generation.Int64
@@ -655,108 +681,89 @@ func safeInspectionProvenance(provenance string) string {
 	}
 }
 
-func boundedInspectionText(value string) (string, bool) {
-	if len(value) <= MaxInspectionTextBytes && utf8.ValidString(value) {
-		return value, false
+func projectInspectionUsage(usage UsageMeasures) InspectionUsage {
+	projected := InspectionUsage{
+		RequestCount: usage.RequestCount, SessionCount: usage.SessionCount,
+		InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
+		CacheWriteInputTokens: usage.CacheWriteInputTokens, OutputTokens: usage.OutputTokens,
+		ReasoningOutputTokens: usage.ReasoningOutputTokens, TotalTokens: usage.TotalTokens,
+		CalculatedCostMicros:       usage.CalculatedCostMicros,
+		CalculatedCurrency:         safeInspectionCurrency(usage.CalculatedCurrency),
+		ProviderReportedCostMicros: usage.ProviderReportedCostMicros,
+		ProviderReportedCurrency:   safeInspectionCurrency(usage.ProviderReportedCurrency),
+		UnknownCostRequests:        usage.UnknownCostRequests, EstimatedCostRequests: usage.EstimatedCostRequests,
+		KnownZeroCostRequests: usage.KnownZeroCostRequests,
+		CostUnknownReason:     safeInspectionCostReason(usage.CostUnknownReason),
+		PricingProvider:       safeInspectionPricingProvider(usage.PricingProvider),
+		CalculationBasis:      safeInspectionCalculationBasis(usage.CalculationBasis),
 	}
-	const marker = "…"
-	limit := MaxInspectionTextBytes - len(marker)
-	var output strings.Builder
-	output.Grow(MaxInspectionTextBytes)
-	for _, character := range value {
-		text := string(character)
-		if output.Len()+len(text) > limit {
-			break
-		}
-		output.WriteString(text)
-	}
-	output.WriteString(marker)
-	return output.String(), true
-}
-
-func boundInspectionUsage(usage UsageMeasures, wasTruncated bool) (UsageMeasures, bool) {
-	bound := func(value string) string {
-		limited, truncated := boundedInspectionText(value)
-		wasTruncated = wasTruncated || truncated
-		return limited
-	}
-	usage.CalculatedCurrency = bound(usage.CalculatedCurrency)
-	usage.ProviderReportedCurrency = bound(usage.ProviderReportedCurrency)
-	usage.CostUnknownReason = bound(usage.CostUnknownReason)
-	usage.PricingProvider = bound(usage.PricingProvider)
-	usage.CalculationBasis = bound(usage.CalculationBasis)
-	usage.PricingVersion = bound(usage.PricingVersion)
-	usage.PricingModelSelector = bound(usage.PricingModelSelector)
-	usage.PricingEffectiveFrom = bound(usage.PricingEffectiveFrom)
-	usage.PricingEffectiveTo = bound(usage.PricingEffectiveTo)
 	if usage.PricingSource != "" {
-		// A custom pricing source may contain a private URL or filesystem path.
-		// Inspection reports that provenance exists without returning its value.
-		usage.PricingSource = "recorded"
-		wasTruncated = true
+		projected.PricingSource = "recorded"
 	}
-	usage.CostUnknownReasons, wasTruncated = boundInspectionCostReasons(usage.CostUnknownReasons, wasTruncated)
-	return usage, wasTruncated
+	var reasons map[string]int64
+	if json.Unmarshal([]byte(usage.CostUnknownReasons), &reasons) == nil {
+		bounded := make(map[string]int64)
+		for reason, count := range reasons {
+			label := safeInspectionCostReason(reason)
+			bounded[label], _ = checkedCostAdd(bounded[label], count)
+		}
+		if encoded, err := json.Marshal(bounded); err == nil && len(encoded) <= MaxInspectionCostReasonBytes {
+			projected.CostUnknownReasons = CostReasonCounts(encoded)
+		}
+	}
+	return projected
 }
 
-func boundInspectionCostReasons(raw CostReasonCounts, wasTruncated bool) (CostReasonCounts, bool) {
-	if raw == "" {
-		return raw, wasTruncated
+func safeInspectionCurrency(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "USD", "EUR", "GBP", "JPY", "CAD", "AUD", "NZD", "CHF", "CNY", "INR", "KRW", "SGD", "BRL", "MXN", "SEK", "NOK", "DKK", "PLN", "CZK", "ILS", "ZAR", "MIXED":
+		return strings.ToUpper(strings.TrimSpace(value))
+	case "":
+		return ""
+	default:
+		return "other"
 	}
-	var counts map[string]int64
-	if err := json.Unmarshal([]byte(raw), &counts); err != nil {
-		return "", true
-	}
-	keys := make([]string, 0, len(counts))
-	for key := range counts {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	bounded := make(map[string]int64, min(len(keys), MaxInspectionCostReasonEntries))
-	var omitted int64
-	for _, key := range keys {
-		label, truncated := boundedInspectionTextLimit(key, maxInspectionReasonLabelBytes)
-		wasTruncated = wasTruncated || truncated
-		if len(bounded) >= MaxInspectionCostReasonEntries-1 {
-			omitted, _ = checkedCostAdd(omitted, counts[key])
-			continue
-		}
-		bounded[label], _ = checkedCostAdd(bounded[label], counts[key])
-		encoded, err := json.Marshal(bounded)
-		if err != nil || len(encoded) > MaxInspectionCostReasonBytes {
-			delete(bounded, label)
-			omitted, _ = checkedCostAdd(omitted, counts[key])
-			wasTruncated = true
-		}
-	}
-	if omitted > 0 {
-		bounded["additional_reasons_omitted"], _ = checkedCostAdd(bounded["additional_reasons_omitted"], omitted)
-		wasTruncated = true
-	}
-	encoded, err := json.Marshal(bounded)
-	if err != nil || len(encoded) > MaxInspectionCostReasonBytes {
-		return "", true
-	}
-	return CostReasonCounts(encoded), wasTruncated
 }
 
-func boundedInspectionTextLimit(value string, limit int) (string, bool) {
-	if len(value) <= limit && utf8.ValidString(value) {
-		return value, false
+func safeInspectionPricingProvider(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "anthropic", "openai", "google", "unknown":
+		return strings.ToLower(strings.TrimSpace(value))
+	case "":
+		return ""
+	default:
+		return "other"
 	}
-	const marker = "…"
-	maxBytes := limit - len(marker)
-	var output strings.Builder
-	output.Grow(limit)
-	for _, character := range value {
-		text := string(character)
-		if output.Len()+len(text) > maxBytes {
-			break
-		}
-		output.WriteString(text)
+}
+
+func safeInspectionCalculationBasis(value string) string {
+	switch value {
+	case "public_catalog_estimate", "partial_public_catalog_estimate", "custom_pricing_estimate", "partial_custom_pricing_estimate", "mixed_pricing_estimate", "partial_mixed_pricing_estimate", "provider_reported", "known_zero", "unavailable":
+		return value
+	case "":
+		return ""
+	default:
+		return "other"
 	}
-	output.WriteString(marker)
-	return output.String(), true
+}
+
+func safeInspectionCostReason(value string) string {
+	switch value {
+	case "model_unresolved", "no_matching_rate", "outside_effective_range", "ambiguous_pricing_rule", "arithmetic_overflow", "currency_conflict":
+		return value
+	case "":
+		return ""
+	default:
+		return "other"
+	}
+}
+
+func isSupportedFingerprint(value string) bool {
+	if len(value) != 64 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
 }
 
 func safeInspectionWarningKind(kind string) string {
