@@ -43,6 +43,8 @@ type sourceSnapshot struct {
 	checkpointBoundaryOffset int64
 	boundaryFingerprint      string
 	identityExpectation      collectorIdentityExpectation
+	classificationOutcomes   OutcomeCounts
+	classificationAdapter    string
 }
 
 func (snapshot sourceSnapshot) close() error {

@@ -230,6 +230,8 @@ func acquireStreamingSourceSnapshot(ctx context.Context, path string, store *Sto
 		stream := newSourceStreamReader(ctx, file, streamCursorOffsets(expectations, openedInfo.Size()), store.benchmarkObserver, store.sourceReadHook, 1)
 		reader := bufio.NewReaderSize(stream, sourceVerificationBufferSize)
 		adapter := knownAdapter
+		var classificationOutcomes OutcomeCounts
+		var classificationAdapter string
 		if adapter == "" {
 			classifier := &adapterClassifier{}
 			if err := classifyAndDrainSource(ctx, reader, classifier, store.benchmarkObserver); err != nil {
@@ -237,6 +239,8 @@ func acquireStreamingSourceSnapshot(ctx context.Context, path string, store *Sto
 				return sourceSnapshot{}, fmt.Errorf("read source for adapter detection: %w", err)
 			}
 			adapter = classifier.adapterName()
+			classificationOutcomes = classifier.outcomes
+			classificationAdapter = classifier.candidateAdapter
 		} else if _, err := io.Copy(io.Discard, reader); err != nil {
 			_ = file.Close()
 			return sourceSnapshot{}, fmt.Errorf("read source for verification: %w", err)
@@ -248,6 +252,20 @@ func acquireStreamingSourceSnapshot(ctx context.Context, path string, store *Sto
 		if stream.read != openedInfo.Size() {
 			_ = file.Close()
 			continue
+		}
+		if adapter == "" {
+			current, matchErr := collectorSourceMatchesOpenFile(path, source, openedInfo)
+			if matchErr != nil {
+				_ = file.Close()
+				return sourceSnapshot{}, fmt.Errorf("revalidate unrecognized source after classification: %w", matchErr)
+			}
+			if !current {
+				_ = file.Close()
+				continue
+			}
+			return sourceSnapshot{file: file, source: source, fingerprint: stream.fullFingerprint(),
+				byteLength: stream.read, classificationOutcomes: classificationOutcomes,
+				classificationAdapter: classificationAdapter}, nil
 		}
 		baseSourceID, err := collectorSourceIDForRead(store, source, adapter)
 		if err != nil {
@@ -363,6 +381,11 @@ func importStreamingSource(ctx context.Context, path string, store *Store, known
 			return ImportResult{}, "", err
 		}
 		adapter := snapshot.adapter
+		if adapter == "" {
+			result := ImportResult{Outcomes: snapshot.classificationOutcomes}
+			_ = snapshot.close()
+			return result, snapshot.classificationAdapter, nil
+		}
 		if snapshot.unchanged {
 			result := ImportResult{}
 			result.Outcomes.Add(OutcomeUnchangedSnapshot)
