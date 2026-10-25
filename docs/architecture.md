@@ -16,7 +16,9 @@ is maintained in [its standalone repository](https://github.com/ayeshLK/komposyn
 and consumes this module.
 
 This architecture is implemented in this repository. It is not a description
-of a general harness runtime or a universal plugin API.
+of a general harness runtime or a universal plugin API. This repository also
+contains a separate experimental temporary chat; see the
+[chat architecture](harness/phase-one-architecture.md).
 
 ```mermaid
 flowchart LR
@@ -48,11 +50,11 @@ flowchart LR
 ## Relationship to the future harness
 
 The intended KompoSyn direction is to compose independently useful components
-into a broader agent harness. That composition layer does not exist yet. Its
-plugin lifecycle, discovery and distribution model, trust boundary, and the
-question of whether every component needs a standalone CLI remain open design
-questions. Do not treat the Token Logger library or CLI integration as a
-completed general plugin contract.
+into a broader agent harness. The experimental chat demonstrates only a
+bounded provider/UI split with temporary messages; it does not settle the
+broader plugin lifecycle, distribution model, trust boundary, or general
+runtime. Do not treat the Token Logger library, CLI integration, or temporary
+chat contracts as a universal plugin API.
 
 ## Import and collection flow
 

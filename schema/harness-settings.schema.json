@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://komposyn.dev/schemas/harness-settings-v1.json",
+  "title": "KompoSyn experimental harness user settings",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "ui": {
+      "type": "object",
+      "properties": { "plugin": { "const": "tview" } },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

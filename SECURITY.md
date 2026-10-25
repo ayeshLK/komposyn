@@ -4,7 +4,8 @@
 
 This repository owns the reusable KompoSyn Go module, including provider
 adapters, collection, SQLite storage and migrations, pricing, diagnostics, and
-reports. The standalone [komposyn-lg repository](https://github.com/ayeshLK/komposyn-lg)
+reports. It also contains an experimental temporary chat with bundled OpenAI
+and Anthropic adapters. The standalone [komposyn-lg repository](https://github.com/ayeshLK/komposyn-lg)
 owns executable behavior, settings and consent policy, data-directory choice,
 process lifecycle, JSONL harness transport, installers, and binary releases.
 
@@ -15,13 +16,21 @@ its exact core dependency; see [compatibility and coordinated security releases]
 
 ## Threat model and guarantees
 
-KompoSyn is local-first. It reads provider-owned source files but does not
+KompoSyn Core is local-first. It reads provider-owned source files but does not
 modify them or intentionally store prompts, responses, full transcripts, API
 keys, or provider credentials. Normalization and reporting operate locally.
 The database may contain usage counts, timestamps, provider/model/client
 identifiers, project/session references, provenance, source hashes, cursors,
 collector state, pricing rules, and sanitized diagnostics. The host filesystem
 protects this data; KompoSyn does not encrypt it for you.
+
+The experimental chat has a separate boundary: submitted text is sent to the
+selected provider, while chat history, model selection, continuation data,
+discovery results, and request usage remain in memory. It persists API-key
+profiles as plaintext in `~/.komposyn/auth.json` and UI settings in
+`~/.komposyn/settings.json`; Unix permissions and Windows current-user ACLs
+restrict access. It does not create a chat database or send chat usage to Token
+Logger. See [temporary chat data handling](docs/harness/phase-one-security.md).
 
 Diagnostics are best-effort sanitized and locally persisted. The standalone
 CLI owns review and routing of public issue drafts. A suspected vulnerability

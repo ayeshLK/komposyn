@@ -16,9 +16,14 @@ This repository currently provides KompoSyn Token Logger Core:
 - The independently versioned `komposyn-lg` executable and its versioned
   JSONL sidecar are maintained in the
   [standalone CLI repository](https://github.com/ayeshLK/komposyn-lg).
+- An experimental, memory-only temporary chat with bundled OpenAI and
+  Anthropic provider adapters lives in this module; see the
+  [harness guide](harness/README.md).
 
 The standalone CLI lets developers use Token Logger with existing agent tools
-without waiting for a complete harness. The sidecar is a token-logger
+without waiting for a complete harness. The experimental chat does not
+implement projects, sessions, tasks, persistent conversations, or tools. The
+sidecar is a token-logger
 integration contract, not a general KompoSyn plugin protocol. The project does
 not currently provide a general harness runtime, universal plugin API, or
 plugin marketplace.

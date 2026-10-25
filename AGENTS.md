@@ -3,22 +3,32 @@
 ## Repository ownership
 
 This repository is the single Go module `github.com/ayeshLK/komposyn`. It owns
-the reusable token-logger API: domain models and validation, SQLite storage
+the reusable Token Logger API: domain models and validation, SQLite storage
 and numbered migrations, provider adapters, collector behavior, pricing,
-diagnostics, and report queries/formatting. The standalone executable,
-interactive onboarding, settings and consent policy, data-directory selection,
-process lifecycle, JSONL harness transport, installers, and binary releases are
-owned by [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
+diagnostics, and report queries/formatting. It also contains an experimental
+temporary text chat under `plugins/model-provider/`, `plugins/ui/`, and
+`internal/harness/`, with source entrypoint `cmd/harness/` and binary name
+`komposyn`. The standalone `komposyn-lg` production executable, production
+settings/consent/onboarding, data-directory selection, JSONL harness transport,
+installers, and binary releases remain owned by
+[ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
 
 Do not add a nested module or independently version core packages. Core and CLI
 versions are independent; the CLI depends on a tagged core release. Keep the
-dependency one-way. Do not assume a general harness runtime, plugin
-marketplace, or universal plugin API exists; read [docs/vision.md](docs/vision.md)
-and [docs/architecture.md](docs/architecture.md) for implemented boundaries.
+dependency one-way. Keep this chat and its role-specific plugin contracts
+experimental; do not add projects, sessions, tasks, persistent conversations,
+tool execution, a marketplace, or a universal plugin API to this milestone.
+Read [docs/vision.md](docs/vision.md), [docs/architecture.md](docs/architecture.md),
+and [docs/harness/README.md](docs/harness/README.md).
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md),
 [LICENSE](LICENSE), and [NOTICE](NOTICE) before changes. Inspect the worktree
 before editing and preserve unrelated changes.
+
+Every new Go source file must begin with the repository's standard copyright
+and Apache-2.0 license header, matching existing Go source files. Keep Go build
+constraints immediately after that header with a blank line before the package
+declaration.
 
 ## Core invariants
 
@@ -50,6 +60,14 @@ before editing and preserve unrelated changes.
 - Harness protocol transport is owned by the standalone CLI. Core changes that
   affect event or schema compatibility must preserve its published protocol-v1
   semantics and be reviewed with the CLI compatibility checks.
+- The experimental chat sends submitted text only to the selected provider;
+  messages, selection, continuation data, discovery, and request usage remain
+  in memory. Persist only validated auth profiles and UI settings. Do not open
+  a chat database, require a workspace, or route through a session runtime.
+- Keep provider and UI contracts role-specific. Providers receive one resolved
+  credential per operation, never load the credential store, and never expose
+  tools in the temporary chat path. Keep Responses and Messages continuation
+  formats provider-owned.
 - Diagnostics remain sanitized, deduplicated, locally persisted, and
   destination-neutral. Public issue drafts require explicit review in the CLI;
   security-sensitive reports use private disclosure.
@@ -58,7 +76,7 @@ before editing and preserve unrelated changes.
 
 ## Development and validation
 
-Requires Go 1.26 or newer. Run focused checks while iterating and, before
+Requires Go 1.26.10 or newer. Run focused checks while iterating and, before
 submitting, run:
 
 ```sh

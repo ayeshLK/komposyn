@@ -8,8 +8,9 @@ compose them when the shared architecture is clear.
 
 The general KompoSyn harness, plugin runtime, and universal plugin API do not
 exist yet. The name describes the project direction, not a platform already
-available to install. Today, KompoSyn delivers one independently useful
-component: Token Logger.
+available to install. Today, KompoSyn delivers the independently useful Token
+Logger component and an experimental temporary text chat that proves bundled
+provider and UI boundaries; neither establishes a general plugin platform.
 
 > **Build independently. Compose seamlessly. Evolve openly.**
 
@@ -23,8 +24,9 @@ Its reusable library lives in this repository as the Go module
 [`komposyn-lg` CLI](https://github.com/ayeshLK/komposyn-lg) makes the component
 useful with existing tools before a broader harness is built.
 
-The CLI's versioned JSONL sidecar is an integration contract for Token Logger,
-not a general KompoSyn plugin protocol. The module here contains no executable
+The production CLI's versioned JSONL sidecar is an integration contract for
+Token Logger, not a general KompoSyn plugin protocol. This module includes the
+experimental `cmd/harness/` entrypoint; it does not own production CLI release
 or binary-release machinery.
 
 ## Principles and open questions
@@ -50,9 +52,11 @@ consistency. See the [project vision](docs/vision.md),
 KompoSyn Core contains the reusable Token Logger library: domain models,
 SQLite persistence and migrations, provider adapters, collection, pricing,
 diagnostics, and report behavior. It reads provider-owned local data without
-capturing prompts, responses, or credentials. The standalone CLI owns command
-behavior, settings, process lifecycle, the JSONL sidecar transport, installers,
-and binary releases.
+capturing prompts, responses, or credentials. The experimental chat sends
+submitted text to the selected provider, stores API keys in a private
+plaintext configuration file, and keeps chat state only in memory. The
+standalone CLI owns production command behavior, settings, process lifecycle,
+the JSONL sidecar transport, installers, and binary releases.
 
 > **Existing CLI users:** install or upgrade using the
 > [standalone CLI instructions](https://github.com/ayeshLK/komposyn-lg#install).
@@ -67,7 +71,7 @@ standalone repository. See [historical combined release verification](docs/histo
 
 ## Development
 
-Requires Go 1.26.9 or newer. Run the core checks with:
+Requires Go 1.26.10 or newer. Run the core checks with:
 
 ```sh
 make check
