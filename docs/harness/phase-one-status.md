@@ -44,6 +44,6 @@
 
 ## Offline validation
 
-Validation passed on 2026-10-25 with Go 1.26.9: `make check` (formatting,
+Validation passed on 2026-10-25 with Go 1.26.10: `make check` (formatting,
 module verification, vet, and full test suite) and `go test -race ./...`. Full
 terminal behavior was not exercised.
