@@ -74,7 +74,13 @@ func Open(path string) (*Store, error) {
 			}
 		}
 	}
-	fileURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String()
+	dbPath := filepath.ToSlash(abs)
+	// A Windows drive path must be represented as file:///C:/..., otherwise
+	// SQLite interprets the drive letter as a URI authority.
+	if runtime.GOOS == "windows" && !strings.HasPrefix(dbPath, "/") {
+		dbPath = "/" + dbPath
+	}
+	fileURL := (&url.URL{Scheme: "file", Path: dbPath}).String()
 	dsn := fileURL + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

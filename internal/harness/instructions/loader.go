@@ -35,7 +35,13 @@ func Load(root, target string) (Result, error) {
 	if e != nil {
 		return Result{}, e
 	}
-	abs, e = filepath.EvalSymlinks(abs)
+	// Resolve both paths against the same lexical workspace root. Resolving
+	// only the root through symlinks makes an otherwise valid target appear
+	// outside the workspace on platforms that preserve the original path.
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(abs, target)
+	}
+	target, e = filepath.Abs(target)
 	if e != nil {
 		return Result{}, e
 	}
