@@ -186,11 +186,13 @@ try {
         if (Test-Path -LiteralPath $installedBinary -PathType Leaf) {
             # File.Replace is atomic and leaves the original intact when a
             # running executable denies replacement.
+            $replacementBackup = Join-Path $stageDir 'previous-komposyn.exe'
             try {
-                [System.IO.File]::Replace($stagedBinary, $installedBinary, $null)
+                [System.IO.File]::Replace($stagedBinary, $installedBinary, $replacementBackup)
             } catch {
                 throw "Could not replace '$installedBinary'. Close any running KompoSyn chat and retry. The existing installation was preserved. Details: $($_.Exception.Message)"
             }
+            Remove-Item -LiteralPath $replacementBackup -Force
         } else {
             [System.IO.File]::Move($stagedBinary, $installedBinary)
         }
