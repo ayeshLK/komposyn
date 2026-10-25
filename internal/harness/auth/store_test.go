@@ -212,7 +212,10 @@ func TestOAuthProfileMetadataAndRefreshKeepStableIdentity(t *testing.T) {
 	if strings.Contains(string(encoded), "secret") || len(metadata) != 1 || metadata[0].Status != "connected" || !metadata[0].PlanUsageEnabled {
 		t.Fatalf("unsafe/inaccurate metadata: %s", encoded)
 	}
-	entered, release := make(chan struct{}), make(chan struct{})
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
 	var calls int
 	var mu sync.Mutex
 	refresh := func(current OAuthCredential) (OAuthTokens, error) {
@@ -222,19 +225,20 @@ func TestOAuthProfileMetadataAndRefreshKeepStableIdentity(t *testing.T) {
 		if current.RefreshToken != "refresh-secret" {
 			t.Errorf("stale refresh token: %q", current.RefreshToken)
 		}
-		select {
-		case entered <- struct{}{}:
-		default:
-		}
+		entered <- struct{}{}
 		<-release
 		return OAuthTokens{AccessToken: "next-access", RefreshToken: "next-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)}, nil
 	}
 	first := make(chan error, 1)
 	go func() { _, err := s.RefreshOAuth(profile.ID, time.Now(), refresh); first <- err }()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first refresh did not reach the token endpoint")
+	}
 	second := make(chan error, 1)
 	go func() { _, err := s.RefreshOAuth(profile.ID, time.Now(), refresh); second <- err }()
-	close(release)
+	unblock()
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
