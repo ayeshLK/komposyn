@@ -28,16 +28,21 @@ import (
 )
 
 type fakeProvider struct {
-	id       p.ID
-	mu       sync.Mutex
-	requests []p.ChatRequest
-	stream   func(context.Context, p.ChatRequest, func(string)) (p.Result, error)
-	started  chan struct{}
+	id           p.ID
+	mu           sync.Mutex
+	requests     []p.ChatRequest
+	stream       func(context.Context, p.ChatRequest, func(string)) (p.Result, error)
+	authenticate func(context.Context, p.Credential) (p.AuthResult, error)
+	started      chan struct{}
 }
 
 func (f *fakeProvider) ID() p.ID                    { return f.id }
 func (f *fakeProvider) AuthMethods() []p.AuthMethod { return []p.AuthMethod{p.AuthAPIKey} }
-func (f *fakeProvider) Authenticate(context.Context, p.Credential) (p.AuthResult, error) {
+
+func (f *fakeProvider) Authenticate(ctx context.Context, credential p.Credential) (p.AuthResult, error) {
+	if f.authenticate != nil {
+		return f.authenticate(ctx, credential)
+	}
 	return p.AuthResult{Provider: f.id}, nil
 }
 func (f *fakeProvider) ListModels(context.Context, p.Credential) ([]p.Model, error) {
@@ -128,6 +133,47 @@ func TestTemporaryMultiMessageChatAndConfirmedModelReset(t *testing.T) {
 	snap = c.Snapshot()
 	if len(snap.Turns) != 0 || snap.Selected.ID != "model-b" {
 		t.Fatalf("confirmed change did not start fresh: %+v", snap)
+	}
+}
+
+func TestCanceledCredentialValidationDoesNotPersist(t *testing.T) {
+	for _, operation := range []string{"add", "replace"} {
+		t.Run(operation, func(t *testing.T) {
+			fp := &fakeProvider{id: p.OpenAI}
+			c, store := makeChat(t, fp)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			fp.authenticate = func(ctx context.Context, _ p.Credential) (p.AuthResult, error) {
+				close(entered)
+				<-release
+				return p.AuthResult{Provider: fp.id}, nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			result := make(chan error, 1)
+			go func() {
+				if operation == "add" {
+					result <- c.AddProfile(ctx, "pending", string(fp.id), "Pending", "new-key", nil)
+					return
+				}
+				result <- c.ReplaceProfile(ctx, "profile", "Test profile", "new-key", nil, false)
+			}()
+			<-entered
+			cancel()
+			close(release)
+			if err := <-result; !errors.Is(err, context.Canceled) {
+				t.Fatalf("operation error = %v, want context canceled", err)
+			}
+			if operation == "add" {
+				if _, _, err := store.Resolve("pending"); err == nil {
+					t.Fatal("canceled add persisted a profile")
+				}
+			} else {
+				_, key, err := store.Resolve("profile")
+				if err != nil || key != "secret-key" {
+					t.Fatalf("canceled replacement changed the credential: key=%q err=%v", key, err)
+				}
+			}
+		})
 	}
 }
 

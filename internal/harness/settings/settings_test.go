@@ -50,7 +50,7 @@ func TestDefaultsSaveAndPreservesOtherFields(t *testing.T) {
 }
 
 func TestInvalidSettingsDoNotResetFile(t *testing.T) {
-	for _, content := range []string{`{"schema_version":1,"ui":{"plugin":""}}`, `{"schema_version":9}`, `{"schema_version":1,"ui":[]}`} {
+	for _, content := range []string{`{"schema_version":1,"ui":{"plugin":""}}`, `{"schema_version":1,"ui":{"plugin":null}}`, `{"schema_version":9}`, `{"schema_version":1,"ui":[]}`} {
 		path := filepath.Join(t.TempDir(), "settings.json")
 		if err := auth.WriteJSON(path, json.RawMessage(content)); err != nil {
 			t.Fatal(err)

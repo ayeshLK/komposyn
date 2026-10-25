@@ -42,6 +42,12 @@ type entry struct {
 	action string
 	model  *ui.Model
 }
+
+type credentialOperation struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
 type terminal struct {
 	app          *tv.Application
 	done         chan struct{}
@@ -64,6 +70,25 @@ type terminal struct {
 	pickerLayout *tv.Flex
 	entries      []entry
 	discovery    ui.Discovery
+	credentialOp *credentialOperation
+}
+
+func (u *terminal) beginCredentialOperation() *credentialOperation {
+	u.cancelCredentialOperation(u.credentialOp)
+	ctx, cancel := context.WithCancel(u.ctx)
+	op := &credentialOperation{ctx: ctx, cancel: cancel}
+	u.credentialOp = op
+	return op
+}
+
+func (u *terminal) cancelCredentialOperation(op *credentialOperation) {
+	if op == nil {
+		return
+	}
+	if u.credentialOp == op {
+		u.credentialOp = nil
+	}
+	op.cancel()
 }
 
 func (p Plugin) Run(parent context.Context, client ui.Client) error {
@@ -359,6 +384,7 @@ func (u *terminal) addProvider() {
 	form.AddFormItem(org)
 	form.AddFormItem(project)
 	form.AddButton("Validate and save", func() {
+		op := u.beginCredentialOperation()
 		candidate := key.GetText()
 		key.SetText("")
 		name := strings.TrimSpace(label.GetText())
@@ -372,13 +398,19 @@ func (u *terminal) addProvider() {
 			}
 		}
 		u.launch(func() {
-			profiles, err := u.client.Profiles(u.ctx)
+			profiles, err := u.client.Profiles(op.ctx)
 			id := profileID(providerID, name, profiles)
-			if err == nil {
-				err = u.client.AddProfile(u.ctx, id, providerID, name, candidate, route)
+			if err == nil && op.ctx.Err() == nil {
+				err = u.client.AddProfile(op.ctx, id, providerID, name, candidate, route)
+			} else if err == nil {
+				err = op.ctx.Err()
 			}
 			candidate = ""
 			u.queue(func() {
+				if u.credentialOp != op {
+					return
+				}
+				u.cancelCredentialOperation(op)
 				if err != nil {
 					u.showMessage("Provider was not saved", err.Error(), func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
 					return
@@ -389,7 +421,11 @@ func (u *terminal) addProvider() {
 			})
 		})
 	})
-	form.AddButton("Cancel", func() { key.SetText(""); u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+	form.AddButton("Cancel", func() {
+		u.cancelCredentialOperation(u.credentialOp)
+		key.SetText("")
+		u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+	})
 	u.app.SetRoot(form, true).SetFocus(label)
 }
 
@@ -444,17 +480,22 @@ func (u *terminal) replaceProfile(p ui.Profile) {
 	form.AddFormItem(label)
 	form.AddFormItem(key)
 	form.AddButton("Validate and replace", func() {
+		op := u.beginCredentialOperation()
 		value := key.GetText()
 		labelValue := label.GetText()
 		key.SetText("")
 		u.launch(func() {
-			err := u.client.ReplaceProfile(u.ctx, p.ID, labelValue, value, nil, false)
+			err := u.client.ReplaceProfile(op.ctx, p.ID, labelValue, value, nil, false)
 			u.queue(func() {
+				if u.credentialOp != op {
+					return
+				}
 				if errors.Is(err, ui.ErrConversationReset) {
-					u.confirmReplace(p, labelValue, value)
+					u.confirmReplace(p, labelValue, value, op)
 					return
 				}
 				value = ""
+				u.cancelCredentialOperation(op)
 				if err != nil {
 					u.showMessage("Credential was not replaced", err.Error(), func() { u.manageProviders() })
 					return
@@ -465,18 +506,29 @@ func (u *terminal) replaceProfile(p ui.Profile) {
 			})
 		})
 	})
-	form.AddButton("Cancel", func() { key.SetText(""); u.manageProviders() })
+	form.AddButton("Cancel", func() {
+		u.cancelCredentialOperation(u.credentialOp)
+		key.SetText("")
+		u.manageProviders()
+	})
 	u.app.SetRoot(form, true)
 }
-func (u *terminal) confirmReplace(p ui.Profile, label, key string) {
+func (u *terminal) confirmReplace(p ui.Profile, label, key string, op *credentialOperation) {
 	modal := tv.NewModal().SetText("This profile is used by the current conversation. Replace it and clear chat history?").AddButtons([]string{"Replace and start fresh", "Cancel"}).SetDoneFunc(func(i int, _ string) {
 		if i != 0 {
+			key = ""
+			u.cancelCredentialOperation(op)
 			u.manageProviders()
 			return
 		}
 		u.launch(func() {
-			err := u.client.ReplaceProfile(u.ctx, p.ID, label, key, nil, true)
+			err := u.client.ReplaceProfile(op.ctx, p.ID, label, key, nil, true)
+			key = ""
 			u.queue(func() {
+				if u.credentialOp != op {
+					return
+				}
+				u.cancelCredentialOperation(op)
 				if err != nil {
 					u.showMessage("Credential was not replaced", err.Error(), func() { u.manageProviders() })
 					return

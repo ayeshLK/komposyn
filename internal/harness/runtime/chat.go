@@ -102,6 +102,9 @@ func (c *Chat) AddProfile(ctx context.Context, id, providerID, label, key string
 	if _, err := plug.Authenticate(ctx, cred); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := c.profiles.AddAPIKey(id, providerID, label, key, route); err != nil {
 		return err
 	}
@@ -136,8 +139,14 @@ func (c *Chat) ReplaceProfile(ctx context.Context, id, label, key string, route 
 	if _, err := plug.Authenticate(ctx, cred); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.active && id == c.activeProfile {
 		return ErrRequestActive
 	}

@@ -91,9 +91,11 @@ func parse(obj map[string]json.RawMessage) (Settings, error) {
 	if !ok {
 		return out, nil
 	}
-	if json.Unmarshal(plugin, &out.Plugin) != nil || out.Plugin == "" {
+	var configuredPlugin *string
+	if json.Unmarshal(plugin, &configuredPlugin) != nil || configuredPlugin == nil || *configuredPlugin == "" {
 		return Settings{}, errors.New("settings ui.plugin must be a non-empty string")
 	}
+	out.Plugin = *configuredPlugin
 	if out.Plugin != DefaultUI {
 		return Settings{}, fmt.Errorf("unknown UI plugin %q", out.Plugin)
 	}

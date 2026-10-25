@@ -24,6 +24,7 @@ import (
 	modelprovider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/ui"
 	"github.com/gdamore/tcell/v2"
+	tv "github.com/rivo/tview"
 )
 
 type clientStub struct {
@@ -31,6 +32,9 @@ type clientStub struct {
 	selected     *ui.Model
 	selectedCh   chan struct{}
 	selectCalls  int
+	profiles     []ui.Profile
+	addHook      func(context.Context, string, string, string, string, map[string]string) error
+	replaceHook  func(context.Context, string, string, string, map[string]string, bool) error
 	snapshotHook func() ui.Snapshot
 	sendHook     func(context.Context, string, func(string)) (ui.Turn, error)
 }
@@ -60,14 +64,21 @@ func (s *synchronizedSimulation) GetContents() ([]tcell.SimCell, int, int) {
 	return snapshot, width, height
 }
 
-func (c *clientStub) Profiles(context.Context) ([]ui.Profile, error) { return nil, nil }
+func (c *clientStub) Profiles(context.Context) ([]ui.Profile, error) { return c.profiles, nil }
 func (c *clientStub) Discover(context.Context) (ui.Discovery, error) {
 	return ui.Discovery{Models: []ui.Model{{Key: "openai\x00personal\x00model-x", Provider: "openai", ProfileID: "personal", ProfileLabel: "Personal", ID: "model-x", DisplayName: "Text Model", Compatibility: modelprovider.CompatibilityUnknown}}}, nil
 }
-func (c *clientStub) AddProfile(context.Context, string, string, string, string, map[string]string) error {
+
+func (c *clientStub) AddProfile(ctx context.Context, id, provider, label, key string, route map[string]string) error {
+	if c.addHook != nil {
+		return c.addHook(ctx, id, provider, label, key, route)
+	}
 	return nil
 }
-func (c *clientStub) ReplaceProfile(context.Context, string, string, string, map[string]string, bool) error {
+func (c *clientStub) ReplaceProfile(ctx context.Context, id, label, key string, route map[string]string, reset bool) error {
+	if c.replaceHook != nil {
+		return c.replaceHook(ctx, id, label, key, route, reset)
+	}
 	return nil
 }
 func (c *clientStub) RemoveProfile(string, bool) error { return nil }
@@ -281,6 +292,117 @@ func TestStopDrainsQueuedWorkerUpdates(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("terminal waited forever for an update after shutdown")
 	}
+}
+
+func TestCancelButtonCancelsPendingAddOperation(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 32)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	started := make(chan context.Context, 1)
+	client := &clientStub{selectedCh: make(chan struct{}, 2)}
+	client.addHook = func(ctx context.Context, _, _, _, _ string, _ map[string]string) error {
+		started <- ctx
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: parent, cancel: cancel}
+	u.pickerInput = tv.NewInputField()
+	u.pickerLayout = tv.NewFlex().AddItem(tv.NewTextView().SetText("Provider picker"), 0, 1, false)
+	u.addProvider()
+	u.app.SetScreen(safeScreen)
+	runDone := make(chan error, 1)
+	go func() { runDone <- u.app.Run() }()
+	waitForScreen(t, safeScreen, "Profile label", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, r := range "test" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyTab, 0)
+	for _, r := range "secret" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyEnter, 0)
+	var operation context.Context
+	select {
+	case operation = <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("add operation did not start")
+	}
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyEnter, 0)
+	select {
+	case <-operation.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Cancel button left the add operation active")
+	}
+	u.app.Stop()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("simulation UI did not stop")
+	}
+	u.wg.Wait()
+}
+
+func TestCancelButtonCancelsPendingReplaceOperation(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 32)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	started := make(chan context.Context, 1)
+	profile := ui.Profile{ID: "openai-personal", Provider: "openai", Label: "Personal", AuthType: "api_key"}
+	client := &clientStub{selectedCh: make(chan struct{}, 2), profiles: []ui.Profile{profile}}
+	client.replaceHook = func(ctx context.Context, _, _, _ string, _ map[string]string, _ bool) error {
+		started <- ctx
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: parent, cancel: cancel}
+	u.replaceProfile(profile)
+	u.app.SetScreen(safeScreen)
+	runDone := make(chan error, 1)
+	go func() { runDone <- u.app.Run() }()
+	waitForScreen(t, safeScreen, "Replace API key", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(10 * time.Millisecond)
+	}
+	press(tcell.KeyTab, 0) // New API key field.
+	for _, r := range "secret" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyTab, 0) // Validate and replace.
+	press(tcell.KeyEnter, 0)
+	var operation context.Context
+	select {
+	case operation = <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replace operation did not start")
+	}
+	press(tcell.KeyTab, 0) // Cancel.
+	press(tcell.KeyEnter, 0)
+	select {
+	case <-operation.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Cancel button left the replace operation active")
+	}
+	waitForScreen(t, safeScreen, "Personal", "Replace API key")
+	u.app.Stop()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("simulation UI did not stop")
+	}
+	u.wg.Wait()
 }
 
 func TestNonSuccessOutcomesAreRendered(t *testing.T) {
