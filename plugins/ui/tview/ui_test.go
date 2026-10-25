@@ -342,6 +342,7 @@ func TestCancelButtonCancelsPendingAddOperation(t *testing.T) {
 	u.app.SetScreen(safeScreen)
 	runDone := make(chan error, 1)
 	go func() { runDone <- u.app.Run() }()
+	t.Cleanup(func() { stopSimulationTerminal(t, u, runDone) })
 	time.Sleep(80 * time.Millisecond)
 	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
 	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
@@ -374,13 +375,6 @@ func TestCancelButtonCancelsPendingAddOperation(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Cancel button left the add operation active")
 	}
-	u.app.Stop()
-	select {
-	case <-runDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("simulation UI did not stop")
-	}
-	u.wg.Wait()
 }
 
 func TestProviderAdvertisedOAuthMethodCanBeCanceled(t *testing.T) {
@@ -469,6 +463,7 @@ func TestCancelButtonCancelsPendingReplaceOperation(t *testing.T) {
 	u.app.SetScreen(safeScreen)
 	runDone := make(chan error, 1)
 	go func() { runDone <- u.app.Run() }()
+	t.Cleanup(func() { stopSimulationTerminal(t, u, runDone) })
 	waitForScreen(t, safeScreen, "Replace API key", "")
 	press := func(key tcell.Key, r rune) {
 		screen.InjectKey(key, r, tcell.ModNone)
@@ -494,13 +489,26 @@ func TestCancelButtonCancelsPendingReplaceOperation(t *testing.T) {
 		t.Fatal("Cancel button left the replace operation active")
 	}
 	waitForScreen(t, safeScreen, "Personal", "Replace API key")
-	u.app.Stop()
+}
+
+func stopSimulationTerminal(t *testing.T, u *terminal, runDone <-chan error) {
+	t.Helper()
+	u.stop()
 	select {
-	case <-runDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("simulation UI did not stop")
+	case err := <-runDone:
+		if err != nil {
+			t.Errorf("simulation UI stopped with error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("simulation UI did not stop")
 	}
-	u.wg.Wait()
+	waitDone := make(chan struct{})
+	go func() { u.wg.Wait(); close(waitDone) }()
+	select {
+	case <-waitDone:
+	case <-time.After(3 * time.Second):
+		t.Error("simulation UI workers did not stop")
+	}
 }
 
 func TestNonSuccessOutcomesAreRendered(t *testing.T) {
