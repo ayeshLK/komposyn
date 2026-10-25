@@ -31,7 +31,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.9
+          go-version: 1.26.10
           cache: true
 
       - name: Verify formatting
@@ -65,7 +65,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.9
+          go-version: 1.26.10
           cache: false
 
       - name: Check out public standalone CLI
@@ -102,7 +102,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.9
+          go-version: 1.26.10
           cache: true
 
       - name: "Compare candidate behavior with merged #141"
@@ -122,8 +122,72 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.9
+          go-version: 1.26.10
           cache: true
 
       - name: Race tests
         run: go test -race ./...
+
+  release-candidate:
+    name: Candidate release validation (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+          - runner: windows-2025
+            goos: windows
+            goarch: amd64
+          - runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.10
+          cache: true
+
+      - name: Set up Python for deterministic archives
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Check Unix installer syntax and run fixture tests
+        if: matrix.goos != 'windows'
+        shell: bash
+        run: |
+          bash -n scripts/install.sh scripts/uninstall.sh
+          bash scripts/test-installer-unix.sh
+
+      - name: Run Windows installer syntax and fixture tests
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/test-installer-windows.ps1
+
+      - name: Build and execute native candidate
+        shell: bash
+        run: |
+          candidate_dir="$(mktemp -d)"
+          commit="$(git rev-parse HEAD)"
+          bash scripts/build-release.sh --version 0.0.0-dev --commit "$commit" --goos "${{ matrix.goos }}" --goarch "${{ matrix.goarch }}" --output-dir "$candidate_dir"
+          bash scripts/test-release-artifacts.sh --version 0.0.0-dev --commit "$commit" --goos "${{ matrix.goos }}" --goarch "${{ matrix.goarch }}" --artifacts-dir "$candidate_dir"

@@ -8,14 +8,17 @@ and numbered migrations, provider adapters, collector behavior, pricing,
 diagnostics, and report queries/formatting. It also contains an experimental
 temporary text chat under `plugins/model-provider/`, `plugins/ui/`, and
 `internal/harness/`, with source entrypoint `cmd/harness/` and binary name
-`komposyn`. The standalone `komposyn-lg` production executable, production
-settings/consent/onboarding, data-directory selection, JSONL harness transport,
-installers, and binary releases remain owned by
+`komposyn`. This repository owns packaging, installers, and binary releases
+for this experimental executable. The standalone `komposyn-lg` production
+executable, production settings/consent/onboarding, data-directory selection,
+and JSONL harness transport remain owned by
 [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
 
-Do not add a nested module or independently version core packages. Core and CLI
-versions are independent; the CLI depends on a tagged core release. Keep the
-dependency one-way. Keep this chat and its role-specific plugin contracts
+Do not add a nested module or independently version core packages. Release
+Please owns one repository-wide version for core source and experimental
+`komposyn` binaries. The production `komposyn-lg` CLI remains independently
+versioned and depends on a tagged core release. Keep the dependency one-way.
+Keep this chat and its role-specific plugin contracts
 experimental; do not add projects, sessions, tasks, persistent conversations,
 tool execution, a marketplace, or a universal plugin API to this milestone.
 Read [docs/vision.md](docs/vision.md), [docs/architecture.md](docs/architecture.md),
@@ -94,13 +97,16 @@ credentials, and never commits a `replace` directive. Review any generated
 diffs from formatting. Keep binaries, databases, WAL files, archives, and
 agent metadata out of commits.
 
-## Core releases
+## Repository releases
 
-Release Please prepares and reviews core version/changelog changes. Merging a
-release PR on `master` creates the source tag and GitHub release notes through
-the pinned Release Please workflow. Core releases contain the Go module source;
-they do not build or publish `komposyn-lg` binaries. Never create or move tags
-manually. Historical combined releases through v0.7.0 remain available; see
+Release Please prepares and reviews the repository-wide version and changelog.
+The workflow is manual-only: merging a release PR on `master` does not create a
+tag. After normal review and merge, explicitly dispatch Release Please from
+`master` to create the source tag and GitHub release, then dispatch the binary
+release workflow with that exact tag and commit. It builds and signs only the
+experimental `komposyn` binary; it does not build or publish `komposyn-lg`.
+Never create or move tags manually. Historical combined releases through
+v0.7.0 remain available; see
 [historical combined release verification](docs/historical-combined-releases.md).
 
 Keep Actions permissions least-privilege and third-party actions pinned to

@@ -1,13 +1,9 @@
-name: Core source release
+name: Prepare or tag a reviewed source release
 
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: release-please-master
@@ -15,9 +11,24 @@ concurrency:
 
 jobs:
   release-please:
-    name: Prepare source release or publish merged release
+    name: Run Release Please on explicit dispatch
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     steps:
+      - name: Require master dispatch
+        env:
+          EVENT_REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          test "$REPOSITORY" = ayeshLK/komposyn
+          test "$EVENT_REF" = refs/heads/master || {
+            echo "Run Release Please from master." >&2
+            exit 1
+          }
+
       - name: Prepare reviewed source release or release merged tag
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:

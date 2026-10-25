@@ -18,6 +18,7 @@ package main
 import (
 	"fmt"
 	"os"
+	goruntime "runtime"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
@@ -31,6 +32,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// These values are set by release builds. Local builds identify themselves as
+// development builds and never infer a version from an unreviewed manifest.
+var cliVersion = "dev"
+var cliCommit = "unknown"
+
 func main() {
 	if err := newCommand().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -42,10 +48,11 @@ func newCommand() *cobra.Command {
 	var authPath, settingsPath string
 	var check bool
 	cmd := &cobra.Command{
-		Use:   "komposyn",
-		Short: "Start a temporary text chat with an OpenAI or Anthropic model",
-		Long:  "KompoSyn runs a local experimental chat. Use /model to add a provider profile, discover models, and select one. Messages and model selection exist only until exit; credentials and UI settings are stored locally.",
-		Args:  cobra.NoArgs,
+		Use:     "komposyn",
+		Version: fmt.Sprintf("version=%s commit=%s target=%s/%s", cliVersion, cliCommit, goruntime.GOOS, goruntime.GOARCH),
+		Short:   "Start a temporary text chat with an OpenAI or Anthropic model",
+		Long:    "KompoSyn runs a local experimental chat. Use /model to add a provider profile, discover models, and select one. Messages and model selection exist only until exit; credentials and UI settings are stored locally.",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			profileStore := auth.Store{Path: authPath}
 			settingsStore := settings.Store{Path: settingsPath}
@@ -76,6 +83,7 @@ func newCommand() *cobra.Command {
 			return frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore})
 		},
 	}
+	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
 	cmd.Flags().StringVar(&authPath, "auth-file", "", "credential file path (default: ~/.komposyn/auth.json)")
 	cmd.Flags().StringVar(&settingsPath, "settings-file", "", "settings file path (default: ~/.komposyn/settings.json)")
 	cmd.Flags().BoolVar(&check, "check", false, "validate local configuration and list provider profile metadata without opening the terminal UI")

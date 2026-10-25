@@ -26,8 +26,9 @@ useful with existing tools before a broader harness is built.
 
 The production CLI's versioned JSONL sidecar is an integration contract for
 Token Logger, not a general KompoSyn plugin protocol. This module includes the
-experimental `cmd/harness/` entrypoint; it does not own production CLI release
-or binary-release machinery.
+experimental `cmd/harness/` entrypoint and its repository-versioned binary
+release path. That path does not replace or distribute the production
+`komposyn-lg` executable.
 
 ## Principles and open questions
 
@@ -54,9 +55,16 @@ SQLite persistence and migrations, provider adapters, collection, pricing,
 diagnostics, and report behavior. It reads provider-owned local data without
 capturing prompts, responses, or credentials. The experimental chat sends
 submitted text to the selected provider, stores API keys in a private
-plaintext configuration file, and keeps chat state only in memory. The
-standalone CLI owns production command behavior, settings, process lifecycle,
-the JSONL sidecar transport, installers, and binary releases.
+plaintext configuration file, and keeps chat state only in memory. This
+repository prepares signed `komposyn` binaries for the experimental
+temporary chat. The standalone CLI repository owns production command
+behavior, settings, consent, data-directory selection, process lifecycle, and
+the JSONL sidecar transport for `komposyn-lg`.
+
+> **Experimental chat users:** install `komposyn` using the
+> [experimental CLI installation guide](docs/installation.md). It can share a
+> bin directory with `komposyn-lg`; uninstalling it preserves the production
+> CLI and both applications' data.
 
 > **Existing CLI users:** install or upgrade using the
 > [standalone CLI instructions](https://github.com/ayeshLK/komposyn-lg#install).
@@ -65,9 +73,12 @@ the JSONL sidecar transport, installers, and binary releases.
 > backups. Do not reinstall a historical combined binary after upgrading.
 
 The historical combined [v0.7.0 release](https://github.com/ayeshLK/komposyn/releases/tag/v0.7.0)
-and earlier tags remain available. Their binary signatures use the former
-core release workflow identity; new CLI artifacts are signed only by the
-standalone repository. See [historical combined release verification](docs/historical-combined-releases.md).
+and earlier tags remain available. Their historical artifact layout and
+verification instructions are in
+[historical combined release verification](docs/historical-combined-releases.md).
+New experimental `komposyn` archives use this repository's manual release
+workflow identity; `komposyn-lg` artifacts continue to use the standalone
+repository's identity.
 
 ## Development
 
@@ -79,11 +90,11 @@ go test -race ./...
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), the [development guide](docs/contributing/development.md),
-and [the documentation index](docs/README.md). CLI command behavior, settings,
-protocol transport, and binary releases belong in
+and [the documentation index](docs/README.md). Production CLI command
+behavior, settings, and protocol transport belong in
 [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg); reusable API,
-provider, storage, migration, pricing, diagnostic, and report behavior belong
-here.
+provider, storage, migration, pricing, diagnostics, reports, and the
+experimental chat and its release artifacts belong here.
 
 The project is licensed under Apache-2.0. See [LICENSE](LICENSE) and
 [NOTICE](NOTICE).

@@ -1,0 +1,149 @@
+# Install the experimental `komposyn` CLI
+
+`komposyn` is the experimental in-memory text chat in this repository. It is
+separate from the production `komposyn-lg` executable. The first signed
+`komposyn` binary release is not published until its native and cryptographic
+release checks are complete; these instructions apply after a signed release
+is available.
+
+Installers download one stable release tag, verify the signed `checksums.txt`
+manifest and the selected archive digest, inspect archive contents, and check
+the executable's version, commit, and target before replacing an installation.
+They do not read or change provider credentials/settings, initialize chat,
+create a database, or make a model request.
+
+## Linux and macOS
+
+Requirements: Bash, `curl`, `tar`, `sha256sum` or `shasum`, and Cosign v2.4.3
+on `PATH`. `jq` is also required when resolving the latest stable release. A
+version-pinned install does not need `jq`.
+
+Download the installer from an immutable source tag, then run it. Update the
+source tag below when you want to use a newer installer implementation:
+
+```sh
+installer_version=v0.10.0
+curl -fsSLo /tmp/komposyn-install.sh \
+  "https://raw.githubusercontent.com/ayeshLK/komposyn/${installer_version}/scripts/install.sh"
+bash /tmp/komposyn-install.sh
+```
+
+With no version argument, the installer resolves the latest stable `vX.Y.Z`
+release once and downloads every file from that exact tag. To pin the binary
+version explicitly:
+
+```sh
+bash /tmp/komposyn-install.sh --version v0.10.0
+```
+
+To upgrade, rerun the installer. Leave off `--version` to use the latest
+stable binary, or pass a version to pin the upgrade.
+
+The default install directory is `~/.local/bin`. To choose another directory:
+
+```sh
+bash /tmp/komposyn-install.sh --install-dir "$HOME/bin/komposyn"
+```
+
+The installer cannot modify the parent shell's `PATH`. Add the selected
+directory to your shell startup file, then open a new terminal. For example,
+for the default directory in Bash or Zsh:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+For local fixture or release-candidate testing, provide an explicit version
+and a directory containing that target archive, `checksums.txt`, and
+`checksums.txt.sigstore.json`:
+
+```sh
+bash /tmp/komposyn-install.sh --version v0.10.0 \
+  --artifacts-dir "$HOME/komposyn-release-artifacts"
+```
+
+The verification identity and OIDC issuer are fixed in the installer. The
+optional `KOMPOSYN_RELEASE_METADATA_URL` and `KOMPOSYN_COSIGN_BIN` environment
+values are test seams for alternate metadata fixtures and Cosign executables;
+they cannot change the accepted release signer identity.
+
+Uninstall only the `komposyn` executable and its owned install artifacts:
+
+```sh
+curl -fsSLo /tmp/komposyn-uninstall.sh \
+  "https://raw.githubusercontent.com/ayeshLK/komposyn/${installer_version}/scripts/uninstall.sh"
+bash /tmp/komposyn-uninstall.sh
+```
+
+Pass `--install-dir` to uninstall from a custom directory. Repeating
+uninstallation is safe. It preserves `~/.komposyn/auth.json`,
+`~/.komposyn/settings.json`, `komposyn-lg`, and Token Logger data.
+
+## Windows
+
+Requirements: Windows PowerShell 5.1 or PowerShell 7 and Cosign v2.4.3 on
+`PATH`. The installer detects native Windows ARM64 even when PowerShell is
+running under x64 emulation.
+
+Download both the installer and its architecture helper from the same
+immutable source tag before running the installer:
+
+```powershell
+$installerVersion = 'v0.10.0'
+$scriptDir = Join-Path $env:TEMP "komposyn-installer-$installerVersion"
+New-Item -ItemType Directory -Path $scriptDir -Force | Out-Null
+$source = "https://raw.githubusercontent.com/ayeshLK/komposyn/$installerVersion/scripts"
+Invoke-WebRequest "$source/install.ps1" -OutFile (Join-Path $scriptDir 'install.ps1')
+Invoke-WebRequest "$source/windows-architecture.ps1" -OutFile (Join-Path $scriptDir 'windows-architecture.ps1')
+& (Join-Path $scriptDir 'install.ps1') -Version $installerVersion
+```
+
+Omit `-Version` to resolve the latest stable release; use `-Version vX.Y.Z` to
+pin one. Rerun the installer to upgrade; the default install directory is
+`%LOCALAPPDATA%\Komposyn\bin`. Choose another directory with `-InstallDir`.
+The installer does not change `PATH`. To add the default directory to the
+current user's persistent PATH:
+
+```powershell
+$bin = Join-Path $env:LOCALAPPDATA 'Komposyn\bin'
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($userPath -split ';') -notcontains $bin) {
+    [Environment]::SetEnvironmentVariable('Path', (($userPath.TrimEnd(';') + ';' + $bin).TrimStart(';')), 'User')
+}
+```
+
+Open a new terminal after changing `PATH`. To install local candidate
+artifacts, pass both `-Version vX.Y.Z` and `-ArtifactsDir PATH`. The optional
+`-MetadataUri` and `-CosignPath` parameters support fixture testing and
+alternate Cosign executable locations; the accepted signer identity remains
+fixed.
+
+Uninstall with the PowerShell script from that same source tag:
+
+```powershell
+Invoke-WebRequest "$source/uninstall.ps1" -OutFile (Join-Path $scriptDir 'uninstall.ps1')
+& (Join-Path $scriptDir 'uninstall.ps1')
+```
+
+Pass `-InstallDir` if the executable is in a custom directory. If Windows
+cannot remove a running executable, close the chat and retry. Uninstallation
+preserves both configuration files, `komposyn-lg`, and Token Logger data.
+
+## Verify an installation
+
+The binary supports `--version` and `--help` without loading configuration.
+Use isolated files when testing `--check`, which reads the selected config
+paths:
+
+```sh
+komposyn --version
+komposyn --help
+tmp_dir="$(mktemp -d)"
+komposyn --auth-file "$tmp_dir/auth.json" \
+  --settings-file "$tmp_dir/settings.json" --check
+rm -rf "$tmp_dir"
+```
+
+The `komposyn` and `komposyn-lg` executable names are distinct, so they can
+share a bin directory. Installing or uninstalling `komposyn` does not alter
+the production executable or either tool's data.
