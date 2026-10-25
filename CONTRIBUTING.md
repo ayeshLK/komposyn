@@ -73,6 +73,9 @@ through v0.7.0 remain available; see [historical release verification](docs/hist
 
 ## Change-specific requirements
 
+- **Go source files:** add the standard current-year copyright line and
+  Apache-2.0 license header to every new file, matching existing Go sources.
+  Keep build constraints below the header with the required blank lines.
 - **Storage or migration:** add an immutable numbered migration, update the
   runner and schema contract, and test fresh creation, complete history,
   restoration, backup failure, and migration failure preservation.

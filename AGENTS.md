@@ -25,6 +25,11 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md),
 [LICENSE](LICENSE), and [NOTICE](NOTICE) before changes. Inspect the worktree
 before editing and preserve unrelated changes.
 
+Every new Go source file must begin with the repository's standard copyright
+and Apache-2.0 license header, matching existing Go source files. Keep Go build
+constraints immediately after that header with a blank line before the package
+declaration.
+
 ## Core invariants
 
 - Keep provider source files read-only. Do not capture prompts, responses,
