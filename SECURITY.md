@@ -18,10 +18,17 @@ its exact core dependency; see [compatibility and coordinated security releases]
 KompoSyn is local-first. It reads provider-owned source files but does not
 modify them or intentionally store prompts, responses, full transcripts, API
 keys, or provider credentials. Normalization and reporting operate locally.
-The database may contain usage counts, timestamps, provider/model/client
+The Token Logger database may contain usage counts, timestamps, provider/model/client
 identifiers, project/session references, provenance, source hashes, cursors,
 collector state, pricing rules, and sanitized diagnostics. The host filesystem
 protects this data; KompoSyn does not encrypt it for you.
+
+The experimental harness under `internal/harness/` has a different boundary: it
+sends prompts, root instructions, and approved tool results to the selected
+provider and persists conversation history in a separate `harness.db`. That
+history can be sensitive and is not encrypted by the harness. It uses explicit
+environment credential references and does not send conversation content to
+Token Logger. See [harness data handling](docs/harness/phase-one-security.md).
 
 Diagnostics are best-effort sanitized and locally persisted. The standalone
 CLI owns review and routing of public issue drafts. A suspected vulnerability

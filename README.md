@@ -6,10 +6,11 @@ We are taking a component-first, or “plugin-first,” approach: solve real
 problems with components that work on their own, learn from their use, and
 compose them when the shared architecture is clear.
 
-The general KompoSyn harness, plugin runtime, and universal plugin API do not
-exist yet. The name describes the project direction, not a platform already
-available to install. Today, KompoSyn delivers one independently useful
-component: Token Logger.
+KompoSyn does not yet provide a supported general harness runtime, plugin
+marketplace, or universal plugin API. An experimental phase-one local harness
+slice is being evaluated in this repository; it is not a platform release or
+compatibility promise. Token Logger remains the independently supported
+component.
 
 > **Build independently. Compose seamlessly. Evolve openly.**
 
@@ -24,8 +25,9 @@ Its reusable library lives in this repository as the Go module
 useful with existing tools before a broader harness is built.
 
 The CLI's versioned JSONL sidecar is an integration contract for Token Logger,
-not a general KompoSyn plugin protocol. The module here contains no executable
-or binary-release machinery.
+not a general KompoSyn plugin protocol. The module has no Token Logger CLI or
+binary-release machinery. An experimental `cmd/komposyn-harness` entrypoint
+exercises a bounded local workflow; see the [experimental harness guide](docs/harness/README.md).
 
 ## Principles and open questions
 
@@ -49,9 +51,11 @@ consistency. See the [project vision](docs/vision.md),
 
 KompoSyn Core contains the reusable Token Logger library: domain models,
 SQLite persistence and migrations, provider adapters, collection, pricing,
-diagnostics, and report behavior. It reads provider-owned local data without
-capturing prompts, responses, or credentials. The standalone CLI owns command
-behavior, settings, process lifecycle, the JSONL sidecar transport, installers,
+diagnostics, and report behavior. The Core library reads provider-owned local
+data without capturing prompts, responses, or credentials. The experimental
+harness is separate internal code and stores local conversation history; see
+its [security notes](docs/harness/phase-one-security.md). The standalone CLI
+owns production command behavior, settings, process lifecycle, the JSONL sidecar transport, installers,
 and binary releases.
 
 > **Existing CLI users:** install or upgrade using the
@@ -75,7 +79,7 @@ go test -race ./...
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), the [development guide](docs/contributing/development.md),
-and [the documentation index](docs/README.md). CLI command behavior, settings,
+and [the documentation index](docs/README.md). Production CLI command behavior, settings,
 protocol transport, and binary releases belong in
 [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg); reusable API,
 provider, storage, migration, pricing, diagnostic, and report behavior belong

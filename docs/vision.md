@@ -19,9 +19,9 @@ This repository currently provides KompoSyn Token Logger Core:
 
 The standalone CLI lets developers use Token Logger with existing agent tools
 without waiting for a complete harness. The sidecar is a token-logger
-integration contract, not a general KompoSyn plugin protocol. The project does
-not currently provide a general harness runtime, universal plugin API, or
-plugin marketplace.
+integration contract, not a general KompoSyn plugin protocol. This repository also contains an experimental phase-one local harness slice
+under `internal/harness/`; it does not yet provide a supported general harness
+runtime, universal plugin API, or plugin marketplace. See the [harness guide](harness/README.md).
 
 ## Proposed direction
 
@@ -42,9 +42,9 @@ The following questions remain open:
 - Which components should be independently distributed, and what do users
   actually need to adopt them?
 
-Until those questions are decided and implemented, documentation should label
-the harness and plugin platform as proposed. The current token logger
-contracts remain the source of truth for users and integrators.
+Until those questions are decided and implemented, label the phase-one harness
+as experimental and keep its APIs internal. The Token Logger contracts remain
+the source of truth for supported library users and integrators.
 
 ## Design principles
 

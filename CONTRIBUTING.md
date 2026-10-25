@@ -8,9 +8,12 @@ before changing storage, migrations, provider handling, or security behavior.
 
 This repository owns the reusable `github.com/ayeshLK/komposyn` Go module:
 domain behavior, APIs, SQLite storage/migrations, adapters, collection, pricing,
-diagnostics, and reports. The standalone executable, command policy, settings,
-consent/onboarding, data-directory resolution, process lifecycle, harness
-transport, installers, and binary release lifecycle belong in
+diagnostics, and reports. An experimental phase-one harness also lives here as
+internal packages under `internal/harness/`, with an entrypoint at
+`cmd/komposyn-harness/`; it is not a supported general plugin API. The
+production standalone executable, command policy, settings, consent/onboarding,
+data-directory resolution, process lifecycle, JSONL harness transport,
+installers, and binary release lifecycle belong in
 [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
 
 Keep dependency direction one-way: CLI imports core; core never imports the
@@ -21,8 +24,9 @@ core changes affect the contract, and exact machine-readable report values.
 ## Project direction
 
 KompoSyn follows a component-first approach: contributions should solve a
-concrete problem and remain useful and testable on their own. The future
-harness, common plugin API, and plugin distribution model remain open. A
+concrete problem and remain useful and testable on their own. The broader
+harness, common plugin API, and plugin distribution model remain open; the
+internal phase-one slice is experimental and does not settle those contracts. A
 proposal should explain the developer need, component boundary, contract, and
 whether independent distribution is useful; no component is required to have
 a CLI for consistency alone. Read the [project vision](docs/vision.md) and

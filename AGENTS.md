@@ -5,16 +5,20 @@
 This repository is the single Go module `github.com/ayeshLK/komposyn`. It owns
 the reusable token-logger API: domain models and validation, SQLite storage
 and numbered migrations, provider adapters, collector behavior, pricing,
-diagnostics, and report queries/formatting. The standalone executable,
-interactive onboarding, settings and consent policy, data-directory selection,
-process lifecycle, JSONL harness transport, installers, and binary releases are
+diagnostics, and report queries/formatting. It also contains an experimental,
+internal phase-one harness under `internal/harness/` with a local entrypoint at
+`cmd/komposyn-harness/`; this is not a stable public API or general plugin
+runtime. The standalone `komposyn-lg` executable, interactive onboarding,
+settings and consent policy, data-directory selection, production process
+lifecycle, JSONL harness transport, installers, and binary releases remain
 owned by [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
 
 Do not add a nested module or independently version core packages. Core and CLI
 versions are independent; the CLI depends on a tagged core release. Keep the
-dependency one-way. Do not assume a general harness runtime, plugin
-marketplace, or universal plugin API exists; read [docs/vision.md](docs/vision.md)
-and [docs/architecture.md](docs/architecture.md) for implemented boundaries.
+dependency one-way. Keep harness packages internal and experimental; do not
+turn this slice into a general plugin runtime, marketplace, or universal plugin
+API without a separate reviewed design. Read [docs/vision.md](docs/vision.md),
+[docs/architecture.md](docs/architecture.md), and [docs/harness/README.md](docs/harness/README.md).
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md),
 [LICENSE](LICENSE), and [NOTICE](NOTICE) before changes. Inspect the worktree
@@ -47,9 +51,9 @@ before editing and preserve unrelated changes.
   registered roots. Preserve one healthy lease owner per data directory.
 - Reports preserve exact JSON/CSV values, local civil-hour grouping, UTC
   offsets, fractional offsets, and DST-fold distinctions.
-- Harness protocol transport is owned by the standalone CLI. Core changes that
-  affect event or schema compatibility must preserve its published protocol-v1
-  semantics and be reviewed with the CLI compatibility checks.
+- The production JSONL harness transport is owned by the standalone CLI. Core
+  changes that affect its event or schema compatibility must preserve published
+  protocol-v1 semantics and be reviewed with the CLI compatibility checks.
 - Diagnostics remain sanitized, deduplicated, locally persisted, and
   destination-neutral. Public issue drafts require explicit review in the CLI;
   security-sensitive reports use private disclosure.

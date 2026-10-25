@@ -15,8 +15,8 @@ and persisted in SQLite. The independently versioned `komposyn-lg` executable
 is maintained in [its standalone repository](https://github.com/ayeshLK/komposyn-lg)
 and consumes this module.
 
-This architecture is implemented in this repository. It is not a description
-of a general harness runtime or a universal plugin API.
+This describes the implemented Token Logger architecture. It does not define
+the experimental harness runtime or a universal plugin API.
 
 ```mermaid
 flowchart LR
@@ -45,10 +45,25 @@ flowchart LR
   Core API or schema changes that affect it are validated against the public
   CLI suite in core CI.
 
+## Experimental phase-one harness
+
+An experimental local harness slice lives in `internal/harness/`, with its
+terminal entrypoint in `cmd/komposyn-harness/`. It is kept inside this module
+and has no exported general plugin contract. Its local conversations are
+separate from Token Logger storage, and its optional observer writes usage-only
+events through the published Core API. The implementation and current gaps are
+documented in [the phase-one harness guide](harness/README.md).
+
+This slice does not change the standalone CLI's ownership of production
+settings, consent, lifecycle, JSONL transport, installers, or binary releases.
+It also does not claim that the future plugin API or harness architecture has
+been decided.
+
 ## Relationship to the future harness
 
 The intended KompoSyn direction is to compose independently useful components
-into a broader agent harness. That composition layer does not exist yet. Its
+into a broader agent harness. A bounded phase-one experiment exists, but the
+supported general composition layer does not. Its
 plugin lifecycle, discovery and distribution model, trust boundary, and the
 question of whether every component needs a standalone CLI remain open design
 questions. Do not treat the Token Logger library or CLI integration as a
