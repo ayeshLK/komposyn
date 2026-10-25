@@ -11,6 +11,13 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.10.0](https://github.com/ayeshLK/komposyn/compare/v0.9.0...v0.10.0) (2026-10-25)
+
+
+### Features
+
+* **harness:** add experimental temporary chat ([#157](https://github.com/ayeshLK/komposyn/issues/157)) ([e006cad](https://github.com/ayeshLK/komposyn/commit/e006cad6492ac21f654c877bd43e055746aa3bce))
+
 ## [0.9.0](https://github.com/ayeshLK/komposyn/compare/v0.8.0...v0.9.0) (2026-10-21)
 
 
