@@ -27,9 +27,12 @@ import (
 )
 
 type clientStub struct {
-	mu         sync.Mutex
-	selected   *ui.Model
-	selectedCh chan struct{}
+	mu           sync.Mutex
+	selected     *ui.Model
+	selectedCh   chan struct{}
+	selectCalls  int
+	snapshotHook func() ui.Snapshot
+	sendHook     func(context.Context, string, func(string)) (ui.Turn, error)
 }
 
 // synchronizedSimulation protects the returned cell slice from tview's render
@@ -75,6 +78,7 @@ func (c *clientStub) Select(_ context.Context, key string, _ bool) error {
 			c.mu.Lock()
 			copy := m
 			c.selected = &copy
+			c.selectCalls++
 			c.mu.Unlock()
 			select {
 			case c.selectedCh <- struct{}{}:
@@ -87,10 +91,22 @@ func (c *clientStub) Select(_ context.Context, key string, _ bool) error {
 }
 func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return ui.Snapshot{Selected: c.selected}
+	hook := c.snapshotHook
+	c.snapshotHook = nil
+	snapshot := ui.Snapshot{Selected: c.selected}
+	c.mu.Unlock()
+	if hook != nil {
+		return hook()
+	}
+	return snapshot
 }
-func (c *clientStub) Send(context.Context, string, func(string)) (ui.Turn, error) {
+func (c *clientStub) Send(ctx context.Context, text string, delta func(string)) (ui.Turn, error) {
+	c.mu.Lock()
+	hook := c.sendHook
+	c.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, text, delta)
+	}
 	return ui.Turn{}, nil
 }
 func (c *clientStub) Cancel() {}
@@ -99,7 +115,7 @@ func TestPickerInteractionOnSimulationScreen(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(100, 32)
 	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
-	client := &clientStub{selectedCh: make(chan struct{}, 1)}
+	client := &clientStub{selectedCh: make(chan struct{}, 2)}
 	finished := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -146,6 +162,13 @@ func TestPickerInteractionOnSimulationScreen(t *testing.T) {
 		<-finished
 		t.Fatal("selecting the rendered model did not reach the client")
 	}
+	time.Sleep(75 * time.Millisecond)
+	client.mu.Lock()
+	selectCalls := client.selectCalls
+	client.mu.Unlock()
+	if selectCalls != 1 {
+		t.Fatalf("one activation called Select %d times", selectCalls)
+	}
 	press(tcell.KeyCtrlC, 0)
 	select {
 	case err := <-finished:
@@ -156,4 +179,177 @@ func TestPickerInteractionOnSimulationScreen(t *testing.T) {
 		cancel()
 		t.Fatal("terminal did not stop")
 	}
+}
+
+func TestEscapeFromModelFilterReturnsToChatAndPreservesSelection(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 32)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	model := ui.Model{Key: "openai\x00personal\x00model-x", Provider: "openai", ProfileID: "personal", ProfileLabel: "Personal", ID: "model-x", DisplayName: "Text Model", Compatibility: modelprovider.CompatibilityUnknown}
+	client := &clientStub{selectedCh: make(chan struct{}, 2), selected: &model}
+	finished := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { finished <- (Plugin{screen: safeScreen}).Run(ctx, client) }()
+	time.Sleep(150 * time.Millisecond)
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, r := range "/model" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyEnter, 0)
+	press(tcell.KeyEscape, 0)
+	waitForScreen(t, safeScreen, "KompoSyn · Temporary Chat", "/model · Select a model")
+	if got := client.Snapshot().Selected; got == nil || got.Key != model.Key {
+		t.Fatalf("selection changed after escape: %+v", got)
+	}
+	press(tcell.KeyCtrlC, 0)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestStopDrainsQueuedWorkerUpdates(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 32)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	model := ui.Model{Key: "openai\x00personal\x00model-x", Provider: "openai", ProfileID: "personal", ProfileLabel: "Personal", ID: "model-x", DisplayName: "Text Model", Compatibility: modelprovider.CompatibilityUnknown}
+	client := &clientStub{selectedCh: make(chan struct{}, 2), selected: &model}
+	sendStarted := make(chan struct{})
+	allowDelta := make(chan struct{})
+	deltaCalling := make(chan struct{})
+	client.sendHook = func(_ context.Context, _ string, delta func(string)) (ui.Turn, error) {
+		close(sendStarted)
+		<-allowDelta
+		close(deltaCalling)
+		delta("pending worker update")
+		return ui.Turn{Outcome: modelprovider.OutcomeCompleted}, nil
+	}
+	finished := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { finished <- (Plugin{screen: safeScreen}).Run(ctx, client) }()
+	time.Sleep(150 * time.Millisecond)
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, r := range "hello" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyEnter, 0)
+	select {
+	case <-sendStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not start")
+	}
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	client.mu.Lock()
+	client.snapshotHook = func() ui.Snapshot {
+		close(blocked)
+		<-release
+		return ui.Snapshot{Selected: &model, Active: false}
+	}
+	client.mu.Unlock()
+	screen.InjectKey(tcell.KeyCtrlC, 0, tcell.ModNone)
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("input loop did not reach the stop callback")
+	}
+	close(allowDelta)
+	select {
+	case <-deltaCalling:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not try to queue its update")
+	}
+	time.Sleep(40 * time.Millisecond)
+	close(release)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal waited forever for an update after shutdown")
+	}
+}
+
+func TestNonSuccessOutcomesAreRendered(t *testing.T) {
+	cases := []struct {
+		name string
+		out  modelprovider.Outcome
+		want string
+	}{
+		{name: "truncated", out: modelprovider.OutcomeTruncated, want: "Response truncated; it was not added to follow-up context."},
+		{name: "unsupported", out: modelprovider.OutcomeUnsupported, want: "Provider response unsupported; it was not added to follow-up context."},
+		{name: "service failure", out: modelprovider.OutcomeService, want: "Provider service failed; response was not added to follow-up context."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			screen := tcell.NewSimulationScreen("UTF-8")
+			screen.SetSize(100, 32)
+			safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+			model := ui.Model{Key: "openai\x00personal\x00model-x", Provider: "openai", ProfileID: "personal", ProfileLabel: "Personal", ID: "model-x", DisplayName: "Text Model", Compatibility: modelprovider.CompatibilityUnknown}
+			client := &clientStub{selectedCh: make(chan struct{}, 2), selected: &model}
+			client.sendHook = func(_ context.Context, _ string, delta func(string)) (ui.Turn, error) {
+				delta("partial reply")
+				return ui.Turn{Outcome: tc.out, Text: "partial reply"}, nil
+			}
+			finished := make(chan error, 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { finished <- (Plugin{screen: safeScreen}).Run(ctx, client) }()
+			time.Sleep(150 * time.Millisecond)
+			press := func(key tcell.Key, r rune) {
+				screen.InjectKey(key, r, tcell.ModNone)
+				time.Sleep(10 * time.Millisecond)
+			}
+			for _, r := range "hello" {
+				press(tcell.KeyRune, r)
+			}
+			press(tcell.KeyEnter, 0)
+			waitForScreen(t, safeScreen, tc.want, "")
+			press(tcell.KeyCtrlC, 0)
+			select {
+			case err := <-finished:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("terminal did not stop")
+			}
+		})
+	}
+}
+
+func waitForScreen(t *testing.T, screen *synchronizedSimulation, contains, absent string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		cells, _, _ := screen.GetContents()
+		var b strings.Builder
+		for _, cell := range cells {
+			b.WriteString(string(cell.Runes))
+		}
+		text := b.String()
+		if strings.Contains(text, contains) && (absent == "" || !strings.Contains(text, absent)) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cells, _, _ := screen.GetContents()
+	var b strings.Builder
+	for _, cell := range cells {
+		b.WriteString(string(cell.Runes))
+	}
+	t.Fatalf("screen did not contain %q (or still contained %q): %q", contains, absent, b.String())
 }

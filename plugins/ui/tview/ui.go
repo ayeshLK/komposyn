@@ -49,7 +49,11 @@ type terminal struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
+	lifecycleMu  sync.Mutex
+	stopping     bool
+	stopOnce     sync.Once
 	closing      atomic.Bool
+	runReturned  atomic.Bool
 	output       *tv.TextView
 	input        *tv.InputField
 	layout       *tv.Flex
@@ -89,10 +93,17 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	})
 	u.write("KompoSyn is ready. Chat state is temporary and will be cleared on exit. Run /model to connect a provider.\n")
 	u.done = make(chan struct{})
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	u.app.SetAfterDrawFunc(func(tcell.Screen) { readyOnce.Do(func() { close(ready) }) })
 	go func() {
 		select {
 		case <-ctx.Done():
-			u.app.Stop()
+			select {
+			case <-ready:
+				u.stop()
+			case <-u.done:
+			}
 		case <-u.done:
 		}
 	}()
@@ -100,10 +111,9 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		u.app.SetScreen(p.screen)
 	}
 	err := u.app.SetRoot(u.layout, true).EnableMouse(true).SetFocus(u.input).Run()
+	u.runReturned.Store(true)
 	close(u.done)
-	u.closing.Store(true)
-	client.Cancel()
-	cancel()
+	u.stop()
 	u.wg.Wait()
 	if err != nil {
 		return fmt.Errorf("run terminal UI: %w", err)
@@ -125,8 +135,32 @@ func (u *terminal) queue(update func()) {
 func (u *terminal) writeAsync(s string) {
 	u.queue(func() { fmt.Fprint(u.output, s); u.output.ScrollToEnd() })
 }
-func (u *terminal) launch(work func()) { u.wg.Add(1); go func() { defer u.wg.Done(); work() }() }
-func (u *terminal) stop()              { u.client.Cancel(); u.app.Stop() }
+func (u *terminal) launch(work func()) {
+	u.lifecycleMu.Lock()
+	if u.stopping {
+		u.lifecycleMu.Unlock()
+		return
+	}
+	u.wg.Add(1)
+	u.lifecycleMu.Unlock()
+	go func() { defer u.wg.Done(); work() }()
+}
+func (u *terminal) stop() {
+	u.stopOnce.Do(func() {
+		u.lifecycleMu.Lock()
+		u.stopping = true
+		u.lifecycleMu.Unlock()
+		u.closing.Store(true)
+		u.cancel()
+		u.client.Cancel()
+		go func() {
+			u.wg.Wait()
+			if !u.runReturned.Load() {
+				u.app.Stop()
+			}
+		}()
+	})
+}
 
 func (u *terminal) submit() {
 	text := u.input.GetText()
@@ -170,15 +204,14 @@ func (u *terminal) submit() {
 	u.launch(func() {
 		turn, err := u.client.Send(u.ctx, trimmed, func(delta string) { u.writeAsync(delta) })
 		u.writeAsync("\n")
-		if err != nil {
-			u.writeAsync("Request " + string(turn.Outcome) + ": " + turn.Message + ". This response was not added to follow-up context.\n")
-		} else if turn.Outcome == modelprovider.OutcomeRefused {
+		if turn.Outcome == modelprovider.OutcomeRefused {
 			if turn.Refusal != "" {
 				u.writeAsync("Provider refusal: " + turn.Refusal + "\n")
 			} else {
 				u.writeAsync("The provider refused this request.\n")
 			}
 		}
+		u.writeAsync(outcomeStatus(turn, err))
 		if turn.Usage.Known {
 			u.writeAsync(fmt.Sprintf("Request usage: input=%d output=%d\n", turn.Usage.InputTokens, turn.Usage.OutputTokens))
 		} else {
@@ -197,13 +230,9 @@ func (u *terminal) openPicker() {
 	u.pickerInput.SetDoneFunc(func(key tcell.Key) {
 		if key == tcell.KeyEnter {
 			u.app.SetFocus(u.picker)
+		} else if key == tcell.KeyEscape {
+			u.returnToChat()
 		}
-	})
-	u.picker.SetSelectedFunc(func(index int, main, secondary string, shortcut rune) {
-		if index < 0 || index >= len(u.entries) {
-			return
-		}
-		u.activate(u.entries[index])
 	})
 	u.picker.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEscape {
@@ -582,6 +611,41 @@ func profileID(providerID, label string, profiles []ui.Profile) string {
 	}
 	return id
 }
+
+func outcomeStatus(turn ui.Turn, err error) string {
+	if err != nil {
+		message := turn.Message
+		if message == "" {
+			message = "request failed"
+		}
+		return fmt.Sprintf("Request %s: %s. This response was not added to follow-up context.\n", turn.Outcome, message)
+	}
+	switch turn.Outcome {
+	case modelprovider.OutcomeCompleted:
+		return "Response completed and added to follow-up context.\n"
+	case modelprovider.OutcomeRefused:
+		return "Provider refusal; response added to follow-up context.\n"
+	case modelprovider.OutcomeTruncated:
+		return "Response truncated; it was not added to follow-up context.\n"
+	case modelprovider.OutcomeInterrupted:
+		return "Response interrupted; it was not added to follow-up context.\n"
+	case modelprovider.OutcomeUnsupported:
+		return "Provider response unsupported; it was not added to follow-up context.\n"
+	case modelprovider.OutcomeAuthentication:
+		return "Provider rejected the credential; response was not added to follow-up context.\n"
+	case modelprovider.OutcomePermission:
+		return "Provider denied permission; response was not added to follow-up context.\n"
+	case modelprovider.OutcomeRateLimited:
+		return "Provider rate limited the request; response was not added to follow-up context.\n"
+	case modelprovider.OutcomeNetwork:
+		return "Provider network request failed; response was not added to follow-up context.\n"
+	case modelprovider.OutcomeService:
+		return "Provider service failed; response was not added to follow-up context.\n"
+	default:
+		return "Provider returned no recognized outcome; response was not added to follow-up context.\n"
+	}
+}
+
 func failureText(out modelprovider.Outcome) string {
 	switch out {
 	case modelprovider.OutcomeAuthentication:
