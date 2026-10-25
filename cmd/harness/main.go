@@ -21,6 +21,7 @@ import (
 	goruntime "runtime"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	oauthauth "github.com/ayeshLK/komposyn/internal/harness/auth/openai"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
@@ -75,7 +76,7 @@ func newCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			chat := runtime.NewChat(registry, profileStore)
+			chat := runtime.NewChatWithOAuth(registry, profileStore, oauthauth.New(profileStore))
 			frontend, err := harnessui.Load(prefs.Plugin, []uiplugin.Plugin{tviewui.New()})
 			if err != nil {
 				return err

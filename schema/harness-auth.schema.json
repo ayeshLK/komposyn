@@ -7,6 +7,7 @@
   "required": ["schema_version", "credentials"],
   "properties": {
     "schema_version": { "const": 1 },
+    "ext_agent_host_id": { "type": "string", "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
     "credentials": {
       "type": "array",
       "items": { "$ref": "#/$defs/profile" }
@@ -29,6 +30,7 @@
             "project": { "type": "string", "minLength": 1, "maxLength": 256 }
           }
         },
+        "revision": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
         "auth": {
           "oneOf": [
             {
@@ -40,13 +42,41 @@
               "type": "object", "additionalProperties": false,
               "required": ["type", "env"],
               "properties": { "type": { "const": "env" }, "env": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" } }
+            },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["type", "oauth"],
+              "properties": {
+                "type": { "const": "oauth" },
+                "oauth": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["client_id", "issuer", "subject", "ext_agent_host_id", "lifecycle_generation"],
+                  "properties": {
+                    "client_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+                    "issuer": { "const": "https://auth.openai.com" },
+                    "subject": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "email": { "type": "string", "maxLength": 320 },
+                    "ext_agent_host_id": { "$ref": "#/$defs/host_id" },
+                    "id_token": { "type": "string" },
+                    "access_token": { "type": "string" },
+                    "refresh_token": { "type": "string" },
+                    "token_type": { "const": "Bearer" },
+                    "scopes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+                    "expires_at": { "type": "string", "format": "date-time" },
+                    "lifecycle_generation": { "type": "integer", "minimum": 1 },
+                    "reconnect_required": { "type": "boolean" }
+                  }
+                }
+              }
             }
           ]
         }
       },
       "allOf": [
-        { "if": { "properties": { "provider": { "const": "anthropic" } } }, "then": { "not": { "required": ["routing"] } } }
+        { "if": { "properties": { "provider": { "const": "anthropic" } } }, "then": { "not": { "required": ["routing"] } } },
+        { "if": { "properties": { "auth": { "properties": { "type": { "const": "oauth" } }, "required": ["type"] } }, "required": ["auth"] }, "then": { "required": ["revision"] } }
       ]
-    }
+    },
+    "host_id": { "type": "string", "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }
   }
 }

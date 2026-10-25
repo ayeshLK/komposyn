@@ -36,11 +36,16 @@ type Plugin struct {
 	Client  *http.Client
 }
 
-func (Plugin) ID() provider.ID                    { return provider.OpenAI }
-func (Plugin) AuthMethods() []provider.AuthMethod { return []provider.AuthMethod{provider.AuthAPIKey} }
+func (Plugin) ID() provider.ID { return provider.OpenAI }
+func (Plugin) AuthMethods() []provider.AuthMethod {
+	return []provider.AuthMethod{provider.AuthAPIKey, provider.AuthOAuth}
+}
 
 func (p Plugin) Authenticate(ctx context.Context, c provider.Credential) (provider.AuthResult, error) {
-	if strings.TrimSpace(c.APIKey) == "" {
+	method := credentialMethod(c)
+	if (method == provider.AuthAPIKey && strings.TrimSpace(c.APIKey) == "") ||
+		(method == provider.AuthOAuth && strings.TrimSpace(c.AccessToken) == "") ||
+		(method != provider.AuthAPIKey && method != provider.AuthOAuth) {
 		return provider.AuthResult{}, &provider.Error{Outcome: provider.OutcomeAuthentication}
 	}
 	_, err := p.list(ctx, c)
@@ -55,11 +60,9 @@ func (p Plugin) ListModels(ctx context.Context, c provider.Credential) ([]provid
 }
 
 func (p Plugin) list(ctx context.Context, c provider.Credential) ([]provider.Model, error) {
-	var body struct {
-		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
-		} `json:"data"`
+	method := credentialMethod(c)
+	if method != provider.AuthAPIKey && method != provider.AuthOAuth {
+		return nil, &provider.Error{Outcome: provider.OutcomeUnsupported}
 	}
 	req, err := p.newRequest(ctx, http.MethodGet, "/models", nil, c)
 	if err != nil {
@@ -71,9 +74,36 @@ func (p Plugin) list(ctx context.Context, c provider.Credential) ([]provider.Mod
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, statusError(resp)
+		return nil, statusError(resp, method)
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&body); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 8<<20))
+	if method == provider.AuthOAuth {
+		var body struct {
+			Models []struct {
+				Slug        string `json:"slug"`
+				DisplayName string `json:"display_name"`
+				Visibility  string `json:"visibility"`
+			} `json:"models"`
+		}
+		if err := decoder.Decode(&body); err != nil {
+			return nil, &provider.Error{Outcome: provider.OutcomeService, StatusCode: resp.StatusCode, RequestID: resp.Header.Get("x-request-id")}
+		}
+		out := make([]provider.Model, 0, len(body.Models))
+		for _, m := range body.Models {
+			if m.Visibility != "list" || m.Slug == "" {
+				continue
+			}
+			out = append(out, provider.Model{ID: m.Slug, DisplayName: m.DisplayName, Compatibility: provider.CompatibilityUnknown, Reason: "the model catalog does not report text-generation capabilities"})
+		}
+		return out, nil
+	}
+	var body struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := decoder.Decode(&body); err != nil {
 		return nil, &provider.Error{Outcome: provider.OutcomeService, StatusCode: resp.StatusCode, RequestID: resp.Header.Get("x-request-id")}
 	}
 	out := make([]provider.Model, 0, len(body.Data))
@@ -87,7 +117,8 @@ func (p Plugin) list(ctx context.Context, c provider.Credential) ([]provider.Mod
 }
 
 func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
-	if in.ModelID == "" || in.MaxOutput <= 0 {
+	method := credentialMethod(in.Credential)
+	if in.ModelID == "" || (method == provider.AuthAPIKey && in.MaxOutput <= 0) || (method != provider.AuthAPIKey && method != provider.AuthOAuth) {
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 	}
 	input := make([]json.RawMessage, 0, len(in.Messages))
@@ -110,7 +141,11 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 		}
 	}
-	payload := map[string]any{"model": in.ModelID, "input": input, "max_output_tokens": in.MaxOutput, "stream": true, "store": false, "include": []string{"reasoning.encrypted_content"}}
+	payload := map[string]any{"model": in.ModelID, "input": input, "stream": true, "store": false}
+	if method == provider.AuthAPIKey {
+		payload["max_output_tokens"] = in.MaxOutput
+		payload["include"] = []string{"reasoning.encrypted_content"}
+	}
 	if in.Instructions != "" {
 		payload["instructions"] = in.Instructions
 	}
@@ -128,7 +163,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return provider.Result{}, statusError(resp)
+		return provider.Result{}, statusError(resp, method)
 	}
 	result := provider.Result{RequestID: resp.Header.Get("x-request-id"), ModelID: in.ModelID}
 	var terminal string
@@ -139,6 +174,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			Delta    string          `json:"delta"`
 			Response json.RawMessage `json:"response"`
 			Message  string          `json:"message"`
+			Error    json.RawMessage `json:"error"`
 		}
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return &provider.Error{Outcome: provider.OutcomeService}
@@ -161,7 +197,12 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 				}
 			}
 		case "error":
-			return &provider.Error{Outcome: provider.OutcomeService, RequestID: result.RequestID}
+			var apiErr struct {
+				Code string `json:"code"`
+			}
+			_ = json.Unmarshal(v.Error, &apiErr)
+			result.ProviderCode = apiErr.Code
+			return &provider.Error{Outcome: outcomeForCode(apiErr.Code, provider.OutcomeService), RequestID: result.RequestID, ProviderCode: apiErr.Code}
 		}
 		return nil
 	})
@@ -198,7 +239,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			result.Outcome = provider.OutcomeUnsupported
 		}
 	case "response.failed":
-		result.Outcome = provider.OutcomeService
+		result.Outcome = outcomeForCode(result.ProviderCode, provider.OutcomeService)
 	}
 	if result.Outcome == provider.OutcomeCompleted && result.StopReason != "completed" {
 		result.Outcome = provider.OutcomeUnsupported
@@ -214,9 +255,12 @@ type resultResponse struct {
 
 func (r *resultResponse) UnmarshalJSON(b []byte) error {
 	var v struct {
-		ID         string `json:"id"`
-		Model      string `json:"model"`
-		Status     string `json:"status"`
+		ID     string `json:"id"`
+		Model  string `json:"model"`
+		Status string `json:"status"`
+		Error  *struct {
+			Code string `json:"code"`
+		} `json:"error"`
 		Incomplete *struct {
 			Reason string `json:"reason"`
 		} `json:"incomplete_details"`
@@ -241,6 +285,9 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 		t.ModelID = v.Model
 	}
 	t.StopReason = v.Status
+	if v.Error != nil {
+		t.ProviderCode = v.Error.Code
+	}
 	if v.Incomplete != nil {
 		t.StopReason = v.Incomplete.Reason
 	}
@@ -282,6 +329,10 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 }
 
 func (p Plugin) newRequest(ctx context.Context, method, path string, body io.Reader, c provider.Credential) (*http.Request, error) {
+	authMethod := credentialMethod(c)
+	if authMethod != provider.AuthAPIKey && authMethod != provider.AuthOAuth {
+		return nil, &provider.Error{Outcome: provider.OutcomeUnsupported}
+	}
 	u, err := url.Parse(strings.TrimRight(p.baseURL(), "/") + path)
 	if err != nil {
 		return nil, &provider.Error{Outcome: provider.OutcomeService}
@@ -290,18 +341,32 @@ func (p Plugin) newRequest(ctx context.Context, method, path string, body io.Rea
 	if err != nil {
 		return nil, &provider.Error{Outcome: provider.OutcomeService}
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if authMethod == provider.AuthOAuth {
+		if strings.TrimSpace(c.AccessToken) == "" {
+			return nil, &provider.Error{Outcome: provider.OutcomeAuthentication}
+		}
+		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.Route.Organization != "" {
+	if authMethod == provider.AuthAPIKey && c.Route.Organization != "" {
 		req.Header.Set("OpenAI-Organization", c.Route.Organization)
 	}
-	if c.Route.Project != "" {
+	if authMethod == provider.AuthAPIKey && c.Route.Project != "" {
 		req.Header.Set("OpenAI-Project", c.Route.Project)
 	}
 	return req, nil
+}
+
+func credentialMethod(c provider.Credential) provider.AuthMethod {
+	if c.Method == "" {
+		return provider.AuthAPIKey
+	}
+	return c.Method
 }
 func (p Plugin) baseURL() string {
 	if p.BaseURL != "" {
@@ -315,7 +380,7 @@ func (p Plugin) client() *http.Client {
 	}
 	return &http.Client{Timeout: 2 * time.Minute}
 }
-func statusError(r *http.Response) error {
+func statusError(r *http.Response, method provider.AuthMethod) error {
 	kind := provider.OutcomeService
 	switch r.StatusCode {
 	case 401:
@@ -327,7 +392,35 @@ func statusError(r *http.Response) error {
 	case 400, 404, 422:
 		kind = provider.OutcomeUnsupported
 	}
-	return &provider.Error{Outcome: kind, StatusCode: r.StatusCode, RequestID: r.Header.Get("x-request-id")}
+	apiCode := ""
+	if method == provider.AuthOAuth {
+		var payload struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&payload)
+		apiCode = payload.Error.Code
+		kind = outcomeForCode(apiCode, kind)
+	}
+	return &provider.Error{Outcome: kind, StatusCode: r.StatusCode, RequestID: r.Header.Get("x-request-id"), ProviderCode: apiCode}
+}
+
+func outcomeForCode(code string, fallback provider.Outcome) provider.Outcome {
+	switch code {
+	case "subscription_sharing_user_not_eligible", "chatpass_v2_scope_not_authorized", "chatpass_v2_invalid_authorization_context":
+		return provider.OutcomePermission
+	case "subscription_sharing_usage_limit_exceeded":
+		return provider.OutcomeRateLimited
+	case "subscription_sharing_usage_unavailable":
+		return provider.OutcomeService
+	case "subscription_sharing_unsupported_capability":
+		return provider.OutcomeUnsupported
+	case "subscription_sharing_invalid_user":
+		return provider.OutcomeAuthentication
+	default:
+		return fallback
+	}
 }
 func classify(err error, status int, id string) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

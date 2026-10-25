@@ -44,8 +44,9 @@ type entry struct {
 }
 
 type credentialOperation struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx     context.Context
+	cancel  context.CancelFunc
+	loginID string
 }
 
 type terminal struct {
@@ -89,6 +90,9 @@ func (u *terminal) cancelCredentialOperation(op *credentialOperation) {
 		u.credentialOp = nil
 	}
 	op.cancel()
+	if op.loginID != "" {
+		u.client.CancelLogin(op.loginID)
+	}
 }
 
 func (p Plugin) Run(parent context.Context, client ui.Client) error {
@@ -287,7 +291,7 @@ func (u *terminal) rebuildPicker() {
 		u.entries = append(u.entries, e)
 		u.picker.AddItem(e.label, secondary, shortcut, func() { u.activate(e) })
 	}
-	add(entry{label: "＋ Add New Provider", action: "add"}, "Choose OpenAI or Anthropic; enter a masked API key", 'a')
+	add(entry{label: "＋ Add New Provider", action: "add"}, "Choose ChatGPT sign-in or an API key", 'a')
 	add(entry{label: "↻ Refresh Models", action: "refresh"}, "Fetch the current provider catalogs", 'r')
 	add(entry{label: "⚙ Manage Providers", action: "manage"}, "Review profile metadata, replace keys, or remove profiles", 'p')
 	for _, m := range u.discovery.Models {
@@ -371,6 +375,37 @@ func (u *terminal) refreshModels() {
 
 func (u *terminal) addProvider() {
 	providerID := "openai"
+	form := tv.NewForm()
+	form.SetBorder(true).SetTitle(" Add New Provider ")
+	form.AddDropDown("Provider", []string{"openai", "anthropic"}, 0, func(value string, _ int) { providerID = value })
+	form.AddButton("Continue", func() {
+		methods := u.client.AuthMethods(providerID)
+		if len(methods) > 1 {
+			options := make([]string, 0, len(methods))
+			for _, method := range methods {
+				if method == "oauth" {
+					options = append(options, "Continue with ChatGPT")
+				} else if method == "api_key" {
+					options = append(options, "API key")
+				}
+			}
+			modal := tv.NewModal().SetText("Choose an authentication method for " + providerID + ".").AddButtons(options).SetDoneFunc(func(_ int, label string) {
+				if label == "Continue with ChatGPT" {
+					u.startOpenAILogin("")
+					return
+				}
+				u.addAPIKeyProvider(providerID)
+			})
+			u.app.SetRoot(modal, true)
+			return
+		}
+		u.addAPIKeyProvider(providerID)
+	})
+	form.AddButton("Cancel", func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+	u.app.SetRoot(form, true).SetFocus(form.GetFormItem(0))
+}
+
+func (u *terminal) addAPIKeyProvider(providerID string) {
 	label := tv.NewInputField().SetLabel("Profile label: ").SetFieldWidth(32)
 	key := tv.NewInputField().SetLabel("API key: ").SetFieldWidth(40).SetMaskCharacter('•')
 	org := tv.NewInputField().SetLabel("OpenAI organization (optional): ").SetFieldWidth(36)
@@ -378,7 +413,6 @@ func (u *terminal) addProvider() {
 	form := tv.NewForm()
 	form.SetBorder(true)
 	form.SetTitle(" Add provider · API key is stored locally as plaintext ")
-	form.AddDropDown("Provider", []string{"openai", "anthropic"}, 0, func(value string, _ int) { providerID = value })
 	form.AddFormItem(label)
 	form.AddFormItem(key)
 	form.AddFormItem(org)
@@ -429,6 +463,43 @@ func (u *terminal) addProvider() {
 	u.app.SetRoot(form, true).SetFocus(label)
 }
 
+func (u *terminal) startOpenAILogin(profileID string) {
+	op := u.beginCredentialOperation()
+	attempt, err := u.client.StartLogin(op.ctx, profileID)
+	if err != nil {
+		u.cancelCredentialOperation(op)
+		u.showMessage("Could not start ChatGPT sign-in", err.Error(), func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+		return
+	}
+	op.loginID = attempt.ID
+	modal := tv.NewModal().SetText("OpenAI will ask you to authorize eligible inference to use your ChatGPT plan. Sign-in alone does not guarantee eligibility. KompoSyn will return here after sign-in; no chat prompt is sent during setup.").AddButtons([]string{"Cancel sign-in"}).SetDoneFunc(func(_ int, _ string) {
+		u.cancelCredentialOperation(op)
+		u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+		u.writePickerNotice("ChatGPT sign-in canceled.")
+	})
+	u.app.SetRoot(modal, true)
+	u.launch(func() {
+		result := <-attempt.Done
+		u.queue(func() {
+			if u.credentialOp != op {
+				return
+			}
+			u.cancelCredentialOperation(op)
+			if result.Err != nil {
+				u.showMessage("ChatGPT sign-in did not complete", result.Err.Error(), func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+				return
+			}
+			u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+			if result.Status == "plan_usage_enabled" {
+				u.writePickerNotice("Connected as " + result.Account + ". ChatGPT plan usage is enabled. Choose a model explicitly.")
+			} else {
+				u.writePickerNotice("Signed in as " + result.Account + ", but ChatGPT plan usage was not enabled. Manage this profile to reconnect with plan usage enabled.")
+			}
+			u.refreshModels()
+		})
+	})
+}
+
 func (u *terminal) manageProviders() {
 	u.launch(func() {
 		profiles, err := u.client.Profiles(u.ctx)
@@ -442,10 +513,14 @@ func (u *terminal) manageProviders() {
 				return
 			}
 			list := tv.NewList().ShowSecondaryText(true)
-			list.SetBorder(true).SetTitle(" Manage Providers · no keys are shown ")
+			list.SetBorder(true).SetTitle(" Manage Providers · no credentials are shown ")
 			for _, p := range profiles {
 				p := p
-				list.AddItem(p.Label, p.Provider+" · "+p.ID+" · "+p.AuthType, 0, func() { u.manageProfile(p) })
+				secondary := p.Provider + " · " + p.ID + " · " + p.AuthType
+				if p.AuthType == "oauth" {
+					secondary = p.Account + " · " + p.Status
+				}
+				list.AddItem(p.Label, secondary, 0, func() { u.manageProfile(p) })
 			}
 			list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 				if event.Key() == tcell.KeyEscape {
@@ -459,6 +534,10 @@ func (u *terminal) manageProviders() {
 	})
 }
 func (u *terminal) manageProfile(p ui.Profile) {
+	if p.AuthType == "oauth" {
+		u.manageOAuthProfile(p)
+		return
+	}
 	modal := tv.NewModal().SetText(p.Label + "\n" + p.Provider + " · " + p.ID + "\nRemoving this local profile does not revoke the provider key.").AddButtons([]string{"Replace API key", "Remove profile", "Back"}).SetDoneFunc(func(_ int, label string) {
 		switch label {
 		case "Replace API key":
@@ -470,6 +549,93 @@ func (u *terminal) manageProfile(p ui.Profile) {
 		}
 	})
 	u.app.SetRoot(modal, true)
+}
+
+func (u *terminal) manageOAuthProfile(p ui.Profile) {
+	status := "Signed in; ChatGPT plan usage is disabled."
+	if p.Status == "plan_usage_enabled" || p.PlanUsageEnabled {
+		status = "Connected · ChatGPT plan usage enabled."
+	}
+	if p.Status == "reconnect_required" {
+		status = "Reconnect required."
+	}
+	modal := tv.NewModal().SetText(p.Account + "\n" + status + "\nEligible requests use your ChatGPT plan. Manage usage in ChatGPT Settings.").AddButtons([]string{"Reconnect / enable plan usage", "Manage usage", "Disconnect and keep registration", "Remove registration", "Back"}).SetDoneFunc(func(_ int, label string) {
+		switch label {
+		case "Reconnect / enable plan usage":
+			u.startOpenAILogin(p.ID)
+		case "Manage usage":
+			u.launch(func() {
+				err := u.client.OpenUsage()
+				if err != nil {
+					u.queue(func() { u.showMessage("Could not open usage settings", err.Error(), func() { u.manageProviders() }) })
+				}
+			})
+		case "Disconnect and keep registration":
+			u.disconnectOAuth(p, false)
+		case "Remove registration":
+			u.disconnectOAuth(p, true)
+		default:
+			u.manageProviders()
+		}
+	})
+	u.app.SetRoot(modal, true)
+}
+
+func (u *terminal) disconnectOAuth(p ui.Profile, remove bool) {
+	op := u.beginCredentialOperation()
+	u.launch(func() {
+		result, err := u.client.Disconnect(op.ctx, p.ID, remove, false)
+		u.queue(func() {
+			if u.credentialOp != op {
+				return
+			}
+			if errors.Is(err, ui.ErrConversationReset) {
+				question := "Disconnecting this selected account clears the current temporary chat. Continue?"
+				if remove {
+					question = "Removing this selected account clears the current temporary chat. Continue?"
+				}
+				modal := tv.NewModal().SetText(question).AddButtons([]string{"Continue", "Cancel"}).SetDoneFunc(func(index int, _ string) {
+					if index != 0 {
+						u.cancelCredentialOperation(op)
+						u.manageProviders()
+						return
+					}
+					u.launch(func() {
+						confirmedResult, confirmedErr := u.client.Disconnect(op.ctx, p.ID, remove, true)
+						u.queue(func() { u.finishOAuthDisconnect(op, p, confirmedResult, confirmedErr, remove) })
+					})
+				})
+				u.app.SetRoot(modal, true)
+				return
+			}
+			u.finishOAuthDisconnect(op, p, result, err, remove)
+		})
+	})
+}
+
+func (u *terminal) finishOAuthDisconnect(op *credentialOperation, p ui.Profile, result ui.DisconnectResult, err error, remove bool) {
+	if u.credentialOp != op {
+		return
+	}
+	u.cancelCredentialOperation(op)
+	if result.LocalTokensRemoved {
+		u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+		message := "ChatGPT tokens were removed locally."
+		if remove {
+			message = "The local ChatGPT registration and tokens were removed."
+		}
+		if !result.RemoteRevocationConfirmed {
+			message += " Remote revocation was not confirmed; disconnect the app in ChatGPT Settings if needed."
+		}
+		u.writePickerNotice(message)
+		u.refreshModels()
+		return
+	}
+	if err != nil {
+		u.showMessage("ChatGPT profile was not disconnected", err.Error(), func() { u.manageProfile(p) })
+		return
+	}
+	u.manageProviders()
 }
 func (u *terminal) replaceProfile(p ui.Profile) {
 	label := tv.NewInputField().SetLabel("Profile label: ").SetText(p.Label)
@@ -665,6 +831,9 @@ func profileID(providerID, label string, profiles []ui.Profile) string {
 }
 
 func outcomeStatus(turn ui.Turn, err error) string {
+	if turn.Message != "" {
+		return fmt.Sprintf("Request %s: %s. This response was not added to follow-up context.\n", turn.Outcome, turn.Message)
+	}
 	if err != nil {
 		message := turn.Message
 		if message == "" {

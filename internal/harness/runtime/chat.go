@@ -44,6 +44,7 @@ type Turn struct {
 	Outcome            provider.Outcome
 	Usage              provider.Usage
 	RequestID, ModelID string
+	ProviderCode       string
 	Message            string
 	At                 time.Time
 }
@@ -53,23 +54,119 @@ type Snapshot struct {
 	Active   bool
 }
 type Chat struct {
-	mu            sync.Mutex
-	catalog       model.Catalog
-	profiles      auth.Store
-	history       []provider.Message
-	turns         []Turn
-	selected      *model.Model
-	discovery     *model.Discovery
-	active        bool
-	activeProfile string
-	cancel        context.CancelFunc
-	generation    uint64
-	sequence      atomic.Uint64
-	timeout       time.Duration
+	mu             sync.Mutex
+	catalog        model.Catalog
+	profiles       auth.Store
+	oauth          auth.OAuthCoordinator
+	oauthResolver  auth.OAuthResolver
+	history        []provider.Message
+	turns          []Turn
+	selected       *model.Model
+	discovery      *model.Discovery
+	active         bool
+	activeProfile  string
+	credentialBusy bool
+	cancel         context.CancelFunc
+	generation     uint64
+	sequence       atomic.Uint64
+	timeout        time.Duration
 }
 
 func NewChat(providers *model.Registry, profiles auth.Store) *Chat {
 	return &Chat{catalog: model.Catalog{Providers: providers, Profiles: profiles}, profiles: profiles, timeout: 2 * time.Minute}
+}
+
+func NewChatWithOAuth(providers *model.Registry, profiles auth.Store, oauth auth.OAuthCoordinator) *Chat {
+	chat := NewChat(providers, profiles)
+	chat.oauth = oauth
+	chat.oauthResolver = oauth
+	chat.catalog.OAuth = oauth
+	return chat
+}
+
+func (c *Chat) StartOAuthLogin(ctx context.Context, profileID string) (auth.OAuthLoginAttempt, error) {
+	if c.oauth == nil {
+		return auth.OAuthLoginAttempt{}, errors.New("OAuth login is unavailable")
+	}
+	c.mu.Lock()
+	if c.active || c.credentialBusy {
+		c.mu.Unlock()
+		return auth.OAuthLoginAttempt{}, ErrRequestActive
+	}
+	c.credentialBusy = true
+	c.mu.Unlock()
+	attempt, err := c.oauth.StartLogin(ctx, profileID)
+	if err != nil {
+		c.mu.Lock()
+		c.credentialBusy = false
+		c.mu.Unlock()
+		return auth.OAuthLoginAttempt{}, err
+	}
+	completed := make(chan auth.OAuthLoginResult, 1)
+	go func() {
+		result := <-attempt.Done
+		if result.Err == nil {
+			c.mu.Lock()
+			c.discovery = nil
+			c.mu.Unlock()
+		}
+		c.mu.Lock()
+		c.credentialBusy = false
+		c.mu.Unlock()
+		completed <- result
+		close(completed)
+	}()
+	attempt.Done = completed
+	return attempt, nil
+}
+
+func (c *Chat) CancelOAuthLogin(attemptID string) bool {
+	return c.oauth != nil && c.oauth.CancelLogin(attemptID)
+}
+
+func (c *Chat) AuthMethods(providerID string) []provider.AuthMethod {
+	plug, ok := c.catalog.Providers.Get(provider.ID(providerID))
+	if !ok {
+		return nil
+	}
+	return append([]provider.AuthMethod(nil), plug.AuthMethods()...)
+}
+
+func (c *Chat) DisconnectOAuth(ctx context.Context, profileID string, removeRegistration, confirmReset bool) (auth.OAuthDisconnectResult, error) {
+	if c.oauth == nil {
+		return auth.OAuthDisconnectResult{}, errors.New("OAuth disconnect is unavailable")
+	}
+	c.mu.Lock()
+	if c.credentialBusy || (c.active && c.activeProfile == profileID) {
+		c.mu.Unlock()
+		return auth.OAuthDisconnectResult{}, ErrRequestActive
+	}
+	selected := c.selected != nil && c.selected.ProfileID == profileID
+	if selected && len(c.turns) > 0 && !confirmReset {
+		c.mu.Unlock()
+		return auth.OAuthDisconnectResult{}, ErrConversationReset
+	}
+	c.credentialBusy = true
+	c.mu.Unlock()
+	result, err := c.oauth.Disconnect(ctx, profileID, removeRegistration)
+	c.mu.Lock()
+	if result.LocalTokensRemoved || result.LocalRegistrationRemoved {
+		if selected && c.selected != nil && c.selected.ProfileID == profileID {
+			c.selected = nil
+			c.clearConversationLocked()
+		}
+		c.discovery = nil
+	}
+	c.credentialBusy = false
+	c.mu.Unlock()
+	return result, err
+}
+
+func (c *Chat) OpenOAuthUsage() error {
+	if c.oauth == nil {
+		return errors.New("OAuth account usage page is unavailable")
+	}
+	return c.oauth.OpenUsage()
 }
 func (c *Chat) Discover(ctx context.Context) model.Discovery {
 	d := c.catalog.Discover(ctx)
@@ -187,7 +284,7 @@ func (c *Chat) RemoveProfile(id string, confirmReset bool) error {
 
 func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error {
 	c.mu.Lock()
-	if c.active {
+	if c.active || c.credentialBusy {
 		c.mu.Unlock()
 		return ErrRequestActive
 	}
@@ -211,7 +308,7 @@ func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error 
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.active {
+	if c.active || c.credentialBusy {
 		return ErrRequestActive
 	}
 	if c.selected != nil && c.selected.Key() == selected.Key() {
@@ -243,7 +340,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		return Turn{}, errors.New("message is empty")
 	}
 	c.mu.Lock()
-	if c.active {
+	if c.active || c.credentialBusy {
 		c.mu.Unlock()
 		return Turn{}, ErrRequestActive
 	}
@@ -252,7 +349,16 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		return Turn{}, ErrNoSelection
 	}
 	selection := *c.selected
-	prof, key, err := c.profiles.Resolve(selection.ProfileID)
+	var prof auth.Profile
+	var key string
+	var err error
+	metadata, metaErr := c.profiles.Get(selection.ProfileID)
+	if metaErr == nil && metadata.Auth.Type == "oauth" {
+		prof = metadata
+		key = ""
+	} else {
+		prof, key, err = c.profiles.Resolve(selection.ProfileID)
+	}
 	if err != nil {
 		c.mu.Unlock()
 		return Turn{}, err
@@ -278,6 +384,33 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	requestID := fmt.Sprintf("chat-%d", generation)
 	c.mu.Unlock()
 	defer cancel()
+	turn := Turn{Prompt: prompt, ModelID: selection.ID, At: time.Now().UTC()}
+	if prof.Auth.Type == "oauth" {
+		var accessToken string
+		if c.oauthResolver == nil {
+			err = errors.New("OpenAI authentication coordinator is unavailable")
+		} else {
+			prof, accessToken, err = c.oauthResolver.Resolve(ctx, selection.ProfileID)
+		}
+		if err != nil {
+			outcome := provider.OutcomeAuthentication
+			if errors.Is(err, auth.ErrOAuthPermissionRequired) {
+				outcome = provider.OutcomePermission
+			}
+			turn.Outcome = outcome
+			turn.Message = "Account authorization is unavailable; manage this profile and reconnect or enable the required usage permission."
+			c.mu.Lock()
+			if c.generation == generation {
+				c.active = false
+				c.activeProfile = ""
+				c.cancel = nil
+				c.turns = append(c.turns, turn)
+			}
+			c.mu.Unlock()
+			return turn, err
+		}
+		key = accessToken
+	}
 	result, callErr := plug.StreamChat(ctx, provider.ChatRequest{RequestID: requestID, ModelID: selection.ID, Credential: modelCredential(prof, key), Messages: history, Instructions: "You are KompoSyn, a helpful text assistant. Do not claim to call tools.", MaxOutput: 4096}, func(delta string) {
 		c.mu.Lock()
 		valid := c.active && c.generation == generation && ctx.Err() == nil
@@ -286,7 +419,15 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 			onDelta(delta)
 		}
 	})
-	turn := Turn{Prompt: prompt, Text: result.Text, Refusal: result.Refusal, Outcome: result.Outcome, Usage: result.Usage, RequestID: result.RequestID, ModelID: selection.ID, At: time.Now().UTC()}
+	turn.Text = result.Text
+	turn.Refusal = result.Refusal
+	turn.Outcome = result.Outcome
+	turn.Usage = result.Usage
+	turn.RequestID = result.RequestID
+	turn.ProviderCode = result.ProviderCode
+	if result.Outcome != provider.OutcomeCompleted && result.ProviderCode != "" {
+		turn.Message = messageForProviderCode(result.ProviderCode)
+	}
 	if callErr != nil {
 		turn.Outcome = provider.ErrorOutcome(callErr)
 		turn.Message = safeError(callErr)
@@ -321,12 +462,15 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 }
 
 func modelCredential(p auth.Profile, key string) provider.Credential {
+	if p.Auth.Type == "oauth" {
+		return provider.Credential{Method: provider.AuthOAuth, AccessToken: key}
+	}
 	r := provider.Routing{}
 	if p.Route != nil {
 		r.Organization = p.Route["organization"]
 		r.Project = p.Route["project"]
 	}
-	return provider.Credential{APIKey: key, Route: r}
+	return provider.Credential{Method: provider.AuthAPIKey, APIKey: key, Route: r}
 }
 func cloneRaw(in []json.RawMessage) []json.RawMessage {
 	out := make([]json.RawMessage, len(in))
@@ -338,6 +482,9 @@ func cloneRaw(in []json.RawMessage) []json.RawMessage {
 func safeError(err error) string {
 	var e *provider.Error
 	if errors.As(err, &e) {
+		if e.ProviderCode != "" {
+			return messageForProviderCode(e.ProviderCode)
+		}
 		switch e.Outcome {
 		case provider.OutcomeAuthentication:
 			return "provider rejected the credential"
@@ -356,4 +503,21 @@ func safeError(err error) string {
 		}
 	}
 	return "request failed"
+}
+
+func messageForProviderCode(code string) string {
+	switch code {
+	case "subscription_sharing_user_not_eligible":
+		return "ChatGPT plan usage is unavailable for this account or workspace. Choose another saved account or API-key profile."
+	case "subscription_sharing_usage_limit_exceeded":
+		return "ChatGPT plan usage limit reached. Review or manage access in ChatGPT Settings → Usage."
+	case "subscription_sharing_usage_unavailable":
+		return "ChatGPT plan usage is temporarily unavailable. Your credentials are preserved; retry later."
+	case "subscription_sharing_unsupported_capability":
+		return "This model or request is not supported by the ChatGPT plan route. Choose another listed model."
+	case "subscription_sharing_invalid_user", "chatpass_v2_scope_not_authorized", "chatpass_v2_invalid_authorization_context":
+		return "ChatGPT plan authorization was rejected. Reconnect the selected account and verify its plan-use permission."
+	default:
+		return "OpenAI could not complete this request. The selected profile remains in use; no billing fallback occurred."
+	}
 }

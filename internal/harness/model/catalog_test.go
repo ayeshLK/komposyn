@@ -17,6 +17,7 @@ package model
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	p "github.com/ayeshLK/komposyn/plugins/model-provider"
@@ -56,5 +57,22 @@ func TestDiscoveryKeepsProfilesSeparateAndPartialFailuresVisible(t *testing.T) {
 	}
 	if d.Models[0].Key() == d.Models[1].Key() || d.Models[0].ID != d.Models[1].ID {
 		t.Fatalf("profile identity collided: %+v", d.Models)
+	}
+}
+
+func TestOAuthTokenRotationDoesNotChangeProfileVersion(t *testing.T) {
+	profile := auth.Profile{ID: "openai-chatgpt-1", Provider: "openai", Label: "ChatGPT", Revision: "stable-revision", Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "issued-client", Issuer: "https://auth.openai.com", Subject: "stable-subject", HostID: "urn:uuid:host", IDToken: "id-one", AccessToken: "access-one", RefreshToken: "refresh-one", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(time.Hour), LifecycleGeneration: 1}}}
+	first := ProfileVersion(profile, "access-one")
+	profile.Auth.OAuth.IDToken = "id-two"
+	profile.Auth.OAuth.AccessToken = "access-two"
+	profile.Auth.OAuth.RefreshToken = "refresh-two"
+	profile.Auth.OAuth.ExpiresAt = time.Now().Add(2 * time.Hour)
+	profile.Auth.OAuth.LifecycleGeneration = 9
+	if got := ProfileVersion(profile, "access-two"); got != first {
+		t.Fatalf("credential lifecycle change reset profile version: %s != %s", got, first)
+	}
+	profile.Auth.OAuth.Subject = "different-subject"
+	if got := ProfileVersion(profile, ""); got == first {
+		t.Fatal("account identity change kept profile version")
 	}
 }
