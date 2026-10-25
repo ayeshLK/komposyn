@@ -115,4 +115,4 @@ verify_preserved_state
 bash "$root/scripts/uninstall.sh" --install-dir "$install_dir"
 [[ ! -e "$install_dir/komposyn" ]] || { echo 'uninstaller left komposyn behind' >&2; exit 1; }
 verify_preserved_state
-echo "Signed release install lifecycle passed for $asset using the real Cosign verifier."
+echo "Signed release install lifecycle passed for $asset using the configured Cosign verifier."

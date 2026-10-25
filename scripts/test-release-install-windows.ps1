@@ -16,7 +16,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$Commit,
-    [Parameter(Mandatory = $true)][string]$ArtifactsDir
+    [Parameter(Mandatory = $true)][string]$ArtifactsDir,
+    [string]$CosignPath = 'cosign'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,7 +58,7 @@ function Assert-PreservedState {
 }
 
 function Invoke-RealInstaller {
-    & (Join-Path $scriptDir 'install.ps1') -Version $Version -InstallDir $installDir -ArtifactsDir $ArtifactsDir
+    & (Join-Path $scriptDir 'install.ps1') -Version $Version -InstallDir $installDir -ArtifactsDir $ArtifactsDir -CosignPath $CosignPath
 }
 
 function Assert-InstalledCLI {
@@ -88,7 +89,7 @@ try {
     & (Join-Path $scriptDir 'uninstall.ps1') -InstallDir $installDir
     if (Test-Path -LiteralPath $installedBinary) { throw 'Uninstaller left komposyn.exe behind.' }
     Assert-PreservedState
-    Write-Output "Signed release install lifecycle passed for $([System.IO.Path]::GetFileName($archive)) using the real Cosign verifier."
+    Write-Output "Signed release install lifecycle passed for $([System.IO.Path]::GetFileName($archive)) using the configured Cosign verifier."
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

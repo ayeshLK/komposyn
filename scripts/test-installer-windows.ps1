@@ -192,6 +192,11 @@ try {
     }
 
     New-FixtureArtifacts -Directory $script:artifacts -Version 'v0.10.0' -Architecture $script:targetArchitecture
+    & (Join-Path $scriptDir 'test-release-install-windows.ps1') `
+        -Version '0.10.0' `
+        -Commit '0123456789abcdef0123456789abcdef01234567' `
+        -ArtifactsDir $script:artifacts `
+        -CosignPath $script:fakeCosign | Out-Null
     Assert-Throws { & (Join-Path $scriptDir 'install.ps1') -InstallDir $script:installDir -ArtifactsDir $script:artifacts -CosignPath $script:fakeCosign } 'Local artifacts were accepted without an explicit version.'
 
     $fixtureHome = Join-Path $testRoot 'isolated home'

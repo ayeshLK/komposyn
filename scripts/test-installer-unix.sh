@@ -61,9 +61,11 @@ make_fixture() {
   mkdir -p "$destination" "$payload"
 	cat >"$payload/komposyn" <<EOF
 #!/usr/bin/env bash
-if [[ "\${1:-}" == --version ]]; then
-		echo "komposyn version=${version} commit=0123456789012345678901234567890123456789 target=${target_os}/${target_arch}"
-fi
+case "\${1:-}" in
+	--version) echo "komposyn version=${version} commit=0123456789012345678901234567890123456789 target=${target_os}/${target_arch}" ;;
+	--help) printf 'Usage: komposyn [flags]\n  --check\n' ;;
+	--check) printf 'UI: tview\nConfigured provider profiles: 0\n' ;;
+esac
 EOF
   chmod 0755 "$payload/komposyn"
   printf 'Apache License fixture\n' >"$payload/LICENSE"
@@ -77,6 +79,10 @@ EOF
 
 release="$tmp/release"
 archive="$(make_fixture "$release")"
+KOMPOSYN_COSIGN_BIN="$fakebin/cosign" bash "$root/scripts/test-release-install-unix.sh" \
+	--version 1.2.3 \
+	--commit 0123456789012345678901234567890123456789 \
+	--artifacts-dir "$release"
 install="$tmp/A path with apostrophe's bin"
 mkdir -p "$install"
 printf 'old executable\n' >"$install/komposyn"
