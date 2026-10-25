@@ -25,10 +25,11 @@ protects this data; KompoSyn does not encrypt it for you.
 The experimental chat has a separate boundary: submitted text is sent to the
 selected provider, while chat history, model selection, continuation data,
 discovery results, and request usage remain in memory. It persists API-key
-profiles as plaintext in `~/.komposyn/auth.json` and UI settings in
-`~/.komposyn/settings.json`; Unix permissions and Windows current-user ACLs
-restrict access. It does not create a chat database or send chat usage to Token
-Logger. See [temporary chat data handling](docs/harness/phase-one-security.md).
+profiles and ChatGPT OAuth tokens as plaintext in `~/.komposyn/auth.json` and
+UI settings in `~/.komposyn/settings.json`; Unix permissions and Windows
+current-user ACLs restrict access. It does not create a chat database or send
+chat usage to Token Logger. See
+[temporary chat data handling](docs/harness/phase-one-security.md).
 
 Diagnostics are best-effort sanitized and locally persisted. The standalone
 CLI owns review and routing of public issue drafts. A suspected vulnerability

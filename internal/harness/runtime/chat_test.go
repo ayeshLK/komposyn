@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -93,6 +94,22 @@ func selectFirst(t *testing.T, c *Chat) {
 	}
 	if err := c.Select(context.Background(), d.Models[0].Key(), false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCredentialOperationBlocksChatAndModelChanges(t *testing.T) {
+	fp := &fakeProvider{id: p.OpenAI}
+	c, _ := makeChat(t, fp)
+	selectFirst(t, c)
+	c.mu.Lock()
+	c.credentialBusy = true
+	c.mu.Unlock()
+	if _, err := c.Send(context.Background(), "must wait", nil); !errors.Is(err, ErrRequestActive) {
+		t.Fatalf("send during credential operation error=%v", err)
+	}
+	selected := c.Snapshot().Selected
+	if err := c.Select(context.Background(), selected.Key(), false); !errors.Is(err, ErrRequestActive) {
+		t.Fatalf("selection during credential operation error=%v", err)
 	}
 }
 
@@ -174,6 +191,68 @@ func TestCanceledCredentialValidationDoesNotPersist(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type rotatingOAuthResolver struct {
+	store auth.Store
+	mu    sync.Mutex
+	count int
+}
+
+func (r *rotatingOAuthResolver) Resolve(_ context.Context, id string) (auth.Profile, string, error) {
+	p, err := r.store.Get(id)
+	if err != nil {
+		return auth.Profile{}, "", err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.count++
+	return p, fmt.Sprintf("access-token-%d", r.count), nil
+}
+
+func TestOAuthAccessTokenRefreshKeepsSelectedModelAndChatContext(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	hostID, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := auth.NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := auth.Profile{ID: "openai-chatgpt-rotation", Provider: "openai", Label: "ChatGPT", Revision: revision, Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "issued-client", Issuer: "https://auth.openai.com", Subject: "stable-subject", HostID: hostID, IDToken: "stable-id", AccessToken: "persisted-access", RefreshToken: "persisted-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(time.Hour)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	plug := &fakeProvider{id: p.OpenAI}
+	registry, err := model.NewRegistry(plug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat(registry, store)
+	chat.oauthResolver = &rotatingOAuthResolver{store: store}
+	selected := model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: p.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "")}
+	chat.selected = &selected
+	for _, prompt := range []string{"first message", "follow-up after token rotation"} {
+		turn, err := chat.Send(context.Background(), prompt, nil)
+		if err != nil || turn.Outcome != p.OutcomeCompleted {
+			t.Fatalf("send turn=%+v err=%v", turn, err)
+		}
+	}
+	requests := plug.captured()
+	if len(requests) != 2 {
+		t.Fatalf("requests=%d", len(requests))
+	}
+	if requests[0].Credential.Method != p.AuthOAuth || requests[0].Credential.AccessToken != "access-token-1" || requests[1].Credential.AccessToken != "access-token-2" {
+		t.Fatalf("OAuth credentials=%+v %+v", requests[0].Credential, requests[1].Credential)
+	}
+	if len(requests[1].Messages) != 3 || requests[1].Messages[0].Text != "first message" || len(requests[1].Messages[1].Native) == 0 || requests[1].Messages[2].Text != "follow-up after token rotation" {
+		t.Fatalf("conversation context reset across refresh: %+v", requests[1].Messages)
+	}
+	snapshot := chat.Snapshot()
+	if snapshot.Selected == nil || snapshot.Selected.Key() != selected.Key() || len(snapshot.Turns) != 2 {
+		t.Fatalf("selection/chat was reset: %+v", snapshot)
 	}
 }
 

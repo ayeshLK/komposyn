@@ -15,6 +15,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestProfileLifecycleAndSecretFreeMetadata(t *testing.T) {
@@ -148,5 +150,132 @@ func TestEnvironmentReferenceDoesNotCopyValue(t *testing.T) {
 	}
 	if strings.Contains(string(b), "env-secret") {
 		t.Fatal("environment value persisted")
+	}
+}
+
+func TestVersionOneCredentialStoreUpgradesWithoutLosingProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	legacy := `{"schema_version":1,"credentials":[{"id":"old-openai","provider":"openai","label":"Old","auth":{"type":"api_key","api_key":"keep-this-key"}}]}`
+	var legacyDocument document
+	if err := json.Unmarshal([]byte(legacy), &legacyDocument); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(path, legacyDocument); err != nil {
+		t.Fatal(err)
+	}
+	s := Store{Path: path}
+	profile, value, err := s.Resolve("old-openai")
+	if err != nil || value != "keep-this-key" || profile.Auth.Type != "api_key" {
+		t.Fatalf("legacy resolve: %+v %q %v", profile, value, err)
+	}
+	if err := s.AddAPIKey("new-anthropic", "anthropic", "New", "new-key", nil); err != nil {
+		t.Fatal(err)
+	}
+	var upgraded document
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &upgraded); err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.SchemaVersion != SchemaVersion || len(upgraded.Credentials) != 2 {
+		t.Fatalf("upgrade=%+v", upgraded)
+	}
+	_, value, err = s.Resolve("old-openai")
+	if err != nil || value != "keep-this-key" {
+		t.Fatalf("legacy key lost after upgrade: %q %v", value, err)
+	}
+}
+
+func TestOAuthProfileMetadataAndRefreshKeepStableIdentity(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	hostID, err := s.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Add(-time.Minute)
+	profile := Profile{ID: "chatgpt-account-1", Provider: "openai", Label: "OpenAI OAuth", Revision: revision, Auth: AuthConfig{Type: "oauth", OAuth: &OAuthCredential{ClientID: "oaiapp_issued", Issuer: "https://auth.openai.com", Subject: "subject-1", Email: "person@example.com", HostID: hostID, IDToken: "id-secret", AccessToken: "access-secret", RefreshToken: "refresh-secret", TokenType: "Bearer", Scopes: []string{"openid", "chatgpt.tokens.use.direct"}, ExpiresAt: expires}}}
+	if err := s.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := s.ListMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(metadata)
+	if strings.Contains(string(encoded), "secret") || len(metadata) != 1 || metadata[0].Status != "connected" || !metadata[0].PlanUsageEnabled {
+		t.Fatalf("unsafe/inaccurate metadata: %s", encoded)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls int
+	var mu sync.Mutex
+	refresh := func(current OAuthCredential) (OAuthTokens, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		if current.RefreshToken != "refresh-secret" {
+			t.Errorf("stale refresh token: %q", current.RefreshToken)
+		}
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return OAuthTokens{AccessToken: "next-access", RefreshToken: "next-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}
+	first := make(chan error, 1)
+	go func() { _, err := s.RefreshOAuth(profile.ID, time.Now(), refresh); first <- err }()
+	<-entered
+	second := make(chan error, 1)
+	go func() { _, err := s.RefreshOAuth(profile.ID, time.Now(), refresh); second <- err }()
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	count := calls
+	mu.Unlock()
+	if count != 1 {
+		t.Fatalf("refresh endpoint called %d times", count)
+	}
+	updated, err := s.Get(profile.ID)
+	if err != nil || updated.Revision != revision || updated.Auth.OAuth.Subject != "subject-1" || updated.Auth.OAuth.AccessToken != "next-access" || updated.Auth.OAuth.RefreshToken != "next-refresh" {
+		t.Fatalf("rotated profile=%+v err=%v", updated, err)
+	}
+}
+
+func TestFailedOAuthRefreshPreservesCredentialBytes(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	hostID, err := s.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, _ := NewOAuthRevision()
+	profile := Profile{ID: "oauth-test", Provider: "openai", Label: "ChatGPT", Revision: revision, Auth: AuthConfig{Type: "oauth", OAuth: &OAuthCredential{ClientID: "issued", Issuer: "https://auth.openai.com", Subject: "sub", HostID: hostID, AccessToken: "old-access", RefreshToken: "old-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(-time.Second)}}}
+	if err := s.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.RefreshOAuth(profile.ID, time.Now(), func(OAuthCredential) (OAuthTokens, error) { return OAuthTokens{}, context.DeadlineExceeded })
+	if err == nil {
+		t.Fatal("temporary refresh failure unexpectedly succeeded")
+	}
+	after, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(want) {
+		t.Fatal("failed refresh changed stored credentials")
 	}
 }

@@ -54,8 +54,9 @@ KompoSyn Core contains the reusable Token Logger library: domain models,
 SQLite persistence and migrations, provider adapters, collection, pricing,
 diagnostics, and report behavior. It reads provider-owned local data without
 capturing prompts, responses, or credentials. The experimental chat sends
-submitted text to the selected provider, stores API keys in a private
-plaintext configuration file, and keeps chat state only in memory. This
+submitted text to the selected provider, stores API keys and ChatGPT OAuth
+tokens in a private plaintext configuration file, and keeps chat state only in
+memory. This
 repository prepares signed `komposyn` binaries for the experimental
 temporary chat. The standalone CLI repository owns production command
 behavior, settings, consent, data-directory selection, process lifecycle, and

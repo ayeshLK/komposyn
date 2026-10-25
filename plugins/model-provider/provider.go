@@ -32,7 +32,10 @@ const (
 
 type AuthMethod string
 
-const AuthAPIKey AuthMethod = "api_key"
+const (
+	AuthAPIKey AuthMethod = "api_key"
+	AuthOAuth  AuthMethod = "oauth"
+)
 
 type Routing struct {
 	Organization string `json:"organization,omitempty"`
@@ -40,8 +43,10 @@ type Routing struct {
 }
 
 type Credential struct {
-	APIKey string
-	Route  Routing
+	Method      AuthMethod
+	APIKey      string
+	AccessToken string
+	Route       Routing
 }
 
 type AuthResult struct {
@@ -123,9 +128,10 @@ type Result struct {
 }
 
 type Error struct {
-	Outcome    Outcome
-	StatusCode int
-	RequestID  string
+	Outcome      Outcome
+	StatusCode   int
+	RequestID    string
+	ProviderCode string
 }
 
 func (e *Error) Error() string {

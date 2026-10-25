@@ -37,9 +37,17 @@ func (c Client) Profiles(ctx context.Context) ([]ui.Profile, error) {
 	}
 	out := make([]ui.Profile, 0, len(items))
 	for _, p := range items {
-		out = append(out, ui.Profile{ID: p.ID, Provider: p.Provider, Label: p.Label, AuthType: p.AuthType})
+		out = append(out, ui.Profile{ID: p.ID, Provider: p.Provider, Label: p.Label, AuthType: p.AuthType, Account: p.Account, Status: p.Status, PlanUsageEnabled: p.PlanUsageEnabled})
 	}
 	return out, nil
+}
+func (c Client) AuthMethods(providerID string) []string {
+	methods := c.Chat.AuthMethods(providerID)
+	out := make([]string, 0, len(methods))
+	for _, method := range methods {
+		out = append(out, string(method))
+	}
+	return out
 }
 func (c Client) Discover(ctx context.Context) (ui.Discovery, error) {
 	d := c.Chat.Discover(ctx)
@@ -59,6 +67,39 @@ func (c Client) ReplaceProfile(ctx context.Context, id, label, key string, route
 	err := c.Chat.ReplaceProfile(ctx, id, label, key, route, confirm)
 	return adaptError(err)
 }
+func (c Client) StartLogin(ctx context.Context, profileID string) (ui.LoginAttempt, error) {
+	attempt, err := c.Chat.StartOpenAILogin(ctx, profileID)
+	if err != nil {
+		return ui.LoginAttempt{}, err
+	}
+	done := make(chan ui.LoginResult, 1)
+	go func() {
+		result := <-attempt.Done
+		item := ui.LoginResult{Err: result.Err}
+		if result.Err == nil && result.Profile.Auth.OAuth != nil {
+			item.ProfileID = result.Profile.ID
+			item.Account = result.Profile.Auth.OAuth.Email
+			item.Status = "connected"
+			for _, scope := range result.Profile.Auth.OAuth.Scopes {
+				if scope == "chatgpt.tokens.use.direct" {
+					item.Status = "plan_usage_enabled"
+				}
+			}
+			if item.Account == "" {
+				item.Account = "ChatGPT account"
+			}
+		}
+		done <- item
+		close(done)
+	}()
+	return ui.LoginAttempt{ID: attempt.ID, Done: done}, nil
+}
+func (c Client) CancelLogin(id string) bool { return c.Chat.CancelOpenAILogin(id) }
+func (c Client) Disconnect(ctx context.Context, id string, remove, confirm bool) (ui.DisconnectResult, error) {
+	result, err := c.Chat.DisconnectOpenAI(ctx, id, remove, confirm)
+	return ui.DisconnectResult{RemoteRevocationConfirmed: result.RemoteRevocationConfirmed, LocalRegistrationRemoved: result.LocalRegistrationRemoved, LocalTokensRemoved: result.LocalTokensRemoved}, adaptError(err)
+}
+func (c Client) OpenUsage() error { return c.Chat.OpenAIUsage() }
 func (c Client) RemoveProfile(id string, confirm bool) error {
 	return adaptError(c.Chat.RemoveProfile(id, confirm))
 }
@@ -72,13 +113,13 @@ func (c Client) Snapshot() ui.Snapshot {
 		out.Selected = convertModel(*s.Selected)
 	}
 	for _, t := range s.Turns {
-		out.Turns = append(out.Turns, ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, Outcome: t.Outcome, Usage: t.Usage})
+		out.Turns = append(out.Turns, ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, Outcome: t.Outcome, Usage: t.Usage})
 	}
 	return out
 }
 func (c Client) Send(ctx context.Context, text string, delta func(string)) (ui.Turn, error) {
 	t, err := c.Chat.Send(ctx, text, delta)
-	return ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, Outcome: t.Outcome, Usage: t.Usage}, err
+	return ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, Outcome: t.Outcome, Usage: t.Usage}, err
 }
 func (c Client) Cancel() { c.Chat.Cancel() }
 

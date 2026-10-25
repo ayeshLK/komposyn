@@ -28,15 +28,18 @@ import (
 )
 
 type clientStub struct {
-	mu           sync.Mutex
-	selected     *ui.Model
-	selectedCh   chan struct{}
-	selectCalls  int
-	profiles     []ui.Profile
-	addHook      func(context.Context, string, string, string, string, map[string]string) error
-	replaceHook  func(context.Context, string, string, string, map[string]string, bool) error
-	snapshotHook func() ui.Snapshot
-	sendHook     func(context.Context, string, func(string)) (ui.Turn, error)
+	mu            sync.Mutex
+	selected      *ui.Model
+	selectedCh    chan struct{}
+	selectCalls   int
+	profiles      []ui.Profile
+	addHook       func(context.Context, string, string, string, string, map[string]string) error
+	replaceHook   func(context.Context, string, string, string, map[string]string, bool) error
+	snapshotHook  func() ui.Snapshot
+	sendHook      func(context.Context, string, func(string)) (ui.Turn, error)
+	methods       map[string][]string
+	loginHook     func(context.Context, string) (ui.LoginAttempt, error)
+	loginCanceled []string
 }
 
 // synchronizedSimulation protects the returned cell slice from tview's render
@@ -65,6 +68,12 @@ func (s *synchronizedSimulation) GetContents() ([]tcell.SimCell, int, int) {
 }
 
 func (c *clientStub) Profiles(context.Context) ([]ui.Profile, error) { return c.profiles, nil }
+func (c *clientStub) AuthMethods(provider string) []string {
+	if methods := c.methods[provider]; methods != nil {
+		return append([]string(nil), methods...)
+	}
+	return []string{"api_key"}
+}
 func (c *clientStub) Discover(context.Context) (ui.Discovery, error) {
 	return ui.Discovery{Models: []ui.Model{{Key: "openai\x00personal\x00model-x", Provider: "openai", ProfileID: "personal", ProfileLabel: "Personal", ID: "model-x", DisplayName: "Text Model", Compatibility: modelprovider.CompatibilityUnknown}}}, nil
 }
@@ -82,6 +91,25 @@ func (c *clientStub) ReplaceProfile(ctx context.Context, id, label, key string, 
 	return nil
 }
 func (c *clientStub) RemoveProfile(string, bool) error { return nil }
+func (c *clientStub) StartLogin(ctx context.Context, profileID string) (ui.LoginAttempt, error) {
+	if c.loginHook != nil {
+		return c.loginHook(ctx, profileID)
+	}
+	done := make(chan ui.LoginResult, 1)
+	done <- ui.LoginResult{Err: context.Canceled}
+	close(done)
+	return ui.LoginAttempt{ID: "test-attempt", Done: done}, nil
+}
+func (c *clientStub) CancelLogin(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.loginCanceled = append(c.loginCanceled, id)
+	return true
+}
+func (c *clientStub) Disconnect(context.Context, string, bool, bool) (ui.DisconnectResult, error) {
+	return ui.DisconnectResult{LocalTokensRemoved: true}, nil
+}
+func (c *clientStub) OpenUsage() error { return nil }
 func (c *clientStub) Select(_ context.Context, key string, _ bool) error {
 	d, _ := c.Discover(context.Background())
 	for _, m := range d.Models {
@@ -314,6 +342,9 @@ func TestCancelButtonCancelsPendingAddOperation(t *testing.T) {
 	u.app.SetScreen(safeScreen)
 	runDone := make(chan error, 1)
 	go func() { runDone <- u.app.Run() }()
+	time.Sleep(80 * time.Millisecond)
+	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 	waitForScreen(t, safeScreen, "Profile label", "")
 	press := func(key tcell.Key, r rune) {
 		screen.InjectKey(key, r, tcell.ModNone)
@@ -350,6 +381,73 @@ func TestCancelButtonCancelsPendingAddOperation(t *testing.T) {
 		t.Fatal("simulation UI did not stop")
 	}
 	u.wg.Wait()
+}
+
+func TestProviderAdvertisedOAuthMethodCanBeCanceled(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 32)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	started := make(chan string, 1)
+	client := &clientStub{selectedCh: make(chan struct{}, 1), methods: map[string][]string{"openai": {"api_key", "oauth"}}}
+	client.loginHook = func(ctx context.Context, _ string) (ui.LoginAttempt, error) {
+		done := make(chan ui.LoginResult, 1)
+		attemptID := "oauth-attempt-42"
+		started <- attemptID
+		go func() { <-ctx.Done(); done <- ui.LoginResult{Err: context.Canceled}; close(done) }()
+		return ui.LoginAttempt{ID: attemptID, Done: done}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel}
+	u.pickerInput = tv.NewInputField()
+	u.pickerLayout = tv.NewFlex().AddItem(tv.NewTextView().SetText("Provider picker"), 0, 1, false)
+	u.addProvider()
+	u.app.SetScreen(safeScreen)
+	finished := make(chan error, 1)
+	go func() { finished <- u.app.Run() }()
+	press := func(key tcell.Key) { screen.InjectKey(key, 0, tcell.ModNone); time.Sleep(40 * time.Millisecond) }
+	waitForScreen(t, safeScreen, "Add New Provider", "")
+	press(tcell.KeyTab)
+	press(tcell.KeyEnter)
+	waitForScreen(t, safeScreen, "Choose an authentication method", "")
+	press(tcell.KeyRight)
+	press(tcell.KeyEnter)
+	select {
+	case id := <-started:
+		if id != "oauth-attempt-42" {
+			t.Fatalf("login attempt ID=%q", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider-advertised OAuth choice did not start login")
+	}
+	waitForScreen(t, safeScreen, "Cancel sign-in", "")
+	press(tcell.KeyEnter)
+	deadline := time.After(2 * time.Second)
+	for {
+		client.mu.Lock()
+		canceled := append([]string(nil), client.loginCanceled...)
+		client.mu.Unlock()
+		if len(canceled) > 0 {
+			if canceled[0] != "oauth-attempt-42" {
+				t.Fatalf("canceled attempt=%q", canceled[0])
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("Cancel sign-in did not cancel the matching OAuth attempt")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	screen.InjectKey(tcell.KeyCtrlC, 0, tcell.ModNone)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal did not stop")
+	}
 }
 
 func TestCancelButtonCancelsPendingReplaceOperation(t *testing.T) {

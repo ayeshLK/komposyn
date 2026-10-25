@@ -25,8 +25,10 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	oauthauth "github.com/ayeshLK/komposyn/internal/harness/auth/openai"
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 )
 
@@ -91,8 +93,9 @@ type Discovery struct {
 	Failures []ProfileFailure
 }
 type Catalog struct {
-	Providers *Registry
-	Profiles  ProfileStore
+	Providers  *Registry
+	Profiles   ProfileStore
+	OpenAIAuth *oauthauth.Manager
 }
 
 func (c Catalog) Discover(ctx context.Context) Discovery {
@@ -116,7 +119,18 @@ func (c Catalog) Discover(ctx context.Context) Discovery {
 				ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: provider.OutcomeUnsupported}}
 				return
 			}
-			resolved, key, err := c.Profiles.Resolve(p.ID)
+			var resolved auth.Profile
+			var key string
+			var err error
+			if p.AuthType == "oauth" {
+				if c.OpenAIAuth == nil {
+					ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: provider.OutcomeAuthentication}}
+					return
+				}
+				resolved, key, err = c.OpenAIAuth.Resolve(ctx, p.ID)
+			} else {
+				resolved, key, err = c.Profiles.Resolve(p.ID)
+			}
 			if err != nil {
 				ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: provider.OutcomeAuthentication}}
 				return
@@ -165,10 +179,24 @@ func credential(p auth.Profile, key string) provider.Credential {
 		r.Organization = p.Route["organization"]
 		r.Project = p.Route["project"]
 	}
-	return provider.Credential{APIKey: key, Route: r}
+	if p.Auth.Type == "oauth" && p.Auth.OAuth != nil {
+		return provider.Credential{Method: provider.AuthOAuth, AccessToken: key}
+	}
+	return provider.Credential{Method: provider.AuthAPIKey, APIKey: key, Route: r}
 }
 func ProfileVersion(p auth.Profile, key string) string {
 	p.Auth.APIKey = ""
+	if p.Auth.OAuth != nil {
+		oauth := *p.Auth.OAuth
+		oauth.IDToken = ""
+		oauth.AccessToken = ""
+		oauth.RefreshToken = ""
+		oauth.TokenType = ""
+		oauth.ExpiresAt = time.Time{}
+		oauth.ReconnectRequired = false
+		p.Auth.OAuth = &oauth
+		key = ""
+	}
 	b, _ := json.Marshal(struct {
 		Profile auth.Profile
 		Secret  string

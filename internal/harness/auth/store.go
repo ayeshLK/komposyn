@@ -18,6 +18,8 @@ package auth
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,17 +29,39 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
+
+var ErrOAuthProfileChanged = errors.New("OpenAI account registration changed during the operation")
+var ErrOAuthReconnectRequired = errors.New("OpenAI account must reconnect")
 
 var profileIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type AuthConfig struct {
-	Type   string `json:"type"`
-	APIKey string `json:"api_key,omitempty"`
-	Env    string `json:"env,omitempty"`
+	Type   string           `json:"type"`
+	APIKey string           `json:"api_key,omitempty"`
+	Env    string           `json:"env,omitempty"`
+	OAuth  *OAuthCredential `json:"oauth,omitempty"`
+}
+
+// OAuthCredential is protected local credential material for one issued
+// OpenAI registration. UI and provider metadata never expose this value.
+type OAuthCredential struct {
+	ClientID          string    `json:"client_id"`
+	Issuer            string    `json:"issuer"`
+	Subject           string    `json:"subject"`
+	Email             string    `json:"email,omitempty"`
+	HostID            string    `json:"ext_agent_host_id"`
+	IDToken           string    `json:"id_token,omitempty"`
+	AccessToken       string    `json:"access_token,omitempty"`
+	RefreshToken      string    `json:"refresh_token,omitempty"`
+	TokenType         string    `json:"token_type,omitempty"`
+	Scopes            []string  `json:"scopes,omitempty"`
+	ExpiresAt         time.Time `json:"expires_at,omitempty"`
+	ReconnectRequired bool      `json:"reconnect_required,omitempty"`
 }
 
 type Profile struct {
@@ -45,20 +69,36 @@ type Profile struct {
 	Provider string            `json:"provider"`
 	Label    string            `json:"label"`
 	Route    map[string]string `json:"routing,omitempty"`
+	Revision string            `json:"revision,omitempty"`
 	Auth     AuthConfig        `json:"auth"`
 }
 
 type document struct {
 	SchemaVersion int       `json:"schema_version"`
+	HostID        string    `json:"ext_agent_host_id,omitempty"`
 	Credentials   []Profile `json:"credentials"`
 }
 
 type Metadata struct {
-	ID       string            `json:"id"`
-	Provider string            `json:"provider"`
-	Label    string            `json:"label"`
-	Route    map[string]string `json:"routing,omitempty"`
-	AuthType string            `json:"auth_type"`
+	ID               string            `json:"id"`
+	Provider         string            `json:"provider"`
+	Label            string            `json:"label"`
+	Route            map[string]string `json:"routing,omitempty"`
+	AuthType         string            `json:"auth_type"`
+	Account          string            `json:"account,omitempty"`
+	Status           string            `json:"status,omitempty"`
+	PlanUsageEnabled bool              `json:"plan_usage_enabled,omitempty"`
+}
+
+// OAuthTokens contains only rotating tokens and expiry. Registration identity
+// and profile configuration are deliberately excluded from refresh updates.
+type OAuthTokens struct {
+	IDToken      string
+	AccessToken  string
+	RefreshToken string
+	TokenType    string
+	Scopes       []string
+	ExpiresAt    time.Time
 }
 
 type Store struct {
@@ -96,9 +136,36 @@ func (s Store) ListMetadata() ([]Metadata, error) {
 	}
 	out := make([]Metadata, 0, len(doc.Credentials))
 	for _, p := range doc.Credentials {
-		out = append(out, Metadata{ID: p.ID, Provider: p.Provider, Label: p.Label, Route: cloneRoute(p.Route), AuthType: p.Auth.Type})
+		m := Metadata{ID: p.ID, Provider: p.Provider, Label: p.Label, Route: cloneRoute(p.Route), AuthType: p.Auth.Type}
+		if p.Auth.Type == "oauth" && p.Auth.OAuth != nil {
+			m.Account = p.Auth.OAuth.Email
+			if m.Account == "" {
+				m.Account = "ChatGPT account"
+			}
+			m.PlanUsageEnabled = hasScope(p.Auth.OAuth.Scopes, "chatgpt.tokens.use.direct")
+			m.Status = "connected"
+			if p.Auth.OAuth.ReconnectRequired || p.Auth.OAuth.RefreshToken == "" {
+				m.Status = "reconnect_required"
+			} else if !m.PlanUsageEnabled {
+				m.Status = "plan_usage_disabled"
+			}
+		}
+		out = append(out, m)
 	}
 	return out, nil
+}
+
+func (s Store) Get(id string) (Profile, error) {
+	doc, err := s.readLocked()
+	if err != nil {
+		return Profile{}, err
+	}
+	for _, p := range doc.Credentials {
+		if p.ID == id {
+			return cloneProfile(p), nil
+		}
+	}
+	return Profile{}, errors.New("credential profile was not found")
 }
 
 func (s Store) Resolve(id string) (Profile, string, error) {
@@ -123,6 +190,8 @@ func (s Store) Resolve(id string) (Profile, string, error) {
 				return Profile{}, "", errors.New("credential environment reference is unavailable")
 			}
 			return p, value, nil
+		case "oauth":
+			return Profile{}, "", errors.New("OAuth credentials require the OpenAI auth coordinator")
 		default:
 			return Profile{}, "", errors.New("unsupported credential authentication type")
 		}
@@ -147,6 +216,177 @@ func (s Store) Add(profile Profile) error {
 
 func (s Store) AddAPIKey(id, providerID, label, key string, route map[string]string) error {
 	return s.Add(Profile{ID: id, Provider: providerID, Label: label, Route: route, Auth: AuthConfig{Type: "api_key", APIKey: key}})
+}
+
+// EnsureHostID creates and persists the stable host identifier before first
+// authorization. It never derives identity from email or account data.
+func (s Store) EnsureHostID() (string, error) {
+	generated := newUUIDURI()
+	if generated == "" {
+		return "", errors.New("unable to create the local host identity")
+	}
+	var hostID string
+	err := s.update(func(doc *document) error {
+		if doc.HostID == "" {
+			doc.HostID = generated
+		}
+		hostID = doc.HostID
+		return nil
+	})
+	return hostID, err
+}
+
+func (s Store) AddOAuth(profile Profile) error {
+	if profile.Provider != "openai" || profile.Auth.Type != "oauth" || profile.Auth.OAuth == nil {
+		return errors.New("an OpenAI OAuth profile is required")
+	}
+	return s.Add(profile)
+}
+
+// NewOAuthRevision returns a random, token-independent profile configuration
+// revision. Refreshes retain it; an explicit reconnect receives a new value.
+func NewOAuthRevision() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", errors.New("unable to create OpenAI profile identity")
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func newUUIDURI() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	h := hex.EncodeToString(b)
+	return "urn:uuid:" + h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+}
+
+// ReplaceOAuth replaces a previously selected registration only when its
+// stable profile revision and validated account identity still match.
+func (s Store) ReplaceOAuth(id, expectedRevision string, replacement Profile) error {
+	if replacement.ID != id || replacement.Provider != "openai" || replacement.Auth.Type != "oauth" || replacement.Auth.OAuth == nil {
+		return errors.New("an OpenAI OAuth profile replacement is required")
+	}
+	if err := validateProfile(replacement); err != nil {
+		return err
+	}
+	return s.update(func(doc *document) error {
+		for i, current := range doc.Credentials {
+			if current.ID != id {
+				continue
+			}
+			if current.Revision != expectedRevision || current.Auth.OAuth == nil ||
+				current.Auth.OAuth.ClientID != replacement.Auth.OAuth.ClientID ||
+				current.Auth.OAuth.Subject != replacement.Auth.OAuth.Subject {
+				return ErrOAuthProfileChanged
+			}
+			doc.Credentials[i] = cloneProfile(replacement)
+			return nil
+		}
+		return ErrOAuthProfileChanged
+	})
+}
+
+// RefreshOAuth serializes token refresh under the same interprocess lock used
+// for all auth-file changes. No concurrent refresh can rotate the same token.
+func (s Store) RefreshOAuth(id string, now time.Time, refresh func(OAuthCredential) (OAuthTokens, error)) (Profile, error) {
+	path, err := s.path()
+	if err != nil {
+		return Profile{}, err
+	}
+	if err = ensurePrivateDir(filepath.Dir(path)); err != nil {
+		return Profile{}, err
+	}
+	unlock, err := lockPath(path)
+	if err != nil {
+		return Profile{}, err
+	}
+	defer unlock()
+	doc, err := readFile(path)
+	if err != nil {
+		return Profile{}, err
+	}
+	for i, p := range doc.Credentials {
+		if p.ID != id {
+			continue
+		}
+		if p.Auth.Type != "oauth" || p.Auth.OAuth == nil {
+			return Profile{}, errors.New("profile is not an OpenAI OAuth registration")
+		}
+		credential := *p.Auth.OAuth
+		if credential.ReconnectRequired || credential.RefreshToken == "" {
+			return Profile{}, ErrOAuthReconnectRequired
+		}
+		if credential.ExpiresAt.After(now.Add(90 * time.Second)) {
+			return cloneProfile(p), nil
+		}
+		tokens, refreshErr := refresh(credential)
+		if refreshErr != nil {
+			return Profile{}, refreshErr
+		}
+		if tokens.AccessToken == "" || tokens.RefreshToken == "" || !tokens.ExpiresAt.After(now) {
+			return Profile{}, errors.New("OpenAI returned an invalid token refresh")
+		}
+		credential.IDToken = tokens.IDToken
+		if credential.IDToken == "" {
+			credential.IDToken = p.Auth.OAuth.IDToken
+		}
+		credential.AccessToken = tokens.AccessToken
+		credential.RefreshToken = tokens.RefreshToken
+		credential.TokenType = tokens.TokenType
+		credential.ExpiresAt = tokens.ExpiresAt
+		if len(tokens.Scopes) > 0 {
+			credential.Scopes = append([]string(nil), tokens.Scopes...)
+		}
+		p.Auth.OAuth = &credential
+		doc.Credentials[i] = p
+		if err := validateDocument(doc); err != nil {
+			return Profile{}, err
+		}
+		if err := writeAtomic(path, doc); err != nil {
+			return Profile{}, err
+		}
+		return cloneProfile(p), nil
+	}
+	return Profile{}, errors.New("credential profile was not found")
+}
+
+func (s Store) MarkOAuthReconnect(id string) error {
+	return s.update(func(doc *document) error {
+		for i := range doc.Credentials {
+			p := &doc.Credentials[i]
+			if p.ID == id && p.Auth.Type == "oauth" && p.Auth.OAuth != nil {
+				p.Auth.OAuth.ReconnectRequired = true
+				p.Auth.OAuth.AccessToken = ""
+				p.Auth.OAuth.RefreshToken = ""
+				p.Auth.OAuth.TokenType = ""
+				p.Auth.OAuth.ExpiresAt = time.Time{}
+				return nil
+			}
+		}
+		return errors.New("credential profile was not found")
+	})
+}
+
+func (s Store) ClearOAuthTokens(id string) error {
+	return s.update(func(doc *document) error {
+		for i := range doc.Credentials {
+			p := &doc.Credentials[i]
+			if p.ID == id && p.Auth.Type == "oauth" && p.Auth.OAuth != nil {
+				p.Auth.OAuth.IDToken = ""
+				p.Auth.OAuth.AccessToken = ""
+				p.Auth.OAuth.RefreshToken = ""
+				p.Auth.OAuth.TokenType = ""
+				p.Auth.OAuth.ExpiresAt = time.Time{}
+				p.Auth.OAuth.ReconnectRequired = true
+				return nil
+			}
+		}
+		return errors.New("credential profile was not found")
+	})
 }
 
 func (s Store) ReplaceAPIKey(id, label, key string, route map[string]string) error {
@@ -209,12 +449,24 @@ func validateProfile(p Profile) error {
 	}
 	switch p.Auth.Type {
 	case "api_key":
-		if strings.TrimSpace(p.Auth.APIKey) == "" || p.Auth.Env != "" {
+		if strings.TrimSpace(p.Auth.APIKey) == "" || p.Auth.Env != "" || p.Auth.OAuth != nil {
 			return errors.New("api_key authentication requires only a non-empty api_key")
 		}
 	case "env":
-		if p.Auth.APIKey != "" || !envNamePattern.MatchString(p.Auth.Env) {
+		if p.Auth.APIKey != "" || p.Auth.OAuth != nil || !envNamePattern.MatchString(p.Auth.Env) {
 			return errors.New("env authentication requires a valid variable name")
+		}
+	case "oauth":
+		if p.Provider != "openai" || p.Auth.APIKey != "" || p.Auth.Env != "" || p.Route != nil || p.Revision == "" || p.Auth.OAuth == nil {
+			return errors.New("OAuth credentials require an OpenAI profile with stable revision and no API-key routing")
+		}
+		o := p.Auth.OAuth
+		if o.ClientID == "" || o.Issuer != "https://auth.openai.com" || o.Subject == "" || o.HostID == "" ||
+			(o.AccessToken == "") != (o.RefreshToken == "") || (o.AccessToken != "" && (o.TokenType != "Bearer" || !o.ExpiresAt.After(time.Time{}))) {
+			return errors.New("invalid OpenAI OAuth registration credentials")
+		}
+		if o.AccessToken == "" && !o.ReconnectRequired {
+			return errors.New("disconnected OAuth profile must require reconnection")
 		}
 	default:
 		return errors.New("unsupported credential authentication type")
@@ -258,6 +510,7 @@ func (s Store) update(change func(*document) error) error {
 	if err = change(doc); err != nil {
 		return err
 	}
+	doc.SchemaVersion = SchemaVersion
 	if err = validateDocument(doc); err != nil {
 		return err
 	}
@@ -309,8 +562,14 @@ func readFile(path string) (*document, error) {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("credential store contains trailing data")
 	}
-	if doc.SchemaVersion != SchemaVersion {
+	version := doc.SchemaVersion
+	if version != 1 && version != SchemaVersion {
 		return nil, fmt.Errorf("unsupported credential store schema version %d", doc.SchemaVersion)
+	}
+	// Version 1 contained only API-key and environment profiles. Those values
+	// map directly to v2 and are upgraded on the next successful mutation.
+	if version == 1 {
+		doc.SchemaVersion = SchemaVersion
 	}
 	if err := validateDocument(&doc); err != nil {
 		return nil, fmt.Errorf("invalid credential store: %w", err)
@@ -334,10 +593,21 @@ func validateDocument(doc *document) error {
 			return errors.New("duplicate credential profile ID")
 		}
 		seen[p.ID] = true
+		if p.Auth.OAuth != nil && p.Auth.OAuth.HostID != doc.HostID {
+			return errors.New("OpenAI OAuth registration host does not match the local host identity")
+		}
 	}
 	return nil
 }
-func cloneProfile(p Profile) Profile { p.Route = cloneRoute(p.Route); return p }
+func cloneProfile(p Profile) Profile {
+	p.Route = cloneRoute(p.Route)
+	if p.Auth.OAuth != nil {
+		o := *p.Auth.OAuth
+		o.Scopes = append([]string(nil), o.Scopes...)
+		p.Auth.OAuth = &o
+	}
+	return p
+}
 func cloneRoute(in map[string]string) map[string]string {
 	if in == nil {
 		return nil
@@ -347,6 +617,15 @@ func cloneRoute(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func hasScope(scopes []string, want string) bool {
+	for _, scope := range scopes {
+		if scope == want {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadJSON and WriteJSON share the private, locked, atomic configuration-file

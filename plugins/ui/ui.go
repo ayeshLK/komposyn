@@ -33,7 +33,20 @@ type Plugin interface {
 	DisplayName() string
 	Run(context.Context, Client) error
 }
-type Profile struct{ ID, Provider, Label, AuthType string }
+type Profile struct {
+	ID, Provider, Label, AuthType string
+	Account, Status               string
+	PlanUsageEnabled              bool
+}
+type LoginResult struct {
+	ProfileID, Account, Status string
+	Err                        error
+}
+type LoginAttempt struct {
+	ID   string
+	Done <-chan LoginResult
+}
+type DisconnectResult struct{ RemoteRevocationConfirmed, LocalRegistrationRemoved, LocalTokensRemoved bool }
 type Model struct {
 	Key, Provider, ProfileID, ProfileLabel, ID, DisplayName string
 	Compatibility                                           modelprovider.Compatibility
@@ -48,9 +61,9 @@ type Discovery struct {
 	Failures []Failure
 }
 type Turn struct {
-	Prompt, Text, Refusal, Message, RequestID, ModelID string
-	Outcome                                            modelprovider.Outcome
-	Usage                                              modelprovider.Usage
+	Prompt, Text, Refusal, Message, RequestID, ModelID, ProviderCode string
+	Outcome                                                          modelprovider.Outcome
+	Usage                                                            modelprovider.Usage
 }
 type Snapshot struct {
 	Selected *Model
@@ -60,9 +73,14 @@ type Snapshot struct {
 
 type Client interface {
 	Profiles(context.Context) ([]Profile, error)
+	AuthMethods(string) []string
 	Discover(context.Context) (Discovery, error)
 	AddProfile(context.Context, string, string, string, string, map[string]string) error
 	ReplaceProfile(context.Context, string, string, string, map[string]string, bool) error
+	StartLogin(context.Context, string) (LoginAttempt, error)
+	CancelLogin(string) bool
+	Disconnect(context.Context, string, bool, bool) (DisconnectResult, error)
+	OpenUsage() error
 	RemoveProfile(string, bool) error
 	Select(context.Context, string, bool) error
 	Snapshot() Snapshot
