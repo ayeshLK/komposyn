@@ -17,8 +17,9 @@ and consumes this module.
 
 This architecture is implemented in this repository. It is not a description
 of a general harness runtime or a universal plugin API. This repository also
-contains a separate experimental temporary chat; see the
-[chat architecture](harness/phase-one-architecture.md).
+contains and releases a separate experimental temporary-chat executable named
+`komposyn`; see the [chat architecture](harness/phase-one-architecture.md) and
+[release verification](release-verification.md).
 
 ```mermaid
 flowchart LR
@@ -37,7 +38,7 @@ flowchart LR
 - `plugins/library/token-logger/` contains the domain model, SQLite store,
   numbered migrations, provider adapters, collector, pricing, diagnostics,
   and reporting.
-- The standalone CLI repository contains command dispatch, interactive setup,
+- The standalone `komposyn-lg` repository contains production command dispatch, interactive setup,
   output formatting, settings and consent policy, process lifecycle, and the
   versioned JSONL harness transport. It calls library APIs instead of querying
   SQLite directly.

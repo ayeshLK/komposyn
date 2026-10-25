@@ -9,7 +9,8 @@ pretending that the eventual harness architecture is already settled.
 
 ## Available now
 
-This repository currently provides KompoSyn Token Logger Core:
+This repository currently provides KompoSyn Token Logger Core and an
+experimental temporary-chat executable:
 
 - A reusable Go library normalizes provider-owned local usage records into a
   versioned event model and stores them in SQLite.
@@ -17,8 +18,10 @@ This repository currently provides KompoSyn Token Logger Core:
   JSONL sidecar are maintained in the
   [standalone CLI repository](https://github.com/ayeshLK/komposyn-lg).
 - An experimental, memory-only temporary chat with bundled OpenAI and
-  Anthropic provider adapters lives in this module; see the
-  [harness guide](harness/README.md).
+  Anthropic provider adapters lives in this module. Its `komposyn` binary is
+  packaged and released from this repository under the Release Please version;
+  see the [harness guide](harness/README.md) and
+  [installation instructions](installation.md).
 
 The standalone CLI lets developers use Token Logger with existing agent tools
 without waiting for a complete harness. The experimental chat does not

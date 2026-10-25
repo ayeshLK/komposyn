@@ -1,10 +1,12 @@
 # Standalone CLI compatibility and coordinated security releases
 
-KompoSyn Core is the reusable library module. The standalone
-[`komposyn-lg`](https://github.com/ayeshLK/komposyn-lg) repository owns the
-executable, settings and consent policy, data-directory selection, process
-lifecycle, protocol transport, installers, and binary releases. CLI and core
-versions advance independently; the CLI records its exact core dependency.
+KompoSyn Core is the reusable library module, and this repository also prepares
+the experimental temporary-chat `komposyn` binary under the same Release Please
+version. The standalone [`komposyn-lg`](https://github.com/ayeshLK/komposyn-lg)
+repository owns its production executable, settings and consent policy,
+data-directory selection, process lifecycle, protocol transport, installer,
+and binary releases. `komposyn-lg` is independently versioned and records its
+exact core dependency.
 
 ## Dependency-update review
 
@@ -32,10 +34,11 @@ both before widening the documented compatibility range.
 
 The repository containing vulnerable code owns the advisory/CVE. Core owns the
 reusable API, storage/migrations, adapters, collector, pricing, diagnostics,
-and report behavior. The standalone repository owns executable behavior,
-settings/consent, data paths, process lifecycle, protocol transport,
-installers, and binary releases. Reports received by the other repository are
-forwarded privately before disclosure.
+and report behavior. This repository also owns the experimental `komposyn`
+chat and binary release. The standalone repository owns the production
+`komposyn-lg` behavior, settings/consent, data paths, process lifecycle,
+protocol transport, installers, and binaries. Reports received by the other
+repository are forwarded privately before disclosure.
 
 For a core vulnerability affecting released CLI versions:
 
@@ -47,12 +50,14 @@ For a core vulnerability affecting released CLI versions:
    release pinned to that tag.
 4. Coordinate advisories that map affected and fixed core and CLI versions,
    support boundaries, impact, and prerequisites.
-5. Give users explicit instructions to install the fixed standalone CLI over
+5. Give users explicit instructions to install the fixed `komposyn-lg` over
    the existing executable. Preserve its database, settings, consent,
    diagnostics, and backups; no self-updater is provided.
 
-For a core-only defect, core publishes the advisory and fix. For a CLI-only
-defect, the standalone repository owns the advisory and signed release. Never
+For a core-only defect, core publishes the advisory and fix. For a production
+CLI-only defect, the standalone repository owns the advisory and signed
+release. For an experimental-chat defect, this repository owns the advisory
+and binary update. Never
 use public issues or pull requests to report an embargoed vulnerability.
 See [SECURITY.md](../SECURITY.md) and the CLI's
 [security policy](https://github.com/ayeshLK/komposyn-lg/blob/master/SECURITY.md).

@@ -2,7 +2,7 @@
 
 ## Local setup
 
-Install Go 1.26.9 or newer, clone the repository, and work from a feature
+Install Go 1.26.10 or newer, clone the repository, and work from a feature
 branch. This is the root module `github.com/ayeshLK/komposyn`.
 
 ## Useful commands
@@ -31,10 +31,14 @@ access. The normal CLI suite itself runs in the standalone repository.
 
 ## Release validation
 
-Core releases are module source tags and release notes, prepared and published
-by the pinned Release Please workflow. Do not build binary archives or create
-or move tags manually. See [core release verification](../release-verification.md)
-and [historical combined artifact verification](../historical-combined-releases.md).
+Release Please owns the repository-wide module and experimental `komposyn`
+version. Its workflow is manual-only; a merged release PR does not create a
+tag. After review, manually dispatch Release Please from `master`, then
+manually dispatch binary validation/signing/publication for that exact tag and
+commit. Never create or move tags manually. See
+[release verification](../release-verification.md),
+[installation](../installation.md), and
+[historical combined artifact verification](../historical-combined-releases.md).
 
 ## Final inspection
 

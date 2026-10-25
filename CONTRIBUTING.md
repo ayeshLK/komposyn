@@ -10,14 +10,16 @@ This repository owns the reusable `github.com/ayeshLK/komposyn` Go module:
 domain behavior, APIs, SQLite storage/migrations, adapters, collection, pricing,
 diagnostics, and reports. It also contains an experimental memory-only chat
 under `internal/harness/` with role-specific model-provider and UI contracts
-under `plugins/`, launched from `cmd/harness/` as `komposyn`. The production
+under `plugins/`, launched from `cmd/harness/` as `komposyn`. This repository
+prepares and publishes signed experimental `komposyn` binaries. The production
 standalone executable, production settings/consent/onboarding, data-directory
-resolution, JSONL harness transport, installers, and binary release lifecycle
-belong in
+resolution, and JSONL harness transport belong in
 [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
 
 Keep dependency direction one-way: CLI imports core; core never imports the
-CLI. Core and CLI versions advance independently. Preserve provider-source
+CLI. Release Please owns one repository-wide version for module tags and
+experimental `komposyn` binaries; `komposyn-lg` remains independently
+versioned. Preserve provider-source
 privacy, data paths and schema compatibility, protocol-v1 semantics where
 core changes affect the contract, and exact machine-readable report values.
 
@@ -64,12 +66,15 @@ The detailed review and coordinated security-release procedure is in
 ## Versioning and releases
 
 Use Conventional Commit prefixes for changes that affect release notes or
-versioning. Release Please opens a reviewed core release PR. When that PR is
-merged to `master`, the pinned Release Please workflow creates the source tag
-and release notes. Core releases contain module source, not CLI binaries. Do
-not create or move tags manually. The standalone repository independently
-versions and publishes signed CLI binaries. Historical combined releases
-through v0.7.0 remain available; see [historical release verification](docs/historical-combined-releases.md).
+versioning. Release Please opens a reviewed repository-wide release PR. The
+workflow is manual-only: merge the reviewed PR normally, then explicitly
+dispatch Release Please from `master` to create the source tag and release.
+Finally dispatch the binary-release workflow with the exact tag and commit to
+build, validate, sign, and publish the experimental `komposyn` archives.
+Merging the release PR alone does not tag or publish; do not create or move
+tags manually. The production `komposyn-lg` CLI retains its separate release
+process. Historical combined releases through v0.7.0 remain available; see
+[historical release verification](docs/historical-combined-releases.md).
 
 ## Change-specific requirements
 

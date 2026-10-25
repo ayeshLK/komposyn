@@ -2,17 +2,15 @@
 
 ## Scope and support
 
-This repository owns the reusable KompoSyn Go module, including provider
-adapters, collection, SQLite storage and migrations, pricing, diagnostics, and
-reports. It also contains an experimental temporary chat with bundled OpenAI
-and Anthropic adapters. The standalone [komposyn-lg repository](https://github.com/ayeshLK/komposyn-lg)
-owns executable behavior, settings and consent policy, data-directory choice,
-process lifecycle, JSONL harness transport, installers, and binary releases.
-
-Core security fixes target the latest released core version and `master`.
-Historical combined releases through v0.7.0 remain available but are not the
-current CLI distribution path. The CLI has an independent version and declares
-its exact core dependency; see [compatibility and coordinated security releases](docs/standalone-compatibility-security.md).
+This repository owns the reusable KompoSyn Go module and the experimental
+temporary-chat `komposyn` executable, installer, and signed binary releases.
+The standalone [komposyn-lg repository](https://github.com/ayeshLK/komposyn-lg)
+owns the production executable, settings and consent policy, data-directory
+choice, process lifecycle, and JSONL harness transport. Release Please provides
+one repository-wide version for core source and experimental binaries;
+`komposyn-lg` remains independently versioned and declares its core dependency.
+Historical combined releases through v0.7.0 remain available. See
+[compatibility and coordinated security releases](docs/standalone-compatibility-security.md).
 
 ## Threat model and guarantees
 
@@ -48,10 +46,11 @@ responses, private paths, and unsanitized diagnostics. Do not attach raw
 production databases or release credentials.
 
 The repository that contains the vulnerable code owns the advisory. If a core
-report affects standalone CLI releases, coordinate privately with the CLI
-maintainers before disclosure so a fixed core tag and compatible signed CLI
-release are ready together. The procedure and version mapping requirements are
-documented in [standalone compatibility and security](docs/standalone-compatibility-security.md).
+report affects `komposyn-lg`, coordinate privately with its maintainers before
+disclosure so a fixed core tag and compatible signed CLI release are ready
+together. For the experimental `komposyn`, coordinate the repository-wide
+source tag and signed binary release. The procedure is in
+[standalone compatibility and security](docs/standalone-compatibility-security.md).
 
 ## Security-sensitive changes
 

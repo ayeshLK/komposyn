@@ -28,8 +28,14 @@ go build -o "$(go env GOPATH)/bin/komposyn" ./cmd/harness
 ```
 
 Bare `go install ./cmd/harness` produces a binary named `harness`, so it is
-not the documented installation path. No binary is committed or published by
-this repository.
+not the documented installation path. Release builds are prepared with
+[`scripts/build-release.sh`](../../scripts/build-release.sh) and published only
+through the manual workflow described in
+[release verification](../release-verification.md); no binary is committed
+to source control.
+
+For a signed binary installation, use the
+[experimental CLI installation guide](../installation.md).
 
 For headless configuration inspection, run `komposyn --check`. `--auth-file`
 and `--settings-file` select alternate paths for tests or isolated runs; they

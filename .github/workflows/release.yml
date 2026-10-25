@@ -1,0 +1,400 @@
+name: Publish experimental komposyn binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release Please version without the leading v (for example 0.10.0)
+        required: true
+        type: string
+      commit:
+        description: Full commit SHA recorded by the reviewed Release Please tag
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: komposyn-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    name: Validate reviewed tag and source release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      tag: ${{ steps.validate.outputs.tag }}
+      commit: ${{ steps.validate.outputs.commit }}
+    steps:
+      - name: Check out master history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate dispatch, exact tag, version, and release
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION_INPUT: ${{ inputs.version }}
+          COMMIT_INPUT: ${{ inputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = ayeshLK/komposyn
+          test "$EVENT_REF" = refs/heads/master || {
+            echo "Dispatch this workflow from master." >&2
+            exit 1
+          }
+          [[ "$VERSION_INPUT" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Version must be stable SemVer without a v prefix." >&2
+            exit 1
+          }
+          [[ "$COMMIT_INPUT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Commit must be a full lowercase 40-character SHA." >&2
+            exit 1
+          }
+          tag="v${VERSION_INPUT}"
+          git fetch --no-tags origin "refs/tags/${tag}:refs/tags/${tag}"
+          actual_commit="$(git rev-parse "${tag}^{commit}")"
+          test "$actual_commit" = "$COMMIT_INPUT" || {
+            echo "Tag ${tag} points to ${actual_commit}, not ${COMMIT_INPUT}." >&2
+            exit 1
+          }
+          tagged_version="$(git show "${tag}:.release-please-manifest.json" | jq -er '.["."]')"
+          test "$tagged_version" = "$VERSION_INPUT" || {
+            echo "Tag manifest version ${tagged_version} does not match ${VERSION_INPUT}." >&2
+            exit 1
+          }
+          release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${tag}")"
+          jq -e '.draft == true' <<<"$release_json" >/dev/null || {
+            echo "Release ${tag} must still be a draft before signed assets are published." >&2
+            exit 1
+          }
+          test "$(jq -r .prerelease <<<"$release_json")" = false
+          # Release Please creates a draft release while keeping its tag. The
+          # release remains private until all verified binaries are uploaded.
+          echo "version=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$actual_commit" >> "$GITHUB_OUTPUT"
+
+  build-native:
+    name: Build and validate (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: validate-release
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            archive: tar.gz
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            archive: tar.gz
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            archive: tar.gz
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+            archive: tar.gz
+          - runner: windows-2025
+            goos: windows
+            goarch: amd64
+            archive: zip
+          - runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+            archive: zip
+    steps:
+      - name: Check out the exact reviewed release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate-release.outputs.commit }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.10
+          cache: true
+
+      - name: Set up Python for deterministic archives
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Build candidate archive and run native smoke checks
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate-release.outputs.commit }}
+          TARGET_OS: ${{ matrix.goos }}
+          TARGET_ARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          bash scripts/build-release.sh --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --goos "$TARGET_OS" --goarch "$TARGET_ARCH" --output-dir dist
+          bash scripts/test-release-artifacts.sh --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --goos "$TARGET_OS" --goarch "$TARGET_ARCH" --artifacts-dir dist
+
+      - name: Upload this target archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: komposyn-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/komposyn_${{ needs.validate-release.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 3
+
+  sign-release:
+    name: Sign and verify the complete checksum manifest
+    needs: [validate-release, build-native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out signing workflow source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Download six native archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: komposyn-*
+          path: published
+          merge-multiple: true
+
+      - name: Prepare checksum manifest
+        env:
+          VERSION: ${{ needs.validate-release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd published
+          test "$(find . -maxdepth 1 -type f -name "komposyn_${VERSION}_*" | wc -l | tr -d ' ')" = 6
+          LC_ALL=C sha256sum komposyn_${VERSION}_* | LC_ALL=C sort -k2 > checksums.txt
+          test "$(wc -l < checksums.txt | tr -d ' ')" = 6
+          sha256sum --check checksums.txt
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Reuse a matching existing signed manifest or sign it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+          EXPECTED_IDENTITY: https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master
+          EXPECTED_ISSUER: https://token.actions.githubusercontent.com
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd published
+          names="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '[.assets[].name] | join("\n")')"
+          has_manifest=false
+          has_bundle=false
+          grep -Fxq checksums.txt <<<"$names" && has_manifest=true || true
+          grep -Fxq checksums.txt.sigstore.json <<<"$names" && has_bundle=true || true
+          if $has_manifest; then
+            mkdir -p existing
+            gh release download "$RELEASE_TAG" --repo "$GH_REPOSITORY" --pattern checksums.txt --dir existing
+            cmp checksums.txt existing/checksums.txt || {
+              echo "Published checksum manifest differs from rebuilt archives." >&2
+              exit 1
+            }
+          fi
+          if $has_bundle; then
+            mkdir -p existing
+            gh release download "$RELEASE_TAG" --repo "$GH_REPOSITORY" --pattern checksums.txt.sigstore.json --dir existing
+            cosign verify-blob checksums.txt --bundle existing/checksums.txt.sigstore.json --certificate-identity "$EXPECTED_IDENTITY" --certificate-oidc-issuer "$EXPECTED_ISSUER"
+            cp existing/checksums.txt.sigstore.json checksums.txt.sigstore.json
+          else
+            cosign sign-blob --yes --bundle checksums.txt.sigstore.json checksums.txt
+            cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json --certificate-identity "$EXPECTED_IDENTITY" --certificate-oidc-issuer "$EXPECTED_ISSUER"
+          fi
+          rm -rf existing
+          sha256sum --check checksums.txt
+
+      - name: Upload signed candidate set for publication
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-komposyn-release
+          path: published/*
+          if-no-files-found: error
+          retention-days: 3
+
+  validate-install:
+    name: Install signed release (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [validate-release, sign-release]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+          - runner: windows-2025
+            goos: windows
+            goarch: amd64
+          - runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+    steps:
+      - name: Check out the exact reviewed release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate-release.outputs.commit }}
+          persist-credentials: false
+
+      - name: Download signed release candidate set
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-komposyn-release
+          path: signed-artifacts
+
+      - name: Set up Go for native Windows ARM64 Cosign
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.10
+          cache: true
+
+      - name: Install pinned Cosign
+        if: matrix.goos != 'windows' || matrix.goarch != 'arm64'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Install pinned Cosign natively on Windows ARM64
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        run: |
+          $env:GOBIN = Join-Path $env:RUNNER_TEMP 'cosign-bin'
+          New-Item -ItemType Directory -Path $env:GOBIN -Force | Out-Null
+          $env:GITHUB_PATH | ForEach-Object { Add-Content -LiteralPath $_ -Value $env:GOBIN }
+          go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3
+          & (Join-Path $env:GOBIN 'cosign.exe') version
+
+      - name: Exercise signed archive installation lifecycle
+        if: matrix.goos != 'windows'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          bash scripts/test-release-install-unix.sh --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --artifacts-dir signed-artifacts
+
+      - name: Exercise signed archive installation lifecycle
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate-release.outputs.commit }}
+        run: |
+          pwsh -NoProfile -File scripts/test-release-install-windows.ps1 -Version "$env:RELEASE_VERSION" -Commit "$env:RELEASE_COMMIT" -ArtifactsDir signed-artifacts
+
+  publish-release:
+    name: Add verified assets to the reviewed source release
+    needs: [validate-release, sign-release, validate-install]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed release set
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-komposyn-release
+          path: published
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Verify signature and publish without overwriting
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.tag }}
+          EXPECTED_IDENTITY: https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master
+          EXPECTED_ISSUER: https://token.actions.githubusercontent.com
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd published
+          release_state="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json isDraft --jq .isDraft)"
+          test "$release_state" = true || {
+            echo "Release must still be a draft; refusing to upload signed assets." >&2
+            exit 1
+          }
+          cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json --certificate-identity "$EXPECTED_IDENTITY" --certificate-oidc-issuer "$EXPECTED_ISSUER"
+          sha256sum --check checksums.txt
+          names="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '[.assets[].name] | join("\n")')"
+          while IFS= read -r asset; do
+            name="${asset#*  }"
+            if grep -Fxq "$name" <<<"$names"; then
+              mkdir -p existing
+              gh release download "$RELEASE_TAG" --repo "$GH_REPOSITORY" --pattern "$name" --dir existing
+              cmp "$name" "existing/$name" || {
+                echo "Release already contains a different $name; refusing to overwrite it." >&2
+                exit 1
+              }
+            else
+              gh release upload "$RELEASE_TAG" "$name" --repo "$GH_REPOSITORY"
+            fi
+          done < checksums.txt
+          for asset in checksums.txt checksums.txt.sigstore.json; do
+            if grep -Fxq "$asset" <<<"$names"; then
+              mkdir -p existing
+              gh release download "$RELEASE_TAG" --repo "$GH_REPOSITORY" --pattern "$asset" --dir existing
+              cmp "$asset" "existing/$asset" || {
+                echo "Release already contains a different $asset; refusing to overwrite it." >&2
+                exit 1
+              }
+            else
+              gh release upload "$RELEASE_TAG" "$asset" --repo "$GH_REPOSITORY"
+            fi
+          done
+          published_names="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '[.assets[].name] | join("\n")')"
+          while IFS= read -r asset; do
+            name="${asset#*  }"
+            grep -Fxq "$name" <<<"$published_names" || { echo "Release is missing $name after upload." >&2; exit 1; }
+          done < checksums.txt
+          for asset in checksums.txt checksums.txt.sigstore.json; do
+            grep -Fxq "$asset" <<<"$published_names" || { echo "Release is missing $asset after upload." >&2; exit 1; }
+          done
+          # Publication is the final action after every expected archive and
+          # the signature bundle are present and verified on the draft release.
+          gh release edit "$RELEASE_TAG" --draft=false --repo "$GH_REPOSITORY"
+          final_state="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json isDraft --jq .isDraft)"
+          test "$final_state" = false || { echo "Release remains a draft after publication." >&2; exit 1; }
