@@ -24,7 +24,13 @@ provider receives one resolved, typed credential and routing context for each
 operation. The auth coordinator owns login attempts, protected token storage,
 refresh, and disconnect; the OpenAI plugin owns model/inference HTTP formats.
 The UI sees only public profile status and commands. No plugin receives the
-credential store.
+credential store. The runtime is the composition layer: it exposes the
+OpenAI-specific account actions to the UI and supplies the auth coordinator to
+discovery/request orchestration. It contains no OpenAI OAuth protocol or model
+HTTP implementation. OAuth remains in `internal/harness/auth/openai/` because
+it manages account credentials before a provider operation; keeping it outside
+the model-provider plugin preserves the provider contract of receiving one
+already-resolved credential per operation.
 
 OpenAI API-key profiles use the public `GET /v1/models` and streamed
 `POST /v1/responses` APIs. OpenAI ChatGPT OAuth profiles use the SIWC account's
