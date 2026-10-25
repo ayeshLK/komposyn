@@ -2,8 +2,11 @@
 
 KompoSyn Core is designed for local usage accounting. It does not require
 provider credentials to normalize local transcripts or query reports. The
-standalone CLI owns command, settings, consent, and process policy; its user
-documentation is maintained in [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
+standalone CLI owns production command, settings, consent, and process policy;
+its user documentation is maintained in
+[ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg). This repository
+also contains an experimental temporary chat; see its
+[data-handling notes](harness/phase-one-security.md).
 
 ## What Komposyn reads
 
@@ -13,24 +16,26 @@ platform default roots when enabled. Source files are read-only.
 
 ## What is stored
 
-The local SQLite database stores normalized usage events, timestamps, token
+The Token Logger SQLite database stores normalized usage events, timestamps, token
 counts, provider/model/client identifiers, project and session references,
 provenance, ingestion keys, source cursors, registered collector paths, local
 collector runtime/health, pricing rules, and sanitized local diagnostics.
-Settings and consent are managed by the standalone CLI. Registered paths are
+Production settings and consent are managed by the standalone CLI. Registered paths are
 local administrative data and are excluded from core diagnostic reports.
 
 ## What is not stored by default
 
-Komposyn does not intentionally persist prompts, model responses, full provider
+Token Logger does not intentionally persist prompts, model responses, full provider
 transcripts, API keys, or provider credentials. Source record hashes and
 metadata may be stored to support provenance, deduplication, and replacement
 detection; they are not a transcript archive.
 
 ## External communication
 
-Core normalization and report queries are local operations. The standalone
-CLI downloads and verifies its signed release artifacts. Diagnostic issue
+Core normalization and report queries are local operations. The experimental
+chat sends submitted text to the selected provider and does not persist the
+conversation. The standalone CLI downloads and verifies its signed release
+artifacts. Diagnostic issue
 review and routing are CLI-owned; no issue is submitted automatically.
 The public pricing catalog is bundled with the application; routine catalog
 loading, import, and reporting do not contact providers or send usage/model

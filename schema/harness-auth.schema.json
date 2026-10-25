@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://komposyn.dev/schemas/harness-auth-v1.json",
+  "title": "KompoSyn experimental harness credentials",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "credentials"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "credentials": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/profile" }
+    }
+  },
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider", "label", "auth"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+        "provider": { "enum": ["openai", "anthropic"] },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "routing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "organization": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "project": { "type": "string", "minLength": 1, "maxLength": 256 }
+          }
+        },
+        "auth": {
+          "oneOf": [
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["type", "api_key"],
+              "properties": { "type": { "const": "api_key" }, "api_key": { "type": "string", "minLength": 1 } }
+            },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["type", "env"],
+              "properties": { "type": { "const": "env" }, "env": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" } }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "provider": { "const": "anthropic" } } }, "then": { "not": { "required": ["routing"] } } }
+      ]
+    }
+  }
+}

@@ -1,11 +1,14 @@
 # KompoSyn Core documentation
 
-This repository documents the reusable `github.com/ayeshLK/komposyn` module.
-The executable, user configuration, JSONL harness transport, installers, and
-binary release process are maintained in the
+This repository documents the reusable `github.com/ayeshLK/komposyn` module
+and an experimental temporary chat. The production executable, user
+configuration, JSONL harness transport, installers, and binary release process are maintained in the
 [standalone CLI repository](https://github.com/ayeshLK/komposyn-lg).
 
 ## Core API and operation
+
+- [Experimental temporary chat](harness/README.md) — `komposyn` build, `/model`
+  workflow, local configuration, provider/UI boundaries, and acceptance status.
 
 - [Project vision](vision.md) — implemented module and open product questions.
 - [Architecture](architecture.md) — core ownership, provider ingestion,

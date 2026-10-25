@@ -1,0 +1,57 @@
+// Package ui defines the experimental frontend lifecycle and its small
+// headless client. It does not depend on a terminal package or chat runtime.
+package ui
+
+import (
+	"context"
+	"errors"
+
+	"github.com/ayeshLK/komposyn/plugins/model-provider"
+)
+
+var (
+	ErrConversationReset = errors.New("changing the selected provider or model requires confirmation to start a fresh chat")
+	ErrRequestActive     = errors.New("a request is active; cancel or wait before changing models or credentials")
+)
+
+type Plugin interface {
+	ID() string
+	DisplayName() string
+	Run(context.Context, Client) error
+}
+type Profile struct{ ID, Provider, Label, AuthType string }
+type Model struct {
+	Key, Provider, ProfileID, ProfileLabel, ID, DisplayName string
+	Compatibility                                           modelprovider.Compatibility
+	Reason                                                  string
+}
+type Failure struct {
+	ProfileID, Provider, Label string
+	Outcome                    modelprovider.Outcome
+}
+type Discovery struct {
+	Models   []Model
+	Failures []Failure
+}
+type Turn struct {
+	Prompt, Text, Refusal, Message, RequestID, ModelID string
+	Outcome                                            modelprovider.Outcome
+	Usage                                              modelprovider.Usage
+}
+type Snapshot struct {
+	Selected *Model
+	Turns    []Turn
+	Active   bool
+}
+
+type Client interface {
+	Profiles(context.Context) ([]Profile, error)
+	Discover(context.Context) (Discovery, error)
+	AddProfile(context.Context, string, string, string, string, map[string]string) error
+	ReplaceProfile(context.Context, string, string, string, map[string]string, bool) error
+	RemoveProfile(string, bool) error
+	Select(context.Context, string, bool) error
+	Snapshot() Snapshot
+	Send(context.Context, string, func(string)) (Turn, error)
+	Cancel()
+}

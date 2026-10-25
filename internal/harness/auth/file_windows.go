@@ -1,0 +1,129 @@
+//go:build windows
+
+package auth
+
+import (
+	"errors"
+	"golang.org/x/sys/windows"
+	"os"
+	"path/filepath"
+	"runtime"
+)
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("credential directory must be a real directory")
+	}
+	return setOwnerOnlyACL(path, true)
+}
+
+func checkPrivateFile(path string, _ os.FileInfo) error { return setOwnerOnlyACL(path, false) }
+func openPrivateFile(path string) (*os.File, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(name, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, err
+	}
+	var info windows.ByHandleFileInformation
+	if err = windows.GetFileInformationByHandle(h, &info); err != nil {
+		windows.CloseHandle(h)
+		return nil, err
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		windows.CloseHandle(h)
+		return nil, errors.New("configuration file must not be a reparse point")
+	}
+	return os.NewFile(uintptr(h), path), nil
+}
+
+func setOwnerOnlyACL(path string, directory bool) error {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	var pin runtime.Pinner
+	pin.Pin(user.User.Sid)
+	defer pin.Unpin()
+	inherit := uint32(windows.NO_INHERITANCE)
+	if directory {
+		inherit = windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT
+	}
+	owner := &windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_USER, TrusteeValue: windows.TrusteeValueFromSID(user.User.Sid)}
+	access := []windows.EXPLICIT_ACCESS{{AccessPermissions: windows.GENERIC_ALL, AccessMode: windows.SET_ACCESS, Inheritance: inherit, Trustee: *owner}}
+	sd, err := windows.BuildSecurityDescriptor(owner, nil, access, nil, nil)
+	if err != nil {
+		return err
+	}
+	absolute, err := sd.ToAbsolute()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := absolute.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}
+func lockPath(path string) (func(), error) {
+	name := path + ".lock"
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err = setOwnerOnlyACL(name, false); err != nil {
+		f.Close()
+		return nil, err
+	}
+	h := windows.Handle(f.Fd())
+	var overlapped windows.Overlapped
+	if err = windows.LockFileEx(h, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() { _ = windows.UnlockFileEx(h, 0, 1, 0, &overlapped); _ = f.Close() }, nil
+}
+func writeAtomic(path string, doc any) error {
+	data, err := marshal(doc)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".auth-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err = setOwnerOnlyACL(tmp, false); err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	src, err := windows.UTF16PtrFromString(tmp)
+	if err != nil {
+		return err
+	}
+	dst, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(src, dst, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}

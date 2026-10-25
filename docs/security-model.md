@@ -37,6 +37,12 @@ full transcripts, API keys, or provider credentials. This is a design
 constraint, not a promise that the host filesystem or a user-created fixture
 cannot contain sensitive data.
 
+The experimental temporary chat is a documented exception to the no-prompt
+transmission boundary: it sends submitted text to the selected provider and
+stores entered API keys as plaintext in the user's private auth file. It keeps
+conversation state only in memory and does not write chat usage to Token
+Logger. See [harness security notes](harness/phase-one-security.md).
+
 ## Disclosure review
 
 Before sharing logs or opening an issue:

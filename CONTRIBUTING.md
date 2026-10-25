@@ -8,9 +8,12 @@ before changing storage, migrations, provider handling, or security behavior.
 
 This repository owns the reusable `github.com/ayeshLK/komposyn` Go module:
 domain behavior, APIs, SQLite storage/migrations, adapters, collection, pricing,
-diagnostics, and reports. The standalone executable, command policy, settings,
-consent/onboarding, data-directory resolution, process lifecycle, harness
-transport, installers, and binary release lifecycle belong in
+diagnostics, and reports. It also contains an experimental memory-only chat
+under `internal/harness/` with role-specific model-provider and UI contracts
+under `plugins/`, launched from `cmd/harness/` as `komposyn`. The production
+standalone executable, production settings/consent/onboarding, data-directory
+resolution, JSONL harness transport, installers, and binary release lifecycle
+belong in
 [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg).
 
 Keep dependency direction one-way: CLI imports core; core never imports the
@@ -22,7 +25,9 @@ core changes affect the contract, and exact machine-readable report values.
 
 KompoSyn follows a component-first approach: contributions should solve a
 concrete problem and remain useful and testable on their own. The future
-harness, common plugin API, and plugin distribution model remain open. A
+harness, common plugin API, and plugin distribution model remain open. The
+temporary chat is an explicitly bounded experiment; do not add session/task
+state, transcript persistence, or general plugin loading to it. A
 proposal should explain the developer need, component boundary, contract, and
 whether independent distribution is useful; no component is required to have
 a CLI for consistency alone. Read the [project vision](docs/vision.md) and
@@ -31,7 +36,7 @@ proposing broader platform architecture.
 
 ## Development and validation
 
-Requires Go 1.26.9 or newer. The normal gate is:
+Requires Go 1.26.10 or newer. The normal gate is:
 
 ```sh
 make check

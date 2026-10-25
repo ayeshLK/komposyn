@@ -1,0 +1,209 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	"github.com/ayeshLK/komposyn/internal/harness/model"
+	p "github.com/ayeshLK/komposyn/plugins/model-provider"
+)
+
+type fakeProvider struct {
+	id       p.ID
+	mu       sync.Mutex
+	requests []p.ChatRequest
+	stream   func(context.Context, p.ChatRequest, func(string)) (p.Result, error)
+	started  chan struct{}
+}
+
+func (f *fakeProvider) ID() p.ID                    { return f.id }
+func (f *fakeProvider) AuthMethods() []p.AuthMethod { return []p.AuthMethod{p.AuthAPIKey} }
+func (f *fakeProvider) Authenticate(context.Context, p.Credential) (p.AuthResult, error) {
+	return p.AuthResult{Provider: f.id}, nil
+}
+func (f *fakeProvider) ListModels(context.Context, p.Credential) ([]p.Model, error) {
+	return []p.Model{{ID: "model-a", DisplayName: "Model A", Compatibility: p.CompatibilitySupported}, {ID: "model-b", DisplayName: "Model B", Compatibility: p.CompatibilitySupported}}, nil
+}
+func (f *fakeProvider) StreamChat(ctx context.Context, r p.ChatRequest, delta func(string)) (p.Result, error) {
+	f.mu.Lock()
+	f.requests = append(f.requests, r)
+	f.mu.Unlock()
+	if f.started != nil {
+		select {
+		case f.started <- struct{}{}:
+		default:
+		}
+	}
+	if f.stream != nil {
+		return f.stream(ctx, r, delta)
+	}
+	if delta != nil {
+		delta("answer")
+	}
+	return p.Result{RequestID: r.RequestID, ModelID: r.ModelID, Outcome: p.OutcomeCompleted, Text: "answer", Native: []json.RawMessage{json.RawMessage(`{"type":"message","content":"answer"}`)}, Usage: p.Usage{Known: true, InputTokens: 2, OutputTokens: 1}}, nil
+}
+func (f *fakeProvider) captured() []p.ChatRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]p.ChatRequest(nil), f.requests...)
+}
+
+func makeChat(t *testing.T, fp *fakeProvider) (*Chat, auth.Store) {
+	t.Helper()
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	registry, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat(registry, store)
+	if err := chat.AddProfile(context.Background(), "profile", string(fp.id), "Test profile", "secret-key", nil); err != nil {
+		t.Fatal(err)
+	}
+	return chat, store
+}
+func selectFirst(t *testing.T, c *Chat) {
+	t.Helper()
+	d := c.Discover(context.Background())
+	if len(d.Models) < 1 {
+		t.Fatalf("discovery=%+v", d)
+	}
+	if err := c.Select(context.Background(), d.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTemporaryMultiMessageChatAndConfirmedModelReset(t *testing.T) {
+	fp := &fakeProvider{id: p.OpenAI}
+	c, _ := makeChat(t, fp)
+	selectFirst(t, c)
+	if _, err := c.Send(context.Background(), "first", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Send(context.Background(), "second", nil); err != nil {
+		t.Fatal(err)
+	}
+	requests := fp.captured()
+	if len(requests) != 2 || len(requests[0].Messages) != 1 || len(requests[1].Messages) != 3 {
+		t.Fatalf("request histories: %+v", requests)
+	}
+	snap := c.Snapshot()
+	if len(snap.Turns) != 2 || snap.Selected == nil {
+		t.Fatalf("snapshot=%+v", snap)
+	}
+	d := c.Discover(context.Background())
+	var second string
+	for _, m := range d.Models {
+		if m.ID == "model-b" {
+			second = m.Key()
+		}
+	}
+	if err := c.Select(context.Background(), second, false); !errors.Is(err, ErrConversationReset) {
+		t.Fatalf("unconfirmed change err=%v", err)
+	}
+	if len(c.Snapshot().Turns) != 2 {
+		t.Fatal("canceling model change should preserve chat")
+	}
+	if err := c.Select(context.Background(), second, true); err != nil {
+		t.Fatal(err)
+	}
+	snap = c.Snapshot()
+	if len(snap.Turns) != 0 || snap.Selected.ID != "model-b" {
+		t.Fatalf("confirmed change did not start fresh: %+v", snap)
+	}
+}
+
+func TestCancellationBlocksLateDeltasAndPreservesSafeHistory(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fp := &fakeProvider{id: p.OpenAI, started: started}
+	fp.stream = func(ctx context.Context, r p.ChatRequest, delta func(string)) (p.Result, error) {
+		if r.RequestID != "chat-1" {
+			t.Fatalf("request ID=%s", r.RequestID)
+		}
+		started <- struct{}{}
+		<-ctx.Done()
+		if delta != nil {
+			delta("late")
+		}
+		<-release
+		return p.Result{}, &p.Error{Outcome: p.OutcomeInterrupted}
+	}
+	c, _ := makeChat(t, fp)
+	selectFirst(t, c)
+	done := make(chan Turn, 1)
+	go func() {
+		turn, _ := c.Send(context.Background(), "unfinished", func(string) { t.Error("late delta reached UI") })
+		done <- turn
+	}()
+	<-started
+	if err := c.Select(context.Background(), "anything", false); !errors.Is(err, ErrRequestActive) {
+		t.Fatalf("active model change err=%v", err)
+	}
+	c.Cancel()
+	close(release)
+	turn := <-done
+	if turn.Outcome != p.OutcomeInterrupted {
+		t.Fatalf("turn=%+v", turn)
+	}
+	snap := c.Snapshot()
+	if snap.Active || len(snap.Turns) != 1 || len(c.history) != 0 {
+		t.Fatalf("unsafe canceled state: %+v history=%+v", snap, c.history)
+	}
+	fp.stream = nil
+	if _, err := c.Send(context.Background(), "next", nil); err != nil {
+		t.Fatal(err)
+	}
+	requests := fp.captured()
+	last := requests[len(requests)-1]
+	if len(last.Messages) != 1 || last.Messages[0].Text != "next" {
+		t.Fatalf("canceled turn contaminated next request: %+v", last.Messages)
+	}
+}
+
+func TestRequestFailureIsSanitizedAndNotReplayed(t *testing.T) {
+	fp := &fakeProvider{id: p.Anthropic}
+	fp.stream = func(context.Context, p.ChatRequest, func(string)) (p.Result, error) {
+		return p.Result{}, &p.Error{Outcome: p.OutcomeAuthentication}
+	}
+	c, _ := makeChat(t, fp)
+	selectFirst(t, c)
+	turn, err := c.Send(context.Background(), "private prompt", nil)
+	if err == nil || turn.Outcome != p.OutcomeAuthentication || turn.Message != "provider rejected the credential" {
+		t.Fatalf("failure=%+v %v", turn, err)
+	}
+	if len(c.history) != 0 {
+		t.Fatal("failed turn appended to provider history")
+	}
+	if got := c.Snapshot().Turns[0].Message; got == "" || got == "secret-key" || got == "private prompt" {
+		t.Fatalf("unsafe user-visible failure: %q", got)
+	}
+}
+
+func TestProfileReplacementDuringActiveRequestIsRejected(t *testing.T) {
+	started := make(chan struct{}, 1)
+	fp := &fakeProvider{id: p.OpenAI, started: started}
+	wait := make(chan struct{})
+	fp.stream = func(ctx context.Context, r p.ChatRequest, d func(string)) (p.Result, error) {
+		started <- struct{}{}
+		<-wait
+		return p.Result{Outcome: p.OutcomeInterrupted}, nil
+	}
+	c, _ := makeChat(t, fp)
+	selectFirst(t, c)
+	done := make(chan struct{})
+	go func() { _, _ = c.Send(context.Background(), "working", nil); close(done) }()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := c.ReplaceProfile(ctx, "profile", "Test", "other-secret", nil, true)
+	if !errors.Is(err, ErrRequestActive) {
+		t.Fatalf("replace error=%v", err)
+	}
+	close(wait)
+	<-done
+}
