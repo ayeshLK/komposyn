@@ -27,11 +27,13 @@ if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { 
 if ($Commit -notmatch '^[0-9a-f]{40}$') { throw 'Commit must be a full lowercase SHA.' }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptDir 'windows-private-fixtures.ps1')
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('komposyn-signed-install-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
 $installDir = Join-Path $tmp 'bin with spaces'
 $configDir = Join-Path $tmp '.komposyn'
 New-Item -ItemType Directory -Path $installDir, $configDir | Out-Null
+Set-KomposynOwnerOnlyAcl -Path $configDir -Directory
 $authFile = Join-Path $configDir 'auth.json'
 $settingsFile = Join-Path $configDir 'settings.json'
 $legacyBinary = Join-Path $installDir 'komposyn-lg.exe'
@@ -42,6 +44,8 @@ $authContent = '{"schema_version":1,"credentials":[]}'
 $settingsContent = '{"schema_version":1,"ui":{"plugin":"tview"}}'
 [System.IO.File]::WriteAllText($authFile, $authContent)
 [System.IO.File]::WriteAllText($settingsFile, $settingsContent)
+Set-KomposynOwnerOnlyAcl -Path $authFile
+Set-KomposynOwnerOnlyAcl -Path $settingsFile
 [System.IO.File]::WriteAllText($legacyBinary, 'production CLI fixture')
 $authSddl = (Get-Acl -LiteralPath $authFile).Sddl
 $settingsSddl = (Get-Acl -LiteralPath $settingsFile).Sddl

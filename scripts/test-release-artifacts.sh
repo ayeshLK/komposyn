@@ -23,6 +23,7 @@ commit=""
 artifacts_dir=""
 goos=""
 goarch=""
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python_bin="$(command -v python3 || command -v python || true)"
 while (($#)); do
 	case "$1" in
@@ -152,6 +153,14 @@ if [[ "$goos/$goarch" == "$host_os/$host_arch" ]]; then
 		echo "read-only --check unexpectedly wrote configuration" >&2
 		exit 1
 	}
+	if [[ "$goos" == windows ]]; then
+		command -v cygpath >/dev/null 2>&1 && command -v pwsh >/dev/null 2>&1 || {
+			echo 'cygpath and PowerShell are required for Windows ACL fixture validation' >&2
+			exit 1
+		}
+		pwsh -NoProfile -File "$(cygpath -w "$root/scripts/test-harness-config-windows.ps1")" \
+			-BinaryPath "$(cygpath -w "$tmp/$binary")"
+	fi
 	echo "native smoke checks passed for $goos/$goarch"
 else
 	echo "metadata and archive checks passed; native execution not run for $goos/$goarch on $host_os/$host_arch"

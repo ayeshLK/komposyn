@@ -167,6 +167,15 @@ jobs:
           go-version: 1.26.10
           cache: true
 
+      - name: Install pinned Cosign natively on Windows ARM64
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        run: |
+          $env:GOBIN = Join-Path $env:RUNNER_TEMP 'cosign-bin'
+          New-Item -ItemType Directory -Path $env:GOBIN -Force | Out-Null
+          go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3
+          & (Join-Path $env:GOBIN 'cosign.exe') version
+
       - name: Set up Python for deterministic archives
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

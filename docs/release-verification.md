@@ -86,12 +86,14 @@ check passing.
 
 If validation, signing, or publication fails after the tag exists, fix the
 workflow issue and dispatch **Publish experimental komposyn binaries** again
-with the same version and exact tag SHA. Builds are deterministic for a given
-tag, commit, and target. Already uploaded assets are accepted only when their
-bytes match the newly validated asset; the workflow never overwrites assets
-and fails on mismatches. It can reuse a matching, previously verified checksum
-manifest or bundle after a partial upload. Investigate any mismatch manually;
-do not delete or replace release assets as an automatic recovery step.
+with the same version and exact tag SHA while the release remains a draft.
+Builds are deterministic for a given tag, commit, and target. Already uploaded
+draft assets are accepted only when their bytes match the newly validated
+asset; the workflow never overwrites assets and fails on mismatches. It can
+reuse a matching, previously verified checksum manifest or bundle after a
+partial upload. The workflow refuses to upload assets to a release that is
+already public. Investigate any mismatch manually; do not delete or replace
+release assets as an automatic recovery step.
 
 Release Please remains responsible for source tags and the source release. Its
 `draft` and `force-tag-creation` settings create a non-public source release
