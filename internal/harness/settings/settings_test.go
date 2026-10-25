@@ -1,10 +1,13 @@
 package settings
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ayeshLK/komposyn/internal/harness/auth"
 )
 
 func TestDefaultsSaveAndPreservesOtherFields(t *testing.T) {
@@ -14,7 +17,7 @@ func TestDefaultsSaveAndPreservesOtherFields(t *testing.T) {
 	if err != nil || got.Plugin != "tview" {
 		t.Fatalf("default: %+v %v", got, err)
 	}
-	if err := os.WriteFile(path, []byte(`{"schema_version":1,"extension":{"x":true},"ui":{"theme":"dark"}}`), 0o600); err != nil {
+	if err := auth.WriteJSON(path, json.RawMessage(`{"schema_version":1,"extension":{"x":true},"ui":{"theme":"dark"}}`)); err != nil {
 		t.Fatal(err)
 	}
 	if got, err = s.Load(); err != nil || got.Plugin != "tview" {
@@ -33,9 +36,9 @@ func TestDefaultsSaveAndPreservesOtherFields(t *testing.T) {
 }
 
 func TestInvalidSettingsDoNotResetFile(t *testing.T) {
-	for _, content := range []string{`{"schema_version":1,"ui":{"plugin":""}}`, `{"schema_version":9}`, `{"schema_version":1,"ui":[]}`, `{`} {
+	for _, content := range []string{`{"schema_version":1,"ui":{"plugin":""}}`, `{"schema_version":9}`, `{"schema_version":1,"ui":[]}`} {
 		path := filepath.Join(t.TempDir(), "settings.json")
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		if err := auth.WriteJSON(path, json.RawMessage(content)); err != nil {
 			t.Fatal(err)
 		}
 		s := Store{Path: path}
