@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
-	oauthauth "github.com/ayeshLK/komposyn/internal/harness/auth/openai"
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 )
 
@@ -93,9 +92,9 @@ type Discovery struct {
 	Failures []ProfileFailure
 }
 type Catalog struct {
-	Providers  *Registry
-	Profiles   ProfileStore
-	OpenAIAuth *oauthauth.Manager
+	Providers *Registry
+	Profiles  ProfileStore
+	OAuth     auth.OAuthResolver
 }
 
 func (c Catalog) Discover(ctx context.Context) Discovery {
@@ -123,11 +122,11 @@ func (c Catalog) Discover(ctx context.Context) Discovery {
 			var key string
 			var err error
 			if p.AuthType == "oauth" {
-				if c.OpenAIAuth == nil {
+				if c.OAuth == nil {
 					ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: provider.OutcomeAuthentication}}
 					return
 				}
-				resolved, key, err = c.OpenAIAuth.Resolve(ctx, p.ID)
+				resolved, key, err = c.OAuth.Resolve(ctx, p.ID)
 			} else {
 				resolved, key, err = c.Profiles.Resolve(p.ID)
 			}

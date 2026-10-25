@@ -51,7 +51,7 @@ const (
 var (
 	ErrLoginCanceled     = errors.New("OpenAI sign-in was canceled")
 	ErrLoginDenied       = errors.New("OpenAI sign-in was declined")
-	ErrPlanUsageDisabled = errors.New("ChatGPT plan usage permission was not granted; reconnect and enable plan usage")
+	ErrPlanUsageDisabled = auth.ErrOAuthPermissionRequired
 )
 
 type Manager struct {
@@ -71,15 +71,10 @@ type Manager struct {
 	attemptCancel  context.CancelFunc
 }
 
-type LoginResult struct {
-	Profile auth.Profile
-	Err     error
-}
+var _ auth.OAuthCoordinator = (*Manager)(nil)
 
-type LoginAttempt struct {
-	ID   string
-	Done <-chan LoginResult
-}
+type LoginResult = auth.OAuthLoginResult
+type LoginAttempt = auth.OAuthLoginAttempt
 
 func New(store auth.Store) *Manager {
 	m := &Manager{
@@ -106,7 +101,7 @@ func (m *Manager) StartLogin(parent context.Context, profileID string) (LoginAtt
 		return LoginAttempt{}, errors.New("could not initialize secure sign-in state")
 	}
 	ctx, cancel := context.WithCancel(parent)
-	done := make(chan LoginResult, 1)
+	done := make(chan auth.OAuthLoginResult, 1)
 	m.attemptMu.Lock()
 	if m.attemptID != "" {
 		m.attemptMu.Unlock()
@@ -117,7 +112,7 @@ func (m *Manager) StartLogin(parent context.Context, profileID string) (LoginAtt
 	m.attemptMu.Unlock()
 	go func() {
 		profile, loginErr := m.login(ctx, profileID)
-		done <- LoginResult{Profile: profile, Err: loginErr}
+		done <- auth.OAuthLoginResult{Profile: profile, Err: loginErr}
 		close(done)
 		m.attemptMu.Lock()
 		if m.attemptID == id {
@@ -491,11 +486,7 @@ func (m *Manager) tokensFromRefresh(r tokenResponse, now time.Time) (auth.OAuthT
 	return auth.OAuthTokens{AccessToken: r.AccessToken, RefreshToken: r.RefreshToken, TokenType: "Bearer", Scopes: strings.Fields(r.Scope), ExpiresAt: now.Add(time.Duration(r.ExpiresIn) * time.Second)}, nil
 }
 
-type DisconnectResult struct {
-	RemoteRevocationConfirmed bool
-	LocalRegistrationRemoved  bool
-	LocalTokensRemoved        bool
-}
+type DisconnectResult = auth.OAuthDisconnectResult
 
 // Disconnect attempts remote refresh-token revocation, then always removes
 // local tokens. removeRegistration controls whether the client mapping remains.

@@ -68,7 +68,7 @@ func (c Client) ReplaceProfile(ctx context.Context, id, label, key string, route
 	return adaptError(err)
 }
 func (c Client) StartLogin(ctx context.Context, profileID string) (ui.LoginAttempt, error) {
-	attempt, err := c.Chat.StartOpenAILogin(ctx, profileID)
+	attempt, err := c.Chat.StartOAuthLogin(ctx, profileID)
 	if err != nil {
 		return ui.LoginAttempt{}, err
 	}
@@ -94,12 +94,12 @@ func (c Client) StartLogin(ctx context.Context, profileID string) (ui.LoginAttem
 	}()
 	return ui.LoginAttempt{ID: attempt.ID, Done: done}, nil
 }
-func (c Client) CancelLogin(id string) bool { return c.Chat.CancelOpenAILogin(id) }
+func (c Client) CancelLogin(id string) bool { return c.Chat.CancelOAuthLogin(id) }
 func (c Client) Disconnect(ctx context.Context, id string, remove, confirm bool) (ui.DisconnectResult, error) {
-	result, err := c.Chat.DisconnectOpenAI(ctx, id, remove, confirm)
+	result, err := c.Chat.DisconnectOAuth(ctx, id, remove, confirm)
 	return ui.DisconnectResult{RemoteRevocationConfirmed: result.RemoteRevocationConfirmed, LocalRegistrationRemoved: result.LocalRegistrationRemoved, LocalTokensRemoved: result.LocalTokensRemoved}, adaptError(err)
 }
-func (c Client) OpenUsage() error { return c.Chat.OpenAIUsage() }
+func (c Client) OpenUsage() error { return c.Chat.OpenOAuthUsage() }
 func (c Client) RemoveProfile(id string, confirm bool) error {
 	return adaptError(c.Chat.RemoveProfile(id, confirm))
 }

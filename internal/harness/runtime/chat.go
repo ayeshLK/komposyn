@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
-	oauthauth "github.com/ayeshLK/komposyn/internal/harness/auth/openai"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 )
@@ -55,13 +54,11 @@ type Snapshot struct {
 	Active   bool
 }
 type Chat struct {
-	mu            sync.Mutex
-	catalog       model.Catalog
-	profiles      auth.Store
-	openAIAuth    *oauthauth.Manager
-	oauthResolver interface {
-		Resolve(context.Context, string) (auth.Profile, string, error)
-	}
+	mu             sync.Mutex
+	catalog        model.Catalog
+	profiles       auth.Store
+	oauth          auth.OAuthCoordinator
+	oauthResolver  auth.OAuthResolver
 	history        []provider.Message
 	turns          []Turn
 	selected       *model.Model
@@ -76,26 +73,36 @@ type Chat struct {
 }
 
 func NewChat(providers *model.Registry, profiles auth.Store) *Chat {
-	oauthManager := oauthauth.New(profiles)
-	return &Chat{catalog: model.Catalog{Providers: providers, Profiles: profiles, OpenAIAuth: oauthManager}, profiles: profiles, openAIAuth: oauthManager, oauthResolver: oauthManager, timeout: 2 * time.Minute}
+	return &Chat{catalog: model.Catalog{Providers: providers, Profiles: profiles}, profiles: profiles, timeout: 2 * time.Minute}
 }
 
-func (c *Chat) StartOpenAILogin(ctx context.Context, profileID string) (oauthauth.LoginAttempt, error) {
+func NewChatWithOAuth(providers *model.Registry, profiles auth.Store, oauth auth.OAuthCoordinator) *Chat {
+	chat := NewChat(providers, profiles)
+	chat.oauth = oauth
+	chat.oauthResolver = oauth
+	chat.catalog.OAuth = oauth
+	return chat
+}
+
+func (c *Chat) StartOAuthLogin(ctx context.Context, profileID string) (auth.OAuthLoginAttempt, error) {
+	if c.oauth == nil {
+		return auth.OAuthLoginAttempt{}, errors.New("OAuth login is unavailable")
+	}
 	c.mu.Lock()
 	if c.active || c.credentialBusy {
 		c.mu.Unlock()
-		return oauthauth.LoginAttempt{}, ErrRequestActive
+		return auth.OAuthLoginAttempt{}, ErrRequestActive
 	}
 	c.credentialBusy = true
 	c.mu.Unlock()
-	attempt, err := c.openAIAuth.StartLogin(ctx, profileID)
+	attempt, err := c.oauth.StartLogin(ctx, profileID)
 	if err != nil {
 		c.mu.Lock()
 		c.credentialBusy = false
 		c.mu.Unlock()
-		return oauthauth.LoginAttempt{}, err
+		return auth.OAuthLoginAttempt{}, err
 	}
-	completed := make(chan oauthauth.LoginResult, 1)
+	completed := make(chan auth.OAuthLoginResult, 1)
 	go func() {
 		result := <-attempt.Done
 		if result.Err == nil {
@@ -113,7 +120,9 @@ func (c *Chat) StartOpenAILogin(ctx context.Context, profileID string) (oauthaut
 	return attempt, nil
 }
 
-func (c *Chat) CancelOpenAILogin(attemptID string) bool { return c.openAIAuth.CancelLogin(attemptID) }
+func (c *Chat) CancelOAuthLogin(attemptID string) bool {
+	return c.oauth != nil && c.oauth.CancelLogin(attemptID)
+}
 
 func (c *Chat) AuthMethods(providerID string) []provider.AuthMethod {
 	plug, ok := c.catalog.Providers.Get(provider.ID(providerID))
@@ -123,20 +132,23 @@ func (c *Chat) AuthMethods(providerID string) []provider.AuthMethod {
 	return append([]provider.AuthMethod(nil), plug.AuthMethods()...)
 }
 
-func (c *Chat) DisconnectOpenAI(ctx context.Context, profileID string, removeRegistration, confirmReset bool) (oauthauth.DisconnectResult, error) {
+func (c *Chat) DisconnectOAuth(ctx context.Context, profileID string, removeRegistration, confirmReset bool) (auth.OAuthDisconnectResult, error) {
+	if c.oauth == nil {
+		return auth.OAuthDisconnectResult{}, errors.New("OAuth disconnect is unavailable")
+	}
 	c.mu.Lock()
 	if c.credentialBusy || (c.active && c.activeProfile == profileID) {
 		c.mu.Unlock()
-		return oauthauth.DisconnectResult{}, ErrRequestActive
+		return auth.OAuthDisconnectResult{}, ErrRequestActive
 	}
 	selected := c.selected != nil && c.selected.ProfileID == profileID
 	if selected && len(c.turns) > 0 && !confirmReset {
 		c.mu.Unlock()
-		return oauthauth.DisconnectResult{}, ErrConversationReset
+		return auth.OAuthDisconnectResult{}, ErrConversationReset
 	}
 	c.credentialBusy = true
 	c.mu.Unlock()
-	result, err := c.openAIAuth.Disconnect(ctx, profileID, removeRegistration)
+	result, err := c.oauth.Disconnect(ctx, profileID, removeRegistration)
 	c.mu.Lock()
 	if result.LocalTokensRemoved || result.LocalRegistrationRemoved {
 		if selected && c.selected != nil && c.selected.ProfileID == profileID {
@@ -150,7 +162,12 @@ func (c *Chat) DisconnectOpenAI(ctx context.Context, profileID string, removeReg
 	return result, err
 }
 
-func (c *Chat) OpenAIUsage() error { return c.openAIAuth.OpenUsage() }
+func (c *Chat) OpenOAuthUsage() error {
+	if c.oauth == nil {
+		return errors.New("OAuth account usage page is unavailable")
+	}
+	return c.oauth.OpenUsage()
+}
 func (c *Chat) Discover(ctx context.Context) model.Discovery {
 	d := c.catalog.Discover(ctx)
 	c.mu.Lock()
@@ -335,14 +352,10 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	var prof auth.Profile
 	var key string
 	var err error
-	if selection.Provider == provider.OpenAI {
-		metadata, metaErr := c.profiles.Get(selection.ProfileID)
-		if metaErr == nil && metadata.Auth.Type == "oauth" {
-			prof = metadata
-			key = ""
-		} else {
-			prof, key, err = c.profiles.Resolve(selection.ProfileID)
-		}
+	metadata, metaErr := c.profiles.Get(selection.ProfileID)
+	if metaErr == nil && metadata.Auth.Type == "oauth" {
+		prof = metadata
+		key = ""
 	} else {
 		prof, key, err = c.profiles.Resolve(selection.ProfileID)
 	}
@@ -381,11 +394,11 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		}
 		if err != nil {
 			outcome := provider.OutcomeAuthentication
-			if errors.Is(err, oauthauth.ErrPlanUsageDisabled) {
+			if errors.Is(err, auth.ErrOAuthPermissionRequired) {
 				outcome = provider.OutcomePermission
 			}
 			turn.Outcome = outcome
-			turn.Message = "OpenAI plan authorization is unavailable; manage this profile and reconnect or enable plan usage."
+			turn.Message = "Account authorization is unavailable; manage this profile and reconnect or enable the required usage permission."
 			c.mu.Lock()
 			if c.generation == generation {
 				c.active = false
