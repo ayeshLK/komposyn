@@ -4,10 +4,12 @@ package auth
 
 import (
 	"errors"
-	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
 	"runtime"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func ensurePrivateDir(path string) error {
@@ -24,7 +26,7 @@ func ensurePrivateDir(path string) error {
 	return setOwnerOnlyACL(path, true)
 }
 
-func checkPrivateFile(path string, _ os.FileInfo) error { return setOwnerOnlyACL(path, false) }
+func checkPrivateFile(path string, _ os.FileInfo) error { return verifyOwnerOnlyACL(path) }
 func openPrivateFile(path string) (*os.File, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -74,6 +76,47 @@ func setOwnerOnlyACL(path string, directory bool) error {
 	}
 	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
 }
+
+func verifyOwnerOnlyACL(path string) error {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	if sd == nil {
+		return errors.New("credential file has no security descriptor")
+	}
+	control, _, err := sd.Control()
+	if err != nil {
+		return err
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return errors.New("credential file ACL is not protected from inheritance")
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	if dacl == nil || dacl.AceCount != 1 {
+		return errors.New("credential file ACL must grant access only to the current user")
+	}
+	var ace *windows.ACCESS_ALLOWED_ACE
+	if err = windows.GetAce(dacl, 0, &ace); err != nil {
+		return err
+	}
+	if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+		return errors.New("credential file ACL contains an unexpected access rule")
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	aclSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+	if !aclSID.Equals(user.User.Sid) {
+		return errors.New("credential file ACL grants access to another identity")
+	}
+	return nil
+}
+
 func lockPath(path string) (func(), error) {
 	name := path + ".lock"
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
