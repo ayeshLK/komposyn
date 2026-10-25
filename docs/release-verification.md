@@ -26,8 +26,9 @@ publish assets.
    `v`) and the exact 40-character tag commit SHA.
 5. The workflow verifies the tag, manifest version, and source release; builds
    and runs native checks for all six supported targets; signs the aggregate
-   checksum manifest; verifies it; adds all assets to the draft source release;
-   and publishes the release only after confirming the complete asset set.
+   checksum manifest; exercises the actual signed install on all six targets;
+   adds all assets to the draft source release; and publishes only after
+   confirming the complete asset set.
 
 The binary workflow accepts only stable `X.Y.Z`, requires the supplied SHA to
 match `vX.Y.Z`, and never moves tags. Its build, signing, and publication jobs
@@ -72,6 +73,15 @@ On macOS, `shasum -a 256 --check checksums.txt` can verify the digests after
 Cosign verification. A checksum without a valid bundle and expected signer
 does not establish release authenticity.
 
+Before publication, a second six-target native matrix installs pinned Cosign
+v2.4.3 and exercises the real installer against the signed candidate set. It
+checks first install, reinstall, replacement, `--version`, `--help`, and
+`--check`, then uninstalls. The check also confirms auth/settings contents and
+access protections remain unchanged and that `komposyn-lg` survives beside
+`komposyn`. These jobs use only temporary fixture configuration and make no
+provider requests. The publication job depends on every platform lifecycle
+check passing.
+
 ## Retry and recovery
 
 If validation, signing, or publication fails after the tag exists, fix the
@@ -97,9 +107,9 @@ PR/master CI builds and runs candidate packages with read-only permissions,
 fixture-based installer tests, and no signing secrets or publication access.
 The release workflow repeats build and smoke validation on native Linux,
 macOS, and Windows amd64/arm64 runners before requesting an OIDC certificate.
-Fixture tests use a mock Cosign executable and are not cryptographic
-verification. Genuine signed-artifact verification happens in the signing and
-publication jobs after manual release dispatch.
+PR fixture tests use a mock Cosign executable and are not cryptographic
+verification. Genuine signature and installed-artifact verification happens
+in the signing and native installation jobs after manual release dispatch.
 
 The production `komposyn-lg` binary release lifecycle remains in
 [ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg). Historical
