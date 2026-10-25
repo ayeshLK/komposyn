@@ -194,10 +194,10 @@ try {
     New-FixtureArtifacts -Directory $script:artifacts -Version 'v0.10.0' -Architecture $script:targetArchitecture
     Assert-Throws { & (Join-Path $scriptDir 'install.ps1') -InstallDir $script:installDir -ArtifactsDir $script:artifacts -CosignPath $script:fakeCosign } 'Local artifacts were accepted without an explicit version.'
 
-    $home = Join-Path $testRoot 'isolated home'
-    New-Item -ItemType Directory -Path (Join-Path $home '.komposyn') -Force | Out-Null
-    $authPath = Join-Path $home '.komposyn/auth.json'
-    $settingsPath = Join-Path $home '.komposyn/settings.json'
+    $fixtureHome = Join-Path $testRoot 'isolated home'
+    New-Item -ItemType Directory -Path (Join-Path $fixtureHome '.komposyn') -Force | Out-Null
+    $authPath = Join-Path $fixtureHome '.komposyn/auth.json'
+    $settingsPath = Join-Path $fixtureHome '.komposyn/settings.json'
     [System.IO.File]::WriteAllText($authPath, '{"schema_version":1,"credentials":[]}')
     [System.IO.File]::WriteAllText($settingsPath, '{"schema_version":1,"ui":{"plugin":"tview"}}')
     $authHash = (Get-FileHash -LiteralPath $authPath -Algorithm SHA256).Hash
