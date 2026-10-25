@@ -48,6 +48,16 @@ var commit = ""
 func main() {
     if len(os.Args) > 1 && os.Args[1] == "--version" {
         fmt.Printf("komposyn version=%s commit=%s target=%s/%s\n", version, commit, runtime.GOOS, runtime.GOARCH)
+        return
+    }
+    if len(os.Args) > 1 && os.Args[1] == "--help" {
+        fmt.Println("Usage: komposyn [flags]")
+        fmt.Println("  --check")
+        return
+    }
+    if len(os.Args) > 1 && os.Args[1] == "--check" {
+        fmt.Println("UI: tview")
+        fmt.Println("Configured provider profiles: 0")
     }
 }
 '@ | Set-Content -LiteralPath $source -Encoding UTF8
