@@ -47,21 +47,22 @@ do not accept credential values. Startup creates no chat database.
 
 The default paths are `~/.komposyn/auth.json` and
 `~/.komposyn/settings.json`. Paths can be overridden with the flags above.
-The version 2 auth file stores API keys and OpenAI OAuth tokens as plaintext
-JSON under the same private-file boundary. On Unix the directory is
+The auth file remains at schema version 1; this CLI format has not been
+released, so OAuth extends the existing pre-release schema without a version
+bump. It stores API keys and OpenAI OAuth tokens as plaintext JSON under the
+same private-file boundary. On Unix the directory is
 restricted to `0700` and files to `0600`; on Windows it applies a protected
 ACL granting access to the current user. Writes use a private temporary file,
 an interprocess lock, and atomic replacement. Symlinks/reparse points,
 malformed files, duplicate profile IDs, invalid fields, and unsupported
-versions fail without replacing the existing configuration. Version 1
-API-key/environment profiles load unchanged and are upgraded on the next
-successful write; failed upgrades leave the source file intact.
+versions fail without replacing the existing configuration. Existing
+API-key/environment profiles load unchanged alongside OAuth profiles.
 
 Example credentials file (use a real key only in your private home directory):
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "credentials": [
     {
       "id": "openai-personal",

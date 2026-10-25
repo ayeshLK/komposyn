@@ -18,6 +18,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -32,7 +33,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 1
 
 var ErrOAuthProfileChanged = errors.New("OpenAI account registration changed during the operation")
 var ErrOAuthReconnectRequired = errors.New("OpenAI account must reconnect")
@@ -50,18 +51,19 @@ type AuthConfig struct {
 // OAuthCredential is protected local credential material for one issued
 // OpenAI registration. UI and provider metadata never expose this value.
 type OAuthCredential struct {
-	ClientID          string    `json:"client_id"`
-	Issuer            string    `json:"issuer"`
-	Subject           string    `json:"subject"`
-	Email             string    `json:"email,omitempty"`
-	HostID            string    `json:"ext_agent_host_id"`
-	IDToken           string    `json:"id_token,omitempty"`
-	AccessToken       string    `json:"access_token,omitempty"`
-	RefreshToken      string    `json:"refresh_token,omitempty"`
-	TokenType         string    `json:"token_type,omitempty"`
-	Scopes            []string  `json:"scopes,omitempty"`
-	ExpiresAt         time.Time `json:"expires_at,omitempty"`
-	ReconnectRequired bool      `json:"reconnect_required,omitempty"`
+	ClientID            string    `json:"client_id"`
+	Issuer              string    `json:"issuer"`
+	Subject             string    `json:"subject"`
+	Email               string    `json:"email,omitempty"`
+	HostID              string    `json:"ext_agent_host_id"`
+	IDToken             string    `json:"id_token,omitempty"`
+	AccessToken         string    `json:"access_token,omitempty"`
+	RefreshToken        string    `json:"refresh_token,omitempty"`
+	TokenType           string    `json:"token_type,omitempty"`
+	Scopes              []string  `json:"scopes,omitempty"`
+	ExpiresAt           time.Time `json:"expires_at,omitempty"`
+	LifecycleGeneration uint64    `json:"lifecycle_generation"`
+	ReconnectRequired   bool      `json:"reconnect_required,omitempty"`
 }
 
 type Profile struct {
@@ -237,14 +239,35 @@ func (s Store) EnsureHostID() (string, error) {
 }
 
 func (s Store) AddOAuth(profile Profile) error {
+	return s.AddOAuthContext(context.Background(), profile)
+}
+
+// AddOAuthContext commits a registration only if its login attempt is still
+// active after acquiring the interprocess auth-file lock.
+func (s Store) AddOAuthContext(ctx context.Context, profile Profile) error {
 	if profile.Provider != "openai" || profile.Auth.Type != "oauth" || profile.Auth.OAuth == nil {
 		return errors.New("an OpenAI OAuth profile is required")
 	}
-	return s.Add(profile)
+	if profile.Auth.OAuth.LifecycleGeneration == 0 {
+		profile.Auth.OAuth.LifecycleGeneration = 1
+	}
+	if err := validateProfile(profile); err != nil {
+		return err
+	}
+	return s.updateContext(ctx, func(doc *document) error {
+		for _, p := range doc.Credentials {
+			if p.ID == profile.ID {
+				return errors.New("credential profile ID already exists")
+			}
+		}
+		doc.Credentials = append(doc.Credentials, cloneProfile(profile))
+		return nil
+	})
 }
 
 // NewOAuthRevision returns a random, token-independent profile configuration
-// revision. Refreshes retain it; an explicit reconnect receives a new value.
+// revision. Refreshes and reauthentication retain it; explicit credential
+// changes are tracked separately by the lifecycle generation.
 func NewOAuthRevision() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -264,26 +287,36 @@ func newUUIDURI() string {
 	return "urn:uuid:" + h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 
-// ReplaceOAuth replaces a previously selected registration only when its
-// stable profile revision and validated account identity still match.
+// ReplaceOAuth replaces a registration only when its lifecycle generation and
+// validated account identity still match.
 func (s Store) ReplaceOAuth(id, expectedRevision string, replacement Profile) error {
+	return s.ReplaceOAuthContext(context.Background(), id, expectedRevision, replacement)
+}
+
+func (s Store) ReplaceOAuthContext(ctx context.Context, id, expectedRevision string, replacement Profile) error {
 	if replacement.ID != id || replacement.Provider != "openai" || replacement.Auth.Type != "oauth" || replacement.Auth.OAuth == nil {
 		return errors.New("an OpenAI OAuth profile replacement is required")
 	}
-	if err := validateProfile(replacement); err != nil {
-		return err
-	}
-	return s.update(func(doc *document) error {
+	return s.updateContext(ctx, func(doc *document) error {
 		for i, current := range doc.Credentials {
 			if current.ID != id {
 				continue
 			}
-			if current.Revision != expectedRevision || current.Auth.OAuth == nil ||
+			if current.Revision != expectedRevision || current.Revision != replacement.Revision || current.Auth.OAuth == nil ||
+				current.Auth.OAuth.LifecycleGeneration != replacement.Auth.OAuth.LifecycleGeneration ||
 				current.Auth.OAuth.ClientID != replacement.Auth.OAuth.ClientID ||
 				current.Auth.OAuth.Subject != replacement.Auth.OAuth.Subject {
 				return ErrOAuthProfileChanged
 			}
-			doc.Credentials[i] = cloneProfile(replacement)
+			if replacement.Auth.OAuth.LifecycleGeneration == ^uint64(0) {
+				return errors.New("OpenAI credential lifecycle generation is exhausted")
+			}
+			candidate := cloneProfile(replacement)
+			candidate.Auth.OAuth.LifecycleGeneration++
+			if err := validateProfile(candidate); err != nil {
+				return err
+			}
+			doc.Credentials[i] = candidate
 			return nil
 		}
 		return ErrOAuthProfileChanged
@@ -325,6 +358,25 @@ func (s Store) RefreshOAuth(id string, now time.Time, refresh func(OAuthCredenti
 		}
 		tokens, refreshErr := refresh(credential)
 		if refreshErr != nil {
+			if errors.Is(refreshErr, ErrOAuthReconnectRequired) {
+				if credential.LifecycleGeneration == ^uint64(0) {
+					return Profile{}, errors.New("OpenAI credential lifecycle generation is exhausted")
+				}
+				credential.ReconnectRequired = true
+				credential.AccessToken = ""
+				credential.RefreshToken = ""
+				credential.TokenType = ""
+				credential.ExpiresAt = time.Time{}
+				credential.LifecycleGeneration++
+				p.Auth.OAuth = &credential
+				doc.Credentials[i] = p
+				if err := validateDocument(doc); err != nil {
+					return Profile{}, err
+				}
+				if err := writeAtomic(path, doc); err != nil {
+					return Profile{}, err
+				}
+			}
 			return Profile{}, refreshErr
 		}
 		if tokens.AccessToken == "" || tokens.RefreshToken == "" || !tokens.ExpiresAt.After(now) {
@@ -354,28 +406,15 @@ func (s Store) RefreshOAuth(id string, now time.Time, refresh func(OAuthCredenti
 	return Profile{}, errors.New("credential profile was not found")
 }
 
-func (s Store) MarkOAuthReconnect(id string) error {
-	return s.update(func(doc *document) error {
-		for i := range doc.Credentials {
-			p := &doc.Credentials[i]
-			if p.ID == id && p.Auth.Type == "oauth" && p.Auth.OAuth != nil {
-				p.Auth.OAuth.ReconnectRequired = true
-				p.Auth.OAuth.AccessToken = ""
-				p.Auth.OAuth.RefreshToken = ""
-				p.Auth.OAuth.TokenType = ""
-				p.Auth.OAuth.ExpiresAt = time.Time{}
-				return nil
-			}
-		}
-		return errors.New("credential profile was not found")
-	})
-}
-
 func (s Store) ClearOAuthTokens(id string) error {
 	return s.update(func(doc *document) error {
 		for i := range doc.Credentials {
 			p := &doc.Credentials[i]
 			if p.ID == id && p.Auth.Type == "oauth" && p.Auth.OAuth != nil {
+				if p.Auth.OAuth.LifecycleGeneration == ^uint64(0) {
+					return errors.New("OpenAI credential lifecycle generation is exhausted")
+				}
+				p.Auth.OAuth.LifecycleGeneration++
 				p.Auth.OAuth.IDToken = ""
 				p.Auth.OAuth.AccessToken = ""
 				p.Auth.OAuth.RefreshToken = ""
@@ -461,7 +500,7 @@ func validateProfile(p Profile) error {
 			return errors.New("OAuth credentials require an OpenAI profile with stable revision and no API-key routing")
 		}
 		o := p.Auth.OAuth
-		if o.ClientID == "" || o.Issuer != "https://auth.openai.com" || o.Subject == "" || o.HostID == "" ||
+		if o.ClientID == "" || o.Issuer != "https://auth.openai.com" || o.Subject == "" || o.HostID == "" || o.LifecycleGeneration == 0 ||
 			(o.AccessToken == "") != (o.RefreshToken == "") || (o.AccessToken != "" && (o.TokenType != "Bearer" || !o.ExpiresAt.After(time.Time{}))) {
 			return errors.New("invalid OpenAI OAuth registration credentials")
 		}
@@ -491,6 +530,10 @@ func (s Store) readLocked() (*document, error) {
 }
 
 func (s Store) update(change func(*document) error) error {
+	return s.updateContext(context.Background(), change)
+}
+
+func (s Store) updateContext(ctx context.Context, change func(*document) error) error {
 	path, err := s.path()
 	if err != nil {
 		return err
@@ -503,6 +546,9 @@ func (s Store) update(change func(*document) error) error {
 		return err
 	}
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	doc, err := readFile(path)
 	if err != nil {
 		return err
@@ -512,6 +558,11 @@ func (s Store) update(change func(*document) error) error {
 	}
 	doc.SchemaVersion = SchemaVersion
 	if err = validateDocument(doc); err != nil {
+		return err
+	}
+	// This final check is the commit linearization point. Cancellation observed
+	// before it aborts; once it passes, the atomic replacement is allowed to win.
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return writeAtomic(path, doc)
@@ -562,14 +613,8 @@ func readFile(path string) (*document, error) {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("credential store contains trailing data")
 	}
-	version := doc.SchemaVersion
-	if version != 1 && version != SchemaVersion {
+	if doc.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("unsupported credential store schema version %d", doc.SchemaVersion)
-	}
-	// Version 1 contained only API-key and environment profiles. Those values
-	// map directly to v2 and are upgraded on the next successful mutation.
-	if version == 1 {
-		doc.SchemaVersion = SchemaVersion
 	}
 	if err := validateDocument(&doc); err != nil {
 		return nil, fmt.Errorf("invalid credential store: %w", err)

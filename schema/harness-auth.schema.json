@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://komposyn.dev/schemas/harness-auth-v2.json",
+  "$id": "https://komposyn.dev/schemas/harness-auth-v1.json",
   "title": "KompoSyn experimental harness credentials",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "credentials"],
   "properties": {
-    "schema_version": { "const": 2 },
+    "schema_version": { "const": 1 },
     "ext_agent_host_id": { "type": "string", "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
     "credentials": {
       "type": "array",
@@ -50,7 +50,7 @@
                 "type": { "const": "oauth" },
                 "oauth": {
                   "type": "object", "additionalProperties": false,
-                  "required": ["client_id", "issuer", "subject", "ext_agent_host_id"],
+                  "required": ["client_id", "issuer", "subject", "ext_agent_host_id", "lifecycle_generation"],
                   "properties": {
                     "client_id": { "type": "string", "minLength": 1, "maxLength": 256 },
                     "issuer": { "const": "https://auth.openai.com" },
@@ -63,6 +63,7 @@
                     "token_type": { "const": "Bearer" },
                     "scopes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
                     "expires_at": { "type": "string", "format": "date-time" },
+                    "lifecycle_generation": { "type": "integer", "minimum": 1 },
                     "reconnect_required": { "type": "boolean" }
                   }
                 }
@@ -72,7 +73,8 @@
         }
       },
       "allOf": [
-        { "if": { "properties": { "provider": { "const": "anthropic" } } }, "then": { "not": { "required": ["routing"] } } }
+        { "if": { "properties": { "provider": { "const": "anthropic" } } }, "then": { "not": { "required": ["routing"] } } },
+        { "if": { "properties": { "auth": { "properties": { "type": { "const": "oauth" } }, "required": ["type"] } }, "required": ["auth"] }, "then": { "required": ["revision"] } }
       ]
     },
     "host_id": { "type": "string", "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }

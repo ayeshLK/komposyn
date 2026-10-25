@@ -329,8 +329,17 @@ func TestInvalidGrantRequiresReconnectWithoutDeletingRegistration(t *testing.T) 
 		t.Fatalf("resolve error=%v", err)
 	}
 	stored, err := store.Get(profile.ID)
-	if err != nil || stored.Auth.OAuth == nil || stored.Auth.OAuth.ClientID != profile.Auth.OAuth.ClientID || stored.Auth.OAuth.Subject != profile.Auth.OAuth.Subject || !stored.Auth.OAuth.ReconnectRequired || stored.Auth.OAuth.AccessToken != "" || stored.Auth.OAuth.RefreshToken != "" {
+	if err != nil || stored.Auth.OAuth == nil || stored.Auth.OAuth.ClientID != profile.Auth.OAuth.ClientID || stored.Auth.OAuth.Subject != profile.Auth.OAuth.Subject || !stored.Auth.OAuth.ReconnectRequired || stored.Auth.OAuth.AccessToken != "" || stored.Auth.OAuth.RefreshToken != "" || stored.Auth.OAuth.LifecycleGeneration != profile.Auth.OAuth.LifecycleGeneration+1 {
 		t.Fatalf("registration was not retained for reconnect: %+v %v", stored, err)
+	}
+	staleCandidate := profile
+	staleCandidate.Auth.OAuth = new(auth.OAuthCredential)
+	*staleCandidate.Auth.OAuth = *profile.Auth.OAuth
+	staleCandidate.Auth.OAuth.AccessToken = "stale-access"
+	staleCandidate.Auth.OAuth.RefreshToken = "stale-refresh"
+	staleCandidate.Auth.OAuth.ExpiresAt = time.Now().Add(time.Hour)
+	if err := store.ReplaceOAuth(profile.ID, profile.Revision, staleCandidate); err != auth.ErrOAuthProfileChanged {
+		t.Fatalf("stale reconnect after invalid_grant error=%v", err)
 	}
 }
 

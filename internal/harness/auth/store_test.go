@@ -17,6 +17,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -153,7 +154,7 @@ func TestEnvironmentReferenceDoesNotCopyValue(t *testing.T) {
 	}
 }
 
-func TestVersionOneCredentialStoreUpgradesWithoutLosingProfiles(t *testing.T) {
+func TestExistingCredentialStorePreservesProfilesWithoutVersionBump(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	legacy := `{"schema_version":1,"credentials":[{"id":"old-openai","provider":"openai","label":"Old","auth":{"type":"api_key","api_key":"keep-this-key"}}]}`
 	var legacyDocument document
@@ -171,20 +172,20 @@ func TestVersionOneCredentialStoreUpgradesWithoutLosingProfiles(t *testing.T) {
 	if err := s.AddAPIKey("new-anthropic", "anthropic", "New", "new-key", nil); err != nil {
 		t.Fatal(err)
 	}
-	var upgraded document
+	var updated document
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &upgraded); err != nil {
+	if err := json.Unmarshal(data, &updated); err != nil {
 		t.Fatal(err)
 	}
-	if upgraded.SchemaVersion != SchemaVersion || len(upgraded.Credentials) != 2 {
-		t.Fatalf("upgrade=%+v", upgraded)
+	if updated.SchemaVersion != SchemaVersion || len(updated.Credentials) != 2 {
+		t.Fatalf("updated store=%+v", updated)
 	}
 	_, value, err = s.Resolve("old-openai")
 	if err != nil || value != "keep-this-key" {
-		t.Fatalf("legacy key lost after upgrade: %q %v", value, err)
+		t.Fatalf("existing key lost after update: %q %v", value, err)
 	}
 }
 
@@ -278,4 +279,126 @@ func TestFailedOAuthRefreshPreservesCredentialBytes(t *testing.T) {
 	if string(after) != string(want) {
 		t.Fatal("failed refresh changed stored credentials")
 	}
+}
+
+func TestOAuthLifecycleGenerationRejectsStaleReconnects(t *testing.T) {
+	t.Run("disconnect wins over pending reconnect", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "auth.json")
+		first, second := Store{Path: path}, Store{Path: path}
+		profile := addStoreOAuthProfile(t, first)
+		candidate := cloneProfile(profile)
+		candidate.Auth.OAuth.AccessToken = "candidate-access"
+		candidate.Auth.OAuth.RefreshToken = "candidate-refresh"
+		candidate.Auth.OAuth.ExpiresAt = time.Now().Add(time.Hour)
+
+		if err := second.ClearOAuthTokens(profile.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := first.ReplaceOAuth(profile.ID, profile.Revision, candidate); !errors.Is(err, ErrOAuthProfileChanged) {
+			t.Fatalf("stale reconnect error=%v", err)
+		}
+		stored, err := second.Get(profile.ID)
+		if err != nil || stored.Auth.OAuth.AccessToken != "" || stored.Auth.OAuth.RefreshToken != "" || !stored.Auth.OAuth.ReconnectRequired || stored.Auth.OAuth.LifecycleGeneration != 2 {
+			t.Fatalf("disconnect was overwritten: %+v %v", stored, err)
+		}
+	})
+
+	t.Run("older reconnect cannot replace newer reconnect", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "auth.json")
+		first, second := Store{Path: path}, Store{Path: path}
+		profile := addStoreOAuthProfile(t, first)
+		candidateA, candidateB := cloneProfile(profile), cloneProfile(profile)
+		candidateA.Auth.OAuth.AccessToken, candidateA.Auth.OAuth.RefreshToken = "access-a", "refresh-a"
+		candidateB.Auth.OAuth.AccessToken, candidateB.Auth.OAuth.RefreshToken = "access-b", "refresh-b"
+		candidateA.Auth.OAuth.ExpiresAt = time.Now().Add(time.Hour)
+		candidateB.Auth.OAuth.ExpiresAt = time.Now().Add(time.Hour)
+
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() { <-start; errs <- first.ReplaceOAuth(profile.ID, profile.Revision, candidateA) }()
+		go func() { <-start; errs <- second.ReplaceOAuth(profile.ID, profile.Revision, candidateB) }()
+		close(start)
+		errA, errB := <-errs, <-errs
+		if (errA == nil) == (errB == nil) {
+			t.Fatalf("expected one reconnect commit, got errors %v and %v", errA, errB)
+		}
+		if errA != nil && !errors.Is(errA, ErrOAuthProfileChanged) {
+			t.Fatalf("first reconnect error=%v", errA)
+		}
+		if errB != nil && !errors.Is(errB, ErrOAuthProfileChanged) {
+			t.Fatalf("second reconnect error=%v", errB)
+		}
+		stored, err := first.Get(profile.ID)
+		if err != nil || stored.Auth.OAuth.LifecycleGeneration != 2 || (stored.Auth.OAuth.AccessToken != "access-a" && stored.Auth.OAuth.AccessToken != "access-b") {
+			t.Fatalf("concurrent reconnect result=%+v %v", stored, err)
+		}
+	})
+}
+
+func TestOAuthMutationCancellationWhileWaitingForStoreLock(t *testing.T) {
+	for _, reconnect := range []bool{false, true} {
+		name := "add"
+		if reconnect {
+			name = "reconnect"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "auth.json")
+			store := Store{Path: path}
+			profile := addStoreOAuthProfile(t, store)
+			if !reconnect {
+				if err := store.Remove(profile.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			candidate := cloneProfile(profile)
+			candidate.Auth.OAuth.AccessToken = "replacement-access"
+			candidate.Auth.OAuth.RefreshToken = "replacement-refresh"
+			candidate.Auth.OAuth.ExpiresAt = time.Now().Add(time.Hour)
+
+			unlock, err := lockPath(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			result := make(chan error, 1)
+			go func() {
+				if reconnect {
+					result <- store.ReplaceOAuthContext(ctx, profile.ID, profile.Revision, candidate)
+				} else {
+					result <- store.AddOAuthContext(ctx, profile)
+				}
+			}()
+			time.Sleep(30 * time.Millisecond)
+			cancel()
+			unlock()
+			if err := <-result; !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled mutation error=%v", err)
+			}
+			if reconnect {
+				stored, err := store.Get(profile.ID)
+				if err != nil || stored.Auth.OAuth.AccessToken != profile.Auth.OAuth.AccessToken || stored.Auth.OAuth.LifecycleGeneration != profile.Auth.OAuth.LifecycleGeneration {
+					t.Fatalf("canceled reconnect changed profile: %+v %v", stored, err)
+				}
+			} else if _, err := store.Get(profile.ID); err == nil {
+				t.Fatal("canceled add persisted a profile")
+			}
+		})
+	}
+}
+
+func addStoreOAuthProfile(t *testing.T, store Store) Profile {
+	t.Helper()
+	hostID, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := Profile{ID: "oauth-lifecycle", Provider: "openai", Label: "ChatGPT", Revision: revision, Auth: AuthConfig{Type: "oauth", OAuth: &OAuthCredential{ClientID: "issued-client", Issuer: "https://auth.openai.com", Subject: "stable-subject", HostID: hostID, IDToken: "id-token", AccessToken: "old-access", RefreshToken: "old-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(time.Hour)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	return profile
 }

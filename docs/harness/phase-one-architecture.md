@@ -61,10 +61,13 @@ current process but are excluded from the next provider request. This avoids
 resending malformed or ambiguous native history after cancellation.
 
 The auth store and settings file are separate from the Token Logger SQLite
-database. They use versioned JSON Schemas and runtime validation. Auth schema
-v2 reads v1 API-key/environment profiles without data loss and writes v2 on a
-successful mutation. Credential updates serialize through a file lock and
-replace through a private temporary file. There is no chat database,
+database. They use versioned JSON Schemas and runtime validation. The auth
+schema remains at version 1 because this CLI format has not shipped; OAuth
+extends its pre-release profile format. Existing API-key/environment profiles
+remain unchanged. Credential updates serialize through a file lock and replace
+through a private temporary file. OAuth lifecycle generations guard reconnect
+and disconnect against stale credential writes, independently of the stable
+profile revision used for chat identity. There is no chat database,
 workspace requirement, SQLite open, session ID, MCP connection, approval card,
 Token Logger usage event, or persistent model selection in this workflow.
 

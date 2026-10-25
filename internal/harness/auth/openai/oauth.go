@@ -330,20 +330,28 @@ func (m *Manager) login(parent context.Context, profileID string) (auth.Profile,
 		if ctx.Err() != nil {
 			return auth.Profile{}, ErrLoginCanceled
 		}
-		if err = m.Store.AddOAuth(profile); err != nil {
+		if err = m.Store.AddOAuthContext(ctx, profile); err != nil {
+			if ctx.Err() != nil {
+				return auth.Profile{}, ErrLoginCanceled
+			}
 			return auth.Profile{}, errors.New("validated OpenAI registration could not be saved")
 		}
 	} else {
 		profile.ID, profile.Label, profile.Revision = existing.ID, existing.Label, existing.Revision
+		credential.LifecycleGeneration = existing.Auth.OAuth.LifecycleGeneration
 		if profile.Label == "" {
 			profile.Label = identity.email
 		}
 		if ctx.Err() != nil {
 			return auth.Profile{}, ErrLoginCanceled
 		}
-		if err = m.Store.ReplaceOAuth(profile.ID, existing.Revision, profile); err != nil {
+		if err = m.Store.ReplaceOAuthContext(ctx, profile.ID, existing.Revision, profile); err != nil {
+			if ctx.Err() != nil {
+				return auth.Profile{}, ErrLoginCanceled
+			}
 			return auth.Profile{}, errors.New("saved OpenAI registration changed before sign-in completed")
 		}
+		profile.Auth.OAuth.LifecycleGeneration++
 	}
 	return profile, nil
 }
@@ -465,7 +473,6 @@ func (m *Manager) Resolve(ctx context.Context, profileID string) (auth.Profile, 
 		return m.tokensFromRefresh(response, m.now())
 	})
 	if errors.Is(err, auth.ErrOAuthReconnectRequired) {
-		_ = m.Store.MarkOAuthReconnect(profileID)
 		return auth.Profile{}, "", auth.ErrOAuthReconnectRequired
 	}
 	if err != nil {

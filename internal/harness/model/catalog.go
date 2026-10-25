@@ -193,6 +193,7 @@ func ProfileVersion(p auth.Profile, key string) string {
 		oauth.RefreshToken = ""
 		oauth.TokenType = ""
 		oauth.ExpiresAt = time.Time{}
+		oauth.LifecycleGeneration = 0
 		oauth.ReconnectRequired = false
 		p.Auth.OAuth = &oauth
 		key = ""
