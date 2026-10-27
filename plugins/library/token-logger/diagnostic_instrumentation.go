@@ -303,10 +303,20 @@ func (store *Store) persistOperationFailure(ctx context.Context, classification 
 	}
 	c := diagnosticCorrelationFrom(ctx)
 	if c.operationID == "" {
-		c.operationID, _ = newDiagnosticID()
+		var idErr error
+		c.operationID, idErr = newDiagnosticID()
+		if idErr != nil || c.operationID == "" {
+			store.markDiagnosticPersistenceLost()
+			return
+		}
 	}
 	if c.evidenceOrder == 0 {
-		c.evidenceOrder, _ = store.reserveDiagnosticEvidenceOrder()
+		var orderErr error
+		c.evidenceOrder, orderErr = store.reserveDiagnosticEvidenceOrder()
+		if orderErr != nil || c.evidenceOrder == 0 {
+			store.markDiagnosticPersistenceLost()
+			return
+		}
 	}
 	if c.operationID == "" || c.evidenceOrder == 0 {
 		return
@@ -488,7 +498,7 @@ func (store *Store) observeCollectorFailure(err error, operation DiagnosticOpera
 		return err
 	}
 	classification := classifyCollectorFailure(err, operation)
-	if classification.Component != DiagnosticComponentStorage && classification.Reason != DiagnosticReasonCancelled {
+	if classification.Reason != DiagnosticReasonCancelled {
 		store.persistOperationFailure(context.Background(), classification, DiagnosticSubjectStore, "")
 	}
 	return store.observeFailure(context.Background(), err, classification,
@@ -807,7 +817,7 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 				Truncated: item.position.ByteOffset.Truncated}})
 	}
 	if store.diagnosticPersistenceReady.Load() && sourceID != "" && correlation.evidenceOrder != 0 &&
-		correlation.coverage == DiagnosticCoverageFullSnapshot && !observedOutcomes.Incomplete() {
+		correlation.coverage == DiagnosticCoverageFullSnapshot && !observedOutcomes.Incomplete() && !observedOutcomes.Pending() {
 		batch.Evaluations = append(batch.Evaluations, diagnosticEvaluation{SubjectKind: DiagnosticSubjectSource,
 			SubjectIdentity: sourceID, Component: DiagnosticComponentParser, Operation: operation,
 			Adapter: diagnosticAdapter(adapter), PollID: correlation.pollID, RunID: correlation.runID,

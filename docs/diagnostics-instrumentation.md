@@ -117,9 +117,11 @@ exactly-once accounting.
 
 Only a clean, complete full snapshot evaluates parser-condition absence, and
 the evaluation is scoped to the source identity and parser component,
-operation, and adapter. Incremental continuation records positive findings but
-cannot resolve old malformed rows. Unchanged snapshots do not carry forward
-coverage because no separate persisted coverage basis exists. Failed,
+operation, and adapter. Pending final records block absence evaluation even
+though the legacy `Incomplete()` predicate does not include pending tails.
+Incremental continuation records positive findings but cannot resolve old
+malformed rows. Unchanged snapshots do not carry forward coverage because no
+separate persisted coverage basis exists. Failed,
 cancelled, incomplete, and uninspected work does not establish absence. These
 choices deliberately leave some conditions active or unknown until a later
 complete full snapshot supplies matching evidence.

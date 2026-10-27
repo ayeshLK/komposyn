@@ -74,7 +74,9 @@ for that failure case.
 
 Coverage is conservative. A clean, complete full snapshot evaluates only the
 same parser component/operation/adapter and source identity, and only the
-closed parser reason catalogue. A positive parser finding remains active.
+closed parser reason catalogue. A pending final record also blocks absence
+evaluation, even though `OutcomeCounts.Incomplete()` does not include pending
+tails. A positive parser finding remains active.
 Incremental/checkpoint parses record positive findings but do not establish
 absence. Unchanged snapshots do not create a new evaluation; they do not carry
 forward conclusions because this schema does not persist a separate verified
@@ -139,7 +141,10 @@ diagnostic tables directly.
 | Public Claude/Codex imports produce detailed records with safe identities, counters, generations, and offsets | `TestPublicImportsPersistDetailedEvidenceWithoutObserver` |
 | Evidence persists when observer is nil or its mailbox is full and unread; collector poll counters retain scope | `TestPublicImportEvidenceSurvivesSaturatedUnreadObserver` |
 | Clean full replacement scan resolves only matching prior parser evidence | `TestPublicImportsPersistDetailedEvidenceWithoutObserver` |
+| Pending replacement tails for Claude and Codex cannot resolve prior evidence; tail completion remains incremental until a full scan | `TestPendingReplacementTailCannotResolvePriorParserEvidence` |
 | Failed diagnostic writes preserve committed usage and report evidence loss after reopen | `TestDiagnosticWriteFailureDoesNotFailCommittedImportAndSurvivesReopen` |
+| Failed evidence-order reservation marks availability lost across reopen | `TestOperationalFindingOrderReservationFailureMarksEvidenceLost` |
+| Collector storage failures persist with observation disabled or saturated/unread | `TestCollectorStorageFailurePersistsWithoutObserverDelivery` |
 | Persistence failure returns safe projections and marks the open store's evidence unavailable | `TestDiagnosticPersistenceFailureIsSafeAndVisibleForStoreHandle` |
 | Migration failure preserves the source schema and verified backup | `TestMigrationEighteenFailurePreservesSchemaAndVerifiedBackup` |
 

@@ -364,6 +364,165 @@ func TestPublicImportFailurePersistsPathFreeDiscoveryTargetEvidence(t *testing.T
 	}
 }
 
+func TestPendingReplacementTailCannotResolvePriorParserEvidence(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "source.jsonl")
+			valid := syntheticClaudeDiagnosticSource()
+			meta := ""
+			if provider == "codex" {
+				meta = `{"type":"session_meta","timestamp":"2026-10-16T12:00:00Z","payload":{"id":"session-private","project_id":"project-private","model":"gpt-5.1-codex"}}` + "\n"
+				valid = `{"type":"token_usage_record","timestamp":"2026-10-16T12:00:01Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"response-private","usage":{"input_tokens":3,"output_tokens":2}}}` + "\n"
+			}
+			malformed := `{"type":"assistant","message": }` + "\n"
+			if provider == "codex" {
+				malformed = `{"type":"token_usage_record","timestamp":"2026-10-16T12:00:00Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"bad-private","usage": }}` + "\n"
+			}
+			if err := os.WriteFile(path, []byte(meta+malformed+valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(filepath.Join(root, "store.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			importSource := func() (ImportResult, error) {
+				if provider == "claude" {
+					return (ClaudeAdapter{}).Import(path, store)
+				}
+				return (CodexAdapter{}).Import(path, store)
+			}
+			initial, err := importSource()
+			if err != nil || initial.Outcomes.MalformedRecord == 0 {
+				t.Fatalf("initial import=%+v err=%v", initial, err)
+			}
+			page, err := store.ListDiagnosticDetails(DiagnosticQuery{Reason: DiagnosticReasonInvalidJSON})
+			if err != nil || len(page.Items) != 1 {
+				t.Fatalf("initial details=%+v err=%v", page, err)
+			}
+			problemID := page.Items[0].ProblemID
+
+			validLine := strings.TrimSuffix(valid, "\n")
+			cut := len(validLine) / 2
+			pending := validLine[:cut]
+			replacement := meta + valid + pending
+			if err := os.WriteFile(path, []byte(replacement), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			partial, err := importSource()
+			if err != nil || partial.Outcomes.DeferredIncompleteTail == 0 {
+				t.Fatalf("pending replacement=%+v err=%v", partial, err)
+			}
+			stillOpen, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || stillOpen.Condition.State == DiagnosticConditionResolved {
+				t.Fatalf("pending tail established absence: condition=%+v err=%v", stillOpen.Condition, err)
+			}
+
+			if err := os.WriteFile(path, []byte(replacement+validLine[cut:]+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			completed, err := importSource()
+			if err != nil || completed.Outcomes.Pending() {
+				t.Fatalf("completed tail=%+v err=%v", completed, err)
+			}
+			stillOpen, err = store.InspectDiagnosticDetail(problemID)
+			if err != nil || stillOpen.Condition.State == DiagnosticConditionResolved {
+				t.Fatalf("appended-tail scan resolved historical condition without full coverage: condition=%+v err=%v", stillOpen.Condition, err)
+			}
+			if _, err := store.db.Exec("UPDATE source_cursors SET snapshot_reusable=0"); err != nil {
+				t.Fatal(err)
+			}
+			full, err := importSource()
+			if err != nil || full.Outcomes.Incomplete() || full.Outcomes.Pending() {
+				t.Fatalf("complete full scan=%+v err=%v", full, err)
+			}
+			resolved, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || resolved.Condition.State != DiagnosticConditionResolved ||
+				(resolved.Condition.Reason != DiagnosticConditionCoveredAbsence && resolved.Condition.Reason != DiagnosticConditionSourceReplaced) {
+				t.Fatalf("complete coverage did not resolve prior evidence: result=%+v condition=%+v err=%v", full, resolved.Condition, err)
+			}
+		})
+	}
+}
+
+func TestCollectorStorageFailurePersistsWithoutObserverDelivery(t *testing.T) {
+	for _, observation := range []string{"disabled", "full_unread"} {
+		t.Run(observation, func(t *testing.T) {
+			var store *Store
+			var observer *DiagnosticObserver
+			var err error
+			if observation == "full_unread" {
+				observer, err = NewDiagnosticObserver(1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				store, err = OpenWithObservation(filepath.Join(t.TempDir(), "store.sqlite"), OpenOptions{}, observer)
+			} else {
+				store, err = Open(filepath.Join(t.TempDir(), "store.sqlite"))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if _, err := store.AcquireCollectorLease("private-owner", 1, "v1", "test", time.Second, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if observer != nil && observer.publish(testDiagnosticEvent()) != DiagnosticEmissionQueued {
+				t.Fatal("failed to fill observation mailbox")
+			}
+			if _, err := store.db.Exec(`CREATE TRIGGER reject_collector_heartbeat BEFORE UPDATE ON collector_runtime BEGIN SELECT RAISE(ABORT, 'synthetic private heartbeat failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.HeartbeatCollector("private-owner"); err == nil {
+				t.Fatal("heartbeat unexpectedly succeeded")
+			} else if failure, ok := FailureDetails(err); !ok || failure.Classification.Reason != DiagnosticReasonStorageFailure {
+				t.Fatalf("heartbeat failure details=%+v ok=%t err=%v", failure, ok, err)
+			}
+			page, err := store.ListDiagnosticDetails(DiagnosticQuery{Reason: DiagnosticReasonStorageFailure})
+			if err != nil || len(page.Items) != 1 || page.Items[0].Classification.Operation != DiagnosticOperationHeartbeat ||
+				page.EvidenceAvailability != DiagnosticAvailabilityAvailable {
+				t.Fatalf("persistent heartbeat failure details=%+v err=%v", page, err)
+			}
+			if observer != nil && observer.Stats().Dropped == 0 {
+				t.Fatal("expected observer publication to be dropped")
+			}
+		})
+	}
+}
+
+func TestOperationalFindingOrderReservationFailureMarksEvidenceLost(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "store.sqlite")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER reject_evidence_order BEFORE UPDATE OF next_evidence_order ON diagnostic_detail_meta BEGIN SELECT RAISE(ABORT, 'synthetic evidence order failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "private-missing.jsonl")
+	if _, err := (ClaudeAdapter{}).Import(missing, store); err == nil {
+		t.Fatal("missing source unexpectedly imported")
+	}
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil || page.EvidenceAvailability != DiagnosticAvailabilityLost {
+		t.Fatalf("order reservation failure was hidden: page=%+v err=%v", page, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	page, err = store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil || page.EvidenceAvailability != DiagnosticAvailabilityLost {
+		t.Fatalf("reservation loss marker did not survive reopen: page=%+v err=%v", page, err)
+	}
+}
+
 func BenchmarkDiagnosticEvidencePersistenceOverhead(b *testing.B) {
 	for _, workload := range []struct{ name, contents string }{
 		{"ordinary_unchanged_poll", syntheticClaudeDiagnosticSource()},
