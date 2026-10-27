@@ -17,10 +17,12 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 func ensurePrivateDir(path string) error {
@@ -53,6 +55,13 @@ func openPrivateFile(path string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), path), nil
 }
 func lockPath(path string) (func(), error) {
+	return lockPathContext(context.Background(), path)
+}
+
+func lockPathContext(ctx context.Context, path string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	name := path + ".lock"
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -62,11 +71,31 @@ func lockPath(path string) (func(), error) {
 		f.Close()
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, err
+	delay := 10 * time.Millisecond
+	for {
+		if err := ctx.Err(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) && !errors.Is(err, syscall.EINTR) {
+			_ = f.Close()
+			return nil, err
+		}
+		if err := waitForLockRetry(ctx, delay); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if delay < 250*time.Millisecond {
+			delay *= 2
+			if delay > 250*time.Millisecond {
+				delay = 250 * time.Millisecond
+			}
+		}
 	}
-	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
 }
 func writeAtomic(path string, doc any) error {
 	data, err := marshal(doc)

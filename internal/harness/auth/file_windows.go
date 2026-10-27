@@ -17,10 +17,12 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -132,6 +134,13 @@ func verifyOwnerOnlyACL(path string) error {
 }
 
 func lockPath(path string) (func(), error) {
+	return lockPathContext(context.Background(), path)
+}
+
+func lockPathContext(ctx context.Context, path string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	name := path + ".lock"
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -143,11 +152,31 @@ func lockPath(path string) (func(), error) {
 	}
 	h := windows.Handle(f.Fd())
 	var overlapped windows.Overlapped
-	if err = windows.LockFileEx(h, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
-		f.Close()
-		return nil, err
+	delay := 10 * time.Millisecond
+	for {
+		if err := ctx.Err(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		err = windows.LockFileEx(h, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)
+		if err == nil {
+			return func() { _ = windows.UnlockFileEx(h, 0, 1, 0, &overlapped); _ = f.Close() }, nil
+		}
+		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			_ = f.Close()
+			return nil, err
+		}
+		if err := waitForLockRetry(ctx, delay); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if delay < 250*time.Millisecond {
+			delay *= 2
+			if delay > 250*time.Millisecond {
+				delay = 250 * time.Millisecond
+			}
+		}
 	}
-	return func() { _ = windows.UnlockFileEx(h, 0, 1, 0, &overlapped); _ = f.Close() }, nil
 }
 func writeAtomic(path string, doc any) error {
 	data, err := marshal(doc)

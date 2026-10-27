@@ -54,22 +54,23 @@ type Snapshot struct {
 	Active   bool
 }
 type Chat struct {
-	mu             sync.Mutex
-	catalog        model.Catalog
-	profiles       auth.Store
-	oauth          auth.OAuthCoordinator
-	oauthResolver  auth.OAuthResolver
-	history        []provider.Message
-	turns          []Turn
-	selected       *model.Model
-	discovery      *model.Discovery
-	active         bool
-	activeProfile  string
-	credentialBusy bool
-	cancel         context.CancelFunc
-	generation     uint64
-	sequence       atomic.Uint64
-	timeout        time.Duration
+	mu                    sync.Mutex
+	catalog               model.Catalog
+	profiles              auth.Store
+	oauth                 auth.OAuthCoordinator
+	oauthResolver         auth.OAuthResolver
+	history               []provider.Message
+	turns                 []Turn
+	selected              *model.Model
+	discovery             *model.Discovery
+	active                bool
+	activeProfile         string
+	credentialBusy        bool
+	credentialBusyProfile string
+	cancel                context.CancelFunc
+	generation            uint64
+	sequence              atomic.Uint64
+	timeout               time.Duration
 }
 
 func NewChat(providers *model.Registry, profiles auth.Store) *Chat {
@@ -94,11 +95,13 @@ func (c *Chat) StartOAuthLogin(ctx context.Context, profileID string) (auth.OAut
 		return auth.OAuthLoginAttempt{}, ErrRequestActive
 	}
 	c.credentialBusy = true
+	c.credentialBusyProfile = profileID
 	c.mu.Unlock()
 	attempt, err := c.oauth.StartLogin(ctx, profileID)
 	if err != nil {
 		c.mu.Lock()
 		c.credentialBusy = false
+		c.credentialBusyProfile = ""
 		c.mu.Unlock()
 		return auth.OAuthLoginAttempt{}, err
 	}
@@ -112,6 +115,7 @@ func (c *Chat) StartOAuthLogin(ctx context.Context, profileID string) (auth.OAut
 		}
 		c.mu.Lock()
 		c.credentialBusy = false
+		c.credentialBusyProfile = ""
 		c.mu.Unlock()
 		completed <- result
 		close(completed)
@@ -147,6 +151,7 @@ func (c *Chat) DisconnectOAuth(ctx context.Context, profileID string, removeRegi
 		return auth.OAuthDisconnectResult{}, ErrConversationReset
 	}
 	c.credentialBusy = true
+	c.credentialBusyProfile = profileID
 	c.mu.Unlock()
 	result, err := c.oauth.Disconnect(ctx, profileID, removeRegistration)
 	c.mu.Lock()
@@ -158,6 +163,7 @@ func (c *Chat) DisconnectOAuth(ctx context.Context, profileID string, removeRegi
 		c.discovery = nil
 	}
 	c.credentialBusy = false
+	c.credentialBusyProfile = ""
 	c.mu.Unlock()
 	return result, err
 }
@@ -212,15 +218,20 @@ func (c *Chat) AddProfile(ctx context.Context, id, providerID, label, key string
 }
 func (c *Chat) ReplaceProfile(ctx context.Context, id, label, key string, route map[string]string, confirmReset bool) error {
 	c.mu.Lock()
-	if c.active {
-		_, _, err := c.profiles.Resolve(id)
-		if err == nil && id == c.activeProfile {
-			c.mu.Unlock()
-			return ErrRequestActive
-		}
+	if c.credentialBusy || (c.active && id == c.activeProfile) {
+		c.mu.Unlock()
+		return ErrRequestActive
 	}
+	c.credentialBusy = true
+	c.credentialBusyProfile = id
 	c.mu.Unlock()
-	p, _, err := c.profiles.Resolve(id)
+	defer func() {
+		c.mu.Lock()
+		c.credentialBusy = false
+		c.credentialBusyProfile = ""
+		c.mu.Unlock()
+	}()
+	p, _, err := c.profiles.ResolveContext(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -240,19 +251,23 @@ func (c *Chat) ReplaceProfile(ctx context.Context, id, label, key string, route 
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
+		c.mu.Unlock()
 		return err
 	}
 	if c.active && id == c.activeProfile {
+		c.mu.Unlock()
 		return ErrRequestActive
 	}
 	if c.selected != nil && c.selected.ProfileID == id && len(c.turns) > 0 && !confirmReset {
+		c.mu.Unlock()
 		return ErrConversationReset
 	}
-	if err := c.profiles.ReplaceAPIKey(id, label, key, route); err != nil {
+	c.mu.Unlock()
+	if err := c.profiles.ReplaceAPIKeyContext(ctx, id, label, key, route); err != nil {
 		return err
 	}
+	c.mu.Lock()
 	c.discovery = nil
 	if c.selected != nil && c.selected.ProfileID == id {
 		if len(c.turns) > 0 {
@@ -260,18 +275,28 @@ func (c *Chat) ReplaceProfile(ctx context.Context, id, label, key string, route 
 		}
 		c.selected = nil
 	}
+	c.mu.Unlock()
 	return nil
 }
 func (c *Chat) RemoveProfile(id string, confirmReset bool) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.active && c.activeProfile == id {
+	if c.credentialBusy || (c.active && c.activeProfile == id) {
+		c.mu.Unlock()
 		return ErrRequestActive
 	}
 	if c.selected != nil && c.selected.ProfileID == id && len(c.turns) > 0 && !confirmReset {
+		c.mu.Unlock()
 		return ErrConversationReset
 	}
-	if err := c.profiles.Remove(id); err != nil {
+	c.credentialBusy = true
+	c.credentialBusyProfile = id
+	c.mu.Unlock()
+	err := c.profiles.RemoveContext(context.Background(), id)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.credentialBusy = false
+	c.credentialBusyProfile = ""
+	if err != nil {
 		return err
 	}
 	c.discovery = nil
@@ -339,41 +364,25 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	if prompt == "" {
 		return Turn{}, errors.New("message is empty")
 	}
+	ctx, cancel := context.WithTimeout(parent, c.timeout)
 	c.mu.Lock()
 	if c.active || c.credentialBusy {
 		c.mu.Unlock()
+		cancel()
 		return Turn{}, ErrRequestActive
 	}
 	if c.selected == nil {
 		c.mu.Unlock()
+		cancel()
 		return Turn{}, ErrNoSelection
 	}
 	selection := *c.selected
-	var prof auth.Profile
-	var key string
-	var err error
-	metadata, metaErr := c.profiles.Get(selection.ProfileID)
-	if metaErr == nil && metadata.Auth.Type == "oauth" {
-		prof = metadata
-		key = ""
-	} else {
-		prof, key, err = c.profiles.Resolve(selection.ProfileID)
-	}
-	if err != nil {
-		c.mu.Unlock()
-		return Turn{}, err
-	}
-	version := model.ProfileVersion(prof, key)
-	if selection.ProfileVersion != "" && selection.ProfileVersion != version {
-		c.mu.Unlock()
-		return Turn{}, errors.New("selected credential changed; refresh and select a model again")
-	}
 	plug, ok := c.catalog.Providers.Get(selection.Provider)
 	if !ok {
 		c.mu.Unlock()
+		cancel()
 		return Turn{}, ErrNoSuchModel
 	}
-	ctx, cancel := context.WithTimeout(parent, c.timeout)
 	generation := c.sequence.Add(1)
 	c.generation = generation
 	c.active = true
@@ -383,7 +392,65 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	history = append(history, provider.Message{Role: provider.RoleUser, Text: prompt})
 	requestID := fmt.Sprintf("chat-%d", generation)
 	c.mu.Unlock()
-	defer cancel()
+	defer func() {
+		cancel()
+		c.mu.Lock()
+		if c.generation == generation {
+			c.active = false
+			c.activeProfile = ""
+			c.cancel = nil
+		}
+		c.mu.Unlock()
+	}()
+
+	finishError := func() {
+		c.mu.Lock()
+		if c.generation == generation {
+			c.active = false
+			c.activeProfile = ""
+			c.cancel = nil
+		}
+		c.mu.Unlock()
+	}
+	stateIsCurrent := func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.generation == generation && c.active && !(c.credentialBusy && c.credentialBusyProfile == selection.ProfileID) && c.selected != nil && *c.selected == selection && ctx.Err() == nil
+	}
+
+	prof, err := c.profiles.GetContext(ctx, selection.ProfileID)
+	if err != nil {
+		finishError()
+		return Turn{}, err
+	}
+	if prof.ID != selection.ProfileID || prof.Provider != string(selection.Provider) {
+		finishError()
+		return Turn{}, errors.New("selected credential changed; refresh and select a model again")
+	}
+	key := ""
+	if prof.Auth.Type != "oauth" {
+		prof, key, err = c.profiles.ResolveContext(ctx, selection.ProfileID)
+		if err != nil {
+			finishError()
+			return Turn{}, err
+		}
+	}
+	if prof.ID != selection.ProfileID || prof.Provider != string(selection.Provider) {
+		finishError()
+		return Turn{}, errors.New("selected credential changed; refresh and select a model again")
+	}
+	if selection.ProfileVersion != "" && selection.ProfileVersion != model.ProfileVersion(prof, key) {
+		finishError()
+		return Turn{}, errors.New("selected credential changed; refresh and select a model again")
+	}
+	if !stateIsCurrent() {
+		finishError()
+		if err := ctx.Err(); err != nil {
+			return Turn{}, err
+		}
+		return Turn{}, errors.New("chat selection changed while resolving credentials")
+	}
+
 	turn := Turn{Prompt: prompt, ModelID: selection.ID, At: time.Now().UTC()}
 	if prof.Auth.Type == "oauth" {
 		var accessToken string
@@ -393,6 +460,10 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 			prof, accessToken, err = c.oauthResolver.Resolve(ctx, selection.ProfileID)
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				finishError()
+				return Turn{}, ctx.Err()
+			}
 			outcome := provider.OutcomeAuthentication
 			if errors.Is(err, auth.ErrOAuthPermissionRequired) {
 				outcome = provider.OutcomePermission
@@ -400,16 +471,31 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 			turn.Outcome = outcome
 			turn.Message = "Account authorization is unavailable; manage this profile and reconnect or enable the required usage permission."
 			c.mu.Lock()
-			if c.generation == generation {
+			if c.generation == generation && c.active && c.selected != nil && *c.selected == selection && ctx.Err() == nil {
 				c.active = false
 				c.activeProfile = ""
 				c.cancel = nil
 				c.turns = append(c.turns, turn)
 			}
 			c.mu.Unlock()
+			if ctx.Err() != nil {
+				return Turn{}, ctx.Err()
+			}
 			return turn, err
 		}
 		key = accessToken
+		if prof.ID != selection.ProfileID || prof.Provider != string(selection.Provider) ||
+			(selection.ProfileVersion != "" && model.ProfileVersion(prof, "") != selection.ProfileVersion) {
+			finishError()
+			return Turn{}, errors.New("selected credential changed; refresh and select a model again")
+		}
+	}
+	if !stateIsCurrent() {
+		finishError()
+		if err := ctx.Err(); err != nil {
+			return Turn{}, err
+		}
+		return Turn{}, errors.New("chat selection changed while resolving credentials")
 	}
 	result, callErr := plug.StreamChat(ctx, provider.ChatRequest{RequestID: requestID, ModelID: selection.ID, Credential: modelCredential(prof, key), Messages: history, Instructions: "You are KompoSyn, a helpful text assistant. Do not claim to call tools.", MaxOutput: 4096}, func(delta string) {
 		c.mu.Lock()

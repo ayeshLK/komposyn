@@ -16,9 +16,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	goruntime "runtime"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	oauthauth "github.com/ayeshLK/komposyn/internal/harness/auth/openai"
@@ -76,12 +79,16 @@ func newCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			chat := runtime.NewChatWithOAuth(registry, profileStore, oauthauth.New(profileStore))
 			frontend, err := harnessui.Load(prefs.Plugin, []uiplugin.Plugin{tviewui.New()})
 			if err != nil {
 				return err
 			}
-			return frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore})
+			oauthManager := oauthauth.New(profileStore)
+			chat := runtime.NewChatWithOAuth(registry, profileStore, oauthManager)
+			runErr := frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore})
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			return errors.Join(runErr, oauthManager.Close(shutdownCtx))
 		},
 	}
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")

@@ -23,6 +23,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -255,6 +256,109 @@ func TestOAuthProfileMetadataAndRefreshKeepStableIdentity(t *testing.T) {
 	if err != nil || updated.Revision != revision || updated.Auth.OAuth.Subject != "subject-1" || updated.Auth.OAuth.AccessToken != "next-access" || updated.Auth.OAuth.RefreshToken != "next-refresh" {
 		t.Fatalf("rotated profile=%+v err=%v", updated, err)
 	}
+}
+
+func TestRefreshOAuthContextCancelsWhileWaitingForLock(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	profile := addExpiringStoreOAuthProfile(t, s, time.Now().Add(-time.Minute))
+	before, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockPath(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	var calls atomic.Int32
+	go func() {
+		close(started)
+		_, refreshErr := s.RefreshOAuthContext(ctx, profile.ID, time.Now, func(OAuthCredential) (OAuthTokens, error) {
+			calls.Add(1)
+			return OAuthTokens{}, nil
+		})
+		done <- refreshErr
+	}()
+	<-started
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			unlock()
+			t.Fatalf("refresh wait error=%v", err)
+		}
+	case <-time.After(time.Second):
+		unlock()
+		t.Fatal("refresh did not leave the canceled lock wait")
+	}
+	unlock()
+	if calls.Load() != 0 {
+		t.Fatalf("refresh callback called %d times after cancellation", calls.Load())
+	}
+	after, err := os.ReadFile(s.Path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("canceled lock wait changed credentials: err=%v", err)
+	}
+}
+
+func TestRefreshOAuthContextRechecksExpiryAfterLock(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	base := time.Now().Truncate(time.Second)
+	profile := addExpiringStoreOAuthProfile(t, s, base.Add(100*time.Second))
+	unlock, err := lockPath(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current atomic.Int64
+	current.Store(base.UnixNano())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	var calls atomic.Int32
+	go func() {
+		close(started)
+		_, refreshErr := s.RefreshOAuthContext(context.Background(), profile.ID, func() time.Time {
+			return time.Unix(0, current.Load())
+		}, func(OAuthCredential) (OAuthTokens, error) {
+			calls.Add(1)
+			return OAuthTokens{AccessToken: "new-access", RefreshToken: "new-refresh", TokenType: "Bearer", ExpiresAt: time.Unix(0, current.Load()).Add(time.Hour)}, nil
+		})
+		done <- refreshErr
+	}()
+	<-started
+	time.Sleep(30 * time.Millisecond)
+	current.Store(base.Add(20 * time.Second).UnixNano())
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh did not complete after lock release")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh callback called %d times; expiry was checked using stale time", calls.Load())
+	}
+}
+
+func addExpiringStoreOAuthProfile(t *testing.T, s Store, expires time.Time) Profile {
+	t.Helper()
+	hostID, err := s.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := Profile{ID: "oauth-refresh-test", Provider: "openai", Label: "OAuth", Revision: revision, Auth: AuthConfig{Type: "oauth", OAuth: &OAuthCredential{ClientID: "issued-client", Issuer: "https://auth.openai.com", Subject: "subject", HostID: hostID, AccessToken: "old-access", RefreshToken: "old-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: expires}}}
+	if err := s.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	return profile
 }
 
 func TestFailedOAuthRefreshPreservesCredentialBytes(t *testing.T) {

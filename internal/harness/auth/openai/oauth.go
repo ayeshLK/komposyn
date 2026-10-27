@@ -49,9 +49,16 @@ const (
 )
 
 var (
-	ErrLoginCanceled     = errors.New("OpenAI sign-in was canceled")
-	ErrLoginDenied       = errors.New("OpenAI sign-in was declined")
-	ErrPlanUsageDisabled = auth.ErrOAuthPermissionRequired
+	ErrLoginCanceled          = errors.New("OpenAI sign-in was canceled")
+	ErrLoginDenied            = errors.New("OpenAI sign-in was declined")
+	ErrPlanUsageDisabled      = auth.ErrOAuthPermissionRequired
+	ErrAuthClosed             = errors.New("OpenAI authentication manager is closed")
+	errAmbiguousTokenExchange = errors.New("OAuth token exchange outcome is ambiguous")
+)
+
+const (
+	defaultRefreshTimeout = 15 * time.Second
+	defaultLockWait       = 30 * time.Second
 )
 
 type Manager struct {
@@ -69,6 +76,45 @@ type Manager struct {
 	attemptMu      sync.Mutex
 	attemptID      string
 	attemptCancel  context.CancelFunc
+	refreshTimeout time.Duration
+	lockWait       time.Duration
+	refreshMu      sync.Mutex
+	refreshClosed  bool
+	refreshActive  int
+	refreshOps     map[*refreshOperation]struct{}
+	refreshDrained chan struct{}
+}
+
+type refreshOperation struct {
+	ctx             context.Context
+	cancel          context.CancelFunc
+	mu              sync.Mutex
+	exchangeStarted bool
+}
+
+type refreshResult struct {
+	profile auth.Profile
+	access  string
+	err     error
+}
+
+func (op *refreshOperation) beginExchange(timeout time.Duration) (context.Context, context.CancelFunc, error) {
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	if err := op.ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	op.exchangeStarted = true
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return ctx, cancel, nil
+}
+
+func (op *refreshOperation) cancelBeforeExchange() {
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	if !op.exchangeStarted {
+		op.cancel()
+	}
 }
 
 var _ auth.OAuthCoordinator = (*Manager)(nil)
@@ -78,17 +124,22 @@ type LoginAttempt = auth.OAuthLoginAttempt
 
 func New(store auth.Store) *Manager {
 	m := &Manager{
-		Store:     store,
-		client:    &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		browser:   openBrowser,
-		listen:    func() (net.Listener, error) { return net.Listen("tcp4", "127.0.0.1:0") },
-		now:       time.Now,
-		timeout:   5 * time.Minute,
-		issuer:    issuerURL,
-		authorize: authorizeURL,
-		token:     tokenURL,
-		resource:  resourceURL,
+		Store:          store,
+		client:         &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		browser:        openBrowser,
+		listen:         func() (net.Listener, error) { return net.Listen("tcp4", "127.0.0.1:0") },
+		now:            time.Now,
+		timeout:        5 * time.Minute,
+		issuer:         issuerURL,
+		authorize:      authorizeURL,
+		token:          tokenURL,
+		resource:       resourceURL,
+		refreshTimeout: defaultRefreshTimeout,
+		lockWait:       defaultLockWait,
+		refreshOps:     make(map[*refreshOperation]struct{}),
+		refreshDrained: make(chan struct{}),
 	}
+	close(m.refreshDrained)
 	m.verifyIdentity = m.validateIdentity
 	return m
 }
@@ -359,6 +410,7 @@ type tokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 	Scope        string `json:"scope"`
 	Error        string `json:"error"`
+	StatusCode   int    `json:"-"`
 }
 
 func (m *Manager) exchangeCode(ctx context.Context, clientID, code, verifier, redirectURI string) (auth.OAuthTokens, error) {
@@ -395,17 +447,21 @@ func (m *Manager) postForm(ctx context.Context, endpoint string, values url.Valu
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return tokenResponse{}, errors.New("OpenAI authentication service could not be reached")
+		return tokenResponse{}, errors.Join(errAmbiguousTokenExchange, errors.New("OpenAI authentication service could not be reached"))
 	}
 	defer resp.Body.Close()
 	var parsed tokenResponse
 	if err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&parsed); err != nil {
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return tokenResponse{}, errors.New("OpenAI returned an invalid authentication response")
+		if resp.StatusCode >= http.StatusInternalServerError || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+			return tokenResponse{}, errors.Join(errAmbiguousTokenExchange, errors.New("OpenAI returned an invalid authentication response"))
 		}
 		return tokenResponse{}, fmt.Errorf("OpenAI authentication failed (HTTP %d)", resp.StatusCode)
 	}
+	parsed.StatusCode = resp.StatusCode
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= http.StatusInternalServerError {
+			return parsed, nil
+		}
 		if parsed.Error != "" {
 			return parsed, nil
 		}
@@ -446,37 +502,134 @@ func (m *Manager) validateIdentity(ctx context.Context, clientID, raw, nonce str
 }
 
 // Resolve refreshes an expiring OAuth profile and returns the currently valid
-// access token only to the caller performing one provider operation.
+// access token only to the caller performing one provider operation. Refresh
+// work is owned by the manager: callers may stop waiting at any point, but a
+// token exchange that has started continues under its independent timeout and
+// persists its replacement before the auth-file lock is released.
 func (m *Manager) Resolve(ctx context.Context, profileID string) (auth.Profile, string, error) {
-	profile, err := m.Store.RefreshOAuth(profileID, m.now(), func(current auth.OAuthCredential) (auth.OAuthTokens, error) {
-		form := url.Values{}
-		form.Set("grant_type", "refresh_token")
-		form.Set("client_id", current.ClientID)
-		form.Set("refresh_token", current.RefreshToken)
-		form.Set("resource", m.resource)
-		response, err := m.postForm(ctx, m.token, form)
-		if err != nil {
-			return auth.OAuthTokens{}, err
-		}
-		if response.Error == "invalid_grant" {
-			return auth.OAuthTokens{}, auth.ErrOAuthReconnectRequired
-		}
-		if response.Error != "" {
-			return auth.OAuthTokens{}, errors.New("OpenAI could not refresh this account")
-		}
-		response.IDToken = "" // retain the last validated ID token as a login hint
-		return m.tokensFromRefresh(response, m.now())
-	})
-	if errors.Is(err, auth.ErrOAuthReconnectRequired) {
-		return auth.Profile{}, "", auth.ErrOAuthReconnectRequired
+	if err := ctx.Err(); err != nil {
+		return auth.Profile{}, "", err
 	}
+	resultCh, err := m.startRefresh(ctx, profileID)
 	if err != nil {
 		return auth.Profile{}, "", err
 	}
-	if profile.Auth.OAuth == nil || !hasOAuthScope(profile.Auth.OAuth.Scopes, "chatgpt.tokens.use.direct") {
-		return profile, "", ErrPlanUsageDisabled
+	if err := ctx.Err(); err != nil {
+		return auth.Profile{}, "", err
 	}
-	return profile, profile.Auth.OAuth.AccessToken, nil
+	select {
+	case <-ctx.Done():
+		return auth.Profile{}, "", ctx.Err()
+	case result := <-resultCh:
+		if err := ctx.Err(); err != nil {
+			return auth.Profile{}, "", err
+		}
+		return result.profile, result.access, result.err
+	}
+}
+
+func (m *Manager) startRefresh(ctx context.Context, profileID string) (<-chan refreshResult, error) {
+	lockCtx, cancel := context.WithTimeout(ctx, m.lockWait)
+	op := &refreshOperation{ctx: lockCtx, cancel: cancel}
+	resultCh := make(chan refreshResult, 1)
+
+	m.refreshMu.Lock()
+	if m.refreshClosed {
+		m.refreshMu.Unlock()
+		cancel()
+		return nil, ErrAuthClosed
+	}
+	if m.refreshActive == 0 {
+		m.refreshDrained = make(chan struct{})
+	}
+	m.refreshActive++
+	m.refreshOps[op] = struct{}{}
+	m.refreshMu.Unlock()
+
+	go func() {
+		defer m.finishRefresh(op)
+		profile, err := m.Store.RefreshOAuthContext(op.ctx, profileID, m.now, func(current auth.OAuthCredential) (auth.OAuthTokens, error) {
+			return m.refreshTokens(op, current)
+		})
+		if err != nil {
+			resultCh <- refreshResult{err: err}
+			return
+		}
+		if profile.Auth.OAuth == nil || !hasOAuthScope(profile.Auth.OAuth.Scopes, "chatgpt.tokens.use.direct") {
+			resultCh <- refreshResult{profile: profile, err: ErrPlanUsageDisabled}
+			return
+		}
+		resultCh <- refreshResult{profile: profile, access: profile.Auth.OAuth.AccessToken}
+	}()
+	return resultCh, nil
+}
+
+func (m *Manager) refreshTokens(op *refreshOperation, current auth.OAuthCredential) (auth.OAuthTokens, error) {
+	ctx, cancel, err := op.beginExchange(m.refreshTimeout)
+	if err != nil {
+		return auth.OAuthTokens{}, err
+	}
+	defer cancel()
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("client_id", current.ClientID)
+	form.Set("refresh_token", current.RefreshToken)
+	form.Set("resource", m.resource)
+	response, err := m.postForm(ctx, m.token, form)
+	if err != nil {
+		if errors.Is(err, errAmbiguousTokenExchange) {
+			return auth.OAuthTokens{}, errors.Join(auth.ErrOAuthRefreshOutcomeUnknown, err)
+		}
+		return auth.OAuthTokens{}, err
+	}
+	if response.StatusCode >= http.StatusInternalServerError && response.Error != "server_error" && response.Error != "temporarily_unavailable" {
+		return auth.OAuthTokens{}, auth.ErrOAuthRefreshOutcomeUnknown
+	}
+	switch response.Error {
+	case "invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused":
+		return auth.OAuthTokens{}, auth.ErrOAuthReconnectRequired
+	case "invalid_client":
+		return auth.OAuthTokens{}, errors.New("OpenAI OAuth client configuration is invalid")
+	case "":
+	default:
+		return auth.OAuthTokens{}, errors.New("OpenAI could not refresh this account")
+	}
+	response.IDToken = "" // retain the last validated ID token as a login hint
+	tokens, err := m.tokensFromRefresh(response, m.now())
+	if err != nil {
+		return auth.OAuthTokens{}, errors.Join(auth.ErrOAuthRefreshOutcomeUnknown, err)
+	}
+	return tokens, nil
+}
+
+// Close rejects new refresh operations, cancels operations still waiting to
+// start an exchange, and waits for exchanges already in progress to persist or
+// reach their independent timeout.
+func (m *Manager) Close(ctx context.Context) error {
+	m.refreshMu.Lock()
+	m.refreshClosed = true
+	for op := range m.refreshOps {
+		op.cancelBeforeExchange()
+	}
+	drained := m.refreshDrained
+	m.refreshMu.Unlock()
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) finishRefresh(op *refreshOperation) {
+	m.refreshMu.Lock()
+	delete(m.refreshOps, op)
+	m.refreshActive--
+	if m.refreshActive == 0 {
+		close(m.refreshDrained)
+	}
+	m.refreshMu.Unlock()
+	op.cancel()
 }
 
 func (m *Manager) tokensFromRefresh(r tokenResponse, now time.Time) (auth.OAuthTokens, error) {

@@ -21,12 +21,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,6 +319,215 @@ func TestResolveRefreshesUnderLockAndKeepsRegistration(t *testing.T) {
 	}
 }
 
+func TestCanceledCallerWaitsNoLongerButRefreshPersistsRotation(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	profile := addOAuthTestProfile(t, store, time.Now().Add(-time.Minute))
+	refreshStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	finishRefresh := func() { releaseOnce.Do(func() { close(release) }) }
+	var startOnce sync.Once
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		startOnce.Do(func() { close(refreshStarted) })
+		select {
+		case <-release:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"access_token":"rotated-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600}`)
+		case <-r.Context().Done():
+			select {
+			case <-requestCanceled:
+			default:
+				close(requestCanceled)
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	manager := New(store)
+	manager.token = server.URL
+	manager.client = server.Client()
+	t.Cleanup(func() {
+		finishRefresh()
+		if err := manager.Close(context.Background()); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	type resolveResult struct {
+		profile auth.Profile
+		access  string
+		err     error
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan resolveResult, 1)
+	go func() {
+		resolved, access, err := manager.Resolve(ctx, profile.ID)
+		result <- resolveResult{profile: resolved, access: access, err: err}
+	}()
+	select {
+	case <-refreshStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("refresh HTTP exchange did not start")
+	}
+	cancel()
+	select {
+	case got := <-result:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("canceled caller result=%+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled caller continued waiting for refresh")
+	}
+	select {
+	case <-requestCanceled:
+		t.Fatal("refresh HTTP request inherited the caller context")
+	case <-time.After(25 * time.Millisecond):
+	}
+	finishRefresh()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := manager.Close(shutdownCtx); err != nil {
+		shutdownCancel()
+		t.Fatalf("drain started refresh: %v", err)
+	}
+	shutdownCancel()
+	stored, err := store.Get(profile.ID)
+	if err != nil || stored.Auth.OAuth.AccessToken != "rotated-access" || stored.Auth.OAuth.RefreshToken != "rotated-refresh" {
+		t.Fatalf("rotated tokens were not persisted: %+v err=%v", stored.Auth.OAuth, err)
+	}
+	nextManager := New(store)
+	nextManager.token = server.URL
+	nextManager.client = server.Client()
+	_, access, err := nextManager.Resolve(context.Background(), profile.ID)
+	if err != nil || access != "rotated-access" || calls.Load() != 1 {
+		t.Fatalf("next resolution access=%q refresh calls=%d err=%v", access, calls.Load(), err)
+	}
+	if err := nextManager.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRefreshRequestUsesIndependentBoundedTimeout(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	profile := addOAuthTestProfile(t, store, time.Now().Add(-time.Minute))
+	transport := &waitForRequestCancellation{started: make(chan struct{}), canceled: make(chan struct{})}
+	manager := New(store)
+	manager.token = "https://token.invalid"
+	manager.client = &http.Client{Transport: transport}
+	manager.refreshTimeout = 40 * time.Millisecond
+	startedAt := time.Now()
+	_, _, err := manager.Resolve(context.Background(), profile.ID)
+	if err == nil || time.Since(startedAt) > time.Second {
+		t.Fatal("timed-out refresh unexpectedly succeeded")
+	}
+	select {
+	case <-transport.started:
+	case <-time.After(time.Second):
+		t.Fatal("refresh request did not start")
+	}
+	select {
+	case <-transport.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("refresh request did not honor its independent timeout")
+	}
+	if err := manager.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.Get(profile.ID)
+	if err != nil || stored.Auth.OAuth.AccessToken != profile.Auth.OAuth.AccessToken || stored.Auth.OAuth.RefreshToken != profile.Auth.OAuth.RefreshToken || !stored.Auth.OAuth.RefreshOutcomeUnknown || !stored.Auth.OAuth.ReconnectRequired {
+		t.Fatalf("ambiguous refresh failure did not preserve credentials and require reconnect: %+v err=%v", stored.Auth.OAuth, err)
+	}
+}
+
+func TestAmbiguousRefreshOutcomeIsPersistedAndNeverReplayed(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	profile := addOAuthTestProfile(t, store, time.Now().Add(-time.Minute))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"access_token":"rotated-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600}`)
+	}))
+	t.Cleanup(server.Close)
+	transport := &consumeThenLoseResponse{requests: &requests}
+	manager := New(store)
+	manager.token = server.URL
+	manager.client = &http.Client{Transport: transport}
+	defer func() {
+		if err := manager.Close(context.Background()); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	}()
+
+	const waiters = 5
+	start := make(chan struct{})
+	errs := make(chan error, waiters)
+	for range waiters {
+		go func() {
+			<-start
+			_, _, err := manager.Resolve(context.Background(), profile.ID)
+			errs <- err
+		}()
+	}
+	close(start)
+	for range waiters {
+		select {
+		case err := <-errs:
+			if !errors.Is(err, auth.ErrOAuthRefreshOutcomeUnknown) {
+				t.Errorf("refresh error=%v, want ambiguous outcome", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("refresh waiter did not finish")
+		}
+	}
+	stored, err := store.Get(profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 || stored.Auth.OAuth.RefreshToken != profile.Auth.OAuth.RefreshToken ||
+		stored.Auth.OAuth.AccessToken != profile.Auth.OAuth.AccessToken || !stored.Auth.OAuth.RefreshOutcomeUnknown || !stored.Auth.OAuth.ReconnectRequired {
+		t.Fatalf("ambiguous refresh state requests=%d credential=%+v", requests.Load(), stored.Auth.OAuth)
+	}
+	otherManager := New(store)
+	otherManager.token = server.URL
+	otherManager.client = server.Client()
+	_, _, err = otherManager.Resolve(context.Background(), profile.ID)
+	if !errors.Is(err, auth.ErrOAuthRefreshOutcomeUnknown) || requests.Load() != 1 {
+		t.Fatalf("later manager replayed uncertain refresh: requests=%d err=%v", requests.Load(), err)
+	}
+	if err := otherManager.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type consumeThenLoseResponse struct{ requests *atomic.Int32 }
+
+func (t *consumeThenLoseResponse) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(r)
+	if err != nil {
+		return nil, err
+	}
+	if t.requests.Load() == 1 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return nil, errors.New("simulated lost response after provider consumed refresh token")
+	}
+	return resp, nil
+}
+
+type waitForRequestCancellation struct {
+	started  chan struct{}
+	canceled chan struct{}
+}
+
+func (t *waitForRequestCancellation) RoundTrip(r *http.Request) (*http.Response, error) {
+	close(t.started)
+	<-r.Context().Done()
+	close(t.canceled)
+	return nil, r.Context().Err()
+}
+
 func TestInvalidGrantRequiresReconnectWithoutDeletingRegistration(t *testing.T) {
 	store := auth.Store{Path: t.TempDir() + "/auth.json"}
 	profile := addOAuthTestProfile(t, store, time.Now().Add(-time.Minute))
@@ -340,6 +553,29 @@ func TestInvalidGrantRequiresReconnectWithoutDeletingRegistration(t *testing.T) 
 	staleCandidate.Auth.OAuth.ExpiresAt = time.Now().Add(time.Hour)
 	if err := store.ReplaceOAuth(profile.ID, profile.Revision, staleCandidate); err != auth.ErrOAuthProfileChanged {
 		t.Fatalf("stale reconnect after invalid_grant error=%v", err)
+	}
+}
+
+func TestConfirmedTemporaryRefreshRejectionPreservesCredentialState(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	profile := addOAuthTestProfile(t, store, time.Now().Add(-time.Minute))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, `{"error":"temporarily_unavailable"}`)
+	}))
+	defer server.Close()
+	manager := New(store)
+	manager.token, manager.client = server.URL, server.Client()
+	if _, _, err := manager.Resolve(context.Background(), profile.ID); err == nil || errors.Is(err, auth.ErrOAuthRefreshOutcomeUnknown) {
+		t.Fatalf("confirmed temporary rejection error=%v", err)
+	}
+	stored, err := store.Get(profile.ID)
+	if err != nil || stored.Auth.OAuth.AccessToken != profile.Auth.OAuth.AccessToken ||
+		stored.Auth.OAuth.RefreshToken != profile.Auth.OAuth.RefreshToken || stored.Auth.OAuth.ReconnectRequired || stored.Auth.OAuth.RefreshOutcomeUnknown {
+		t.Fatalf("temporary rejection changed stored credential state: %+v err=%v", stored.Auth.OAuth, err)
+	}
+	if err := manager.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
