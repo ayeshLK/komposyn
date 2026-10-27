@@ -57,8 +57,8 @@ and does not describe this SQLite migration range.
 17. Records only project-name provenance demonstrated by the current import
     path. Historical rows remain unknown.
 18. Adds a private random diagnostic namespace and a separately bounded
-    detailed-problem aggregate with exact decimal-text counters, per-operation
-    replay protection, operational condition evidence, independent review
+    detailed-problem aggregate with exact decimal-text counters, bounded
+    per-problem finding-ID replay protection, operational condition evidence, independent review
     revision, and at most four location samples carrying generation/coverage
     scope. Existing diagnostic rows are not rewritten or enriched.
 

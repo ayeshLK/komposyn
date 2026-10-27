@@ -33,12 +33,13 @@ import (
 )
 
 const (
-	DefaultDiagnosticPageSize      = 20
-	MaxDiagnosticPageSize          = 100
-	MaxDiagnosticContinuationBytes = 1024
-	MaxDiagnosticListResponseBytes = 1024 * 1024
-	MaxDetailedDiagnosticProblems  = 4096
-	MaxDiagnosticLocationSamples   = 4
+	DefaultDiagnosticPageSize                = 20
+	MaxDiagnosticPageSize                    = 100
+	MaxDiagnosticContinuationBytes           = 1024
+	MaxDiagnosticListResponseBytes           = 1024 * 1024
+	MaxDetailedDiagnosticProblems            = 4096
+	MaxDiagnosticLocationSamples             = 4
+	MaxDiagnosticFindingReplayKeysPerProblem = 64
 )
 
 var (
@@ -367,7 +368,7 @@ const diagnosticDetailSelect = "SELECT problem_id,created_at,component,operation
 	"latest_poll_id,latest_poll_count,latest_poll_available,latest_poll_saturated,latest_run_id,latest_run_count," +
 	"latest_run_available,latest_run_saturated,lifetime_count,lifetime_saturated,condition,condition_as_of," +
 	"condition_generation,condition_offset,condition_coverage,condition_reason,material_revision,review_state," +
-	"reviewed_revision,reviewed_at,samples_truncated,overflowed,legacy_fingerprint FROM diagnostic_details"
+	"reviewed_revision,reviewed_at,samples_truncated,overflowed,observation_history_truncated,legacy_fingerprint FROM diagnostic_details"
 
 func scanDiagnosticDetail(tx *sql.Tx, rows *sql.Rows) (DiagnosticDetail, error) {
 	var d DiagnosticDetail
@@ -375,12 +376,12 @@ func scanDiagnosticDetail(tx *sql.Tx, rows *sql.Rows) (DiagnosticDetail, error) 
 	var component, operation, reason, severity, category, adapter string
 	var kind, ref, subjectAvail, scope string
 	var pollID, pollCount, pollAvail, runID, runCount, runAvail string
-	var pollSat, runSat, lifeSat, st, overflow int
+	var pollSat, runSat, lifeSat, st, overflow, historyTruncated int
 	var life, condition, generation, offset, coverage, conditionReason string
 	var revision, reviewRevision, reviewState string
 	var legacy sql.NullString
 	err := rows.Scan(&d.ProblemID, &created, &component, &operation, &reason, &severity, &category, &adapter, &kind, &ref, &subjectAvail, &scope,
-		&first, &last, &positive, &pollID, &pollCount, &pollAvail, &pollSat, &runID, &runCount, &runAvail, &runSat, &life, &lifeSat, &condition, &asof, &generation, &offset, &coverage, &conditionReason, &revision, &reviewState, &reviewRevision, &reviewed, &st, &overflow, &legacy)
+		&first, &last, &positive, &pollID, &pollCount, &pollAvail, &pollSat, &runID, &runCount, &runAvail, &runSat, &life, &lifeSat, &condition, &asof, &generation, &offset, &coverage, &conditionReason, &revision, &reviewState, &reviewRevision, &reviewed, &st, &overflow, &historyTruncated, &legacy)
 	if err != nil {
 		return d, err
 	}
@@ -413,9 +414,10 @@ func scanDiagnosticDetail(tx *sql.Tx, rows *sql.Rows) (DiagnosticDetail, error) 
 	if err = d.Subject.Validate(); err != nil {
 		return d, err
 	}
-	d.LatestPoll = DiagnosticObservationCount{Scope: DiagnosticCountPoll, ScopeID: DiagnosticID(pollID), Count: DiagnosticExactCount{Value: pollCount, Availability: DiagnosticAvailability(pollAvail), Saturated: pollSat != 0}}
-	d.LatestObservedRun = DiagnosticObservationCount{Scope: DiagnosticCountRun, ScopeID: DiagnosticID(runID), Count: DiagnosticExactCount{Value: runCount, Availability: DiagnosticAvailability(runAvail), Saturated: runSat != 0}}
-	d.Lifetime = DiagnosticExactCount{Value: life, Availability: DiagnosticAvailabilityAvailable, Saturated: lifeSat != 0}
+	d.LatestPoll = DiagnosticObservationCount{Scope: DiagnosticCountPoll, ScopeID: DiagnosticID(pollID), Count: DiagnosticExactCount{Value: pollCount, Availability: DiagnosticAvailability(pollAvail), Saturated: pollSat != 0, Truncated: historyTruncated != 0}}
+	d.LatestObservedRun = DiagnosticObservationCount{Scope: DiagnosticCountRun, ScopeID: DiagnosticID(runID), Count: DiagnosticExactCount{Value: runCount, Availability: DiagnosticAvailability(runAvail), Saturated: runSat != 0, Truncated: historyTruncated != 0}}
+	d.Lifetime = DiagnosticExactCount{Value: life, Availability: DiagnosticAvailabilityAvailable, Saturated: lifeSat != 0, Truncated: historyTruncated != 0}
+	d.Truncated = historyTruncated != 0
 	if d.LatestPoll.ScopeID.Validate() != nil || d.LatestObservedRun.ScopeID.Validate() != nil ||
 		!validAvailability(d.LatestPoll.Count.Availability) || !validAvailability(d.LatestObservedRun.Count.Availability) ||
 		(pollSat != 0 && pollCount != exactCount(^uint64(0))) || (runSat != 0 && runCount != exactCount(^uint64(0))) ||

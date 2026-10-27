@@ -364,7 +364,8 @@ CREATE TABLE diagnostic_details (
     latest_poll_count TEXT NOT NULL DEFAULT '0',
     latest_poll_available TEXT NOT NULL DEFAULT 'unknown',
     latest_poll_saturated INTEGER NOT NULL DEFAULT 0,
-    last_observation_order TEXT NOT NULL DEFAULT '0',
+    finding_slot_cursor INTEGER NOT NULL DEFAULT 0 CHECK (finding_slot_cursor BETWEEN 0 AND 63),
+    observation_history_truncated INTEGER NOT NULL DEFAULT 0,
     latest_run_id TEXT NOT NULL DEFAULT '',
     latest_run_order TEXT NOT NULL DEFAULT '0',
     latest_run_count TEXT NOT NULL DEFAULT '0',
@@ -401,5 +402,14 @@ CREATE TABLE diagnostic_detail_samples (
     generation TEXT NOT NULL DEFAULT '',
     coverage TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(problem_id, slot)
+);
+
+CREATE TABLE diagnostic_detail_findings (
+    problem_id TEXT NOT NULL REFERENCES diagnostic_details(problem_id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL CHECK (slot BETWEEN 0 AND 63),
+    finding_key TEXT NOT NULL,
+    evidence_order TEXT NOT NULL,
+    PRIMARY KEY(problem_id, slot),
+    UNIQUE(problem_id, finding_key)
 );
 `

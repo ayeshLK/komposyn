@@ -645,6 +645,9 @@ func TestMigrationSixteenFailurePreservesSchemaFifteenAndBackup(t *testing.T) {
 	if _, err := db.Exec("DROP TABLE parser_checkpoints"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {
 		t.Fatal(err)
 	}
@@ -708,6 +711,9 @@ func TestMigrationSeventeenNameSourceDefaultsLegacyRowsToUnknown(t *testing.T) {
 	if _, err := store.db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-name', '/legacy', 'Unattributed', '2026-01-01T00:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {
 		t.Fatal(err)
 	}
@@ -753,6 +759,9 @@ func TestMigrationSeventeenFailurePreservesSchemaSixteenAndBackup(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-name', '/legacy', 'Unattributed', '2026-01-01T00:00:00Z')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {

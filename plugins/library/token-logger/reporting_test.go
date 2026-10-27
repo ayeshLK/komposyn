@@ -487,6 +487,9 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {
 		t.Fatal(err)
 	}

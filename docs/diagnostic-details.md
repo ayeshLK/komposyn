@@ -36,12 +36,15 @@ identities. The latter is historical and is not necessarily the current run.
 Legacy occurrence counts remain separate; migrated legacy rows do not gain
 inferred detailed provenance or counts.
 
-Each source operation receives a monotonically reserved evidence order. The
-per-problem aggregate records its latest observation order, making replay of
-that already-committed operation idempotent without retaining an unbounded
-finding journal. A later parse uses a later order and counts as a new
-observation even when it sees the same location. Producers must aggregate
-multiple causes for one problem within an operation before persistence.
+Each source operation receives a monotonically reserved evidence order, but
+reservation order does not imply commit order. Each problem therefore retains
+a bounded 64-key ring of committed finding IDs for replay detection; distinct
+findings count even when their operations commit out of order. When the ring
+evicts an ID, counter projections set `truncated` so that the bounded history
+is not represented as fully exact. A later parse uses a new finding ID and
+counts as a new observation even when it sees the same location. Producers
+must aggregate multiple causes for one problem within an operation before
+persistence.
 
 Each location sample includes its generation and coverage availability so
 positions from replaced sources remain distinguishable. The public page and
@@ -104,6 +107,8 @@ diagnostic tables directly.
 | Safe projection and response-size bound | `TestDiagnosticDetailOutputOmitsRawIdentityAndLegacyText` |
 | Four-sample cap and 4,096-problem capacity overflow | `TestDiagnosticEvidenceCapacityOverflowAndSamplesAreBounded` |
 | Replayed operation idempotence vs a new parse at the same location | `TestDiagnosticFindingReplayIsIdempotentAcrossCalls` |
+| Reverse completion order, replay after reverse completion, old-generation ordering | `TestDiagnosticOutOfOrderFindingsCountOnceAndKeepConditionOrdering` |
+| Replay-window eviction and explicit counter truncation | `TestDiagnosticReplayWindowOverflowMarksCounterTruncation` |
 | Unscoped/same-scope evaluations preserve historical poll counts and saturation | `TestDiagnosticEvaluationPreservesPollCounterWithoutNewPoll` |
 | Samples retain source generation and coverage across replacement/late evidence | `TestDiagnosticSamplesRetainGenerationAndCoverage` |
 | Public version in nonempty/empty list and detail JSON | `TestDiagnosticDetailsNamespacesCountersAndReviewCAS` |

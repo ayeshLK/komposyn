@@ -179,7 +179,7 @@ func persistDiagnosticFinding(tx *sql.Tx, key []byte, f persistedDiagnosticFindi
 	if f.PollID.Validate() != nil || f.RunID.Validate() != nil || f.EvidenceOrder == 0 {
 		return ErrInvalidDiagnostic
 	}
-	if f.FindingID.Validate() != nil {
+	if f.FindingID == "" || f.FindingID.Validate() != nil {
 		return ErrInvalidDiagnostic
 	}
 	if err := validDiagnosticFindingSubject(f.SubjectKind, f.SubjectIdentity, f.SubjectAvailability, f.Generation, f.Coverage); err != nil {
@@ -215,10 +215,10 @@ func persistDiagnosticFinding(tx *sql.Tx, key []byte, f persistedDiagnosticFindi
 			runAvailability = string(DiagnosticAvailabilityAvailable)
 			runCount = exactCount(f.ObservationCount)
 		}
-		_, err = tx.Exec("INSERT INTO diagnostic_details(problem_id,created_at,component,operation,reason,severity,category,adapter,subject_kind,subject_reference,subject_availability,identity_scope,first_seen_at,last_seen_at,last_positive_at,latest_poll_id,latest_poll_order,latest_poll_count,latest_poll_available,latest_poll_saturated,last_observation_order,latest_run_id,latest_run_order,latest_run_count,latest_run_available,latest_run_saturated,lifetime_count,lifetime_saturated,condition,condition_as_of,condition_generation,condition_offset,condition_order,condition_coverage,condition_reason,material_revision,review_state,reviewed_revision,samples_truncated,overflowed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		_, err = tx.Exec("INSERT INTO diagnostic_details(problem_id,created_at,component,operation,reason,severity,category,adapter,subject_kind,subject_reference,subject_availability,identity_scope,first_seen_at,last_seen_at,last_positive_at,latest_poll_id,latest_poll_order,latest_poll_count,latest_poll_available,latest_poll_saturated,latest_run_id,latest_run_order,latest_run_count,latest_run_available,latest_run_saturated,lifetime_count,lifetime_saturated,condition,condition_as_of,condition_generation,condition_offset,condition_order,condition_coverage,condition_reason,material_revision,review_state,reviewed_revision,samples_truncated,overflowed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 			problem, now, string(f.Classification.Component), string(f.Classification.Operation), string(f.Classification.Reason), string(f.Classification.Severity), string(f.Classification.Category), string(f.Classification.Adapter), string(f.SubjectKind), ref, availability, scope,
 			now, now, now, string(f.PollID), exactCount(f.EvidenceOrder), pollCount, pollAvailability, boolInt(f.PollID != "" && f.ObservationCount == math.MaxUint64),
-			exactCount(f.EvidenceOrder), string(f.RunID), exactCount(f.EvidenceOrder), runCount, runAvailability, boolInt(f.RunID != "" && f.ObservationCount == math.MaxUint64), exactCount(f.ObservationCount), boolInt(f.ObservationCount == math.MaxUint64),
+			string(f.RunID), exactCount(f.EvidenceOrder), runCount, runAvailability, boolInt(f.RunID != "" && f.ObservationCount == math.MaxUint64), exactCount(f.ObservationCount), boolInt(f.ObservationCount == math.MaxUint64),
 			string(DiagnosticConditionActive), now, generation, decimalOrEmpty(f.CoverageOffset), exactCount(f.EvidenceOrder), string(coverage), string(reason), "1", string(DiagnosticReviewPending), "0", 0, 0)
 		if err != nil {
 			return err
@@ -226,19 +226,24 @@ func persistDiagnosticFinding(tx *sql.Tx, key []byte, f persistedDiagnosticFindi
 		if _, err := tx.Exec("UPDATE diagnostic_detail_meta SET problem_count=problem_count+1 WHERE singleton=1"); err != nil {
 			return err
 		}
+		if _, err := rememberDiagnosticFinding(tx, problem, f); err != nil {
+			return err
+		}
 		return mergeDiagnosticSamples(tx, problem, f.Position, f.Generation, f.Coverage)
 	}
-	var oldCategory, oldCondition, oldGeneration, oldOffset, oldOrder, oldPollOrder, oldRunOrder, oldCoverage, oldReason, oldObservationOrder string
+	var oldCategory, oldCondition, oldGeneration, oldOffset, oldOrder, oldPollOrder, oldRunOrder, oldCoverage, oldReason string
 	var oldPollID, oldRunID, oldPollAvailability, oldRunAvailability string
 	var oldMaterial, oldLifetime, oldPollCount, oldRunCount string
 	var oldLifetimeSaturated, oldPollSaturated, oldRunSaturated int
-	err = tx.QueryRow("SELECT category,condition,condition_generation,condition_offset,condition_order,latest_poll_order,latest_run_order,material_revision,lifetime_count,lifetime_saturated,latest_poll_count,latest_poll_saturated,latest_run_count,latest_run_saturated,latest_poll_id,latest_run_id,condition_coverage,condition_reason,latest_poll_available,latest_run_available,last_observation_order FROM diagnostic_details WHERE problem_id=?", problem).Scan(&oldCategory, &oldCondition, &oldGeneration, &oldOffset, &oldOrder, &oldPollOrder, &oldRunOrder, &oldMaterial, &oldLifetime, &oldLifetimeSaturated, &oldPollCount, &oldPollSaturated, &oldRunCount, &oldRunSaturated, &oldPollID, &oldRunID, &oldCoverage, &oldReason, &oldPollAvailability, &oldRunAvailability, &oldObservationOrder)
+	err = tx.QueryRow("SELECT category,condition,condition_generation,condition_offset,condition_order,latest_poll_order,latest_run_order,material_revision,lifetime_count,lifetime_saturated,latest_poll_count,latest_poll_saturated,latest_run_count,latest_run_saturated,latest_poll_id,latest_run_id,condition_coverage,condition_reason,latest_poll_available,latest_run_available FROM diagnostic_details WHERE problem_id=?", problem).Scan(&oldCategory, &oldCondition, &oldGeneration, &oldOffset, &oldOrder, &oldPollOrder, &oldRunOrder, &oldMaterial, &oldLifetime, &oldLifetimeSaturated, &oldPollCount, &oldPollSaturated, &oldRunCount, &oldRunSaturated, &oldPollID, &oldRunID, &oldCoverage, &oldReason, &oldPollAvailability, &oldRunAvailability)
 	if err != nil {
 		return err
 	}
-	// Evidence order is reserved once per source operation. Replaying that
-	// operation is ignored, while a later parse at the same location counts.
-	if compareDecimal(f.EvidenceOrder, oldObservationOrder) <= 0 {
+	newFinding, err := rememberDiagnosticFinding(tx, problem, f)
+	if err != nil {
+		return err
+	}
+	if !newFinding {
 		return nil
 	}
 	lifetime, lifetimeSat := addExactCounter(oldLifetime, f.ObservationCount, oldLifetimeSaturated != 0)
@@ -316,8 +321,8 @@ func persistDiagnosticFinding(tx *sql.Tx, key []byte, f persistedDiagnosticFindi
 	if !conditionNewer {
 		lastSeen, lastPositive, conditionAsOf = "", "", ""
 	}
-	_, err = tx.Exec("UPDATE diagnostic_details SET last_seen_at=CASE WHEN ?='' THEN last_seen_at ELSE ? END,last_positive_at=CASE WHEN ?='' THEN last_positive_at ELSE ? END,category=?,lifetime_count=?,lifetime_saturated=?,latest_poll_id=?,latest_poll_order=?,latest_poll_count=?,latest_poll_available=?,latest_poll_saturated=?,last_observation_order=?,latest_run_id=?,latest_run_order=?,latest_run_count=?,latest_run_available=?,latest_run_saturated=?,condition=?,condition_as_of=CASE WHEN ?='' THEN condition_as_of ELSE ? END,condition_generation=?,condition_offset=?,condition_order=?,condition_coverage=?,condition_reason=?,material_revision=? WHERE problem_id=?",
-		lastSeen, lastSeen, lastPositive, lastPositive, category, lifetime, boolInt(lifetimeSat), pollID, pollOrder, pollCount, pollAvailability, pollSat, exactCount(f.EvidenceOrder), runID, runOrder, runCount, runAvailability, runSat, string(condition), conditionAsOf, asof, conditionGen, conditionOff, conditionOrder, string(coverage), string(conditionReason), material, problem)
+	_, err = tx.Exec("UPDATE diagnostic_details SET last_seen_at=CASE WHEN ?='' THEN last_seen_at ELSE ? END,last_positive_at=CASE WHEN ?='' THEN last_positive_at ELSE ? END,category=?,lifetime_count=?,lifetime_saturated=?,latest_poll_id=?,latest_poll_order=?,latest_poll_count=?,latest_poll_available=?,latest_poll_saturated=?,latest_run_id=?,latest_run_order=?,latest_run_count=?,latest_run_available=?,latest_run_saturated=?,condition=?,condition_as_of=CASE WHEN ?='' THEN condition_as_of ELSE ? END,condition_generation=?,condition_offset=?,condition_order=?,condition_coverage=?,condition_reason=?,material_revision=? WHERE problem_id=?",
+		lastSeen, lastSeen, lastPositive, lastPositive, category, lifetime, boolInt(lifetimeSat), pollID, pollOrder, pollCount, pollAvailability, pollSat, runID, runOrder, runCount, runAvailability, runSat, string(condition), conditionAsOf, asof, conditionGen, conditionOff, conditionOrder, string(coverage), string(conditionReason), material, problem)
 	if err != nil {
 		return err
 	}
@@ -554,6 +559,46 @@ func mergeDiagnosticSamples(tx *sql.Tx, id string, p DiagnosticPosition, generat
 		}
 	}
 	return nil
+}
+
+// rememberDiagnosticFinding retains a bounded per-problem replay window. The
+// ledger stores identity only, not the finding payload or a run journal.
+func rememberDiagnosticFinding(tx *sql.Tx, problem string, f persistedDiagnosticFinding) (bool, error) {
+	key := string(f.FindingID)
+	if key == "" {
+		return false, ErrInvalidDiagnostic
+	}
+	var exists int
+	err := tx.QueryRow("SELECT 1 FROM diagnostic_detail_findings WHERE problem_id=? AND finding_key=?", problem, key).Scan(&exists)
+	if err == nil {
+		return false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	var slot int
+	if err := tx.QueryRow("SELECT finding_slot_cursor FROM diagnostic_details WHERE problem_id=?", problem).Scan(&slot); err != nil {
+		return false, err
+	}
+	var occupied int
+	err = tx.QueryRow("SELECT 1 FROM diagnostic_detail_findings WHERE problem_id=? AND slot=?", problem, slot).Scan(&occupied)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if _, err := tx.Exec(`INSERT INTO diagnostic_detail_findings(problem_id,slot,finding_key,evidence_order) VALUES(?,?,?,?)
+		ON CONFLICT(problem_id,slot) DO UPDATE SET finding_key=excluded.finding_key,evidence_order=excluded.evidence_order`,
+		problem, slot, key, exactCount(f.EvidenceOrder)); err != nil {
+		return false, err
+	}
+	truncated := 0
+	if err == nil {
+		truncated = 1
+	}
+	if _, err := tx.Exec("UPDATE diagnostic_details SET finding_slot_cursor=?,observation_history_truncated=MAX(observation_history_truncated,?) WHERE problem_id=?",
+		(slot+1)%MaxDiagnosticFindingReplayKeysPerProblem, truncated, problem); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func diagnosticSamplesState(tx *sql.Tx, id string) (string, error) {

@@ -179,7 +179,8 @@ exported methods.
 `ErrDiagnosticInspectionUnavailable`. Limits are
 `DefaultDiagnosticPageSize`, `MaxDiagnosticPageSize`,
 `MaxDiagnosticContinuationBytes`, `MaxDiagnosticListResponseBytes`,
-`MaxDetailedDiagnosticProblems`, and `MaxDiagnosticLocationSamples`.
+`MaxDetailedDiagnosticProblems`, `MaxDiagnosticLocationSamples`, and
+`MaxDiagnosticFindingReplayKeysPerProblem`.
 
 **Structured diagnostics v1 APIs:** `DiagnosticContractVersion`,
 `DiagnosticComponent`, `DiagnosticOperation`, `DiagnosticReason`,

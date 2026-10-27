@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 
 func testDetailedFinding(identity string, order, count uint64, offset uint64) persistedDiagnosticFinding {
 	return persistedDiagnosticFinding{
+		FindingID: DiagnosticID(fmt.Sprintf("%032x", order)),
 		Classification: makeDiagnosticClassification(DiagnosticComponentParser, DiagnosticOperationParse,
 			DiagnosticReasonMalformedRecord, DiagnosticAdapterCodex),
 		SubjectKind: DiagnosticSubjectSource, SubjectIdentity: identity,
@@ -206,6 +208,66 @@ func TestDiagnosticFindingReplayIsIdempotentAcrossCalls(t *testing.T) {
 	}
 	if detail.Lifetime.Value != "14" || detail.LatestPoll.Count.Value != "14" || detail.LatestObservedRun.Count.Value != "14" {
 		t.Fatalf("new parse at same location was not counted: %#v", detail)
+	}
+}
+
+func TestDiagnosticOutOfOrderFindingsCountOnceAndKeepConditionOrdering(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	older := testDetailedFinding("reverse-completion", 1, 7, 100)
+	older.Generation.Value = 1
+	newer := testDetailedFinding("reverse-completion", 2, 5, 200)
+	newer.Generation.Value = 2
+	// Distinct operation IDs complete in reverse reservation order.
+	persistTestFinding(t, store, newer)
+	persistTestFinding(t, store, older)
+	detail, err := store.InspectDiagnosticDetail(testDetailedProblemID(t, store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Lifetime.Value != "12" || detail.LatestPoll.Count.Value != "12" || detail.LatestObservedRun.Count.Value != "12" || detail.Condition.Generation.Value != 2 {
+		t.Fatalf("reverse-completed findings lost counts or replaced current condition: %#v", detail)
+	}
+	// Replays remain duplicates even though a newer operation committed first.
+	persistTestFinding(t, store, newer)
+	persistTestFinding(t, store, older)
+	detail, err = store.InspectDiagnosticDetail(detail.ProblemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Lifetime.Value != "12" || detail.LatestPoll.Count.Value != "12" || detail.LatestObservedRun.Count.Value != "12" || detail.Condition.Generation.Value != 2 {
+		t.Fatalf("replay after reverse completion changed detail: %#v", detail)
+	}
+}
+
+func TestDiagnosticReplayWindowOverflowMarksCounterTruncation(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for i := uint64(1); i <= MaxDiagnosticFindingReplayKeysPerProblem+1; i++ {
+		persistTestFinding(t, store, testDetailedFinding("bounded-replay", i, 1, i))
+	}
+	detail, err := store.InspectDiagnosticDetail(testDetailedProblemID(t, store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detail.Lifetime.Truncated || !detail.LatestPoll.Count.Truncated || !detail.LatestObservedRun.Count.Truncated || !detail.Truncated {
+		t.Fatalf("replay-window eviction was not exposed: %#v", detail)
+	}
+	// An evicted old key can be observed again, but counters remain marked
+	// truncated instead of being presented as fully exact history.
+	persistTestFinding(t, store, testDetailedFinding("bounded-replay", 1, 1, 1))
+	detail, err = store.InspectDiagnosticDetail(detail.ProblemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Lifetime.Value != "66" || !detail.Lifetime.Truncated {
+		t.Fatalf("bounded replay loss not reflected in counter: %#v", detail.Lifetime)
 	}
 }
 
@@ -537,7 +599,7 @@ func TestMigrationEighteenFailurePreservesSchemaAndVerifiedBackup(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, statement := range []string{"DROP TABLE diagnostic_detail_samples", "DROP TABLE diagnostic_details", "DROP TABLE diagnostic_detail_meta", "DELETE FROM schema_migrations WHERE version=18"} {
+	for _, statement := range []string{"DROP TABLE diagnostic_detail_findings", "DROP TABLE diagnostic_detail_samples", "DROP TABLE diagnostic_details", "DROP TABLE diagnostic_detail_meta", "DELETE FROM schema_migrations WHERE version=18"} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}
