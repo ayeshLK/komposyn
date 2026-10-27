@@ -64,7 +64,8 @@
                     "scopes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
                     "expires_at": { "type": "string", "format": "date-time" },
                     "lifecycle_generation": { "type": "integer", "minimum": 1 },
-                    "reconnect_required": { "type": "boolean" }
+                    "reconnect_required": { "type": "boolean" },
+                    "refresh_outcome_unknown": { "type": "boolean" }
                   }
                 }
               }

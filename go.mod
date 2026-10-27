@@ -8,6 +8,7 @@ require (
 	github.com/gdamore/tcell/v2 v2.13.10
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/rivo/tview v0.42.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.60.1
