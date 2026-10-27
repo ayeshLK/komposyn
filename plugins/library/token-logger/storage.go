@@ -31,19 +31,20 @@ import (
 
 // Store is the library-owned SQLite persistence boundary.
 type Store struct {
-	db                        *sql.DB
-	databasePath              string
-	backupPath                string
-	migrationBackupPath       string
-	beforeSnapshotRead        func()
-	beforeSnapshotParse       func()
-	sourceReadHook            func(pass int, bytesRead int64)
-	beforeAppend              func()
-	benchmarkObserver         *collectorBenchmarkObserver
-	diagnosticObserver        *DiagnosticObserver
-	diagnosticPersistenceLost atomic.Bool
-	diagnosticHandleKey       [32]byte
-	diagnosticKeyAvailable    bool
+	db                         *sql.DB
+	databasePath               string
+	backupPath                 string
+	migrationBackupPath        string
+	beforeSnapshotRead         func()
+	beforeSnapshotParse        func()
+	sourceReadHook             func(pass int, bytesRead int64)
+	beforeAppend               func()
+	benchmarkObserver          *collectorBenchmarkObserver
+	diagnosticObserver         *DiagnosticObserver
+	diagnosticPersistenceLost  atomic.Bool
+	diagnosticPersistenceReady atomic.Bool
+	diagnosticHandleKey        [32]byte
+	diagnosticKeyAvailable     bool
 }
 
 var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
@@ -135,6 +136,7 @@ func openWithOptionsAndObserver(path string, options OpenOptions, observer *Diag
 		return nil, store.observeFailure(context.Background(), wrapped,
 			sqliteDiagnosticClassification(err, DiagnosticOperationPersist), DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected})
 	}
+	store.diagnosticPersistenceReady.Store(true)
 	return store, nil
 }
 

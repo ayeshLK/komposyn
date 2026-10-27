@@ -36,6 +36,9 @@ const initialDiagnosticAggregationKeys = 8
 
 type diagnosticCorrelation struct {
 	operationID         DiagnosticID
+	evidenceOrder       uint64
+	coverage            DiagnosticCoverageKind
+	coverageOffset      uint64
 	runID               DiagnosticID
 	pollID              DiagnosticID
 	sourceGeneration    uint64
@@ -140,21 +143,29 @@ func (store *Store) registeredRootDiagnosticSubject(path string) DiagnosticSubje
 	if store == nil {
 		return DiagnosticSubject{Kind: DiagnosticSubjectRoot, Availability: DiagnosticAvailabilityNotCollected}
 	}
+	id, _ := store.registeredRootDiagnosticIdentity(path)
+	if id == "" {
+		return DiagnosticSubject{Kind: DiagnosticSubjectRoot, Availability: DiagnosticAvailabilityNotCollected}
+	}
+	return store.diagnosticSubject(DiagnosticSubjectRoot, id)
+}
+
+func (store *Store) registeredRootDiagnosticIdentity(path string) (string, bool) {
 	canonical, err := canonicalCollectorPath(path)
 	if err != nil {
-		return DiagnosticSubject{Kind: DiagnosticSubjectRoot, Availability: DiagnosticAvailabilityNotCollected}
+		return "", false
 	}
 	displayPath, err := absoluteCollectorPath(path)
 	if err != nil {
-		return DiagnosticSubject{Kind: DiagnosticSubjectRoot, Availability: DiagnosticAvailabilityNotCollected}
+		return canonical, true
 	}
 	var id string
 	if err := store.db.QueryRow(`SELECT id FROM collector_sources
 		WHERE canonical_path = ? OR display_path = ? ORDER BY CASE WHEN canonical_path = ? THEN 0 ELSE 1 END LIMIT 1`,
 		canonical, filepath.Clean(displayPath), canonical).Scan(&id); err != nil || errors.Is(err, sql.ErrNoRows) {
-		return store.diagnosticSubject(DiagnosticSubjectRoot, canonical)
+		return canonical, true
 	}
-	return store.diagnosticSubject(DiagnosticSubjectRoot, id)
+	return id, true
 }
 
 func (store *Store) discoveryTargetDiagnosticSubject(path string) DiagnosticSubject {
@@ -277,6 +288,40 @@ func (store *Store) observeFailure(ctx context.Context, cause error, classificat
 			kind: DiagnosticEventOperationFailed, correlation: correlation, subject: subject})
 	}
 	return newOperationalError(cause, failure)
+}
+
+// persistOperationFailure consumes the trusted internal classification and
+// identity before it is projected to the optional observer. It is best effort:
+// a diagnostic write can never change the result of the owning operation.
+func (store *Store) persistOperationFailure(ctx context.Context, classification DiagnosticClassification,
+	kind DiagnosticSubjectKind, identity string) {
+	if store == nil || !store.diagnosticPersistenceReady.Load() || classification.Validate() != nil {
+		return
+	}
+	if identity == "" && kind != DiagnosticSubjectStore {
+		return
+	}
+	c := diagnosticCorrelationFrom(ctx)
+	if c.operationID == "" {
+		c.operationID, _ = newDiagnosticID()
+	}
+	if c.evidenceOrder == 0 {
+		c.evidenceOrder, _ = store.reserveDiagnosticEvidenceOrder()
+	}
+	if c.operationID == "" || c.evidenceOrder == 0 {
+		return
+	}
+	availability := DiagnosticAvailabilityAvailable
+	if identity == "" {
+		availability = DiagnosticAvailabilityNotCollected
+	}
+	finding := persistedDiagnosticFinding{Classification: classification, FindingID: c.operationID,
+		SubjectKind: kind, SubjectIdentity: identity, SubjectAvailability: availability,
+		PollID: c.pollID, RunID: c.runID, EvidenceOrder: c.evidenceOrder, ObservationCount: 1,
+		Generation: diagnosticGeneration(c), CoverageOffset: unavailableMeasurement(),
+		Position:   DiagnosticPosition{ByteOffset: unavailableMeasurement(), LineNumber: unavailableMeasurement()},
+		ObservedAt: time.Now().UTC(), Coverage: DiagnosticCoverageUninspected}
+	_ = store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{finding}})
 }
 
 // recordFailedSourceOutcomeAt records FailedSource only at boundaries that
@@ -442,7 +487,11 @@ func (store *Store) observeCollectorFailure(err error, operation DiagnosticOpera
 	if err == nil || errors.Is(err, ErrCollectorActive) {
 		return err
 	}
-	return store.observeFailure(context.Background(), err, classifyCollectorFailure(err, operation),
+	classification := classifyCollectorFailure(err, operation)
+	if classification.Component != DiagnosticComponentStorage && classification.Reason != DiagnosticReasonCancelled {
+		store.persistOperationFailure(context.Background(), classification, DiagnosticSubjectStore, "")
+	}
+	return store.observeFailure(context.Background(), err, classification,
 		DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected})
 }
 
@@ -672,7 +721,7 @@ func (accumulator *diagnosticPollAccumulator) flush() {
 }
 
 func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, sourceID string, outcomes OutcomeCounts, operation DiagnosticOperation) {
-	if store == nil || store.diagnosticObserver == nil {
+	if store == nil {
 		return
 	}
 	correlation := diagnosticCorrelationFrom(ctx)
@@ -683,8 +732,7 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 	if correlation.accumulator != nil {
 		correlation.accumulator.addCounts(observedOutcomes)
 	}
-	if observedOutcomes.MalformedRecord == 0 && observedOutcomes.UnsupportedUsage == 0 ||
-		(adapter != "claude" && adapter != "codex") {
+	if adapter != "claude" && adapter != "codex" {
 		return
 	}
 	if correlation.operationID == "" {
@@ -724,6 +772,7 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 		conditions = append(conditions, condition{reason: DiagnosticReasonUnsupportedUsage, outcome: OutcomeUnsupportedUsage,
 			count: unsupportedCount - unsupportedClassified})
 	}
+	batch := diagnosticEvidenceBatch{}
 	for _, item := range conditions {
 		if item.count <= 0 {
 			continue
@@ -733,6 +782,21 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 		if correlation.accumulator != nil {
 			correlation.accumulator.addConditionWithPosition(classification, subject, item.outcome, uint64ToCount(item.count),
 				item.position, correlation.sourceGeneration, correlation.hasSourceGeneration)
+		}
+		if store.diagnosticPersistenceReady.Load() && sourceID != "" && correlation.evidenceOrder != 0 {
+			coverage := correlation.coverage
+			if coverage == "" {
+				coverage = DiagnosticCoveragePartial
+			}
+			finding := persistedDiagnosticFinding{Classification: classification, FindingID: correlation.operationID,
+				SubjectKind: DiagnosticSubjectSource, SubjectIdentity: sourceID, SubjectAvailability: DiagnosticAvailabilityAvailable,
+				PollID: correlation.pollID, RunID: correlation.runID, EvidenceOrder: correlation.evidenceOrder,
+				ObservationCount: item.count, Generation: diagnosticGeneration(correlation),
+				CoverageOffset: DiagnosticOptionalUint64{Value: correlation.coverageOffset, Availability: DiagnosticAvailabilityAvailable}, Position: item.position,
+				ObservedAt: time.Now().UTC(), Coverage: coverage}
+			batch.Findings = append(batch.Findings, finding)
+		}
+		if correlation.accumulator != nil {
 			continue
 		}
 		counts := DiagnosticOutcomeCounts{Scope: DiagnosticCountOperation, Availability: DiagnosticAvailabilityAvailable}
@@ -742,6 +806,28 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 			evidence: DiagnosticEvidence{Scope: DiagnosticEvidenceOperation, Availability: DiagnosticAvailabilityAvailable,
 				Truncated: item.position.ByteOffset.Truncated}})
 	}
+	if store.diagnosticPersistenceReady.Load() && sourceID != "" && correlation.evidenceOrder != 0 &&
+		correlation.coverage == DiagnosticCoverageFullSnapshot && !observedOutcomes.Incomplete() {
+		batch.Evaluations = append(batch.Evaluations, diagnosticEvaluation{SubjectKind: DiagnosticSubjectSource,
+			SubjectIdentity: sourceID, Component: DiagnosticComponentParser, Operation: operation,
+			Adapter: diagnosticAdapter(adapter), PollID: correlation.pollID, RunID: correlation.runID,
+			EvidenceOrder: correlation.evidenceOrder, Generation: diagnosticGeneration(correlation),
+			CoverageOffset: DiagnosticOptionalUint64{Value: correlation.coverageOffset, Availability: DiagnosticAvailabilityAvailable},
+			ObservedAt:     time.Now().UTC(), Coverage: DiagnosticCoverageFullSnapshot, CompleteCoverage: true,
+			EvaluatedReasons: []DiagnosticReason{DiagnosticReasonInvalidJSON, DiagnosticReasonInvalidTimestamp,
+				DiagnosticReasonInvalidTokenCount, DiagnosticReasonRequiredContextMissing, DiagnosticReasonUnsupportedUsage,
+				DiagnosticReasonMalformedRecord}})
+	}
+	if len(batch.Findings) > 0 || len(batch.Evaluations) > 0 {
+		_ = store.recordDiagnosticEvidence(batch)
+	}
+}
+
+func diagnosticGeneration(c diagnosticCorrelation) DiagnosticOptionalUint64 {
+	if !c.hasSourceGeneration {
+		return unavailableMeasurement()
+	}
+	return DiagnosticOptionalUint64{Value: c.sourceGeneration, Availability: DiagnosticAvailabilityAvailable}
 }
 
 func diagnosticOutcomeDelta(total, baseline OutcomeCounts) OutcomeCounts {
@@ -784,5 +870,6 @@ func uint64ToCount(value uint64) int {
 func newDiagnosticCorrelation(ctx context.Context) diagnosticCorrelation {
 	correlation := diagnosticCorrelationFrom(ctx)
 	correlation.operationID, _ = newDiagnosticID()
+	correlation.evidenceOrder = 0
 	return correlation
 }

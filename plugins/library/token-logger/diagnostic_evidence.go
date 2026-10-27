@@ -51,6 +51,8 @@ type persistedDiagnosticFinding struct {
 type diagnosticEvaluation struct {
 	SubjectKind      DiagnosticSubjectKind
 	SubjectIdentity  string
+	Component        DiagnosticComponent
+	Operation        DiagnosticOperation
 	Adapter          DiagnosticAdapter
 	PollID           DiagnosticID
 	RunID            DiagnosticID
@@ -71,7 +73,7 @@ type diagnosticEvidenceBatch struct {
 func (s *Store) recordDiagnosticEvidence(batch diagnosticEvidenceBatch) (result error) {
 	defer func() {
 		if result != nil {
-			s.diagnosticPersistenceLost.Store(true)
+			s.markDiagnosticPersistenceLost()
 		}
 	}()
 	tx, err := s.db.Begin()
@@ -117,6 +119,16 @@ func (s *Store) recordDiagnosticEvidence(batch diagnosticEvidenceBatch) (result 
 		return ErrDiagnosticInspectionUnavailable
 	}
 	return nil
+}
+
+func (s *Store) markDiagnosticPersistenceLost() {
+	if s == nil {
+		return
+	}
+	s.diagnosticPersistenceLost.Store(true)
+	// Best effort, separate from any failed evidence transaction. This marker
+	// is non-recursive and never affects the owning ingestion operation.
+	_, _ = s.db.Exec("UPDATE diagnostic_detail_meta SET persistence_available=0 WHERE singleton=1")
 }
 
 // reserveDiagnosticEvidenceOrder supplies a persisted monotonic ordering token
@@ -416,6 +428,15 @@ func applyDiagnosticEvaluation(tx *sql.Tx, key []byte, e diagnosticEvaluation) e
 		return err
 	}
 	for _, t := range targets {
+		if e.Component != "" && e.Component != DiagnosticComponent(t.component) {
+			continue
+		}
+		if e.Operation != "" && e.Operation != DiagnosticOperation(t.operation) {
+			continue
+		}
+		if e.Adapter != "" && e.Adapter != DiagnosticAdapter(t.adapter) {
+			continue
+		}
 		found := false
 		for _, r := range e.EvaluatedReasons {
 			if string(r) == t.reason {

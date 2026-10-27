@@ -126,6 +126,295 @@ func TestClaudeAndCodexImportsPublishSafeClassifiedFindings(t *testing.T) {
 	assertDiagnosticPrivacy(t, codexEvent, diagnosticPrivateMarker, codexPath, "synthetic-project", "synthetic-session", "synthetic-thread", "synthetic-response")
 }
 
+func TestPublicImportsPersistDetailedEvidenceWithoutObserver(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "details.sqlite")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	claudePath := filepath.Join(root, "private-claude.jsonl")
+	codexPath := filepath.Join(root, "private-codex.jsonl")
+	claude := []byte(`{"type":"assistant","cwd":"/` + diagnosticPrivateMarker + `","message": }` + "\n" + syntheticClaudeDiagnosticSource())
+	codex := []byte(`{"type":"session_meta","timestamp":"2026-10-16T12:00:00Z","payload":{"id":"private-session","model":"gpt-5.1-codex"}}` + "\n" +
+		`{"type":"token_usage_record","timestamp":"2026-10-16T12:00:01Z","payload":{"thread_id":"private-thread","session_id":"private-session","response_id":"private-response","usage": }}` + "\n")
+	for path, data := range map[string][]byte{claudePath: claude, codexPath: codex} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := (ClaudeAdapter{}).Import(claudePath, store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(codexPath, store); err != nil {
+		t.Fatal(err)
+	}
+	collector, err := NewCollector(store, []string{codexPath}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.PollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(codexPath, store); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("persisted details=%d, want 2: page=%+v lost=%t", len(page.Items), page, store.diagnosticPersistenceLost.Load())
+	}
+	seen := map[DiagnosticAdapter]DiagnosticDetail{}
+	for _, item := range page.Items {
+		seen[item.Classification.Adapter] = item
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, marker := range []string{diagnosticPrivateMarker, claudePath, codexPath, "private-session", "private-response", "private-thread"} {
+			if strings.Contains(string(encoded), marker) {
+				t.Fatalf("private marker %q leaked in %s", marker, encoded)
+			}
+		}
+	}
+	for _, adapter := range []DiagnosticAdapter{DiagnosticAdapterClaude, DiagnosticAdapterCodex} {
+		item, ok := seen[adapter]
+		if !ok {
+			t.Fatalf("missing persisted %s parser finding: %+v", adapter, page.Items)
+		}
+		wantLifetime := "1"
+		if adapter == DiagnosticAdapterCodex {
+			wantLifetime = "3"
+		}
+		if item.Condition.State != DiagnosticConditionActive || item.Subject.Availability != DiagnosticAvailabilityAvailable ||
+			item.Lifetime.Value != wantLifetime || len(item.Samples) == 0 || item.Samples[0].Generation.Availability != DiagnosticAvailabilityAvailable {
+			t.Fatalf("unexpected persisted %s evidence: %+v", adapter, item)
+		}
+		if adapter == DiagnosticAdapterCodex && (item.LatestPoll.Count.Value != "1" || item.LatestPoll.ScopeID == "") {
+			t.Fatalf("collector poll scope was not persisted without an observer: %+v", item.LatestPoll)
+		}
+		if got, err := store.InspectDiagnosticDetail(item.ProblemID); err != nil || got.ProblemID != item.ProblemID {
+			t.Fatalf("inspect %s: %+v, %v", adapter, got, err)
+		}
+	}
+	backupPath, err := createMigrationBackup(dbPath, filepath.Join(root, "restore.sqlite"), CurrentSchemaVersion, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Open(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range page.Items {
+		copy, err := restored.InspectDiagnosticDetail(item.ProblemID)
+		if err != nil || copy.Subject.Reference != item.Subject.Reference {
+			_ = restored.Close()
+			t.Fatalf("diagnostic identity changed after backup restore: detail=%+v err=%v", copy, err)
+		}
+	}
+	if err := restored.Close(); err != nil {
+		t.Fatal(err)
+	}
+	codexProblem := seen[DiagnosticAdapterCodex]
+	if err := store.ReviewDiagnosticDetail(DiagnosticReviewRequest{ProblemID: codexProblem.ProblemID,
+		ExpectedEvidenceRevision: codexProblem.Review.EvidenceRevision, State: DiagnosticReviewReviewed}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(codexPath, store); err != nil {
+		t.Fatal(err)
+	}
+	recurred, err := store.InspectDiagnosticDetail(codexProblem.ProblemID)
+	if err != nil || recurred.Lifetime.Value != "4" || recurred.Review.State != DiagnosticReviewReviewed || recurred.Review.PredatesEvidence {
+		t.Fatalf("count-only recurrence changed reviewed state: detail=%+v err=%v", recurred, err)
+	}
+	claudeProblem := seen[DiagnosticAdapterClaude]
+	if err := os.WriteFile(claudePath, []byte(syntheticClaudeDiagnosticSource()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (ClaudeAdapter{}).Import(claudePath, store); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := store.InspectDiagnosticDetail(claudeProblem.ProblemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Condition.State != DiagnosticConditionResolved || resolved.Condition.Reason != DiagnosticConditionSourceReplaced {
+		t.Fatalf("complete replacement scan did not resolve with generation evidence: %+v", resolved.Condition)
+	}
+}
+
+func TestPublicImportEvidenceSurvivesSaturatedUnreadObserver(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "source-private.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"assistant","message": }`+"\n"+syntheticClaudeDiagnosticSource()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observer, err := NewDiagnosticObserver(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := observer.publish(testDiagnosticEvent()); got != DiagnosticEmissionQueued {
+		t.Fatalf("prefill disposition=%s", got)
+	}
+	store, err := OpenWithObservation(filepath.Join(root, "observed.sqlite"), OpenOptions{}, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.PollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if observer.Stats().Dropped == 0 {
+		t.Fatal("expected parser finding to be dropped by the full mailbox")
+	}
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Classification.Adapter != DiagnosticAdapterClaude ||
+		page.Items[0].LatestPoll.Count.Value != "1" || page.Items[0].LatestPoll.ScopeID == "" {
+		t.Fatalf("persisted evidence depended on observer delivery: %+v", page.Items)
+	}
+}
+
+func TestDiagnosticWriteFailureDoesNotFailCommittedImportAndSurvivesReopen(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "source.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"assistant","message": }`+"\n"+syntheticClaudeDiagnosticSource()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "store.sqlite")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER reject_detail BEFORE INSERT ON diagnostic_details BEGIN SELECT RAISE(FAIL, 'synthetic write failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (ClaudeAdapter{}).Import(path, store)
+	if err != nil || result.Receipt.Imported != 1 {
+		t.Fatalf("committed import masked by detail persistence failure: %+v, %v", result, err)
+	}
+	if count, err := store.EventCount(); err != nil || count != 1 {
+		t.Fatalf("committed usage count=%d err=%v", count, err)
+	}
+	if !store.diagnosticPersistenceLost.Load() {
+		t.Fatal("diagnostic persistence loss was not exposed in memory")
+	}
+	var persistenceAvailable int
+	if err := store.db.QueryRow("SELECT persistence_available FROM diagnostic_detail_meta WHERE singleton=1").Scan(&persistenceAvailable); err != nil || persistenceAvailable != 0 {
+		t.Fatalf("failure marker before reopen=%d err=%v", persistenceAvailable, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil || page.EvidenceAvailability != DiagnosticAvailabilityLost {
+		t.Fatalf("diagnostic write loss not preserved across reopen: page=%+v err=%v", page, err)
+	}
+	if _, err := store.db.Exec("DROP TRIGGER reject_detail"); err != nil {
+		t.Fatal(err)
+	}
+	result, err = (ClaudeAdapter{}).Import(path, store)
+	if err != nil {
+		t.Fatalf("idempotent retry failed after diagnostic persistence failure: %v", err)
+	}
+	if count, err := store.EventCount(); err != nil || count != 1 {
+		t.Fatalf("retry changed committed accounting: %d, %v", count, err)
+	}
+}
+
+func TestPublicImportFailurePersistsPathFreeDiscoveryTargetEvidence(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "private-missing-source.jsonl")
+	store, err := Open(filepath.Join(root, "store.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := (ClaudeAdapter{}).Import(missing, store); err == nil {
+		t.Fatal("missing provider source unexpectedly imported")
+	}
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Subject.Kind != DiagnosticSubjectDiscoveryTarget ||
+		page.Items[0].Subject.Availability != DiagnosticAvailabilityAvailable || page.Items[0].Condition.State != DiagnosticConditionActive {
+		t.Fatalf("missing-source evidence=%+v", page.Items)
+	}
+	encoded, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), missing) {
+		t.Fatalf("missing source path leaked: %s", encoded)
+	}
+}
+
+func BenchmarkDiagnosticEvidencePersistenceOverhead(b *testing.B) {
+	for _, workload := range []struct{ name, contents string }{
+		{"ordinary_unchanged_poll", syntheticClaudeDiagnosticSource()},
+		{"repeated_parser_error", `{"type":"assistant","message": }` + "\n" + syntheticClaudeDiagnosticSource()},
+	} {
+		for _, persistence := range []struct {
+			name    string
+			enabled bool
+		}{{"baseline", false}, {"persisted", true}} {
+			b.Run(workload.name+"/"+persistence.name, func(b *testing.B) {
+				root := b.TempDir()
+				source := filepath.Join(root, "synthetic.jsonl")
+				if err := os.WriteFile(source, []byte(workload.contents), 0o600); err != nil {
+					b.Fatal(err)
+				}
+				dbPath := filepath.Join(root, "store.sqlite")
+				store, err := Open(dbPath)
+				if err != nil {
+					b.Fatal(err)
+				}
+				defer store.Close()
+				collector, err := NewCollector(store, []string{source}, time.Second)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := collector.PollOnce(); err != nil {
+					b.Fatal(err)
+				}
+				store.diagnosticPersistenceReady.Store(persistence.enabled)
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if _, err := collector.PollOnce(); err != nil {
+						b.Fatal(err)
+					}
+				}
+				b.StopTimer()
+				info, err := os.Stat(dbPath)
+				if err != nil {
+					b.Fatal(err)
+				}
+				totalBytes := info.Size()
+				if walInfo, statErr := os.Stat(dbPath + "-wal"); statErr == nil {
+					totalBytes += walInfo.Size()
+				}
+				b.ReportMetric(float64(totalBytes), "sqlite-db-wal-bytes")
+			})
+		}
+	}
+}
+
 func TestParserPositionsAreBoundedRepresentativeSamples(t *testing.T) {
 	t.Run("Claude repeated malformed records retain first offset and mark truncation", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "claude-malformed.jsonl")
@@ -242,6 +531,11 @@ func TestParserPositionFromCursorRetryIsRegeneratedWithoutDuplicateSamples(t *te
 		parserEvent.Position.ByteOffset.Availability != DiagnosticAvailabilityAvailable ||
 		parserEvent.Position.ByteOffset.Value != uint64(len(initial)) || parserEvent.Position.ByteOffset.Truncated {
 		t.Fatalf("cursor retry retained duplicate or stale position samples: %+v", events)
+	}
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{Reason: DiagnosticReasonInvalidJSON})
+	if err != nil || len(page.Items) != 1 || page.Items[0].Lifetime.Value != "1" || len(page.Items[0].Samples) != 1 ||
+		page.Items[0].Samples[0].Position.ByteOffset.Value != uint64(len(initial)) {
+		t.Fatalf("cursor retry persisted speculative/duplicate evidence: page=%+v err=%v", page, err)
 	}
 }
 
