@@ -39,6 +39,7 @@ type Store struct {
 	sourceReadHook      func(pass int, bytesRead int64)
 	beforeAppend        func()
 	benchmarkObserver   *collectorBenchmarkObserver
+	diagnosticObserver  *DiagnosticObserver
 }
 
 var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
@@ -57,6 +58,22 @@ func Open(path string) (*Store, error) {
 // OpenWithOptions opens or creates a store and applies all migrations. If the
 // existing database needs migration, it first verifies a private online backup.
 func OpenWithOptions(path string, options OpenOptions) (*Store, error) {
+	return openWithOptionsAndObserver(path, options, nil)
+}
+
+// OpenWithObservation opens a store with an optional caller-owned diagnostics
+// mailbox. Observation is available during preflight; nil preserves the
+// existing initialization behavior. A failed open leaves evidence queued on
+// observer and returns no Store.
+func OpenWithObservation(path string, options OpenOptions, observer *DiagnosticObserver) (*Store, error) {
+	store, err := openWithOptionsAndObserver(path, options, observer)
+	if err != nil {
+		return nil, observedOpenFailure(observer, err)
+	}
+	return store, nil
+}
+
+func openWithOptionsAndObserver(path string, options OpenOptions, observer *DiagnosticObserver) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("database path is required")
 	}
@@ -93,7 +110,7 @@ func OpenWithOptions(path string, options OpenOptions) (*Store, error) {
 		return nil, fmt.Errorf("open SQLite database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db, databasePath: path, backupPath: options.BackupPath}
+	store := &Store{db: db, databasePath: path, backupPath: options.BackupPath, diagnosticObserver: observer}
 	if err := store.configure(); err != nil {
 		db.Close()
 		return nil, err
