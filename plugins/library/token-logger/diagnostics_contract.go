@@ -498,16 +498,43 @@ func (event DiagnosticEvent) Validate() error {
 	if err := event.Position.Validate(); err != nil {
 		return err
 	}
-	if event.Kind == DiagnosticEventPollSummary {
+	switch event.Kind {
+	case DiagnosticEventPollSummary:
 		if err := event.Counts.Validate(); err != nil {
 			return err
 		}
 		if event.Counts.Scope != DiagnosticCountPoll || event.Counts.ScopeID != event.PollID {
 			return ErrInvalidDiagnostic
 		}
-	} else if event.Counts.Scope != DiagnosticCountOperation ||
-		event.Counts.Availability != DiagnosticAvailabilityNotCollected || event.Counts.Validate() != nil {
-		return ErrInvalidDiagnostic
+	case DiagnosticEventConditionSummary:
+		if err := event.Counts.Validate(); err != nil || event.Counts.Availability != DiagnosticAvailabilityAvailable {
+			return ErrInvalidDiagnostic
+		}
+		switch event.Counts.Scope {
+		case DiagnosticCountOperation:
+			if event.Evidence.Scope != DiagnosticEvidenceOperation {
+				return ErrInvalidDiagnostic
+			}
+		case DiagnosticCountPoll:
+			if event.Counts.ScopeID != event.PollID || event.Evidence.Scope != DiagnosticEvidencePoll {
+				return ErrInvalidDiagnostic
+			}
+		case DiagnosticCountRun:
+			if event.Counts.ScopeID != event.CollectorRunID || event.Evidence.Scope != DiagnosticEvidenceRun {
+				return ErrInvalidDiagnostic
+			}
+		case DiagnosticCountLifetime:
+			if event.Evidence.Scope != DiagnosticEvidenceSourceGeneration {
+				return ErrInvalidDiagnostic
+			}
+		default:
+			return ErrInvalidDiagnostic
+		}
+	default:
+		if event.Counts.Scope != DiagnosticCountOperation ||
+			event.Counts.Availability != DiagnosticAvailabilityNotCollected || event.Counts.Validate() != nil {
+			return ErrInvalidDiagnostic
+		}
 	}
 	encoded, err := json.Marshal(event)
 	if err != nil || len(encoded) > MaxDiagnosticItemBytes {
@@ -528,7 +555,7 @@ func (classification DiagnosticClassification) Validate() error {
 	if !ok || !validComponent(classification.Component) || !validOperation(classification.Operation) ||
 		!spec.components[classification.Component] || !spec.operations[classification.Operation] ||
 		classification.Severity != spec.severity || classification.Retryability != spec.retryability ||
-		classification.Impact != spec.impact || !validDiagnosticCategory(string(classification.Category)) ||
+		classification.Impact != diagnosticImpactFor(classification.Component, classification.Operation, spec.impact) || !validDiagnosticCategory(string(classification.Category)) ||
 		classification.Category != spec.category && classification.Category != DiagnosticCategory(DiagnosticCategorySecuritySensitive) ||
 		!validDiagnosticAdapter(classification.Adapter) ||
 		classification.ExplanationCode != explanationCode(classification.Reason) ||
@@ -572,7 +599,13 @@ func (position DiagnosticPosition) Validate() error {
 	if err := position.ByteOffset.Validate(); err != nil {
 		return err
 	}
-	return position.LineNumber.Validate()
+	if err := position.LineNumber.Validate(); err != nil {
+		return err
+	}
+	if position.LineNumber.Availability == DiagnosticAvailabilityAvailable && position.LineNumber.Value == 0 {
+		return ErrInvalidDiagnostic
+	}
+	return nil
 }
 
 func (evidence DiagnosticEvidence) Validate() error {
@@ -829,8 +862,17 @@ func makeDiagnosticClassification(component DiagnosticComponent, operation Diagn
 	}
 	classification := DiagnosticClassification{Component: component, Operation: operation, Reason: reason,
 		Severity: spec.severity, Category: spec.category, Adapter: adapter, Retryability: spec.retryability,
-		Impact: spec.impact, ExplanationCode: explanationCode(reason), RemediationCode: spec.remediation}
+		Impact: diagnosticImpactFor(component, operation, spec.impact), ExplanationCode: explanationCode(reason), RemediationCode: spec.remediation}
 	return classification
+}
+
+func diagnosticImpactFor(component DiagnosticComponent, operation DiagnosticOperation, fallback DiagnosticImpact) DiagnosticImpact {
+	if component == DiagnosticComponentStorage &&
+		(operation == DiagnosticOperationQueryDiagnostics || operation == DiagnosticOperationReviewDiagnostic) &&
+		fallback == DiagnosticImpactIngestionUnavailable {
+		return DiagnosticImpactInspectionUnavailable
+	}
+	return fallback
 }
 
 func (failure DiagnosticFailure) Validate() error {

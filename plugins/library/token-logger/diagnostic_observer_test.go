@@ -393,6 +393,81 @@ func TestDiagnosticPollSummaryHasExplicitCountScope(t *testing.T) {
 	}
 }
 
+func TestDiagnosticConditionSummaryCarriesScopedCounts(t *testing.T) {
+	observer, err := NewDiagnosticObserver(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := testDiagnosticEvent()
+	event.Kind = DiagnosticEventConditionSummary
+	event.Classification = makeDiagnosticClassification(DiagnosticComponentParser, DiagnosticOperationParse,
+		DiagnosticReasonMalformedRecord, DiagnosticAdapterClaude)
+	event.PollID = "ffeeddccbbaa99887766554433221100"
+	event.Evidence = DiagnosticEvidence{Scope: DiagnosticEvidencePoll, Availability: DiagnosticAvailabilityAvailable}
+	event.Counts = DiagnosticOutcomeCounts{Scope: DiagnosticCountPoll, ScopeID: event.PollID,
+		Availability: DiagnosticAvailabilityAvailable, MalformedRecord: 7}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("condition event validation: %v", err)
+	}
+	if got := observer.publish(event); got != DiagnosticEmissionQueued {
+		t.Fatalf("condition event publish = %q", got)
+	}
+	got := <-observer.Events()
+	if got.Kind != DiagnosticEventConditionSummary || got.Classification.Reason != DiagnosticReasonMalformedRecord ||
+		got.Counts.Scope != DiagnosticCountPoll || got.Counts.ScopeID != event.PollID || got.Counts.MalformedRecord != 7 {
+		t.Fatalf("published condition event = %+v", got)
+	}
+
+	bad := event
+	bad.Counts.ScopeID = "00112233445566778899aabbccddeeff"
+	if err := bad.Validate(); !errors.Is(err, ErrInvalidDiagnostic) {
+		t.Fatalf("mismatched poll identifier validation = %v", err)
+	}
+	bad = event
+	bad.Counts.Availability = DiagnosticAvailabilityNotCollected
+	bad.Counts.MalformedRecord = 0
+	if err := bad.Validate(); !errors.Is(err, ErrInvalidDiagnostic) {
+		t.Fatalf("unavailable condition count validation = %v", err)
+	}
+}
+
+func TestDiagnosticStorageImpactMatchesOperation(t *testing.T) {
+	query := makeDiagnosticClassification(DiagnosticComponentStorage, DiagnosticOperationQueryDiagnostics,
+		DiagnosticReasonStorageBusy, DiagnosticAdapterUnavailable)
+	if query.Impact != DiagnosticImpactInspectionUnavailable || query.Validate() != nil {
+		t.Fatalf("diagnostic query classification = %+v, validation=%v", query, query.Validate())
+	}
+	persist := makeDiagnosticClassification(DiagnosticComponentStorage, DiagnosticOperationPersist,
+		DiagnosticReasonStorageBusy, DiagnosticAdapterUnavailable)
+	if persist.Impact != DiagnosticImpactIngestionUnavailable || persist.Validate() != nil {
+		t.Fatalf("persist classification = %+v, validation=%v", persist, persist.Validate())
+	}
+	query.Impact = DiagnosticImpactIngestionUnavailable
+	if err := query.Validate(); !errors.Is(err, ErrInvalidDiagnostic) {
+		t.Fatalf("overstated query impact validation = %v", err)
+	}
+	persist.Impact = DiagnosticImpactInspectionUnavailable
+	if err := persist.Validate(); !errors.Is(err, ErrInvalidDiagnostic) {
+		t.Fatalf("understated persist impact validation = %v", err)
+	}
+}
+
+func TestDiagnosticPositionLineNumberIsOneBased(t *testing.T) {
+	position := DiagnosticPosition{ByteOffset: DiagnosticOptionalUint64{Availability: DiagnosticAvailabilityAvailable},
+		LineNumber: unavailableMeasurement()}
+	if err := position.Validate(); err != nil {
+		t.Fatalf("zero byte offset and unavailable line should be valid: %v", err)
+	}
+	position.LineNumber = DiagnosticOptionalUint64{Availability: DiagnosticAvailabilityAvailable, Value: 0}
+	if err := position.Validate(); !errors.Is(err, ErrInvalidDiagnostic) {
+		t.Fatalf("zero line number validation = %v", err)
+	}
+	position.LineNumber.Value = 1
+	if err := position.Validate(); err != nil {
+		t.Fatalf("one-based line number validation = %v", err)
+	}
+}
+
 func TestOpenWithObservationPreflightFailureIsSafeAndPreservesDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "unsupported.sqlite")
 	database, err := sql.Open(sqlite3DriverName, path)

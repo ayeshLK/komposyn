@@ -43,8 +43,10 @@ fixed catalogue by the consumer.
 | schema_unsupported | schema / inspect_schema, open | error; inspection_unavailable | upgrade_core |
 | backup_failed | migration / backup, migrate | error; ingestion_unavailable | review_backup |
 | migration_failed | migration / migrate | error; ingestion_unavailable | review_migration |
-| storage_busy, storage_locked | storage / open, backup, migrate, persist, diagnostic query/review | error; ingestion_unavailable; retryable | review_storage |
-| storage_full, storage_readonly, storage_corrupt, storage_failure | storage / same storage operations | error; ingestion_unavailable | review_storage |
+| storage_busy, storage_locked | storage / open, backup, migrate, persist | error; ingestion_unavailable; retryable | review_storage |
+| storage_busy, storage_locked | storage / query_diagnostics, review_diagnostic | error; inspection_unavailable; retryable | review_storage |
+| storage_full, storage_readonly, storage_corrupt, storage_failure | storage / open, backup, migrate, persist | error; ingestion_unavailable | review_storage |
+| storage_full, storage_readonly, storage_corrupt, storage_failure | storage / query_diagnostics, review_diagnostic | error; inspection_unavailable | review_storage |
 | invalid_json, invalid_timestamp, invalid_token_count, required_context_missing, unsupported_usage, malformed_record | parser / classify, parse | warning; ingestion_may_be_incomplete | review_record |
 | lease_active | collector / acquire_lease | info; none | wait_for_collector |
 | lease_lost | collector / lease and stop operations | warning; ingestion_may_be_incomplete | check_collector |
@@ -171,8 +173,12 @@ outcomes, one explicit operation/poll/run/lifetime scope, optional run/poll ID,
 availability, saturation, and truncation. `AddOutcome` saturates at
 `math.MaxUint64`; `Saturated` becomes true on reaching that bound. Rejected
 outcome names do not mutate the value. These counts do not claim unique bad
-records or lost usage. Non-poll events carry operation-scoped counts with
-`not_collected` availability; this makes the absence of a summary explicit.
+records or lost usage. `operation_failed` and `operation_recovered` events carry
+operation-scoped counts with `not_collected` availability. `condition_summary`
+events require available counts and may scope them to the operation, poll, run,
+or lifetime; poll/run IDs and evidence scopes must match. `poll_summary` events
+require poll-scoped counts. This makes emitted summaries and deliberately
+uncollected counts explicit.
 
 ## Observer ownership and loss
 
