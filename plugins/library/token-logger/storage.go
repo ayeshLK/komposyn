@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	sqlite3 "modernc.org/sqlite"
@@ -30,18 +31,19 @@ import (
 
 // Store is the library-owned SQLite persistence boundary.
 type Store struct {
-	db                     *sql.DB
-	databasePath           string
-	backupPath             string
-	migrationBackupPath    string
-	beforeSnapshotRead     func()
-	beforeSnapshotParse    func()
-	sourceReadHook         func(pass int, bytesRead int64)
-	beforeAppend           func()
-	benchmarkObserver      *collectorBenchmarkObserver
-	diagnosticObserver     *DiagnosticObserver
-	diagnosticHandleKey    [32]byte
-	diagnosticKeyAvailable bool
+	db                        *sql.DB
+	databasePath              string
+	backupPath                string
+	migrationBackupPath       string
+	beforeSnapshotRead        func()
+	beforeSnapshotParse       func()
+	sourceReadHook            func(pass int, bytesRead int64)
+	beforeAppend              func()
+	benchmarkObserver         *collectorBenchmarkObserver
+	diagnosticObserver        *DiagnosticObserver
+	diagnosticPersistenceLost atomic.Bool
+	diagnosticHandleKey       [32]byte
+	diagnosticKeyAvailable    bool
 }
 
 var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
@@ -363,6 +365,14 @@ func (s *Store) migrate() (resultErr error) {
 		}
 		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 17, formatStoredTime(time.Now())); err != nil {
 			return fmt.Errorf("record migration 17: %w", err)
+		}
+	}
+	if applied < 18 {
+		if _, err := tx.Exec(schemaMigrationEighteenDiagnosticEvidence); err != nil {
+			return fmt.Errorf("apply migration 18: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 18, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 18: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

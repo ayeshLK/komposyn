@@ -2,7 +2,7 @@
 
 Komposyn upgrades its SQLite schema automatically when `Store.Open` is called.
 Migrations are numbered, applied in order, and recorded in the
-`schema_migrations` table. The current schema version is 16. Core consumers
+`schema_migrations` table. The current schema version is 18. Core consumers
 can read `tokenlogger.CurrentSchemaVersion`; the oldest numbered schema with a
 complete forward migration path is `tokenlogger.OldestMigratableSchemaVersion`
 (1). The protocol-v1 `schema_versions` field describes event-format versions
@@ -54,6 +54,13 @@ and does not describe this SQLite migration range.
     continuation. It stores bounded normalized parser state, parser/format
     revisions, source generation, complete-record boundary, verified prefix
     fingerprint, and a state digest. It contains no provider source text.
+17. Records only project-name provenance demonstrated by the current import
+    path. Historical rows remain unknown.
+18. Adds a private random diagnostic namespace and a separately bounded
+    detailed-problem aggregate with exact decimal-text counters, bounded
+    per-problem finding-ID replay protection, operational condition evidence, independent review
+    revision, and at most four location samples carrying generation/coverage
+    scope. Existing diagnostic rows are not rewritten or enriched.
 
 ## Compatibility rules
 

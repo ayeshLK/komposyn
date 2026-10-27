@@ -327,3 +327,89 @@ const schemaMigrationSeventeenProjectNameSource = `
 ALTER TABLE projects ADD COLUMN display_name_source TEXT NOT NULL DEFAULT 'unknown'
     CHECK (display_name_source IN ('unknown', 'fallback', 'cwd', 'provider', 'explicit'));
 `
+
+// Schema migration 18 adds a separate bounded diagnostic evidence model. The
+// random namespace key is created in the migration transaction and is
+// preserved by the normal online-backup mechanism.
+const schemaMigrationEighteenDiagnosticEvidence = `
+CREATE TABLE diagnostic_detail_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    namespace_key BLOB NOT NULL CHECK (length(namespace_key) = 32),
+    overflow_count TEXT NOT NULL DEFAULT '0',
+    overflow_saturated INTEGER NOT NULL DEFAULT 0,
+    next_evidence_order TEXT NOT NULL DEFAULT '0',
+    problem_count INTEGER NOT NULL DEFAULT 0 CHECK (problem_count BETWEEN 0 AND 4096),
+    persistence_available INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO diagnostic_detail_meta(singleton, namespace_key) VALUES (1, randomblob(32));
+
+CREATE TABLE diagnostic_details (
+    problem_id TEXT PRIMARY KEY CHECK (length(problem_id) = 64),
+    created_at TEXT NOT NULL,
+    component TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    category TEXT NOT NULL,
+    adapter TEXT NOT NULL DEFAULT '',
+    subject_kind TEXT NOT NULL,
+    subject_reference TEXT NOT NULL DEFAULT '',
+    subject_availability TEXT NOT NULL,
+    identity_scope TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_positive_at TEXT NOT NULL,
+    latest_poll_id TEXT NOT NULL DEFAULT '',
+    latest_poll_order TEXT NOT NULL DEFAULT '0',
+    latest_poll_count TEXT NOT NULL DEFAULT '0',
+    latest_poll_available TEXT NOT NULL DEFAULT 'unknown',
+    latest_poll_saturated INTEGER NOT NULL DEFAULT 0,
+    finding_slot_cursor INTEGER NOT NULL DEFAULT 0 CHECK (finding_slot_cursor BETWEEN 0 AND 63),
+    observation_history_truncated INTEGER NOT NULL DEFAULT 0,
+    latest_run_id TEXT NOT NULL DEFAULT '',
+    latest_run_order TEXT NOT NULL DEFAULT '0',
+    latest_run_count TEXT NOT NULL DEFAULT '0',
+    latest_run_available TEXT NOT NULL DEFAULT 'unknown',
+    latest_run_saturated INTEGER NOT NULL DEFAULT 0,
+    lifetime_count TEXT NOT NULL DEFAULT '0',
+    lifetime_saturated INTEGER NOT NULL DEFAULT 0,
+    condition TEXT NOT NULL CHECK (condition IN ('active', 'resolved', 'unknown')),
+    condition_as_of TEXT NOT NULL,
+    condition_generation TEXT NOT NULL DEFAULT '',
+    condition_offset TEXT NOT NULL DEFAULT '',
+    condition_order TEXT NOT NULL DEFAULT '0',
+    condition_coverage TEXT NOT NULL DEFAULT 'unknown',
+    condition_reason TEXT NOT NULL,
+    material_revision TEXT NOT NULL DEFAULT '1',
+    review_state TEXT NOT NULL DEFAULT 'pending' CHECK (review_state IN ('pending', 'reviewed', 'skipped')),
+    reviewed_revision TEXT NOT NULL DEFAULT '0',
+    reviewed_at TEXT NOT NULL DEFAULT '',
+    samples_truncated INTEGER NOT NULL DEFAULT 0,
+    overflowed INTEGER NOT NULL DEFAULT 0,
+    legacy_fingerprint TEXT
+);
+CREATE INDEX diagnostic_details_created_idx ON diagnostic_details(created_at, problem_id);
+CREATE INDEX diagnostic_details_review_idx ON diagnostic_details(review_state, created_at, problem_id);
+CREATE INDEX diagnostic_details_condition_idx ON diagnostic_details(condition, created_at, problem_id);
+CREATE INDEX diagnostic_details_category_idx ON diagnostic_details(category, reason, created_at, problem_id);
+CREATE INDEX diagnostic_details_subject_idx ON diagnostic_details(subject_reference, created_at, problem_id);
+
+CREATE TABLE diagnostic_detail_samples (
+    problem_id TEXT NOT NULL REFERENCES diagnostic_details(problem_id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL CHECK (slot BETWEEN 0 AND 3),
+    byte_offset TEXT NOT NULL DEFAULT '',
+    line_number TEXT NOT NULL DEFAULT '',
+    generation TEXT NOT NULL DEFAULT '',
+    coverage TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(problem_id, slot)
+);
+
+CREATE TABLE diagnostic_detail_findings (
+    problem_id TEXT NOT NULL REFERENCES diagnostic_details(problem_id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL CHECK (slot BETWEEN 0 AND 63),
+    finding_key TEXT NOT NULL,
+    evidence_order TEXT NOT NULL,
+    PRIMARY KEY(problem_id, slot),
+    UNIQUE(problem_id, finding_key)
+);
+`

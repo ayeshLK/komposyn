@@ -172,7 +172,11 @@ func TestMigrationEightRemapsCrossNamespaceSyntheticIDCollisions(t *testing.T) {
 		`DROP TABLE collector_runtime`,
 		`DROP TABLE collector_sources`,
 		`ALTER TABLE projects DROP COLUMN display_name_source`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17)`,
+		`DROP TABLE diagnostic_detail_findings`,
+		`DROP TABLE diagnostic_detail_samples`,
+		`DROP TABLE diagnostic_details`,
+		`DROP TABLE diagnostic_detail_meta`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -265,7 +269,11 @@ func TestMigrationEightRemapsSyntheticIDCollisions(t *testing.T) {
 		`DROP TABLE collector_runtime`,
 		`DROP TABLE collector_sources`,
 		`ALTER TABLE projects DROP COLUMN display_name_source`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17)`,
+		`DROP TABLE diagnostic_detail_findings`,
+		`DROP TABLE diagnostic_detail_samples`,
+		`DROP TABLE diagnostic_details`,
+		`DROP TABLE diagnostic_detail_meta`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -457,7 +465,19 @@ func TestMigrationTenAddsCollectorIdentityMapWithoutChangingCursors(t *testing.T
 	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 11"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (12, 13, 14, 15, 16, 17)"); err != nil {
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_details"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_meta"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (12, 13, 14, 15, 16, 17, 18)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec("DROP TABLE parser_checkpoints"); err != nil {

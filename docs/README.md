@@ -26,6 +26,8 @@ and JSONL harness transport are maintained in the
   proposed durable parser checkpoints, safe record boundaries, replay
   equivalence, fallback rules, and acceptance evidence for issue #139.
 - [Token Logger core API](core-api.md) — supported exports and compatibility.
+- [Persisted diagnostic details](diagnostic-details.md) — local diagnostic
+  identity, evidence, counters, condition and review semantics.
 - [Diagnostics contract v1 foundation](diagnostics-contract-v1.md) — closed
   classifications, safe failures/events, bounded mailbox, and observed open.
 - [Structured diagnostic instrumentation](diagnostics-instrumentation.md) —

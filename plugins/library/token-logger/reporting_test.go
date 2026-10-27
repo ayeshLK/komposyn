@@ -487,7 +487,19 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)"); err != nil {
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_details"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_meta"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec("ALTER TABLE projects DROP COLUMN display_name_source"); err != nil {

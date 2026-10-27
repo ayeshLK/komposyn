@@ -645,7 +645,19 @@ func TestMigrationSixteenFailurePreservesSchemaFifteenAndBackup(t *testing.T) {
 	if _, err := db.Exec("DROP TABLE parser_checkpoints"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("DELETE FROM schema_migrations WHERE version IN (16, 17)"); err != nil {
+	if _, err := db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP TABLE diagnostic_details"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP TABLE diagnostic_detail_meta"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DELETE FROM schema_migrations WHERE version IN (16, 17, 18)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec("ALTER TABLE projects DROP COLUMN display_name_source"); err != nil {
@@ -699,7 +711,19 @@ func TestMigrationSeventeenNameSourceDefaultsLegacyRowsToUnknown(t *testing.T) {
 	if _, err := store.db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-name', '/legacy', 'Unattributed', '2026-01-01T00:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 17"); err != nil {
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_details"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_meta"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (17, 18)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec("ALTER TABLE projects DROP COLUMN display_name_source"); err != nil {
@@ -721,8 +745,8 @@ func TestMigrationSeventeenNameSourceDefaultsLegacyRowsToUnknown(t *testing.T) {
 		t.Fatalf("legacy display name source = %q, want unknown", source)
 	}
 	var version int
-	if err := upgraded.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 17 {
-		t.Fatalf("schema version = %d, err = %v; want 17", version, err)
+	if err := upgraded.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 18 {
+		t.Fatalf("schema version = %d, err = %v; want 18", version, err)
 	}
 }
 
@@ -737,7 +761,19 @@ func TestMigrationSeventeenFailurePreservesSchemaSixteenAndBackup(t *testing.T) 
 	if _, err := store.db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-name', '/legacy', 'Unattributed', '2026-01-01T00:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 17"); err != nil {
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_samples"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_details"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_meta"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version IN (17, 18)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec("ALTER TABLE projects DROP COLUMN display_name_source"); err != nil {
