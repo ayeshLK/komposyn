@@ -364,6 +364,7 @@ CREATE TABLE diagnostic_details (
     latest_poll_count TEXT NOT NULL DEFAULT '0',
     latest_poll_available TEXT NOT NULL DEFAULT 'unknown',
     latest_poll_saturated INTEGER NOT NULL DEFAULT 0,
+    last_observation_order TEXT NOT NULL DEFAULT '0',
     latest_run_id TEXT NOT NULL DEFAULT '',
     latest_run_order TEXT NOT NULL DEFAULT '0',
     latest_run_count TEXT NOT NULL DEFAULT '0',
@@ -397,6 +398,8 @@ CREATE TABLE diagnostic_detail_samples (
     slot INTEGER NOT NULL CHECK (slot BETWEEN 0 AND 3),
     byte_offset TEXT NOT NULL DEFAULT '',
     line_number TEXT NOT NULL DEFAULT '',
+    generation TEXT NOT NULL DEFAULT '',
+    coverage TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(problem_id, slot)
 );
 `

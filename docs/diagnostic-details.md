@@ -36,6 +36,17 @@ identities. The latter is historical and is not necessarily the current run.
 Legacy occurrence counts remain separate; migrated legacy rows do not gain
 inferred detailed provenance or counts.
 
+Each source operation receives a monotonically reserved evidence order. The
+per-problem aggregate records its latest observation order, making replay of
+that already-committed operation idempotent without retaining an unbounded
+finding journal. A later parse uses a later order and counts as a new
+observation even when it sees the same location. Producers must aggregate
+multiple causes for one problem within an operation before persistence.
+
+Each location sample includes its generation and coverage availability so
+positions from replaced sources remain distinguishable. The public page and
+detail projections include `diagnostic_contract_version` (currently 1).
+
 Operational condition is derived from ordered internal findings and
 source/generation coverage. A positive finding marks a problem active. Absence
 can resolve it only after sufficient subsequent evaluation of that same
@@ -92,6 +103,10 @@ diagnostic tables directly.
 | Bounded keyset paging and filter-bound continuation validation | `TestDiagnosticPagingBindsFiltersAndRejectsMalformedTokens` |
 | Safe projection and response-size bound | `TestDiagnosticDetailOutputOmitsRawIdentityAndLegacyText` |
 | Four-sample cap and 4,096-problem capacity overflow | `TestDiagnosticEvidenceCapacityOverflowAndSamplesAreBounded` |
+| Replayed operation idempotence vs a new parse at the same location | `TestDiagnosticFindingReplayIsIdempotentAcrossCalls` |
+| Unscoped/same-scope evaluations preserve historical poll counts and saturation | `TestDiagnosticEvaluationPreservesPollCounterWithoutNewPoll` |
+| Samples retain source generation and coverage across replacement/late evidence | `TestDiagnosticSamplesRetainGenerationAndCoverage` |
+| Public version in nonempty/empty list and detail JSON | `TestDiagnosticDetailsNamespacesCountersAndReviewCAS` |
 | Persistence failure returns safe projections and marks the open store's evidence unavailable | `TestDiagnosticPersistenceFailureIsSafeAndVisibleForStoreHandle` |
 | Migration failure preserves the source schema and verified backup | `TestMigrationEighteenFailurePreservesSchemaAndVerifiedBackup` |
 

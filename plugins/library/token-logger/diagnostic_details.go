@@ -119,12 +119,16 @@ type DiagnosticReview struct {
 	PredatesEvidence bool                  `json:"predates_evidence"`
 }
 type DiagnosticLocationSample struct {
-	Position DiagnosticPosition `json:"position"`
+	Position             DiagnosticPosition       `json:"position"`
+	Generation           DiagnosticOptionalUint64 `json:"generation"`
+	Coverage             DiagnosticCoverageKind   `json:"coverage"`
+	CoverageAvailability DiagnosticAvailability   `json:"coverage_availability"`
 }
 
 // DiagnosticDetail is a bounded privacy-filtered projection. Legacy messages
 // and caller-supplied metadata are intentionally not included.
 type DiagnosticDetail struct {
+	ContractVersion          int                         `json:"diagnostic_contract_version"`
 	ProblemID                string                      `json:"problem_id"`
 	CreatedAt                time.Time                   `json:"created_at"`
 	Classification           DiagnosticClassification    `json:"classification"`
@@ -154,6 +158,7 @@ type DiagnosticQuery struct {
 	ContinuationToken string                `json:"continuation_token,omitempty"`
 }
 type DiagnosticPage struct {
+	ContractVersion      int                    `json:"diagnostic_contract_version"`
 	Items                []DiagnosticDetail     `json:"items"`
 	NextToken            string                 `json:"next_token,omitempty"`
 	Truncated            bool                   `json:"truncated"`
@@ -319,7 +324,7 @@ func (s *Store) ListDiagnosticDetails(query DiagnosticQuery) (DiagnosticPage, er
 	if hasMore {
 		items = items[:f.pageSize]
 	}
-	page := DiagnosticPage{Items: items, OverflowCount: DiagnosticExactCount{Value: "0", Availability: DiagnosticAvailabilityAvailable}, EvidenceAvailability: DiagnosticAvailabilityAvailable}
+	page := DiagnosticPage{ContractVersion: DiagnosticContractVersion, Items: items, OverflowCount: DiagnosticExactCount{Value: "0", Availability: DiagnosticAvailabilityAvailable}, EvidenceAvailability: DiagnosticAvailabilityAvailable}
 	var persistenceAvailable int
 	if err := tx.QueryRow("SELECT overflow_count, overflow_saturated, persistence_available FROM diagnostic_detail_meta WHERE singleton=1").Scan(&page.OverflowCount.Value, &page.OverflowCount.Saturated, &persistenceAvailable); err != nil {
 		return DiagnosticPage{}, ErrDiagnosticInspectionUnavailable
@@ -440,6 +445,7 @@ func scanDiagnosticDetail(tx *sql.Tx, rows *sql.Rows) (DiagnosticDetail, error) 
 	}
 	d.SamplesTruncated = st != 0
 	d.CapacityOverflow = overflow != 0
+	d.ContractVersion = DiagnosticContractVersion
 	d.LegacyDetailAvailability = DiagnosticAvailabilityNotCollected
 	d.Samples, err = loadDiagnosticSamples(tx, d.ProblemID)
 	if err != nil {
@@ -459,18 +465,31 @@ func validConditionReason(value DiagnosticConditionReason) bool {
 	return false
 }
 func loadDiagnosticSamples(tx *sql.Tx, id string) ([]DiagnosticLocationSample, error) {
-	rows, err := tx.Query("SELECT byte_offset,line_number FROM diagnostic_detail_samples WHERE problem_id=? ORDER BY slot LIMIT 4", id)
+	rows, err := tx.Query("SELECT byte_offset,line_number,generation,coverage FROM diagnostic_detail_samples WHERE problem_id=? ORDER BY slot LIMIT 4", id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]DiagnosticLocationSample, 0, 4)
 	for rows.Next() {
-		var b, l string
-		if err := rows.Scan(&b, &l); err != nil {
+		var b, l, generation, coverage string
+		if err := rows.Scan(&b, &l, &generation, &coverage); err != nil {
 			return nil, err
 		}
-		out = append(out, DiagnosticLocationSample{DiagnosticPosition{optionalDecimal(b), optionalDecimal(l)}})
+		if generation != "" && validateExactCount(generation) != nil {
+			return nil, ErrInvalidDiagnostic
+		}
+		sample := DiagnosticLocationSample{Position: DiagnosticPosition{optionalDecimal(b), optionalDecimal(l)}, Generation: optionalDecimal(generation)}
+		if coverage != "" {
+			sample.Coverage = DiagnosticCoverageKind(coverage)
+			if !validDiagnosticCoverage(sample.Coverage) {
+				return nil, ErrInvalidDiagnostic
+			}
+			sample.CoverageAvailability = DiagnosticAvailabilityAvailable
+		} else {
+			sample.CoverageAvailability = DiagnosticAvailabilityNotCollected
+		}
+		out = append(out, sample)
 	}
 	return out, rows.Err()
 }

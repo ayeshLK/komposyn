@@ -26,10 +26,10 @@ import (
 	"time"
 )
 
-// diagnosticFinding is the trusted internal persistence seam. It is produced
+// persistedDiagnosticFinding is the trusted internal persistence seam. It is produced
 // by core operations, never from DiagnosticObserver.Events or public DTOs.
 // SubjectIdentity must already exist at the core discovery/identity boundary.
-type diagnosticFinding struct {
+type persistedDiagnosticFinding struct {
 	Classification      DiagnosticClassification
 	FindingID           DiagnosticID
 	SubjectKind         DiagnosticSubjectKind
@@ -64,7 +64,7 @@ type diagnosticEvaluation struct {
 }
 
 type diagnosticEvidenceBatch struct {
-	Findings    []diagnosticFinding
+	Findings    []persistedDiagnosticFinding
 	Evaluations []diagnosticEvaluation
 }
 
@@ -165,7 +165,7 @@ func diagnosticRefs(key []byte, kind DiagnosticSubjectKind, identity string, ava
 	return ref, scope, string(actualAvailability), problem
 }
 
-func persistDiagnosticFinding(tx *sql.Tx, key []byte, f diagnosticFinding) error {
+func persistDiagnosticFinding(tx *sql.Tx, key []byte, f persistedDiagnosticFinding) error {
 	if f.ObservationCount == 0 {
 		f.ObservationCount = 1
 	}
@@ -215,10 +215,10 @@ func persistDiagnosticFinding(tx *sql.Tx, key []byte, f diagnosticFinding) error
 			runAvailability = string(DiagnosticAvailabilityAvailable)
 			runCount = exactCount(f.ObservationCount)
 		}
-		_, err = tx.Exec("INSERT INTO diagnostic_details(problem_id,created_at,component,operation,reason,severity,category,adapter,subject_kind,subject_reference,subject_availability,identity_scope,first_seen_at,last_seen_at,last_positive_at,latest_poll_id,latest_poll_order,latest_poll_count,latest_poll_available,latest_poll_saturated,latest_run_id,latest_run_order,latest_run_count,latest_run_available,latest_run_saturated,lifetime_count,lifetime_saturated,condition,condition_as_of,condition_generation,condition_offset,condition_order,condition_coverage,condition_reason,material_revision,review_state,reviewed_revision,samples_truncated,overflowed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		_, err = tx.Exec("INSERT INTO diagnostic_details(problem_id,created_at,component,operation,reason,severity,category,adapter,subject_kind,subject_reference,subject_availability,identity_scope,first_seen_at,last_seen_at,last_positive_at,latest_poll_id,latest_poll_order,latest_poll_count,latest_poll_available,latest_poll_saturated,last_observation_order,latest_run_id,latest_run_order,latest_run_count,latest_run_available,latest_run_saturated,lifetime_count,lifetime_saturated,condition,condition_as_of,condition_generation,condition_offset,condition_order,condition_coverage,condition_reason,material_revision,review_state,reviewed_revision,samples_truncated,overflowed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 			problem, now, string(f.Classification.Component), string(f.Classification.Operation), string(f.Classification.Reason), string(f.Classification.Severity), string(f.Classification.Category), string(f.Classification.Adapter), string(f.SubjectKind), ref, availability, scope,
 			now, now, now, string(f.PollID), exactCount(f.EvidenceOrder), pollCount, pollAvailability, boolInt(f.PollID != "" && f.ObservationCount == math.MaxUint64),
-			string(f.RunID), exactCount(f.EvidenceOrder), runCount, runAvailability, boolInt(f.RunID != "" && f.ObservationCount == math.MaxUint64), exactCount(f.ObservationCount), boolInt(f.ObservationCount == math.MaxUint64),
+			exactCount(f.EvidenceOrder), string(f.RunID), exactCount(f.EvidenceOrder), runCount, runAvailability, boolInt(f.RunID != "" && f.ObservationCount == math.MaxUint64), exactCount(f.ObservationCount), boolInt(f.ObservationCount == math.MaxUint64),
 			string(DiagnosticConditionActive), now, generation, decimalOrEmpty(f.CoverageOffset), exactCount(f.EvidenceOrder), string(coverage), string(reason), "1", string(DiagnosticReviewPending), "0", 0, 0)
 		if err != nil {
 			return err
@@ -226,15 +226,20 @@ func persistDiagnosticFinding(tx *sql.Tx, key []byte, f diagnosticFinding) error
 		if _, err := tx.Exec("UPDATE diagnostic_detail_meta SET problem_count=problem_count+1 WHERE singleton=1"); err != nil {
 			return err
 		}
-		return mergeDiagnosticSamples(tx, problem, f.Position)
+		return mergeDiagnosticSamples(tx, problem, f.Position, f.Generation, f.Coverage)
 	}
-	var oldCategory, oldCondition, oldGeneration, oldOffset, oldOrder, oldPollOrder, oldRunOrder, oldCoverage, oldReason string
+	var oldCategory, oldCondition, oldGeneration, oldOffset, oldOrder, oldPollOrder, oldRunOrder, oldCoverage, oldReason, oldObservationOrder string
 	var oldPollID, oldRunID, oldPollAvailability, oldRunAvailability string
 	var oldMaterial, oldLifetime, oldPollCount, oldRunCount string
 	var oldLifetimeSaturated, oldPollSaturated, oldRunSaturated int
-	err = tx.QueryRow("SELECT category,condition,condition_generation,condition_offset,condition_order,latest_poll_order,latest_run_order,material_revision,lifetime_count,lifetime_saturated,latest_poll_count,latest_poll_saturated,latest_run_count,latest_run_saturated,latest_poll_id,latest_run_id,condition_coverage,condition_reason,latest_poll_available,latest_run_available FROM diagnostic_details WHERE problem_id=?", problem).Scan(&oldCategory, &oldCondition, &oldGeneration, &oldOffset, &oldOrder, &oldPollOrder, &oldRunOrder, &oldMaterial, &oldLifetime, &oldLifetimeSaturated, &oldPollCount, &oldPollSaturated, &oldRunCount, &oldRunSaturated, &oldPollID, &oldRunID, &oldCoverage, &oldReason, &oldPollAvailability, &oldRunAvailability)
+	err = tx.QueryRow("SELECT category,condition,condition_generation,condition_offset,condition_order,latest_poll_order,latest_run_order,material_revision,lifetime_count,lifetime_saturated,latest_poll_count,latest_poll_saturated,latest_run_count,latest_run_saturated,latest_poll_id,latest_run_id,condition_coverage,condition_reason,latest_poll_available,latest_run_available,last_observation_order FROM diagnostic_details WHERE problem_id=?", problem).Scan(&oldCategory, &oldCondition, &oldGeneration, &oldOffset, &oldOrder, &oldPollOrder, &oldRunOrder, &oldMaterial, &oldLifetime, &oldLifetimeSaturated, &oldPollCount, &oldPollSaturated, &oldRunCount, &oldRunSaturated, &oldPollID, &oldRunID, &oldCoverage, &oldReason, &oldPollAvailability, &oldRunAvailability, &oldObservationOrder)
 	if err != nil {
 		return err
+	}
+	// Evidence order is reserved once per source operation. Replaying that
+	// operation is ignored, while a later parse at the same location counts.
+	if compareDecimal(f.EvidenceOrder, oldObservationOrder) <= 0 {
+		return nil
 	}
 	lifetime, lifetimeSat := addExactCounter(oldLifetime, f.ObservationCount, oldLifetimeSaturated != 0)
 	material := oldMaterial
@@ -311,8 +316,8 @@ func persistDiagnosticFinding(tx *sql.Tx, key []byte, f diagnosticFinding) error
 	if !conditionNewer {
 		lastSeen, lastPositive, conditionAsOf = "", "", ""
 	}
-	_, err = tx.Exec("UPDATE diagnostic_details SET last_seen_at=CASE WHEN ?='' THEN last_seen_at ELSE ? END,last_positive_at=CASE WHEN ?='' THEN last_positive_at ELSE ? END,category=?,lifetime_count=?,lifetime_saturated=?,latest_poll_id=?,latest_poll_order=?,latest_poll_count=?,latest_poll_available=?,latest_poll_saturated=?,latest_run_id=?,latest_run_order=?,latest_run_count=?,latest_run_available=?,latest_run_saturated=?,condition=?,condition_as_of=CASE WHEN ?='' THEN condition_as_of ELSE ? END,condition_generation=?,condition_offset=?,condition_order=?,condition_coverage=?,condition_reason=?,material_revision=? WHERE problem_id=?",
-		lastSeen, lastSeen, lastPositive, lastPositive, category, lifetime, boolInt(lifetimeSat), pollID, pollOrder, pollCount, pollAvailability, pollSat, runID, runOrder, runCount, runAvailability, runSat, string(condition), conditionAsOf, asof, conditionGen, conditionOff, conditionOrder, string(coverage), string(conditionReason), material, problem)
+	_, err = tx.Exec("UPDATE diagnostic_details SET last_seen_at=CASE WHEN ?='' THEN last_seen_at ELSE ? END,last_positive_at=CASE WHEN ?='' THEN last_positive_at ELSE ? END,category=?,lifetime_count=?,lifetime_saturated=?,latest_poll_id=?,latest_poll_order=?,latest_poll_count=?,latest_poll_available=?,latest_poll_saturated=?,last_observation_order=?,latest_run_id=?,latest_run_order=?,latest_run_count=?,latest_run_available=?,latest_run_saturated=?,condition=?,condition_as_of=CASE WHEN ?='' THEN condition_as_of ELSE ? END,condition_generation=?,condition_offset=?,condition_order=?,condition_coverage=?,condition_reason=?,material_revision=? WHERE problem_id=?",
+		lastSeen, lastSeen, lastPositive, lastPositive, category, lifetime, boolInt(lifetimeSat), pollID, pollOrder, pollCount, pollAvailability, pollSat, exactCount(f.EvidenceOrder), runID, runOrder, runCount, runAvailability, runSat, string(condition), conditionAsOf, asof, conditionGen, conditionOff, conditionOrder, string(coverage), string(conditionReason), material, problem)
 	if err != nil {
 		return err
 	}
@@ -320,7 +325,7 @@ func persistDiagnosticFinding(tx *sql.Tx, key []byte, f diagnosticFinding) error
 	if err != nil {
 		return err
 	}
-	if err := mergeDiagnosticSamples(tx, problem, f.Position); err != nil {
+	if err := mergeDiagnosticSamples(tx, problem, f.Position, f.Generation, f.Coverage); err != nil {
 		return err
 	}
 	afterSamples, err := diagnosticSamplesState(tx, problem)
@@ -385,16 +390,19 @@ func applyDiagnosticEvaluation(tx *sql.Tx, key []byte, e diagnosticEvaluation) e
 	}
 	now := formatStoredTime(e.ObservedAt.UTC())
 	ref, _, _, _ := diagnosticRefs(key, e.SubjectKind, e.SubjectIdentity, DiagnosticAvailabilityUnknown, DiagnosticClassification{})
-	rows, err := tx.Query("SELECT problem_id,component,operation,reason,adapter,condition,condition_generation,condition_offset,condition_order,latest_poll_order,material_revision,condition_reason,latest_poll_id,latest_poll_available FROM diagnostic_details WHERE subject_kind=? AND subject_reference=?", string(e.SubjectKind), ref)
+	rows, err := tx.Query("SELECT problem_id,component,operation,reason,adapter,condition,condition_generation,condition_offset,condition_order,latest_poll_order,material_revision,condition_reason,latest_poll_id,latest_poll_available,latest_poll_count,latest_poll_saturated FROM diagnostic_details WHERE subject_kind=? AND subject_reference=?", string(e.SubjectKind), ref)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	type target struct{ id, component, operation, reason, adapter, condition, generation, offset, order, pollOrder, revision, conditionReason, pollID, pollAvailability string }
+	type target struct {
+		id, component, operation, reason, adapter, condition, generation, offset, order, pollOrder, revision, conditionReason, pollID, pollAvailability, pollCount string
+		pollSaturated                                                                                                                                              int
+	}
 	var targets []target
 	for rows.Next() {
 		var t target
-		if err := rows.Scan(&t.id, &t.component, &t.operation, &t.reason, &t.adapter, &t.condition, &t.generation, &t.offset, &t.order, &t.pollOrder, &t.revision, &t.conditionReason, &t.pollID, &t.pollAvailability); err != nil {
+		if err := rows.Scan(&t.id, &t.component, &t.operation, &t.reason, &t.adapter, &t.condition, &t.generation, &t.offset, &t.order, &t.pollOrder, &t.revision, &t.conditionReason, &t.pollID, &t.pollAvailability, &t.pollCount, &t.pollSaturated); err != nil {
 			return err
 		}
 		targets = append(targets, t)
@@ -436,17 +444,26 @@ func applyDiagnosticEvaluation(tx *sql.Tx, key []byte, e diagnosticEvaluation) e
 			}
 			revision = exactCount(n + 1)
 		}
-		pollOrder, pollCount, pollAvail, pollID := t.pollOrder, "0", t.pollAvailability, string(DiagnosticID(t.pollID))
+		pollOrder, pollCount, pollAvail, pollID, pollSaturated := t.pollOrder, t.pollCount, t.pollAvailability, t.pollID, t.pollSaturated
 		if e.PollID != "" && compareDecimal(e.EvidenceOrder, t.pollOrder) > 0 {
 			pollOrder = exactCount(e.EvidenceOrder)
-			pollID = string(e.PollID)
-			pollAvail = string(DiagnosticAvailabilityUnknown)
-			if complete {
+			if string(e.PollID) == t.pollID {
+				// A later complete evaluation may make an unknown zero known, but
+				// it must retain any positive/saturated count already recorded.
+				if complete && pollCount == "0" && pollSaturated == 0 && pollAvail == string(DiagnosticAvailabilityUnknown) {
+					pollAvail = string(DiagnosticAvailabilityAvailable)
+				}
+			} else {
+				pollID = string(e.PollID)
 				pollCount = "0"
-				pollAvail = string(DiagnosticAvailabilityAvailable)
+				pollAvail = string(DiagnosticAvailabilityUnknown)
+				pollSaturated = 0
+				if complete {
+					pollAvail = string(DiagnosticAvailabilityAvailable)
+				}
 			}
 		}
-		_, err := tx.Exec("UPDATE diagnostic_details SET condition=?,condition_as_of=?,condition_generation=?,condition_offset=?,condition_order=?,condition_coverage=?,condition_reason=?,material_revision=?,latest_poll_id=?,latest_poll_order=?,latest_poll_count=?,latest_poll_available=?,latest_poll_saturated=0 WHERE problem_id=?", string(state), now, generation, decimalOrEmpty(e.CoverageOffset), exactCount(e.EvidenceOrder), string(e.Coverage), string(why), revision, pollID, pollOrder, pollCount, pollAvail, t.id)
+		_, err := tx.Exec("UPDATE diagnostic_details SET condition=?,condition_as_of=?,condition_generation=?,condition_offset=?,condition_order=?,condition_coverage=?,condition_reason=?,material_revision=?,latest_poll_id=?,latest_poll_order=?,latest_poll_count=?,latest_poll_available=?,latest_poll_saturated=? WHERE problem_id=?", string(state), now, generation, decimalOrEmpty(e.CoverageOffset), exactCount(e.EvidenceOrder), string(e.Coverage), string(why), revision, pollID, pollOrder, pollCount, pollAvail, pollSaturated, t.id)
 		if err != nil {
 			return err
 		}
@@ -463,7 +480,7 @@ func validDiagnosticCoverage(value DiagnosticCoverageKind) bool {
 	return false
 }
 
-func mergeDiagnosticSamples(tx *sql.Tx, id string, p DiagnosticPosition) error {
+func mergeDiagnosticSamples(tx *sql.Tx, id string, p DiagnosticPosition, generation DiagnosticOptionalUint64, coverage DiagnosticCoverageKind) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
@@ -479,30 +496,31 @@ func mergeDiagnosticSamples(tx *sql.Tx, id string, p DiagnosticPosition) error {
 	if byteValue == "" && lineValue == "" {
 		return nil
 	}
+	generationValue, coverageValue := optionalDecimalText(generation), string(coverage)
 	var exists int
-	err := tx.QueryRow("SELECT 1 FROM diagnostic_detail_samples WHERE problem_id=? AND byte_offset=? AND line_number=?", id, byteValue, lineValue).Scan(&exists)
+	err := tx.QueryRow("SELECT 1 FROM diagnostic_detail_samples WHERE problem_id=? AND byte_offset=? AND line_number=? AND generation=? AND coverage=?", id, byteValue, lineValue, generationValue, coverageValue).Scan(&exists)
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	rows, err := tx.Query("SELECT byte_offset,line_number FROM diagnostic_detail_samples WHERE problem_id=? ORDER BY slot", id)
+	rows, err := tx.Query("SELECT byte_offset,line_number,generation,coverage FROM diagnostic_detail_samples WHERE problem_id=? ORDER BY slot", id)
 	if err != nil {
 		return err
 	}
-	type sample struct{ b, l string }
+	type sample struct{ b, l, generation, coverage string }
 	items := []sample{}
 	for rows.Next() {
 		var x sample
-		if err := rows.Scan(&x.b, &x.l); err != nil {
+		if err := rows.Scan(&x.b, &x.l, &x.generation, &x.coverage); err != nil {
 			rows.Close()
 			return err
 		}
 		items = append(items, x)
 	}
 	rows.Close()
-	items = append(items, sample{byteValue, lineValue})
+	items = append(items, sample{byteValue, lineValue, generationValue, coverageValue})
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].b == "" {
 			return false
@@ -513,7 +531,13 @@ func mergeDiagnosticSamples(tx *sql.Tx, id string, p DiagnosticPosition) error {
 		if cmp := compareDecimalString(items[i].b, items[j].b); cmp != 0 {
 			return cmp < 0
 		}
-		return compareDecimalString(items[i].l, items[j].l) < 0
+		if cmp := compareDecimalString(items[i].l, items[j].l); cmp != 0 {
+			return cmp < 0
+		}
+		if cmp := compareDecimalString(items[i].generation, items[j].generation); cmp != 0 {
+			return cmp < 0
+		}
+		return items[i].coverage < items[j].coverage
 	})
 	if len(items) > MaxDiagnosticLocationSamples {
 		items = items[:MaxDiagnosticLocationSamples]
@@ -525,7 +549,7 @@ func mergeDiagnosticSamples(tx *sql.Tx, id string, p DiagnosticPosition) error {
 		return err
 	}
 	for i, x := range items {
-		if _, err := tx.Exec("INSERT INTO diagnostic_detail_samples(problem_id,slot,byte_offset,line_number) VALUES(?,?,?,?)", id, i, x.b, x.l); err != nil {
+		if _, err := tx.Exec("INSERT INTO diagnostic_detail_samples(problem_id,slot,byte_offset,line_number,generation,coverage) VALUES(?,?,?,?,?,?)", id, i, x.b, x.l, x.generation, x.coverage); err != nil {
 			return err
 		}
 	}
@@ -537,18 +561,18 @@ func diagnosticSamplesState(tx *sql.Tx, id string) (string, error) {
 	if err := tx.QueryRow("SELECT samples_truncated FROM diagnostic_details WHERE problem_id=?", id).Scan(&truncated); err != nil {
 		return "", err
 	}
-	rows, err := tx.Query("SELECT byte_offset,line_number FROM diagnostic_detail_samples WHERE problem_id=? ORDER BY slot", id)
+	rows, err := tx.Query("SELECT byte_offset,line_number,generation,coverage FROM diagnostic_detail_samples WHERE problem_id=? ORDER BY slot", id)
 	if err != nil {
 		return "", err
 	}
 	defer rows.Close()
 	value := strconv.Itoa(truncated) + "|"
 	for rows.Next() {
-		var b, l string
-		if err := rows.Scan(&b, &l); err != nil {
+		var b, l, generation, coverage string
+		if err := rows.Scan(&b, &l, &generation, &coverage); err != nil {
 			return "", err
 		}
-		value += b + ":" + l + "|"
+		value += b + ":" + l + ":" + generation + ":" + coverage + "|"
 	}
 	return value, rows.Err()
 }

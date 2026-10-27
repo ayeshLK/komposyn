@@ -28,8 +28,8 @@ import (
 	"time"
 )
 
-func testDetailedFinding(identity string, order, count uint64, offset uint64) diagnosticFinding {
-	return diagnosticFinding{
+func testDetailedFinding(identity string, order, count uint64, offset uint64) persistedDiagnosticFinding {
+	return persistedDiagnosticFinding{
 		Classification: makeDiagnosticClassification(DiagnosticComponentParser, DiagnosticOperationParse,
 			DiagnosticReasonMalformedRecord, DiagnosticAdapterCodex),
 		SubjectKind: DiagnosticSubjectSource, SubjectIdentity: identity,
@@ -57,9 +57,9 @@ func testDetailedEvaluation(identity string, order, generation, offset uint64, c
 		EvaluatedReasons: []DiagnosticReason{DiagnosticReasonMalformedRecord}}
 }
 
-func persistTestFinding(t *testing.T, store *Store, finding diagnosticFinding) {
+func persistTestFinding(t *testing.T, store *Store, finding persistedDiagnosticFinding) {
 	t.Helper()
-	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{finding}}); err != nil {
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{finding}}); err != nil {
 		tx, _ := store.db.Begin()
 		key, _ := diagnosticNamespace(tx)
 		cause := persistDiagnosticFinding(tx, key, finding)
@@ -88,6 +88,25 @@ func TestDiagnosticDetailsNamespacesCountersAndReviewCAS(t *testing.T) {
 		t.Fatalf("same-reason sources not distinct: %#v", page.Items)
 	}
 	first := page.Items[0]
+	if page.ContractVersion != DiagnosticContractVersion || first.ContractVersion != DiagnosticContractVersion {
+		t.Fatalf("contract version missing from public projections: page=%d detail=%d", page.ContractVersion, first.ContractVersion)
+	}
+	pageJSON, err := json.Marshal(page)
+	if err != nil || !bytes.Contains(pageJSON, []byte(`"diagnostic_contract_version":1`)) {
+		t.Fatalf("serialized list omitted contract version: %s (%v)", pageJSON, err)
+	}
+	inspected, err := store.InspectDiagnosticDetail(first.ProblemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detailJSON, err := json.Marshal(inspected)
+	if err != nil || !bytes.Contains(detailJSON, []byte(`"diagnostic_contract_version":1`)) {
+		t.Fatalf("serialized detail omitted contract version: %s (%v)", detailJSON, err)
+	}
+	emptyPage, err := store.ListDiagnosticDetails(DiagnosticQuery{Reason: DiagnosticReasonInvalidJSON})
+	if err != nil || emptyPage.ContractVersion != DiagnosticContractVersion {
+		t.Fatalf("empty list version=%d err=%v", emptyPage.ContractVersion, err)
+	}
 	if first.Lifetime.Value != "2" || first.LatestPoll.Count.Value != "2" || first.LatestObservedRun.Count.Value != "2" {
 		t.Fatalf("scoped counters incorrect: %#v", first)
 	}
@@ -113,7 +132,7 @@ func TestDiagnosticDetailsNamespacesCountersAndReviewCAS(t *testing.T) {
 	if err := store.ReviewDiagnosticDetail(DiagnosticReviewRequest{ProblemID: first.ProblemID, ExpectedEvidenceRevision: first.Review.EvidenceRevision, State: DiagnosticReviewReviewed}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{testDetailedFinding("source-alpha", 3, 1, 100)}}); err != nil {
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{testDetailedFinding("source-alpha", 3, 1, 100)}}); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := store.InspectDiagnosticDetail(first.ProblemID)
@@ -163,6 +182,111 @@ func TestDiagnosticDetailsNamespacesCountersAndReviewCAS(t *testing.T) {
 	}
 }
 
+func TestDiagnosticFindingReplayIsIdempotentAcrossCalls(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	finding := testDetailedFinding("replay-source", 1, 7, 100)
+	persistTestFinding(t, store, finding)
+	persistTestFinding(t, store, finding)
+	detail, err := store.InspectDiagnosticDetail(testDetailedProblemID(t, store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Lifetime.Value != "7" || detail.LatestPoll.Count.Value != "7" || detail.LatestObservedRun.Count.Value != "7" {
+		t.Fatalf("replay double-counted committed finding: %#v", detail)
+	}
+	newParse := testDetailedFinding("replay-source", 2, 7, 100)
+	persistTestFinding(t, store, newParse)
+	detail, err = store.InspectDiagnosticDetail(detail.ProblemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Lifetime.Value != "14" || detail.LatestPoll.Count.Value != "14" || detail.LatestObservedRun.Count.Value != "14" {
+		t.Fatalf("new parse at same location was not counted: %#v", detail)
+	}
+}
+
+func TestDiagnosticEvaluationPreservesPollCounterWithoutNewPoll(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	finding := testDetailedFinding("poll-preserve", 1, math.MaxUint64, 100)
+	persistTestFinding(t, store, finding)
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := page.Items[0].LatestPoll
+	evaluation := testDetailedEvaluation("poll-preserve", 2, 1, 200, DiagnosticCoverageFullSnapshot, true)
+	evaluation.PollID = ""
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Evaluations: []diagnosticEvaluation{evaluation}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.InspectDiagnosticDetail(page.Items[0].ProblemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LatestPoll.ScopeID != before.ScopeID || got.LatestPoll.Count != before.Count {
+		t.Fatalf("unscoped evaluation changed historical poll tuple: before=%#v after=%#v", before, got.LatestPoll)
+	}
+	evaluation = testDetailedEvaluation("poll-preserve", 3, 1, 300, DiagnosticCoverageFullSnapshot, true)
+	evaluation.PollID = before.ScopeID
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Evaluations: []diagnosticEvaluation{evaluation}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.InspectDiagnosticDetail(page.Items[0].ProblemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LatestPoll.Count != before.Count {
+		t.Fatalf("same-poll evaluation cleared count or saturation: before=%#v after=%#v", before, got.LatestPoll)
+	}
+}
+
+func TestDiagnosticSamplesRetainGenerationAndCoverage(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	first := testDetailedFinding("sample-generation", 1, 1, 100)
+	persistTestFinding(t, store, first)
+	second := testDetailedFinding("sample-generation", 2, 1, 200)
+	second.Generation.Value = 2
+	persistTestFinding(t, store, second)
+	lateOld := testDetailedFinding("sample-generation", 3, 1, 300)
+	lateOld.Generation.Value = 1
+	persistTestFinding(t, store, lateOld)
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := page.Items[0]
+	if detail.Lifetime.Value != "3" || detail.Condition.Generation.Value != 2 || len(detail.Samples) != 3 {
+		t.Fatalf("generation-scoped samples or lifetime incorrect: %#v", detail)
+	}
+	want := []struct{ offset, generation uint64 }{{100, 1}, {200, 2}, {300, 1}}
+	for i, sample := range detail.Samples {
+		if sample.Position.ByteOffset.Value != want[i].offset || sample.Generation.Value != want[i].generation || sample.CoverageAvailability != DiagnosticAvailabilityAvailable || sample.Coverage != DiagnosticCoverageFullSnapshot {
+			t.Fatalf("sample %d scope mismatch: %#v", i, sample)
+		}
+	}
+}
+
+func testDetailedProblemID(t *testing.T, store *Store) string {
+	t.Helper()
+	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("read sole detailed problem: page=%#v err=%v", page, err)
+	}
+	return page.Items[0].ProblemID
+}
+
 func TestDiagnosticConditionRequiresSufficientLaterCoverage(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
@@ -206,7 +330,7 @@ func TestDiagnosticConditionRequiresSufficientLaterCoverage(t *testing.T) {
 	if d.LastPositiveAt.Equal(d.Condition.AsOf) {
 		t.Fatal("resolution overwrote the last positive observation")
 	}
-	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{testDetailedFinding("source-generation", 9, 5, 250)}}); err != nil {
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{testDetailedFinding("source-generation", 9, 5, 250)}}); err != nil {
 		t.Fatal(err)
 	}
 	d, err = store.InspectDiagnosticDetail(d.ProblemID)
@@ -216,7 +340,7 @@ func TestDiagnosticConditionRequiresSufficientLaterCoverage(t *testing.T) {
 	if d.Condition.State != DiagnosticConditionResolved || d.LatestPoll.Count.Value != "0" {
 		t.Fatalf("older finding overwrote newer resolution: %#v", d)
 	}
-	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{testDetailedFinding("source-generation", 13, 1, 300)}}); err != nil {
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{testDetailedFinding("source-generation", 13, 1, 300)}}); err != nil {
 		t.Fatal(err)
 	}
 	d, err = store.InspectDiagnosticDetail(d.ProblemID)
@@ -247,7 +371,7 @@ func TestDiagnosticCountersAreExactAndSaturating(t *testing.T) {
 		t.Fatalf("large counter rounded: %#v", page.Items[0].Lifetime)
 	}
 	f := testDetailedFinding("wide-counter", 2, math.MaxUint64-large, 0)
-	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{f}}); err != nil {
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{f}}); err != nil {
 		t.Fatal(err)
 	}
 	d, err := store.InspectDiagnosticDetail(page.Items[0].ProblemID)
@@ -257,7 +381,7 @@ func TestDiagnosticCountersAreExactAndSaturating(t *testing.T) {
 	if d.Lifetime.Value != strconv.FormatUint(math.MaxUint64, 10) || !d.Lifetime.Saturated {
 		t.Fatalf("counter did not saturate exactly: %#v", d.Lifetime)
 	}
-	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{testDetailedFinding("wide-counter", 3, 1, 0)}}); err != nil {
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{testDetailedFinding("wide-counter", 3, 1, 0)}}); err != nil {
 		t.Fatal(err)
 	}
 	d, err = store.InspectDiagnosticDetail(page.Items[0].ProblemID)
@@ -338,7 +462,7 @@ func TestDiagnosticEvidenceCapacityOverflowAndSamplesAreBounded(t *testing.T) {
 	}
 	defer store.Close()
 	for i := uint64(1); i <= MaxDiagnosticLocationSamples+1; i++ {
-		if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{testDetailedFinding("sample-source", i, 1, i)}}); err != nil {
+		if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{testDetailedFinding("sample-source", i, 1, i)}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -356,11 +480,11 @@ func TestDiagnosticEvidenceCapacityOverflowAndSamplesAreBounded(t *testing.T) {
 	}
 	for i := uint64(1); i <= MaxDetailedDiagnosticProblems; i++ {
 		f := testDetailedFinding("capacity-"+strconv.FormatUint(i, 10), i, 1, 0)
-		if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{f}}); err != nil {
+		if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{f}}); err != nil {
 			t.Fatalf("persist problem %d: %v", i, err)
 		}
 	}
-	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{testDetailedFinding("capacity-overflow", MaxDetailedDiagnosticProblems+1, 7, 0)}}); err != nil {
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{testDetailedFinding("capacity-overflow", MaxDetailedDiagnosticProblems+1, 7, 0)}}); err != nil {
 		t.Fatal(err)
 	}
 	page, err = store.ListDiagnosticDetails(DiagnosticQuery{PageSize: 1})
@@ -385,7 +509,7 @@ func TestDiagnosticPersistenceFailureIsSafeAndVisibleForStoreHandle(t *testing.T
 	if _, err := store.db.Exec("CREATE TRIGGER reject_diagnostic_detail BEFORE INSERT ON diagnostic_details BEGIN SELECT RAISE(ABORT,'private sql marker'); END"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []diagnosticFinding{testDetailedFinding("failed-persist", 1, 1, 0)}}); !errors.Is(err, ErrDiagnosticInspectionUnavailable) {
+	if err := store.recordDiagnosticEvidence(diagnosticEvidenceBatch{Findings: []persistedDiagnosticFinding{testDetailedFinding("failed-persist", 1, 1, 0)}}); !errors.Is(err, ErrDiagnosticInspectionUnavailable) {
 		t.Fatalf("persistence failure=%v", err)
 	}
 	page, err := store.ListDiagnosticDetails(DiagnosticQuery{})
