@@ -44,6 +44,10 @@ flowchart LR
   SQLite directly.
 - The supported reusable Go adapter surface and intentional pre-1.0 API
   compatibility decisions are recorded in [core-api.md](core-api.md).
+- Structured diagnostics contract v1 adds safe typed failure projections, an
+  optional bounded caller-owned observer, and observed Store opening. The
+  event mailbox is transient and lossy; persisted diagnostic evidence remains
+  a separate core-owned follow-up with its own internal findings path.
 - The protocol-v1 contract is maintained by the standalone CLI repository.
   Core API or schema changes that affect it are validated against the public
   CLI suite in core CI.

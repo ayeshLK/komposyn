@@ -29,6 +29,11 @@ module and distinguishes it from command policy.
   reviewing, and generating destination-neutral reports. Tracker selection,
   security-sensitive public-draft blocking, and external draft URLs belong to
   the CLI.
+- **Diagnostics contract v1 foundation:** `OperationalError`,
+  `DiagnosticClassification`, `DiagnosticFailure`, `DiagnosticEvent`,
+  `DiagnosticObserver`, bounded counter/evidence/reference values,
+  `NewDiagnosticObserver`, `FailureDetails`, and `OpenWithObservation`.
+  These are additive and separate from legacy `Diagnostic` serialization.
 
 SQLite migration mechanics, raw cursor internals, SQL helpers, provider parser
 types, pricing catalog synchronization details, and the mutable `Version`
@@ -155,6 +160,39 @@ exported methods.
 `Store.RecordDiagnosticWithMetadata`, `Store.Diagnostic`,
 `Store.PendingDiagnostics`, `Store.DiagnosticReport`, and
 `Store.MarkDiagnosticReviewed`.
+
+**Structured diagnostics v1 APIs:** `DiagnosticContractVersion`,
+`DiagnosticComponent`, `DiagnosticOperation`, `DiagnosticReason`,
+`DiagnosticSeverity`, `DiagnosticCategory`, `DiagnosticAdapter`,
+`DiagnosticRetryability`, `DiagnosticImpact`, `DiagnosticExplanationCode`,
+`DiagnosticRemediationCode`, `DiagnosticClassification`, `DiagnosticFailure`,
+`OperationalError`, `DiagnosticEvent`, `DiagnosticEventKind`,
+`DiagnosticID`, `DiagnosticSubject`, `DiagnosticSubjectKind`,
+`DiagnosticIdentityScope`, `DiagnosticAvailability`,
+`DiagnosticOptionalUint64`, `DiagnosticPosition`, `DiagnosticEvidence`,
+`DiagnosticEvidenceScope`, `DiagnosticUnavailableReason`, `DiagnosticCountScope`,
+`DiagnosticOutcomeCounts`, `DiagnosticEmissionDisposition`,
+`DiagnosticObserver`, `DiagnosticObserverStats`,
+`NewDiagnosticObserver`, `OpenWithObservation`, `FailureDetails`,
+`ErrInvalidDiagnostic`, and `ErrInvalidDiagnosticObserverCapacity`.
+The corresponding closed catalogue constants are exported under these
+families: `DiagnosticComponent*`, `DiagnosticOperation*`,
+`DiagnosticReason*`, `DiagnosticSeverity*`, `DiagnosticAdapter*`,
+`DiagnosticRetry*`, `DiagnosticImpact*`, `DiagnosticExplanation*`,
+`DiagnosticRemediation*`, `DiagnosticEvent*`, `DiagnosticSubject*`,
+`DiagnosticIdentity*`, `DiagnosticAvailability*`,
+`DiagnosticUnavailable*`, `DiagnosticCount*`,
+`DiagnosticEvidence*`, and `DiagnosticEmission*`. The capacity/item-size
+limits are `DefaultDiagnosticObserverCapacity`,
+`MaxDiagnosticObserverCapacity`, and `MaxDiagnosticItemBytes`.
+Validation methods are `DiagnosticClassification.Validate`,
+`DiagnosticFailure.Validate`, `DiagnosticEvent.Validate`,
+`DiagnosticSubject.Validate`, `DiagnosticID.Validate`,
+`DiagnosticOptionalUint64.Validate`, `DiagnosticPosition.Validate`,
+`DiagnosticEvidence.Validate`, `DiagnosticOutcomeCounts.Validate`, and
+`DiagnosticOutcomeCounts.AddOutcome`.
+See [diagnostics contract v1 foundation](diagnostics-contract-v1.md) for
+catalogue values, validation, mailbox loss semantics, and current limits.
 
 **Version compatibility:** `CoreVersion` is the named core-version accessor.
 The mutable exported `Version` variable remains deprecated for consumers that

@@ -65,3 +65,60 @@ func TestExternalConsumerCoreContract(t *testing.T) {
 		t.Fatalf("list collector sources = %+v, %v", sources, err)
 	}
 }
+
+func TestExternalDiagnosticFoundationContract(t *testing.T) {
+	observer, err := tokenlogger.NewDiagnosticObserver(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := observer.Stats(); got.Capacity != tokenlogger.DefaultDiagnosticObserverCapacity || got.Admitted != 0 || got.Dropped != 0 {
+		t.Fatalf("initial observer stats = %+v", got)
+	}
+	if observer.Events() == nil {
+		t.Fatal("observer returned a nil event stream")
+	}
+	store, err := tokenlogger.OpenWithObservation(":memory:", tokenlogger.OpenOptions{}, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityAvailable}).Validate(); err != nil {
+		t.Fatalf("known zero measurement = %v", err)
+	}
+	if err := (tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityNotCollected}).Validate(); err != nil {
+		t.Fatalf("unavailable measurement = %v", err)
+	}
+	classification := tokenlogger.DiagnosticClassification{
+		Component: tokenlogger.DiagnosticComponentUnknown, Operation: tokenlogger.DiagnosticOperationOpen,
+		Reason: tokenlogger.DiagnosticReasonFailureUnclassified, Severity: tokenlogger.DiagnosticSeverityError,
+		Category: tokenlogger.DiagnosticCategoryUnknown, Adapter: tokenlogger.DiagnosticAdapterUnavailable,
+		Retryability: tokenlogger.DiagnosticRetryUnknown, Impact: tokenlogger.DiagnosticImpactUnknown,
+		ExplanationCode: tokenlogger.DiagnosticExplanationFailureUnclassified,
+		RemediationCode: tokenlogger.DiagnosticRemediationReviewOperation,
+	}
+	event := tokenlogger.DiagnosticEvent{
+		ContractVersion: tokenlogger.DiagnosticContractVersion, CoreVersion: "0.0.0-dev", ObservedAt: time.Now().UTC(),
+		Kind: tokenlogger.DiagnosticEventOperationFailed, Classification: classification, HasClassification: true,
+		OperationID:          "00112233445566778899aabbccddeeff",
+		Subject:              tokenlogger.DiagnosticSubject{Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+		SourceSchemaVersion:  tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+		TargetSchemaVersion:  tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+		DurationMilliseconds: tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+		RetryAttempt:         tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+		RetryCount:           tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+		Position: tokenlogger.DiagnosticPosition{
+			ByteOffset: tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+			LineNumber: tokenlogger.DiagnosticOptionalUint64{Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+		},
+		Evidence: tokenlogger.DiagnosticEvidence{Scope: tokenlogger.DiagnosticEvidenceOperation,
+			Availability:      tokenlogger.DiagnosticAvailabilityNotCollected,
+			UnavailableReason: tokenlogger.DiagnosticUnavailableNotCollected},
+		Counts: tokenlogger.DiagnosticOutcomeCounts{Scope: tokenlogger.DiagnosticCountOperation,
+			Availability: tokenlogger.DiagnosticAvailabilityNotCollected},
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("external event validation = %v", err)
+	}
+}
