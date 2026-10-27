@@ -387,6 +387,7 @@ func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Read
 					result.Outcomes.Add(OutcomeDeferredIncompleteTail)
 				} else {
 					result.Outcomes.Add(OutcomeMalformedRecord)
+					noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidJSON)
 				}
 			} else {
 				if envelope.SessionID == "" {
@@ -399,6 +400,7 @@ func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Read
 					decoded, messageErr := decodeClaudeMessage(envelope.Message)
 					if messageErr != nil {
 						result.Outcomes.Add(OutcomeMalformedRecord)
+						noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidJSON)
 						messageDecodeFailed = true
 						message = claudeMessage{}
 					} else {
@@ -415,15 +417,25 @@ func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Read
 					}
 				} else if !usageShapeSupported {
 					result.Outcomes.Add(OutcomeUnsupportedUsage)
-				} else if message.Usage == nil || message.Usage.InputTokens < 0 || message.Usage.OutputTokens < 0 ||
-					message.Usage.CacheCreationInputTokens < 0 || message.Usage.CacheReadInputTokens < 0 ||
-					!claudeCacheDurationBreakdownValid(*message.Usage) || session.Model == "" {
+					noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage)
+				} else if messageDecodeFailed {
+					// The failed decode was already counted and classified above.
+				} else if message.Usage == nil {
+					result.Outcomes.Add(OutcomeMalformedRecord)
+					noteDiagnosticParserFailure(ctx, DiagnosticReasonRequiredContextMissing)
+				} else if message.Usage.InputTokens < 0 || message.Usage.OutputTokens < 0 ||
+					message.Usage.CacheCreationInputTokens < 0 || message.Usage.CacheReadInputTokens < 0 {
+					result.Outcomes.Add(OutcomeMalformedRecord)
+					noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTokenCount)
+				} else if !claudeCacheDurationBreakdownValid(*message.Usage) {
+					result.Outcomes.Add(OutcomeMalformedRecord)
+					noteDiagnosticParserFailure(ctx, DiagnosticReasonMalformedRecord)
+				} else if session.Model == "" {
+					result.Outcomes.Add(OutcomeMalformedRecord)
+					noteDiagnosticParserFailure(ctx, DiagnosticReasonRequiredContextMissing)
+				} else {
 					// Avoid double counting an assistant record whose message could not
 					// be decoded; that failure was classified immediately above.
-					if !messageDecodeFailed {
-						result.Outcomes.Add(OutcomeMalformedRecord)
-					}
-				} else {
 					recordID := envelope.UUID
 					if recordID == "" {
 						recordID = fmt.Sprintf("offset-%d", lineOffset)
@@ -432,6 +444,7 @@ func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Read
 					occurredAt, timeErr := claudeTimestamp(envelope.Timestamp)
 					if timeErr != nil {
 						result.Outcomes.Add(OutcomeMalformedRecord)
+						noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTimestamp)
 					} else {
 						events = append(events, claudeEventObserved(sourceID, fingerprint, lineOffset, recordID, session, *message.Usage, occurredAt, line, store.benchmarkObserver))
 					}
@@ -511,7 +524,9 @@ func importClaudeReaderAttemptWithCheckpoint(ctx context.Context, source io.Read
 		return ImportResult{}, true, nil
 	}
 	if err != nil {
-		return result, false, fmt.Errorf("persist Claude project, session, events, and cursor: %w", err)
+		return result, false, markDiagnosticBoundary(
+			fmt.Errorf("persist Claude project, session, events, and cursor: %w", err),
+			sqliteDiagnosticClassification(err, DiagnosticOperationPersist))
 	}
 	result.Receipt = receipt
 	return result, false, nil

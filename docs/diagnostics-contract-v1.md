@@ -214,20 +214,25 @@ initialization behavior unchanged. A preflight error returns no Store; the
 safe event remains on the caller's observer. This foundation instruments the
 real unsupported-schema preflight failure and uses `failure_unclassified` for
 other open failures not yet classified at a typed boundary. It does not
-instrument every parser, storage, discovery, or collector failure.
+instrument every parser, storage, discovery, or collector failure. The
+subsequent core boundary instrumentation and its coverage matrix are documented
+in [structured diagnostic instrumentation](diagnostics-instrumentation.md).
 
 When an observer is full, the open error still returns immediately with its
 original error text/chain and safe failure projection marks the event dropped.
 Failure to make an operation or reference ID available does not fail a
-successful operation. Events are published after initialization returns and
-outside SQLite transactions or Store/Collector locks.
+successful operation. Preflight findings are published after preflight
+returns; later initialization and Store findings are published after their
+owning SQLite transaction or statement unwinds and outside Store/Collector
+locks.
 
 ## Remaining work
 
-Subsequent #163 work instruments discovery, parser validation, persistence,
-collector lease/heartbeat/stop, correlation, scoped references, and
-operation/poll summaries. It must aggregate independently of observer loss
-where persistence is required. #112 owns persisted diagnostic namespaces,
+The subsequent #163 work instruments discovery, parser validation,
+persistence, collector lease/heartbeat/stop, correlation, scoped references,
+and operation/poll summaries. Its internal finding value is not a persistence
+store; future persisted summaries must consume that core-owned finding boundary
+independently rather than drain this lossy mailbox. #112 owns persisted diagnostic namespaces,
 versioned detail identity, migrations, observation counters, evidence-derived
 condition state, bounded query paging, and review APIs. No schema change,
 persistence, CLI adapter, logging, export, consent, or repair behavior is

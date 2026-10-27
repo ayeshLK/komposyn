@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -259,6 +260,9 @@ func TestSchemaSnapshotBoundsRetriesForChangingSource(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "retry budget") || !strings.Contains(err.Error(), "source changed during copy") || copies < 1 {
 		t.Fatalf("copies=%d err=%v; want bounded failure for a changing snapshot", copies, err)
 	}
+	if !errors.Is(err, errSchemaSnapshotUnstable) || classifyOpenFailure(err).Reason != DiagnosticReasonSnapshotUnstable {
+		t.Fatalf("unstable snapshot classification = %+v, err=%v", classifyOpenFailure(err), err)
+	}
 }
 
 func TestSchemaSnapshotRetriesBeyondFiveCollectorCommits(t *testing.T) {
@@ -451,13 +455,30 @@ func TestMigrationBackupFailureLeavesSchemaUnmigratedAndPreservesDestination(t *
 	if err := os.WriteFile(backupPath, sentinel, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := OpenWithOptions(databasePath, OpenOptions{BackupPath: backupPath})
+	observer, err := NewDiagnosticObserver(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenWithObservation(databasePath, OpenOptions{BackupPath: backupPath}, observer)
 	if store != nil {
 		_ = store.Close()
 		t.Fatal("OpenWithOptions succeeded although backup creation was blocked")
 	}
 	if err == nil {
 		t.Fatal("OpenWithOptions did not report backup failure")
+	}
+	failure, ok := FailureDetails(err)
+	if !ok || failure.Classification.Reason != DiagnosticReasonBackupFailed || failure.EmissionDisposition != DiagnosticEmissionQueued {
+		t.Fatalf("backup failure details = %+v, %v", failure, ok)
+	}
+	var backupEvent DiagnosticEvent
+	select {
+	case backupEvent = <-observer.Events():
+	default:
+		t.Fatal("backup failure was not observed")
+	}
+	if backupEvent.Classification.Reason != DiagnosticReasonBackupFailed || backupEvent.Classification.Operation != DiagnosticOperationBackup {
+		t.Fatalf("backup event classification = %+v", backupEvent.Classification)
 	}
 	backupContents, err := os.ReadFile(backupPath)
 	if err != nil || !reflect.DeepEqual(backupContents, sentinel) {
@@ -504,13 +525,36 @@ func TestMigrationFailureLeavesOriginalAndVerifiedBackupUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err := OpenWithOptions(databasePath, OpenOptions{BackupPath: backupPath})
+	observer, err := NewDiagnosticObserver(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenWithObservation(databasePath, OpenOptions{BackupPath: backupPath}, observer)
 	if store != nil {
 		_ = store.Close()
 		t.Fatal("OpenWithOptions succeeded although migration 2 was rejected")
 	}
 	if err == nil || !strings.Contains(err.Error(), "injected migration failure") {
 		t.Fatalf("migration error = %v, want injected migration failure", err)
+	}
+	failure, ok := FailureDetails(err)
+	if !ok || failure.Classification.Reason != DiagnosticReasonMigrationFailed || failure.EmissionDisposition != DiagnosticEmissionQueued {
+		t.Fatalf("migration failure details = %+v, %v", failure, ok)
+	}
+	var migrationEvent DiagnosticEvent
+	select {
+	case migrationEvent = <-observer.Events():
+	default:
+		t.Fatal("migration failure was not observed")
+	}
+	encodedMigrationEvent, err := json.Marshal(migrationEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrationEvent.Classification.Reason != DiagnosticReasonMigrationFailed ||
+		strings.Contains(string(encodedMigrationEvent), "injected migration failure") || strings.Contains(string(encodedMigrationEvent), databasePath) ||
+		strings.Contains(string(encodedMigrationEvent), backupPath) {
+		t.Fatalf("migration event leaked local details or has wrong reason: %s", encodedMigrationEvent)
 	}
 
 	assertPreMigrationDatabase := func(path string, hasBackupMetadata bool) {

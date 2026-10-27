@@ -37,9 +37,18 @@ const (
 )
 
 var (
-	ErrUnsupportedSchema = errors.New("unsupported SQLite schema version")
-	ErrInvalidSchema     = errors.New("invalid SQLite schema state")
+	ErrUnsupportedSchema      = errors.New("unsupported SQLite schema version")
+	ErrInvalidSchema          = errors.New("invalid SQLite schema state")
+	errSchemaSnapshotChanged  = errors.New("schema snapshot source changed during copy")
+	errSchemaSnapshotUnstable = errors.New("schema snapshot remained unstable within the inspection retry budget")
 )
+
+type schemaSnapshotUnstableError struct{ cause error }
+
+func (err *schemaSnapshotUnstableError) Error() string { return err.cause.Error() }
+func (err *schemaSnapshotUnstableError) Unwrap() []error {
+	return []error{errSchemaSnapshotUnstable, err.cause}
+}
 
 // UnsupportedSchemaError reports that a database was created by a newer core.
 type UnsupportedSchemaError struct {
@@ -94,6 +103,10 @@ func inspectSchemaSnapshotWithCopier(path string, copyFile func(string, string) 
 		}
 		remaining := time.Until(deadline)
 		if remaining <= delay {
+			if errors.Is(err, errSchemaSnapshotChanged) {
+				return 0, true, fmt.Errorf("inspect private schema snapshot within %s retry budget: %w", retryBudget,
+					&schemaSnapshotUnstableError{cause: err})
+			}
 			return 0, true, fmt.Errorf("inspect private schema snapshot within %s retry budget: %w", retryBudget, err)
 		}
 		time.Sleep(delay)
@@ -165,7 +178,7 @@ func inspectSchemaSnapshotAttempt(path string, copyFile func(string, string) err
 		return 0, fmt.Errorf("verify schema snapshot source: %w", err)
 	}
 	if !maps.Equal(before, copied) || !maps.Equal(before, after) {
-		return 0, errors.New("schema snapshot source changed during copy")
+		return 0, errSchemaSnapshotChanged
 	}
 	// A journal copied during a writer's transaction can require rollback
 	// recovery once separated from the writer's locks. Allow SQLite to recover

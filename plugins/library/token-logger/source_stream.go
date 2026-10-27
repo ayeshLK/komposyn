@@ -377,20 +377,46 @@ func sourceGenerationFromStream(expectation sourceCursorExpectation, stream *sou
 	return cursor.SourceGeneration
 }
 
-func importStreamingSource(ctx context.Context, path string, store *Store, knownAdapter string) (ImportResult, string, error) {
+func importStreamingSource(ctx context.Context, path string, store *Store, knownAdapter string) (result ImportResult, adapter string, resultErr error) {
+	correlation := newDiagnosticCorrelation(ctx)
+	if store.diagnosticObserver != nil {
+		correlation.parserFindings = newDiagnosticParserFindings()
+		ctx = withDiagnosticCorrelation(ctx, correlation)
+	}
+	classificationAdapter := knownAdapter
+	var sourceID string
+	defer func() {
+		if resultErr != nil {
+			classification := classifyImportFailure(resultErr, classificationAdapter)
+			var boundary *diagnosticBoundaryFailure
+			if errors.As(resultErr, &boundary) {
+				classification = boundary.classification
+			}
+			resultErr = store.observeFailure(ctx, resultErr, classification,
+				store.diagnosticSubject(DiagnosticSubjectSource, sourceID))
+		}
+		operation := DiagnosticOperationParse
+		if sourceID == "" {
+			operation = DiagnosticOperationClassify
+		}
+		store.recordOutcomeFindingsAt(ctx, classificationAdapter, sourceID, result.Outcomes, operation)
+	}()
 	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
 		snapshot, err := acquireStreamingSourceSnapshot(ctx, path, store, knownAdapter)
 		if err != nil {
 			return ImportResult{}, "", err
 		}
-		adapter := snapshot.adapter
+		adapter = snapshot.adapter
 		if adapter == "" {
-			result := ImportResult{Outcomes: snapshot.classificationOutcomes}
+			result = ImportResult{Outcomes: snapshot.classificationOutcomes}
+			classificationAdapter = snapshot.classificationAdapter
 			_ = snapshot.close()
-			return result, snapshot.classificationAdapter, nil
+			return result, classificationAdapter, nil
 		}
+		classificationAdapter = adapter
+		sourceID = snapshot.baseSourceID
 		if snapshot.unchanged {
-			result := ImportResult{}
+			result = ImportResult{}
 			result.Outcomes.Add(OutcomeUnchangedSnapshot)
 			if snapshot.expectedCursor.cursor.PendingTail {
 				result.Outcomes.Add(OutcomeDeferredIncompleteTail)
@@ -398,15 +424,18 @@ func importStreamingSource(ctx context.Context, path string, store *Store, known
 			_ = snapshot.close()
 			return result, adapter, nil
 		}
-		result, retry, importErr := importStreamingSnapshot(ctx, path, snapshot, store, knownAdapter == "")
+		var retry bool
+		result, retry, resultErr = importStreamingSnapshot(ctx, path, snapshot, store, knownAdapter == "")
 		_ = snapshot.close()
-		if errors.Is(importErr, errSourceSnapshotChanged) {
+		if errors.Is(resultErr, errSourceSnapshotChanged) {
+			correlation.parserFindings.reset()
 			continue
 		}
-		if importErr != nil {
-			return result, adapter, importErr
+		if resultErr != nil {
+			return result, adapter, resultErr
 		}
 		if retry {
+			correlation.parserFindings.reset()
 			if attempt == sourceCursorRetryLimit {
 				return ImportResult{}, adapter, fmt.Errorf("%w after %d attempts", errSourceCursorRetryExhausted, sourceCursorRetryLimit)
 			}
@@ -425,6 +454,14 @@ func importStreamingSnapshot(ctx context.Context, path string, snapshot sourceSn
 		store.beforeSnapshotParse()
 	}
 	parse := func(resume bool) (ImportResult, bool, error) {
+		correlation := diagnosticCorrelationFrom(ctx)
+		if correlation.parserFindings != nil {
+			correlation.parserFindings.reset()
+			if resume {
+				correlation.parserFindings.baseOutcomes = snapshot.checkpoint.State.Outcomes
+			}
+			ctx = withDiagnosticCorrelation(ctx, correlation)
+		}
 		if _, err := snapshot.file.Seek(0, io.SeekStart); err != nil {
 			return ImportResult{}, false, fmt.Errorf("rewind source for parser pass: %w", err)
 		}

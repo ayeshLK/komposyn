@@ -81,17 +81,13 @@ func classifyOpenFailure(err error) DiagnosticClassification {
 		return makeDiagnosticClassification(DiagnosticComponentSchema, DiagnosticOperationOpen,
 			DiagnosticReasonSchemaUnsupported, DiagnosticAdapterUnavailable)
 	}
+	if errors.Is(err, errSchemaSnapshotUnstable) {
+		return makeDiagnosticClassification(DiagnosticComponentSchema, DiagnosticOperationInspectSchema,
+			DiagnosticReasonSnapshotUnstable, DiagnosticAdapterUnavailable)
+	}
 	if errors.Is(err, fs.ErrPermission) || errors.Is(err, os.ErrPermission) {
 		return makeDiagnosticClassification(DiagnosticComponentStorage, DiagnosticOperationOpen,
 			DiagnosticReasonPermissionDenied, DiagnosticAdapterUnavailable)
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return makeDiagnosticClassification(DiagnosticComponentUnknown, DiagnosticOperationOpen,
-			DiagnosticReasonDeadlineExceeded, DiagnosticAdapterUnavailable)
-	}
-	if errors.Is(err, context.Canceled) {
-		return makeDiagnosticClassification(DiagnosticComponentUnknown, DiagnosticOperationOpen,
-			DiagnosticReasonCancelled, DiagnosticAdapterUnavailable)
 	}
 	var sqliteError *sqlite3.Error
 	if errors.As(err, &sqliteError) {
@@ -112,6 +108,14 @@ func classifyOpenFailure(err error) DiagnosticClassification {
 		}
 		return makeDiagnosticClassification(DiagnosticComponentStorage, DiagnosticOperationOpen,
 			reason, DiagnosticAdapterUnavailable)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return makeDiagnosticClassification(DiagnosticComponentUnknown, DiagnosticOperationOpen,
+			DiagnosticReasonDeadlineExceeded, DiagnosticAdapterUnavailable)
+	}
+	if errors.Is(err, context.Canceled) {
+		return makeDiagnosticClassification(DiagnosticComponentUnknown, DiagnosticOperationOpen,
+			DiagnosticReasonCancelled, DiagnosticAdapterUnavailable)
 	}
 	return makeDiagnosticClassification(DiagnosticComponentUnknown, DiagnosticOperationOpen,
 		DiagnosticReasonFailureUnclassified, DiagnosticAdapterUnavailable)
