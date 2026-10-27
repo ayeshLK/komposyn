@@ -59,13 +59,39 @@ unchanged poll alone is not resolution evidence. Evidence order is reserved
 before an operation and prevents delayed older work from replacing newer
 applicable evidence; wall-clock or commit order alone is not used.
 
-The private reducer accepts trusted findings/evaluations from core
-instrumentation; it does not consume `DiagnosticObserver.Events()`. Synthetic
-tests exercise the persistence and reducer seam. Production population and
-coverage evaluation require the instrumentation work tracked by issue
-[#163](https://github.com/ayeshLK/komposyn/issues/163); until that integration
-lands, this change does not claim end-to-end production collection of detailed
-evidence.
+The private reducer accepts trusted operation results from core instrumentation;
+it does not consume `DiagnosticObserver.Events()`. Claude and Codex parser
+findings, Store-backed source failures, collector discovery failures, and
+collector lease/runtime failures feed this seam after their owning boundaries.
+Parser findings are recorded only after the ingestion/cursor/checkpoint
+transaction commits. Diagnostic writes are best effort: they cannot fail an
+already committed import or make it retry. A failed evidence write marks the
+detail model unavailable in the open Store and, when SQLite still accepts the
+small availability update, across reopen. The update is non-recursive; if the
+database itself cannot persist that marker, the reopened Store cannot know that
+evidence was lost, so availability remains explicitly an in-memory limitation
+for that failure case.
+
+Coverage is conservative. A clean, complete full snapshot evaluates only the
+same parser component/operation/adapter and source identity, and only the
+closed parser reason catalogue. A pending final record also blocks absence
+evaluation, even though `OutcomeCounts.Incomplete()` does not include pending
+tails. A positive parser finding remains active.
+Incremental/checkpoint parses record positive findings but do not establish
+absence. Unchanged snapshots do not create a new evaluation; they do not carry
+forward conclusions because this schema does not persist a separate verified
+coverage basis. Cancelled, incomplete, failed, or uninspected work cannot
+resolve conditions. A clean full scan of a newer source generation can resolve
+an older absent condition with `source_replaced` evidence. Removed sources are
+not inferred healthy. Storage and collector failures use their own controlled
+classification and do not resolve parser conditions.
+
+The replay ledger is a bounded 64 committed finding-ID ring per problem. An
+evicted ID may be counted again if it is replayed later; projections mark the
+counter `truncated`. This bounded replay policy was approved in the PR #169
+review discussion, but is not stated as explicitly in accepted issue #167.
+Maintainers should carry that clarification into #167 before treating the
+replay behavior as an unqualified contract guarantee.
 
 ## Review and limits
 
@@ -100,7 +126,7 @@ diagnostic tables directly.
 
 | Requirement area | Focused test |
 | --- | --- |
-| Same-reason subjects remain distinct; namespace survives reopen; independent stores differ; legacy rows stay unavailable | `TestDiagnosticDetailsNamespacesCountersAndReviewCAS` |
+| Same-reason subjects remain distinct; namespace survives reopen/online backup restore; independent stores differ; legacy rows stay unavailable | `TestDiagnosticDetailsNamespacesCountersAndReviewCAS`; `TestPublicImportsPersistDetailedEvidenceWithoutObserver` |
 | Partial coverage cannot resolve; sufficient later coverage can; older findings cannot overwrite newer evidence | `TestDiagnosticConditionRequiresSufficientLaterCoverage` |
 | Exact `uint64` counters and saturation | `TestDiagnosticCountersAreExactAndSaturating` |
 | Bounded keyset paging and filter-bound continuation validation | `TestDiagnosticPagingBindsFiltersAndRejectsMalformedTokens` |
@@ -112,9 +138,18 @@ diagnostic tables directly.
 | Unscoped/same-scope evaluations preserve historical poll counts and saturation | `TestDiagnosticEvaluationPreservesPollCounterWithoutNewPoll` |
 | Samples retain source generation and coverage across replacement/late evidence | `TestDiagnosticSamplesRetainGenerationAndCoverage` |
 | Public version in nonempty/empty list and detail JSON | `TestDiagnosticDetailsNamespacesCountersAndReviewCAS` |
+| Public Claude/Codex imports produce detailed records with safe identities, counters, generations, and offsets | `TestPublicImportsPersistDetailedEvidenceWithoutObserver` |
+| Evidence persists when observer is nil or its mailbox is full and unread; collector poll counters retain scope | `TestPublicImportEvidenceSurvivesSaturatedUnreadObserver` |
+| Clean full replacement scan resolves only matching prior parser evidence | `TestPublicImportsPersistDetailedEvidenceWithoutObserver` |
+| Pending replacement tails for Claude and Codex cannot resolve prior evidence; tail completion remains incremental until a full scan | `TestPendingReplacementTailCannotResolvePriorParserEvidence` |
+| Failed diagnostic writes preserve committed usage and report evidence loss after reopen | `TestDiagnosticWriteFailureDoesNotFailCommittedImportAndSurvivesReopen` |
+| Failed evidence-order reservation marks availability lost across reopen | `TestOperationalFindingOrderReservationFailureMarksEvidenceLost` |
+| Collector storage failures persist with observation disabled or saturated/unread | `TestCollectorStorageFailurePersistsWithoutObserverDelivery` |
 | Persistence failure returns safe projections and marks the open store's evidence unavailable | `TestDiagnosticPersistenceFailureIsSafeAndVisibleForStoreHandle` |
 | Migration failure preserves the source schema and verified backup | `TestMigrationEighteenFailurePreservesSchemaAndVerifiedBackup` |
 
-These tests cover the reducer/storage seam with synthetic trusted findings.
-They do not substitute for the pending production integration and source
-coverage tests tracked by #163.
+These tests combine synthetic reducer cases with public provider imports,
+collector polling, and public list/inspect calls. #163 instrumentation is
+merged. Remaining work for #112 is review of this integration, broader fault
+and scan-shape acceptance evidence, and maintainer completion audit. The
+standalone CLI work in komposyn-lg #58 remains separate.

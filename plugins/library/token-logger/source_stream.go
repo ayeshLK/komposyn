@@ -379,10 +379,8 @@ func sourceGenerationFromStream(expectation sourceCursorExpectation, stream *sou
 
 func importStreamingSource(ctx context.Context, path string, store *Store, knownAdapter string) (result ImportResult, adapter string, resultErr error) {
 	correlation := newDiagnosticCorrelation(ctx)
-	if store.diagnosticObserver != nil {
-		correlation.parserFindings = newDiagnosticParserFindings()
-		ctx = withDiagnosticCorrelation(ctx, correlation)
-	}
+	correlation.parserFindings = newDiagnosticParserFindings()
+	ctx = withDiagnosticCorrelation(ctx, correlation)
 	classificationAdapter := knownAdapter
 	var sourceID string
 	defer func() {
@@ -392,6 +390,14 @@ func importStreamingSource(ctx context.Context, path string, store *Store, known
 			if errors.As(resultErr, &boundary) {
 				classification = boundary.classification
 			}
+			if !diagnosticCancellationOnly(resultErr) {
+				kind, identity := DiagnosticSubjectSource, sourceID
+				if identity == "" {
+					kind = DiagnosticSubjectDiscoveryTarget
+					identity, _ = canonicalCollectorPath(path)
+				}
+				store.persistOperationFailure(ctx, classification, kind, identity)
+			}
 			resultErr = store.observeFailure(ctx, resultErr, classification,
 				store.diagnosticSubject(DiagnosticSubjectSource, sourceID))
 		}
@@ -399,7 +405,9 @@ func importStreamingSource(ctx context.Context, path string, store *Store, known
 		if sourceID == "" {
 			operation = DiagnosticOperationClassify
 		}
-		store.recordOutcomeFindingsAt(ctx, classificationAdapter, sourceID, result.Outcomes, operation)
+		if resultErr == nil {
+			store.recordOutcomeFindingsAt(ctx, classificationAdapter, sourceID, result.Outcomes, operation)
+		}
 	}()
 	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
 		snapshot, err := acquireStreamingSourceSnapshot(ctx, path, store, knownAdapter)
@@ -417,6 +425,11 @@ func importStreamingSource(ctx context.Context, path string, store *Store, known
 		sourceID = snapshot.baseSourceID
 		correlation.sourceGeneration = uint64(max(snapshot.generation, 0))
 		correlation.hasSourceGeneration = snapshot.generation >= 0
+		correlation.coverage = DiagnosticCoverageFullSnapshot
+		if snapshot.checkpointUsable {
+			correlation.coverage = DiagnosticCoverageIncremental
+		}
+		correlation.coverageOffset = uint64(max(snapshot.byteLength, 0))
 		ctx = withDiagnosticCorrelation(ctx, correlation)
 		if snapshot.unchanged {
 			result = ImportResult{}
@@ -427,6 +440,14 @@ func importStreamingSource(ctx context.Context, path string, store *Store, known
 			_ = snapshot.close()
 			return result, adapter, nil
 		}
+		if store.diagnosticPersistenceReady.Load() && correlation.evidenceOrder == 0 {
+			var orderErr error
+			correlation.evidenceOrder, orderErr = store.reserveDiagnosticEvidenceOrder()
+			if orderErr != nil {
+				store.markDiagnosticPersistenceLost()
+			}
+		}
+		ctx = withDiagnosticCorrelation(ctx, correlation)
 		var retry bool
 		result, retry, resultErr = importStreamingSnapshot(ctx, path, snapshot, store, knownAdapter == "")
 		_ = snapshot.close()

@@ -1,10 +1,11 @@
 # Structured diagnostic instrumentation
 
-This document records the core instrumentation delivered after the shared
-diagnostics foundation in #168. It implements the remaining in-memory
-observation portion of [#163](https://github.com/ayeshLK/komposyn/issues/163)
-against the accepted [contract v1](https://github.com/ayeshLK/komposyn/issues/167).
-It does not implement persisted diagnostics in [#112](https://github.com/ayeshLK/komposyn/issues/112).
+This document records core instrumentation delivered after the shared
+diagnostics foundation in #168. Operational/parser instrumentation for
+[#163](https://github.com/ayeshLK/komposyn/issues/163) and the persisted
+production finding seam for [#112](https://github.com/ayeshLK/komposyn/issues/112)
+use the accepted [contract v1](https://github.com/ayeshLK/komposyn/issues/167).
+Observer publication remains optional and is separate from persisted evidence.
 
 The observer is optional, bounded, lossy troubleshooting evidence. It does not
 count unique bad records, audit ingestion, change import outcomes, or authorize
@@ -103,37 +104,72 @@ Recovery remains unavailable until the core has trustworthy same-subject,
 same-generation coverage evidence; #112's persisted condition model must not
 infer it from a healthy global poll.
 
-No schema or persisted diagnostic behavior is added. #112 still owns
-database-scoped namespace identity, persisted findings/summaries, observation
-counters, active/resolved/review state, bounded query APIs, and migrations.
-The standalone CLI still needs to adopt a published core release before it can
-consume these additions; this PR does not add CLI commands, logging, export, or
-consent behavior.
+Persisted parser findings originate from private core operation results after
+the usage/cursor/checkpoint commit. The reducer receives internal source IDs
+and closed classifications directly; the handle-scoped observer reference is
+never rehashed into durable identity. A new import operation receives one
+stable finding ID and evidence order before parsing, preserving both through
+source/cursor retries. Repeated later parsing receives a new ID. A fresh
+operation is not folded into the old one merely because the same source
+position is observed again. The 64-ID per-problem replay ring is bounded and
+eviction is surfaced as counter truncation; it does not promise unlimited
+exactly-once accounting.
+
+Only a clean, complete full snapshot evaluates parser-condition absence, and
+the evaluation is scoped to the source identity and parser component,
+operation, and adapter. Pending final records block absence evaluation even
+though the legacy `Incomplete()` predicate does not include pending tails.
+Incremental continuation records positive findings but cannot resolve old
+malformed rows. Unchanged snapshots do not carry forward coverage because no
+separate persisted coverage basis exists. Failed,
+cancelled, incomplete, and uninspected work does not establish absence. These
+choices deliberately leave some conditions active or unknown until a later
+complete full snapshot supplies matching evidence.
+
+Diagnostic evidence writes occur after the ingestion transaction and are best
+effort. Failure never changes a committed import result or causes usage to be
+retried. The model marks evidence unavailable in memory and attempts one
+non-recursive persisted availability marker. If the database cannot accept
+that marker, reopening cannot recover knowledge of the failed diagnostic
+write. Failure before a usable Store exists remains transient. The detailed
+inspection and review methods query only stored data; normal `Store.Open` can
+still migrate the database and synchronize the pricing catalogue.
+
+The standalone CLI still owns commands, rendering, export, and consent. It
+should consume these public APIs; no CLI commands, logs, export archives, or
+disclosure behavior are added here.
 
 ## Overhead evidence
 
-`BenchmarkDiagnosticObservationOverhead` compares observer-disabled and
-observer-enabled synthetic ordinary polling and repeated missing-source errors
-on the same host. Run with:
+`BenchmarkDiagnosticEvidencePersistenceOverhead` compares persistence disabled
+and enabled on the same host, for ordinary unchanged polling and repeated
+parser-error polling. The baseline disables only the new persisted evidence
+seam; ingestion, cursor checks, and legacy behavior remain identical. Run with:
 
 ```sh
 go test ./plugins/library/token-logger -run '^$' \
-  -bench '^BenchmarkDiagnosticObservationOverhead$' -benchmem -count=3
+  -bench '^BenchmarkDiagnosticEvidencePersistenceOverhead$' -benchmem -benchtime=100x -count=3
 ```
 
-The benchmark drains the mailbox after each operation so the enabled case
-measures publication rather than queue saturation. On Linux amd64 with Go
-1.26.10 and an Intel Core i7-10510U, the three samples were:
+The benchmark has no observer configured. It measures operation latency,
+Go allocations, and the SQLite main database plus live WAL at the end of each
+100-poll workload. On Linux amd64 with Go 1.26.10 and an Intel Core i7-10510U,
+the three samples were:
 
-| Workload | Observer | ns/op range | B/op range | allocs/op | events/op | drops/op |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| ordinary collection | disabled | 474,906–704,450 | 100,452–100,636 | 518 | 0 | 0 |
-| ordinary collection | enabled | 488,346–505,261 | 103,985–104,125 | 533 | 1 | 0 |
-| repeated missing-source errors | disabled | 291,361–300,440 | 25,648–25,679 | 348 | 0 | 0 |
-| repeated missing-source errors | enabled | 316,694–345,207 | 31,416–31,452 | 373 | 1 | 0 |
+| Workload | Persistence | ns/op range | B/op range | allocs/op | SQLite DB + WAL bytes |
+| --- | --- | ---: | ---: | ---: | ---: |
+| ordinary unchanged polling | disabled | 581,489–679,100 | 101,863–102,214 | 538 | 428,488 |
+| ordinary unchanged polling | enabled | 644,230–781,009 | 102,042–102,131 | 538 | 428,488 |
+| repeated parser-error polling | disabled | 5,946,519–6,693,220 | 207,911–209,742 | 1,262–1,263 | 2,958,168 |
+| repeated parser-error polling | enabled | 11,983,228–12,953,327 | 234,629–237,424 | 1,785–1,786 | 4,435,424 |
 
-Timing variation is too wide to support a general CPU-overhead conclusion.
-The observed enabled-case allocation deltas were 15 allocations and about
-3.5 KiB per ordinary poll, and 25 allocations and about 5.7 KiB per repeated
-error. The mailbox admitted one event per enabled operation and dropped none.
-These small synthetic workloads do not represent large production datasets.
+Ordinary unchanged polling had the same allocations and database-plus-WAL
+size; its timing ranges overlap. Repeated parser-error polling added 522–524
+allocations and roughly 26–29 KiB of Go allocation per operation in this
+workload. The database-plus-WAL footprint after 100 polls was about 1.48 MB
+larger with persistence enabled (roughly 14.8 KiB per poll before checkpoint).
+Latency was about 1.8–2.2 times the baseline in these samples. The repeated
+error path intentionally reparses the same incomplete source and is a
+diagnostic-heavy workload; these measurements do not predict ordinary
+production polling. They do show a material cost for repeated-error evidence
+that should be reviewed before treating the implementation as complete.

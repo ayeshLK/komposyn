@@ -52,6 +52,7 @@ func testDetailedFinding(identity string, order, count uint64, offset uint64) pe
 
 func testDetailedEvaluation(identity string, order, generation, offset uint64, coverage DiagnosticCoverageKind, complete bool) diagnosticEvaluation {
 	return diagnosticEvaluation{SubjectKind: DiagnosticSubjectSource, SubjectIdentity: identity,
+		Component: DiagnosticComponentParser, Operation: DiagnosticOperationParse, Adapter: DiagnosticAdapterCodex,
 		PollID: DiagnosticID("11112222333344445555666677778888"), RunID: DiagnosticID("88887777666655554444333322221111"),
 		EvidenceOrder: order, Generation: DiagnosticOptionalUint64{Value: generation, Availability: DiagnosticAvailabilityAvailable},
 		CoverageOffset: DiagnosticOptionalUint64{Value: offset, Availability: DiagnosticAvailabilityAvailable},

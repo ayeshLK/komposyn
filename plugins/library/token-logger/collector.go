@@ -123,15 +123,17 @@ func (c *Collector) PollOnceContext(ctx context.Context) (total ImportResult, po
 		ctx = context.Background()
 	}
 	correlation := diagnosticCorrelationFrom(ctx)
+	if correlation.pollID == "" {
+		correlation.pollID, _ = newDiagnosticID()
+	}
 	var accumulator *diagnosticPollAccumulator
 	if c.store.diagnosticObserver != nil {
 		correlation.operationID = ""
-		correlation.pollID, _ = newDiagnosticID()
 		accumulator = newDiagnosticPollAccumulator(c.store, correlation)
 		correlation.accumulator = accumulator
-		ctx = withDiagnosticCorrelation(ctx, correlation)
 		defer accumulator.flush()
 	}
+	ctx = withDiagnosticCorrelation(ctx, correlation)
 	now := time.Now().UTC()
 	c.mu.Lock()
 	c.health.Status = "running"
@@ -145,19 +147,27 @@ func (c *Collector) PollOnceContext(ctx context.Context) (total ImportResult, po
 	}
 	for _, failure := range discovery.Failures {
 		var subject DiagnosticSubject
+		var subjectKind DiagnosticSubjectKind
+		var subjectIdentity string
 		if failure.TargetPath != "" {
 			subject = c.store.discoveryTargetDiagnosticSubject(failure.TargetPath)
+			subjectKind = DiagnosticSubjectDiscoveryTarget
+			subjectIdentity, _ = canonicalCollectorPath(failure.TargetPath)
 		} else {
 			subject = c.store.registeredRootDiagnosticSubject(failure.RootPath)
+			subjectKind = DiagnosticSubjectRoot
+			subjectIdentity, _ = c.store.registeredRootDiagnosticIdentity(failure.RootPath)
 		}
 		if errors.Is(failure.Err, context.Canceled) || errors.Is(failure.Err, context.DeadlineExceeded) {
 			classification := classifyDiscoveryFailure(failure.Err)
+			c.store.persistOperationFailure(ctx, classification, subjectKind, subjectIdentity)
 			failureErr := c.store.observeFailure(ctx, failure.Err, classification, subject)
 			pollErrors = append(pollErrors, failureErr)
 			continue
 		}
 		total.Outcomes.Add(OutcomeFailedSource)
 		classification := classifyDiscoveryFailure(failure.Err)
+		c.store.persistOperationFailure(ctx, classification, subjectKind, subjectIdentity)
 		recordFailedSourceOutcomeAt(ctx, classification, subject)
 		failureErr := c.store.observeFailure(ctx, failure.Err, classification, subject)
 		pollErrors = append(pollErrors, failureErr)
@@ -385,7 +395,7 @@ func (c *Collector) collectorRunContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if c.store == nil || c.store.diagnosticObserver == nil {
+	if c.store == nil {
 		return ctx
 	}
 	correlation := diagnosticCorrelationFrom(ctx)
