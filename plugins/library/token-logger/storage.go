@@ -30,16 +30,18 @@ import (
 
 // Store is the library-owned SQLite persistence boundary.
 type Store struct {
-	db                  *sql.DB
-	databasePath        string
-	backupPath          string
-	migrationBackupPath string
-	beforeSnapshotRead  func()
-	beforeSnapshotParse func()
-	sourceReadHook      func(pass int, bytesRead int64)
-	beforeAppend        func()
-	benchmarkObserver   *collectorBenchmarkObserver
-	diagnosticObserver  *DiagnosticObserver
+	db                     *sql.DB
+	databasePath           string
+	backupPath             string
+	migrationBackupPath    string
+	beforeSnapshotRead     func()
+	beforeSnapshotParse    func()
+	sourceReadHook         func(pass int, bytesRead int64)
+	beforeAppend           func()
+	benchmarkObserver      *collectorBenchmarkObserver
+	diagnosticObserver     *DiagnosticObserver
+	diagnosticHandleKey    [32]byte
+	diagnosticKeyAvailable bool
 }
 
 var errSourceCursorChanged = errors.New("source cursor changed while snapshot was being parsed")
@@ -68,6 +70,9 @@ func OpenWithOptions(path string, options OpenOptions) (*Store, error) {
 func OpenWithObservation(path string, options OpenOptions, observer *DiagnosticObserver) (*Store, error) {
 	store, err := openWithOptionsAndObserver(path, options, observer)
 	if err != nil {
+		if _, classified := FailureDetails(err); classified {
+			return nil, err
+		}
 		return nil, observedOpenFailure(observer, err)
 	}
 	return store, nil
@@ -110,10 +115,13 @@ func openWithOptionsAndObserver(path string, options OpenOptions, observer *Diag
 		return nil, fmt.Errorf("open SQLite database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db, databasePath: path, backupPath: options.BackupPath, diagnosticObserver: observer}
+	key, keyAvailable := newStoreDiagnosticKey()
+	store := &Store{db: db, databasePath: path, backupPath: options.BackupPath,
+		diagnosticObserver: observer, diagnosticHandleKey: key, diagnosticKeyAvailable: keyAvailable}
 	if err := store.configure(); err != nil {
 		db.Close()
-		return nil, err
+		return nil, store.observeFailure(context.Background(), err,
+			classifyOpenFailure(err), DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected})
 	}
 	if err := store.migrate(); err != nil {
 		db.Close()
@@ -121,7 +129,9 @@ func openWithOptionsAndObserver(path string, options OpenOptions, observer *Diag
 	}
 	if err := store.syncBundledPricingCatalog(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("load bundled pricing catalog: %w", err)
+		wrapped := fmt.Errorf("load bundled pricing catalog: %w", err)
+		return nil, store.observeFailure(context.Background(), wrapped,
+			sqliteDiagnosticClassification(err, DiagnosticOperationPersist), DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected})
 	}
 	return store, nil
 }
@@ -160,7 +170,19 @@ func (s *Store) Close() error { return s.db.Close() }
 // migrate applies numbered schema migrations in order after Open has completed
 // the compatibility preflight on a private snapshot. The live schema version
 // is checked again under the migration transaction's write lock.
-func (s *Store) migrate() error {
+func (s *Store) migrate() (resultErr error) {
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		var boundary *diagnosticBoundaryFailure
+		classification := classifyMigrationFailure(resultErr)
+		if errors.As(resultErr, &boundary) {
+			classification = boundary.classification
+		}
+		resultErr = s.observeFailure(context.Background(), resultErr, classification,
+			DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected})
+	}()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin migrations: %w", err)
@@ -182,7 +204,8 @@ func (s *Store) migrate() error {
 	if applied > 0 && applied < currentSchemaVersion && s.databasePath != ":memory:" {
 		backupPath, err := createMigrationBackup(s.databasePath, s.backupPath, applied, currentSchemaVersion)
 		if err != nil {
-			return fmt.Errorf("create verified pre-migration backup: %w", err)
+			return &diagnosticBoundaryFailure{cause: fmt.Errorf("create verified pre-migration backup: %w", err),
+				classification: classifyBackupFailure(err)}
 		}
 		s.migrationBackupPath = backupPath
 	}

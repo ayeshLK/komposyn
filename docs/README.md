@@ -28,6 +28,9 @@ and JSONL harness transport are maintained in the
 - [Token Logger core API](core-api.md) — supported exports and compatibility.
 - [Diagnostics contract v1 foundation](diagnostics-contract-v1.md) — closed
   classifications, safe failures/events, bounded mailbox, and observed open.
+- [Structured diagnostic instrumentation](diagnostics-instrumentation.md) —
+  failure-boundary coverage, correlation, bounded poll summaries, and privacy
+  limits delivered after the shared foundation.
 - [Project inspection evidence](project-inspection.md) — bounded read-only
   identity evidence, selected versus stored-history semantics, schema gaps,
   and conservative recovery classifications.

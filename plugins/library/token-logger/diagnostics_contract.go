@@ -220,7 +220,9 @@ func diagnosticReasonSpecFor(reason DiagnosticReason) (diagnosticReasonSpec, boo
 		DiagnosticOperationAcquireLease, DiagnosticOperationHeartbeat, DiagnosticOperationRequestStop,
 		DiagnosticOperationReleaseLease, DiagnosticOperationQueryDiagnostics, DiagnosticOperationReviewDiagnostic)
 	storageOperations := set(DiagnosticOperationOpen, DiagnosticOperationBackup, DiagnosticOperationMigrate,
-		DiagnosticOperationPersist, DiagnosticOperationQueryDiagnostics, DiagnosticOperationReviewDiagnostic)
+		DiagnosticOperationRead, DiagnosticOperationPersist, DiagnosticOperationAcquireLease,
+		DiagnosticOperationHeartbeat, DiagnosticOperationRequestStop, DiagnosticOperationReleaseLease,
+		DiagnosticOperationQueryDiagnostics, DiagnosticOperationReviewDiagnostic)
 	parserOperations := set(DiagnosticOperationClassify, DiagnosticOperationParse)
 	sourceOperations := set(DiagnosticOperationDiscover, DiagnosticOperationRead)
 	collectorOperations := set(DiagnosticOperationAcquireLease, DiagnosticOperationHeartbeat,
