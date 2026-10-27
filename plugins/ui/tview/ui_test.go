@@ -91,7 +91,7 @@ func (c *clientStub) ReplaceProfile(ctx context.Context, id, label, key string, 
 	return nil
 }
 func (c *clientStub) RemoveProfile(string, bool) error { return nil }
-func (c *clientStub) StartLogin(ctx context.Context, profileID string) (ui.LoginAttempt, error) {
+func (c *clientStub) StartLogin(ctx context.Context, providerID, method, profileID string) (ui.LoginAttempt, error) {
 	if c.loginHook != nil {
 		return c.loginHook(ctx, profileID)
 	}
@@ -106,10 +106,10 @@ func (c *clientStub) CancelLogin(id string) bool {
 	c.loginCanceled = append(c.loginCanceled, id)
 	return true
 }
-func (c *clientStub) Disconnect(context.Context, string, bool, bool) (ui.DisconnectResult, error) {
+func (c *clientStub) Disconnect(context.Context, string, string, string, bool, bool) (ui.DisconnectResult, error) {
 	return ui.DisconnectResult{LocalTokensRemoved: true}, nil
 }
-func (c *clientStub) OpenUsage() error { return nil }
+func (c *clientStub) OpenUsage(context.Context) error { return nil }
 func (c *clientStub) Select(_ context.Context, key string, _ bool) error {
 	d, _ := c.Discover(context.Background())
 	for _, m := range d.Models {
@@ -385,10 +385,12 @@ func TestProviderAdvertisedOAuthMethodCanBeCanceled(t *testing.T) {
 	client := &clientStub{selectedCh: make(chan struct{}, 1), methods: map[string][]string{"openai": {"api_key", "oauth"}}}
 	client.loginHook = func(ctx context.Context, _ string) (ui.LoginAttempt, error) {
 		done := make(chan ui.LoginResult, 1)
+		events := make(chan ui.LoginEvent, 1)
+		events <- ui.LoginEvent{Kind: "authorization_pending", Message: "Signing in..."}
 		attemptID := "oauth-attempt-42"
 		started <- attemptID
-		go func() { <-ctx.Done(); done <- ui.LoginResult{Err: context.Canceled}; close(done) }()
-		return ui.LoginAttempt{ID: attemptID, Done: done}, nil
+		go func() { <-ctx.Done(); done <- ui.LoginResult{Err: context.Canceled}; close(done); close(events) }()
+		return ui.LoginAttempt{ID: attemptID, Events: events, Done: done}, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -415,6 +417,7 @@ func TestProviderAdvertisedOAuthMethodCanBeCanceled(t *testing.T) {
 		t.Fatal("provider-advertised OAuth choice did not start login")
 	}
 	waitForScreen(t, safeScreen, "Cancel sign-in", "")
+	waitForScreen(t, safeScreen, "Signing in...", "")
 	press(tcell.KeyEnter)
 	deadline := time.After(2 * time.Second)
 	for {

@@ -21,21 +21,46 @@ import (
 
 var ErrOAuthPermissionRequired = errors.New("OAuth account permission is required")
 
-type OAuthLoginResult struct {
-	Profile Profile
-	Err     error
+type LoginResult struct {
+	Profile   Profile
+	ProfileID string
+	Status    PublicStatus
+	Err       error
 }
 
-type OAuthLoginAttempt struct {
-	ID   string
-	Done <-chan OAuthLoginResult
+type OAuthLoginResult = LoginResult
+
+type LoginEventKind string
+
+const (
+	LoginStarted   LoginEventKind = "started"
+	LoginBrowser   LoginEventKind = "opening_browser"
+	LoginCompleted LoginEventKind = "completed"
+)
+
+// LoginEvent is transient progress only. Authorization URLs and credentials
+// are never included; the injected browser capability receives the URL.
+type LoginEvent struct {
+	Kind      LoginEventKind
+	Message   string
+	Succeeded bool
 }
 
-type OAuthDisconnectResult struct {
+type LoginAttempt struct {
+	ID     string
+	Events <-chan LoginEvent
+	Done   <-chan LoginResult
+}
+
+type OAuthLoginAttempt = LoginAttempt
+
+type DisconnectResult struct {
 	RemoteRevocationConfirmed bool
 	LocalRegistrationRemoved  bool
 	LocalTokensRemoved        bool
 }
+
+type OAuthDisconnectResult = DisconnectResult
 
 type OAuthResolver interface {
 	Resolve(context.Context, string) (Profile, string, error)
@@ -44,10 +69,25 @@ type OAuthResolver interface {
 // OAuthCoordinator is the provider-neutral auth lifecycle consumed by the
 // temporary chat runtime. Provider-specific protocol details stay in the
 // concrete auth implementation.
-type OAuthCoordinator interface {
+type LoginCoordinator interface {
 	OAuthResolver
 	StartLogin(context.Context, string) (OAuthLoginAttempt, error)
 	CancelLogin(string) bool
 	Disconnect(context.Context, string, bool) (OAuthDisconnectResult, error)
-	OpenUsage() error
 }
+
+type OAuthCoordinator interface {
+	LoginCoordinator
+	OpenUsage(context.Context) error
+}
+
+// BrowserOpener is the only capability the provider auth implementation uses
+// to deliver its transient authorization URL. UI packages need not orchestrate
+// OAuth protocol details or receive the URL in public state.
+type BrowserOpener interface {
+	Open(context.Context, string) error
+}
+
+type BrowserOpenerFunc func(context.Context, string) error
+
+func (f BrowserOpenerFunc) Open(ctx context.Context, target string) error { return f(ctx, target) }

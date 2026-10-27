@@ -36,15 +36,22 @@ type Plugin interface {
 type Profile struct {
 	ID, Provider, Label, AuthType string
 	Account, Status               string
-	PlanUsageEnabled              bool
+	Permissions                   []Permission
 }
+type Permission struct{ ID, Name, State, Description string }
 type LoginResult struct {
 	ProfileID, Account, Status string
+	Permissions                []Permission
 	Err                        error
 }
+type LoginEvent struct {
+	Kind, Message string
+	Succeeded     bool
+}
 type LoginAttempt struct {
-	ID   string
-	Done <-chan LoginResult
+	ID     string
+	Events <-chan LoginEvent
+	Done   <-chan LoginResult
 }
 type DisconnectResult struct{ RemoteRevocationConfirmed, LocalRegistrationRemoved, LocalTokensRemoved bool }
 type Model struct {
@@ -54,6 +61,7 @@ type Model struct {
 }
 type Failure struct {
 	ProfileID, Provider, Label string
+	Message                    string
 	Outcome                    modelprovider.Outcome
 }
 type Discovery struct {
@@ -77,10 +85,10 @@ type Client interface {
 	Discover(context.Context) (Discovery, error)
 	AddProfile(context.Context, string, string, string, string, map[string]string) error
 	ReplaceProfile(context.Context, string, string, string, map[string]string, bool) error
-	StartLogin(context.Context, string) (LoginAttempt, error)
+	StartLogin(context.Context, string, string, string) (LoginAttempt, error)
 	CancelLogin(string) bool
-	Disconnect(context.Context, string, bool, bool) (DisconnectResult, error)
-	OpenUsage() error
+	Disconnect(context.Context, string, string, string, bool, bool) (DisconnectResult, error)
+	OpenUsage(context.Context) error
 	RemoveProfile(string, bool) error
 	Select(context.Context, string, bool) error
 	Snapshot() Snapshot

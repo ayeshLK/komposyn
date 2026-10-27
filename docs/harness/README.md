@@ -198,6 +198,13 @@ model and an empty conversation while saved settings/credentials remain.
   scoped resolution. `internal/harness/auth/openai/` owns browser attempts,
   OIDC validation, refresh, and disconnect; provider plugins receive only the
   credential for the current operation and own their HTTP wire behavior.
+
+Authentication is composed explicitly by provider and stored auth method.
+Discovery and chat use the same profile-resolution registry; status inspection
+returns sanitized connection and permission metadata without refreshing or
+resolving secrets. Login progress is typed and UI-independent, and sensitive
+authorization URLs are delivered only to an injected browser-opening
+capability. See the [Phase 2 auth boundary](phase-two-auth-boundary.md).
 - `internal/harness/model/` aggregates discovery and temporary selection.
 - `internal/harness/runtime/` coordinates in-memory requests and replay-safe
   history without opening a database.

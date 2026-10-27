@@ -55,7 +55,9 @@ into a broader agent harness. The experimental chat demonstrates only a
 bounded provider/UI split with temporary messages; it does not settle the
 broader plugin lifecycle, distribution model, trust boundary, or general
 runtime. Do not treat the Token Logger library, CLI integration, or temporary
-chat contracts as a universal plugin API.
+chat contracts as a universal plugin API. Its provider/method auth registry
+and UI-independent login interaction are limited to this experiment; see the
+[Phase 2 auth boundary](harness/phase-two-auth-boundary.md).
 
 ## Import and collection flow
 

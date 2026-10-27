@@ -85,6 +85,7 @@ func (m Model) Key() string { return string(m.Provider) + "\x00" + m.ProfileID +
 
 type ProfileFailure struct {
 	ProfileID, Provider, Label string
+	Message                    string
 	Outcome                    provider.Outcome
 }
 type Discovery struct {
@@ -94,7 +95,7 @@ type Discovery struct {
 type Catalog struct {
 	Providers *Registry
 	Profiles  ProfileStore
-	OAuth     auth.OAuthResolver
+	Auth      *auth.Registry
 }
 
 func (c Catalog) Discover(ctx context.Context) Discovery {
@@ -118,20 +119,14 @@ func (c Catalog) Discover(ctx context.Context) Discovery {
 				ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: provider.OutcomeUnsupported}}
 				return
 			}
-			var resolved auth.Profile
-			var key string
-			var err error
-			if p.AuthType == "oauth" {
-				if c.OAuth == nil {
-					ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: provider.OutcomeAuthentication}}
-					return
-				}
-				resolved, key, err = c.OAuth.Resolve(ctx, p.ID)
-			} else {
-				resolved, key, err = c.Profiles.ResolveContext(ctx, p.ID)
-			}
-			if err != nil {
+			if c.Auth == nil {
 				ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: provider.OutcomeAuthentication}}
+				return
+			}
+			resolved, key, err := c.Auth.Resolve(ctx, p.Provider, auth.Method(p.AuthType), p.ID)
+			if err != nil {
+				outcome, message := authFailure(err)
+				ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: outcome, Message: message}}
 				return
 			}
 			cred := credential(resolved, key)
@@ -170,6 +165,23 @@ func (c Catalog) Discover(ctx context.Context) Discovery {
 		return out.Failures[i].Provider < out.Failures[j].Provider
 	})
 	return out
+}
+
+func authFailure(err error) (provider.Outcome, string) {
+	failure, ok := auth.AsFailure(err)
+	if !ok {
+		return provider.OutcomeAuthentication, "The selected credential could not be resolved."
+	}
+	switch failure.Kind {
+	case auth.FailurePermission:
+		return provider.OutcomePermission, failure.Error()
+	case auth.FailureTemporary:
+		return provider.OutcomeNetwork, failure.Error()
+	case auth.FailureCanceled:
+		return provider.OutcomeInterrupted, failure.Error()
+	default:
+		return provider.OutcomeAuthentication, failure.Error()
+	}
 }
 
 func credential(p auth.Profile, key string) provider.Credential {
