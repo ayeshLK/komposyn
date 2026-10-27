@@ -39,8 +39,8 @@ inference is claimed.
 | Manual callback and device login remain deferred, not closure prerequisites. | Issue #164 decision; [Phase two auth boundary](phase-two-auth-boundary.md) | **Intentionally deferred.** |
 | Live authorization and billable inference require explicit opt-in. | [Security notes](phase-one-security.md), [setup and usage](README.md) | **Not performed; no live-account evidence claimed.** |
 | Provider process termination or a lost response may make token recovery impossible. | [Security notes](phase-one-security.md), [setup and usage](README.md) | **Documented limitation.** When KompoSyn observes an ambiguous response failure, it preserves credentials, marks reconnect required, and suppresses automatic replay. Termination before persistence may still require sign-in. |
-| Native Unix and Windows file protection/locking validation. | Existing Unix/Windows build-tagged lock and ACL implementations; hosted test matrix | **Locally tested on Unix; hosted Windows process and native lock tests passed on the reviewed PR run.** The follow-up commit's hosted run is pending. |
-| Standalone `komposyn-lg` compatibility. | Core repository CI compatibility job | **Passed on the reviewed PR run; follow-up commit's hosted run is pending.** No downstream code or module replacement is committed. |
+| Native Unix and Windows file protection/locking validation. | Existing Unix/Windows build-tagged lock and ACL implementations; hosted test matrix | **Passed.** Local Unix process tests and hosted Windows tests passed on commit `ae86b61`, including the Windows ARM64 release validation. |
+| Standalone `komposyn-lg` compatibility. | Core repository CI compatibility job | **Passed** on commit `ae86b61` in [hosted CI run 40532618360](https://github.com/ayeshLK/komposyn/actions/runs/40532618360). No downstream code or module replacement is committed. |
 
 ## Proposed final issue update after merge
 
@@ -48,8 +48,8 @@ After review and merge, the maintainer can complete the remaining broad
 validation checkbox in section 6 of [issue #164](https://github.com/ayeshLK/komposyn/issues/164):
 this PR supplies separate-process reliability/lifecycle tests and simulated
 screen/runtime/UI-adapter evidence for the previously missing acceptance
-scenarios. Reconfirm that this follow-up commit's Unix and Windows CI, race,
-release candidate, and standalone compatibility jobs pass before checking it
-off. Keep live authorization/billable inference recorded as untested and
+scenarios. All hosted test, race, release-candidate, and standalone
+compatibility jobs passed on code commit `ae86b61` in [run 40532618360](https://github.com/ayeshLK/komposyn/actions/runs/40532618360).
+Keep live authorization/billable inference recorded as untested and
 manual/device login recorded as intentionally deferred. Do not check off
 validation or close the issue before the PR merges.
