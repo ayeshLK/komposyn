@@ -256,6 +256,68 @@ func TestOAuthAccessTokenRefreshKeepsSelectedModelAndChatContext(t *testing.T) {
 	}
 }
 
+type waitingOAuthResolver struct{ started chan struct{} }
+
+func (r waitingOAuthResolver) Resolve(ctx context.Context, _ string) (auth.Profile, string, error) {
+	close(r.started)
+	<-ctx.Done()
+	return auth.Profile{}, "", ctx.Err()
+}
+
+func TestCanceledChatRefreshDoesNotStartInferenceOrAppendTurn(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	hostID, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := auth.NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := auth.Profile{ID: "openai-chatgpt-cancel-refresh", Provider: "openai", Label: "ChatGPT", Revision: revision, Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "issued-client", Issuer: "https://auth.openai.com", Subject: "stable-subject", HostID: hostID, IDToken: "validated-id", AccessToken: "old-access", RefreshToken: "old-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(time.Hour)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	plug := &fakeProvider{id: p.OpenAI}
+	registry, err := model.NewRegistry(plug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat(registry, store)
+	started := make(chan struct{})
+	chat.oauthResolver = waitingOAuthResolver{started: started}
+	selected := model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: p.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "")}
+	chat.selected = &selected
+	ctx, cancel := context.WithCancel(context.Background())
+	sendDone := make(chan error, 1)
+	go func() {
+		_, sendErr := chat.Send(ctx, "prompt", nil)
+		sendDone <- sendErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("OAuth resolution did not start")
+	}
+	cancel()
+	select {
+	case err := <-sendDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled chat error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled chat kept waiting for refresh completion")
+	}
+	if got := len(plug.captured()); got != 0 {
+		t.Fatalf("canceled request started inference %d times", got)
+	}
+	snapshot := chat.Snapshot()
+	if snapshot.Active || len(snapshot.Turns) != 0 {
+		t.Fatalf("canceled OAuth wait produced stale chat state: %+v", snapshot)
+	}
+}
+
 func TestCancellationBlocksLateDeltasAndPreservesSafeHistory(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})

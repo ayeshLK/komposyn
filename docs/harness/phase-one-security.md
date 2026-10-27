@@ -23,8 +23,14 @@ Credentials do not appear in provider error messages, profile metadata, UI
 snapshots, chat messages, or diagnostic output. Authorization URLs containing
 the retained ID-token hint are never displayed or logged. The auth coordinator
 passes only one resolved credential into a provider call. Refresh is serialized
-under the auth-file interprocess lock; temporary refresh errors preserve the
-stored credentials, while permanent invalidation marks reconnect required.
+under the auth-file interprocess lock. A canceled caller can stop waiting for
+the lock; after a refresh exchange begins, it runs with an independent
+15-second timeout and a successful replacement is persisted before unlocking.
+The CLI drains in-flight exchanges during normal shutdown. Temporary refresh
+errors preserve the stored credentials, while confirmed unusable-token errors
+mark reconnect required. If the process terminates or a network failure makes
+the exchange outcome ambiguous, a provider-rotated token may be unrecoverable;
+KompoSyn does not blindly retry it.
 Disconnect attempts the discovered remote refresh-token revocation endpoint,
 then removes local tokens; the UI distinguishes confirmed remote revocation
 from local-only removal. Removing an API-key profile does not revoke that key.

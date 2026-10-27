@@ -33,7 +33,11 @@ import (
 	"time"
 )
 
-const SchemaVersion = 1
+const (
+	SchemaVersion           = 1
+	oauthRefreshLockTimeout = 30 * time.Second
+	oauthRefreshLeadTime    = 90 * time.Second
+)
 
 var ErrOAuthProfileChanged = errors.New("OpenAI account registration changed during the operation")
 var ErrOAuthReconnectRequired = errors.New("OpenAI account must reconnect")
@@ -326,6 +330,19 @@ func (s Store) ReplaceOAuthContext(ctx context.Context, id, expectedRevision str
 // RefreshOAuth serializes token refresh under the same interprocess lock used
 // for all auth-file changes. No concurrent refresh can rotate the same token.
 func (s Store) RefreshOAuth(id string, now time.Time, refresh func(OAuthCredential) (OAuthTokens, error)) (Profile, error) {
+	return s.RefreshOAuthContext(context.Background(), id, func() time.Time { return now }, refresh)
+}
+
+// RefreshOAuthContext checks cancellation while acquiring the auth-file lock
+// and immediately before beginning a refresh exchange. Once refresh returns
+// successfully, persistence completes under the lock even if ctx is canceled.
+func (s Store) RefreshOAuthContext(ctx context.Context, id string, now func() time.Time, refresh func(OAuthCredential) (OAuthTokens, error)) (Profile, error) {
+	if now == nil {
+		return Profile{}, errors.New("OAuth refresh clock is required")
+	}
+	if refresh == nil {
+		return Profile{}, errors.New("OAuth refresh operation is required")
+	}
 	path, err := s.path()
 	if err != nil {
 		return Profile{}, err
@@ -333,11 +350,16 @@ func (s Store) RefreshOAuth(id string, now time.Time, refresh func(OAuthCredenti
 	if err = ensurePrivateDir(filepath.Dir(path)); err != nil {
 		return Profile{}, err
 	}
-	unlock, err := lockPath(path)
+	lockCtx, cancelLock := context.WithTimeout(ctx, oauthRefreshLockTimeout)
+	defer cancelLock()
+	unlock, err := lockPathContext(lockCtx, path)
 	if err != nil {
 		return Profile{}, err
 	}
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return Profile{}, err
+	}
 	doc, err := readFile(path)
 	if err != nil {
 		return Profile{}, err
@@ -353,8 +375,14 @@ func (s Store) RefreshOAuth(id string, now time.Time, refresh func(OAuthCredenti
 		if credential.ReconnectRequired || credential.RefreshToken == "" {
 			return Profile{}, ErrOAuthReconnectRequired
 		}
-		if credential.ExpiresAt.After(now.Add(90 * time.Second)) {
+		if err := ctx.Err(); err != nil {
+			return Profile{}, err
+		}
+		if credential.ExpiresAt.After(now().Add(oauthRefreshLeadTime)) {
 			return cloneProfile(p), nil
+		}
+		if err := ctx.Err(); err != nil {
+			return Profile{}, err
 		}
 		tokens, refreshErr := refresh(credential)
 		if refreshErr != nil {
@@ -379,7 +407,7 @@ func (s Store) RefreshOAuth(id string, now time.Time, refresh func(OAuthCredenti
 			}
 			return Profile{}, refreshErr
 		}
-		if tokens.AccessToken == "" || tokens.RefreshToken == "" || !tokens.ExpiresAt.After(now) {
+		if tokens.AccessToken == "" || tokens.RefreshToken == "" || !tokens.ExpiresAt.After(now()) {
 			return Profile{}, errors.New("OpenAI returned an invalid token refresh")
 		}
 		credential.IDToken = tokens.IDToken
@@ -404,6 +432,17 @@ func (s Store) RefreshOAuth(id string, now time.Time, refresh func(OAuthCredenti
 		return cloneProfile(p), nil
 	}
 	return Profile{}, errors.New("credential profile was not found")
+}
+
+func waitForLockRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (s Store) ClearOAuthTokens(id string) error {

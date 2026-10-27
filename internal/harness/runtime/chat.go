@@ -393,6 +393,16 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 			prof, accessToken, err = c.oauthResolver.Resolve(ctx, selection.ProfileID)
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				c.mu.Lock()
+				if c.generation == generation {
+					c.active = false
+					c.activeProfile = ""
+					c.cancel = nil
+				}
+				c.mu.Unlock()
+				return Turn{}, ctx.Err()
+			}
 			outcome := provider.OutcomeAuthentication
 			if errors.Is(err, auth.ErrOAuthPermissionRequired) {
 				outcome = provider.OutcomePermission
@@ -410,6 +420,16 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 			return turn, err
 		}
 		key = accessToken
+	}
+	if err := ctx.Err(); err != nil {
+		c.mu.Lock()
+		if c.generation == generation {
+			c.active = false
+			c.activeProfile = ""
+			c.cancel = nil
+		}
+		c.mu.Unlock()
+		return Turn{}, err
 	}
 	result, callErr := plug.StreamChat(ctx, provider.ChatRequest{RequestID: requestID, ModelID: selection.ID, Credential: modelCredential(prof, key), Messages: history, Instructions: "You are KompoSyn, a helpful text assistant. Do not claim to call tools.", MaxOutput: 4096}, func(delta string) {
 		c.mu.Lock()
