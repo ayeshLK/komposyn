@@ -337,7 +337,11 @@ func (u *terminal) rebuildPicker() {
 		u.pickerStatus.SetText("Models with unknown capability are unverified; model lists do not promise text-chat access. Refresh checks live credentials.")
 	}
 	for _, f := range u.discovery.Failures {
-		u.pickerStatus.SetText(u.pickerStatus.GetText(true) + fmt.Sprintf("\n%s (%s): %s", f.Label, f.Provider, failureText(f.Outcome)))
+		message := f.Message
+		if message == "" {
+			message = failureText(f.Outcome)
+		}
+		u.pickerStatus.SetText(u.pickerStatus.GetText(true) + fmt.Sprintf("\n%s (%s): %s", f.Label, f.Provider, message))
 	}
 }
 
@@ -465,19 +469,30 @@ func (u *terminal) addAPIKeyProvider(providerID string) {
 
 func (u *terminal) startOpenAILogin(profileID string) {
 	op := u.beginCredentialOperation()
-	attempt, err := u.client.StartLogin(op.ctx, profileID)
+	attempt, err := u.client.StartLogin(op.ctx, "openai", "oauth", profileID)
 	if err != nil {
 		u.cancelCredentialOperation(op)
 		u.showMessage("Could not start ChatGPT sign-in", err.Error(), func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
 		return
 	}
 	op.loginID = attempt.ID
-	modal := tv.NewModal().SetText("OpenAI will ask you to authorize eligible inference to use your ChatGPT plan. Sign-in alone does not guarantee eligibility. KompoSyn will return here after sign-in; no chat prompt is sent during setup.").AddButtons([]string{"Cancel sign-in"}).SetDoneFunc(func(_ int, _ string) {
+	baseText := "OpenAI will ask you to authorize eligible inference to use your ChatGPT plan. Sign-in alone does not guarantee eligibility. KompoSyn will return here after sign-in; no chat prompt is sent during setup."
+	modal := tv.NewModal().SetText(baseText).AddButtons([]string{"Cancel sign-in"}).SetDoneFunc(func(_ int, _ string) {
 		u.cancelCredentialOperation(op)
 		u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 		u.writePickerNotice("ChatGPT sign-in canceled.")
 	})
 	u.app.SetRoot(modal, true)
+	u.launch(func() {
+		for event := range attempt.Events {
+			message := event.Message
+			u.queue(func() {
+				if u.credentialOp == op && message != "" {
+					modal.SetText(baseText + "\n" + message)
+				}
+			})
+		}
+	})
 	u.launch(func() {
 		result := <-attempt.Done
 		u.queue(func() {
@@ -490,11 +505,7 @@ func (u *terminal) startOpenAILogin(profileID string) {
 				return
 			}
 			u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
-			if result.Status == "plan_usage_enabled" {
-				u.writePickerNotice("Connected as " + result.Account + ". ChatGPT plan usage is enabled. Choose a model explicitly.")
-			} else {
-				u.writePickerNotice("Signed in as " + result.Account + ", but ChatGPT plan usage was not enabled. Manage this profile to reconnect with plan usage enabled.")
-			}
+			u.writePickerNotice("Sign-in completed for " + result.Account + ". Review the profile's connection and permission status, then choose a model explicitly.")
 			u.refreshModels()
 		})
 	})
@@ -552,12 +563,9 @@ func (u *terminal) manageProfile(p ui.Profile) {
 }
 
 func (u *terminal) manageOAuthProfile(p ui.Profile) {
-	status := "Signed in; ChatGPT plan usage is disabled."
-	if p.Status == "plan_usage_enabled" || p.PlanUsageEnabled {
-		status = "Connected · ChatGPT plan usage enabled."
-	}
-	if p.Status == "reconnect_required" {
-		status = "Reconnect required."
+	status := "Connection: " + p.Status
+	for _, permission := range p.Permissions {
+		status += "\n" + permission.Name + ": " + permission.State
 	}
 	modal := tv.NewModal().SetText(p.Account + "\n" + status + "\nEligible requests use your ChatGPT plan. Manage usage in ChatGPT Settings.").AddButtons([]string{"Reconnect / enable plan usage", "Manage usage", "Disconnect and keep registration", "Remove registration", "Back"}).SetDoneFunc(func(_ int, label string) {
 		switch label {
@@ -584,7 +592,7 @@ func (u *terminal) manageOAuthProfile(p ui.Profile) {
 func (u *terminal) disconnectOAuth(p ui.Profile, remove bool) {
 	op := u.beginCredentialOperation()
 	u.launch(func() {
-		result, err := u.client.Disconnect(op.ctx, p.ID, remove, false)
+		result, err := u.client.Disconnect(op.ctx, p.Provider, p.AuthType, p.ID, remove, false)
 		u.queue(func() {
 			if u.credentialOp != op {
 				return
@@ -601,7 +609,7 @@ func (u *terminal) disconnectOAuth(p ui.Profile, remove bool) {
 						return
 					}
 					u.launch(func() {
-						confirmedResult, confirmedErr := u.client.Disconnect(op.ctx, p.ID, remove, true)
+						confirmedResult, confirmedErr := u.client.Disconnect(op.ctx, p.Provider, p.AuthType, p.ID, remove, true)
 						u.queue(func() { u.finishOAuthDisconnect(op, p, confirmedResult, confirmedErr, remove) })
 					})
 				})

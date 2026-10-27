@@ -31,13 +31,18 @@ type Client struct {
 }
 
 func (c Client) Profiles(ctx context.Context) ([]ui.Profile, error) {
-	items, err := c.ProfileStore.ListMetadata()
+	items, err := c.ProfileStore.ListMetadataContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ui.Profile, 0, len(items))
 	for _, p := range items {
-		out = append(out, ui.Profile{ID: p.ID, Provider: p.Provider, Label: p.Label, AuthType: p.AuthType, Account: p.Account, Status: p.Status, PlanUsageEnabled: p.PlanUsageEnabled})
+		status, statusErr := c.Chat.AuthStatus(ctx, p.Provider, auth.Method(p.AuthType), p.ID)
+		if statusErr != nil {
+			return nil, statusErr
+		}
+		out = append(out, ui.Profile{ID: p.ID, Provider: p.Provider, Label: p.Label, AuthType: p.AuthType,
+			Account: status.Account, Status: status.Connection, Permissions: convertPermissions(status.Permissions)})
 	}
 	return out, nil
 }
@@ -56,7 +61,7 @@ func (c Client) Discover(ctx context.Context) (ui.Discovery, error) {
 		out.Models = append(out.Models, ui.Model{Key: m.Key(), Provider: string(m.Provider), ProfileID: m.ProfileID, ProfileLabel: m.ProfileLabel, ID: m.ID, DisplayName: m.DisplayName, Compatibility: m.Compatibility, Reason: m.Reason})
 	}
 	for _, f := range d.Failures {
-		out.Failures = append(out.Failures, ui.Failure{ProfileID: f.ProfileID, Provider: f.Provider, Label: f.Label, Outcome: f.Outcome})
+		out.Failures = append(out.Failures, ui.Failure{ProfileID: f.ProfileID, Provider: f.Provider, Label: f.Label, Message: f.Message, Outcome: f.Outcome})
 	}
 	return out, nil
 }
@@ -67,36 +72,37 @@ func (c Client) ReplaceProfile(ctx context.Context, id, label, key string, route
 	err := c.Chat.ReplaceProfile(ctx, id, label, key, route, confirm)
 	return adaptError(err)
 }
-func (c Client) StartLogin(ctx context.Context, profileID string) (ui.LoginAttempt, error) {
-	attempt, err := c.Chat.StartOAuthLogin(ctx, profileID)
+func (c Client) StartLogin(ctx context.Context, providerID, method, profileID string) (ui.LoginAttempt, error) {
+	attempt, err := c.Chat.StartLogin(ctx, providerID, auth.Method(method), profileID)
 	if err != nil {
 		return ui.LoginAttempt{}, err
 	}
 	done := make(chan ui.LoginResult, 1)
+	events := make(chan ui.LoginEvent, 4)
+	go func() {
+		defer close(events)
+		if attempt.Events == nil {
+			return
+		}
+		for event := range attempt.Events {
+			events <- ui.LoginEvent{Kind: string(event.Kind), Message: event.Message, Succeeded: event.Succeeded}
+		}
+	}()
 	go func() {
 		result := <-attempt.Done
-		item := ui.LoginResult{Err: result.Err}
-		if result.Err == nil && result.Profile.Auth.OAuth != nil {
-			item.ProfileID = result.Profile.ID
-			item.Account = result.Profile.Auth.OAuth.Email
-			item.Status = "connected"
-			for _, scope := range result.Profile.Auth.OAuth.Scopes {
-				if scope == "chatgpt.tokens.use.direct" {
-					item.Status = "plan_usage_enabled"
-				}
-			}
-			if item.Account == "" {
-				item.Account = "ChatGPT account"
-			}
+		item := ui.LoginResult{Err: result.Err, Status: result.Status.Connection, Permissions: convertPermissions(result.Status.Permissions)}
+		if result.Err == nil {
+			item.ProfileID = result.ProfileID
+			item.Account = result.Status.Account
 		}
 		done <- item
 		close(done)
 	}()
-	return ui.LoginAttempt{ID: attempt.ID, Done: done}, nil
+	return ui.LoginAttempt{ID: attempt.ID, Events: events, Done: done}, nil
 }
 func (c Client) CancelLogin(id string) bool { return c.Chat.CancelOAuthLogin(id) }
-func (c Client) Disconnect(ctx context.Context, id string, remove, confirm bool) (ui.DisconnectResult, error) {
-	result, err := c.Chat.DisconnectOAuth(ctx, id, remove, confirm)
+func (c Client) Disconnect(ctx context.Context, providerID, method, id string, remove, confirm bool) (ui.DisconnectResult, error) {
+	result, err := c.Chat.Disconnect(ctx, providerID, auth.Method(method), id, remove, confirm)
 	return ui.DisconnectResult{RemoteRevocationConfirmed: result.RemoteRevocationConfirmed, LocalRegistrationRemoved: result.LocalRegistrationRemoved, LocalTokensRemoved: result.LocalTokensRemoved}, adaptError(err)
 }
 func (c Client) OpenUsage() error { return c.Chat.OpenOAuthUsage() }
@@ -143,4 +149,12 @@ func Load(id string, plugins []ui.Plugin) (ui.Plugin, error) {
 }
 func convertModel(m model.Model) *ui.Model {
 	return &ui.Model{Key: m.Key(), Provider: string(m.Provider), ProfileID: m.ProfileID, ProfileLabel: m.ProfileLabel, ID: m.ID, DisplayName: m.DisplayName, Compatibility: m.Compatibility, Reason: m.Reason}
+}
+
+func convertPermissions(permissions []auth.Permission) []ui.Permission {
+	out := make([]ui.Permission, 0, len(permissions))
+	for _, permission := range permissions {
+		out = append(out, ui.Permission{ID: permission.ID, Name: permission.Name, State: string(permission.State), Description: permission.Description})
+	}
+	return out
 }

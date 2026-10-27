@@ -28,8 +28,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +71,7 @@ type Manager struct {
 	token          string
 	resource       string
 	verifyIdentity func(context.Context, string, string, string) (verifiedIdentity, error)
+	openURL        auth.BrowserOpener
 	attemptMu      sync.Mutex
 	attemptID      string
 	attemptCancel  context.CancelFunc
@@ -118,6 +117,8 @@ func (op *refreshOperation) cancelBeforeExchange() {
 }
 
 var _ auth.OAuthCoordinator = (*Manager)(nil)
+var _ auth.Resolver = (*Manager)(nil)
+var _ auth.StatusResolver = (*Manager)(nil)
 
 type LoginResult = auth.OAuthLoginResult
 type LoginAttempt = auth.OAuthLoginAttempt
@@ -126,7 +127,7 @@ func New(store auth.Store) *Manager {
 	m := &Manager{
 		Store:          store,
 		client:         &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		browser:        openBrowser,
+		browser:        func(string) error { return errors.New("system browser opener is unavailable") },
 		listen:         func() (net.Listener, error) { return net.Listen("tcp4", "127.0.0.1:0") },
 		now:            time.Now,
 		timeout:        5 * time.Minute,
@@ -141,8 +142,26 @@ func New(store auth.Store) *Manager {
 	}
 	close(m.refreshDrained)
 	m.verifyIdentity = m.validateIdentity
+	m.openURL = auth.BrowserOpenerFunc(func(ctx context.Context, target string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return m.browser(target)
+	})
 	return m
 }
+
+// NewWithBrowser composes the auth implementation with a transient URL-opening capability.
+func NewWithBrowser(store auth.Store, opener auth.BrowserOpener) *Manager {
+	m := New(store)
+	if opener != nil {
+		m.openURL = opener
+	}
+	return m
+}
+
+func (m *Manager) Provider() string    { return "openai" }
+func (m *Manager) Method() auth.Method { return auth.MethodOAuth }
 
 // StartLogin starts a uniquely identified browser authorization attempt. Its
 // ID is distinct from the account/profile ID and can be used to cancel safely.
@@ -153,6 +172,7 @@ func (m *Manager) StartLogin(parent context.Context, profileID string) (LoginAtt
 	}
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan auth.OAuthLoginResult, 1)
+	events := make(chan auth.LoginEvent, 4)
 	m.attemptMu.Lock()
 	if m.attemptID != "" {
 		m.attemptMu.Unlock()
@@ -162,9 +182,22 @@ func (m *Manager) StartLogin(parent context.Context, profileID string) (LoginAtt
 	m.attemptID, m.attemptCancel = id, cancel
 	m.attemptMu.Unlock()
 	go func() {
-		profile, loginErr := m.login(ctx, profileID)
-		done <- auth.OAuthLoginResult{Profile: profile, Err: loginErr}
+		emit := func(event auth.LoginEvent) {
+			select {
+			case events <- event:
+			default:
+			}
+		}
+		emit(auth.LoginEvent{Kind: auth.LoginStarted, Message: "Sign-in started"})
+		profile, loginErr := m.login(ctx, profileID, emit)
+		result := auth.OAuthLoginResult{Profile: profile, ProfileID: profile.ID, Err: loginErr}
+		if loginErr == nil && profile.Auth.OAuth != nil {
+			result.Status = statusFor(profile.Auth.OAuth)
+		}
+		emit(auth.LoginEvent{Kind: auth.LoginCompleted, Message: "Sign-in finished", Succeeded: loginErr == nil})
+		done <- result
 		close(done)
+		close(events)
 		m.attemptMu.Lock()
 		if m.attemptID == id {
 			m.attemptID, m.attemptCancel = "", nil
@@ -172,7 +205,7 @@ func (m *Manager) StartLogin(parent context.Context, profileID string) (LoginAtt
 		m.attemptMu.Unlock()
 		cancel()
 	}()
-	return LoginAttempt{ID: id, Done: done}, nil
+	return LoginAttempt{ID: id, Events: events, Done: done}, nil
 }
 
 func (m *Manager) CancelLogin(attemptID string) bool {
@@ -202,7 +235,7 @@ func (m *Manager) Login(ctx context.Context, profileID string) (auth.Profile, er
 
 // login performs browser authorization. It commits a candidate only after
 // callback, token exchange, and OIDC identity validation all succeed.
-func (m *Manager) login(parent context.Context, profileID string) (auth.Profile, error) {
+func (m *Manager) login(parent context.Context, profileID string, emit func(auth.LoginEvent)) (auth.Profile, error) {
 	ctx, cancel := context.WithTimeout(parent, m.timeout)
 	defer cancel()
 	hostID, err := m.Store.EnsureHostID()
@@ -307,7 +340,10 @@ func (m *Manager) login(parent context.Context, profileID string) (auth.Profile,
 	if err := ctx.Err(); err != nil {
 		return auth.Profile{}, ErrLoginCanceled
 	}
-	if err := m.browser(authorizationURL); err != nil {
+	if emit != nil {
+		emit(auth.LoginEvent{Kind: auth.LoginBrowser, Message: "Opening the provider authorization page"})
+	}
+	if err := m.openURL.Open(ctx, authorizationURL); err != nil {
 		return auth.Profile{}, errors.New("could not open the system browser; configure a default browser and retry sign-in")
 	}
 
@@ -528,6 +564,39 @@ func (m *Manager) Resolve(ctx context.Context, profileID string) (auth.Profile, 
 	}
 }
 
+// PublicStatus inspects persisted metadata only. It does not refresh tokens,
+// resolve credentials, or make a network request.
+func (m *Manager) PublicStatus(ctx context.Context, profileID string) (auth.PublicStatus, error) {
+	profile, err := m.Store.GetContext(ctx, profileID)
+	if err != nil {
+		return auth.PublicStatus{}, err
+	}
+	if profile.Provider != m.Provider() || profile.Auth.Type != string(m.Method()) || profile.Auth.OAuth == nil {
+		return auth.PublicStatus{}, errors.New("profile is not an OpenAI OAuth registration")
+	}
+	return statusFor(profile.Auth.OAuth), nil
+}
+
+func statusFor(credential *auth.OAuthCredential) auth.PublicStatus {
+	status := auth.PublicStatus{Connection: "connected", Account: credential.Email}
+	if status.Account == "" {
+		status.Account = "ChatGPT account"
+	}
+	if credential.ReconnectRequired || credential.RefreshOutcomeUnknown || credential.RefreshToken == "" {
+		status.Connection = "reconnect_required"
+	}
+	permission := auth.Permission{ID: "inference.plan", Name: "ChatGPT plan usage", State: auth.PermissionMissing,
+		Description: "Allows eligible chat requests to use the selected ChatGPT plan."}
+	if hasOAuthScope(credential.Scopes, "chatgpt.tokens.use.direct") {
+		permission.State = auth.PermissionGranted
+	}
+	if status.Connection == "connected" && permission.State == auth.PermissionMissing {
+		status.Connection = "permission_required"
+	}
+	status.Permissions = []auth.Permission{permission}
+	return status
+}
+
 func (m *Manager) startRefresh(ctx context.Context, profileID string) (<-chan refreshResult, error) {
 	lockCtx, cancel := context.WithTimeout(ctx, m.lockWait)
 	op := &refreshOperation{ctx: lockCtx, cancel: cancel}
@@ -589,7 +658,7 @@ func (m *Manager) refreshTokens(op *refreshOperation, current auth.OAuthCredenti
 	case "invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused":
 		return auth.OAuthTokens{}, auth.ErrOAuthReconnectRequired
 	case "invalid_client":
-		return auth.OAuthTokens{}, errors.New("OpenAI OAuth client configuration is invalid")
+		return auth.OAuthTokens{}, auth.ErrInvalidClientConfiguration
 	case "":
 	default:
 		return auth.OAuthTokens{}, errors.New("OpenAI could not refresh this account")
@@ -765,23 +834,4 @@ func newProfileID() (string, error) {
 		return "", err
 	}
 	return "openai-chatgpt-" + base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-func openBrowser(target string) error {
-	var command string
-	var args []string
-	switch runtime.GOOS {
-	case "darwin":
-		command, args = "open", []string{target}
-	case "windows":
-		command, args = "rundll32", []string{"url.dll,FileProtocolHandler", target}
-	default:
-		command, args = "xdg-open", []string{target}
-	}
-	cmd := exec.Command(command, args...)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	go func() { _ = cmd.Wait() }()
-	return nil
 }

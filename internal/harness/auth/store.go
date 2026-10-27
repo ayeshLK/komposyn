@@ -88,14 +88,12 @@ type document struct {
 }
 
 type Metadata struct {
-	ID               string            `json:"id"`
-	Provider         string            `json:"provider"`
-	Label            string            `json:"label"`
-	Route            map[string]string `json:"routing,omitempty"`
-	AuthType         string            `json:"auth_type"`
-	Account          string            `json:"account,omitempty"`
-	Status           string            `json:"status,omitempty"`
-	PlanUsageEnabled bool              `json:"plan_usage_enabled,omitempty"`
+	ID       string            `json:"id"`
+	Provider string            `json:"provider"`
+	Label    string            `json:"label"`
+	Route    map[string]string `json:"routing,omitempty"`
+	AuthType string            `json:"auth_type"`
+	Status   string            `json:"status,omitempty"`
 }
 
 // OAuthTokens contains only rotating tokens and expiry. Registration identity
@@ -150,16 +148,9 @@ func (s Store) ListMetadataContext(ctx context.Context) ([]Metadata, error) {
 	for _, p := range doc.Credentials {
 		m := Metadata{ID: p.ID, Provider: p.Provider, Label: p.Label, Route: cloneRoute(p.Route), AuthType: p.Auth.Type}
 		if p.Auth.Type == "oauth" && p.Auth.OAuth != nil {
-			m.Account = p.Auth.OAuth.Email
-			if m.Account == "" {
-				m.Account = "ChatGPT account"
-			}
-			m.PlanUsageEnabled = hasScope(p.Auth.OAuth.Scopes, "chatgpt.tokens.use.direct")
 			m.Status = "connected"
 			if p.Auth.OAuth.ReconnectRequired || p.Auth.OAuth.RefreshOutcomeUnknown || p.Auth.OAuth.RefreshToken == "" {
 				m.Status = "reconnect_required"
-			} else if !m.PlanUsageEnabled {
-				m.Status = "plan_usage_disabled"
 			}
 		}
 		out = append(out, m)
@@ -756,15 +747,6 @@ func cloneRoute(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
-}
-
-func hasScope(scopes []string, want string) bool {
-	for _, scope := range scopes {
-		if scope == want {
-			return true
-		}
-	}
-	return false
 }
 
 // ReadJSON and WriteJSON share the private, locked, atomic configuration-file

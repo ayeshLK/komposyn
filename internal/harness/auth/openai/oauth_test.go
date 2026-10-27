@@ -123,8 +123,12 @@ func TestLoginRegistersAndStoresOnlyValidatedCandidate(t *testing.T) {
 		t.Fatal("token response was not stored")
 	}
 	metadata, err := store.ListMetadata()
-	if err != nil || len(metadata) != 1 || !metadata[0].PlanUsageEnabled || metadata[0].Status != "connected" {
+	if err != nil || len(metadata) != 1 || metadata[0].Status != "connected" {
 		t.Fatalf("metadata=%+v err=%v", metadata, err)
+	}
+	publicStatus, statusErr := manager.PublicStatus(context.Background(), profile.ID)
+	if statusErr != nil || publicStatus.Connection != "connected" || len(publicStatus.Permissions) != 1 || publicStatus.Permissions[0].State != auth.PermissionGranted {
+		t.Fatalf("public status=%+v err=%v", publicStatus, statusErr)
 	}
 	raw, err := json.Marshal(metadata)
 	if err != nil {
@@ -198,6 +202,38 @@ func TestLoginCancellationAndWrongStateDoNotPersistCandidate(t *testing.T) {
 				t.Fatalf("candidate persisted: %+v", metadata)
 			}
 		})
+	}
+}
+
+func TestLoginUsesInjectedBrowserAndEmitsURLFreeProgress(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	var opened string
+	manager := NewWithBrowser(store, auth.BrowserOpenerFunc(func(_ context.Context, target string) error {
+		opened = target
+		return errors.New("browser unavailable")
+	}))
+	attempt, err := manager.StartLogin(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := <-attempt.Done
+	if result.Err == nil || !strings.HasPrefix(opened, "https://") {
+		t.Fatalf("open target=%q result=%+v", opened, result)
+	}
+	var events []auth.LoginEvent
+	for event := range attempt.Events {
+		events = append(events, event)
+	}
+	if len(events) < 3 || events[0].Kind != auth.LoginStarted || events[1].Kind != auth.LoginBrowser || events[len(events)-1].Kind != auth.LoginCompleted {
+		t.Fatalf("events=%+v", events)
+	}
+	if events[len(events)-1].Succeeded {
+		t.Fatalf("failed sign-in emitted successful completion: %+v", events)
+	}
+	for _, event := range events {
+		if strings.Contains(event.Message, "https://") || strings.Contains(event.Message, "state=") {
+			t.Fatalf("sensitive URL leaked through progress event: %+v", event)
+		}
 	}
 }
 

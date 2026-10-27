@@ -210,7 +210,7 @@ func TestOAuthProfileMetadataAndRefreshKeepStableIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded, _ := json.Marshal(metadata)
-	if strings.Contains(string(encoded), "secret") || len(metadata) != 1 || metadata[0].Status != "connected" || !metadata[0].PlanUsageEnabled {
+	if strings.Contains(string(encoded), "secret") || len(metadata) != 1 || metadata[0].Status != "connected" {
 		t.Fatalf("unsafe/inaccurate metadata: %s", encoded)
 	}
 	entered, release := make(chan struct{}, 1), make(chan struct{})

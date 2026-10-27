@@ -51,7 +51,11 @@ func TestDiscoveryKeepsProfilesSeparateAndPartialFailuresVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := (Catalog{Providers: registry, Profiles: store}).Discover(context.Background())
+	authRegistry := auth.NewRegistry()
+	if err := authRegistry.Register("openai", auth.MethodAPIKey, auth.StoreResolver{Store: store, ProviderID: "openai", AuthMethod: auth.MethodAPIKey}); err != nil {
+		t.Fatal(err)
+	}
+	d := (Catalog{Providers: registry, Profiles: store, Auth: authRegistry}).Discover(context.Background())
 	if len(d.Models) != 2 || len(d.Failures) != 1 || d.Failures[0].Outcome != p.OutcomePermission {
 		t.Fatalf("discovery=%+v", d)
 	}

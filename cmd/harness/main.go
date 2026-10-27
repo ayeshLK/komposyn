@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	goruntime "runtime"
 	"time"
 
@@ -83,8 +84,25 @@ func newCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			oauthManager := oauthauth.New(profileStore)
-			chat := runtime.NewChatWithOAuth(registry, profileStore, oauthManager)
+			oauthManager := oauthauth.NewWithBrowser(profileStore, auth.BrowserOpenerFunc(openSystemBrowser))
+			authRegistry := auth.NewRegistry()
+			for _, plug := range registry.All() {
+				providerID := string(plug.ID())
+				for _, advertised := range plug.AuthMethods() {
+					if auth.Method(advertised) != auth.MethodAPIKey {
+						continue
+					}
+					for _, method := range []auth.Method{auth.MethodAPIKey, auth.MethodEnv} {
+						if err := authRegistry.Register(providerID, method, auth.StoreResolver{Store: profileStore, ProviderID: providerID, AuthMethod: method}); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			if err := authRegistry.Register(oauthManager.Provider(), oauthManager.Method(), oauthManager); err != nil {
+				return err
+			}
+			chat := runtime.NewChatWithAuth(registry, profileStore, authRegistry)
 			runErr := frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore})
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
@@ -96,4 +114,24 @@ func newCommand() *cobra.Command {
 	cmd.Flags().StringVar(&settingsPath, "settings-file", "", "settings file path (default: ~/.komposyn/settings.json)")
 	cmd.Flags().BoolVar(&check, "check", false, "validate local configuration and list provider profile metadata without opening the terminal UI")
 	return cmd
+}
+
+func openSystemBrowser(ctx context.Context, target string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var command *exec.Cmd
+	switch goruntime.GOOS {
+	case "windows":
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	case "darwin":
+		command = exec.Command("open", target)
+	default:
+		command = exec.Command("xdg-open", target)
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	go func() { _ = command.Wait() }()
+	return nil
 }

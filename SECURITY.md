@@ -30,6 +30,10 @@ UI settings in `~/.komposyn/settings.json`; Unix permissions and Windows
 current-user ACLs restrict access. It does not create a chat database or send
 chat usage to Token Logger. See
 [temporary chat data handling](docs/harness/phase-one-security.md).
+OAuth authorization URLs are transient inputs to an injected system-browser
+capability; progress events, status snapshots, diagnostics, and chat context do
+not include them. Auth status reads local metadata without resolving secrets
+or contacting a provider. See the [auth boundary](docs/harness/phase-two-auth-boundary.md).
 
 Diagnostics are best-effort sanitized and locally persisted. The standalone
 CLI owns review and routing of public issue drafts. A suspected vulnerability

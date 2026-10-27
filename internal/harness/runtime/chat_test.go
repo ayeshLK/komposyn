@@ -200,6 +200,9 @@ type rotatingOAuthResolver struct {
 	count int
 }
 
+func (r *rotatingOAuthResolver) Provider() string    { return "openai" }
+func (r *rotatingOAuthResolver) Method() auth.Method { return auth.MethodOAuth }
+
 func (r *rotatingOAuthResolver) Resolve(_ context.Context, id string) (auth.Profile, string, error) {
 	p, err := r.store.Get(id)
 	if err != nil {
@@ -231,7 +234,9 @@ func TestOAuthAccessTokenRefreshKeepsSelectedModelAndChatContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := NewChat(registry, store)
-	chat.oauthResolver = &rotatingOAuthResolver{store: store}
+	if err := chat.authRegistry.Register("openai", auth.MethodOAuth, &rotatingOAuthResolver{store: store}); err != nil {
+		t.Fatal(err)
+	}
 	selected := model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: p.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "")}
 	chat.selected = &selected
 	for _, prompt := range []string{"first message", "follow-up after token rotation"} {
@@ -257,6 +262,9 @@ func TestOAuthAccessTokenRefreshKeepsSelectedModelAndChatContext(t *testing.T) {
 }
 
 type waitingOAuthResolver struct{ started chan struct{} }
+
+func (waitingOAuthResolver) Provider() string    { return "openai" }
+func (waitingOAuthResolver) Method() auth.Method { return auth.MethodOAuth }
 
 func (r waitingOAuthResolver) Resolve(ctx context.Context, _ string) (auth.Profile, string, error) {
 	close(r.started)
@@ -285,7 +293,9 @@ func TestCanceledChatRefreshDoesNotStartInferenceOrAppendTurn(t *testing.T) {
 	}
 	chat := NewChat(registry, store)
 	started := make(chan struct{})
-	chat.oauthResolver = waitingOAuthResolver{started: started}
+	if err := chat.authRegistry.Register("openai", auth.MethodOAuth, waitingOAuthResolver{started: started}); err != nil {
+		t.Fatal(err)
+	}
 	selected := model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: p.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "")}
 	chat.selected = &selected
 	ctx, cancel := context.WithCancel(context.Background())
@@ -325,6 +335,9 @@ type blockingStoreResolver struct {
 	release chan struct{}
 }
 
+func (blockingStoreResolver) Provider() string    { return "openai" }
+func (blockingStoreResolver) Method() auth.Method { return auth.MethodOAuth }
+
 func (r blockingStoreResolver) Resolve(ctx context.Context, id string) (auth.Profile, string, error) {
 	profile, err := r.store.RefreshOAuthContext(ctx, id, time.Now, func(auth.OAuthCredential) (auth.OAuthTokens, error) {
 		close(r.started)
@@ -361,7 +374,9 @@ func TestSnapshotAndCancelStayResponsiveDuringAuthStoreLockWait(t *testing.T) {
 	releaseRefresh := func() { releaseOnce.Do(func() { close(resolver.release) }) }
 	t.Cleanup(releaseRefresh)
 	chat := NewChat(registry, store)
-	chat.oauthResolver = resolver
+	if err := chat.authRegistry.Register("openai", auth.MethodOAuth, resolver); err != nil {
+		t.Fatal(err)
+	}
 	selected := model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: p.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "")}
 	chat.selected = &selected
 	refreshDone := make(chan error, 1)
