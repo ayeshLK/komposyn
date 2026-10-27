@@ -141,15 +141,22 @@ func TestLoginRegistersAndStoresOnlyValidatedCandidate(t *testing.T) {
 
 func TestLoginCancellationAndWrongStateDoNotPersistCandidate(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		state  func(string) string
-		cancel bool
+		name     string
+		state    func(string) string
+		cancel   bool
+		denied   bool
+		existing bool
 	}{
 		{name: "canceled", cancel: true},
 		{name: "wrong-state", state: func(string) string { return "wrong-state" }},
+		{name: "denied-keeps-existing-profile", denied: true, existing: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := auth.Store{Path: t.TempDir() + "/auth.json"}
+			var existing auth.Profile
+			if tc.existing {
+				existing = addOAuthTestProfile(t, store, time.Now().Add(time.Hour))
+			}
 			manager := New(store)
 			manager.timeout = 2 * time.Second
 			manager.verifyIdentity = func(context.Context, string, string, string) (verifiedIdentity, error) {
@@ -169,6 +176,10 @@ func TestLoginCancellationAndWrongStateDoNotPersistCandidate(t *testing.T) {
 					state = tc.state(state)
 				}
 				values := url.Values{"code": {"code"}, "state": {state}, "client_id": {"oaiapp"}}
+				if tc.denied {
+					values.Set("error", "access_denied")
+					values.Del("code")
+				}
 				for i := 0; i < 20; i++ {
 					resp, err := http.Get(redirect.String() + "?" + values.Encode())
 					if err == nil {
@@ -180,7 +191,11 @@ func TestLoginCancellationAndWrongStateDoNotPersistCandidate(t *testing.T) {
 				return fmt.Errorf("listener missing")
 			}
 			manager.token = "http://127.0.0.1:1/token"
-			attempt, err := manager.StartLogin(context.Background(), "")
+			profileID := ""
+			if tc.existing {
+				profileID = existing.ID
+			}
+			attempt, err := manager.StartLogin(context.Background(), profileID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -194,12 +209,25 @@ func TestLoginCancellationAndWrongStateDoNotPersistCandidate(t *testing.T) {
 			if result.Err == nil {
 				t.Fatal("invalid/canceled flow unexpectedly succeeded")
 			}
+			if tc.denied && !errors.Is(result.Err, ErrLoginDenied) {
+				t.Fatalf("denied login error=%v", result.Err)
+			}
 			metadata, err := store.ListMetadata()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(metadata) != 0 {
+			expectedProfiles := 0
+			if tc.existing {
+				expectedProfiles = 1
+			}
+			if len(metadata) != expectedProfiles {
 				t.Fatalf("candidate persisted: %+v", metadata)
+			}
+			if tc.existing {
+				stored, err := store.Get(existing.ID)
+				if err != nil || stored.Auth.OAuth.AccessToken != existing.Auth.OAuth.AccessToken || stored.Auth.OAuth.RefreshToken != existing.Auth.OAuth.RefreshToken || stored.Revision != existing.Revision {
+					t.Fatalf("denied login overwrote valid profile: %+v err=%v", stored.Auth.OAuth, err)
+				}
 			}
 		})
 	}

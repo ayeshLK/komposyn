@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	openaioauth "github.com/ayeshLK/komposyn/internal/harness/auth/openai"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
 	p "github.com/ayeshLK/komposyn/plugins/model-provider"
 )
@@ -258,6 +259,50 @@ func TestOAuthAccessTokenRefreshKeepsSelectedModelAndChatContext(t *testing.T) {
 	snapshot := chat.Snapshot()
 	if snapshot.Selected == nil || snapshot.Selected.Key() != selected.Key() || len(snapshot.Turns) != 2 {
 		t.Fatalf("selection/chat was reset: %+v", snapshot)
+	}
+}
+
+func TestOAuthIdentityWithoutInferencePermissionCannotStartChat(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	hostID, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := auth.NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := auth.Profile{ID: "openai-chatgpt-no-permission", Provider: "openai", Label: "ChatGPT", Revision: revision, Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "issued-client", Issuer: "https://auth.openai.com", Subject: "stable-subject", HostID: hostID, AccessToken: "identity-only-access", RefreshToken: "identity-only-refresh", TokenType: "Bearer", Scopes: []string{"openid", "email"}, ExpiresAt: time.Now().Add(time.Hour)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{id: p.OpenAI}
+	registry, err := model.NewRegistry(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat(registry, store)
+	oauthManager := openaioauth.New(store)
+	defer func() {
+		if err := oauthManager.Close(context.Background()); err != nil {
+			t.Errorf("close auth manager: %v", err)
+		}
+	}()
+	if err := chat.authRegistry.Register("openai", auth.MethodOAuth, oauthManager); err != nil {
+		t.Fatal(err)
+	}
+	status, err := chat.AuthStatus(context.Background(), "openai", auth.MethodOAuth, profile.ID)
+	if err != nil || status.Connection != "permission_required" || len(status.Permissions) != 1 || status.Permissions[0].State != auth.PermissionMissing {
+		t.Fatalf("permission status=%+v err=%v", status, err)
+	}
+	selected := model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: p.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "")}
+	chat.selected = &selected
+	turn, err := chat.Send(context.Background(), "must not be sent", nil)
+	if err == nil || turn.Outcome != p.OutcomePermission {
+		t.Fatalf("no-permission chat turn=%+v err=%v", turn, err)
+	}
+	if got := len(provider.captured()); got != 0 {
+		t.Fatalf("identity-only account started inference %d times", got)
 	}
 }
 

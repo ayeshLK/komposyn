@@ -126,3 +126,32 @@ func TestMissingExplicitEnvironmentCredentialIsConfigurationFailure(t *testing.T
 		t.Fatalf("failure=%+v err=%v", failure, err)
 	}
 }
+
+func TestExplicitEnvironmentProfilesResolveOnlyForTheirProvider(t *testing.T) {
+	for _, provider := range []string{"openai", "anthropic"} {
+		t.Run(provider, func(t *testing.T) {
+			store := Store{Path: t.TempDir() + "/auth.json", LookupEnv: func(name string) (string, bool) {
+				return "selected-env-secret", name == "EXPLICIT_"+provider+"_KEY"
+			}}
+			profileID := provider + "-environment"
+			if err := store.Add(Profile{ID: profileID, Provider: provider, Label: "Explicit environment", Auth: AuthConfig{Type: "env", Env: "EXPLICIT_" + provider + "_KEY"}}); err != nil {
+				t.Fatal(err)
+			}
+			registry := NewRegistry()
+			if err := registry.Register(provider, MethodEnv, StoreResolver{Store: store, ProviderID: provider, AuthMethod: MethodEnv}); err != nil {
+				t.Fatal(err)
+			}
+			resolved, secret, err := registry.Resolve(context.Background(), provider, MethodEnv, profileID)
+			if err != nil || resolved.ID != profileID || secret != "selected-env-secret" {
+				t.Fatalf("resolved profile=%+v secret=%q err=%v", resolved, secret, err)
+			}
+			other := "anthropic"
+			if provider == "anthropic" {
+				other = "openai"
+			}
+			if _, _, err := registry.Resolve(context.Background(), other, MethodEnv, profileID); err == nil {
+				t.Fatalf("%s profile resolved through %s registry route", provider, other)
+			}
+		})
+	}
+}
