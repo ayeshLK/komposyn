@@ -34,6 +34,12 @@ module and distinguishes it from command policy.
   `DiagnosticObserver`, bounded counter/evidence/reference values,
   `NewDiagnosticObserver`, `FailureDetails`, and `OpenWithObservation`.
   These are additive and separate from legacy `Diagnostic` serialization.
+- **Persisted diagnostic details:** bounded detail projections, exact
+  counters, condition and review evidence, and the `Store.ListDiagnosticDetails`,
+  `Store.InspectDiagnosticDetail`, and `Store.ReviewDiagnosticDetail` APIs.
+  These APIs inspect stored evidence only. See
+  [persisted diagnostic details](diagnostic-details.md) for privacy, bounds,
+  migration side effects, and the production instrumentation dependency.
 
 SQLite migration mechanics, raw cursor internals, SQL helpers, provider parser
 types, pricing catalog synchronization details, and the mutable `Version`
@@ -160,6 +166,20 @@ exported methods.
 `Store.RecordDiagnosticWithMetadata`, `Store.Diagnostic`,
 `Store.PendingDiagnostics`, `Store.DiagnosticReport`, and
 `Store.MarkDiagnosticReviewed`.
+
+**Persisted diagnostic detail APIs:** `DiagnosticCondition`,
+`DiagnosticReviewState`, `DiagnosticConditionReason`,
+`DiagnosticCoverageKind`, `DiagnosticExactCount`,
+`DiagnosticObservationCount`, `DiagnosticConditionEvidence`,
+`DiagnosticReview`, `DiagnosticLocationSample`, `DiagnosticDetail`,
+`DiagnosticQuery`, `DiagnosticPage`, `DiagnosticReviewRequest`,
+`Store.ListDiagnosticDetails`, `Store.InspectDiagnosticDetail`,
+`Store.ReviewDiagnosticDetail`, `ErrInvalidDiagnosticQuery`,
+`ErrDiagnosticDetailNotFound`, `ErrDiagnosticReviewConflict`, and
+`ErrDiagnosticInspectionUnavailable`. Limits are
+`DefaultDiagnosticPageSize`, `MaxDiagnosticPageSize`,
+`MaxDiagnosticContinuationBytes`, `MaxDiagnosticListResponseBytes`,
+`MaxDetailedDiagnosticProblems`, and `MaxDiagnosticLocationSamples`.
 
 **Structured diagnostics v1 APIs:** `DiagnosticContractVersion`,
 `DiagnosticComponent`, `DiagnosticOperation`, `DiagnosticReason`,
