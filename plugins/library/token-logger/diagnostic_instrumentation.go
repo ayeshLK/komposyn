@@ -35,26 +35,30 @@ const maxDiagnosticAggregationKeysPerPoll = 256
 const initialDiagnosticAggregationKeys = 8
 
 type diagnosticCorrelation struct {
-	operationID    DiagnosticID
-	runID          DiagnosticID
-	pollID         DiagnosticID
-	accumulator    *diagnosticPollAccumulator
-	runAccumulator *diagnosticRunAccumulator
-	parserFindings *diagnosticParserFindings
+	operationID         DiagnosticID
+	runID               DiagnosticID
+	pollID              DiagnosticID
+	sourceGeneration    uint64
+	hasSourceGeneration bool
+	accumulator         *diagnosticPollAccumulator
+	runAccumulator      *diagnosticRunAccumulator
+	parserFindings      *diagnosticParserFindings
 }
 
 type diagnosticParserFindings struct {
 	counts       map[DiagnosticReason]uint64
+	positions    map[DiagnosticReason]DiagnosticPosition
 	baseOutcomes OutcomeCounts
 }
 
 func newDiagnosticParserFindings() *diagnosticParserFindings {
-	return &diagnosticParserFindings{counts: make(map[DiagnosticReason]uint64, 8)}
+	return &diagnosticParserFindings{counts: make(map[DiagnosticReason]uint64, 8), positions: make(map[DiagnosticReason]DiagnosticPosition, 8)}
 }
 
 func (findings *diagnosticParserFindings) reset() {
 	if findings != nil {
 		clear(findings.counts)
+		clear(findings.positions)
 		findings.baseOutcomes = OutcomeCounts{}
 	}
 }
@@ -71,11 +75,27 @@ func diagnosticOutcomeForReason(reason DiagnosticReason) RecordOutcome {
 	}
 }
 
-func noteDiagnosticParserFailure(ctx context.Context, reason DiagnosticReason) {
+func noteDiagnosticParserFailure(ctx context.Context, reason DiagnosticReason, byteOffset int64) {
 	findings := diagnosticCorrelationFrom(ctx).parserFindings
-	if findings != nil && diagnosticOutcomeForReason(reason) != "" && findings.counts[reason] < math.MaxUint64 {
+	if findings == nil || diagnosticOutcomeForReason(reason) == "" {
+		return
+	}
+	if findings.counts[reason] < math.MaxUint64 {
 		findings.counts[reason]++
 	}
+	if byteOffset < 0 {
+		return
+	}
+	position, exists := findings.positions[reason]
+	if !exists {
+		findings.positions[reason] = DiagnosticPosition{
+			ByteOffset: DiagnosticOptionalUint64{Value: uint64(byteOffset), Availability: DiagnosticAvailabilityAvailable},
+			LineNumber: unavailableMeasurement(),
+		}
+		return
+	}
+	position.ByteOffset.Truncated = true
+	findings.positions[reason] = position
 }
 
 type diagnosticCorrelationContextKey struct{}
@@ -132,7 +152,7 @@ func (store *Store) registeredRootDiagnosticSubject(path string) DiagnosticSubje
 	if err := store.db.QueryRow(`SELECT id FROM collector_sources
 		WHERE canonical_path = ? OR display_path = ? ORDER BY CASE WHEN canonical_path = ? THEN 0 ELSE 1 END LIMIT 1`,
 		canonical, filepath.Clean(displayPath), canonical).Scan(&id); err != nil || errors.Is(err, sql.ErrNoRows) {
-		return DiagnosticSubject{Kind: DiagnosticSubjectRoot, Availability: DiagnosticAvailabilityNotCollected}
+		return store.diagnosticSubject(DiagnosticSubjectRoot, canonical)
 	}
 	return store.diagnosticSubject(DiagnosticSubjectRoot, id)
 }
@@ -158,6 +178,7 @@ type diagnosticFinding struct {
 	subject        DiagnosticSubject
 	counts         DiagnosticOutcomeCounts
 	evidence       DiagnosticEvidence
+	position       DiagnosticPosition
 }
 
 // diagnosticBoundaryFailure marks an actual internal failure boundary without
@@ -209,13 +230,20 @@ func (store *Store) publishFinding(finding diagnosticFinding) DiagnosticEmission
 		evidence = DiagnosticEvidence{Scope: DiagnosticEvidenceOperation,
 			Availability: DiagnosticAvailabilityNotCollected, UnavailableReason: DiagnosticUnavailableNotCollected}
 	}
+	position := finding.position
+	if position.ByteOffset.Availability == "" {
+		position.ByteOffset = unavailableMeasurement()
+	}
+	if position.LineNumber.Availability == "" {
+		position.LineNumber = unavailableMeasurement()
+	}
 	event := DiagnosticEvent{ContractVersion: DiagnosticContractVersion, CoreVersion: safeCoreVersion(),
 		ObservedAt: time.Now().UTC(), Kind: finding.kind, Classification: finding.classification,
 		HasClassification: finding.kind != DiagnosticEventPollSummary, OperationID: correlation.operationID,
 		CollectorRunID: correlation.runID, PollID: correlation.pollID, Subject: finding.subject,
 		SourceSchemaVersion: unavailableMeasurement(), TargetSchemaVersion: unavailableMeasurement(),
 		DurationMilliseconds: unavailableMeasurement(), RetryAttempt: unavailableMeasurement(), RetryCount: unavailableMeasurement(),
-		Position: DiagnosticPosition{ByteOffset: unavailableMeasurement(), LineNumber: unavailableMeasurement()},
+		Position: position,
 		Evidence: evidence, Counts: counts}
 	return store.diagnosticObserver.publish(event)
 }
@@ -248,11 +276,18 @@ func (store *Store) observeFailure(ctx context.Context, cause error, classificat
 		failure.EmissionDisposition = store.publishFinding(diagnosticFinding{classification: classification,
 			kind: DiagnosticEventOperationFailed, correlation: correlation, subject: subject})
 	}
-	if correlation.accumulator != nil {
-		correlation.accumulator.addCounts(OutcomeCounts{FailedSource: 1})
-		correlation.accumulator.addCondition(classification, subject, OutcomeFailedSource, 1)
-	}
 	return newOperationalError(cause, failure)
+}
+
+// recordFailedSourceOutcomeAt records FailedSource only at boundaries that
+// also increment the caller-visible ImportResult outcome.
+func recordFailedSourceOutcomeAt(ctx context.Context, classification DiagnosticClassification, subject DiagnosticSubject) {
+	correlation := diagnosticCorrelationFrom(ctx)
+	if correlation.accumulator == nil {
+		return
+	}
+	correlation.accumulator.addCounts(OutcomeCounts{FailedSource: 1})
+	correlation.accumulator.addCondition(classification, subject, OutcomeFailedSource, 1)
 }
 
 func diagnosticCancellationOnly(err error) bool {
@@ -447,10 +482,18 @@ type diagnosticConditionKey struct {
 	subject        DiagnosticSubject
 }
 
+type diagnosticPollCondition struct {
+	counts                 DiagnosticOutcomeCounts
+	position               DiagnosticPosition
+	positionGeneration     uint64
+	hasPosition            bool
+	positionGenerationLost bool
+}
+
 type diagnosticPollAccumulator struct {
 	store       *Store
 	correlation diagnosticCorrelation
-	conditions  map[diagnosticConditionKey]DiagnosticOutcomeCounts
+	conditions  map[diagnosticConditionKey]diagnosticPollCondition
 	counts      DiagnosticOutcomeCounts
 	truncated   bool
 }
@@ -504,7 +547,7 @@ func (accumulator *diagnosticRunAccumulator) flush() {
 func newDiagnosticPollAccumulator(store *Store, correlation diagnosticCorrelation) *diagnosticPollAccumulator {
 	correlation.accumulator = nil
 	return &diagnosticPollAccumulator{store: store, correlation: correlation,
-		conditions: make(map[diagnosticConditionKey]DiagnosticOutcomeCounts, initialDiagnosticAggregationKeys),
+		conditions: make(map[diagnosticConditionKey]diagnosticPollCondition, initialDiagnosticAggregationKeys),
 		counts: DiagnosticOutcomeCounts{Scope: DiagnosticCountPoll, ScopeID: correlation.pollID,
 			Availability: DiagnosticAvailabilityAvailable}}
 }
@@ -530,6 +573,11 @@ func (accumulator *diagnosticPollAccumulator) addCounts(outcomes OutcomeCounts) 
 
 func (accumulator *diagnosticPollAccumulator) addCondition(classification DiagnosticClassification, subject DiagnosticSubject,
 	outcome RecordOutcome, count int) {
+	accumulator.addConditionWithPosition(classification, subject, outcome, count, DiagnosticPosition{}, 0, false)
+}
+
+func (accumulator *diagnosticPollAccumulator) addConditionWithPosition(classification DiagnosticClassification, subject DiagnosticSubject,
+	outcome RecordOutcome, count int, position DiagnosticPosition, generation uint64, hasGeneration bool) {
 	if accumulator == nil || count <= 0 {
 		return
 	}
@@ -537,17 +585,30 @@ func (accumulator *diagnosticPollAccumulator) addCondition(classification Diagno
 		accumulator.correlation.runAccumulator.addCondition(classification, subject, outcome, count)
 	}
 	key := diagnosticConditionKey{classification: classification, subject: subject}
-	counts, exists := accumulator.conditions[key]
+	condition, exists := accumulator.conditions[key]
 	if !exists && len(accumulator.conditions) >= maxDiagnosticAggregationKeysPerPoll {
 		accumulator.truncated = true
 		return
 	}
 	if !exists {
-		counts = DiagnosticOutcomeCounts{Scope: DiagnosticCountPoll, ScopeID: accumulator.correlation.pollID,
+		condition.counts = DiagnosticOutcomeCounts{Scope: DiagnosticCountPoll, ScopeID: accumulator.correlation.pollID,
 			Availability: DiagnosticAvailabilityAvailable}
 	}
-	addDiagnosticOutcomeCount(&counts, outcome, count)
-	accumulator.conditions[key] = counts
+	addDiagnosticOutcomeCount(&condition.counts, outcome, count)
+	if position.ByteOffset.Availability == DiagnosticAvailabilityAvailable {
+		if !condition.hasPosition && !condition.positionGenerationLost && hasGeneration {
+			condition.position = position
+			condition.positionGeneration = generation
+			condition.hasPosition = true
+		} else if condition.hasPosition && (!hasGeneration || condition.positionGeneration != generation) {
+			condition.position = DiagnosticPosition{ByteOffset: unavailableMeasurement(), LineNumber: unavailableMeasurement()}
+			condition.hasPosition = false
+			condition.positionGenerationLost = true
+		} else if condition.hasPosition {
+			condition.position.ByteOffset.Truncated = true
+		}
+	}
+	accumulator.conditions[key] = condition
 }
 
 func addDiagnosticOutcomeCount(counts *DiagnosticOutcomeCounts, outcome RecordOutcome, amount int) {
@@ -593,12 +654,13 @@ func (accumulator *diagnosticPollAccumulator) flush() {
 	if accumulator == nil || accumulator.store == nil {
 		return
 	}
-	for key, counts := range accumulator.conditions {
-		counts.Truncated = accumulator.truncated
+	for key, condition := range accumulator.conditions {
+		condition.counts.Truncated = accumulator.truncated
+		evidenceTruncated := accumulator.truncated || condition.positionGenerationLost || condition.position.ByteOffset.Truncated
 		finding := diagnosticFinding{classification: key.classification, kind: DiagnosticEventConditionSummary,
-			correlation: accumulator.correlation, subject: key.subject, counts: counts,
+			correlation: accumulator.correlation, subject: key.subject, counts: condition.counts, position: condition.position,
 			evidence: DiagnosticEvidence{Scope: DiagnosticEvidencePoll,
-				Availability: DiagnosticAvailabilityAvailable, Truncated: accumulator.truncated}}
+				Availability: DiagnosticAvailabilityAvailable, Truncated: evidenceTruncated}}
 		accumulator.store.publishFinding(finding)
 	}
 	accumulator.counts.Truncated = accumulator.truncated
@@ -630,9 +692,10 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 	}
 	subject := store.diagnosticSubject(DiagnosticSubjectSource, sourceID)
 	type condition struct {
-		reason  DiagnosticReason
-		outcome RecordOutcome
-		count   uint64
+		reason   DiagnosticReason
+		outcome  RecordOutcome
+		count    uint64
+		position DiagnosticPosition
 	}
 	conditions := make([]condition, 0, 8)
 	var malformedClassified, unsupportedClassified uint64
@@ -642,7 +705,8 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 			if count == 0 || outcome == "" {
 				continue
 			}
-			conditions = append(conditions, condition{reason, outcome, count})
+			conditions = append(conditions, condition{reason: reason, outcome: outcome, count: count,
+				position: correlation.parserFindings.positions[reason]})
 			if outcome == OutcomeMalformedRecord {
 				malformedClassified = saturatingAdd(malformedClassified, count)
 			} else {
@@ -652,11 +716,13 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 	}
 	malformedCount := uint64(max(observedOutcomes.MalformedRecord, 0))
 	if malformedCount > malformedClassified {
-		conditions = append(conditions, condition{DiagnosticReasonMalformedRecord, OutcomeMalformedRecord, malformedCount - malformedClassified})
+		conditions = append(conditions, condition{reason: DiagnosticReasonMalformedRecord, outcome: OutcomeMalformedRecord,
+			count: malformedCount - malformedClassified})
 	}
 	unsupportedCount := uint64(max(observedOutcomes.UnsupportedUsage, 0))
 	if unsupportedCount > unsupportedClassified {
-		conditions = append(conditions, condition{DiagnosticReasonUnsupportedUsage, OutcomeUnsupportedUsage, unsupportedCount - unsupportedClassified})
+		conditions = append(conditions, condition{reason: DiagnosticReasonUnsupportedUsage, outcome: OutcomeUnsupportedUsage,
+			count: unsupportedCount - unsupportedClassified})
 	}
 	for _, item := range conditions {
 		if item.count <= 0 {
@@ -665,14 +731,16 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 		classification := makeDiagnosticClassification(DiagnosticComponentParser, operation,
 			item.reason, diagnosticAdapter(adapter))
 		if correlation.accumulator != nil {
-			correlation.accumulator.addCondition(classification, subject, item.outcome, uint64ToCount(item.count))
+			correlation.accumulator.addConditionWithPosition(classification, subject, item.outcome, uint64ToCount(item.count),
+				item.position, correlation.sourceGeneration, correlation.hasSourceGeneration)
 			continue
 		}
 		counts := DiagnosticOutcomeCounts{Scope: DiagnosticCountOperation, Availability: DiagnosticAvailabilityAvailable}
 		addDiagnosticOutcomeCount64(&counts, item.outcome, item.count)
 		store.publishFinding(diagnosticFinding{classification: classification, kind: DiagnosticEventConditionSummary,
-			correlation: correlation, subject: subject, counts: counts,
-			evidence: DiagnosticEvidence{Scope: DiagnosticEvidenceOperation, Availability: DiagnosticAvailabilityAvailable}})
+			correlation: correlation, subject: subject, counts: counts, position: item.position,
+			evidence: DiagnosticEvidence{Scope: DiagnosticEvidenceOperation, Availability: DiagnosticAvailabilityAvailable,
+				Truncated: item.position.ByteOffset.Truncated}})
 	}
 }
 

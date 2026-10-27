@@ -265,7 +265,7 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 					result.Outcomes.Add(OutcomeDeferredIncompleteTail)
 				} else {
 					result.Outcomes.Add(OutcomeMalformedRecord)
-					noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidJSON)
+					noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidJSON, lineOffset)
 				}
 			} else {
 				if envelope.ID != "" {
@@ -276,15 +276,15 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 					record, usage, turnUsage, threadUsage, status := decodeCodexUsageRecord(envelope)
 					if status == codexUsageRecordUnsupported {
 						result.Outcomes.Add(OutcomeUnsupportedUsage)
-						noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage)
+						noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage, lineOffset)
 					} else if status == codexUsageRecordMalformed {
 						result.Outcomes.Add(OutcomeMalformedRecord)
-						noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidJSON)
+						noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidJSON, lineOffset)
 					} else {
 						session, ok := codexUsageRecordSession(record, activeSessionID, metadataSessions)
 						if !ok || session.Model == "" || session.ProjectID == "" || !session.HasExplicitProjectID {
 							result.Outcomes.Add(OutcomeMalformedRecord)
-							noteDiagnosticParserFailure(ctx, DiagnosticReasonRequiredContextMissing)
+							noteDiagnosticParserFailure(ctx, DiagnosticReasonRequiredContextMissing, lineOffset)
 						} else {
 							if record.SessionID == "" {
 								record.SessionID = session.ID
@@ -298,13 +298,13 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 								if seen.usage != usage || seen.hasTurn != hasTurn || seen.hasThread != hasThread ||
 									(hasTurn && seen.turnUsage != turnUsage) || (hasThread && seen.threadUsage != threadUsage) {
 									result.Outcomes.Add(OutcomeUnsupportedUsage)
-									noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage)
+									noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage, lineOffset)
 									goto codexRecordProcessed
 								}
 								occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 								if timeErr != nil {
 									result.Outcomes.Add(OutcomeMalformedRecord)
-									noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTimestamp)
+									noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTimestamp, lineOffset)
 								} else {
 									newStreamSessions[session.ID] = true
 									events = append(events, codexUsageEventObserved(sourceID, fingerprint, lineOffset, record, session, usage, occurredAt, line, store.benchmarkObserver))
@@ -313,14 +313,14 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 							}
 							if !codexCumulativeValid(record, usage, turnUsage, threadUsage, turnCumulative, threadCumulative) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
-								noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage)
+								noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage, lineOffset)
 								codexResetCumulativeBaselines(record, turnUsage, threadUsage, turnCumulative, threadCumulative)
 								goto codexRecordProcessed
 							}
 							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 							if timeErr != nil {
 								result.Outcomes.Add(OutcomeMalformedRecord)
-								noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTimestamp)
+								noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTimestamp, lineOffset)
 							} else {
 								logicalScope := codexLogicalScope(record.SessionID, record.ThreadID)
 								newStreamSessions[session.ID] = true
@@ -342,7 +342,7 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 					if payloadErr != nil {
 						if codexUsageBearingType(codexRawRecordType(envelope)) {
 							result.Outcomes.Add(OutcomeMalformedRecord)
-							noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidJSON)
+							noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidJSON, lineOffset)
 						} else {
 							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						}
@@ -400,7 +400,7 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 							result.Outcomes.Add(OutcomeIgnoredNonUsage)
 						case "token_usage_record":
 							result.Outcomes.Add(OutcomeUnsupportedUsage)
-							noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage)
+							noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage, lineOffset)
 						case "token_count":
 							if payload.SessionID != "" || payload.ProjectID != "" || payload.CWD != "" {
 								current = updateCodexSession(current, payload, sourceID)
@@ -428,16 +428,16 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 							}
 							if !codexUsageShapeSupported(envelope) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
-								noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage)
+								noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage, lineOffset)
 								break
 							}
 							usage, ok := codexCumulativeUsage(envelope, payload)
 							if !ok || current.Model == "" {
 								result.Outcomes.Add(OutcomeMalformedRecord)
 								if current.Model == "" {
-									noteDiagnosticParserFailure(ctx, DiagnosticReasonRequiredContextMissing)
+									noteDiagnosticParserFailure(ctx, DiagnosticReasonRequiredContextMissing, lineOffset)
 								} else {
-									noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTokenCount)
+									noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTokenCount, lineOffset)
 								}
 								break
 							}
@@ -450,14 +450,14 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 							occurredAt, timeErr := codexTimestamp(envelope.Timestamp)
 							if timeErr != nil {
 								result.Outcomes.Add(OutcomeMalformedRecord)
-								noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTimestamp)
+								noteDiagnosticParserFailure(ctx, DiagnosticReasonInvalidTimestamp, lineOffset)
 								break
 							}
 							events = append(events, codexEventObserved(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line, store.benchmarkObserver))
 						default:
 							if codexUsageBearingType(codexRecordType(envelope, payload)) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
-								noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage)
+								noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage, lineOffset)
 							} else {
 								result.Outcomes.Add(OutcomeIgnoredNonUsage)
 							}

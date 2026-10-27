@@ -158,6 +158,7 @@ func (c *Collector) PollOnceContext(ctx context.Context) (total ImportResult, po
 		}
 		total.Outcomes.Add(OutcomeFailedSource)
 		classification := classifyDiscoveryFailure(failure.Err)
+		recordFailedSourceOutcomeAt(ctx, classification, subject)
 		failureErr := c.store.observeFailure(ctx, failure.Err, classification, subject)
 		pollErrors = append(pollErrors, failureErr)
 		c.recordFailure(failure.Err, DiagnosticCategoryIngestion)
@@ -206,6 +207,12 @@ func (c *Collector) PollOnceContext(ctx context.Context) (total ImportResult, po
 				break
 			}
 			total.Outcomes.Add(OutcomeFailedSource)
+			failureClassification := classifyImportFailure(importErr, adapter)
+			if details, ok := FailureDetails(importErr); ok {
+				failureClassification = details.Classification
+			}
+			recordFailedSourceOutcomeAt(ctx, failureClassification,
+				DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected})
 			pollErrors = append(pollErrors, importErr)
 			c.recordFailure(fmt.Errorf("import %s source: %w", adapter, importErr), DiagnosticCategoryIngestion)
 			mergeCollectorRootFailure(rootHealth, source.RootPaths, importErr)

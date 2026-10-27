@@ -415,6 +415,9 @@ func importStreamingSource(ctx context.Context, path string, store *Store, known
 		}
 		classificationAdapter = adapter
 		sourceID = snapshot.baseSourceID
+		correlation.sourceGeneration = uint64(max(snapshot.generation, 0))
+		correlation.hasSourceGeneration = snapshot.generation >= 0
+		ctx = withDiagnosticCorrelation(ctx, correlation)
 		if snapshot.unchanged {
 			result = ImportResult{}
 			result.Outcomes.Add(OutcomeUnchangedSnapshot)

@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -91,7 +92,8 @@ func TestClaudeAndCodexImportsPublishSafeClassifiedFindings(t *testing.T) {
 	claudeEvent := claudeEvents[0]
 	if claudeEvent.Kind != DiagnosticEventConditionSummary || claudeEvent.Classification.Reason != DiagnosticReasonInvalidJSON ||
 		claudeEvent.Classification.Adapter != DiagnosticAdapterClaude || claudeEvent.Counts.MalformedRecord != 1 ||
-		claudeEvent.Counts.Scope != DiagnosticCountOperation || !diagnosticReferenceAvailable(claudeEvent.Subject) {
+		claudeEvent.Counts.Scope != DiagnosticCountOperation || !diagnosticReferenceAvailable(claudeEvent.Subject) ||
+		claudeEvent.Position.ByteOffset.Availability != DiagnosticAvailabilityAvailable || claudeEvent.Position.ByteOffset.Value != 0 {
 		t.Fatalf("Claude event = %+v", claudeEvent)
 	}
 	assertDiagnosticPrivacy(t, claudeEvent, diagnosticPrivateMarker, claudePath, "/synthetic/private/project", "synthetic-session", "synthetic-response")
@@ -117,10 +119,190 @@ func TestClaudeAndCodexImportsPublishSafeClassifiedFindings(t *testing.T) {
 	codexEvent := codexEvents[0]
 	if codexEvent.Kind != DiagnosticEventConditionSummary || codexEvent.Classification.Reason != DiagnosticReasonUnsupportedUsage ||
 		codexEvent.Classification.Adapter != DiagnosticAdapterCodex || codexEvent.Counts.UnsupportedUsage != 1 ||
-		!diagnosticReferenceAvailable(codexEvent.Subject) {
+		!diagnosticReferenceAvailable(codexEvent.Subject) ||
+		codexEvent.Position.ByteOffset.Availability != DiagnosticAvailabilityAvailable ||
+		codexEvent.Position.ByteOffset.Value != uint64(len(strings.Split(syntheticCodexUnsupportedSource(), "\n")[0])+1) {
 		t.Fatalf("Codex event = %+v", codexEvent)
 	}
 	assertDiagnosticPrivacy(t, codexEvent, diagnosticPrivateMarker, codexPath, "synthetic-project", "synthetic-session", "synthetic-thread", "synthetic-response")
+}
+
+func TestParserPositionsAreBoundedRepresentativeSamples(t *testing.T) {
+	t.Run("Claude repeated malformed records retain first offset and mark truncation", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "claude-malformed.jsonl")
+		data := []byte("{\"type\":\"assistant\",\"message\": }\n{\"type\":\"assistant\",\"message\": }\n" + syntheticClaudeDiagnosticSource())
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		observer, _ := NewDiagnosticObserver(8)
+		store, err := OpenWithObservation(filepath.Join(t.TempDir(), "claude.sqlite"), OpenOptions{}, observer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		result, err := (ClaudeAdapter{}).Import(path, store)
+		if err != nil || result.Outcomes.MalformedRecord != 2 {
+			t.Fatalf("Claude import=%+v err=%v", result, err)
+		}
+		events := drainDiagnosticEvents(observer)
+		if len(events) != 1 || events[0].Counts.MalformedRecord != 2 ||
+			events[0].Position.ByteOffset.Availability != DiagnosticAvailabilityAvailable ||
+			events[0].Position.ByteOffset.Value != 0 || !events[0].Position.ByteOffset.Truncated || !events[0].Evidence.Truncated {
+			t.Fatalf("Claude sampled position = %+v", events)
+		}
+	})
+
+	t.Run("Codex repeated malformed records retain first suffix offset and mark truncation", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "codex-malformed.jsonl")
+		metadata := `{"type":"session_meta","timestamp":"2026-10-16T12:00:00Z","payload":{"id":"session","project_id":"project","model":"gpt-5.1-codex"}}` + "\n"
+		data := []byte(metadata + "{\"type\":\n{\"type\":\n")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		observer, _ := NewDiagnosticObserver(8)
+		store, err := OpenWithObservation(filepath.Join(t.TempDir(), "codex.sqlite"), OpenOptions{}, observer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		result, err := (CodexAdapter{}).Import(path, store)
+		if err != nil || result.Outcomes.MalformedRecord != 2 {
+			t.Fatalf("Codex import=%+v err=%v", result, err)
+		}
+		events := drainDiagnosticEvents(observer)
+		if len(events) != 1 || events[0].Counts.MalformedRecord != 2 ||
+			events[0].Position.ByteOffset.Availability != DiagnosticAvailabilityAvailable ||
+			events[0].Position.ByteOffset.Value != uint64(len(metadata)) || !events[0].Position.ByteOffset.Truncated || !events[0].Evidence.Truncated {
+			t.Fatalf("Codex sampled position = %+v", events)
+		}
+	})
+}
+
+func TestParserPositionFromDiscardedSnapshotRetryIsNotPublished(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mutating-source.jsonl")
+	initial := []byte("{\"type\":\"assistant\",\"message\": }\n" + syntheticClaudeDiagnosticSource())
+	current := []byte(syntheticClaudeDiagnosticSource())
+	if err := os.WriteFile(path, initial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observer, _ := NewDiagnosticObserver(8)
+	store, err := OpenWithObservation(filepath.Join(t.TempDir(), "retry.sqlite"), OpenOptions{}, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	collector, err := NewCollector(store, []string{path}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	store.sourceReadHook = func(pass int, bytesRead int64) {
+		if pass == 2 && bytesRead > 0 {
+			once.Do(func() {
+				replacement := path + ".replacement"
+				if err := os.WriteFile(replacement, current, 0o600); err != nil {
+					t.Errorf("replace source during speculative parser pass: %v", err)
+					return
+				}
+				if err := os.Remove(path); err != nil {
+					t.Errorf("remove source during speculative parser pass: %v", err)
+					return
+				}
+				if err := os.Rename(replacement, path); err != nil {
+					t.Errorf("install replacement source during speculative parser pass: %v", err)
+				}
+			})
+		}
+	}
+	result, err := collector.PollOnce()
+	if err != nil || result.Receipt.Imported != 1 || result.Outcomes.MalformedRecord != 0 {
+		t.Fatalf("retried import=%+v err=%v", result, err)
+	}
+	events := drainDiagnosticEvents(observer)
+	for _, event := range events {
+		if event.Kind == DiagnosticEventConditionSummary && event.Classification.Component == DiagnosticComponentParser {
+			t.Fatalf("discarded-pass parser evidence was published: %+v", event)
+		}
+	}
+}
+
+func TestParserPositionsUseAbsoluteOffsetsAfterCheckpointContinuation(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), provider+"-checkpoint.jsonl")
+			initial := []byte(syntheticClaudeDiagnosticSource())
+			if provider == "codex" {
+				initial = []byte(`{"type":"session_meta","timestamp":"2026-10-16T12:00:00Z","payload":{"id":"session","project_id":"project","model":"gpt-5.1-codex"}}` + "\n")
+			}
+			if err := os.WriteFile(path, initial, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			observer, _ := NewDiagnosticObserver(8)
+			store, err := OpenWithObservation(filepath.Join(t.TempDir(), provider+".sqlite"), OpenOptions{}, observer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			importProvider := func() (ImportResult, error) {
+				if provider == "claude" {
+					return (ClaudeAdapter{}).Import(path, store)
+				}
+				return (CodexAdapter{}).Import(path, store)
+			}
+			if _, err := importProvider(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append(initial, []byte("{\"type\":\n")...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := importProvider()
+			if err != nil || result.Outcomes.MalformedRecord != 1 {
+				t.Fatalf("continued import=%+v err=%v", result, err)
+			}
+			events := drainDiagnosticEvents(observer)
+			if len(events) != 1 || events[0].Classification.Reason != DiagnosticReasonInvalidJSON ||
+				events[0].Counts.MalformedRecord != 1 ||
+				events[0].Position.ByteOffset.Availability != DiagnosticAvailabilityAvailable ||
+				events[0].Position.ByteOffset.Value != uint64(len(initial)) || events[0].Position.ByteOffset.Truncated {
+				t.Fatalf("checkpoint continuation position=%+v", events)
+			}
+		})
+	}
+}
+
+func TestPollParserPositionBecomesUnavailableAcrossSourceGenerations(t *testing.T) {
+	observer, _ := NewDiagnosticObserver(4)
+	store, err := OpenWithObservation(filepath.Join(t.TempDir(), "generations.sqlite"), OpenOptions{}, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	pollID, err := newDiagnosticID()
+	if err != nil {
+		t.Fatalf("create poll ID: %v", err)
+	}
+	correlation := diagnosticCorrelation{pollID: pollID}
+	accumulator := newDiagnosticPollAccumulator(store, correlation)
+	classification := makeDiagnosticClassification(DiagnosticComponentParser, DiagnosticOperationParse,
+		DiagnosticReasonInvalidJSON, DiagnosticAdapterClaude)
+	subject := store.diagnosticSubject(DiagnosticSubjectSource, "existing-source-identity")
+	for generation, offset := range map[uint64]uint64{3: 19, 4: 37} {
+		position := DiagnosticPosition{ByteOffset: DiagnosticOptionalUint64{Value: offset, Availability: DiagnosticAvailabilityAvailable},
+			LineNumber: unavailableMeasurement()}
+		accumulator.addConditionWithPosition(classification, subject, OutcomeMalformedRecord, 1, position, generation, true)
+	}
+	accumulator.flush()
+	events := drainDiagnosticEvents(observer)
+	for _, event := range events {
+		if event.Kind == DiagnosticEventConditionSummary {
+			if event.Position.ByteOffset.Availability != DiagnosticAvailabilityNotCollected || !event.Evidence.Truncated ||
+				event.Counts.MalformedRecord != 2 {
+				t.Fatalf("cross-generation poll position was overstated: %+v", event)
+			}
+			return
+		}
+	}
+	t.Fatalf("poll condition summary missing: %+v", events)
 }
 
 func TestExpectedProviderRecordsAndIncompleteTailDoNotBecomeFailures(t *testing.T) {
@@ -241,6 +423,7 @@ func TestCollectorPublishesPollAndConditionSummariesWithMatchingCorrelation(t *t
 	if condition == nil || summary == nil || condition.PollID == "" || condition.PollID != summary.PollID ||
 		condition.Counts.Scope != DiagnosticCountPoll || condition.Counts.ScopeID != condition.PollID ||
 		condition.Counts.MalformedRecord != 1 || condition.Evidence.Scope != DiagnosticEvidencePoll ||
+		condition.Position.ByteOffset.Availability != DiagnosticAvailabilityAvailable || condition.Position.ByteOffset.Value != 0 ||
 		summary.Counts.Scope != DiagnosticCountPoll || summary.Counts.ScopeID != summary.PollID || summary.Counts.MalformedRecord != 1 {
 		t.Fatalf("condition=%+v summary=%+v", condition, summary)
 	}
@@ -351,6 +534,18 @@ func TestRequiredRootFailureIsScopedButOptionalMissingRootIsExpected(t *testing.
 		!diagnosticReferenceAvailable(rootEvent.Subject) || rootEvent.Subject.Reference == registered.Source.ID {
 		t.Fatalf("required root event = %+v", rootEvent)
 	}
+	var failedSourceCondition, failedSourcePoll uint64
+	for _, event := range events {
+		if event.Kind == DiagnosticEventConditionSummary {
+			failedSourceCondition += event.Counts.FailedSource
+		}
+		if event.Kind == DiagnosticEventPollSummary {
+			failedSourcePoll += event.Counts.FailedSource
+		}
+	}
+	if failedSourceCondition != 1 || failedSourcePoll != 1 {
+		t.Fatalf("actual missing-root failure counts: condition=%d poll=%d events=%+v", failedSourceCondition, failedSourcePoll, events)
+	}
 	assertDiagnosticPrivacy(t, *rootEvent, root, registered.Source.ID)
 	var identityCount, cursorCount int
 	if err := store.db.QueryRow(`SELECT count(*) FROM collector_source_identities`).Scan(&identityCount); err != nil {
@@ -375,6 +570,96 @@ func TestRequiredRootFailureIsScopedButOptionalMissingRootIsExpected(t *testing.
 	optionalEvents := drainDiagnosticEvents(optionalObserver)
 	if len(optionalEvents) != 1 || optionalEvents[0].Kind != DiagnosticEventPollSummary {
 		t.Fatalf("optional missing root emitted failure: %+v", optionalEvents)
+	}
+}
+
+func TestExpiredPollDeadlineDoesNotFabricateFailedSourceOutcome(t *testing.T) {
+	root := t.TempDir()
+	observer, _ := NewDiagnosticObserver(8)
+	store, err := OpenWithObservation(filepath.Join(t.TempDir(), "deadline.sqlite"), OpenOptions{}, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	collector, err := NewCollector(store, []string{root}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	result, err := collector.PollOnceContext(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) || result.Outcomes.FailedSource != 0 {
+		t.Fatalf("expired poll result=%+v err=%v", result, err)
+	}
+	events := drainDiagnosticEvents(observer)
+	var poll *DiagnosticEvent
+	var conditionFailed uint64
+	for index := range events {
+		if events[index].Kind == DiagnosticEventPollSummary {
+			poll = &events[index]
+		}
+		if events[index].Kind == DiagnosticEventConditionSummary {
+			conditionFailed += events[index].Counts.FailedSource
+		}
+	}
+	if poll == nil || poll.Counts.FailedSource != 0 || conditionFailed != 0 {
+		t.Fatalf("deadline was counted as a failed source: poll=%+v conditionFailed=%d events=%+v", poll, conditionFailed, events)
+	}
+	foundDeadline := false
+	for _, event := range events {
+		if event.Kind == DiagnosticEventOperationFailed && event.Classification.Reason == DiagnosticReasonDeadlineExceeded {
+			foundDeadline = true
+		}
+	}
+	if !foundDeadline {
+		t.Fatalf("deadline classification was lost: %+v", events)
+	}
+}
+
+func TestUnregisteredRequiredRootsHaveDistinctHandleScopedReferences(t *testing.T) {
+	rootDir := t.TempDir()
+	first := filepath.Join(rootDir, "first-private-root")
+	second := filepath.Join(rootDir, "second-private-root")
+	observer, _ := NewDiagnosticObserver(32)
+	store, err := OpenWithObservation(filepath.Join(t.TempDir(), "unregistered-roots.sqlite"), OpenOptions{}, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	collector, err := NewCollectorWithRoots(store, []CollectorRoot{{Path: first, Required: true}, {Path: second, Required: true}}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := collector.PollOnce(); err == nil {
+			t.Fatal("required missing roots did not fail")
+		}
+	}
+	events := drainDiagnosticEvents(observer)
+	var rootReferences []string
+	for _, event := range events {
+		if event.Kind != DiagnosticEventOperationFailed || event.Classification.Operation != DiagnosticOperationDiscover {
+			continue
+		}
+		if event.Subject.Kind != DiagnosticSubjectRoot || !diagnosticReferenceAvailable(event.Subject) {
+			t.Fatalf("unregistered root reference is unavailable: %+v", event)
+		}
+		rootReferences = append(rootReferences, event.Subject.Reference)
+		assertDiagnosticPrivacy(t, event, first, second, "first-private-root", "second-private-root")
+	}
+	if len(rootReferences) != 4 || rootReferences[0] == rootReferences[1] ||
+		rootReferences[0] != rootReferences[2] || rootReferences[1] != rootReferences[3] {
+		t.Fatalf("unregistered roots were not distinct and stable within the Store handle: refs=%v events=%+v", rootReferences, events)
+	}
+	for table, query := range map[string]string{
+		"collector_sources":           `SELECT count(*) FROM collector_sources`,
+		"collector_source_identities": `SELECT count(*) FROM collector_source_identities`,
+		"source_cursors":              `SELECT count(*) FROM source_cursors`,
+	} {
+		var count int
+		if err := store.db.QueryRow(query).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("diagnostics changed %s: count=%d err=%v", table, count, err)
+		}
 	}
 }
 
