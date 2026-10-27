@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,6 +117,7 @@ func TestConcurrentRefreshAcrossProcessesUsesOneReplacement(t *testing.T) {
 	var calls atomic.Int32
 	started := make(chan struct{})
 	release := make(chan struct{})
+	releaseHandler := closeOnce(release)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if err := r.ParseForm(); err != nil {
@@ -128,7 +130,10 @@ func TestConcurrentRefreshAcrossProcessesUsesOneReplacement(t *testing.T) {
 		<-release
 		_, _ = fmt.Fprint(w, `{"access_token":"rotated-process-access","refresh_token":"rotated-process-refresh","token_type":"Bearer","expires_in":3600}`)
 	}))
-	defer server.Close()
+	defer func() {
+		releaseHandler()
+		server.Close()
+	}()
 	first := startOAuthProcess(t, "resolve", path, profile.ID, server.URL)
 	first.ready(t)
 	first.release()
@@ -140,7 +145,7 @@ func TestConcurrentRefreshAcrossProcessesUsesOneReplacement(t *testing.T) {
 	second := startOAuthProcess(t, "resolve", path, profile.ID, server.URL)
 	second.ready(t)
 	second.release()
-	close(release)
+	releaseHandler()
 	first.waitResolved(t)
 	second.waitResolved(t)
 	if got := calls.Load(); got != 1 {
@@ -150,6 +155,54 @@ func TestConcurrentRefreshAcrossProcessesUsesOneReplacement(t *testing.T) {
 	if err != nil || stored.Auth.OAuth.AccessToken != "rotated-process-access" || stored.Auth.OAuth.RefreshToken != "rotated-process-refresh" {
 		t.Fatalf("rotated token set not persisted: profile=%+v err=%v", stored.Auth.OAuth, err)
 	}
+}
+
+func TestRefreshHandlerCleanupReleasesBlockedServer(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	releaseHandler := closeOnce(release)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_, _ = fmt.Fprint(w, "released")
+	}))
+	requestDone := make(chan error, 1)
+	go func() {
+		response, err := http.Get(server.URL)
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		requestDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		releaseHandler()
+		server.Close()
+		t.Fatal("blocked handler did not start")
+	}
+	releaseHandler()
+	releaseHandler()
+	closed := make(chan struct{})
+	go func() { server.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server close waited on a blocked refresh handler")
+	}
+	select {
+	case err := <-requestDone:
+		if err != nil {
+			t.Fatalf("released refresh request failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh request did not finish after cleanup release")
+	}
+}
+
+func closeOnce(channel chan struct{}) func() {
+	var once sync.Once
+	return func() { once.Do(func() { close(channel) }) }
 }
 
 type oauthProcess struct {

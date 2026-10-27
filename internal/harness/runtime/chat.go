@@ -146,6 +146,7 @@ func (c *Chat) StartLogin(ctx context.Context, providerID string, method auth.Me
 	}
 	completed := make(chan auth.OAuthLoginResult, 1)
 	events := attempt.Events
+	loginDone := attempt.Done
 	c.loginMu.Lock()
 	if c.loginOwners == nil {
 		c.loginOwners = make(map[string]auth.LoginCoordinator)
@@ -153,7 +154,7 @@ func (c *Chat) StartLogin(ctx context.Context, providerID string, method auth.Me
 	c.loginOwners[attempt.ID] = coordinator
 	c.loginMu.Unlock()
 	go func() {
-		result := <-attempt.Done
+		result := <-loginDone
 		if result.Err == nil {
 			c.mu.Lock()
 			c.discovery = nil
