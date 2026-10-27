@@ -216,7 +216,10 @@ Logger's database schema. No chat or usage history is written to Token Logger.
 
 See [phase-one architecture](phase-one-architecture.md),
 [security notes](phase-one-security.md), and the
-[phase-one acceptance status](phase-one-status.md).
+[phase-one acceptance status](phase-one-status.md). The final
+[issue #164 acceptance matrix](issue-164-acceptance.md) maps the remaining
+reliability, lifecycle, UI, and platform checks to their test evidence and
+records unverified cases and explicit limits.
 
 Implementation follows the official [Sign in with ChatGPT open-source flow](https://developers.openai.com/siwc/token-sharing-open-source),
 [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations),

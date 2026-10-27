@@ -17,7 +17,7 @@ Evidence below refers to deterministic tests and source paths in this branch.
 | OpenAI model-list pagination | Complete for current endpoint | Current OpenAI list endpoint returns a model list without a page cursor; the adapter decodes the complete result. |
 | Discovery partial failures and profile identity | Complete | `internal/harness/model/`; provider/profile/model tuple avoids account collisions and partial failures are represented by profile. |
 | Request options, tools, multimodal, automatic routing | Deferred by plan | Only text, minimal system instruction, API-key output limit, stream, and cancellation are sent. The SIWC OAuth preview route omits `max_output_tokens`. Tools are not advertised or executed. |
-| Windows private credential ACL | Implemented; hosted validation pending | Windows-specific DACL, lock, no-reparse open, and replacement paths are present. Local test execution is Linux; CI must validate Windows. |
+| Windows private credential ACL | Implemented; hosted validation passed for the existing suite | Windows-specific DACL, lock, no-reparse open, and replacement paths are covered by the hosted Windows test matrix. The new issue-164 process-boundary tests still require this branch's hosted Windows run; see the [issue #164 acceptance matrix](issue-164-acceptance.md). |
 | Provider live verification | Not tested | No credentials were used. Fake HTTP tests do not claim real-provider connectivity. |
 | Both-provider UI walkthrough through a real provider | Not tested | Offline adapter/runtime/UI components are tested separately. A live/billable walkthrough requires explicit opt-in. |
 
