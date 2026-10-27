@@ -250,6 +250,11 @@ func (s *Store) UpdateCollectorSourceHealth(id, status, message string) error {
 }
 
 func (s *Store) AcquireCollectorLease(instanceID string, pid int, version, mode string, interval, staleAfter time.Duration) (bool, error) {
+	recovered, err := s.acquireCollectorLease(instanceID, pid, version, mode, interval, staleAfter)
+	return recovered, s.observeCollectorFailure(err, DiagnosticOperationAcquireLease)
+}
+
+func (s *Store) acquireCollectorLease(instanceID string, pid int, version, mode string, interval, staleAfter time.Duration) (bool, error) {
 	if instanceID == "" {
 		return false, errors.New("collector instance ID is required")
 	}
@@ -302,11 +307,21 @@ func (s *Store) AcquireCollectorLease(instanceID string, pid int, version, mode 
 }
 
 func (s *Store) MarkCollectorReady(instanceID string) error {
+	err := s.markCollectorReady(instanceID)
+	return s.observeCollectorFailure(err, DiagnosticOperationAcquireLease)
+}
+
+func (s *Store) markCollectorReady(instanceID string) error {
 	result, err := s.db.Exec(`UPDATE collector_runtime SET state = 'running', heartbeat_at = ? WHERE singleton = 1 AND instance_id = ?`, formatStoredTime(time.Now()), instanceID)
 	return leaseResult(result, err)
 }
 
 func (s *Store) HeartbeatCollector(instanceID string) (bool, error) {
+	requested, err := s.heartbeatCollector(instanceID)
+	return requested, s.observeCollectorFailure(err, DiagnosticOperationHeartbeat)
+}
+
+func (s *Store) heartbeatCollector(instanceID string) (bool, error) {
 	result, err := s.db.Exec(`UPDATE collector_runtime SET heartbeat_at = ? WHERE singleton = 1 AND instance_id = ?`, formatStoredTime(time.Now()), instanceID)
 	if err := leaseResult(result, err); err != nil {
 		return false, err
@@ -333,6 +348,11 @@ func leaseResult(result sql.Result, err error) error {
 }
 
 func (s *Store) BeginCollectorPoll(instanceID string, sourceCount int) error {
+	err := s.beginCollectorPoll(instanceID, sourceCount)
+	return s.observeCollectorFailure(err, DiagnosticOperationHeartbeat)
+}
+
+func (s *Store) beginCollectorPoll(instanceID string, sourceCount int) error {
 	result, err := s.db.Exec(`UPDATE collector_runtime SET state = CASE WHEN stop_requested_at IS NULL THEN 'running' ELSE 'stopping' END,
 		heartbeat_at = ?, last_poll_at = ?, source_count = ?
 		WHERE singleton = 1 AND instance_id = ?`, formatStoredTime(time.Now()), formatStoredTime(time.Now()), sourceCount, instanceID)
@@ -340,6 +360,11 @@ func (s *Store) BeginCollectorPoll(instanceID string, sourceCount int) error {
 }
 
 func (s *Store) CompleteCollectorPoll(instanceID string, result ImportResult, health CollectorHealth, pollErr error) error {
+	err := s.completeCollectorPoll(instanceID, result, health, pollErr)
+	return s.observeCollectorFailure(err, DiagnosticOperationHeartbeat)
+}
+
+func (s *Store) completeCollectorPoll(instanceID string, result ImportResult, health CollectorHealth, pollErr error) error {
 	state, message := "running", ""
 	if pollErr != nil || result.Outcomes.Incomplete() {
 		state = "degraded"
@@ -366,6 +391,11 @@ func (s *Store) CompleteCollectorPoll(instanceID string, result ImportResult, he
 }
 
 func (s *Store) RequestCollectorStop() (bool, error) {
+	requested, err := s.requestCollectorStop()
+	return requested, s.observeCollectorFailure(err, DiagnosticOperationRequestStop)
+}
+
+func (s *Store) requestCollectorStop() (bool, error) {
 	result, err := s.db.Exec(`UPDATE collector_runtime SET state = 'stopping', stop_requested_at = COALESCE(stop_requested_at, ?)
 		WHERE singleton = 1 AND state IN ('starting', 'running', 'degraded', 'stopping')`, formatStoredTime(time.Now()))
 	if err != nil {
@@ -376,6 +406,11 @@ func (s *Store) RequestCollectorStop() (bool, error) {
 }
 
 func (s *Store) ReleaseCollectorLease(instanceID, terminalState, message string) error {
+	err := s.releaseCollectorLease(instanceID, terminalState, message)
+	return s.observeCollectorFailure(err, DiagnosticOperationReleaseLease)
+}
+
+func (s *Store) releaseCollectorLease(instanceID, terminalState, message string) error {
 	now := formatStoredTime(time.Now())
 	if message != "" {
 		message = SanitizeDiagnostic(message)

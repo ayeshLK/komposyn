@@ -118,26 +118,49 @@ func (c *Collector) PollOnce() (ImportResult, error) {
 
 // PollOnceContext scans once and stops between discovery/import records when
 // cancelled. A persistence transaction already in progress remains atomic.
-func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
+func (c *Collector) PollOnceContext(ctx context.Context) (total ImportResult, pollErr error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	correlation := diagnosticCorrelationFrom(ctx)
+	var accumulator *diagnosticPollAccumulator
+	if c.store.diagnosticObserver != nil {
+		correlation.operationID = ""
+		correlation.pollID, _ = newDiagnosticID()
+		accumulator = newDiagnosticPollAccumulator(c.store, correlation)
+		correlation.accumulator = accumulator
+		ctx = withDiagnosticCorrelation(ctx, correlation)
+		defer accumulator.flush()
+	}
 	now := time.Now().UTC()
 	c.mu.Lock()
 	c.health.Status = "running"
 	c.health.LastPollAt = now
 	c.mu.Unlock()
 	discovery := discoverCollectorSources(ctx, c.roots)
-	total := ImportResult{}
 	var pollErrors []error
 	rootHealth := make(map[string]CollectorRootHealth, len(c.roots))
 	for _, root := range c.roots {
 		rootHealth[root.Path] = CollectorRootHealth{Status: "healthy"}
 	}
 	for _, failure := range discovery.Failures {
+		var subject DiagnosticSubject
+		if failure.TargetPath != "" {
+			subject = c.store.discoveryTargetDiagnosticSubject(failure.TargetPath)
+		} else {
+			subject = c.store.registeredRootDiagnosticSubject(failure.RootPath)
+		}
 		if errors.Is(failure.Err, context.Canceled) || errors.Is(failure.Err, context.DeadlineExceeded) {
-			pollErrors = append(pollErrors, failure.Err)
+			classification := classifyDiscoveryFailure(failure.Err)
+			failureErr := c.store.observeFailure(ctx, failure.Err, classification, subject)
+			pollErrors = append(pollErrors, failureErr)
 			continue
 		}
 		total.Outcomes.Add(OutcomeFailedSource)
-		pollErrors = append(pollErrors, failure.Err)
+		classification := classifyDiscoveryFailure(failure.Err)
+		recordFailedSourceOutcomeAt(ctx, classification, subject)
+		failureErr := c.store.observeFailure(ctx, failure.Err, classification, subject)
+		pollErrors = append(pollErrors, failureErr)
 		c.recordFailure(failure.Err, DiagnosticCategoryIngestion)
 		root := rootHealth[failure.RootPath]
 		root.Status = "degraded"
@@ -162,7 +185,8 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			rootHealth[rootPath] = root
 		}
 		if err := ctx.Err(); err != nil {
-			pollErrors = append(pollErrors, err)
+			pollErrors = append(pollErrors, c.store.observeFailure(ctx, err,
+				classifyDiscoveryFailure(err), DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected}))
 			interrupted = true
 			break
 		}
@@ -170,7 +194,8 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 			c.beforeSource(path)
 		}
 		if err := ctx.Err(); err != nil {
-			pollErrors = append(pollErrors, err)
+			pollErrors = append(pollErrors, c.store.observeFailure(ctx, err,
+				classifyDiscoveryFailure(err), DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected}))
 			interrupted = true
 			break
 		}
@@ -182,6 +207,12 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 				break
 			}
 			total.Outcomes.Add(OutcomeFailedSource)
+			failureClassification := classifyImportFailure(importErr, adapter)
+			if details, ok := FailureDetails(importErr); ok {
+				failureClassification = details.Classification
+			}
+			recordFailedSourceOutcomeAt(ctx, failureClassification,
+				DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected})
 			pollErrors = append(pollErrors, importErr)
 			c.recordFailure(fmt.Errorf("import %s source: %w", adapter, importErr), DiagnosticCategoryIngestion)
 			mergeCollectorRootFailure(rootHealth, source.RootPaths, importErr)
@@ -221,7 +252,14 @@ func (c *Collector) PollOnceContext(ctx context.Context) (ImportResult, error) {
 	c.health.DiscoveryFailures = len(discovery.Failures)
 	c.health.Roots = rootHealth
 	c.mu.Unlock()
-	return total, errors.Join(pollErrors...)
+	pollErr = errors.Join(pollErrors...)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(pollErr, context.DeadlineExceeded) {
+		pollErr = errors.Join(pollErr, c.store.observeFailure(ctx, context.DeadlineExceeded,
+			makeDiagnosticClassification(DiagnosticComponentCollector, DiagnosticOperationRead,
+				DiagnosticReasonDeadlineExceeded, DiagnosticAdapterUnavailable),
+			DiagnosticSubject{Availability: DiagnosticAvailabilityNotCollected}))
+	}
+	return total, pollErr
 }
 
 func mergeCollectorRootFailure(health map[string]CollectorRootHealth, roots []string, err error) {
@@ -287,6 +325,7 @@ func (c *Collector) Run(ctx context.Context) error {
 // RunImmediate performs one poll immediately, then continues at the configured
 // interval until cancellation.
 func (c *Collector) RunImmediate(ctx context.Context, observer func(ImportResult, error)) error {
+	ctx = c.collectorRunContext(ctx)
 	c.mu.Lock()
 	c.health.Lifecycle = "starting"
 	c.mu.Unlock()
@@ -295,6 +334,7 @@ func (c *Collector) RunImmediate(ctx context.Context, observer func(ImportResult
 		observer(result, err)
 	}
 	if ctx.Err() != nil {
+		diagnosticCorrelationFrom(ctx).runAccumulator.flush()
 		c.mu.Lock()
 		c.health.Lifecycle = "stopped"
 		c.mu.Unlock()
@@ -306,6 +346,8 @@ func (c *Collector) RunImmediate(ctx context.Context, observer func(ImportResult
 // RunWithResults polls until ctx is cancelled and reports every completed poll
 // to observer. The observer runs synchronously and must return promptly.
 func (c *Collector) RunWithResults(ctx context.Context, observer func(ImportResult, error)) error {
+	ctx = c.collectorRunContext(ctx)
+	defer diagnosticCorrelationFrom(ctx).runAccumulator.flush()
 	if err := ctx.Err(); err != nil {
 		c.mu.Lock()
 		c.health.Lifecycle = "stopped"
@@ -339,6 +381,23 @@ func (c *Collector) RunWithResults(ctx context.Context, observer func(ImportResu
 	}
 }
 
+func (c *Collector) collectorRunContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c.store == nil || c.store.diagnosticObserver == nil {
+		return ctx
+	}
+	correlation := diagnosticCorrelationFrom(ctx)
+	if correlation.runID == "" {
+		correlation.runID, _ = newDiagnosticID()
+	}
+	if correlation.runAccumulator == nil {
+		correlation.runAccumulator = newDiagnosticRunAccumulator(c.store, correlation)
+	}
+	return withDiagnosticCorrelation(ctx, correlation)
+}
+
 func (c *Collector) recordFailure(err error, category string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -359,8 +418,9 @@ func (c *Collector) recordDiagnostic(message, category string) (Diagnostic, erro
 }
 
 type collectorDiscoveryFailure struct {
-	RootPath string
-	Err      error
+	RootPath   string
+	TargetPath string
+	Err        error
 }
 
 type collectorDiscovery struct {
@@ -430,7 +490,8 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 				return err
 			}
 			if walkErr != nil {
-				result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: fmt.Errorf("inspect source subtree: %w", walkErr)})
+				result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path,
+					TargetPath: path, Err: fmt.Errorf("inspect source subtree: %w", walkErr)})
 				if entry != nil && entry.IsDir() {
 					return filepath.SkipDir
 				}
@@ -439,7 +500,8 @@ func discoverCollectorSources(ctx context.Context, roots []CollectorRoot) collec
 			if !entry.IsDir() && (filepath.Ext(path) == ".jsonl" || filepath.Ext(path) == ".json") {
 				canonicalPath, canonicalErr := canonicalCollectorPath(path)
 				if canonicalErr != nil {
-					result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path, Err: fmt.Errorf("resolve discovered source: %w", canonicalErr)})
+					result.Failures = append(result.Failures, collectorDiscoveryFailure{RootPath: root.Path,
+						TargetPath: path, Err: fmt.Errorf("resolve discovered source: %w", canonicalErr)})
 					return nil
 				}
 				resolvedPath, _ := filepath.EvalSymlinks(path)
