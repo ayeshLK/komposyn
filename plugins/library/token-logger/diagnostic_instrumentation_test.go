@@ -22,7 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -178,10 +177,9 @@ func TestParserPositionsAreBoundedRepresentativeSamples(t *testing.T) {
 	})
 }
 
-func TestParserPositionFromDiscardedSnapshotRetryIsNotPublished(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "mutating-source.jsonl")
-	initial := []byte("{\"type\":\"assistant\",\"message\": }\n" + syntheticClaudeDiagnosticSource())
-	current := []byte(syntheticClaudeDiagnosticSource())
+func TestParserPositionFromCursorRetryIsRegeneratedWithoutDuplicateSamples(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retry-source.jsonl")
+	initial := []byte(syntheticClaudeDiagnosticSource())
 	if err := os.WriteFile(path, initial, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -195,34 +193,55 @@ func TestParserPositionFromDiscardedSnapshotRetryIsNotPublished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var once sync.Once
+	if _, err := collector.PollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	_ = drainDiagnosticEvents(observer)
+	malformed := []byte("{\"type\":\"assistant\",\"message\": }\n")
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(malformed); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var cursorID string
+	if err := store.db.QueryRow(`SELECT source_id FROM source_cursors LIMIT 1`).Scan(&cursorID); err != nil {
+		t.Fatal(err)
+	}
+	parserPasses := 0
+	store.beforeSnapshotParse = func() { parserPasses++ }
+	var once bool
 	store.sourceReadHook = func(pass int, bytesRead int64) {
 		if pass == 2 && bytesRead > 0 {
-			once.Do(func() {
-				replacement := path + ".replacement"
-				if err := os.WriteFile(replacement, current, 0o600); err != nil {
-					t.Errorf("replace source during speculative parser pass: %v", err)
-					return
-				}
-				if err := os.Remove(path); err != nil {
-					t.Errorf("remove source during speculative parser pass: %v", err)
-					return
-				}
-				if err := os.Rename(replacement, path); err != nil {
-					t.Errorf("install replacement source during speculative parser pass: %v", err)
-				}
-			})
+			if once {
+				return
+			}
+			once = true
+			if _, err := store.db.Exec(`UPDATE source_cursors SET last_provider_record_id = 'concurrent-cursor-change' WHERE source_id = ?`, cursorID); err != nil {
+				t.Errorf("force cursor compare-and-swap retry: %v", err)
+			}
 		}
 	}
 	result, err := collector.PollOnce()
-	if err != nil || result.Receipt.Imported != 1 || result.Outcomes.MalformedRecord != 0 {
+	if err != nil || result.Outcomes.MalformedRecord != 1 || parserPasses < 2 {
 		t.Fatalf("retried import=%+v err=%v", result, err)
 	}
 	events := drainDiagnosticEvents(observer)
+	var parserEvent *DiagnosticEvent
 	for _, event := range events {
 		if event.Kind == DiagnosticEventConditionSummary && event.Classification.Component == DiagnosticComponentParser {
-			t.Fatalf("discarded-pass parser evidence was published: %+v", event)
+			copy := event
+			parserEvent = &copy
 		}
+	}
+	if parserEvent == nil || parserEvent.Counts.MalformedRecord != 1 ||
+		parserEvent.Position.ByteOffset.Availability != DiagnosticAvailabilityAvailable ||
+		parserEvent.Position.ByteOffset.Value != uint64(len(initial)) || parserEvent.Position.ByteOffset.Truncated {
+		t.Fatalf("cursor retry retained duplicate or stale position samples: %+v", events)
 	}
 }
 
