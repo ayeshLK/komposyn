@@ -105,7 +105,7 @@ func (c Client) Disconnect(ctx context.Context, providerID, method, id string, r
 	result, err := c.Chat.Disconnect(ctx, providerID, auth.Method(method), id, remove, confirm)
 	return ui.DisconnectResult{RemoteRevocationConfirmed: result.RemoteRevocationConfirmed, LocalRegistrationRemoved: result.LocalRegistrationRemoved, LocalTokensRemoved: result.LocalTokensRemoved}, adaptError(err)
 }
-func (c Client) OpenUsage() error { return c.Chat.OpenOAuthUsage() }
+func (c Client) OpenUsage(ctx context.Context) error { return c.Chat.OpenOAuthUsage(ctx) }
 func (c Client) RemoveProfile(id string, confirm bool) error {
 	return adaptError(c.Chat.RemoveProfile(id, confirm))
 }

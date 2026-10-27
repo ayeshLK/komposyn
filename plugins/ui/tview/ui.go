@@ -573,7 +573,7 @@ func (u *terminal) manageOAuthProfile(p ui.Profile) {
 			u.startOpenAILogin(p.ID)
 		case "Manage usage":
 			u.launch(func() {
-				err := u.client.OpenUsage()
+				err := u.client.OpenUsage(u.ctx)
 				if err != nil {
 					u.queue(func() { u.showMessage("Could not open usage settings", err.Error(), func() { u.manageProviders() }) })
 				}

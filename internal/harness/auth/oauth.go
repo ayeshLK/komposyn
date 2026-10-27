@@ -78,7 +78,7 @@ type LoginCoordinator interface {
 
 type OAuthCoordinator interface {
 	LoginCoordinator
-	OpenUsage() error
+	OpenUsage(context.Context) error
 }
 
 // BrowserOpener is the only capability the provider auth implementation uses

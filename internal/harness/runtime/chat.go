@@ -240,11 +240,11 @@ func (c *Chat) Disconnect(ctx context.Context, providerID string, method auth.Me
 	return result, err
 }
 
-func (c *Chat) OpenOAuthUsage() error {
+func (c *Chat) OpenOAuthUsage(ctx context.Context) error {
 	if c.oauth == nil {
 		return errors.New("OAuth account usage page is unavailable")
 	}
-	return c.oauth.OpenUsage()
+	return c.oauth.OpenUsage(ctx)
 }
 func (c *Chat) Discover(ctx context.Context) model.Discovery {
 	d := c.catalog.Discover(ctx)

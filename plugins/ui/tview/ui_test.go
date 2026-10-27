@@ -109,7 +109,7 @@ func (c *clientStub) CancelLogin(id string) bool {
 func (c *clientStub) Disconnect(context.Context, string, string, string, bool, bool) (ui.DisconnectResult, error) {
 	return ui.DisconnectResult{LocalTokensRemoved: true}, nil
 }
-func (c *clientStub) OpenUsage() error { return nil }
+func (c *clientStub) OpenUsage(context.Context) error { return nil }
 func (c *clientStub) Select(_ context.Context, key string, _ bool) error {
 	d, _ := c.Discover(context.Background())
 	for _, m := range d.Models {

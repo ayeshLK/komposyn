@@ -88,7 +88,7 @@ type Client interface {
 	StartLogin(context.Context, string, string, string) (LoginAttempt, error)
 	CancelLogin(string) bool
 	Disconnect(context.Context, string, string, string, bool, bool) (DisconnectResult, error)
-	OpenUsage() error
+	OpenUsage(context.Context) error
 	RemoveProfile(string, bool) error
 	Select(context.Context, string, bool) error
 	Snapshot() Snapshot

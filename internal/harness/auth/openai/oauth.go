@@ -747,8 +747,8 @@ func (m *Manager) Disconnect(ctx context.Context, profileID string, removeRegist
 	return result, nil
 }
 
-func (m *Manager) OpenUsage() error {
-	if err := m.browser(UsageURL); err != nil {
+func (m *Manager) OpenUsage(ctx context.Context) error {
+	if err := m.openURL.Open(ctx, UsageURL); err != nil {
 		return errors.New("could not open ChatGPT usage settings in the system browser")
 	}
 	return nil

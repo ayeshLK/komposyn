@@ -237,6 +237,31 @@ func TestLoginUsesInjectedBrowserAndEmitsURLFreeProgress(t *testing.T) {
 	}
 }
 
+func TestOpenUsageUsesInjectedBrowserAndSanitizesErrors(t *testing.T) {
+	var opened []string
+	manager := NewWithBrowser(auth.Store{}, auth.BrowserOpenerFunc(func(_ context.Context, target string) error {
+		opened = append(opened, target)
+		return nil
+	}))
+	if err := manager.OpenUsage(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) != 1 || opened[0] != UsageURL {
+		t.Fatalf("opened URLs=%q, want only %q", opened, UsageURL)
+	}
+
+	failed := NewWithBrowser(auth.Store{}, auth.BrowserOpenerFunc(func(_ context.Context, target string) error {
+		if target != UsageURL {
+			t.Errorf("failure opener URL=%q, want %q", target, UsageURL)
+		}
+		return errors.New("private opener diagnostic")
+	}))
+	err := failed.OpenUsage(context.Background())
+	if err == nil || err.Error() != "could not open ChatGPT usage settings in the system browser" || strings.Contains(err.Error(), "private opener diagnostic") {
+		t.Fatalf("opener failure was not sanitized: %v", err)
+	}
+}
+
 func TestExpiredAndMisboundIDTokensAreRejected(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
