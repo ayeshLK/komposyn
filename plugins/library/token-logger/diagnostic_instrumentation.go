@@ -25,6 +25,7 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"path/filepath"
 	"time"
 
 	sqlite3 "modernc.org/sqlite"
@@ -123,8 +124,14 @@ func (store *Store) registeredRootDiagnosticSubject(path string) DiagnosticSubje
 	if err != nil {
 		return DiagnosticSubject{Kind: DiagnosticSubjectRoot, Availability: DiagnosticAvailabilityNotCollected}
 	}
+	displayPath, err := absoluteCollectorPath(path)
+	if err != nil {
+		return DiagnosticSubject{Kind: DiagnosticSubjectRoot, Availability: DiagnosticAvailabilityNotCollected}
+	}
 	var id string
-	if err := store.db.QueryRow(`SELECT id FROM collector_sources WHERE canonical_path = ?`, canonical).Scan(&id); err != nil || errors.Is(err, sql.ErrNoRows) {
+	if err := store.db.QueryRow(`SELECT id FROM collector_sources
+		WHERE canonical_path = ? OR display_path = ? ORDER BY CASE WHEN canonical_path = ? THEN 0 ELSE 1 END LIMIT 1`,
+		canonical, filepath.Clean(displayPath), canonical).Scan(&id); err != nil || errors.Is(err, sql.ErrNoRows) {
 		return DiagnosticSubject{Kind: DiagnosticSubjectRoot, Availability: DiagnosticAvailabilityNotCollected}
 	}
 	return store.diagnosticSubject(DiagnosticSubjectRoot, id)

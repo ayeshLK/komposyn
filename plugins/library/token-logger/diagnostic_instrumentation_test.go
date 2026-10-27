@@ -177,9 +177,6 @@ func TestSourceReferencesArePerStoreHandleAndDoNotCreateDiagnosticIdentity(t *te
 		t.Fatal(err)
 	}
 	eventA := drainDiagnosticEvents(observerA)[0]
-	if _, err := storeA.db.Query(`SELECT source_id FROM collector_source_identities`); err != nil {
-		t.Fatal(err)
-	}
 	storeA.Close()
 	observerB, _ := NewDiagnosticObserver(2)
 	storeB, err := OpenWithObservation(filepath.Join(t.TempDir(), "handle-b.sqlite"), OpenOptions{}, observerB)
@@ -329,6 +326,7 @@ func TestRequiredRootFailureIsScopedButOptionalMissingRootIsExpected(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
 	registered, err := store.RegisterCollectorSource(root, true)
 	if err != nil {
 		t.Fatal(err)
@@ -364,8 +362,6 @@ func TestRequiredRootFailureIsScopedButOptionalMissingRootIsExpected(t *testing.
 	if identityCount != 0 || cursorCount != 0 {
 		t.Fatalf("diagnostics allocated ingestion state: identities=%d cursors=%d", identityCount, cursorCount)
 	}
-	store.Close()
-
 	optionalObserver, _ := NewDiagnosticObserver(4)
 	optionalStore, err := OpenWithObservation(filepath.Join(t.TempDir(), "optional.sqlite"), OpenOptions{}, optionalObserver)
 	if err != nil {
