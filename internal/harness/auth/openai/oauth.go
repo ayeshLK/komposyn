@@ -49,10 +49,11 @@ const (
 )
 
 var (
-	ErrLoginCanceled     = errors.New("OpenAI sign-in was canceled")
-	ErrLoginDenied       = errors.New("OpenAI sign-in was declined")
-	ErrPlanUsageDisabled = auth.ErrOAuthPermissionRequired
-	ErrAuthClosed        = errors.New("OpenAI authentication manager is closed")
+	ErrLoginCanceled          = errors.New("OpenAI sign-in was canceled")
+	ErrLoginDenied            = errors.New("OpenAI sign-in was declined")
+	ErrPlanUsageDisabled      = auth.ErrOAuthPermissionRequired
+	ErrAuthClosed             = errors.New("OpenAI authentication manager is closed")
+	errAmbiguousTokenExchange = errors.New("OAuth token exchange outcome is ambiguous")
 )
 
 const (
@@ -409,6 +410,7 @@ type tokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 	Scope        string `json:"scope"`
 	Error        string `json:"error"`
+	StatusCode   int    `json:"-"`
 }
 
 func (m *Manager) exchangeCode(ctx context.Context, clientID, code, verifier, redirectURI string) (auth.OAuthTokens, error) {
@@ -445,17 +447,21 @@ func (m *Manager) postForm(ctx context.Context, endpoint string, values url.Valu
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return tokenResponse{}, errors.New("OpenAI authentication service could not be reached")
+		return tokenResponse{}, errors.Join(errAmbiguousTokenExchange, errors.New("OpenAI authentication service could not be reached"))
 	}
 	defer resp.Body.Close()
 	var parsed tokenResponse
 	if err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&parsed); err != nil {
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return tokenResponse{}, errors.New("OpenAI returned an invalid authentication response")
+		if resp.StatusCode >= http.StatusInternalServerError || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+			return tokenResponse{}, errors.Join(errAmbiguousTokenExchange, errors.New("OpenAI returned an invalid authentication response"))
 		}
 		return tokenResponse{}, fmt.Errorf("OpenAI authentication failed (HTTP %d)", resp.StatusCode)
 	}
+	parsed.StatusCode = resp.StatusCode
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= http.StatusInternalServerError {
+			return parsed, nil
+		}
 		if parsed.Error != "" {
 			return parsed, nil
 		}
@@ -571,7 +577,13 @@ func (m *Manager) refreshTokens(op *refreshOperation, current auth.OAuthCredenti
 	form.Set("resource", m.resource)
 	response, err := m.postForm(ctx, m.token, form)
 	if err != nil {
+		if errors.Is(err, errAmbiguousTokenExchange) {
+			return auth.OAuthTokens{}, errors.Join(auth.ErrOAuthRefreshOutcomeUnknown, err)
+		}
 		return auth.OAuthTokens{}, err
+	}
+	if response.StatusCode >= http.StatusInternalServerError && response.Error != "server_error" && response.Error != "temporarily_unavailable" {
+		return auth.OAuthTokens{}, auth.ErrOAuthRefreshOutcomeUnknown
 	}
 	switch response.Error {
 	case "invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused":
@@ -583,7 +595,11 @@ func (m *Manager) refreshTokens(op *refreshOperation, current auth.OAuthCredenti
 		return auth.OAuthTokens{}, errors.New("OpenAI could not refresh this account")
 	}
 	response.IDToken = "" // retain the last validated ID token as a login hint
-	return m.tokensFromRefresh(response, m.now())
+	tokens, err := m.tokensFromRefresh(response, m.now())
+	if err != nil {
+		return auth.OAuthTokens{}, errors.Join(auth.ErrOAuthRefreshOutcomeUnknown, err)
+	}
+	return tokens, nil
 }
 
 // Close rejects new refresh operations, cancels operations still waiting to

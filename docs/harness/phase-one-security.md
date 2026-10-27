@@ -26,11 +26,15 @@ passes only one resolved credential into a provider call. Refresh is serialized
 under the auth-file interprocess lock. A canceled caller can stop waiting for
 the lock; after a refresh exchange begins, it runs with an independent
 15-second timeout and a successful replacement is persisted before unlocking.
-The CLI drains in-flight exchanges during normal shutdown. Temporary refresh
-errors preserve the stored credentials, while confirmed unusable-token errors
-mark reconnect required. If the process terminates or a network failure makes
-the exchange outcome ambiguous, a provider-rotated token may be unrecoverable;
-KompoSyn does not blindly retry it.
+The CLI drains in-flight exchanges during normal shutdown. Confirmed temporary
+OAuth rejections preserve stored credentials and can be retried later. When a
+transport failure, malformed success response, or server failure leaves the
+refresh outcome ambiguous, KompoSyn preserves the credentials, records that
+the outcome is unknown, and requires reconnection without submitting the old
+refresh token again. Process termination before that state is saved can still
+leave a provider-rotated token unrecoverable. Chat reads use bounded,
+cancellable lock waits and run outside the chat mutex, so snapshots and
+cancellation remain responsive while another process holds the auth-file lock.
 Disconnect attempts the discovered remote refresh-token revocation endpoint,
 then removes local tokens; the UI distinguishes confirmed remote revocation
 from local-only removal. Removing an API-key profile does not revoke that key.

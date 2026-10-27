@@ -67,8 +67,8 @@ func (r *Registry) All() []provider.Provider {
 }
 
 type ProfileStore interface {
-	ListMetadata() ([]auth.Metadata, error)
-	Resolve(string) (auth.Profile, string, error)
+	ListMetadataContext(context.Context) ([]auth.Metadata, error)
+	ResolveContext(context.Context, string) (auth.Profile, string, error)
 	AddAPIKey(string, string, string, string, map[string]string) error
 	ReplaceAPIKey(string, string, string, map[string]string) error
 	Remove(string) error
@@ -98,7 +98,7 @@ type Catalog struct {
 }
 
 func (c Catalog) Discover(ctx context.Context) Discovery {
-	profiles, err := c.Profiles.ListMetadata()
+	profiles, err := c.Profiles.ListMetadataContext(ctx)
 	if err != nil {
 		return Discovery{Failures: []ProfileFailure{{Outcome: provider.OutcomeService}}}
 	}
@@ -128,7 +128,7 @@ func (c Catalog) Discover(ctx context.Context) Discovery {
 				}
 				resolved, key, err = c.OAuth.Resolve(ctx, p.ID)
 			} else {
-				resolved, key, err = c.Profiles.Resolve(p.ID)
+				resolved, key, err = c.Profiles.ResolveContext(ctx, p.ID)
 			}
 			if err != nil {
 				ch <- item{failure: &ProfileFailure{ProfileID: p.ID, Provider: p.Provider, Label: p.Label, Outcome: provider.OutcomeAuthentication}}
@@ -194,6 +194,7 @@ func ProfileVersion(p auth.Profile, key string) string {
 		oauth.ExpiresAt = time.Time{}
 		oauth.LifecycleGeneration = 0
 		oauth.ReconnectRequired = false
+		oauth.RefreshOutcomeUnknown = false
 		p.Auth.OAuth = &oauth
 		key = ""
 	}

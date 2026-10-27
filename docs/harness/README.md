@@ -120,8 +120,15 @@ does not start inference or append a completed turn. On normal CLI shutdown,
 refreshes waiting to start are canceled and started exchanges are drained
 within the CLI's 20-second shutdown window. Process termination or an
 ambiguous network/timeout failure can still lose a replacement if the provider
-rotated the token but the response was not received; KompoSyn does not blindly
-retry that token and may require the user to sign in again.
+rotated the token but the response was not received. When KompoSyn observes an
+ambiguous exchange failure, it preserves the saved credentials, marks the
+profile as requiring reconnection, and will not submit that refresh token
+again automatically. If the process terminates before that state is saved, the
+provider may have rotated a token that KompoSyn cannot recover; the user may
+need to sign in again. Confirmed temporary OAuth rejections preserve the
+credentials without marking the outcome unknown. Chat credential reads happen
+outside the chat mutex and use cancellable, bounded lock waits so snapshots and
+cancellation stay responsive while another process owns the auth-file lock.
 
 Settings contain only the schema version and UI plugin selection:
 

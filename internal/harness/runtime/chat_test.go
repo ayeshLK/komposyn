@@ -289,6 +289,7 @@ func TestCanceledChatRefreshDoesNotStartInferenceOrAppendTurn(t *testing.T) {
 	selected := model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: p.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "")}
 	chat.selected = &selected
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	sendDone := make(chan error, 1)
 	go func() {
 		_, sendErr := chat.Send(ctx, "prompt", nil)
@@ -315,6 +316,112 @@ func TestCanceledChatRefreshDoesNotStartInferenceOrAppendTurn(t *testing.T) {
 	snapshot := chat.Snapshot()
 	if snapshot.Active || len(snapshot.Turns) != 0 {
 		t.Fatalf("canceled OAuth wait produced stale chat state: %+v", snapshot)
+	}
+}
+
+type blockingStoreResolver struct {
+	store   auth.Store
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r blockingStoreResolver) Resolve(ctx context.Context, id string) (auth.Profile, string, error) {
+	profile, err := r.store.RefreshOAuthContext(ctx, id, time.Now, func(auth.OAuthCredential) (auth.OAuthTokens, error) {
+		close(r.started)
+		<-r.release
+		return auth.OAuthTokens{AccessToken: "rotated-access", RefreshToken: "rotated-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)}, nil
+	})
+	if err != nil {
+		return auth.Profile{}, "", err
+	}
+	return profile, profile.Auth.OAuth.AccessToken, nil
+}
+
+func TestSnapshotAndCancelStayResponsiveDuringAuthStoreLockWait(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	hostID, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := auth.NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := auth.Profile{ID: "openai-chatgpt-blocked-store", Provider: "openai", Label: "ChatGPT", Revision: revision, Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "issued-client", Issuer: "https://auth.openai.com", Subject: "stable-subject", HostID: hostID, IDToken: "validated-id", AccessToken: "old-access", RefreshToken: "old-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(-time.Minute)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	plug := &fakeProvider{id: p.OpenAI}
+	registry, err := model.NewRegistry(plug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := blockingStoreResolver{store: store, started: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	releaseRefresh := func() { releaseOnce.Do(func() { close(resolver.release) }) }
+	t.Cleanup(releaseRefresh)
+	chat := NewChat(registry, store)
+	chat.oauthResolver = resolver
+	selected := model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: p.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "")}
+	chat.selected = &selected
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, _, refreshErr := resolver.Resolve(context.Background(), profile.ID)
+		refreshDone <- refreshErr
+	}()
+	select {
+	case <-resolver.started:
+	case <-time.After(2 * time.Second):
+		releaseRefresh()
+		t.Fatal("background refresh did not acquire the auth-file lock")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sendDone := make(chan error, 1)
+	go func() {
+		_, sendErr := chat.Send(ctx, "prompt", nil)
+		sendDone <- sendErr
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !chat.Snapshot().Active && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !chat.Snapshot().Active {
+		cancel()
+		releaseRefresh()
+		t.Fatal("chat request did not register before waiting on credential storage")
+	}
+	snapshotDone := make(chan struct{})
+	go func() {
+		_ = chat.Snapshot()
+		close(snapshotDone)
+	}()
+	select {
+	case <-snapshotDone:
+	case <-time.After(100 * time.Millisecond):
+		cancel()
+		releaseRefresh()
+		t.Fatal("Snapshot blocked behind the auth-file lock")
+	}
+	chat.Cancel()
+	select {
+	case err := <-sendDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled lock waiter error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Cancel did not stop the auth-file lock wait")
+	}
+	releaseRefresh()
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := len(plug.captured()); got != 0 {
+		t.Fatalf("canceled lock waiter started inference %d times", got)
+	}
+	if snapshot := chat.Snapshot(); snapshot.Active || len(snapshot.Turns) != 0 {
+		t.Fatalf("canceled lock waiter changed chat state: %+v", snapshot)
 	}
 }
 

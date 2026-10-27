@@ -41,6 +41,7 @@ const (
 
 var ErrOAuthProfileChanged = errors.New("OpenAI account registration changed during the operation")
 var ErrOAuthReconnectRequired = errors.New("OpenAI account must reconnect")
+var ErrOAuthRefreshOutcomeUnknown = errors.New("OpenAI refresh outcome is unknown; account must reconnect")
 
 var profileIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -55,19 +56,20 @@ type AuthConfig struct {
 // OAuthCredential is protected local credential material for one issued
 // OpenAI registration. UI and provider metadata never expose this value.
 type OAuthCredential struct {
-	ClientID            string    `json:"client_id"`
-	Issuer              string    `json:"issuer"`
-	Subject             string    `json:"subject"`
-	Email               string    `json:"email,omitempty"`
-	HostID              string    `json:"ext_agent_host_id"`
-	IDToken             string    `json:"id_token,omitempty"`
-	AccessToken         string    `json:"access_token,omitempty"`
-	RefreshToken        string    `json:"refresh_token,omitempty"`
-	TokenType           string    `json:"token_type,omitempty"`
-	Scopes              []string  `json:"scopes,omitempty"`
-	ExpiresAt           time.Time `json:"expires_at,omitempty"`
-	LifecycleGeneration uint64    `json:"lifecycle_generation"`
-	ReconnectRequired   bool      `json:"reconnect_required,omitempty"`
+	ClientID              string    `json:"client_id"`
+	Issuer                string    `json:"issuer"`
+	Subject               string    `json:"subject"`
+	Email                 string    `json:"email,omitempty"`
+	HostID                string    `json:"ext_agent_host_id"`
+	IDToken               string    `json:"id_token,omitempty"`
+	AccessToken           string    `json:"access_token,omitempty"`
+	RefreshToken          string    `json:"refresh_token,omitempty"`
+	TokenType             string    `json:"token_type,omitempty"`
+	Scopes                []string  `json:"scopes,omitempty"`
+	ExpiresAt             time.Time `json:"expires_at,omitempty"`
+	LifecycleGeneration   uint64    `json:"lifecycle_generation"`
+	ReconnectRequired     bool      `json:"reconnect_required,omitempty"`
+	RefreshOutcomeUnknown bool      `json:"refresh_outcome_unknown,omitempty"`
 }
 
 type Profile struct {
@@ -136,7 +138,11 @@ func (s Store) path() (string, error) {
 }
 
 func (s Store) ListMetadata() ([]Metadata, error) {
-	doc, err := s.readLocked()
+	return s.ListMetadataContext(context.Background())
+}
+
+func (s Store) ListMetadataContext(ctx context.Context) ([]Metadata, error) {
+	doc, err := s.readLockedContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +156,7 @@ func (s Store) ListMetadata() ([]Metadata, error) {
 			}
 			m.PlanUsageEnabled = hasScope(p.Auth.OAuth.Scopes, "chatgpt.tokens.use.direct")
 			m.Status = "connected"
-			if p.Auth.OAuth.ReconnectRequired || p.Auth.OAuth.RefreshToken == "" {
+			if p.Auth.OAuth.ReconnectRequired || p.Auth.OAuth.RefreshOutcomeUnknown || p.Auth.OAuth.RefreshToken == "" {
 				m.Status = "reconnect_required"
 			} else if !m.PlanUsageEnabled {
 				m.Status = "plan_usage_disabled"
@@ -162,7 +168,12 @@ func (s Store) ListMetadata() ([]Metadata, error) {
 }
 
 func (s Store) Get(id string) (Profile, error) {
-	doc, err := s.readLocked()
+	return s.GetContext(context.Background(), id)
+}
+
+// GetContext reads one profile with a bounded, cancellable auth-file lock wait.
+func (s Store) GetContext(ctx context.Context, id string) (Profile, error) {
+	doc, err := s.readLockedContext(ctx)
 	if err != nil {
 		return Profile{}, err
 	}
@@ -175,7 +186,12 @@ func (s Store) Get(id string) (Profile, error) {
 }
 
 func (s Store) Resolve(id string) (Profile, string, error) {
-	doc, err := s.readLocked()
+	return s.ResolveContext(context.Background(), id)
+}
+
+// ResolveContext resolves one profile with a bounded, cancellable auth-file lock wait.
+func (s Store) ResolveContext(ctx context.Context, id string) (Profile, string, error) {
+	doc, err := s.readLockedContext(ctx)
 	if err != nil {
 		return Profile{}, "", err
 	}
@@ -372,6 +388,9 @@ func (s Store) RefreshOAuthContext(ctx context.Context, id string, now func() ti
 			return Profile{}, errors.New("profile is not an OpenAI OAuth registration")
 		}
 		credential := *p.Auth.OAuth
+		if credential.RefreshOutcomeUnknown {
+			return Profile{}, ErrOAuthRefreshOutcomeUnknown
+		}
 		if credential.ReconnectRequired || credential.RefreshToken == "" {
 			return Profile{}, ErrOAuthReconnectRequired
 		}
@@ -386,6 +405,16 @@ func (s Store) RefreshOAuthContext(ctx context.Context, id string, now func() ti
 		}
 		tokens, refreshErr := refresh(credential)
 		if refreshErr != nil {
+			if errors.Is(refreshErr, ErrOAuthRefreshOutcomeUnknown) {
+				credential.RefreshOutcomeUnknown = true
+				credential.ReconnectRequired = true
+				p.Auth.OAuth = &credential
+				doc.Credentials[i] = p
+				if err := writeAtomic(path, doc); err != nil {
+					return Profile{}, errors.Join(ErrOAuthRefreshOutcomeUnknown, err)
+				}
+				return Profile{}, ErrOAuthRefreshOutcomeUnknown
+			}
 			if errors.Is(refreshErr, ErrOAuthReconnectRequired) {
 				if credential.LifecycleGeneration == ^uint64(0) {
 					return Profile{}, errors.New("OpenAI credential lifecycle generation is exhausted")
@@ -468,10 +497,14 @@ func (s Store) ClearOAuthTokens(id string) error {
 }
 
 func (s Store) ReplaceAPIKey(id, label, key string, route map[string]string) error {
+	return s.ReplaceAPIKeyContext(context.Background(), id, label, key, route)
+}
+
+func (s Store) ReplaceAPIKeyContext(ctx context.Context, id, label, key string, route map[string]string) error {
 	if strings.TrimSpace(key) == "" {
 		return errors.New("API key is required")
 	}
-	return s.update(func(doc *document) error {
+	return s.updateContext(ctx, func(doc *document) error {
 		for i, p := range doc.Credentials {
 			if p.ID == id {
 				p.Label = label
@@ -491,7 +524,11 @@ func (s Store) ReplaceAPIKey(id, label, key string, route map[string]string) err
 }
 
 func (s Store) Remove(id string) error {
-	return s.update(func(doc *document) error {
+	return s.RemoveContext(context.Background(), id)
+}
+
+func (s Store) RemoveContext(ctx context.Context, id string) error {
+	return s.updateContext(ctx, func(doc *document) error {
 		for i, p := range doc.Credentials {
 			if p.ID == id {
 				doc.Credentials = append(doc.Credentials[:i], doc.Credentials[i+1:]...)
@@ -553,6 +590,10 @@ func validateProfile(p Profile) error {
 }
 
 func (s Store) readLocked() (*document, error) {
+	return s.readLockedContext(context.Background())
+}
+
+func (s Store) readLockedContext(ctx context.Context) (*document, error) {
 	path, err := s.path()
 	if err != nil {
 		return nil, err
@@ -560,12 +601,24 @@ func (s Store) readLocked() (*document, error) {
 	if err = ensurePrivateDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	unlock, err := lockPath(path)
+	lockCtx, cancel := context.WithTimeout(ctx, oauthRefreshLockTimeout)
+	defer cancel()
+	unlock, err := lockPathContext(lockCtx, path)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	return readFile(path)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	doc, err := readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return doc, nil
 }
 
 func (s Store) update(change func(*document) error) error {
@@ -580,7 +633,9 @@ func (s Store) updateContext(ctx context.Context, change func(*document) error) 
 	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	unlock, err := lockPath(path)
+	lockCtx, cancel := context.WithTimeout(ctx, oauthRefreshLockTimeout)
+	defer cancel()
+	unlock, err := lockPathContext(lockCtx, path)
 	if err != nil {
 		return err
 	}

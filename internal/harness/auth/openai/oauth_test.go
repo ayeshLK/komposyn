@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -434,9 +435,85 @@ func TestRefreshRequestUsesIndependentBoundedTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := store.Get(profile.ID)
-	if err != nil || stored.Auth.OAuth.AccessToken != profile.Auth.OAuth.AccessToken || stored.Auth.OAuth.RefreshToken != profile.Auth.OAuth.RefreshToken || stored.Auth.OAuth.ReconnectRequired {
-		t.Fatalf("temporary refresh failure changed stored credentials: %+v err=%v", stored.Auth.OAuth, err)
+	if err != nil || stored.Auth.OAuth.AccessToken != profile.Auth.OAuth.AccessToken || stored.Auth.OAuth.RefreshToken != profile.Auth.OAuth.RefreshToken || !stored.Auth.OAuth.RefreshOutcomeUnknown || !stored.Auth.OAuth.ReconnectRequired {
+		t.Fatalf("ambiguous refresh failure did not preserve credentials and require reconnect: %+v err=%v", stored.Auth.OAuth, err)
 	}
+}
+
+func TestAmbiguousRefreshOutcomeIsPersistedAndNeverReplayed(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	profile := addOAuthTestProfile(t, store, time.Now().Add(-time.Minute))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"access_token":"rotated-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600}`)
+	}))
+	t.Cleanup(server.Close)
+	transport := &consumeThenLoseResponse{requests: &requests}
+	manager := New(store)
+	manager.token = server.URL
+	manager.client = &http.Client{Transport: transport}
+	defer func() {
+		if err := manager.Close(context.Background()); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	}()
+
+	const waiters = 5
+	start := make(chan struct{})
+	errs := make(chan error, waiters)
+	for range waiters {
+		go func() {
+			<-start
+			_, _, err := manager.Resolve(context.Background(), profile.ID)
+			errs <- err
+		}()
+	}
+	close(start)
+	for range waiters {
+		select {
+		case err := <-errs:
+			if !errors.Is(err, auth.ErrOAuthRefreshOutcomeUnknown) {
+				t.Errorf("refresh error=%v, want ambiguous outcome", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("refresh waiter did not finish")
+		}
+	}
+	stored, err := store.Get(profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 || stored.Auth.OAuth.RefreshToken != profile.Auth.OAuth.RefreshToken ||
+		stored.Auth.OAuth.AccessToken != profile.Auth.OAuth.AccessToken || !stored.Auth.OAuth.RefreshOutcomeUnknown || !stored.Auth.OAuth.ReconnectRequired {
+		t.Fatalf("ambiguous refresh state requests=%d credential=%+v", requests.Load(), stored.Auth.OAuth)
+	}
+	otherManager := New(store)
+	otherManager.token = server.URL
+	otherManager.client = server.Client()
+	_, _, err = otherManager.Resolve(context.Background(), profile.ID)
+	if !errors.Is(err, auth.ErrOAuthRefreshOutcomeUnknown) || requests.Load() != 1 {
+		t.Fatalf("later manager replayed uncertain refresh: requests=%d err=%v", requests.Load(), err)
+	}
+	if err := otherManager.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type consumeThenLoseResponse struct{ requests *atomic.Int32 }
+
+func (t *consumeThenLoseResponse) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(r)
+	if err != nil {
+		return nil, err
+	}
+	if t.requests.Load() == 1 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return nil, errors.New("simulated lost response after provider consumed refresh token")
+	}
+	return resp, nil
 }
 
 type waitForRequestCancellation struct {
@@ -476,6 +553,29 @@ func TestInvalidGrantRequiresReconnectWithoutDeletingRegistration(t *testing.T) 
 	staleCandidate.Auth.OAuth.ExpiresAt = time.Now().Add(time.Hour)
 	if err := store.ReplaceOAuth(profile.ID, profile.Revision, staleCandidate); err != auth.ErrOAuthProfileChanged {
 		t.Fatalf("stale reconnect after invalid_grant error=%v", err)
+	}
+}
+
+func TestConfirmedTemporaryRefreshRejectionPreservesCredentialState(t *testing.T) {
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	profile := addOAuthTestProfile(t, store, time.Now().Add(-time.Minute))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, `{"error":"temporarily_unavailable"}`)
+	}))
+	defer server.Close()
+	manager := New(store)
+	manager.token, manager.client = server.URL, server.Client()
+	if _, _, err := manager.Resolve(context.Background(), profile.ID); err == nil || errors.Is(err, auth.ErrOAuthRefreshOutcomeUnknown) {
+		t.Fatalf("confirmed temporary rejection error=%v", err)
+	}
+	stored, err := store.Get(profile.ID)
+	if err != nil || stored.Auth.OAuth.AccessToken != profile.Auth.OAuth.AccessToken ||
+		stored.Auth.OAuth.RefreshToken != profile.Auth.OAuth.RefreshToken || stored.Auth.OAuth.ReconnectRequired || stored.Auth.OAuth.RefreshOutcomeUnknown {
+		t.Fatalf("temporary rejection changed stored credential state: %+v err=%v", stored.Auth.OAuth, err)
+	}
+	if err := manager.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
