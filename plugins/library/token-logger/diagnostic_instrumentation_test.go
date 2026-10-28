@@ -524,8 +524,8 @@ func TestCancelledKnownSourceCoverageMarksActiveProblemUnknown(t *testing.T) {
 					`{"type":"token_usage_record","timestamp":"2026-10-16T12:00:01Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"response-private","usage":{"input_tokens":3,"output_tokens":2}}}` + "\n"
 				malformed = `{"type":"token_usage_record","timestamp":"2026-10-16T12:00:00Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"bad-private","usage": }}` + "\n"
 			}
-			contents := []byte(malformed + valid)
-			if err := os.WriteFile(path, contents, 0o600); err != nil {
+			original := []byte(malformed + valid)
+			if err := os.WriteFile(path, original, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			store, err := Open(filepath.Join(root, "store.sqlite"))
@@ -533,11 +533,13 @@ func TestCancelledKnownSourceCoverageMarksActiveProblemUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
-			if provider == "claude" {
-				if _, err := (ClaudeAdapter{}).Import(path, store); err != nil {
-					t.Fatal(err)
+			importSource := func() (ImportResult, error) {
+				if provider == "claude" {
+					return (ClaudeAdapter{}).Import(path, store)
 				}
-			} else if _, err := (CodexAdapter{}).Import(path, store); err != nil {
+				return (CodexAdapter{}).Import(path, store)
+			}
+			if _, err := importSource(); err != nil {
 				t.Fatal(err)
 			}
 			page, err := store.ListDiagnosticDetails(DiagnosticQuery{Reason: DiagnosticReasonInvalidJSON})
@@ -545,6 +547,21 @@ func TestCancelledKnownSourceCoverageMarksActiveProblemUnknown(t *testing.T) {
 				t.Fatalf("initial active problem=%+v err=%v", page, err)
 			}
 			problemID := page.Items[0].ProblemID
+			initial, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceID := "claude-file-" + digest([]byte(path))
+			if provider == "codex" {
+				sourceID = "codex-file-" + digest([]byte(path))
+			}
+			initialCursor, err := store.Cursor(sourceID)
+			if err != nil || initialCursor.SourceGeneration != 0 {
+				t.Fatalf("initial cursor=%+v err=%v", initialCursor, err)
+			}
+			if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			collector, err := NewCollector(store, []string{path}, time.Second)
 			if err != nil {
 				t.Fatal(err)
@@ -562,8 +579,118 @@ func TestCancelledKnownSourceCoverageMarksActiveProblemUnknown(t *testing.T) {
 			detail, err := store.InspectDiagnosticDetail(problemID)
 			if err != nil || detail.Condition.State != DiagnosticConditionUnknown ||
 				detail.Condition.Coverage != DiagnosticCoverageCancelled ||
-				detail.Condition.Reason != DiagnosticConditionCoverageInsufficient {
+				detail.Condition.Reason != DiagnosticConditionCoverageInsufficient ||
+				detail.Condition.Generation.Availability == DiagnosticAvailabilityAvailable ||
+				detail.Condition.CoverageOffset.Availability == DiagnosticAvailabilityAvailable ||
+				!detail.Condition.AsOf.After(initial.Condition.AsOf) || detail.Lifetime != initial.Lifetime ||
+				!detail.LastPositiveAt.Equal(initial.LastPositiveAt) {
 				t.Fatalf("cancelled known-source scan did not yield scoped unknown: condition=%+v err=%v", detail.Condition, err)
+			}
+			cursorAfterCancel, err := store.Cursor(sourceID)
+			if err != nil || cursorAfterCancel.SourceGeneration != 0 {
+				t.Fatalf("cancelled replacement advanced cursor generation: cursor=%+v err=%v", cursorAfterCancel, err)
+			}
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := importSource(); err != nil {
+				t.Fatalf("restored source import=%v", err)
+			}
+			recovered, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterRestore, cursorErr := store.Cursor(sourceID)
+			if err != nil || recovered.Condition.State != DiagnosticConditionActive ||
+				recovered.Condition.Generation.Availability != DiagnosticAvailabilityAvailable || recovered.Condition.Generation.Value != 0 ||
+				!recovered.Condition.AsOf.After(detail.Condition.AsOf) || recovered.Lifetime.Value == detail.Lifetime.Value ||
+				cursorErr != nil || cursorAfterRestore.SourceGeneration != 0 {
+				t.Fatalf("restored positive evidence did not reactivate generation zero: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", recovered, cursorAfterRestore, err, cursorErr)
+			}
+		})
+	}
+}
+
+func TestFailedReplacementCoverageCannotOutrankCommittedPositiveFinding(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "source.jsonl")
+			valid := syntheticClaudeDiagnosticSource()
+			malformed := `{"type":"assistant","message": }` + "\n"
+			if provider == "codex" {
+				valid = `{"type":"session_meta","timestamp":"2026-10-16T12:00:00Z","payload":{"id":"session-private","project_id":"project-private","model":"gpt-5.1-codex"}}` + "\n" +
+					`{"type":"token_usage_record","timestamp":"2026-10-16T12:00:01Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"response-private","usage":{"input_tokens":3,"output_tokens":2}}}` + "\n"
+				malformed = `{"type":"token_usage_record","timestamp":"2026-10-16T12:00:00Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"bad-private","usage": }}` + "\n"
+			}
+			original := []byte(malformed + valid)
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(filepath.Join(root, "store.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			importSource := func() (ImportResult, error) {
+				if provider == "claude" {
+					return (ClaudeAdapter{}).Import(path, store)
+				}
+				return (CodexAdapter{}).Import(path, store)
+			}
+			if _, err := importSource(); err != nil {
+				t.Fatal(err)
+			}
+			page, err := store.ListDiagnosticDetails(DiagnosticQuery{Reason: DiagnosticReasonInvalidJSON})
+			if err != nil || len(page.Items) != 1 {
+				t.Fatalf("initial details=%+v err=%v", page, err)
+			}
+			problemID := page.Items[0].ProblemID
+			initial, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceID := "claude-file-" + digest([]byte(path))
+			if provider == "codex" {
+				sourceID = "codex-file-" + digest([]byte(path))
+			}
+			if cursor, err := store.Cursor(sourceID); err != nil || cursor.SourceGeneration != 0 {
+				t.Fatalf("initial cursor=%+v err=%v", cursor, err)
+			}
+			if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(`CREATE TRIGGER reject_source_cursor_update BEFORE UPDATE ON source_cursors
+				BEGIN SELECT RAISE(ABORT, 'synthetic cursor persistence failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := importSource(); err == nil {
+				t.Fatal("replacement import unexpectedly committed through the rejecting cursor trigger")
+			}
+			if _, err := store.db.Exec("DROP TRIGGER reject_source_cursor_update"); err != nil {
+				t.Fatal(err)
+			}
+			failed, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterFailure, cursorErr := store.Cursor(sourceID)
+			if err != nil || failed.Condition.State != DiagnosticConditionUnknown ||
+				failed.Condition.Coverage != DiagnosticCoverageUninspected ||
+				failed.Condition.Generation.Availability == DiagnosticAvailabilityAvailable ||
+				failed.Condition.CoverageOffset.Availability == DiagnosticAvailabilityAvailable ||
+				!failed.Condition.AsOf.After(initial.Condition.AsOf) || failed.Lifetime != initial.Lifetime ||
+				!failed.LastPositiveAt.Equal(initial.LastPositiveAt) || cursorErr != nil || cursorAfterFailure.SourceGeneration != 0 {
+				t.Fatalf("failed replacement advanced committed evidence: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", failed, cursorAfterFailure, err, cursorErr)
+			}
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := importSource()
+			if err != nil || result.Outcomes.MalformedRecord != 1 {
+				t.Fatalf("restored source import=%+v err=%v", result, err)
+			}
+			recovered, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterRestore, cursorErr := store.Cursor(sourceID)
+			if err != nil || recovered.Condition.State != DiagnosticConditionActive ||
+				recovered.Condition.Generation.Availability != DiagnosticAvailabilityAvailable || recovered.Condition.Generation.Value != 0 ||
+				!recovered.Condition.AsOf.After(failed.Condition.AsOf) || recovered.Lifetime.Value == failed.Lifetime.Value ||
+				cursorErr != nil || cursorAfterRestore.SourceGeneration != 0 {
+				t.Fatalf("restored positive evidence did not reactivate generation zero: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", recovered, cursorAfterRestore, err, cursorErr)
 			}
 		})
 	}

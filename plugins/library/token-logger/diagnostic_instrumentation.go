@@ -822,7 +822,8 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 		coverage = DiagnosticCoveragePartial
 	}
 	if correlation.coverage == DiagnosticCoverageFullSnapshot || correlation.coverage == DiagnosticCoverageIncremental {
-		store.appendParserCoverageEvaluation(&batch, correlation, adapter, sourceID, operation, coverage, completeCoverage)
+		store.appendParserCoverageEvaluation(&batch, correlation, adapter, sourceID, operation, coverage, completeCoverage,
+			diagnosticGeneration(correlation), DiagnosticOptionalUint64{Value: correlation.coverageOffset, Availability: DiagnosticAvailabilityAvailable})
 	}
 	if len(batch.Findings) > 0 || len(batch.Evaluations) > 0 {
 		_ = store.recordDiagnosticEvidence(batch)
@@ -843,21 +844,26 @@ func (store *Store) recordParserCoverageEvaluation(ctx context.Context, adapter,
 		correlation.evidenceOrder = order
 	}
 	var batch diagnosticEvidenceBatch
-	store.appendParserCoverageEvaluation(&batch, correlation, adapter, sourceID, operation, coverage, complete)
+	// These measurements describe an attempted snapshot. If its ingestion or
+	// cursor transaction failed, they cannot safely order later committed
+	// findings. Preserve operation ordering while withholding snapshot scope.
+	store.appendParserCoverageEvaluation(&batch, correlation, adapter, sourceID, operation, coverage, complete,
+		DiagnosticOptionalUint64{Availability: DiagnosticAvailabilityUnknown},
+		DiagnosticOptionalUint64{Availability: DiagnosticAvailabilityUnknown})
 	if len(batch.Evaluations) > 0 {
 		_ = store.recordDiagnosticEvidence(batch)
 	}
 }
 
-func (store *Store) appendParserCoverageEvaluation(batch *diagnosticEvidenceBatch, correlation diagnosticCorrelation, adapter, sourceID string, operation DiagnosticOperation, coverage DiagnosticCoverageKind, complete bool) {
+func (store *Store) appendParserCoverageEvaluation(batch *diagnosticEvidenceBatch, correlation diagnosticCorrelation, adapter, sourceID string, operation DiagnosticOperation, coverage DiagnosticCoverageKind, complete bool, generation, coverageOffset DiagnosticOptionalUint64) {
 	if store == nil || batch == nil || !store.diagnosticPersistenceReady.Load() || sourceID == "" || correlation.evidenceOrder == 0 {
 		return
 	}
 	batch.Evaluations = append(batch.Evaluations, diagnosticEvaluation{SubjectKind: DiagnosticSubjectSource,
 		SubjectIdentity: sourceID, Component: DiagnosticComponentParser, Operation: operation,
 		Adapter: diagnosticAdapter(adapter), PollID: correlation.pollID, RunID: correlation.runID,
-		EvidenceOrder: correlation.evidenceOrder, Generation: diagnosticGeneration(correlation),
-		CoverageOffset: DiagnosticOptionalUint64{Value: correlation.coverageOffset, Availability: DiagnosticAvailabilityAvailable},
+		EvidenceOrder: correlation.evidenceOrder, Generation: generation,
+		CoverageOffset: coverageOffset,
 		ObservedAt:     time.Now().UTC(), Coverage: coverage, CompleteCoverage: complete,
 		EvaluatedReasons: []DiagnosticReason{DiagnosticReasonInvalidJSON, DiagnosticReasonInvalidTimestamp,
 			DiagnosticReasonInvalidTokenCount, DiagnosticReasonRequiredContextMissing, DiagnosticReasonUnsupportedUsage,

@@ -85,6 +85,11 @@ problems that the scan does not positively reobserve become unknown. A later
 applicable cancelled or failed parse becomes `cancelled` or `uninspected` when
 core already knows the source identity and evidence order. Failures before
 that boundary remain transient and do not invent a source subject.
+Because those attempts do not commit their cursor/checkpoint, their attempted
+generation and byte length are not used as condition evidence; both are
+reported unavailable. The reserved operation order still prevents an older
+concurrent result from overwriting the evaluation, while a later committed
+positive finding can reactivate the condition.
 
 Unknown describes the current condition evidence, while `last_positive_at`
 retains the timestamp of the most recent persisted positive finding. Coverage
@@ -155,6 +160,7 @@ diagnostic tables directly.
 | Clean full replacement scan resolves only matching prior parser evidence | `TestPublicImportsPersistDetailedEvidenceWithoutObserver` |
 | Public Claude/Codex imports preserve positive evidence, resolve after clean full coverage, then transition resolved to unknown on pending replacement tails; counters and last-positive evidence remain stable | `TestPendingReplacementTailCannotResolvePriorParserEvidence` |
 | Public Claude/Codex collector cancellation with a known source boundary changes an active problem to unknown/cancelled | `TestCancelledKnownSourceCoverageMarksActiveProblemUnknown` |
+| Failed replacement leaves attempted generation/offset unavailable; restored generation-zero positive evidence reactivates the problem | `TestFailedReplacementCoverageCannotOutrankCommittedPositiveFinding` |
 | Failed diagnostic writes preserve committed usage and report evidence loss after reopen | `TestDiagnosticWriteFailureDoesNotFailCommittedImportAndSurvivesReopen` |
 | Failed evidence-order reservation marks availability lost across reopen | `TestOperationalFindingOrderReservationFailureMarksEvidenceLost` |
 | Collector storage failures persist with observation disabled or saturated/unread | `TestCollectorStorageFailurePersistsWithoutObserverDelivery` |
