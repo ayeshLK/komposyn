@@ -72,19 +72,39 @@ database itself cannot persist that marker, the reopened Store cannot know that
 evidence was lost, so availability remains explicitly an in-memory limitation
 for that failure case.
 
-Coverage is conservative. A clean, complete full snapshot evaluates only the
-same parser component/operation/adapter and source identity, and only the
-closed parser reason catalogue. A pending final record also blocks absence
-evaluation, even though `OutcomeCounts.Incomplete()` does not include pending
-tails. A positive parser finding remains active.
-Incremental/checkpoint parses record positive findings but do not establish
-absence. Unchanged snapshots do not create a new evaluation; they do not carry
-forward conclusions because this schema does not persist a separate verified
-coverage basis. Cancelled, incomplete, failed, or uninspected work cannot
-resolve conditions. A clean full scan of a newer source generation can resolve
-an older absent condition with `source_replaced` evidence. Removed sources are
-not inferred healthy. Storage and collector failures use their own controlled
-classification and do not resolve parser conditions.
+Coverage is conservative and scope matched. A clean, complete full snapshot
+evaluates only the same source identity, parser component, operation, adapter,
+and closed parser-reason catalogue; it can resolve only matching older
+conditions. A full snapshot with malformed/unsupported outcomes or a pending
+final record records partial coverage and makes matching older conditions
+unknown. `OutcomeCounts.Incomplete()` does not include pending tails, so the
+pending count is checked separately. If the same operation positively finds a
+problem, that finding keeps it active. An applicable checkpoint/incremental
+scan records insufficient coverage and cannot establish absence; historical
+problems that the scan does not positively reobserve become unknown. A later
+applicable cancelled or failed parse becomes `cancelled` or `uninspected` when
+core already knows the source identity and evidence order. Failures before
+that boundary remain transient and do not invent a source subject.
+Because those attempts do not commit their cursor/checkpoint, their attempted
+generation and byte length are not used as condition evidence; both are
+reported unavailable. The reserved operation order still prevents an older
+concurrent result from overwriting the evaluation, while a later committed
+positive finding can reactivate the condition. A later complete full scan with
+its own committed generation can also resolve it. When the prior generation is
+unavailable, the result is `covered_absence`; core does not infer a
+`source_replaced` relationship it cannot establish.
+
+Unknown describes the current condition evidence, while `last_positive_at`
+retains the timestamp of the most recent persisted positive finding. Coverage
+evaluations do not increment lifetime, poll, or run observation counters and
+do not erase those historical counts. Their material state changes advance the
+review revision; count-only recurrence does not. Unchanged snapshots create no
+new evaluation and do not carry forward conclusions because this schema does
+not persist a separate verified coverage basis. A clean full scan of a newer
+source generation can resolve an older absent condition with
+`source_replaced` evidence. Removed sources are not inferred healthy. Storage
+and collector failures use their own controlled classification and do not
+resolve parser conditions.
 
 The replay ledger is a bounded 64 committed finding-ID ring per problem. An
 evicted ID may be counted again if it is replayed later; projections mark the
@@ -141,7 +161,9 @@ diagnostic tables directly.
 | Public Claude/Codex imports produce detailed records with safe identities, counters, generations, and offsets | `TestPublicImportsPersistDetailedEvidenceWithoutObserver` |
 | Evidence persists when observer is nil or its mailbox is full and unread; collector poll counters retain scope | `TestPublicImportEvidenceSurvivesSaturatedUnreadObserver` |
 | Clean full replacement scan resolves only matching prior parser evidence | `TestPublicImportsPersistDetailedEvidenceWithoutObserver` |
-| Pending replacement tails for Claude and Codex cannot resolve prior evidence; tail completion remains incremental until a full scan | `TestPendingReplacementTailCannotResolvePriorParserEvidence` |
+| Public Claude/Codex imports preserve positive evidence, resolve after clean full coverage, then transition resolved to unknown on pending replacement tails; counters and last-positive evidence remain stable | `TestPendingReplacementTailCannotResolvePriorParserEvidence` |
+| Public Claude/Codex collector cancellation with a known source boundary changes an active problem to unknown/cancelled | `TestCancelledKnownSourceCoverageMarksActiveProblemUnknown` |
+| Failed replacement leaves attempted generation/offset unavailable; restored generation-zero positive evidence reactivates the problem | `TestFailedReplacementCoverageCannotOutrankCommittedPositiveFinding` |
 | Failed diagnostic writes preserve committed usage and report evidence loss after reopen | `TestDiagnosticWriteFailureDoesNotFailCommittedImportAndSurvivesReopen` |
 | Failed evidence-order reservation marks availability lost across reopen | `TestOperationalFindingOrderReservationFailureMarksEvidenceLost` |
 | Collector storage failures persist with observation disabled or saturated/unread | `TestCollectorStorageFailurePersistsWithoutObserverDelivery` |
@@ -149,7 +171,8 @@ diagnostic tables directly.
 | Migration failure preserves the source schema and verified backup | `TestMigrationEighteenFailurePreservesSchemaAndVerifiedBackup` |
 
 These tests combine synthetic reducer cases with public provider imports,
-collector polling, and public list/inspect calls. #163 instrumentation is
-merged. Remaining work for #112 is review of this integration, broader fault
-and scan-shape acceptance evidence, and maintainer completion audit. The
-standalone CLI work in komposyn-lg #58 remains separate.
+collector polling, and public list/inspect calls. Production parser coverage
+evaluations are integrated for successful full/incremental scans and known
+source cancellation/failure boundaries. Issue #112 remains open for review of
+this integration and the maintainer completion audit. Standalone CLI work in
+komposyn-lg #58 remains separate.

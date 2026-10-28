@@ -382,7 +382,11 @@ func TestPendingReplacementTailCannotResolvePriorParserEvidence(t *testing.T) {
 			if err := os.WriteFile(path, []byte(meta+malformed+valid), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			store, err := Open(filepath.Join(root, "store.sqlite"))
+			observer, err := NewDiagnosticObserver(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := OpenWithObservation(filepath.Join(root, "store.sqlite"), OpenOptions{}, observer)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -406,7 +410,54 @@ func TestPendingReplacementTailCannotResolvePriorParserEvidence(t *testing.T) {
 			validLine := strings.TrimSuffix(valid, "\n")
 			cut := len(validLine) / 2
 			pending := validLine[:cut]
-			replacement := meta + valid + pending
+			active, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || active.Condition.State != DiagnosticConditionActive {
+				t.Fatalf("initial parser problem was not active: condition=%+v err=%v", active.Condition, err)
+			}
+			if err := os.WriteFile(path, []byte(meta+malformed+valid+pending), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			activeTail, err := importSource()
+			if err != nil || activeTail.Outcomes.DeferredIncompleteTail == 0 {
+				t.Fatalf("pending appended tail=%+v err=%v", activeTail, err)
+			}
+			activeUnknown, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || activeUnknown.Condition.State != DiagnosticConditionActive {
+				t.Fatalf("positive malformed evidence was erased by an incomplete scan: condition=%+v err=%v", activeUnknown.Condition, err)
+			}
+			if err := os.WriteFile(path, []byte(meta+malformed+valid+pending+validLine[cut:]+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if completed, err := importSource(); err != nil || completed.Outcomes.Pending() {
+				t.Fatalf("completed initial tail=%+v err=%v", completed, err)
+			}
+			activeAfterTail, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || activeAfterTail.Condition.State != DiagnosticConditionActive {
+				t.Fatalf("positive historical record was not retained through tail completion: condition=%+v err=%v", activeAfterTail.Condition, err)
+			}
+
+			cleanReplacement := meta + valid
+			if err := os.WriteFile(path, []byte(cleanReplacement), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			clean, err := importSource()
+			if err != nil || clean.Outcomes.Incomplete() || clean.Outcomes.Pending() {
+				t.Fatalf("complete replacement=%+v err=%v", clean, err)
+			}
+			resolved, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || resolved.Condition.State != DiagnosticConditionResolved {
+				t.Fatalf("complete replacement did not resolve prior evidence: condition=%+v err=%v", resolved.Condition, err)
+			}
+			if err := store.ReviewDiagnosticDetail(DiagnosticReviewRequest{ProblemID: problemID,
+				ExpectedEvidenceRevision: resolved.Review.EvidenceRevision, State: DiagnosticReviewReviewed}); err != nil {
+				t.Fatalf("review resolved detail: %v", err)
+			}
+			resolved, err = store.InspectDiagnosticDetail(problemID)
+			if err != nil || resolved.Review.State != DiagnosticReviewReviewed {
+				t.Fatalf("review state was not committed: review=%+v err=%v", resolved.Review, err)
+			}
+
+			replacement := cleanReplacement + pending
 			if err := os.WriteFile(path, []byte(replacement), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -414,9 +465,21 @@ func TestPendingReplacementTailCannotResolvePriorParserEvidence(t *testing.T) {
 			if err != nil || partial.Outcomes.DeferredIncompleteTail == 0 {
 				t.Fatalf("pending replacement=%+v err=%v", partial, err)
 			}
-			stillOpen, err := store.InspectDiagnosticDetail(problemID)
-			if err != nil || stillOpen.Condition.State == DiagnosticConditionResolved {
-				t.Fatalf("pending tail established absence: condition=%+v err=%v", stillOpen.Condition, err)
+			unknown, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || unknown.Condition.State != DiagnosticConditionUnknown ||
+				unknown.Condition.Reason != DiagnosticConditionCoverageInsufficient ||
+				unknown.Condition.Coverage != DiagnosticCoveragePartial ||
+				!unknown.Condition.AsOf.After(resolved.Condition.AsOf) ||
+				unknown.Condition.Availability != DiagnosticAvailabilityAvailable ||
+				!unknown.LastPositiveAt.Equal(resolved.LastPositiveAt) ||
+				unknown.Lifetime != resolved.Lifetime || unknown.LatestPoll != resolved.LatestPoll ||
+				unknown.LatestObservedRun != resolved.LatestObservedRun ||
+				unknown.Review.State != DiagnosticReviewReviewed || !unknown.Review.PredatesEvidence {
+				t.Fatalf("pending tail did not replace resolved condition with scoped unknown: condition=%+v err=%v", unknown.Condition, err)
+			}
+			if err := store.ReviewDiagnosticDetail(DiagnosticReviewRequest{ProblemID: problemID,
+				ExpectedEvidenceRevision: resolved.Review.EvidenceRevision, State: DiagnosticReviewSkipped}); !errors.Is(err, ErrDiagnosticReviewConflict) {
+				t.Fatalf("stale review after condition change=%v; want conflict", err)
 			}
 
 			if err := os.WriteFile(path, []byte(replacement+validLine[cut:]+"\n"), 0o600); err != nil {
@@ -426,9 +489,9 @@ func TestPendingReplacementTailCannotResolvePriorParserEvidence(t *testing.T) {
 			if err != nil || completed.Outcomes.Pending() {
 				t.Fatalf("completed tail=%+v err=%v", completed, err)
 			}
-			stillOpen, err = store.InspectDiagnosticDetail(problemID)
-			if err != nil || stillOpen.Condition.State == DiagnosticConditionResolved {
-				t.Fatalf("appended-tail scan resolved historical condition without full coverage: condition=%+v err=%v", stillOpen.Condition, err)
+			stillUnknown, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || stillUnknown.Condition.State != DiagnosticConditionUnknown {
+				t.Fatalf("appended-tail scan changed condition without full coverage: condition=%+v err=%v", stillUnknown.Condition, err)
 			}
 			if _, err := store.db.Exec("UPDATE source_cursors SET snapshot_reusable=0"); err != nil {
 				t.Fatal(err)
@@ -437,10 +500,280 @@ func TestPendingReplacementTailCannotResolvePriorParserEvidence(t *testing.T) {
 			if err != nil || full.Outcomes.Incomplete() || full.Outcomes.Pending() {
 				t.Fatalf("complete full scan=%+v err=%v", full, err)
 			}
-			resolved, err := store.InspectDiagnosticDetail(problemID)
-			if err != nil || resolved.Condition.State != DiagnosticConditionResolved ||
-				(resolved.Condition.Reason != DiagnosticConditionCoveredAbsence && resolved.Condition.Reason != DiagnosticConditionSourceReplaced) {
-				t.Fatalf("complete coverage did not resolve prior evidence: result=%+v condition=%+v err=%v", full, resolved.Condition, err)
+			resolvedAgain, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || resolvedAgain.Condition.State != DiagnosticConditionResolved ||
+				(resolvedAgain.Condition.Reason != DiagnosticConditionCoveredAbsence && resolvedAgain.Condition.Reason != DiagnosticConditionSourceReplaced) {
+				t.Fatalf("complete coverage did not resolve prior evidence: result=%+v condition=%+v err=%v", full, resolvedAgain.Condition, err)
+			}
+			if observer.Stats().Dropped == 0 {
+				t.Fatal("observer mailbox should be saturated and unread while details persist")
+			}
+		})
+	}
+}
+
+func TestCancelledKnownSourceCoverageMarksActiveProblemUnknown(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "source.jsonl")
+			valid := syntheticClaudeDiagnosticSource()
+			malformed := `{"type":"assistant","message": }` + "\n"
+			if provider == "codex" {
+				valid = `{"type":"session_meta","timestamp":"2026-10-16T12:00:00Z","payload":{"id":"session-private","project_id":"project-private","model":"gpt-5.1-codex"}}` + "\n" +
+					`{"type":"token_usage_record","timestamp":"2026-10-16T12:00:01Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"response-private","usage":{"input_tokens":3,"output_tokens":2}}}` + "\n"
+				malformed = `{"type":"token_usage_record","timestamp":"2026-10-16T12:00:00Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"bad-private","usage": }}` + "\n"
+			}
+			original := []byte(malformed + valid)
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(filepath.Join(root, "store.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			importSource := func() (ImportResult, error) {
+				if provider == "claude" {
+					return (ClaudeAdapter{}).Import(path, store)
+				}
+				return (CodexAdapter{}).Import(path, store)
+			}
+			if _, err := importSource(); err != nil {
+				t.Fatal(err)
+			}
+			page, err := store.ListDiagnosticDetails(DiagnosticQuery{Reason: DiagnosticReasonInvalidJSON})
+			if err != nil || len(page.Items) != 1 || page.Items[0].Condition.State != DiagnosticConditionActive {
+				t.Fatalf("initial active problem=%+v err=%v", page, err)
+			}
+			problemID := page.Items[0].ProblemID
+			initial, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceID := "claude-file-" + digest([]byte(path))
+			if provider == "codex" {
+				sourceID = "codex-file-" + digest([]byte(path))
+			}
+			initialCursor, err := store.Cursor(sourceID)
+			if err != nil || initialCursor.SourceGeneration != 0 {
+				t.Fatalf("initial cursor=%+v err=%v", initialCursor, err)
+			}
+			if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			collector, err := NewCollector(store, []string{path}, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			store.sourceReadHook = func(pass int, bytesRead int64) {
+				if pass == 2 && bytesRead > 0 {
+					cancel()
+				}
+			}
+			if _, err := collector.PollOnceContext(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("poll error=%v; want cancellation during parser inspection", err)
+			}
+			detail, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || detail.Condition.State != DiagnosticConditionUnknown ||
+				detail.Condition.Coverage != DiagnosticCoverageCancelled ||
+				detail.Condition.Reason != DiagnosticConditionCoverageInsufficient ||
+				detail.Condition.Generation.Availability == DiagnosticAvailabilityAvailable ||
+				detail.Condition.CoverageOffset.Availability == DiagnosticAvailabilityAvailable ||
+				!detail.Condition.AsOf.After(initial.Condition.AsOf) || detail.Lifetime != initial.Lifetime ||
+				!detail.LastPositiveAt.Equal(initial.LastPositiveAt) {
+				t.Fatalf("cancelled known-source scan did not yield scoped unknown: condition=%+v err=%v", detail.Condition, err)
+			}
+			cursorAfterCancel, err := store.Cursor(sourceID)
+			if err != nil || cursorAfterCancel.SourceGeneration != 0 {
+				t.Fatalf("cancelled replacement advanced cursor generation: cursor=%+v err=%v", cursorAfterCancel, err)
+			}
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := importSource(); err != nil {
+				t.Fatalf("restored source import=%v", err)
+			}
+			recovered, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterRestore, cursorErr := store.Cursor(sourceID)
+			if err != nil || recovered.Condition.State != DiagnosticConditionActive ||
+				recovered.Condition.Generation.Availability != DiagnosticAvailabilityAvailable || recovered.Condition.Generation.Value != 0 ||
+				!recovered.Condition.AsOf.After(detail.Condition.AsOf) || recovered.Lifetime.Value == detail.Lifetime.Value ||
+				cursorErr != nil || cursorAfterRestore.SourceGeneration != 0 {
+				t.Fatalf("restored positive evidence did not reactivate generation zero: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", recovered, cursorAfterRestore, err, cursorErr)
+			}
+
+			if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx2, cancel2 := context.WithCancel(context.Background())
+			store.sourceReadHook = func(pass int, bytesRead int64) {
+				if pass == 2 && bytesRead > 0 {
+					cancel2()
+				}
+			}
+			if _, err := collector.PollOnceContext(ctx2); !errors.Is(err, context.Canceled) {
+				cancel2()
+				t.Fatalf("second replacement poll error=%v; want cancellation", err)
+			}
+			cancel2()
+			cancelledAgain, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterSecondCancel, cursorErr := store.Cursor(sourceID)
+			if err != nil || cancelledAgain.Condition.State != DiagnosticConditionUnknown ||
+				cancelledAgain.Condition.Generation.Availability == DiagnosticAvailabilityAvailable ||
+				cursorErr != nil || cursorAfterSecondCancel.SourceGeneration != 0 {
+				t.Fatalf("second cancelled replacement evidence=%+v cursor=%+v inspectErr=%v cursorErr=%v", cancelledAgain, cursorAfterSecondCancel, err, cursorErr)
+			}
+			store.sourceReadHook = nil
+			cleanResult, err := importSource()
+			if err != nil || cleanResult.Outcomes.MalformedRecord != 0 || cleanResult.Outcomes.Incomplete() || cleanResult.Outcomes.Pending() {
+				t.Fatalf("clean recovery import=%+v err=%v", cleanResult, err)
+			}
+			cleanRecovered, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterClean, cursorErr := store.Cursor(sourceID)
+			if err != nil || cleanRecovered.Condition.State != DiagnosticConditionResolved ||
+				cleanRecovered.Condition.Coverage != DiagnosticCoverageFullSnapshot ||
+				cleanRecovered.Condition.Reason != DiagnosticConditionCoveredAbsence ||
+				cleanRecovered.Condition.Generation.Availability != DiagnosticAvailabilityAvailable || cleanRecovered.Condition.Generation.Value != 1 ||
+				!cleanRecovered.Condition.AsOf.After(cancelledAgain.Condition.AsOf) || cleanRecovered.Lifetime != recovered.Lifetime ||
+				!cleanRecovered.LastPositiveAt.Equal(recovered.LastPositiveAt) || cursorErr != nil || cursorAfterClean.SourceGeneration != 1 {
+				t.Fatalf("clean full scan did not recover after cancellation: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", cleanRecovered, cursorAfterClean, err, cursorErr)
+			}
+			cleanAsOf := cleanRecovered.Condition.AsOf
+			unchanged, err := importSource()
+			unchangedDetail, inspectErr := store.InspectDiagnosticDetail(problemID)
+			if err != nil || unchanged.Outcomes.UnchangedSnapshot != 1 || inspectErr != nil ||
+				unchangedDetail.Condition.State != DiagnosticConditionResolved || !unchangedDetail.Condition.AsOf.Equal(cleanAsOf) {
+				t.Fatalf("unchanged scan changed clean recovery: result=%+v detail=%+v importErr=%v inspectErr=%v", unchanged, unchangedDetail, err, inspectErr)
+			}
+		})
+	}
+}
+
+func TestFailedReplacementCoverageCannotOutrankCommittedPositiveFinding(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "source.jsonl")
+			valid := syntheticClaudeDiagnosticSource()
+			malformed := `{"type":"assistant","message": }` + "\n"
+			if provider == "codex" {
+				valid = `{"type":"session_meta","timestamp":"2026-10-16T12:00:00Z","payload":{"id":"session-private","project_id":"project-private","model":"gpt-5.1-codex"}}` + "\n" +
+					`{"type":"token_usage_record","timestamp":"2026-10-16T12:00:01Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"response-private","usage":{"input_tokens":3,"output_tokens":2}}}` + "\n"
+				malformed = `{"type":"token_usage_record","timestamp":"2026-10-16T12:00:00Z","payload":{"thread_id":"thread-private","session_id":"session-private","response_id":"bad-private","usage": }}` + "\n"
+			}
+			original := []byte(malformed + valid)
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(filepath.Join(root, "store.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			importSource := func() (ImportResult, error) {
+				if provider == "claude" {
+					return (ClaudeAdapter{}).Import(path, store)
+				}
+				return (CodexAdapter{}).Import(path, store)
+			}
+			if _, err := importSource(); err != nil {
+				t.Fatal(err)
+			}
+			page, err := store.ListDiagnosticDetails(DiagnosticQuery{Reason: DiagnosticReasonInvalidJSON})
+			if err != nil || len(page.Items) != 1 {
+				t.Fatalf("initial details=%+v err=%v", page, err)
+			}
+			problemID := page.Items[0].ProblemID
+			initial, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceID := "claude-file-" + digest([]byte(path))
+			if provider == "codex" {
+				sourceID = "codex-file-" + digest([]byte(path))
+			}
+			if cursor, err := store.Cursor(sourceID); err != nil || cursor.SourceGeneration != 0 {
+				t.Fatalf("initial cursor=%+v err=%v", cursor, err)
+			}
+			if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(`CREATE TRIGGER reject_source_cursor_update BEFORE UPDATE ON source_cursors
+				BEGIN SELECT RAISE(ABORT, 'synthetic cursor persistence failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := importSource(); err == nil {
+				t.Fatal("replacement import unexpectedly committed through the rejecting cursor trigger")
+			}
+			if _, err := store.db.Exec("DROP TRIGGER reject_source_cursor_update"); err != nil {
+				t.Fatal(err)
+			}
+			failed, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterFailure, cursorErr := store.Cursor(sourceID)
+			if err != nil || failed.Condition.State != DiagnosticConditionUnknown ||
+				failed.Condition.Coverage != DiagnosticCoverageUninspected ||
+				failed.Condition.Generation.Availability == DiagnosticAvailabilityAvailable ||
+				failed.Condition.CoverageOffset.Availability == DiagnosticAvailabilityAvailable ||
+				!failed.Condition.AsOf.After(initial.Condition.AsOf) || failed.Lifetime != initial.Lifetime ||
+				!failed.LastPositiveAt.Equal(initial.LastPositiveAt) || cursorErr != nil || cursorAfterFailure.SourceGeneration != 0 {
+				t.Fatalf("failed replacement advanced committed evidence: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", failed, cursorAfterFailure, err, cursorErr)
+			}
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := importSource()
+			if err != nil || result.Outcomes.MalformedRecord != 1 {
+				t.Fatalf("restored source import=%+v err=%v", result, err)
+			}
+			recovered, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterRestore, cursorErr := store.Cursor(sourceID)
+			if err != nil || recovered.Condition.State != DiagnosticConditionActive ||
+				recovered.Condition.Generation.Availability != DiagnosticAvailabilityAvailable || recovered.Condition.Generation.Value != 0 ||
+				!recovered.Condition.AsOf.After(failed.Condition.AsOf) || recovered.Lifetime.Value == failed.Lifetime.Value ||
+				cursorErr != nil || cursorAfterRestore.SourceGeneration != 0 {
+				t.Fatalf("restored positive evidence did not reactivate generation zero: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", recovered, cursorAfterRestore, err, cursorErr)
+			}
+
+			if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(`CREATE TRIGGER reject_source_cursor_update_again BEFORE UPDATE ON source_cursors
+				BEGIN SELECT RAISE(ABORT, 'synthetic second cursor persistence failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := importSource(); err == nil {
+				t.Fatal("second replacement import unexpectedly committed through the rejecting cursor trigger")
+			}
+			if _, err := store.db.Exec("DROP TRIGGER reject_source_cursor_update_again"); err != nil {
+				t.Fatal(err)
+			}
+			unknownAgain, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || unknownAgain.Condition.State != DiagnosticConditionUnknown || unknownAgain.Condition.Generation.Availability == DiagnosticAvailabilityAvailable {
+				t.Fatalf("second rollback evidence=%+v err=%v", unknownAgain.Condition, err)
+			}
+			cleanResult, err := importSource()
+			if err != nil || cleanResult.Outcomes.MalformedRecord != 0 || cleanResult.Outcomes.Incomplete() || cleanResult.Outcomes.Pending() {
+				t.Fatalf("clean recovery import=%+v err=%v", cleanResult, err)
+			}
+			cleanRecovered, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterClean, cursorErr := store.Cursor(sourceID)
+			if err != nil || cleanRecovered.Condition.State != DiagnosticConditionResolved ||
+				cleanRecovered.Condition.Coverage != DiagnosticCoverageFullSnapshot ||
+				cleanRecovered.Condition.Reason != DiagnosticConditionCoveredAbsence ||
+				cleanRecovered.Condition.Generation.Availability != DiagnosticAvailabilityAvailable || cleanRecovered.Condition.Generation.Value != 1 ||
+				!cleanRecovered.Condition.AsOf.After(unknownAgain.Condition.AsOf) || cleanRecovered.Lifetime != recovered.Lifetime ||
+				!cleanRecovered.LastPositiveAt.Equal(recovered.LastPositiveAt) || cursorErr != nil || cursorAfterClean.SourceGeneration != 1 {
+				t.Fatalf("clean full scan did not recover after rollback: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", cleanRecovered, cursorAfterClean, err, cursorErr)
+			}
+			cleanAsOf := cleanRecovered.Condition.AsOf
+			unchanged, err := importSource()
+			unchangedDetail, inspectErr := store.InspectDiagnosticDetail(problemID)
+			if err != nil || unchanged.Outcomes.UnchangedSnapshot != 1 || inspectErr != nil ||
+				unchangedDetail.Condition.State != DiagnosticConditionResolved || !unchangedDetail.Condition.AsOf.Equal(cleanAsOf) {
+				t.Fatalf("unchanged scan changed clean recovery: result=%+v detail=%+v importErr=%v inspectErr=%v", unchanged, unchangedDetail, err, inspectErr)
 			}
 		})
 	}

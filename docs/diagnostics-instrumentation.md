@@ -115,16 +115,35 @@ position is observed again. The 64-ID per-problem replay ring is bounded and
 eviction is surfaced as counter truncation; it does not promise unlimited
 exactly-once accounting.
 
-Only a clean, complete full snapshot evaluates parser-condition absence, and
-the evaluation is scoped to the source identity and parser component,
-operation, and adapter. Pending final records block absence evaluation even
-though the legacy `Incomplete()` predicate does not include pending tails.
-Incremental continuation records positive findings but cannot resolve old
-malformed rows. Unchanged snapshots do not carry forward coverage because no
-separate persisted coverage basis exists. Failed,
-cancelled, incomplete, and uninspected work does not establish absence. These
-choices deliberately leave some conditions active or unknown until a later
-complete full snapshot supplies matching evidence.
+Coverage evaluations are scoped to the source identity, parser component,
+operation, adapter, and closed parser-reason catalogue. A clean, complete full
+snapshot can establish absence for matching conditions. Full scans with
+malformed/unsupported outcomes or pending final records, and applicable
+checkpoint/incremental scans, persist insufficient-coverage evaluations;
+matching conditions become unknown unless that operation positively observed
+the same problem, which remains active. Pending tails are checked separately
+because the legacy `Incomplete()` predicate excludes them. A later known-source
+failure or cancellation records `uninspected` or `cancelled` coverage without
+persisting speculative parser findings. This is attempted only after core has
+the source identity and evidence boundary; earlier acquisition/classification
+failures remain transient or discovery-target evidence.
+The attempted snapshot's generation and byte length are withheld when its
+cursor/checkpoint transaction fails or is cancelled. The evaluation retains
+its reserved operation order, so it cannot be superseded by older concurrent
+work while subsequent committed evidence is not blocked by a speculative
+generation.
+If the next applicable committed scan is complete and full, it can establish
+absence using its own known generation even though the prior unknown evaluation
+has no generation. The reducer reports `covered_absence` in that case because
+it cannot claim a generation replacement without a prior committed generation.
+
+Unknown condition evidence updates its timestamp, coverage and review
+revision; it includes generation and offset only when they describe a known
+committed scope. It does not increment detailed counters or erase
+`last_positive_at`. Unchanged snapshots do not create evaluations or
+carry forward coverage because no separate persisted coverage basis exists.
+Only a later matching complete full snapshot can establish absence; removed
+sources are not inferred healthy.
 
 Diagnostic evidence writes occur after the ingestion transaction and are best
 effort. Failure never changes a committed import result or causes usage to be

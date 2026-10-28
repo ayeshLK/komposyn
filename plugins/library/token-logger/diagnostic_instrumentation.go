@@ -816,21 +816,58 @@ func (store *Store) recordOutcomeFindingsAt(ctx context.Context, adapter, source
 			evidence: DiagnosticEvidence{Scope: DiagnosticEvidenceOperation, Availability: DiagnosticAvailabilityAvailable,
 				Truncated: item.position.ByteOffset.Truncated}})
 	}
-	if store.diagnosticPersistenceReady.Load() && sourceID != "" && correlation.evidenceOrder != 0 &&
-		correlation.coverage == DiagnosticCoverageFullSnapshot && !observedOutcomes.Incomplete() && !observedOutcomes.Pending() {
-		batch.Evaluations = append(batch.Evaluations, diagnosticEvaluation{SubjectKind: DiagnosticSubjectSource,
-			SubjectIdentity: sourceID, Component: DiagnosticComponentParser, Operation: operation,
-			Adapter: diagnosticAdapter(adapter), PollID: correlation.pollID, RunID: correlation.runID,
-			EvidenceOrder: correlation.evidenceOrder, Generation: diagnosticGeneration(correlation),
-			CoverageOffset: DiagnosticOptionalUint64{Value: correlation.coverageOffset, Availability: DiagnosticAvailabilityAvailable},
-			ObservedAt:     time.Now().UTC(), Coverage: DiagnosticCoverageFullSnapshot, CompleteCoverage: true,
-			EvaluatedReasons: []DiagnosticReason{DiagnosticReasonInvalidJSON, DiagnosticReasonInvalidTimestamp,
-				DiagnosticReasonInvalidTokenCount, DiagnosticReasonRequiredContextMissing, DiagnosticReasonUnsupportedUsage,
-				DiagnosticReasonMalformedRecord}})
+	coverage := correlation.coverage
+	completeCoverage := coverage == DiagnosticCoverageFullSnapshot && !observedOutcomes.Incomplete() && !observedOutcomes.Pending()
+	if !completeCoverage && (observedOutcomes.Incomplete() || observedOutcomes.Pending()) {
+		coverage = DiagnosticCoveragePartial
+	}
+	if correlation.coverage == DiagnosticCoverageFullSnapshot || correlation.coverage == DiagnosticCoverageIncremental {
+		store.appendParserCoverageEvaluation(&batch, correlation, adapter, sourceID, operation, coverage, completeCoverage,
+			diagnosticGeneration(correlation), DiagnosticOptionalUint64{Value: correlation.coverageOffset, Availability: DiagnosticAvailabilityAvailable})
 	}
 	if len(batch.Findings) > 0 || len(batch.Evaluations) > 0 {
 		_ = store.recordDiagnosticEvidence(batch)
 	}
+}
+
+func (store *Store) recordParserCoverageEvaluation(ctx context.Context, adapter, sourceID string, operation DiagnosticOperation, coverage DiagnosticCoverageKind, complete bool) {
+	if store == nil || !store.diagnosticPersistenceReady.Load() || sourceID == "" || (adapter != "claude" && adapter != "codex") {
+		return
+	}
+	correlation := diagnosticCorrelationFrom(ctx)
+	if correlation.evidenceOrder == 0 {
+		order, err := store.reserveDiagnosticEvidenceOrder()
+		if err != nil {
+			store.markDiagnosticPersistenceLost()
+			return
+		}
+		correlation.evidenceOrder = order
+	}
+	var batch diagnosticEvidenceBatch
+	// These measurements describe an attempted snapshot. If its ingestion or
+	// cursor transaction failed, they cannot safely order later committed
+	// findings. Preserve operation ordering while withholding snapshot scope.
+	store.appendParserCoverageEvaluation(&batch, correlation, adapter, sourceID, operation, coverage, complete,
+		DiagnosticOptionalUint64{Availability: DiagnosticAvailabilityUnknown},
+		DiagnosticOptionalUint64{Availability: DiagnosticAvailabilityUnknown})
+	if len(batch.Evaluations) > 0 {
+		_ = store.recordDiagnosticEvidence(batch)
+	}
+}
+
+func (store *Store) appendParserCoverageEvaluation(batch *diagnosticEvidenceBatch, correlation diagnosticCorrelation, adapter, sourceID string, operation DiagnosticOperation, coverage DiagnosticCoverageKind, complete bool, generation, coverageOffset DiagnosticOptionalUint64) {
+	if store == nil || batch == nil || !store.diagnosticPersistenceReady.Load() || sourceID == "" || correlation.evidenceOrder == 0 {
+		return
+	}
+	batch.Evaluations = append(batch.Evaluations, diagnosticEvaluation{SubjectKind: DiagnosticSubjectSource,
+		SubjectIdentity: sourceID, Component: DiagnosticComponentParser, Operation: operation,
+		Adapter: diagnosticAdapter(adapter), PollID: correlation.pollID, RunID: correlation.runID,
+		EvidenceOrder: correlation.evidenceOrder, Generation: generation,
+		CoverageOffset: coverageOffset,
+		ObservedAt:     time.Now().UTC(), Coverage: coverage, CompleteCoverage: complete,
+		EvaluatedReasons: []DiagnosticReason{DiagnosticReasonInvalidJSON, DiagnosticReasonInvalidTimestamp,
+			DiagnosticReasonInvalidTokenCount, DiagnosticReasonRequiredContextMissing, DiagnosticReasonUnsupportedUsage,
+			DiagnosticReasonMalformedRecord}})
 }
 
 func diagnosticGeneration(c diagnosticCorrelation) DiagnosticOptionalUint64 {

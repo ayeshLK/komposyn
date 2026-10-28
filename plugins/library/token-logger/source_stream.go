@@ -407,6 +407,12 @@ func importStreamingSource(ctx context.Context, path string, store *Store, known
 		}
 		if resultErr == nil {
 			store.recordOutcomeFindingsAt(ctx, classificationAdapter, sourceID, result.Outcomes, operation)
+		} else if sourceID != "" && (classificationAdapter == "claude" || classificationAdapter == "codex") {
+			coverage := DiagnosticCoverageUninspected
+			if ctx != nil && ctx.Err() != nil {
+				coverage = DiagnosticCoverageCancelled
+			}
+			store.recordParserCoverageEvaluation(ctx, classificationAdapter, sourceID, operation, coverage, false)
 		}
 	}()
 	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
