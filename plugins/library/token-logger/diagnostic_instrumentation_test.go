@@ -604,6 +604,50 @@ func TestCancelledKnownSourceCoverageMarksActiveProblemUnknown(t *testing.T) {
 				cursorErr != nil || cursorAfterRestore.SourceGeneration != 0 {
 				t.Fatalf("restored positive evidence did not reactivate generation zero: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", recovered, cursorAfterRestore, err, cursorErr)
 			}
+
+			if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx2, cancel2 := context.WithCancel(context.Background())
+			store.sourceReadHook = func(pass int, bytesRead int64) {
+				if pass == 2 && bytesRead > 0 {
+					cancel2()
+				}
+			}
+			if _, err := collector.PollOnceContext(ctx2); !errors.Is(err, context.Canceled) {
+				cancel2()
+				t.Fatalf("second replacement poll error=%v; want cancellation", err)
+			}
+			cancel2()
+			cancelledAgain, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterSecondCancel, cursorErr := store.Cursor(sourceID)
+			if err != nil || cancelledAgain.Condition.State != DiagnosticConditionUnknown ||
+				cancelledAgain.Condition.Generation.Availability == DiagnosticAvailabilityAvailable ||
+				cursorErr != nil || cursorAfterSecondCancel.SourceGeneration != 0 {
+				t.Fatalf("second cancelled replacement evidence=%+v cursor=%+v inspectErr=%v cursorErr=%v", cancelledAgain, cursorAfterSecondCancel, err, cursorErr)
+			}
+			store.sourceReadHook = nil
+			cleanResult, err := importSource()
+			if err != nil || cleanResult.Outcomes.MalformedRecord != 0 || cleanResult.Outcomes.Incomplete() || cleanResult.Outcomes.Pending() {
+				t.Fatalf("clean recovery import=%+v err=%v", cleanResult, err)
+			}
+			cleanRecovered, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterClean, cursorErr := store.Cursor(sourceID)
+			if err != nil || cleanRecovered.Condition.State != DiagnosticConditionResolved ||
+				cleanRecovered.Condition.Coverage != DiagnosticCoverageFullSnapshot ||
+				cleanRecovered.Condition.Reason != DiagnosticConditionCoveredAbsence ||
+				cleanRecovered.Condition.Generation.Availability != DiagnosticAvailabilityAvailable || cleanRecovered.Condition.Generation.Value != 1 ||
+				!cleanRecovered.Condition.AsOf.After(cancelledAgain.Condition.AsOf) || cleanRecovered.Lifetime != recovered.Lifetime ||
+				!cleanRecovered.LastPositiveAt.Equal(recovered.LastPositiveAt) || cursorErr != nil || cursorAfterClean.SourceGeneration != 1 {
+				t.Fatalf("clean full scan did not recover after cancellation: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", cleanRecovered, cursorAfterClean, err, cursorErr)
+			}
+			cleanAsOf := cleanRecovered.Condition.AsOf
+			unchanged, err := importSource()
+			unchangedDetail, inspectErr := store.InspectDiagnosticDetail(problemID)
+			if err != nil || unchanged.Outcomes.UnchangedSnapshot != 1 || inspectErr != nil ||
+				unchangedDetail.Condition.State != DiagnosticConditionResolved || !unchangedDetail.Condition.AsOf.Equal(cleanAsOf) {
+				t.Fatalf("unchanged scan changed clean recovery: result=%+v detail=%+v importErr=%v inspectErr=%v", unchanged, unchangedDetail, err, inspectErr)
+			}
 		})
 	}
 }
@@ -691,6 +735,45 @@ func TestFailedReplacementCoverageCannotOutrankCommittedPositiveFinding(t *testi
 				!recovered.Condition.AsOf.After(failed.Condition.AsOf) || recovered.Lifetime.Value == failed.Lifetime.Value ||
 				cursorErr != nil || cursorAfterRestore.SourceGeneration != 0 {
 				t.Fatalf("restored positive evidence did not reactivate generation zero: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", recovered, cursorAfterRestore, err, cursorErr)
+			}
+
+			if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(`CREATE TRIGGER reject_source_cursor_update_again BEFORE UPDATE ON source_cursors
+				BEGIN SELECT RAISE(ABORT, 'synthetic second cursor persistence failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := importSource(); err == nil {
+				t.Fatal("second replacement import unexpectedly committed through the rejecting cursor trigger")
+			}
+			if _, err := store.db.Exec("DROP TRIGGER reject_source_cursor_update_again"); err != nil {
+				t.Fatal(err)
+			}
+			unknownAgain, err := store.InspectDiagnosticDetail(problemID)
+			if err != nil || unknownAgain.Condition.State != DiagnosticConditionUnknown || unknownAgain.Condition.Generation.Availability == DiagnosticAvailabilityAvailable {
+				t.Fatalf("second rollback evidence=%+v err=%v", unknownAgain.Condition, err)
+			}
+			cleanResult, err := importSource()
+			if err != nil || cleanResult.Outcomes.MalformedRecord != 0 || cleanResult.Outcomes.Incomplete() || cleanResult.Outcomes.Pending() {
+				t.Fatalf("clean recovery import=%+v err=%v", cleanResult, err)
+			}
+			cleanRecovered, err := store.InspectDiagnosticDetail(problemID)
+			cursorAfterClean, cursorErr := store.Cursor(sourceID)
+			if err != nil || cleanRecovered.Condition.State != DiagnosticConditionResolved ||
+				cleanRecovered.Condition.Coverage != DiagnosticCoverageFullSnapshot ||
+				cleanRecovered.Condition.Reason != DiagnosticConditionCoveredAbsence ||
+				cleanRecovered.Condition.Generation.Availability != DiagnosticAvailabilityAvailable || cleanRecovered.Condition.Generation.Value != 1 ||
+				!cleanRecovered.Condition.AsOf.After(unknownAgain.Condition.AsOf) || cleanRecovered.Lifetime != recovered.Lifetime ||
+				!cleanRecovered.LastPositiveAt.Equal(recovered.LastPositiveAt) || cursorErr != nil || cursorAfterClean.SourceGeneration != 1 {
+				t.Fatalf("clean full scan did not recover after rollback: detail=%+v cursor=%+v inspectErr=%v cursorErr=%v", cleanRecovered, cursorAfterClean, err, cursorErr)
+			}
+			cleanAsOf := cleanRecovered.Condition.AsOf
+			unchanged, err := importSource()
+			unchangedDetail, inspectErr := store.InspectDiagnosticDetail(problemID)
+			if err != nil || unchanged.Outcomes.UnchangedSnapshot != 1 || inspectErr != nil ||
+				unchangedDetail.Condition.State != DiagnosticConditionResolved || !unchangedDetail.Condition.AsOf.Equal(cleanAsOf) {
+				t.Fatalf("unchanged scan changed clean recovery: result=%+v detail=%+v importErr=%v inspectErr=%v", unchanged, unchangedDetail, err, inspectErr)
 			}
 		})
 	}

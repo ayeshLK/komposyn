@@ -89,7 +89,10 @@ Because those attempts do not commit their cursor/checkpoint, their attempted
 generation and byte length are not used as condition evidence; both are
 reported unavailable. The reserved operation order still prevents an older
 concurrent result from overwriting the evaluation, while a later committed
-positive finding can reactivate the condition.
+positive finding can reactivate the condition. A later complete full scan with
+its own committed generation can also resolve it. When the prior generation is
+unavailable, the result is `covered_absence`; core does not infer a
+`source_replaced` relationship it cannot establish.
 
 Unknown describes the current condition evidence, while `last_positive_at`
 retains the timestamp of the most recent persisted positive finding. Coverage

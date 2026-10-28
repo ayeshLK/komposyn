@@ -132,6 +132,10 @@ cursor/checkpoint transaction fails or is cancelled. The evaluation retains
 its reserved operation order, so it cannot be superseded by older concurrent
 work while subsequent committed evidence is not blocked by a speculative
 generation.
+If the next applicable committed scan is complete and full, it can establish
+absence using its own known generation even though the prior unknown evaluation
+has no generation. The reducer reports `covered_absence` in that case because
+it cannot claim a generation replacement without a prior committed generation.
 
 Unknown condition evidence updates its timestamp, coverage and review
 revision; it includes generation and offset only when they describe a known

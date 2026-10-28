@@ -451,7 +451,7 @@ func applyDiagnosticEvaluation(tx *sql.Tx, key []byte, e diagnosticEvaluation) e
 			continue
 		}
 		complete := e.CompleteCoverage && (e.Coverage == DiagnosticCoverageFullSnapshot || e.Coverage == DiagnosticCoverageUnchangedFull) &&
-			e.Generation.Availability == DiagnosticAvailabilityAvailable && t.generation != ""
+			e.Generation.Availability == DiagnosticAvailabilityAvailable
 		state := DiagnosticConditionUnknown
 		why := DiagnosticConditionCoverageInsufficient
 		generation := decimalOrEmpty(e.Generation)
