@@ -71,53 +71,45 @@ The broader agent runtime, universal plugin API, projects, sessions, tasks,
 persistent conversations, tool execution, and MCP support are not part of this
 release.
 
-> **Release preparation:** v0.10.0 is not downloadable until its signed binary
-> release is published. The commands below use the planned immutable `v0.10.0`
-> source tag and will work after that tag and signed release assets exist.
+> **Release preparation (checked 2026-10-29):** the latest GitHub release is
+> v0.9.0 and has no binary assets. v0.10.0 and its signed binaries are not
+> published yet. The quick-start scripts can be fetched from `master`, but
+> installation succeeds only after a suitable signed binary release is
+> published.
 
 ### Linux and macOS
 
-Requires Bash, `curl`, `tar`, `sha256sum` or `shasum`, and Cosign v2.4.3 on
-`PATH`. `jq` is needed only when selecting the latest stable binary. See the
-[Cosign installation guide](https://docs.sigstore.dev/cosign/system_config/installation/)
-for supported setup options. A version-pinned installer does not need `jq`.
+Requires Bash, `curl`, `jq`, `tar`, `sha256sum` or `shasum`, and Cosign v2.4.3
+on `PATH`. See the [Cosign installation guide](https://docs.sigstore.dev/cosign/system_config/installation/)
+for supported setup options.
 
 ```sh
-installer_version=v0.10.0
-curl -fsSLo /tmp/komposyn-install.sh \
-  "https://raw.githubusercontent.com/ayeshLK/komposyn/${installer_version}/scripts/install.sh"
-bash /tmp/komposyn-install.sh
+curl -fsSL https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/install.sh | bash
 ```
 
-The source script is pinned to v0.10.0. Omitting `--version` selects the
-latest stable binary; pass `--version v0.10.0` to pin the binary version.
-The default install location is `~/.local/bin`. If it is not on your `PATH`,
+The script resolves the latest stable binary release. The default install
+location is `~/.local/bin`; the installer does not change `PATH`. If needed,
 add `export PATH="$HOME/.local/bin:$PATH"` to your shell startup file and open
-a new terminal. See the [installation guide](docs/installation.md) for custom
-directories and additional PATH details.
+a new terminal. See the [installation guide](docs/installation.md) for pinned
+versions, manual script review, custom directories, PATH details, signature
+verification, and troubleshooting.
 
 ### Windows (PowerShell)
 
 Requires Windows PowerShell 5.1 or PowerShell 7 and Cosign v2.4.3 on `PATH`.
 See the [Cosign installation guide](https://docs.sigstore.dev/cosign/system_config/installation/).
-Download the installer and architecture helper from the same source tag into
-the same directory before running the installer:
+The command downloads the installer and architecture helper from the same
+current `master` ref into one temporary directory before running the installer:
 
 ```powershell
-$installerVersion = 'v0.10.0'
-$scriptDir = Join-Path $env:TEMP "komposyn-installer-$installerVersion"
-New-Item -ItemType Directory -Path $scriptDir -Force | Out-Null
-$source = "https://raw.githubusercontent.com/ayeshLK/komposyn/$installerVersion/scripts"
-Invoke-WebRequest "$source/install.ps1" -OutFile (Join-Path $scriptDir 'install.ps1')
-Invoke-WebRequest "$source/windows-architecture.ps1" -OutFile (Join-Path $scriptDir 'windows-architecture.ps1')
-& (Join-Path $scriptDir 'install.ps1')
+$d = Join-Path $env:TEMP ([guid]::NewGuid()); New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; try { Invoke-WebRequest -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/install.ps1' -OutFile (Join-Path $d 'install.ps1'); Invoke-WebRequest -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/windows-architecture.ps1' -OutFile (Join-Path $d 'windows-architecture.ps1'); & (Join-Path $d 'install.ps1') } finally { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }
 ```
 
-The source scripts are pinned to v0.10.0. Omitting `-Version` selects the
-latest stable binary; pass `-Version v0.10.0` to pin the binary version. The
-default location is `%LOCALAPPDATA%\Komposyn\bin`; the installer does not
-change `PATH`. See the [Windows PATH instructions](docs/installation.md#windows)
-and open a new terminal after adding the directory.
+This fetches the installer and architecture helper from the same current
+`master` ref. The installer resolves the latest stable binary release. Its
+default location is `%LOCALAPPDATA%\Komposyn\bin`; it does not change `PATH`.
+See the [Windows PATH instructions](docs/installation.md#windows) and open a
+new terminal after adding the directory.
 
 ### Check your installation
 
@@ -146,58 +138,32 @@ credentials are stored as plaintext in a private configuration file. See
 
 ## Upgrade
 
-Rerun the installer to upgrade. Omitting the version selects the latest stable
-binary; pass a version to pin the upgrade. The downloaded installer does not
-update its own script. To use a newer installer implementation, download it
-from that newer immutable source tag. On Windows, download the installer and
-architecture helper together from that tag, and close a running chat before
-upgrading. Upgrades preserve auth/settings, `komposyn-lg`, and Token Logger
-data.
-
-**Linux and macOS** (using the installer downloaded above):
-
-```sh
-bash /tmp/komposyn-install.sh
-bash /tmp/komposyn-install.sh --version v0.10.0
-```
-
-**Windows**, after downloading both scripts again from the same source tag
-into `$scriptDir` as in the Windows install block:
-
-```powershell
-& (Join-Path $scriptDir 'install.ps1')
-& (Join-Path $scriptDir 'install.ps1') -Version v0.10.0
-```
+Rerun the same install command above to install the latest stable binary. On
+Windows, close a running chat first. Upgrading replaces the `komposyn`
+executable and preserves auth/settings, the separate `komposyn-lg` executable,
+Token Logger data, and backups.
 
 ## Uninstall
 
-Uninstall removes the `komposyn` executable and preserves
+Uninstall removes only the `komposyn` executable and preserves
 `~/.komposyn/auth.json`, `~/.komposyn/settings.json` (or the corresponding
 Windows home paths), `komposyn-lg`, and Token Logger data and backups.
 
 **Linux and macOS:**
 
 ```sh
-installer_version=v0.10.0
-curl -fsSLo /tmp/komposyn-uninstall.sh \
-  "https://raw.githubusercontent.com/ayeshLK/komposyn/${installer_version}/scripts/uninstall.sh"
-bash /tmp/komposyn-uninstall.sh
+curl -fsSL https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/uninstall.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-$uninstallerVersion = 'v0.10.0'
-$scriptDir = Join-Path $env:TEMP "komposyn-uninstaller-$uninstallerVersion"
-New-Item -ItemType Directory -Path $scriptDir -Force | Out-Null
-$source = "https://raw.githubusercontent.com/ayeshLK/komposyn/$uninstallerVersion/scripts"
-Invoke-WebRequest "$source/uninstall.ps1" -OutFile (Join-Path $scriptDir 'uninstall.ps1')
-& (Join-Path $scriptDir 'uninstall.ps1')
+$d = Join-Path $env:TEMP ([guid]::NewGuid()); New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; try { Invoke-WebRequest -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/uninstall.ps1' -OutFile (Join-Path $d 'uninstall.ps1'); & (Join-Path $d 'uninstall.ps1') } finally { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }
 ```
 
-For a custom install directory, pass the same `--install-dir` / `-InstallDir`
-value to uninstall that you used to install. See the [installation guide](docs/installation.md)
-for details. Install or upgrade the production Token Logger CLI using the
+For a custom install directory, see the [installation guide](docs/installation.md)
+for the matching install and uninstall options. Install or upgrade the
+production Token Logger CLI using the
 [standalone instructions](https://github.com/ayeshLK/komposyn-lg#install); its
 executable and data are separate from `komposyn`.
 
