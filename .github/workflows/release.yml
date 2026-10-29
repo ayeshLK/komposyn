@@ -23,7 +23,8 @@ jobs:
     name: Validate reviewed tag and source release
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # GitHub hides draft releases from tokens without push access.
+      contents: write
     outputs:
       version: ${{ steps.validate.outputs.version }}
       tag: ${{ steps.validate.outputs.tag }}
@@ -162,7 +163,8 @@ jobs:
     needs: [validate-release, build-native]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # Retry checks must be able to read existing draft release assets.
+      contents: write
       id-token: write
     steps:
       - name: Check out signing workflow source

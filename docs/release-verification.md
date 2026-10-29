@@ -32,7 +32,11 @@ publish assets.
 
 The binary workflow accepts only stable `X.Y.Z`, requires the supplied SHA to
 match `vX.Y.Z`, and never moves tags. Its build, signing, and publication jobs
-use separate least-privilege permissions. It does not use production provider
+use separate job-scoped permissions. GitHub requires push access to see draft
+releases, so source-release validation and signing's draft-asset retry checks
+need `contents: write`, as does publication. Build and install-test jobs retain
+`contents: read`; only signing receives `id-token: write`. The validation and
+signing steps do not modify the draft release. It does not use production provider
 credentials or make live model requests.
 
 ## Artifact and signature contract
