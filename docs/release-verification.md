@@ -24,6 +24,9 @@ publish assets.
 4. Resolve the full commit SHA at that tag and dispatch **Publish experimental
    komposyn binaries** from `master`, entering the numeric version (without
    `v`) and the exact 40-character tag commit SHA.
+   Supply the commit referenced by the release tag, which can differ from the
+   current `master` commit after workflow fixes. To resolve it without modifying
+   local tags, run `gh api repos/ayeshLK/komposyn/commits/vX.Y.Z --jq .sha`.
 5. The workflow verifies the tag, manifest version, and source release; builds
    and runs native checks for all six supported targets; signs the aggregate
    checksum manifest; exercises the actual signed install on all six targets;
@@ -36,8 +39,10 @@ use separate job-scoped permissions. GitHub requires push access to see draft
 releases, so source-release validation and signing's draft-asset retry checks
 need `contents: write`, as does publication. Build and install-test jobs retain
 `contents: read`; only signing receives `id-token: write`. The validation and
-signing steps do not modify the draft release. It does not use production provider
-credentials or make live model requests.
+signing steps do not modify the draft release. Validation uses
+`gh release view` to locate drafts; the REST release-by-tag endpoint resolves
+published releases and cannot be used for this draft gate. The workflow does
+not use production provider credentials or make live model requests.
 
 ## Artifact and signature contract
 

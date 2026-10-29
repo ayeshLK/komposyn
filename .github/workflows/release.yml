@@ -73,12 +73,15 @@ jobs:
             echo "Tag manifest version ${tagged_version} does not match ${VERSION_INPUT}." >&2
             exit 1
           }
-          release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${tag}")"
-          jq -e '.draft == true' <<<"$release_json" >/dev/null || {
+          # The REST release-by-tag endpoint only resolves published releases.
+          # gh release view also searches drafts visible to this token.
+          release_json="$(gh release view "$tag" --repo "$REPOSITORY" --json tagName,isDraft,isPrerelease)"
+          test "$(jq -r .tagName <<<"$release_json")" = "$tag"
+          jq -e '.isDraft == true' <<<"$release_json" >/dev/null || {
             echo "Release ${tag} must still be a draft before signed assets are published." >&2
             exit 1
           }
-          test "$(jq -r .prerelease <<<"$release_json")" = false
+          test "$(jq -r .isPrerelease <<<"$release_json")" = false
           # Release Please creates a draft release while keeping its tag. The
           # release remains private until all verified binaries are uploaded.
           echo "version=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
