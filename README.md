@@ -139,8 +139,9 @@ credentials are stored as plaintext in a private configuration file. See
 ## Upgrade
 
 Rerun the same install command above to install the latest stable binary. On
-Windows, close a running chat first. Upgrades preserve auth/settings,
-`komposyn-lg`, and Token Logger data and backups.
+Windows, close a running chat first. Upgrading replaces the `komposyn`
+executable and preserves auth/settings, the separate `komposyn-lg` executable,
+Token Logger data, and backups.
 
 ## Uninstall
 
