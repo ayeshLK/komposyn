@@ -11,6 +11,29 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.10.0](https://github.com/ayeshLK/komposyn/compare/v0.9.0...v0.10.0) (2026-10-29)
+
+
+### Features
+
+* **auth:** add provider-scoped auth registry and interactions ([1c36607](https://github.com/ayeshLK/komposyn/commit/1c36607463b160afee8bcbae3077a4ea3971ae1c))
+* **auth:** add provider-scoped auth registry and interactions ([82ca93a](https://github.com/ayeshLK/komposyn/commit/82ca93a1dc1956097a90d8133c48bde956e6f102))
+* **diagnostics:** add contract v1 foundation ([9fa3baa](https://github.com/ayeshLK/komposyn/commit/9fa3baabe866ff70ed237e10bbdb88bb6d7eee16))
+* **diagnostics:** add contract v1 foundation ([e61d434](https://github.com/ayeshLK/komposyn/commit/e61d43400f90b8335d6f15b3ad6a29851d202730))
+* **diagnostics:** persist production evidence ([#172](https://github.com/ayeshLK/komposyn/issues/172)) ([fa67515](https://github.com/ayeshLK/komposyn/commit/fa67515efe7430da47c1819cba4a3cba0445ea40))
+* **harness:** add ChatGPT OAuth sign-in ([#161](https://github.com/ayeshLK/komposyn/issues/161)) ([bd9f3b1](https://github.com/ayeshLK/komposyn/commit/bd9f3b13dd4dadabd7057e921b7190c3a2ddb3b2))
+* **harness:** add experimental temporary chat ([#157](https://github.com/ayeshLK/komposyn/issues/157)) ([e006cad](https://github.com/ayeshLK/komposyn/commit/e006cad6492ac21f654c877bd43e055746aa3bce))
+* **harness:** prepare signed CLI release workflow ([#160](https://github.com/ayeshLK/komposyn/issues/160)) ([bb91840](https://github.com/ayeshLK/komposyn/commit/bb91840b9df42e97f12ff3a0d2624b999e8cadba))
+* instrument structured diagnostic boundaries ([#170](https://github.com/ayeshLK/komposyn/issues/170)) ([2d12dc7](https://github.com/ayeshLK/komposyn/commit/2d12dc77d95db48207cd7e50712ee967295b0c81))
+* persist diagnostic evidence and add inspection APIs ([#169](https://github.com/ayeshLK/komposyn/issues/169)) ([fc63c3c](https://github.com/ayeshLK/komposyn/commit/fc63c3cba307984afa2862198785dc315647f26d))
+
+
+### Bug Fixes
+
+* **auth:** route usage page through browser opener ([d2c1ba2](https://github.com/ayeshLK/komposyn/commit/d2c1ba27a5e21a3163ce5f2cdafe47dd927d05ae))
+* **diagnostics:** address foundation review feedback ([395cc8c](https://github.com/ayeshLK/komposyn/commit/395cc8c165f3cb5702790f6ca89dedef8388e1e6))
+* **harness:** make OAuth refresh survive cancellation ([#165](https://github.com/ayeshLK/komposyn/issues/165)) ([1232f87](https://github.com/ayeshLK/komposyn/commit/1232f875acd9c2f7fe742fe19f3b43ae07b856a3))
+
 ## [0.9.0](https://github.com/ayeshLK/komposyn/compare/v0.8.0...v0.9.0) (2026-10-21)
 
 
