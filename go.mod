@@ -7,7 +7,7 @@ toolchain go1.26.10
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/gdamore/tcell/v2 v2.13.10
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/rivo/tview v0.42.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
