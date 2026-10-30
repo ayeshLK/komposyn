@@ -11,6 +11,19 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.11.0](https://github.com/ayeshLK/komposyn/compare/v0.10.0...v0.11.0) (2026-10-30)
+
+
+### Features
+
+* **ui:** improve chat navigation and usage display ([#182](https://github.com/ayeshLK/komposyn/issues/182)) ([ef63d18](https://github.com/ayeshLK/komposyn/commit/ef63d189f4858018f54ebf369365bee903f1f766))
+
+
+### Bug Fixes
+
+* **ci:** allow release jobs to inspect draft releases ([#179](https://github.com/ayeshLK/komposyn/issues/179)) ([8afe570](https://github.com/ayeshLK/komposyn/commit/8afe570347a061f9715d924eb88e897ff587f6a0))
+* **ci:** resolve draft releases during binary validation ([#180](https://github.com/ayeshLK/komposyn/issues/180)) ([5806431](https://github.com/ayeshLK/komposyn/commit/5806431ec2d08b313f3422f0706918e357c39c60))
+
 ## [0.10.0](https://github.com/ayeshLK/komposyn/compare/v0.9.0...v0.10.0) (2026-10-29)
 
 
