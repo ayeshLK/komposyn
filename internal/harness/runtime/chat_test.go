@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -684,6 +685,28 @@ func TestRequestFailureIsSanitizedAndNotReplayed(t *testing.T) {
 	}
 	if got := c.Snapshot().Turns[0].Message; got == "" || got == "secret-key" || got == "private prompt" {
 		t.Fatalf("unsafe user-visible failure: %q", got)
+	}
+}
+
+func TestUnsupportedProviderDiagnosticCodeIsRetainedWithoutAddingHistory(t *testing.T) {
+	fp := &fakeProvider{id: p.OpenAI}
+	fp.stream = func(_ context.Context, _ p.ChatRequest, delta func(string)) (p.Result, error) {
+		if delta != nil {
+			delta("visible answer")
+		}
+		return p.Result{Outcome: p.OutcomeUnsupported, Text: "visible answer", DiagnosticCode: p.DiagnosticOpenAICompletedStatusInProgress}, nil
+	}
+	chat, _ := makeChat(t, fp)
+	selectFirst(t, chat)
+	turn, err := chat.Send(context.Background(), "private prompt", nil)
+	if err != nil || turn.Outcome != p.OutcomeUnsupported || turn.DiagnosticCode != p.DiagnosticOpenAICompletedStatusInProgress {
+		t.Fatalf("turn=%+v err=%v", turn, err)
+	}
+	if len(chat.history) != 0 {
+		t.Fatalf("unsupported response was added to continuation history: %+v", chat.history)
+	}
+	if strings.Contains(string(turn.DiagnosticCode), "private") || strings.Contains(string(turn.DiagnosticCode), "visible") {
+		t.Fatalf("sensitive content appeared in diagnostic code: %q", turn.DiagnosticCode)
 	}
 }
 

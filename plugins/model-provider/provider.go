@@ -119,16 +119,61 @@ const (
 	OutcomeService        Outcome = "service_failed"
 )
 
+// DiagnosticCode identifies a bounded provider/runtime rejection branch.
+// Values contain only fixed structural labels; they must never include source
+// text, IDs, credentials, URLs, or arbitrary provider strings.
+type DiagnosticCode string
+
+const (
+	DiagnosticOpenAICompletedMissingResponse    DiagnosticCode = "openai.response_completed.missing_response"
+	DiagnosticOpenAICompletedNoAssistantMessage DiagnosticCode = "openai.response_completed.no_assistant_message"
+	DiagnosticOpenAICompletedFunctionCall       DiagnosticCode = "openai.response_completed.function_call"
+	DiagnosticOpenAICompletedComputerCall       DiagnosticCode = "openai.response_completed.computer_call"
+	DiagnosticOpenAICompletedOtherOutputItem    DiagnosticCode = "openai.response_completed.other_output_item"
+	DiagnosticOpenAICompletedInvalidRole        DiagnosticCode = "openai.response_completed.invalid_message_role"
+	DiagnosticOpenAICompletedEmptyMessage       DiagnosticCode = "openai.response_completed.empty_message"
+	DiagnosticOpenAICompletedOtherContent       DiagnosticCode = "openai.response_completed.other_content"
+	DiagnosticOpenAICompletedTextMismatch       DiagnosticCode = "openai.response_completed.stream_final_text_mismatch"
+	DiagnosticOpenAICompletedStatusFailed       DiagnosticCode = "openai.response_completed.status_failed"
+	DiagnosticOpenAICompletedStatusCancelled    DiagnosticCode = "openai.response_completed.status_cancelled"
+	DiagnosticOpenAICompletedStatusInProgress   DiagnosticCode = "openai.response_completed.status_in_progress"
+	DiagnosticOpenAICompletedStatusQueued       DiagnosticCode = "openai.response_completed.status_queued"
+	DiagnosticOpenAICompletedStatusIncomplete   DiagnosticCode = "openai.response_completed.status_incomplete"
+	DiagnosticOpenAICompletedStatusOther        DiagnosticCode = "openai.response_completed.status_other"
+	DiagnosticOpenAIIncompleteOtherStopReason   DiagnosticCode = "openai.response_incomplete.other_stop_reason"
+	DiagnosticRuntimeMissingNative              DiagnosticCode = "runtime.completed.missing_native_continuation"
+)
+
+// SafeDiagnosticCode reports whether a diagnostic belongs to the fixed local
+// vocabulary suitable for display or copying into a bug report.
+func SafeDiagnosticCode(code DiagnosticCode) bool {
+	switch code {
+	case DiagnosticOpenAICompletedMissingResponse, DiagnosticOpenAICompletedNoAssistantMessage,
+		DiagnosticOpenAICompletedFunctionCall, DiagnosticOpenAICompletedComputerCall,
+		DiagnosticOpenAICompletedOtherOutputItem, DiagnosticOpenAICompletedInvalidRole,
+		DiagnosticOpenAICompletedEmptyMessage, DiagnosticOpenAICompletedOtherContent,
+		DiagnosticOpenAICompletedTextMismatch,
+		DiagnosticOpenAICompletedStatusFailed, DiagnosticOpenAICompletedStatusCancelled,
+		DiagnosticOpenAICompletedStatusInProgress, DiagnosticOpenAICompletedStatusQueued,
+		DiagnosticOpenAICompletedStatusIncomplete, DiagnosticOpenAICompletedStatusOther,
+		DiagnosticOpenAIIncompleteOtherStopReason, DiagnosticRuntimeMissingNative:
+		return true
+	default:
+		return false
+	}
+}
+
 type Result struct {
-	RequestID    string
-	ModelID      string
-	Outcome      Outcome
-	StopReason   string
-	Text         string
-	Refusal      string
-	Native       []json.RawMessage
-	Usage        Usage
-	ProviderCode string
+	RequestID      string
+	ModelID        string
+	Outcome        Outcome
+	DiagnosticCode DiagnosticCode
+	StopReason     string
+	Text           string
+	Refusal        string
+	Native         []json.RawMessage
+	Usage          Usage
+	ProviderCode   string
 }
 
 type Error struct {

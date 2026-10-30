@@ -225,14 +225,17 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			}
 		} else {
 			result.Outcome = provider.OutcomeUnsupported
+			result.DiagnosticCode = provider.DiagnosticOpenAICompletedTextMismatch
 		}
 	}
 	if terminal == "response.completed" && finalResponse == nil {
 		result.Outcome = provider.OutcomeUnsupported
+		result.DiagnosticCode = provider.DiagnosticOpenAICompletedMissingResponse
 		return result, nil
 	}
 	if terminal == "response.completed" && !finalResponse.HasReplayableMessage {
 		result.Outcome = provider.OutcomeUnsupported
+		result.DiagnosticCode = provider.DiagnosticOpenAICompletedNoAssistantMessage
 		return result, nil
 	}
 	switch terminal {
@@ -245,6 +248,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			result.Outcome = provider.OutcomeTruncated
 		} else {
 			result.Outcome = provider.OutcomeUnsupported
+			result.DiagnosticCode = provider.DiagnosticOpenAIIncompleteOtherStopReason
 		}
 	case "response.failed":
 		result.Outcome = outcomeForCode(result.ProviderCode, provider.OutcomeService)
@@ -253,6 +257,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	// omits response.status. An explicit conflicting status remains invalid.
 	if result.Outcome == provider.OutcomeCompleted && result.StopReason != "" && result.StopReason != "completed" {
 		result.Outcome = provider.OutcomeUnsupported
+		result.DiagnosticCode = completedStatusDiagnostic(result.StopReason)
 	}
 	return result, nil
 }
@@ -332,15 +337,27 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 		}
 		if item.Type == "function_call" || item.Type == "computer_call" {
 			t.Outcome = provider.OutcomeUnsupported
+			if item.Type == "function_call" {
+				t.DiagnosticCode = provider.DiagnosticOpenAICompletedFunctionCall
+			} else {
+				t.DiagnosticCode = provider.DiagnosticOpenAICompletedComputerCall
+			}
 			continue
 		}
 		if item.Type != "message" && item.Type != "reasoning" {
 			t.Outcome = provider.OutcomeUnsupported
+			t.DiagnosticCode = provider.DiagnosticOpenAICompletedOtherOutputItem
 			continue
 		}
 		if item.Type == "message" {
-			if item.Role != "assistant" || len(item.Content) == 0 {
+			if item.Role != "assistant" {
 				t.Outcome = provider.OutcomeUnsupported
+				t.DiagnosticCode = provider.DiagnosticOpenAICompletedInvalidRole
+				continue
+			}
+			if len(item.Content) == 0 {
+				t.Outcome = provider.OutcomeUnsupported
+				t.DiagnosticCode = provider.DiagnosticOpenAICompletedEmptyMessage
 				continue
 			}
 			r.HasReplayableMessage = true
@@ -353,11 +370,29 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 				r.FinalText += c.Text
 			} else {
 				t.Outcome = provider.OutcomeUnsupported
+				t.DiagnosticCode = provider.DiagnosticOpenAICompletedOtherContent
 			}
 		}
 		t.Native = append(t.Native, append(json.RawMessage(nil), raw...))
 	}
 	return nil
+}
+
+func completedStatusDiagnostic(status string) provider.DiagnosticCode {
+	switch status {
+	case "failed":
+		return provider.DiagnosticOpenAICompletedStatusFailed
+	case "cancelled":
+		return provider.DiagnosticOpenAICompletedStatusCancelled
+	case "in_progress":
+		return provider.DiagnosticOpenAICompletedStatusInProgress
+	case "queued":
+		return provider.DiagnosticOpenAICompletedStatusQueued
+	case "incomplete":
+		return provider.DiagnosticOpenAICompletedStatusIncomplete
+	default:
+		return provider.DiagnosticOpenAICompletedStatusOther
+	}
 }
 
 func (p Plugin) newRequest(ctx context.Context, method, path string, body io.Reader, c provider.Credential) (*http.Request, error) {

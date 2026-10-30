@@ -141,7 +141,13 @@ func TestCompletedEventWithoutEmbeddedStatusReplaysNativeResponse(t *testing.T) 
 }
 
 func TestCompletedEventWithoutReplayableResponseIsUnsupported(t *testing.T) {
-	for _, tc := range []struct{ name, response string }{{"missing response", ""}, {"conflicting status", `,"status":"in_progress"`}} {
+	for _, tc := range []struct {
+		name, response string
+		code           p.DiagnosticCode
+	}{
+		{"missing response", "", p.DiagnosticOpenAICompletedMissingResponse},
+		{"conflicting status", `,"status":"in_progress"`, p.DiagnosticOpenAICompletedStatusInProgress},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -154,8 +160,35 @@ func TestCompletedEventWithoutReplayableResponseIsUnsupported(t *testing.T) {
 			}))
 			defer server.Close()
 			result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "m", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture"}, Messages: []p.Message{{Role: p.RoleUser, Text: "hi"}}}, nil)
-			if err != nil || result.Outcome != p.OutcomeUnsupported {
+			if err != nil || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != tc.code {
 				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestCompletedEventUnsupportedOutputUsesBoundedDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		code         p.DiagnosticCode
+	}{
+		{"function call", `{"type":"function_call","name":"private-tool-name","arguments":"private arguments"}`, p.DiagnosticOpenAICompletedFunctionCall},
+		{"unknown output", `{"type":"private-output-kind"}`, p.DiagnosticOpenAICompletedOtherOutputItem},
+		{"unknown content", `{"type":"message","role":"assistant","content":[{"type":"private-content-kind","text":"private response text"}]}`, p.DiagnosticOpenAICompletedOtherContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"visible reply\"}\n\n")
+				fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[%s,{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"visible reply\"}]}]}}\n\n", tc.output)
+			}))
+			defer server.Close()
+			result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "m", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture"}, Messages: []p.Message{{Role: p.RoleUser, Text: "private prompt"}}}, nil)
+			if err != nil || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != tc.code {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if !p.SafeDiagnosticCode(result.DiagnosticCode) || strings.Contains(string(result.DiagnosticCode), "private") || strings.Contains(string(result.DiagnosticCode), "visible") {
+				t.Fatalf("unsafe diagnostic code %q", result.DiagnosticCode)
 			}
 		})
 	}

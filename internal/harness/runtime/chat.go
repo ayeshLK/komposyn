@@ -46,6 +46,7 @@ type Turn struct {
 	Usage              provider.Usage
 	RequestID, ModelID string
 	ProviderCode       string
+	DiagnosticCode     provider.DiagnosticCode
 	Message            string
 	At                 time.Time
 }
@@ -631,6 +632,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	turn.Usage = result.Usage
 	turn.RequestID = result.RequestID
 	turn.ProviderCode = result.ProviderCode
+	turn.DiagnosticCode = result.DiagnosticCode
 	if result.Outcome != provider.OutcomeCompleted && result.ProviderCode != "" {
 		turn.Message = messageForProviderCode(result.ProviderCode)
 	}
@@ -661,6 +663,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		if len(result.Native) == 0 {
 			turn.Outcome = provider.OutcomeUnsupported
 			turn.Message = "provider returned no replayable continuation data"
+			turn.DiagnosticCode = provider.DiagnosticRuntimeMissingNative
 		} else {
 			c.history = append(c.history, provider.Message{Role: provider.RoleUser, Text: prompt}, provider.Message{Role: provider.RoleAssistant, Text: result.Text, Native: cloneRaw(result.Native)})
 		}

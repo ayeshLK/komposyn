@@ -1307,8 +1307,12 @@ func profileID(providerID, label string, profiles []ui.Profile) string {
 }
 
 func outcomeStatus(turn ui.Turn, err error) string {
+	diagnostic := ""
+	if turn.Outcome == modelprovider.OutcomeUnsupported && modelprovider.SafeDiagnosticCode(turn.DiagnosticCode) {
+		diagnostic = " (diagnostic: " + string(turn.DiagnosticCode) + ")"
+	}
 	if turn.Message != "" {
-		return fmt.Sprintf("Request %s: %s. This response was not added to follow-up context.\n", turn.Outcome, turn.Message)
+		return fmt.Sprintf("Request %s%s: %s. This response was not added to follow-up context.\n", turn.Outcome, diagnostic, turn.Message)
 	}
 	if err != nil {
 		message := turn.Message
@@ -1327,7 +1331,7 @@ func outcomeStatus(turn ui.Turn, err error) string {
 	case modelprovider.OutcomeInterrupted:
 		return "Response interrupted; it was not added to follow-up context.\n"
 	case modelprovider.OutcomeUnsupported:
-		return "Provider response unsupported; it was not added to follow-up context.\n"
+		return "Provider response unsupported" + diagnostic + "; it was not added to follow-up context.\n"
 	case modelprovider.OutcomeAuthentication:
 		return "Provider rejected the credential; response was not added to follow-up context.\n"
 	case modelprovider.OutcomePermission:

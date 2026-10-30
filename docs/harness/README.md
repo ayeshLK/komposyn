@@ -181,6 +181,11 @@ completed user/assistant turns and provider-native continuation data. A failed,
 canceled, refused-without-replay-data, truncated, or unsupported response is
 not added to provider continuation history. Partial text remains visible in
 the current UI, is marked interrupted/failed, and is never resent automatically.
+When an OpenAI response is rejected as unsupported, the status may include a
+fixed diagnostic code such as `openai.response_completed.status_in_progress`.
+These codes identify a bounded rejection branch; they contain no response text,
+provider IDs, credentials, URLs, or arbitrary provider values. They exist to
+support safe bug reports and are not persisted.
 
 Only one request runs at a time. While busy, Enter preserves the draft; Ctrl+C
 or `/cancel` cancels the request. Changing provider, model, or profile after
