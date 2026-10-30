@@ -52,6 +52,12 @@ type synchronizedSimulation struct {
 	mu sync.Mutex
 }
 
+func (s *synchronizedSimulation) Init() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.SimulationScreen.Init()
+}
+
 func (s *synchronizedSimulation) Show() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1056,5 +1062,139 @@ func TestTranscriptSeparatesTurnsAndKeepsThemeForeground(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPromptRecallBoundariesDraftAndEditedHistory(t *testing.T) {
+	u := &terminal{input: tv.NewInputField()}
+	u.input.SetText("unsent draft")
+	u.recallPrompt(-1)
+	if u.input.GetText() != "unsent draft" {
+		t.Fatal("empty history changed draft")
+	}
+	u.rememberPrompt("first question")
+	u.rememberPrompt("second question")
+	u.recallPrompt(1)
+	if u.input.GetText() != "unsent draft" {
+		t.Fatal("Down outside history changed draft")
+	}
+	u.recallPrompt(-1)
+	if u.input.GetText() != "second question" {
+		t.Fatal("Up did not recall most recent prompt")
+	}
+	u.recallPrompt(-1)
+	u.recallPrompt(-1)
+	if u.input.GetText() != "first question" {
+		t.Fatal("oldest history boundary wrapped")
+	}
+	u.input.SetText("edited recalled question")
+	u.recallPrompt(1)
+	u.recallPrompt(1)
+	if u.input.GetText() != "unsent draft" {
+		t.Fatal("Down did not restore original draft")
+	}
+	if u.promptHistory[0] != "first question" {
+		t.Fatal("editing recall mutated history")
+	}
+	u.clearTranscript()
+	u.recallPrompt(-1)
+	if u.input.GetText() != "second question" {
+		t.Fatal("display clear removed prompt history")
+	}
+	fresh := &terminal{input: tv.NewInputField()}
+	fresh.recallPrompt(-1)
+	if fresh.input.GetText() != "" {
+		t.Fatal("history escaped its terminal instance")
+	}
+}
+
+func TestPromptHistorySkipsUnsubmittedQuestions(t *testing.T) {
+	client := &clientStub{}
+	u := &terminal{input: tv.NewInputField(), output: tv.NewTextView(), client: client, commands: supportedCommands()}
+	u.input.SetText("  ")
+	u.submit()
+	u.input.SetText("not sent without a model")
+	u.submit()
+	client.snapshotHook = func() ui.Snapshot { return ui.Snapshot{Selected: &ui.Model{ID: "model"}, Active: true} }
+	u.input.SetText("not sent while busy")
+	u.submit()
+	u.input.SetText("/help")
+	u.submit()
+	if len(u.promptHistory) != 0 {
+		t.Fatalf("non-submitted input entered history: %q", u.promptHistory)
+	}
+}
+
+func TestComposerArrowHistoryAndSlashSuggestionsOnSimulation(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	sent := make(chan string, 4)
+	client := &clientStub{selected: &ui.Model{Key: "m", ID: "model"}}
+	client.sendHook = func(_ context.Context, text string, _ func(string)) (ui.Turn, error) {
+		sent <- text
+		return ui.Turn{Outcome: modelprovider.OutcomeCompleted}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop")
+		}
+	}()
+	waitForScreen(t, safe, "KompoSyn", "")
+	typeText := func(text string) {
+		for _, r := range text {
+			screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+		}
+	}
+	press := func(key tcell.Key) { screen.InjectKey(key, 0, tcell.ModNone) }
+	for _, question := range []string{"first question", "second question"} {
+		typeText(question)
+		press(tcell.KeyEnter)
+		select {
+		case got := <-sent:
+			if got != question {
+				t.Fatalf("sent %q, want %q", got, question)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("question not submitted")
+		}
+	}
+	typeText("keep draft")
+	press(tcell.KeyUp)
+	waitForScreen(t, safe, "> second question", "")
+	press(tcell.KeyUp)
+	waitForScreen(t, safe, "> first question", "")
+	press(tcell.KeyDown)
+	waitForScreen(t, safe, "> second question", "")
+	press(tcell.KeyDown)
+	waitForScreen(t, safe, "> keep draft", "")
+	select {
+	case got := <-sent:
+		t.Fatalf("navigation submitted %q", got)
+	default:
+	}
+	press(tcell.KeyUp)
+	press(tcell.KeyEnter)
+	select {
+	case got := <-sent:
+		if got != "second question" {
+			t.Fatalf("resubmitted %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("recalled question not submitted on Enter")
+	}
+	typeText("/")
+	press(tcell.KeyUp)
+	press(tcell.KeyTab)
+	waitForScreen(t, safe, "> /exit", "") // Up navigates slash suggestions, not prompt history.
+	select {
+	case got := <-sent:
+		t.Fatalf("completion submitted %q", got)
+	default:
 	}
 }

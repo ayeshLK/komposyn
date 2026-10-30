@@ -60,47 +60,51 @@ type credentialOperation struct {
 }
 
 type terminal struct {
-	app               *tv.Application
-	done              chan struct{}
-	client            ui.Client
-	ctx               context.Context
-	cancel            context.CancelFunc
-	wg                sync.WaitGroup
-	lifecycleMu       sync.Mutex
-	stopping          bool
-	stopOnce          sync.Once
-	closing           atomic.Bool
-	runReturned       atomic.Bool
-	output            *tv.TextView
-	transcript        []outputPart
-	header            *tv.TextView
-	input             *tv.InputField
-	layout            *tv.Flex
-	body              *tv.Flex
-	usagePane         *tv.TextView
-	footer            *tv.TextView
-	composer          *tv.Flex
-	commandList       *tv.List
-	usageCompact      *tv.TextView
-	commands          []command
-	commandItems      []command
-	usageVisible      bool
-	wide              bool
-	layoutReady       bool
-	compactUsageShown bool
-	usageExact        bool
-	usageCursor       int
-	terminalWidth     int
-	pickerQuery       string
-	picker            *tv.List
-	modelList         *tv.List
-	pickerInput       *tv.InputField
-	pickerStatus      *tv.TextView
-	pickerLayout      *tv.Flex
-	entries           []entry
-	modelEntries      []entry
-	discovery         ui.Discovery
-	credentialOp      *credentialOperation
+	app                *tv.Application
+	done               chan struct{}
+	client             ui.Client
+	ctx                context.Context
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	lifecycleMu        sync.Mutex
+	stopping           bool
+	stopOnce           sync.Once
+	closing            atomic.Bool
+	runReturned        atomic.Bool
+	output             *tv.TextView
+	transcript         []outputPart
+	header             *tv.TextView
+	input              *tv.InputField
+	promptHistory      []string
+	promptHistoryIndex int
+	promptHistoryDraft string
+	browsingPrompts    bool
+	layout             *tv.Flex
+	body               *tv.Flex
+	usagePane          *tv.TextView
+	footer             *tv.TextView
+	composer           *tv.Flex
+	commandList        *tv.List
+	usageCompact       *tv.TextView
+	commands           []command
+	commandItems       []command
+	usageVisible       bool
+	wide               bool
+	layoutReady        bool
+	compactUsageShown  bool
+	usageExact         bool
+	usageCursor        int
+	terminalWidth      int
+	pickerQuery        string
+	picker             *tv.List
+	modelList          *tv.List
+	pickerInput        *tv.InputField
+	pickerStatus       *tv.TextView
+	pickerLayout       *tv.Flex
+	entries            []entry
+	modelEntries       []entry
+	discovery          ui.Discovery
+	credentialOp       *credentialOperation
 }
 
 func (u *terminal) beginCredentialOperation() *credentialOperation {
@@ -132,7 +136,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
-	u.footer = tv.NewTextView().SetText("Tab focus · Ctrl+U usage · Ctrl+N/P models · Ctrl+E exact · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
+	u.footer = tv.NewTextView().SetText("↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · Ctrl+E exact · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
@@ -175,6 +179,14 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 				u.dismissCommandSuggestions()
 				return nil
 			}
+		}
+		switch event.Key() {
+		case tcell.KeyUp:
+			u.recallPrompt(-1)
+			return nil
+		case tcell.KeyDown:
+			u.recallPrompt(1)
+			return nil
 		}
 		return event
 	})
@@ -623,6 +635,41 @@ func (u *terminal) stop() {
 	})
 }
 
+// Prompt recall belongs to the composer, independently of conversation context
+// and the visible transcript. Nothing is persisted or submitted by navigation.
+func (u *terminal) resetPromptNavigation() {
+	u.browsingPrompts = false
+	u.promptHistoryIndex = len(u.promptHistory)
+	u.promptHistoryDraft = ""
+}
+
+func (u *terminal) rememberPrompt(text string) {
+	u.promptHistory = append(u.promptHistory, text)
+	u.resetPromptNavigation()
+}
+
+func (u *terminal) recallPrompt(direction int) {
+	if len(u.promptHistory) == 0 {
+		return
+	}
+	if !u.browsingPrompts {
+		if direction > 0 {
+			return
+		}
+		u.promptHistoryDraft = u.input.GetText()
+		u.promptHistoryIndex = len(u.promptHistory)
+		u.browsingPrompts = true
+	}
+	u.promptHistoryIndex = max(0, min(len(u.promptHistory), u.promptHistoryIndex+direction))
+	if u.promptHistoryIndex == len(u.promptHistory) {
+		draft := u.promptHistoryDraft
+		u.resetPromptNavigation()
+		u.input.SetText(draft)
+		return
+	}
+	u.input.SetText(u.promptHistory[u.promptHistoryIndex])
+}
+
 func (u *terminal) submit() {
 	text := u.input.GetText()
 	trimmed := strings.TrimSpace(text)
@@ -642,6 +689,7 @@ func (u *terminal) submit() {
 		u.write("A reply is active. Your draft is preserved; press Ctrl+C to cancel.\n")
 		return
 	}
+	u.rememberPrompt(trimmed)
 	u.input.SetText("")
 	u.writeUser(trimmed)
 	u.launch(func() {
@@ -663,6 +711,7 @@ func (u *terminal) submit() {
 }
 
 func (u *terminal) runCommand(text string) {
+	u.resetPromptNavigation()
 	trimmed := strings.TrimSpace(text)
 	name := strings.Fields(trimmed)[0]
 	if name == "/model" && trimmed != "/model" {
@@ -690,7 +739,7 @@ func (u *terminal) runCommand(text string) {
 		for _, item := range u.commands {
 			descriptions = append(descriptions, item.name+" "+item.description)
 		}
-		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+E toggles exact counts; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details.\n")
+		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+E toggles exact counts; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")

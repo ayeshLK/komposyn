@@ -198,7 +198,16 @@ command definitions used for dispatch. Type `/` and narrow the prefix, use
 Up/Down to highlight a suggestion, Tab to complete it, Enter to run the
 highlighted command, or Esc to dismiss suggestions while keeping the draft.
 Command input is dispatched as a command and is never sent as provider text.
-Outside an active suggestion list, Tab and Shift+Tab move between the picker
+Outside an active suggestion list, Up/Down in the composer recalls previously
+submitted questions. Up moves toward older questions; Down moves toward newer
+ones and restores the draft that was present before browsing. Recalled text can
+be edited and is sent only when Enter is pressed. This history stays in memory
+for the current CLI run, including across Ctrl+L and model switches; it is not
+saved to disk. Blank submissions, slash commands, and unsent drafts are not
+added to history. Up/Down still navigate slash suggestions while that list is
+open. Provider forms and model lists keep their own arrow-key behavior.
+
+Tab and Shift+Tab move between the picker
 filter, provider actions, and model choices. Provider actions and model rows
 have separate headings in the same searchable picker; headings are not
 selectable rows, and actions remain available while filtering.
