@@ -45,6 +45,11 @@ type entry struct {
 
 type command struct{ name, description, action string }
 
+type outputPart struct {
+	text   string
+	markup bool
+}
+
 const usageWideThreshold = 100
 
 type credentialOperation struct {
@@ -66,6 +71,7 @@ type terminal struct {
 	closing           atomic.Bool
 	runReturned       atomic.Bool
 	output            *tv.TextView
+	transcript        []outputPart
 	header            *tv.TextView
 	input             *tv.InputField
 	layout            *tv.Flex
@@ -81,6 +87,7 @@ type terminal struct {
 	wide              bool
 	layoutReady       bool
 	compactUsageShown bool
+	terminalWidth     int
 	pickerQuery       string
 	picker            *tv.List
 	modelList         *tv.List
@@ -216,8 +223,32 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	return nil
 }
 
-func (u *terminal) write(s string)       { fmt.Fprint(u.output, tv.Escape(s)); u.output.ScrollToEnd() }
-func (u *terminal) writeMarkup(s string) { fmt.Fprint(u.output, s); u.output.ScrollToEnd() }
+func (u *terminal) write(s string)       { u.appendOutput(s, false) }
+func (u *terminal) writeMarkup(s string) { u.appendOutput(s, true) }
+
+func (u *terminal) appendOutput(text string, markup bool) {
+	if text == "" || u.output == nil {
+		return
+	}
+	if !markup && len(u.transcript) > 0 && !u.transcript[len(u.transcript)-1].markup {
+		u.transcript[len(u.transcript)-1].text += text
+	} else {
+		u.transcript = append(u.transcript, outputPart{text: text, markup: markup})
+	}
+	u.output.Clear()
+	for _, part := range u.transcript {
+		if part.markup {
+			fmt.Fprint(u.output, part.text)
+		} else {
+			fmt.Fprint(u.output, escapeLiteralText(part.text))
+		}
+	}
+	u.output.ScrollToEnd()
+}
+
+func escapeLiteralText(text string) string {
+	return tv.Escape(text)
+}
 func (u *terminal) queue(update func()) {
 	if u.closing.Load() || u.ctx.Err() != nil {
 		return
@@ -229,7 +260,7 @@ func (u *terminal) queue(update func()) {
 	})
 }
 func (u *terminal) writeAsync(s string) {
-	u.queue(func() { fmt.Fprint(u.output, tv.Escape(s)); u.output.ScrollToEnd() })
+	u.queue(func() { u.appendOutput(s, false) })
 }
 
 func supportedCommands() []command {
@@ -380,14 +411,27 @@ func (u *terminal) updateUsage() {
 	if total.outputKnown {
 		output = fmt.Sprintf("%d", total.output)
 	}
-	text := fmt.Sprintf("Input tokens: %s\nOutput tokens: %s", input, output)
+	suffix := ""
 	if total.unknownRequests > 0 {
-		text += fmt.Sprintf("\n%d request(s) had partial or unavailable usage", total.unknownRequests)
+		suffix = " (partial)"
 	}
+	text := fmt.Sprintf("Input tokens: %s%s\nOutput tokens: %s%s", input, suffix, output, suffix)
 	u.usagePane.SetText(text)
 	if u.usageCompact != nil {
 		u.usageCompact.SetText(text)
+		if u.compactUsageShown {
+			u.composer.ResizeItem(u.usageCompact, compactUsageRows(text, u.terminalWidth), 0)
+		}
 	}
+}
+
+func compactUsageRows(text string, width int) int {
+	innerWidth := max(1, width-2)
+	rows := 0
+	for _, line := range strings.Split(text, "\n") {
+		rows += max(1, (len(line)+innerWidth-1)/innerWidth)
+	}
+	return max(2, rows)
 }
 
 func (u *terminal) toggleUsage() {
@@ -395,7 +439,7 @@ func (u *terminal) toggleUsage() {
 		u.compactUsageShown = !u.compactUsageShown
 		u.updateUsage()
 		if u.compactUsageShown {
-			u.composer.ResizeItem(u.usageCompact, 2, 0)
+			u.composer.ResizeItem(u.usageCompact, compactUsageRows(u.usageCompact.GetText(true), u.terminalWidth), 0)
 		} else {
 			u.composer.ResizeItem(u.usageCompact, 0, 0)
 		}
@@ -411,10 +455,14 @@ func (u *terminal) toggleUsage() {
 
 func (u *terminal) setTerminalWidth(width int) {
 	wide := width >= usageWideThreshold
+	u.terminalWidth = width
 	if u.body == nil || u.usagePane == nil {
 		return
 	}
 	if u.layoutReady && wide == u.wide {
+		if !wide && u.compactUsageShown {
+			u.composer.ResizeItem(u.usageCompact, compactUsageRows(u.usageCompact.GetText(true), width), 0)
+		}
 		return
 	}
 	u.layoutReady = true

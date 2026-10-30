@@ -287,7 +287,8 @@ func TestSlashSuggestionsKeyboardWorkflowDoesNotSubmitCommands(t *testing.T) {
 	sent := make(chan string, 1)
 	client.sendHook = func(_ context.Context, text string, delta func(string)) (ui.Turn, error) {
 		sent <- text
-		delta("reply [red]literal")
+		delta("reply [re")
+		delta("d]literal")
 		return ui.Turn{Outcome: modelprovider.OutcomeCompleted}, nil
 	}
 	finished := make(chan error, 1)
@@ -338,7 +339,10 @@ func TestUsagePaneResizesAndCompactControlKeepsComposerVisible(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(80, 24)
 	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
-	client := &clientStub{selectedCh: make(chan struct{}, 1)}
+	client := &clientStub{selectedCh: make(chan struct{}, 1), turns: []ui.Turn{
+		{Usage: modelprovider.Usage{Known: true, InputTokens: 1234567890123456789, OutputTokens: 2345678901234567890}},
+		{Usage: modelprovider.Usage{}},
+	}}
 	finished := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -354,16 +358,16 @@ func TestUsagePaneResizesAndCompactControlKeepsComposerVisible(t *testing.T) {
 	}
 	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
 	waitForScreen(t, safeScreen, "KompoSyn", "Usage · this chat")
-	screen.SetSize(80, 24)
+	screen.SetSize(30, 24)
 	screen.InjectKey(tcell.KeyRune, 'z', tcell.ModNone)
 	waitForScreen(t, safeScreen, "> xyz", "Usage · this chat")
 	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
-	waitForScreen(t, safeScreen, "Input tokens: unknown", "Usage · this chat")
+	waitForScreen(t, safeScreen, "partial", "Usage · this chat")
 	if got := renderedScreen(safeScreen); !strings.Contains(got, "> xyz") {
 		t.Fatalf("composer disappeared while compact usage was open: %q", got)
 	}
 	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
-	waitForScreen(t, safeScreen, "> xyz", "Input tokens: unknown")
+	waitForScreen(t, safeScreen, "> xyz", "partial")
 	screen.InjectKey(tcell.KeyCtrlC, 0, tcell.ModNone)
 	select {
 	case err := <-finished:
