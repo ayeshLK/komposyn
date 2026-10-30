@@ -889,7 +889,7 @@ func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
 	if len(u.transcript) != 1 || u.transcript[0].text != "after clear" {
 		t.Fatalf("render buffer=%+v", u.transcript)
 	}
-	if got := u.output.GetText(false); !strings.Contains(got, "[gray]") || strings.Contains(got, "Assistant:") || !u.transcript[0].assistant {
+	if got := u.output.GetText(false); strings.Contains(got, "[gray]") || strings.Contains(got, "Assistant:") || !u.transcript[0].assistant {
 		t.Fatalf("assistant styling/label = text %q parts %+v", got, u.transcript)
 	}
 }
@@ -1007,4 +1007,54 @@ func waitForScreen(t *testing.T, screen *synchronizedSimulation, contains, absen
 		b.WriteString(string(cell.Runes))
 	}
 	t.Fatalf("screen did not contain %q (or still contained %q): %q", contains, absent, b.String())
+}
+
+func TestTranscriptSeparatesTurnsAndKeepsThemeForeground(t *testing.T) {
+	for _, theme := range []struct {
+		name                   string
+		foreground, background tcell.Color
+	}{
+		{"dark", tcell.ColorWhite, tcell.ColorBlack},
+		{"light", tcell.ColorBlack, tcell.ColorWhite},
+	} {
+		t.Run(theme.name, func(t *testing.T) {
+			screen := tcell.NewSimulationScreen("UTF-8")
+			if err := screen.Init(); err != nil {
+				t.Fatal(err)
+			}
+			defer screen.Fini()
+			screen.SetSize(80, 24)
+			view := newTranscriptView()
+			if view.GetBackgroundColor() != tcell.ColorDefault {
+				t.Fatal("transcript overrides terminal palette")
+			}
+			view.SetTextColor(theme.foreground).SetBackgroundColor(theme.background)
+			u := &terminal{output: view}
+			u.writeUser("Question [red]literal")
+			u.writeAssistant("Answer [re")
+			u.writeAssistant("d]literal")
+			u.write("\n")
+			u.writeUser("Follow-up")
+			u.writeAssistant("Second answer")
+			want := "\nYou: Question [red]literal\n\nAnswer [red]literal\n\nYou: Follow-up\n\nSecond answer"
+			if got := view.GetText(true); got != want {
+				t.Fatalf("turn spacing or literal output: got %q, want %q", got, want)
+			}
+			view.SetRect(0, 0, 80, 24)
+			view.Draw(screen)
+			screen.Show()
+			// First reply starts after the prompt and one visibly blank row.
+			ch, _, style, _ := screen.GetContent(0, 3)
+			fg, bg, attrs := style.Decompose()
+			if ch != 'A' || fg != theme.foreground || bg != theme.background || attrs&tcell.AttrDim != 0 {
+				t.Fatalf("reply style: char=%q fg=%v bg=%v attrs=%v", ch, fg, bg, attrs)
+			}
+			for x := 0; x < 80; x++ {
+				ch, _, _, _ := screen.GetContent(x, 2)
+				if ch != ' ' && ch != 0 {
+					t.Fatalf("no blank line before answer at column %d", x)
+				}
+			}
+		})
+	}
 }

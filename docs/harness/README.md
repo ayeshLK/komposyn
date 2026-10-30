@@ -205,7 +205,10 @@ selectable rows, and actions remain available while filtering.
 
 The compact banner shows the KompoSyn name, build version, and selected model;
 before selection it says **No model selected**. User turns retain a bold `You:`
-label; assistant text is muted gray without a role label. Provider and user
+label and a blank line separates each question from its answer. Assistant text
+uses the terminal’s normal foreground and background rather than fixed gray,
+so the transcript follows the terminal’s light/dark palette without an assistant
+role label. Provider and user
 text is escaped as literal text across streaming chunks before rendering.
 
 Input, output, cached-read, and cache-write token counts accumulate in memory
