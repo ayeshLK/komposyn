@@ -115,12 +115,19 @@ func (c Client) Select(ctx context.Context, key string, confirm bool) error {
 }
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
-	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Active: s.Active, Version: c.Version}
+	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, Version: c.Version}
 	if s.Selected != nil {
 		out.Selected = convertModel(*s.Selected)
 	}
 	for _, t := range s.Turns {
 		out.Turns = append(out.Turns, ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, Outcome: t.Outcome, Usage: t.Usage})
+	}
+	for _, item := range s.Usage {
+		out.Usage = append(out.Usage, ui.ModelUsage{Provider: item.Provider, ModelID: item.ModelID,
+			Input:      ui.MetricUsage{Tokens: item.Input.Tokens, Known: item.Input.Known, Partial: item.Input.Partial},
+			Output:     ui.MetricUsage{Tokens: item.Output.Tokens, Known: item.Output.Known, Partial: item.Output.Partial},
+			CachedRead: ui.MetricUsage{Tokens: item.CachedRead.Tokens, Known: item.CachedRead.Known, Partial: item.CachedRead.Partial},
+			CacheWrite: ui.MetricUsage{Tokens: item.CacheWrite.Tokens, Known: item.CacheWrite.Known, Partial: item.CacheWrite.Partial}})
 	}
 	return out
 }

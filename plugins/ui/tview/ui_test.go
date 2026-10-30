@@ -31,6 +31,7 @@ type clientStub struct {
 	mu            sync.Mutex
 	selected      *ui.Model
 	turns         []ui.Turn
+	usage         []ui.ModelUsage
 	version       string
 	selectedCh    chan struct{}
 	selectCalls   int
@@ -134,7 +135,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Version: c.version}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -283,11 +284,15 @@ func TestSlashSuggestionsKeyboardWorkflowDoesNotSubmitCommands(t *testing.T) {
 	screen.SetSize(110, 32)
 	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
 	model := ui.Model{Key: "openai\x00personal\x00model-x", Provider: "openai", ProfileID: "personal", ProfileLabel: "Personal", ID: "model-x", DisplayName: "Text Model"}
-	client := &clientStub{selectedCh: make(chan struct{}, 1), selected: &model}
+	client := &clientStub{selectedCh: make(chan struct{}, 1), selected: &model,
+		turns: []ui.Turn{{Prompt: "earlier context"}},
+		usage: []ui.ModelUsage{{Provider: "openai", ModelID: "model-x", Input: ui.MetricUsage{Tokens: 4, Known: true}}}}
 	sent := make(chan string, 1)
+	continueReply := make(chan struct{})
 	client.sendHook = func(_ context.Context, text string, delta func(string)) (ui.Turn, error) {
 		sent <- text
 		delta("reply [re")
+		<-continueReply
 		delta("d]literal")
 		return ui.Turn{Outcome: modelprovider.OutcomeCompleted}, nil
 	}
@@ -323,7 +328,26 @@ func TestSlashSuggestionsKeyboardWorkflowDoesNotSubmitCommands(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("ordinary composer text was not submitted")
 	}
-	waitForScreen(t, safeScreen, "reply [red]literal", "")
+	waitForScreen(t, safeScreen, "reply [re", "")
+	for _, r := range "keep draft" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyCtrlL, 0)
+	waitForScreen(t, safeScreen, "> keep draft", "reply [re")
+	if got := client.Snapshot(); got.Selected == nil {
+		t.Fatal("display clear changed model selection")
+	}
+	if got := client.Snapshot(); len(got.Turns) != 1 || len(got.Usage) != 1 || got.Usage[0].Input.Tokens != 4 {
+		t.Fatalf("display clear changed continuation or usage state: %+v", got)
+	}
+	if !strings.Contains(renderedScreen(safeScreen), "> keep draft") {
+		t.Fatalf("clear discarded composer draft: %q", renderedScreen(safeScreen))
+	}
+	close(continueReply)
+	waitForScreen(t, safeScreen, "d]literal", "reply [re")
+	if strings.Contains(renderedScreen(safeScreen), "Assistant:") {
+		t.Fatal("assistant label remains visible")
+	}
 	press(tcell.KeyCtrlC, 0)
 	select {
 	case err := <-finished:
@@ -339,30 +363,29 @@ func TestUsagePaneResizesAndCompactControlKeepsComposerVisible(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(80, 24)
 	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
-	client := &clientStub{selectedCh: make(chan struct{}, 1), turns: []ui.Turn{
-		{Usage: modelprovider.Usage{Known: true, InputTokens: 1234567890123456789, OutputTokens: 2345678901234567890}},
-		{Usage: modelprovider.Usage{}},
-	}}
+	client := &clientStub{selectedCh: make(chan struct{}, 1), usage: []ui.ModelUsage{{Provider: "openai", ModelID: "model-x",
+		Input:  ui.MetricUsage{Tokens: 1234567890123456789, Known: true},
+		Output: ui.MetricUsage{Tokens: 2345678901234567890, Known: true, Partial: true}}}}
 	finished := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { finished <- (Plugin{screen: safeScreen}).Run(ctx, client) }()
 	time.Sleep(150 * time.Millisecond)
 	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
-	waitForScreen(t, safeScreen, "> x", "Usage · this chat")
+	waitForScreen(t, safeScreen, "> x", "Usage · this run")
 	screen.SetSize(110, 30)
 	screen.InjectKey(tcell.KeyRune, 'y', tcell.ModNone)
-	waitForScreen(t, safeScreen, "Usage · this chat", "")
+	waitForScreen(t, safeScreen, "Usage · this run", "")
 	if got := renderedScreen(safeScreen); !strings.Contains(got, "> xy") {
 		t.Fatalf("composer did not remain available after resizing wide: %q", got)
 	}
 	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
-	waitForScreen(t, safeScreen, "KompoSyn", "Usage · this chat")
+	waitForScreen(t, safeScreen, "KompoSyn", "Usage · this run")
 	screen.SetSize(30, 24)
 	screen.InjectKey(tcell.KeyRune, 'z', tcell.ModNone)
-	waitForScreen(t, safeScreen, "> xyz", "Usage · this chat")
+	waitForScreen(t, safeScreen, "> xyz", "Usage · this run")
 	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
-	waitForScreen(t, safeScreen, "partial", "Usage · this chat")
+	waitForScreen(t, safeScreen, "partial", "Usage · this run")
 	if got := renderedScreen(safeScreen); !strings.Contains(got, "> xyz") {
 		t.Fatalf("composer disappeared while compact usage was open: %q", got)
 	}
@@ -718,27 +741,61 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 	}
 }
 
-func TestAccumulatedUsagePreservesUnknownAndPartialFields(t *testing.T) {
-	totals := accumulatedUsage([]ui.Turn{
-		{Usage: modelprovider.Usage{Known: true, InputTokens: 5, OutputTokens: 2}},
-		{Usage: modelprovider.Usage{InputKnown: true, InputTokens: 3}},
-		{Usage: modelprovider.Usage{}},
-	})
-	if totals.input != 8 || totals.output != 2 || !totals.inputKnown || !totals.outputKnown || totals.unknownRequests != 2 {
-		t.Fatalf("usage totals = %+v", totals)
+func TestUsageRenderingPreservesUnknownPartialAndExactCounts(t *testing.T) {
+	items := []ui.ModelUsage{{Provider: "openai", ModelID: "model-a",
+		Input:  ui.MetricUsage{Tokens: 1234, Known: true, Partial: true},
+		Output: ui.MetricUsage{Tokens: 0, Known: true}, CachedRead: ui.MetricUsage{}}}
+	compact := renderUsage(items, false, -1)
+	if !strings.Contains(compact, "1.2K (partial)") || !strings.Contains(compact, "Output: 0") || !strings.Contains(compact, "Cached read: unknown") {
+		t.Fatalf("compact usage = %q", compact)
 	}
-	client := &clientStub{turns: []ui.Turn{{Usage: modelprovider.Usage{InputKnown: true, InputTokens: 3}}}}
-	u := &terminal{client: client, usagePane: tv.NewTextView()}
-	u.updateUsage()
-	if got := u.usagePane.GetText(true); !strings.Contains(got, "Input tokens: 3") || !strings.Contains(got, "Output tokens: unknown") {
-		t.Fatalf("partial usage rendering = %q", got)
+	exact := renderUsage(items, true, -1)
+	if !strings.Contains(exact, "1234 (partial)") || !strings.Contains(exact, "Output: 0") {
+		t.Fatalf("exact usage = %q", exact)
 	}
-	client.mu.Lock()
-	client.turns = nil
-	client.mu.Unlock()
+}
+
+func TestCompactCountUsesIntegerRounding(t *testing.T) {
+	for value, want := range map[int64]string{999: "999", 1000: "1K", 1499: "1.5K", 1200: "1.2K", 999999: "1M", 2500000: "2.5M", 999950000: "1B", 2500000000: "2.5B", 9007199254740993: "9007199.3B"} {
+		if got := compactCount(value); got != want {
+			t.Errorf("compactCount(%d)=%q, want %q", value, got, want)
+		}
+	}
+}
+
+func TestUsageRowsCanBePagedOnNarrowLayout(t *testing.T) {
+	client := &clientStub{usage: []ui.ModelUsage{{Provider: "openai", ModelID: "a"}, {Provider: "anthropic", ModelID: "b"}}}
+	u := &terminal{client: client, usagePane: tv.NewTextView(), usageCompact: tv.NewTextView(), composer: tv.NewFlex(), terminalWidth: 70}
+	u.composer.AddItem(u.usageCompact, 0, 0, false)
 	u.updateUsage()
-	if got := u.usagePane.GetText(true); !strings.Contains(got, "Input tokens: unknown") || !strings.Contains(got, "Output tokens: unknown") {
-		t.Fatalf("usage did not reset when the in-memory chat cleared: %q", got)
+	u.compactUsageShown = true
+	u.updateUsage()
+	if got := u.usageCompact.GetText(true); !strings.Contains(got, "openai / a") {
+		t.Fatalf("first row: %q", got)
+	}
+	u.moveUsageCursor(1)
+	if got := u.usageCompact.GetText(true); !strings.Contains(got, "anthropic / b") {
+		t.Fatalf("second row: %q", got)
+	}
+}
+
+func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
+	u := &terminal{output: tv.NewTextView().SetDynamicColors(true), input: tv.NewInputField()}
+	u.writeAssistant("before clear")
+	u.input.SetText("keep my draft")
+	u.clearTranscript()
+	u.writeAssistant("after clear")
+	if got := u.input.GetText(); got != "keep my draft" {
+		t.Fatalf("draft=%q", got)
+	}
+	if strings.Contains(u.output.GetText(true), "before clear") || !strings.Contains(u.output.GetText(true), "after clear") {
+		t.Fatalf("transcript after clear=%q", u.output.GetText(true))
+	}
+	if len(u.transcript) != 1 || u.transcript[0].text != "after clear" {
+		t.Fatalf("render buffer=%+v", u.transcript)
+	}
+	if got := u.output.GetText(false); !strings.Contains(got, "[gray]") || strings.Contains(got, "Assistant:") || !u.transcript[0].assistant {
+		t.Fatalf("assistant styling/label = text %q parts %+v", got, u.transcript)
 	}
 }
 

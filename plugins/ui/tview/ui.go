@@ -46,8 +46,9 @@ type entry struct {
 type command struct{ name, description, action string }
 
 type outputPart struct {
-	text   string
-	markup bool
+	text      string
+	markup    bool
+	assistant bool
 }
 
 const usageWideThreshold = 100
@@ -87,6 +88,8 @@ type terminal struct {
 	wide              bool
 	layoutReady       bool
 	compactUsageShown bool
+	usageExact        bool
+	usageCursor       int
 	terminalWidth     int
 	pickerQuery       string
 	picker            *tv.List
@@ -126,10 +129,10 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true}
 	u.output = tv.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	u.usagePane = tv.NewTextView()
-	u.usagePane.SetBorder(true).SetTitle(" Usage · this chat ")
+	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
-	u.footer = tv.NewTextView().SetText("Tab/Shift+Tab: move focus · Ctrl+U: usage · Ctrl+C: cancel/exit")
+	u.footer = tv.NewTextView().SetText("Tab/Shift+Tab: move focus · Ctrl+U: usage · Ctrl+E: exact counts · Ctrl+L: clear display · Ctrl+C: cancel/exit")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView()
 	u.commands = supportedCommands()
@@ -189,6 +192,23 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 			u.toggleUsage()
 			return nil
 		}
+		if event.Key() == tcell.KeyCtrlL {
+			u.clearTranscript()
+			return nil
+		}
+		if event.Key() == tcell.KeyCtrlE {
+			u.usageExact = !u.usageExact
+			u.updateUsage()
+			return nil
+		}
+		if event.Key() == tcell.KeyCtrlN || event.Key() == tcell.KeyCtrlP {
+			direction := 1
+			if event.Key() == tcell.KeyCtrlP {
+				direction = -1
+			}
+			u.moveUsageCursor(direction)
+			return nil
+		}
 		return event
 	})
 	u.writeMarkup("[gray]KompoSyn is ready. Chat state is temporary and will be cleared on exit. Run /model to connect a provider.[-]\n")
@@ -223,22 +243,25 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	return nil
 }
 
-func (u *terminal) write(s string)       { u.appendOutput(s, false) }
-func (u *terminal) writeMarkup(s string) { u.appendOutput(s, true) }
+func (u *terminal) write(s string)          { u.appendOutput(s, false, false) }
+func (u *terminal) writeMarkup(s string)    { u.appendOutput(s, true, false) }
+func (u *terminal) writeAssistant(s string) { u.appendOutput(s, false, true) }
 
-func (u *terminal) appendOutput(text string, markup bool) {
+func (u *terminal) appendOutput(text string, markup, assistant bool) {
 	if text == "" || u.output == nil {
 		return
 	}
-	if !markup && len(u.transcript) > 0 && !u.transcript[len(u.transcript)-1].markup {
+	if !markup && len(u.transcript) > 0 && !u.transcript[len(u.transcript)-1].markup && u.transcript[len(u.transcript)-1].assistant == assistant {
 		u.transcript[len(u.transcript)-1].text += text
 	} else {
-		u.transcript = append(u.transcript, outputPart{text: text, markup: markup})
+		u.transcript = append(u.transcript, outputPart{text: text, markup: markup, assistant: assistant})
 	}
 	u.output.Clear()
 	for _, part := range u.transcript {
 		if part.markup {
 			fmt.Fprint(u.output, part.text)
+		} else if part.assistant {
+			fmt.Fprint(u.output, "[gray]"+escapeLiteralText(part.text)+"[-]")
 		} else {
 			fmt.Fprint(u.output, escapeLiteralText(part.text))
 		}
@@ -260,7 +283,19 @@ func (u *terminal) queue(update func()) {
 	})
 }
 func (u *terminal) writeAsync(s string) {
-	u.queue(func() { u.appendOutput(s, false) })
+	u.queue(func() { u.appendOutput(s, false, false) })
+}
+
+func (u *terminal) writeAssistantAsync(s string) {
+	u.queue(func() { u.appendOutput(s, false, true) })
+}
+
+func (u *terminal) clearTranscript() {
+	u.transcript = nil
+	if u.output != nil {
+		u.output.Clear()
+		u.output.ScrollToBeginning()
+	}
 }
 
 func supportedCommands() []command {
@@ -370,52 +405,19 @@ func (u *terminal) updateBanner() {
 	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]", tv.Escape(version), tv.Escape(modelName)))
 }
 
-type usageTotals struct {
-	input, output           int64
-	inputKnown, outputKnown bool
-	unknownRequests         int
-}
-
-func accumulatedUsage(turns []ui.Turn) usageTotals {
-	var total usageTotals
-	for _, turn := range turns {
-		usage := turn.Usage
-		inputKnown, outputKnown := usage.InputKnown, usage.OutputKnown
-		if usage.Known && !inputKnown && !outputKnown {
-			inputKnown, outputKnown = true, true
-		}
-		if inputKnown {
-			total.input += usage.InputTokens
-			total.inputKnown = true
-		}
-		if outputKnown {
-			total.output += usage.OutputTokens
-			total.outputKnown = true
-		}
-		if !inputKnown || !outputKnown {
-			total.unknownRequests++
-		}
-	}
-	return total
-}
-
 func (u *terminal) updateUsage() {
 	if u.usagePane == nil || u.client == nil {
 		return
 	}
-	total := accumulatedUsage(u.client.Snapshot().Turns)
-	input, output := "unknown", "unknown"
-	if total.inputKnown {
-		input = fmt.Sprintf("%d", total.input)
+	usage := u.client.Snapshot().Usage
+	selected := -1
+	if !u.wide || len(usage) > 4 {
+		selected = u.usageCursor
 	}
-	if total.outputKnown {
-		output = fmt.Sprintf("%d", total.output)
+	text := renderUsage(usage, u.usageExact, selected)
+	if !u.wide && u.compactUsageShown {
+		text = renderUsage(usage, u.usageExact, u.usageCursor)
 	}
-	suffix := ""
-	if total.unknownRequests > 0 {
-		suffix = " (partial)"
-	}
-	text := fmt.Sprintf("Input tokens: %s%s\nOutput tokens: %s%s", input, suffix, output, suffix)
 	u.usagePane.SetText(text)
 	if u.usageCompact != nil {
 		u.usageCompact.SetText(text)
@@ -423,6 +425,77 @@ func (u *terminal) updateUsage() {
 			u.composer.ResizeItem(u.usageCompact, compactUsageRows(text, u.terminalWidth), 0)
 		}
 	}
+}
+
+func (u *terminal) moveUsageCursor(delta int) {
+	count := len(u.client.Snapshot().Usage)
+	if count == 0 {
+		return
+	}
+	u.usageCursor = (u.usageCursor + delta + count) % count
+	u.updateUsage()
+	if !u.wide && u.compactUsageShown {
+		u.composer.ResizeItem(u.usageCompact, compactUsageRows(u.usageCompact.GetText(true), u.terminalWidth), 0)
+	}
+}
+
+func renderUsage(items []ui.ModelUsage, exact bool, selected int) string {
+	if len(items) == 0 {
+		return "No model usage yet.\nCtrl+U: show usage"
+	}
+	start, end := 0, len(items)
+	if selected >= 0 {
+		selected %= len(items)
+		start, end = selected, selected+1
+	}
+	var b strings.Builder
+	if selected >= 0 {
+		fmt.Fprintf(&b, "Model %d of %d · Ctrl+N/P: change\n", start+1, len(items))
+	}
+	b.WriteString("Ctrl+E: exact/compact\n")
+	for i := start; i < end; i++ {
+		item := items[i]
+		fmt.Fprintf(&b, "%s / %s\nInput: %s · Output: %s\nCached read: %s · Cache write: %s\n",
+			tv.Escape(item.Provider), tv.Escape(item.ModelID), formatMetric(item.Input, exact), formatMetric(item.Output, exact), formatMetric(item.CachedRead, exact), formatMetric(item.CacheWrite, exact))
+	}
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func formatMetric(metric ui.MetricUsage, exact bool) string {
+	if !metric.Known {
+		return "unknown"
+	}
+	value := fmt.Sprintf("%d", metric.Tokens)
+	if !exact {
+		value = compactCount(metric.Tokens)
+	}
+	if metric.Partial {
+		value += " (partial)"
+	}
+	return value
+}
+
+func compactCount(value int64) string {
+	if value < 1000 {
+		return fmt.Sprintf("%d", value)
+	}
+	unit, suffix := int64(1000), "K"
+	if value >= 999_950 {
+		unit, suffix = 1_000_000, "M"
+	}
+	if value >= 999_950_000 {
+		unit, suffix = 1_000_000_000, "B"
+	}
+	whole, remainder := value/unit, value%unit
+	tenth := (remainder*10 + unit/2) / unit
+	if tenth == 10 {
+		whole++
+		tenth = 0
+	}
+	if tenth == 0 {
+		return fmt.Sprintf("%d%s", whole, suffix)
+	}
+	return fmt.Sprintf("%d.%d%s", whole, tenth, suffix)
 }
 
 func compactUsageRows(text string, width int) int {
@@ -528,9 +601,9 @@ func (u *terminal) submit() {
 		return
 	}
 	u.input.SetText("")
-	u.writeMarkup("\n[white::b]You:[-:-:-] " + tv.Escape(trimmed) + "\n[gray]Assistant:[-] ")
+	u.writeMarkup("\n[white::b]You:[-:-:-] " + tv.Escape(trimmed) + "\n")
 	u.launch(func() {
-		turn, err := u.client.Send(u.ctx, trimmed, func(delta string) { u.writeAsync(delta) })
+		turn, err := u.client.Send(u.ctx, trimmed, func(delta string) { u.writeAssistantAsync(delta) })
 		u.writeAsync("\n")
 		if turn.Outcome == modelprovider.OutcomeRefused {
 			if turn.Refusal != "" {
@@ -575,7 +648,7 @@ func (u *terminal) runCommand(text string) {
 		for _, item := range u.commands {
 			descriptions = append(descriptions, item.name+" "+item.description)
 		}
-		u.write("Commands: " + strings.Join(descriptions, "; ") + ".\n")
+		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Ctrl+L clears the display, Ctrl+U shows usage, Ctrl+E toggles exact counts, and Ctrl+N/P changes model rows.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")

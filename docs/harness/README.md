@@ -199,23 +199,35 @@ have separate headings in the same searchable picker; headings are not
 selectable rows, and actions remain available while filtering.
 
 The compact banner shows the KompoSyn name, build version, and selected model;
-before selection it says **No model selected**. Assistant turns use a muted
-textual role label and spacing, with terminal markup in provider and user text
-escaped before rendering.
+before selection it says **No model selected**. User turns retain a bold `You:`
+label; assistant text is muted gray without a role label. Provider and user
+text is escaped as literal text across streaming chunks before rendering.
 
-Reported input and output tokens accumulate from completed provider results in
-the current in-memory chat. A field is shown as unknown until the provider
-reports it; partial reporting does not imply zero for a missing field. Usage
-from failed or interrupted streams is retained when the provider returned it,
-and the UI counts each final result once. The totals describe requests made in
-this chat, including repeated conversation context, not total provider-account
-consumption. They reset when a confirmed model/profile change clears the chat
-and disappear when the process exits. On terminals at least 100 columns wide,
-the 28-column usage pane is shown by default. Below 100 columns it collapses;
-Ctrl+U reveals a compact two-line usage summary above the composer while
-leaving the input available. Ctrl+U collapses it again. On wide terminals,
-Ctrl+U toggles the side pane. Resizing applies the automatic wide/narrow layout;
-the wide-terminal manual expanded/collapsed choice is retained across resizes.
+Input, output, cached-read, and cache-write token counts accumulate in memory
+for each provider/model pair for the lifetime of the process. Credential
+profiles for the same provider/model are grouped; account and profile details
+are not shown. Switching models clears conversation continuation after
+confirmation but does not clear usage. Ctrl+L clears only the visible transcript
+and its render buffer; an active reply continues from the point it was cleared,
+and the draft, selected model, continuation context, and usage remain. Usage
+from failed or interrupted provider calls is included when reported. Unknown
+metrics remain unknown; if some calls report a metric and others omit it, the
+shown count is marked partial. OpenAI input counts include cached-read tokens,
+so cached-read is a subset of input. Anthropic reports uncached input separately
+from cached-read and cache-write; those values remain separate. KompoSyn does
+not add cache categories to input or count them twice. Unsupported cache metrics
+stay unknown, not zero. The exact counter values are retained internally.
+
+Counts use compact integer formatting (`1K`, `1.2K`, `1M`, `2.5M`) by default.
+Ctrl+E toggles exact counts. On terminals at least 100 columns wide, the
+28-column usage pane shows provider/model rows by default. When the pane cannot
+show every row, Ctrl+N and Ctrl+P cycle through them. Below 100 columns it
+collapses; Ctrl+U reveals one model row above the composer while leaving input
+available. Ctrl+N and Ctrl+P cycle through rows in that compact view. Ctrl+U
+collapses the compact view again. On wide terminals, Ctrl+U toggles the side
+pane. Resizing applies the automatic wide/narrow layout; the
+wide-terminal manual expanded/collapsed choice is retained across resizes.
+Usage is not persisted and disappears when the process exits.
 
 ## Implementation boundaries
 

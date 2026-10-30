@@ -50,7 +50,7 @@ func TestPaginatedDiscoveryAndMessagesStream(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			for _, s := range []string{
-				"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"m2\",\"usage\":{\"input_tokens\":4,\"cache_read_input_tokens\":1}}}\n\n",
+				"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"m2\",\"usage\":{\"input_tokens\":4,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":0}}}\n\n",
 				"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
 				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
 				"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
@@ -77,7 +77,7 @@ func TestPaginatedDiscoveryAndMessagesStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != p.OutcomeCompleted || res.RequestID != "msg-1" || got != "hello" || !res.Usage.Known || !res.Usage.InputKnown || !res.Usage.OutputKnown || res.Usage.InputTokens != 5 || res.Usage.OutputTokens != 2 || len(res.Native) != 1 {
+	if res.Outcome != p.OutcomeCompleted || res.RequestID != "msg-1" || got != "hello" || !res.Usage.Known || !res.Usage.InputKnown || !res.Usage.OutputKnown || res.Usage.InputTokens != 4 || res.Usage.OutputTokens != 2 || !res.Usage.CacheReadKnown || !res.Usage.CacheWriteKnown || res.Usage.CacheRead != 1 || res.Usage.CacheWrite != 0 || len(res.Native) != 1 {
 		t.Fatalf("result=%+v streamed=%q", res, got)
 	}
 	if body["max_tokens"] != float64(64) || body["system"] != "help" {

@@ -68,7 +68,7 @@ func TestDiscoverAndStreamResponsesWithNativeReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != p.OutcomeCompleted || res.RequestID != "resp-1" || res.ModelID != "text-model" || res.Text != "hello" || streamed != "hello" || !res.Usage.Known || !res.Usage.InputKnown || !res.Usage.OutputKnown || res.Usage.InputTokens != 3 || res.Usage.ReasoningTokens != 2 {
+	if res.Outcome != p.OutcomeCompleted || res.RequestID != "resp-1" || res.ModelID != "text-model" || res.Text != "hello" || streamed != "hello" || !res.Usage.Known || !res.Usage.InputKnown || !res.Usage.OutputKnown || res.Usage.InputTokens != 3 || res.Usage.ReasoningTokens != 2 || !res.Usage.CacheReadKnown || res.Usage.CacheRead != 1 || res.Usage.CacheWriteKnown {
 		t.Fatalf("result=%+v streamed=%q", res, streamed)
 	}
 	if chatBody["store"] != false || chatBody["stream"] != true || chatBody["instructions"] != "be concise" || chatBody["max_output_tokens"] != float64(128) {
@@ -92,11 +92,72 @@ func TestDiscoverAndStreamResponsesWithNativeReplay(t *testing.T) {
 
 func TestResultResponsePreservesPartialUsage(t *testing.T) {
 	response := resultResponse{Target: &p.Result{}}
-	if err := json.Unmarshal([]byte(`{"usage":{"input_tokens":7},"output":[]}`), &response); err != nil {
+	if err := json.Unmarshal([]byte(`{"usage":{"input_tokens":7,"input_tokens_details":{"cached_tokens":0}},"output":[]}`), &response); err != nil {
 		t.Fatal(err)
 	}
-	if !response.Target.Usage.InputKnown || response.Target.Usage.OutputKnown || response.Target.Usage.Known || response.Target.Usage.InputTokens != 7 {
+	if !response.Target.Usage.InputKnown || response.Target.Usage.OutputKnown || response.Target.Usage.Known || response.Target.Usage.InputTokens != 7 || !response.Target.Usage.CacheReadKnown || response.Target.Usage.CacheRead != 0 || response.Target.Usage.CacheWriteKnown {
 		t.Fatalf("partial usage was lost or treated as complete: %+v", response.Target.Usage)
+	}
+}
+
+func TestCompletedEventWithoutEmbeddedStatusReplaysNativeResponse(t *testing.T) {
+	var requestBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requestBodies = append(requestBodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fixture\",\"model\":\"subscription-model\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fixture answer\"}]}]}}\n\n")
+	}))
+	defer server.Close()
+	plugin := Plugin{BaseURL: server.URL, Client: server.Client()}
+	credential := p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}
+	var visible string
+	first, err := plugin.StreamChat(context.Background(), p.ChatRequest{ModelID: "subscription-model", Credential: credential, Messages: []p.Message{{Role: p.RoleUser, Text: "first"}}}, func(delta string) { visible += delta })
+	if err != nil || first.Outcome != p.OutcomeCompleted || visible != "fixture answer" || len(first.Native) != 1 {
+		t.Fatalf("first response=%+v visible=%q err=%v", first, visible, err)
+	}
+	second, err := plugin.StreamChat(context.Background(), p.ChatRequest{ModelID: "subscription-model", Credential: credential, Messages: []p.Message{{Role: p.RoleUser, Text: "first"}, {Role: p.RoleAssistant, Text: first.Text, Native: first.Native}, {Role: p.RoleUser, Text: "follow-up"}}}, nil)
+	if err != nil || second.Outcome != p.OutcomeCompleted {
+		t.Fatalf("follow-up=%+v err=%v", second, err)
+	}
+	if len(requestBodies) != 2 {
+		t.Fatalf("requests=%d", len(requestBodies))
+	}
+	if requestBodies[0]["store"] != false || requestBodies[1]["store"] != false {
+		t.Fatal("subscription fixture enabled response storage")
+	}
+	input := requestBodies[1]["input"].([]any)
+	if len(input) != 3 {
+		t.Fatalf("follow-up input=%v", input)
+	}
+	replayed, _ := json.Marshal(input[1])
+	if !strings.Contains(string(replayed), "fixture answer") || !strings.Contains(string(replayed), "output_text") {
+		t.Fatalf("follow-up omitted provider-native assistant item: %s", replayed)
+	}
+}
+
+func TestCompletedEventWithoutReplayableResponseIsUnsupported(t *testing.T) {
+	for _, tc := range []struct{ name, response string }{{"missing response", ""}, {"conflicting status", `,"status":"in_progress"`}} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"visible only\"}\n\n")
+				if tc.response == "" {
+					fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+				} else {
+					fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp\",\"model\":\"m\"%s,\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"visible only\"}]}]}}\n\n", tc.response)
+				}
+			}))
+			defer server.Close()
+			result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "m", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture"}, Messages: []p.Message{{Role: p.RoleUser, Text: "hi"}}}, nil)
+			if err != nil || result.Outcome != p.OutcomeUnsupported {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
 	}
 }
 

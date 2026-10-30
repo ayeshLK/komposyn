@@ -73,9 +73,26 @@ type Turn struct {
 	Outcome                                                          modelprovider.Outcome
 	Usage                                                            modelprovider.Usage
 }
+
+// MetricUsage retains exact reported counts and marks incomplete coverage.
+// A count may be known and partial when some requests omitted that metric.
+type MetricUsage struct {
+	Tokens  int64
+	Known   bool
+	Partial bool
+}
+
+// ModelUsage groups credentials for the same provider/model within one process.
+// It intentionally exposes no credential profile or account metadata.
+type ModelUsage struct {
+	Provider, ModelID      string
+	Input, Output          MetricUsage
+	CachedRead, CacheWrite MetricUsage
+}
 type Snapshot struct {
 	Selected *Model
 	Turns    []Turn
+	Usage    []ModelUsage
 	Active   bool
 	Version  string
 }

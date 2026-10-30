@@ -154,6 +154,134 @@ func TestTemporaryMultiMessageChatAndConfirmedModelReset(t *testing.T) {
 	}
 }
 
+func TestUsageAccumulatesPerProviderModelAcrossConversationResets(t *testing.T) {
+	fp := &fakeProvider{id: p.OpenAI}
+	var call int
+	fp.stream = func(_ context.Context, request p.ChatRequest, _ func(string)) (p.Result, error) {
+		call++
+		result := p.Result{RequestID: request.RequestID, ModelID: request.ModelID, Native: []json.RawMessage{json.RawMessage(`{"type":"message"}`)}}
+		switch {
+		case request.ModelID == "model-a" && call == 1:
+			result.Outcome = p.OutcomeCompleted
+			result.Usage = p.Usage{InputKnown: true, InputTokens: 100, OutputKnown: true, OutputTokens: 20, CacheReadKnown: true, CacheRead: 0}
+		case request.ModelID == "model-b":
+			result.Outcome = p.OutcomeService
+			result.Usage = p.Usage{InputKnown: true, InputTokens: 0}
+			return result, &p.Error{Outcome: p.OutcomeService}
+		default:
+			result.Outcome = p.OutcomeCompleted
+			result.Usage = p.Usage{InputKnown: true, InputTokens: 25, OutputKnown: true, OutputTokens: 5}
+		}
+		return result, nil
+	}
+	c, _ := makeChat(t, fp)
+	selectModel := func(id string, confirm bool) {
+		t.Helper()
+		for _, found := range c.Discover(context.Background()).Models {
+			if found.ID == id {
+				if err := c.Select(context.Background(), found.Key(), confirm); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		}
+		t.Fatalf("model %s not found", id)
+	}
+	selectModel("model-a", false)
+	if _, err := c.Send(context.Background(), "first A", nil); err != nil {
+		t.Fatal(err)
+	}
+	selectModel("model-b", true)
+	if _, err := c.Send(context.Background(), "failed B", nil); err == nil {
+		t.Fatal("expected failed model B operation")
+	}
+	selectModel("model-a", true)
+	if _, err := c.Send(context.Background(), "second A", nil); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := c.Snapshot()
+	if len(snapshot.Turns) != 1 {
+		t.Fatalf("conversation reset did not keep only last turn: %+v", snapshot.Turns)
+	}
+	if len(snapshot.Usage) != 2 {
+		t.Fatalf("usage models=%+v", snapshot.Usage)
+	}
+	var a, b ModelUsage
+	for _, item := range snapshot.Usage {
+		if item.ModelID == "model-a" {
+			a = item
+		}
+		if item.ModelID == "model-b" {
+			b = item
+		}
+	}
+	if a.Input.Tokens != 125 || !a.Input.Known || a.Input.Partial || a.Output.Tokens != 25 || a.CachedRead.Tokens != 0 || !a.CachedRead.Known || !a.CachedRead.Partial || a.CacheWrite.Known {
+		t.Fatalf("model A usage = %+v", a)
+	}
+	if !b.Input.Known || b.Input.Tokens != 0 || b.Output.Known {
+		t.Fatalf("failed model B usage = %+v", b)
+	}
+	newChat, _ := makeChat(t, &fakeProvider{id: p.OpenAI})
+	if len(newChat.Snapshot().Usage) != 0 {
+		t.Fatal("usage survived process/runtime recreation")
+	}
+}
+
+func TestUsageIdentityIncludesProviderButGroupsCredentialProfiles(t *testing.T) {
+	openai := &fakeProvider{id: p.OpenAI}
+	anthropic := &fakeProvider{id: p.Anthropic}
+	registry, err := model.NewRegistry(openai, anthropic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	c := NewChat(registry, store)
+	if err := c.AddProfile(context.Background(), "openai-one", string(p.OpenAI), "OpenAI One", "secret-one", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AddProfile(context.Background(), "openai-two", string(p.OpenAI), "OpenAI Two", "secret-two", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AddProfile(context.Background(), "anthropic-one", string(p.Anthropic), "Anthropic One", "secret-three", nil); err != nil {
+		t.Fatal(err)
+	}
+	discovery := c.Discover(context.Background())
+	selectAndSend := func(providerID p.ID, profileID string) {
+		t.Helper()
+		for _, found := range discovery.Models {
+			if found.Provider == providerID && found.ProfileID == profileID && found.ID == "model-a" {
+				if err := c.Select(context.Background(), found.Key(), true); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := c.Send(context.Background(), "count once", nil); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		}
+		t.Fatalf("%s model-a for profile %s not found", providerID, profileID)
+	}
+	selectAndSend(p.OpenAI, "openai-one")
+	selectAndSend(p.OpenAI, "openai-two")
+	selectAndSend(p.Anthropic, "anthropic-one")
+	usage := c.Snapshot().Usage
+	if len(usage) != 2 {
+		t.Fatalf("provider/model identities=%+v", usage)
+	}
+	for _, item := range usage {
+		want := int64(2)
+		if item.Provider == string(p.OpenAI) {
+			want = 4
+		}
+		if item.ModelID != "model-a" || item.Input.Tokens != want {
+			t.Errorf("profile aggregation or provider identity failed: %+v", item)
+		}
+		if item.Provider != string(p.OpenAI) && item.Provider != string(p.Anthropic) {
+			t.Errorf("unexpected provider identity %q", item.Provider)
+		}
+	}
+}
+
 func TestCanceledCredentialValidationDoesNotPersist(t *testing.T) {
 	for _, operation := range []string{"add", "replace"} {
 		t.Run(operation, func(t *testing.T) {
@@ -499,7 +627,7 @@ func TestCancellationBlocksLateDeltasAndPreservesSafeHistory(t *testing.T) {
 			delta("late")
 		}
 		<-release
-		return p.Result{}, &p.Error{Outcome: p.OutcomeInterrupted}
+		return p.Result{ModelID: r.ModelID, Outcome: p.OutcomeInterrupted, Usage: p.Usage{InputKnown: true, InputTokens: 8}}, &p.Error{Outcome: p.OutcomeInterrupted}
 	}
 	c, _ := makeChat(t, fp)
 	selectFirst(t, c)
@@ -522,9 +650,16 @@ func TestCancellationBlocksLateDeltasAndPreservesSafeHistory(t *testing.T) {
 	if snap.Active || len(snap.Turns) != 1 || len(c.history) != 0 {
 		t.Fatalf("unsafe canceled state: %+v history=%+v", snap, c.history)
 	}
+	if len(snap.Usage) != 1 || !snap.Usage[0].Input.Known || snap.Usage[0].Input.Tokens != 8 || snap.Usage[0].Output.Known {
+		t.Fatalf("interrupted usage was lost or treated as complete: %+v", snap.Usage)
+	}
 	fp.stream = nil
 	if _, err := c.Send(context.Background(), "next", nil); err != nil {
 		t.Fatal(err)
+	}
+	snap = c.Snapshot()
+	if snap.Usage[0].Input.Partial || !snap.Usage[0].Output.Partial {
+		t.Fatalf("partial coverage was not retained across requests: %+v", snap.Usage[0])
 	}
 	requests := fp.captured()
 	last := requests[len(requests)-1]
