@@ -975,6 +975,17 @@ func TestNonSuccessOutcomesAreRendered(t *testing.T) {
 	}
 }
 
+func TestUnsupportedDiagnosticStatusIsBounded(t *testing.T) {
+	got := outcomeStatus(ui.Turn{Outcome: modelprovider.OutcomeUnsupported, DiagnosticCode: modelprovider.DiagnosticOpenAICompletedStatusInProgress}, nil)
+	if !strings.Contains(got, string(modelprovider.DiagnosticOpenAICompletedStatusInProgress)) {
+		t.Fatalf("safe diagnostic was not shown: %q", got)
+	}
+	unsafe := outcomeStatus(ui.Turn{Outcome: modelprovider.OutcomeUnsupported, DiagnosticCode: "private provider payload"}, nil)
+	if strings.Contains(unsafe, "private") || strings.Contains(unsafe, "payload") || unsafe != "Provider response unsupported; it was not added to follow-up context.\n" {
+		t.Fatalf("unrecognized diagnostic was exposed: %q", unsafe)
+	}
+}
+
 func waitForScreen(t *testing.T, screen *synchronizedSimulation, contains, absent string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

@@ -70,6 +70,7 @@ type Discovery struct {
 }
 type Turn struct {
 	Prompt, Text, Refusal, Message, RequestID, ModelID, ProviderCode string
+	DiagnosticCode                                                   modelprovider.DiagnosticCode
 	Outcome                                                          modelprovider.Outcome
 	Usage                                                            modelprovider.Usage
 }

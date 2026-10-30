@@ -120,7 +120,7 @@ func (c Client) Snapshot() ui.Snapshot {
 		out.Selected = convertModel(*s.Selected)
 	}
 	for _, t := range s.Turns {
-		out.Turns = append(out.Turns, ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, Outcome: t.Outcome, Usage: t.Usage})
+		out.Turns = append(out.Turns, ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, DiagnosticCode: t.DiagnosticCode, Outcome: t.Outcome, Usage: t.Usage})
 	}
 	for _, item := range s.Usage {
 		out.Usage = append(out.Usage, ui.ModelUsage{Provider: item.Provider, ModelID: item.ModelID,
@@ -133,7 +133,7 @@ func (c Client) Snapshot() ui.Snapshot {
 }
 func (c Client) Send(ctx context.Context, text string, delta func(string)) (ui.Turn, error) {
 	t, err := c.Chat.Send(ctx, text, delta)
-	return ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, Outcome: t.Outcome, Usage: t.Usage}, err
+	return ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, DiagnosticCode: t.DiagnosticCode, Outcome: t.Outcome, Usage: t.Usage}, err
 }
 func (c Client) Cancel() { c.Chat.Cancel() }
 
