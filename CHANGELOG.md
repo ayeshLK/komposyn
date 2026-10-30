@@ -11,6 +11,21 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.12.0](https://github.com/ayeshLK/komposyn/compare/v0.11.0...v0.12.0) (2026-10-30)
+
+
+### Features
+
+* **chat:** expose bounded rejection diagnostics ([#186](https://github.com/ayeshLK/komposyn/issues/186)) ([f7f10f0](https://github.com/ayeshLK/komposyn/commit/f7f10f0430ef15977e798ebcbf2bcc0fc21d9ddc))
+
+
+### Bug Fixes
+
+* **chat:** improve continuation and usage UX ([e68a8e9](https://github.com/ayeshLK/komposyn/commit/e68a8e99f29371312a1e4f593f9e2c5225104c65))
+* **chat:** improve continuation and usage UX ([10107d4](https://github.com/ayeshLK/komposyn/commit/10107d4b2d68cc80960ee88ec5b3722aa3d2841b))
+* **chat:** page usage rows in wide terminals ([0f6c57a](https://github.com/ayeshLK/komposyn/commit/0f6c57a0a7aaa063c59e77be646184d8dfb439d3))
+* **chat:** scroll long usage details ([a6cea7b](https://github.com/ayeshLK/komposyn/commit/a6cea7b72eed138536bfc7f245a47ef8eb350186))
+
 ## [0.11.0](https://github.com/ayeshLK/komposyn/compare/v0.10.0...v0.11.0) (2026-10-30)
 
 
