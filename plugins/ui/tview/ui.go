@@ -128,13 +128,13 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	ctx, cancel := context.WithCancel(parent)
 	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true}
 	u.output = tv.NewTextView().SetDynamicColors(true).SetScrollable(true)
-	u.usagePane = tv.NewTextView()
+	u.usagePane = tv.NewTextView().SetScrollable(true)
 	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
-	u.footer = tv.NewTextView().SetText("Tab/Shift+Tab: move focus · Ctrl+U: usage · Ctrl+E: exact counts · Ctrl+L: clear display · Ctrl+C: cancel/exit")
+	u.footer = tv.NewTextView().SetText("Tab focus · Ctrl+U usage · Ctrl+N/P models · Ctrl+E exact · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
-	u.usageCompact = tv.NewTextView()
+	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
 	u.input = tv.NewInputField().SetLabel("> ").SetFieldWidth(0).SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
@@ -207,6 +207,17 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 				direction = -1
 			}
 			u.moveUsageCursor(direction)
+			return nil
+		}
+		if event.Key() == tcell.KeyPgDn || event.Key() == tcell.KeyPgUp {
+			if !((u.wide && u.usageVisible) || (!u.wide && u.compactUsageShown)) {
+				return event
+			}
+			direction := 1
+			if event.Key() == tcell.KeyPgUp {
+				direction = -1
+			}
+			u.scrollUsage(direction)
 			return nil
 		}
 		return event
@@ -418,12 +429,28 @@ func (u *terminal) updateUsage() {
 		text = renderUsage(usage, u.usageExact, u.usageCursor)
 	}
 	u.usagePane.SetText(text)
+	u.usagePane.ScrollToBeginning()
 	if u.usageCompact != nil {
 		u.usageCompact.SetText(text)
+		u.usageCompact.ScrollToBeginning()
 		if u.compactUsageShown {
-			u.composer.ResizeItem(u.usageCompact, compactUsageRows(text, u.terminalWidth), 0)
+			u.composer.ResizeItem(u.usageCompact, compactUsageVisibleRows(text, u.terminalWidth), 0)
 		}
 	}
+}
+
+func (u *terminal) scrollUsage(direction int) {
+	view := u.usagePane
+	if !u.wide && u.compactUsageShown {
+		view = u.usageCompact
+	}
+	if view == nil {
+		return
+	}
+	row, _ := view.GetScrollOffset()
+	_, _, _, height := view.GetRect()
+	step := max(1, height-3)
+	view.ScrollTo(max(0, row+direction*step), 0)
 }
 
 func (u *terminal) moveUsageCursor(delta int) {
@@ -434,7 +461,7 @@ func (u *terminal) moveUsageCursor(delta int) {
 	u.usageCursor = (u.usageCursor + delta + count) % count
 	u.updateUsage()
 	if !u.wide && u.compactUsageShown {
-		u.composer.ResizeItem(u.usageCompact, compactUsageRows(u.usageCompact.GetText(true), u.terminalWidth), 0)
+		u.composer.ResizeItem(u.usageCompact, compactUsageVisibleRows(u.usageCompact.GetText(true), u.terminalWidth), 0)
 	}
 }
 
@@ -449,12 +476,12 @@ func renderUsage(items []ui.ModelUsage, exact bool, selected int) string {
 	}
 	var b strings.Builder
 	if selected >= 0 {
-		fmt.Fprintf(&b, "Model %d of %d · Ctrl+N/P: change\n", start+1, len(items))
+		fmt.Fprintf(&b, "Model %d/%d · Ctrl+N/P\n", start+1, len(items))
 	}
 	b.WriteString("Ctrl+E: exact/compact\n")
 	for i := start; i < end; i++ {
 		item := items[i]
-		fmt.Fprintf(&b, "%s / %s\nInput: %s · Output: %s\nCached read: %s · Cache write: %s\n",
+		fmt.Fprintf(&b, "%s / %s\nInput: %s\nOutput: %s\nCached read: %s\nCache write: %s\n",
 			tv.Escape(item.Provider), tv.Escape(item.ModelID), formatMetric(item.Input, exact), formatMetric(item.Output, exact), formatMetric(item.CachedRead, exact), formatMetric(item.CacheWrite, exact))
 	}
 	return strings.TrimSuffix(b.String(), "\n")
@@ -506,12 +533,16 @@ func compactUsageRows(text string, width int) int {
 	return max(2, rows)
 }
 
+func compactUsageVisibleRows(text string, width int) int {
+	return min(5, compactUsageRows(text, width))
+}
+
 func (u *terminal) toggleUsage() {
 	if !u.wide {
 		u.compactUsageShown = !u.compactUsageShown
 		u.updateUsage()
 		if u.compactUsageShown {
-			u.composer.ResizeItem(u.usageCompact, compactUsageRows(u.usageCompact.GetText(true), u.terminalWidth), 0)
+			u.composer.ResizeItem(u.usageCompact, compactUsageVisibleRows(u.usageCompact.GetText(true), u.terminalWidth), 0)
 		} else {
 			u.composer.ResizeItem(u.usageCompact, 0, 0)
 		}
@@ -533,7 +564,7 @@ func (u *terminal) setTerminalWidth(width int) {
 	}
 	if u.layoutReady && wide == u.wide {
 		if !wide && u.compactUsageShown {
-			u.composer.ResizeItem(u.usageCompact, compactUsageRows(u.usageCompact.GetText(true), width), 0)
+			u.composer.ResizeItem(u.usageCompact, compactUsageVisibleRows(u.usageCompact.GetText(true), width), 0)
 		}
 		return
 	}
@@ -647,7 +678,7 @@ func (u *terminal) runCommand(text string) {
 		for _, item := range u.commands {
 			descriptions = append(descriptions, item.name+" "+item.description)
 		}
-		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Ctrl+L clears the display, Ctrl+U shows usage, Ctrl+E toggles exact counts, and Ctrl+N/P changes model rows.\n")
+		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+E toggles exact counts; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")

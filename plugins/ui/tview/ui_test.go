@@ -385,6 +385,7 @@ func TestUsagePaneResizesAndCompactControlKeepsComposerVisible(t *testing.T) {
 	screen.InjectKey(tcell.KeyRune, 'z', tcell.ModNone)
 	waitForScreen(t, safeScreen, "> xyz", "Usage · this run")
 	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
+	screen.InjectKey(tcell.KeyPgDn, 0, tcell.ModNone)
 	waitForScreen(t, safeScreen, "partial", "Usage · this run")
 	if got := renderedScreen(safeScreen); !strings.Contains(got, "> xyz") {
 		t.Fatalf("composer disappeared while compact usage was open: %q", got)
@@ -803,7 +804,7 @@ func TestWideUsageRowsCanBePagedOnOrdinaryHeight(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	waitForScreen(t, safeScreen, "model-last", "")
-	if got := renderedScreen(safeScreen); !strings.Contains(got, "Model 4 of 4") {
+	if got := renderedScreen(safeScreen); !strings.Contains(got, "Model 4/4") {
 		t.Fatalf("wide usage paging did not reach the last model: %q", got)
 	}
 	screen.InjectKey(tcell.KeyCtrlC, 0, tcell.ModNone)
@@ -814,6 +815,62 @@ func TestWideUsageRowsCanBePagedOnOrdinaryHeight(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("wide usage terminal did not stop")
+	}
+}
+
+func TestWideUsageMetricsScrollWithExactLongAndPartialValues(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(80, 24)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	client := &clientStub{usage: []ui.ModelUsage{{Provider: "anthropic", ModelID: "model-example-long-name",
+		Input:      ui.MetricUsage{Tokens: 1234567, Known: true, Partial: true},
+		Output:     ui.MetricUsage{Tokens: 2345678, Known: true},
+		CachedRead: ui.MetricUsage{Tokens: 3456789, Known: true, Partial: true},
+		CacheWrite: ui.MetricUsage{Tokens: 4567890, Known: true}}}}
+	finished := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { finished <- (Plugin{screen: safeScreen}).Run(ctx, client) }()
+	time.Sleep(150 * time.Millisecond)
+	screen.SetSize(110, 24)
+	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
+	waitForScreen(t, safeScreen, "Usage · this run", "")
+	screen.InjectKey(tcell.KeyCtrlE, 0, tcell.ModNone)
+	waitForScreen(t, safeScreen, "Input: 1234567 (partial)", "")
+	if strings.Contains(renderedScreen(safeScreen), "Cache write: 4567890") {
+		t.Fatal("regression fixture should require scrolling to reveal cache write")
+	}
+	var observed strings.Builder
+	observed.WriteString(renderedScreen(safeScreen))
+	for range 5 {
+		screen.InjectKey(tcell.KeyPgDn, 0, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+		observed.WriteString(renderedScreen(safeScreen))
+		if strings.Contains(observed.String(), "Cache write: 4567890") {
+			break
+		}
+	}
+	if !strings.Contains(observed.String(), "Cache write: 4567890") {
+		t.Fatalf("PageDown could not reveal the exact cache-write metric: %q", renderedScreen(safeScreen))
+	}
+	for _, metric := range []string{"Output: 2345678", "Cached read: 3456789"} {
+		if !strings.Contains(observed.String(), metric) {
+			t.Errorf("scrolling did not expose %q; observed %q", metric, observed.String())
+		}
+	}
+	screen.InjectKey(tcell.KeyPgUp, 0, tcell.ModNone)
+	waitForScreen(t, safeScreen, "Model 1/1", "")
+	if got := renderedScreen(safeScreen); !strings.Contains(got, "model-example-") || !strings.Contains(got, "long-name") {
+		t.Fatalf("scrolling did not return to the model heading: %q", got)
+	}
+	screen.InjectKey(tcell.KeyCtrlC, 0, tcell.ModNone)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("scrollable usage terminal did not stop")
 	}
 }
 
