@@ -11,6 +11,18 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.13.0](https://github.com/ayeshLK/komposyn/compare/v0.12.0...v0.13.0) (2026-10-30)
+
+
+### Features
+
+* **ui:** recall submitted questions with arrow keys ([#189](https://github.com/ayeshLK/komposyn/issues/189)) ([d2255af](https://github.com/ayeshLK/komposyn/commit/d2255af0f7b79302edba82d98673113011d8dd09))
+
+
+### Bug Fixes
+
+* **ui:** improve chat turn spacing and reply contrast ([#188](https://github.com/ayeshLK/komposyn/issues/188)) ([8216a6f](https://github.com/ayeshLK/komposyn/commit/8216a6fcb0b1859359791e473e9ada9b219581e8))
+
 ## [0.12.0](https://github.com/ayeshLK/komposyn/compare/v0.11.0...v0.12.0) (2026-10-30)
 
 
