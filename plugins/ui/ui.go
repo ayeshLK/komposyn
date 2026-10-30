@@ -77,6 +77,7 @@ type Snapshot struct {
 	Selected *Model
 	Turns    []Turn
 	Active   bool
+	Version  string
 }
 
 type Client interface {

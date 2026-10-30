@@ -195,6 +195,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			}
 			if m.Usage.Input != nil {
 				inputUsageKnown = true
+				result.Usage.InputKnown = true
 				result.Usage.InputTokens = *m.Usage.Input + m.Usage.CacheRead + m.Usage.CacheWrite
 				result.Usage.CacheRead = m.Usage.CacheRead
 				result.Usage.CacheWrite = m.Usage.CacheWrite
@@ -257,6 +258,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			if len(v.Usage) > 0 && json.Unmarshal(v.Usage, &u) == nil {
 				if u.Output != nil {
 					result.Usage.OutputTokens = *u.Output
+					result.Usage.OutputKnown = true
 					outputUsageKnown = true
 				}
 				if u.CacheRead > 0 {

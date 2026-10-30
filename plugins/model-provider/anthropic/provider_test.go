@@ -77,7 +77,7 @@ func TestPaginatedDiscoveryAndMessagesStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != p.OutcomeCompleted || res.RequestID != "msg-1" || got != "hello" || !res.Usage.Known || res.Usage.InputTokens != 5 || res.Usage.OutputTokens != 2 || len(res.Native) != 1 {
+	if res.Outcome != p.OutcomeCompleted || res.RequestID != "msg-1" || got != "hello" || !res.Usage.Known || !res.Usage.InputKnown || !res.Usage.OutputKnown || res.Usage.InputTokens != 5 || res.Usage.OutputTokens != 2 || len(res.Native) != 1 {
 		t.Fatalf("result=%+v streamed=%q", res, got)
 	}
 	if body["max_tokens"] != float64(64) || body["system"] != "help" {

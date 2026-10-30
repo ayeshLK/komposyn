@@ -30,6 +30,8 @@ import (
 type clientStub struct {
 	mu            sync.Mutex
 	selected      *ui.Model
+	turns         []ui.Turn
+	version       string
 	selectedCh    chan struct{}
 	selectCalls   int
 	profiles      []ui.Profile
@@ -132,7 +134,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Version: c.version}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -187,12 +189,12 @@ func TestPickerInteractionOnSimulationScreen(t *testing.T) {
 		<-finished
 		t.Fatalf("picker actions/models not rendered: %q", rendered)
 	}
-	// Enter leaves the filter field for the picker list; three Down presses move
-	// from Add New Provider through the two persistent actions to the model.
+	// Tab moves from the action group to models; the grouped headings are not
+	// selectable entries and therefore do not disturb row-to-model mapping.
 	press(tcell.KeyEnter, 0)
-	press(tcell.KeyDown, 0)
-	press(tcell.KeyDown, 0)
-	press(tcell.KeyDown, 0)
+	press(tcell.KeyBacktab, 0)
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyTab, 0)
 	press(tcell.KeyEnter, 0)
 	select {
 	case <-client.selectedCh:
@@ -218,6 +220,172 @@ func TestPickerInteractionOnSimulationScreen(t *testing.T) {
 		cancel()
 		t.Fatal("terminal did not stop")
 	}
+}
+
+func TestPickerFilteringKeepsActionsAndModelRowsMapped(t *testing.T) {
+	first := ui.Model{Key: "first", Provider: "openai", ProfileID: "p1", ProfileLabel: "One", ID: "model-one", DisplayName: "Alpha"}
+	second := ui.Model{Key: "second", Provider: "anthropic", ProfileID: "p2", ProfileLabel: "Two", ID: "model-two", DisplayName: "Beta"}
+	client := &clientStub{selectedCh: make(chan struct{}, 1)}
+	u := &terminal{client: client, discovery: ui.Discovery{Models: []ui.Model{first, second}}, picker: tv.NewList(), modelList: tv.NewList(), pickerStatus: tv.NewTextView(), pickerQuery: "beta"}
+	u.rebuildPicker()
+	if u.picker.GetItemCount() != 3 {
+		t.Fatalf("provider actions disappeared while filtering: %d", u.picker.GetItemCount())
+	}
+	if u.modelList.GetItemCount() != 1 || len(u.modelEntries) != 1 || u.modelEntries[0].model == nil || u.modelEntries[0].model.Key != second.Key {
+		t.Fatalf("filtered model row lost its identity: items=%d entries=%+v", u.modelList.GetItemCount(), u.modelEntries)
+	}
+}
+
+func TestProviderFormTraversesForwardAndBackward(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(90, 24)
+	form := tv.NewForm()
+	form.AddInputField("Profile label", "", 20, nil, nil)
+	form.AddInputField("API key", "", 20, nil, nil)
+	form.AddButton("Save", func() {})
+	first, second := form.GetFormItem(0), form.GetFormItem(1)
+	app := tv.NewApplication().SetScreen(screen).SetRoot(form, true).SetFocus(first)
+	done := make(chan error, 1)
+	go func() { done <- app.Run() }()
+	time.Sleep(100 * time.Millisecond)
+	if app.GetFocus() != first {
+		t.Fatalf("initial provider form focus = %T", app.GetFocus())
+	}
+	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+	deadline := time.Now().Add(time.Second)
+	for app.GetFocus() != second && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if app.GetFocus() != second {
+		t.Fatalf("Tab did not move to second provider form field: %T", app.GetFocus())
+	}
+	screen.InjectKey(tcell.KeyBacktab, 0, tcell.ModNone)
+	deadline = time.Now().Add(time.Second)
+	for app.GetFocus() != first && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if app.GetFocus() != first {
+		t.Fatalf("Shift+Tab did not restore first provider form field: %T", app.GetFocus())
+	}
+	app.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("form simulation did not stop")
+	}
+}
+
+func TestSlashSuggestionsKeyboardWorkflowDoesNotSubmitCommands(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(110, 32)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	model := ui.Model{Key: "openai\x00personal\x00model-x", Provider: "openai", ProfileID: "personal", ProfileLabel: "Personal", ID: "model-x", DisplayName: "Text Model"}
+	client := &clientStub{selectedCh: make(chan struct{}, 1), selected: &model}
+	sent := make(chan string, 1)
+	client.sendHook = func(_ context.Context, text string, delta func(string)) (ui.Turn, error) {
+		sent <- text
+		delta("reply [re")
+		delta("d]literal")
+		return ui.Turn{Outcome: modelprovider.OutcomeCompleted}, nil
+	}
+	finished := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { finished <- (Plugin{screen: safeScreen}).Run(ctx, client) }()
+	time.Sleep(120 * time.Millisecond)
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	press(tcell.KeyRune, '/')
+	waitForScreen(t, safeScreen, "/model  ·  open provider", "")
+	press(tcell.KeyDown, 0) // highlight /help
+	press(tcell.KeyTab, 0)  // complete, do not submit
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safeScreen, "Commands: /model", "")
+	select {
+	case got := <-sent:
+		t.Fatalf("slash command was sent to provider as %q", got)
+	default:
+	}
+	for _, r := range "ordinary draft" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyEnter, 0)
+	select {
+	case got := <-sent:
+		if got != "ordinary draft" {
+			t.Fatalf("submitted text = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ordinary composer text was not submitted")
+	}
+	waitForScreen(t, safeScreen, "reply [red]literal", "")
+	press(tcell.KeyCtrlC, 0)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestUsagePaneResizesAndCompactControlKeepsComposerVisible(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(80, 24)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	client := &clientStub{selectedCh: make(chan struct{}, 1), turns: []ui.Turn{
+		{Usage: modelprovider.Usage{Known: true, InputTokens: 1234567890123456789, OutputTokens: 2345678901234567890}},
+		{Usage: modelprovider.Usage{}},
+	}}
+	finished := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { finished <- (Plugin{screen: safeScreen}).Run(ctx, client) }()
+	time.Sleep(150 * time.Millisecond)
+	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
+	waitForScreen(t, safeScreen, "> x", "Usage · this chat")
+	screen.SetSize(110, 30)
+	screen.InjectKey(tcell.KeyRune, 'y', tcell.ModNone)
+	waitForScreen(t, safeScreen, "Usage · this chat", "")
+	if got := renderedScreen(safeScreen); !strings.Contains(got, "> xy") {
+		t.Fatalf("composer did not remain available after resizing wide: %q", got)
+	}
+	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
+	waitForScreen(t, safeScreen, "KompoSyn", "Usage · this chat")
+	screen.SetSize(30, 24)
+	screen.InjectKey(tcell.KeyRune, 'z', tcell.ModNone)
+	waitForScreen(t, safeScreen, "> xyz", "Usage · this chat")
+	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
+	waitForScreen(t, safeScreen, "partial", "Usage · this chat")
+	if got := renderedScreen(safeScreen); !strings.Contains(got, "> xyz") {
+		t.Fatalf("composer disappeared while compact usage was open: %q", got)
+	}
+	screen.InjectKey(tcell.KeyCtrlU, 0, tcell.ModNone)
+	waitForScreen(t, safeScreen, "> xyz", "partial")
+	screen.InjectKey(tcell.KeyCtrlC, 0, tcell.ModNone)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func renderedScreen(screen *synchronizedSimulation) string {
+	cells, _, _ := screen.GetContents()
+	var b strings.Builder
+	for _, cell := range cells {
+		b.WriteString(string(cell.Runes))
+	}
+	return b.String()
 }
 
 func TestEscapeFromModelFilterReturnsToChatAndPreservesSelection(t *testing.T) {
@@ -511,6 +679,99 @@ func stopSimulationTerminal(t *testing.T, u *terminal, runDone <-chan error) {
 	case <-waitDone:
 	case <-time.After(3 * time.Second):
 		t.Error("simulation UI workers did not stop")
+	}
+}
+
+func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
+	client := &clientStub{version: "0.11.0"}
+	u := &terminal{client: client, commands: supportedCommands(), input: tv.NewInputField(), output: tv.NewTextView(), commandList: tv.NewList(), composer: tv.NewFlex()}
+	u.composer.AddItem(u.commandList, 0, 0, false).AddItem(u.input, 1, 0, true)
+	u.input.SetChangedFunc(u.refreshCommandSuggestions)
+	u.refreshCommandSuggestions("/m")
+	if len(u.commandItems) != 1 || u.commandItems[0].name != "/model" {
+		t.Fatalf("/m suggestions = %+v", u.commandItems)
+	}
+	u.refreshCommandSuggestions("/")
+	if len(u.commandItems) != 4 {
+		t.Fatalf("root slash suggestions = %+v", u.commandItems)
+	}
+	u.commandList.SetCurrentItem(1)
+	u.completeCommandSuggestion()
+	if got := u.input.GetText(); got != "/help " || u.suggestionsActive() {
+		t.Fatalf("completion text=%q active=%t", got, u.suggestionsActive())
+	}
+	u.refreshCommandSuggestions("/he")
+	u.selectCommandSuggestion()
+	if strings.Contains(u.output.GetText(true), "Commands: /model") == false {
+		t.Fatalf("selected /help did not follow command behavior: %q", u.output.GetText(true))
+	}
+	if u.input.GetText() != "" {
+		t.Fatalf("selected command left composer text %q", u.input.GetText())
+	}
+	u.refreshCommandSuggestions("/not-a-command")
+	if u.suggestionsActive() {
+		t.Fatal("no-match prefix left command suggestions active")
+	}
+	u.refreshCommandSuggestions("ordinary draft")
+	if u.suggestionsActive() {
+		t.Fatal("ordinary draft opened command suggestions")
+	}
+}
+
+func TestAccumulatedUsagePreservesUnknownAndPartialFields(t *testing.T) {
+	totals := accumulatedUsage([]ui.Turn{
+		{Usage: modelprovider.Usage{Known: true, InputTokens: 5, OutputTokens: 2}},
+		{Usage: modelprovider.Usage{InputKnown: true, InputTokens: 3}},
+		{Usage: modelprovider.Usage{}},
+	})
+	if totals.input != 8 || totals.output != 2 || !totals.inputKnown || !totals.outputKnown || totals.unknownRequests != 2 {
+		t.Fatalf("usage totals = %+v", totals)
+	}
+	client := &clientStub{turns: []ui.Turn{{Usage: modelprovider.Usage{InputKnown: true, InputTokens: 3}}}}
+	u := &terminal{client: client, usagePane: tv.NewTextView()}
+	u.updateUsage()
+	if got := u.usagePane.GetText(true); !strings.Contains(got, "Input tokens: 3") || !strings.Contains(got, "Output tokens: unknown") {
+		t.Fatalf("partial usage rendering = %q", got)
+	}
+	client.mu.Lock()
+	client.turns = nil
+	client.mu.Unlock()
+	u.updateUsage()
+	if got := u.usagePane.GetText(true); !strings.Contains(got, "Input tokens: unknown") || !strings.Contains(got, "Output tokens: unknown") {
+		t.Fatalf("usage did not reset when the in-memory chat cleared: %q", got)
+	}
+}
+
+func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
+	client := &clientStub{version: "0.11.0"}
+	model := ui.Model{Key: "selected", ID: "model-y", DisplayName: "Model Y"}
+	u := &terminal{client: client, header: tv.NewTextView(), body: tv.NewFlex(), usagePane: tv.NewTextView(), usageCompact: tv.NewTextView(), composer: tv.NewFlex(), input: tv.NewInputField()}
+	u.body.AddItem(tv.NewTextView(), 0, 1, false).AddItem(u.usagePane, 0, 0, false)
+	u.composer.AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
+	u.updateBanner()
+	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") {
+		t.Fatalf("initial banner = %q", got)
+	}
+	client.selected = &model
+	u.updateBanner()
+	if got := u.header.GetText(true); !strings.Contains(got, "Model Y") {
+		t.Fatalf("selected model missing from banner: %q", got)
+	}
+	u.setTerminalWidth(usageWideThreshold)
+	if !u.wide {
+		t.Fatal("usage pane did not expand at documented threshold")
+	}
+	u.setTerminalWidth(usageWideThreshold - 1)
+	if u.wide {
+		t.Fatal("usage pane did not collapse below threshold")
+	}
+	u.toggleUsage()
+	if !u.compactUsageShown {
+		t.Fatal("narrow usage control did not expand the compact pane")
+	}
+	u.toggleUsage()
+	if u.compactUsageShown {
+		t.Fatal("narrow usage control did not collapse the compact pane")
 	}
 }
 

@@ -188,6 +188,35 @@ messages requires confirmation and clears the in-memory chat. Canceling that
 confirmation preserves the selection and chat. Restart begins with no selected
 model and an empty conversation while saved settings/credentials remain.
 
+The composer suggests `/model`, `/help`, `/cancel`, and `/exit` from the same
+command definitions used for dispatch. Type `/` and narrow the prefix, use
+Up/Down to highlight a suggestion, Tab to complete it, Enter to run the
+highlighted command, or Esc to dismiss suggestions while keeping the draft.
+Command input is dispatched as a command and is never sent as provider text.
+Outside an active suggestion list, Tab and Shift+Tab move between the picker
+filter, provider actions, and model choices. Provider actions and model rows
+have separate headings in the same searchable picker; headings are not
+selectable rows, and actions remain available while filtering.
+
+The compact banner shows the KompoSyn name, build version, and selected model;
+before selection it says **No model selected**. Assistant turns use a muted
+textual role label and spacing, with terminal markup in provider and user text
+escaped before rendering.
+
+Reported input and output tokens accumulate from completed provider results in
+the current in-memory chat. A field is shown as unknown until the provider
+reports it; partial reporting does not imply zero for a missing field. Usage
+from failed or interrupted streams is retained when the provider returned it,
+and the UI counts each final result once. The totals describe requests made in
+this chat, including repeated conversation context, not total provider-account
+consumption. They reset when a confirmed model/profile change clears the chat
+and disappear when the process exits. On terminals at least 100 columns wide,
+the 28-column usage pane is shown by default. Below 100 columns it collapses;
+Ctrl+U reveals a compact two-line usage summary above the composer while
+leaving the input available. Ctrl+U collapses it again. On wide terminals,
+Ctrl+U toggles the side pane. Resizing applies the automatic wide/narrow layout;
+the wide-terminal manual expanded/collapsed choice is retained across resizes.
+
 ## Implementation boundaries
 
 - `plugins/model-provider/` holds the experimental provider contract and

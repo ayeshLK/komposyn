@@ -43,6 +43,15 @@ type entry struct {
 	model  *ui.Model
 }
 
+type command struct{ name, description, action string }
+
+type outputPart struct {
+	text   string
+	markup bool
+}
+
+const usageWideThreshold = 100
+
 type credentialOperation struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -50,28 +59,45 @@ type credentialOperation struct {
 }
 
 type terminal struct {
-	app          *tv.Application
-	done         chan struct{}
-	client       ui.Client
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	lifecycleMu  sync.Mutex
-	stopping     bool
-	stopOnce     sync.Once
-	closing      atomic.Bool
-	runReturned  atomic.Bool
-	output       *tv.TextView
-	input        *tv.InputField
-	layout       *tv.Flex
-	pickerQuery  string
-	picker       *tv.List
-	pickerInput  *tv.InputField
-	pickerStatus *tv.TextView
-	pickerLayout *tv.Flex
-	entries      []entry
-	discovery    ui.Discovery
-	credentialOp *credentialOperation
+	app               *tv.Application
+	done              chan struct{}
+	client            ui.Client
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	lifecycleMu       sync.Mutex
+	stopping          bool
+	stopOnce          sync.Once
+	closing           atomic.Bool
+	runReturned       atomic.Bool
+	output            *tv.TextView
+	transcript        []outputPart
+	header            *tv.TextView
+	input             *tv.InputField
+	layout            *tv.Flex
+	body              *tv.Flex
+	usagePane         *tv.TextView
+	footer            *tv.TextView
+	composer          *tv.Flex
+	commandList       *tv.List
+	usageCompact      *tv.TextView
+	commands          []command
+	commandItems      []command
+	usageVisible      bool
+	wide              bool
+	layoutReady       bool
+	compactUsageShown bool
+	terminalWidth     int
+	pickerQuery       string
+	picker            *tv.List
+	modelList         *tv.List
+	pickerInput       *tv.InputField
+	pickerStatus      *tv.TextView
+	pickerLayout      *tv.Flex
+	entries           []entry
+	modelEntries      []entry
+	discovery         ui.Discovery
+	credentialOp      *credentialOperation
 }
 
 func (u *terminal) beginCredentialOperation() *credentialOperation {
@@ -97,16 +123,57 @@ func (u *terminal) cancelCredentialOperation(op *credentialOperation) {
 
 func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	ctx, cancel := context.WithCancel(parent)
-	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel}
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true}
 	u.output = tv.NewTextView().SetDynamicColors(true).SetScrollable(true)
-	u.output.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
-	u.input = tv.NewInputField().SetLabel("> ").SetFieldWidth(0)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.output, 0, 1, false).AddItem(u.input, 1, 0, true)
+	u.usagePane = tv.NewTextView()
+	u.usagePane.SetBorder(true).SetTitle(" Usage · this chat ")
+	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
+	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
+	u.footer = tv.NewTextView().SetText("Tab/Shift+Tab: move focus · Ctrl+U: usage · Ctrl+C: cancel/exit")
+	u.commandList = tv.NewList().ShowSecondaryText(false)
+	u.usageCompact = tv.NewTextView()
+	u.commands = supportedCommands()
+	u.input = tv.NewInputField().SetLabel("> ").SetFieldWidth(0).SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
+	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
+	u.updateBanner()
+	u.updateUsage()
+	u.app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		width, _ := screen.Size()
+		u.setTerminalWidth(width)
+		return false
+	})
 	u.input.SetDoneFunc(func(key tcell.Key) {
-		if key != tcell.KeyEnter {
-			return
+		switch key {
+		case tcell.KeyEnter:
+			if u.suggestionsActive() {
+				u.selectCommandSuggestion()
+			} else {
+				u.submit()
+			}
+		case tcell.KeyEscape:
+			u.dismissCommandSuggestions()
 		}
-		u.submit()
+	})
+	u.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if u.suggestionsActive() {
+			switch event.Key() {
+			case tcell.KeyUp:
+				u.moveCommandSuggestion(-1)
+				return nil
+			case tcell.KeyDown:
+				u.moveCommandSuggestion(1)
+				return nil
+			case tcell.KeyTab:
+				u.completeCommandSuggestion()
+				return nil
+			case tcell.KeyEscape:
+				u.dismissCommandSuggestions()
+				return nil
+			}
+		}
+		return event
 	})
 	u.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyCtrlC {
@@ -118,9 +185,13 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 			}
 			return nil
 		}
+		if event.Key() == tcell.KeyCtrlU {
+			u.toggleUsage()
+			return nil
+		}
 		return event
 	})
-	u.write("KompoSyn is ready. Chat state is temporary and will be cleared on exit. Run /model to connect a provider.\n")
+	u.writeMarkup("[gray]KompoSyn is ready. Chat state is temporary and will be cleared on exit. Run /model to connect a provider.[-]\n")
 	u.done = make(chan struct{})
 	ready := make(chan struct{})
 	var readyOnce sync.Once
@@ -138,6 +209,8 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	}()
 	if p.screen != nil {
 		u.app.SetScreen(p.screen)
+		width, _ := p.screen.Size()
+		u.setTerminalWidth(width)
 	}
 	err := u.app.SetRoot(u.layout, true).EnableMouse(true).SetFocus(u.input).Run()
 	u.runReturned.Store(true)
@@ -150,7 +223,32 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	return nil
 }
 
-func (u *terminal) write(s string) { fmt.Fprint(u.output, s); u.output.ScrollToEnd() }
+func (u *terminal) write(s string)       { u.appendOutput(s, false) }
+func (u *terminal) writeMarkup(s string) { u.appendOutput(s, true) }
+
+func (u *terminal) appendOutput(text string, markup bool) {
+	if text == "" || u.output == nil {
+		return
+	}
+	if !markup && len(u.transcript) > 0 && !u.transcript[len(u.transcript)-1].markup {
+		u.transcript[len(u.transcript)-1].text += text
+	} else {
+		u.transcript = append(u.transcript, outputPart{text: text, markup: markup})
+	}
+	u.output.Clear()
+	for _, part := range u.transcript {
+		if part.markup {
+			fmt.Fprint(u.output, part.text)
+		} else {
+			fmt.Fprint(u.output, escapeLiteralText(part.text))
+		}
+	}
+	u.output.ScrollToEnd()
+}
+
+func escapeLiteralText(text string) string {
+	return tv.Escape(text)
+}
 func (u *terminal) queue(update func()) {
 	if u.closing.Load() || u.ctx.Err() != nil {
 		return
@@ -162,7 +260,226 @@ func (u *terminal) queue(update func()) {
 	})
 }
 func (u *terminal) writeAsync(s string) {
-	u.queue(func() { fmt.Fprint(u.output, s); u.output.ScrollToEnd() })
+	u.queue(func() { u.appendOutput(s, false) })
+}
+
+func supportedCommands() []command {
+	return []command{
+		{name: "/model", description: "open provider and model setup", action: "picker"},
+		{name: "/help", description: "show available commands", action: "help"},
+		{name: "/cancel", description: "stop the active reply", action: "cancel"},
+		{name: "/exit", description: "close KompoSyn", action: "exit"},
+	}
+}
+
+func (u *terminal) suggestionsActive() bool {
+	return u.commandList != nil && u.commandList.GetItemCount() > 0
+}
+
+func (u *terminal) refreshCommandSuggestions(text string) {
+	if u.commandList == nil || u.composer == nil {
+		return
+	}
+	query := strings.TrimSpace(text)
+	if !strings.HasPrefix(query, "/") || strings.ContainsAny(query, " \t\n") {
+		u.commandItems = nil
+		u.commandList.Clear()
+		u.composer.ResizeItem(u.commandList, 0, 0)
+		return
+	}
+	prefix := strings.ToLower(query)
+	u.commandItems = u.commandItems[:0]
+	u.commandList.Clear()
+	for _, item := range u.commands {
+		if strings.HasPrefix(item.name, prefix) {
+			u.commandItems = append(u.commandItems, item)
+			u.commandList.AddItem(item.name+"  ·  "+item.description, "", 0, nil)
+		}
+	}
+	if len(u.commandItems) == 0 {
+		u.composer.ResizeItem(u.commandList, 0, 0)
+		return
+	}
+	u.commandList.SetCurrentItem(0)
+	u.composer.ResizeItem(u.commandList, min(4, len(u.commandItems)), 0)
+}
+
+func (u *terminal) dismissCommandSuggestions() {
+	if u.commandList != nil {
+		u.commandItems = nil
+		u.commandList.Clear()
+		u.composer.ResizeItem(u.commandList, 0, 0)
+	}
+}
+
+func (u *terminal) moveCommandSuggestion(delta int) {
+	if !u.suggestionsActive() {
+		return
+	}
+	index := u.commandList.GetCurrentItem() + delta
+	if index < 0 {
+		index = len(u.commandItems) - 1
+	} else if index >= len(u.commandItems) {
+		index = 0
+	}
+	u.commandList.SetCurrentItem(index)
+}
+
+func (u *terminal) completeCommandSuggestion() {
+	if !u.suggestionsActive() {
+		return
+	}
+	index := u.commandList.GetCurrentItem()
+	if index < 0 || index >= len(u.commandItems) {
+		index = 0
+	}
+	u.input.SetText(u.commandItems[index].name + " ")
+	u.dismissCommandSuggestions()
+}
+
+func (u *terminal) selectCommandSuggestion() {
+	if !u.suggestionsActive() {
+		return
+	}
+	index := u.commandList.GetCurrentItem()
+	if index < 0 || index >= len(u.commandItems) {
+		index = 0
+	}
+	selected := u.commandItems[index].name
+	u.dismissCommandSuggestions()
+	u.input.SetText(selected)
+	u.runCommand(selected)
+}
+
+func (u *terminal) updateBanner() {
+	if u.header == nil || u.client == nil {
+		return
+	}
+	snapshot := u.client.Snapshot()
+	modelName := "No model selected"
+	if snapshot.Selected != nil {
+		modelName = snapshot.Selected.DisplayName
+		if modelName == "" {
+			modelName = snapshot.Selected.ID
+		}
+	}
+	version := snapshot.Version
+	if version == "" {
+		version = "dev"
+	}
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]", tv.Escape(version), tv.Escape(modelName)))
+}
+
+type usageTotals struct {
+	input, output           int64
+	inputKnown, outputKnown bool
+	unknownRequests         int
+}
+
+func accumulatedUsage(turns []ui.Turn) usageTotals {
+	var total usageTotals
+	for _, turn := range turns {
+		usage := turn.Usage
+		inputKnown, outputKnown := usage.InputKnown, usage.OutputKnown
+		if usage.Known && !inputKnown && !outputKnown {
+			inputKnown, outputKnown = true, true
+		}
+		if inputKnown {
+			total.input += usage.InputTokens
+			total.inputKnown = true
+		}
+		if outputKnown {
+			total.output += usage.OutputTokens
+			total.outputKnown = true
+		}
+		if !inputKnown || !outputKnown {
+			total.unknownRequests++
+		}
+	}
+	return total
+}
+
+func (u *terminal) updateUsage() {
+	if u.usagePane == nil || u.client == nil {
+		return
+	}
+	total := accumulatedUsage(u.client.Snapshot().Turns)
+	input, output := "unknown", "unknown"
+	if total.inputKnown {
+		input = fmt.Sprintf("%d", total.input)
+	}
+	if total.outputKnown {
+		output = fmt.Sprintf("%d", total.output)
+	}
+	suffix := ""
+	if total.unknownRequests > 0 {
+		suffix = " (partial)"
+	}
+	text := fmt.Sprintf("Input tokens: %s%s\nOutput tokens: %s%s", input, suffix, output, suffix)
+	u.usagePane.SetText(text)
+	if u.usageCompact != nil {
+		u.usageCompact.SetText(text)
+		if u.compactUsageShown {
+			u.composer.ResizeItem(u.usageCompact, compactUsageRows(text, u.terminalWidth), 0)
+		}
+	}
+}
+
+func compactUsageRows(text string, width int) int {
+	innerWidth := max(1, width-2)
+	rows := 0
+	for _, line := range strings.Split(text, "\n") {
+		rows += max(1, (len(line)+innerWidth-1)/innerWidth)
+	}
+	return max(2, rows)
+}
+
+func (u *terminal) toggleUsage() {
+	if !u.wide {
+		u.compactUsageShown = !u.compactUsageShown
+		u.updateUsage()
+		if u.compactUsageShown {
+			u.composer.ResizeItem(u.usageCompact, compactUsageRows(u.usageCompact.GetText(true), u.terminalWidth), 0)
+		} else {
+			u.composer.ResizeItem(u.usageCompact, 0, 0)
+		}
+		return
+	}
+	u.usageVisible = !u.usageVisible
+	if u.usageVisible {
+		u.body.ResizeItem(u.usagePane, 28, 0)
+	} else {
+		u.body.ResizeItem(u.usagePane, 0, 0)
+	}
+}
+
+func (u *terminal) setTerminalWidth(width int) {
+	wide := width >= usageWideThreshold
+	u.terminalWidth = width
+	if u.body == nil || u.usagePane == nil {
+		return
+	}
+	if u.layoutReady && wide == u.wide {
+		if !wide && u.compactUsageShown {
+			u.composer.ResizeItem(u.usageCompact, compactUsageRows(u.usageCompact.GetText(true), width), 0)
+		}
+		return
+	}
+	u.layoutReady = true
+	u.wide = wide
+	if wide {
+		u.compactUsageShown = false
+		u.composer.ResizeItem(u.usageCompact, 0, 0)
+		if u.usageVisible {
+			u.body.ResizeItem(u.usagePane, 28, 0)
+		} else {
+			u.body.ResizeItem(u.usagePane, 0, 0)
+		}
+	} else {
+		u.body.ResizeItem(u.usagePane, 0, 0)
+		u.compactUsageShown = false
+		u.composer.ResizeItem(u.usageCompact, 0, 0)
+	}
 }
 func (u *terminal) launch(work func()) {
 	u.lifecycleMu.Lock()
@@ -198,25 +515,7 @@ func (u *terminal) submit() {
 		return
 	}
 	if strings.HasPrefix(trimmed, "/") {
-		if strings.HasPrefix(trimmed, "/model ") {
-			u.input.SetText("")
-			u.write("Use /model to open the provider and model picker. No command arguments were used.\n")
-			return
-		}
-		switch strings.Fields(trimmed)[0] {
-		case "/model":
-			u.openPicker()
-		case "/help":
-			u.write("Commands: /model opens provider and model setup; /cancel stops a reply; /exit closes KompoSyn.\n")
-		case "/cancel":
-			u.client.Cancel()
-			u.write("Cancellation requested.\n")
-		case "/exit":
-			u.stop()
-		default:
-			u.write("Unknown command. Use /help.\n")
-		}
-		u.input.SetText("")
+		u.runCommand(trimmed)
 		return
 	}
 	snapshot := u.client.Snapshot()
@@ -229,7 +528,7 @@ func (u *terminal) submit() {
 		return
 	}
 	u.input.SetText("")
-	u.write("\nYou: " + trimmed + "\nAssistant: ")
+	u.writeMarkup("\n[white::b]You:[-:-:-] " + tv.Escape(trimmed) + "\n[gray]Assistant:[-] ")
 	u.launch(func() {
 		turn, err := u.client.Send(u.ctx, trimmed, func(delta string) { u.writeAsync(delta) })
 		u.writeAsync("\n")
@@ -241,21 +540,63 @@ func (u *terminal) submit() {
 			}
 		}
 		u.writeAsync(outcomeStatus(turn, err))
-		if turn.Usage.Known {
-			u.writeAsync(fmt.Sprintf("Request usage: input=%d output=%d\n", turn.Usage.InputTokens, turn.Usage.OutputTokens))
-		} else {
-			u.writeAsync("Request usage: unknown\n")
-		}
-		u.writeAsync("\n")
+		u.queue(func() {
+			u.updateUsage()
+			u.updateBanner()
+		})
 	})
+}
+
+func (u *terminal) runCommand(text string) {
+	trimmed := strings.TrimSpace(text)
+	name := strings.Fields(trimmed)[0]
+	if name == "/model" && trimmed != "/model" {
+		u.input.SetText("")
+		u.write("Use /model to open the provider and model picker. No command arguments were used.\n")
+		return
+	}
+	var selected *command
+	for i := range u.commands {
+		if u.commands[i].name == name {
+			selected = &u.commands[i]
+			break
+		}
+	}
+	if selected == nil {
+		u.write("Unknown command. Use /help.\n")
+		u.input.SetText("")
+		return
+	}
+	switch selected.action {
+	case "picker":
+		u.openPicker()
+	case "help":
+		var descriptions []string
+		for _, item := range u.commands {
+			descriptions = append(descriptions, item.name+" "+item.description)
+		}
+		u.write("Commands: " + strings.Join(descriptions, "; ") + ".\n")
+	case "cancel":
+		u.client.Cancel()
+		u.write("Cancellation requested.\n")
+	case "exit":
+		u.stop()
+	}
+	u.input.SetText("")
 }
 
 func (u *terminal) openPicker() {
 	u.pickerInput = tv.NewInputField().SetLabel("Filter models and actions: ").SetFieldWidth(0).SetText(u.pickerQuery).SetChangedFunc(func(v string) { u.pickerQuery = v; u.rebuildPicker() })
 	u.picker = tv.NewList().ShowSecondaryText(true)
-	u.pickerStatus = tv.NewTextView().SetDynamicColors(true)
-	u.pickerLayout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.pickerInput, 1, 0, true).AddItem(u.picker, 0, 1, false).AddItem(u.pickerStatus, 2, 0, false)
-	u.picker.SetBorder(true).SetTitle(" /model · Select a model or manage providers ")
+	u.modelList = tv.NewList().ShowSecondaryText(true)
+	for _, list := range []*tv.List{u.picker, u.modelList} {
+		list.SetSelectedFocusOnly(true)
+	}
+	u.pickerStatus = tv.NewTextView()
+	actionHeading := tv.NewTextView().SetText("PROVIDER ACTIONS")
+	modelHeading := tv.NewTextView().SetText("AVAILABLE MODELS")
+	u.pickerLayout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.pickerInput, 1, 0, true).AddItem(actionHeading, 1, 0, false).AddItem(u.picker, 6, 0, false).AddItem(modelHeading, 1, 0, false).AddItem(u.modelList, 0, 1, false).AddItem(u.pickerStatus, 2, 0, false)
+	u.pickerLayout.SetBorder(true).SetTitle(" /model · Select a model or manage providers ")
 	u.pickerInput.SetDoneFunc(func(key tcell.Key) {
 		if key == tcell.KeyEnter {
 			u.app.SetFocus(u.picker)
@@ -263,13 +604,43 @@ func (u *terminal) openPicker() {
 			u.returnToChat()
 		}
 	})
+	u.pickerInput.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyTab:
+			u.app.SetFocus(u.picker)
+			return nil
+		case tcell.KeyBacktab:
+			u.app.SetFocus(u.modelList)
+			return nil
+		}
+		return event
+	})
 	u.picker.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEscape {
 			u.returnToChat()
 			return nil
 		}
 		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(u.modelList)
+			return nil
+		}
+		if event.Key() == tcell.KeyBacktab {
 			u.app.SetFocus(u.pickerInput)
+			return nil
+		}
+		return event
+	})
+	u.modelList.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEscape {
+			u.returnToChat()
+			return nil
+		}
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(u.pickerInput)
+			return nil
+		}
+		if event.Key() == tcell.KeyBacktab {
+			u.app.SetFocus(u.picker)
 			return nil
 		}
 		return event
@@ -280,20 +651,26 @@ func (u *terminal) openPicker() {
 }
 
 func (u *terminal) rebuildPicker() {
-	if u.picker == nil {
+	if u.picker == nil || u.modelList == nil {
 		return
 	}
 	selected := u.client.Snapshot().Selected
 	query := strings.ToLower(strings.TrimSpace(u.pickerQuery))
 	u.entries = nil
+	u.modelEntries = nil
 	u.picker.Clear()
-	add := func(e entry, secondary string, shortcut rune) {
+	u.modelList.Clear()
+	addAction := func(e entry, secondary string, shortcut rune) {
 		u.entries = append(u.entries, e)
 		u.picker.AddItem(e.label, secondary, shortcut, func() { u.activate(e) })
 	}
-	add(entry{label: "＋ Add New Provider", action: "add"}, "Choose ChatGPT sign-in or an API key", 'a')
-	add(entry{label: "↻ Refresh Models", action: "refresh"}, "Fetch the current provider catalogs", 'r')
-	add(entry{label: "⚙ Manage Providers", action: "manage"}, "Review profile metadata, replace keys, or remove profiles", 'p')
+	addAction(entry{label: "＋ Add New Provider", action: "add"}, "Choose ChatGPT sign-in or an API key", 'a')
+	addAction(entry{label: "↻ Refresh Models", action: "refresh"}, "Fetch the current provider catalogs", 'r')
+	addAction(entry{label: "⚙ Manage Providers", action: "manage"}, "Review profile metadata, replace keys, or remove profiles", 'p')
+	addModel := func(e entry, secondary string) {
+		u.modelEntries = append(u.modelEntries, e)
+		u.modelList.AddItem(e.label, secondary, 0, func() { u.activate(e) })
+	}
 	for _, m := range u.discovery.Models {
 		mark := ""
 		if selected != nil && selected.Key == m.Key {
@@ -307,28 +684,7 @@ func (u *terminal) rebuildPicker() {
 		secondary := fmt.Sprintf("%s · %s · %s", m.ProfileID, m.ID, compat)
 		e := entry{label: label, action: "select", model: &m}
 		if query == "" || strings.Contains(strings.ToLower(label+" "+secondary), query) {
-			add(e, secondary, 0)
-		}
-	}
-	if query != "" { // Keep all actions visible while the model list is filtered.
-		u.picker.Clear()
-		old := u.entries
-		u.entries = nil
-		for _, e := range old[:min(3, len(old))] {
-			secondary := map[string]string{"add": "Add or configure an API-key profile", "refresh": "Refresh model catalogs", "manage": "Inspect or edit provider profiles"}[e.action]
-			add(e, secondary, 0)
-		}
-		for _, m := range u.discovery.Models {
-			mark := ""
-			if selected != nil && selected.Key == m.Key {
-				mark = " ✓ current"
-			}
-			label := fmt.Sprintf("%s · %s · %s%s", m.Provider, m.ProfileLabel, m.DisplayName, mark)
-			secondary := fmt.Sprintf("%s · %s · %s", m.ProfileID, m.ID, m.Compatibility)
-			if strings.Contains(strings.ToLower(label+" "+secondary), query) {
-				copy := m
-				add(entry{label: label, action: "select", model: &copy}, secondary, 0)
-			}
+			addModel(e, secondary)
 		}
 	}
 	if len(u.discovery.Models) == 0 {
@@ -370,6 +726,8 @@ func (u *terminal) refreshModels() {
 			}
 			u.discovery = d
 			u.rebuildPicker()
+			u.updateBanner()
+			u.updateUsage()
 			if len(d.Models) > 0 && len(d.Failures) == 0 {
 				u.pickerStatus.SetText("Live discovery completed. Unknown capability means text-chat support is unverified.")
 			}
@@ -380,6 +738,7 @@ func (u *terminal) refreshModels() {
 func (u *terminal) addProvider() {
 	providerID := "openai"
 	form := tv.NewForm()
+	form.SetButtonActivatedStyle(tcell.StyleDefault.Foreground(tcell.ColorYellow).Bold(true))
 	form.SetBorder(true).SetTitle(" Add New Provider ")
 	form.AddDropDown("Provider", []string{"openai", "anthropic"}, 0, func(value string, _ int) { providerID = value })
 	form.AddButton("Continue", func() {
@@ -415,6 +774,7 @@ func (u *terminal) addAPIKeyProvider(providerID string) {
 	org := tv.NewInputField().SetLabel("OpenAI organization (optional): ").SetFieldWidth(36)
 	project := tv.NewInputField().SetLabel("OpenAI project (optional): ").SetFieldWidth(36)
 	form := tv.NewForm()
+	form.SetButtonActivatedStyle(tcell.StyleDefault.Foreground(tcell.ColorYellow).Bold(true))
 	form.SetBorder(true)
 	form.SetTitle(" Add provider · API key is stored locally as plaintext ")
 	form.AddFormItem(label)
@@ -649,6 +1009,7 @@ func (u *terminal) replaceProfile(p ui.Profile) {
 	label := tv.NewInputField().SetLabel("Profile label: ").SetText(p.Label)
 	key := tv.NewInputField().SetLabel("New API key: ").SetMaskCharacter('•')
 	form := tv.NewForm()
+	form.SetButtonActivatedStyle(tcell.StyleDefault.Foreground(tcell.ColorYellow).Bold(true))
 	form.SetBorder(true)
 	form.SetTitle(" Replace API key ")
 	form.AddFormItem(label)
@@ -775,6 +1136,8 @@ func (u *terminal) selectModel(m ui.Model) {
 				return
 			}
 			u.returnToChat()
+			u.updateBanner()
+			u.updateUsage()
 			u.write(fmt.Sprintf("Selected %s · %s · %s (%s capability).\n", m.Provider, m.ProfileLabel, m.ID, m.Compatibility))
 		})
 	})
@@ -793,6 +1156,8 @@ func (u *terminal) confirmSelection(m ui.Model) {
 					return
 				}
 				u.returnToChat()
+				u.updateBanner()
+				u.updateUsage()
 				u.write("Previous chat cleared. Selected " + m.Provider + " · " + m.ProfileLabel + " · " + m.ID + ".\n")
 			})
 		})
