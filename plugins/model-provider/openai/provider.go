@@ -291,8 +291,18 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 	if v.Incomplete != nil {
 		t.StopReason = v.Incomplete.Reason
 	}
-	if v.Usage != nil && v.Usage.Input != nil && v.Usage.Output != nil {
-		t.Usage = provider.Usage{Known: true, InputTokens: *v.Usage.Input, OutputTokens: *v.Usage.Output, CacheRead: v.Usage.InputDetails.Cached, ReasoningTokens: v.Usage.OutputDetails.Reasoning}
+	if v.Usage != nil {
+		t.Usage.InputKnown = v.Usage.Input != nil
+		t.Usage.OutputKnown = v.Usage.Output != nil
+		if v.Usage.Input != nil {
+			t.Usage.InputTokens = *v.Usage.Input
+		}
+		if v.Usage.Output != nil {
+			t.Usage.OutputTokens = *v.Usage.Output
+		}
+		t.Usage.Known = t.Usage.InputKnown && t.Usage.OutputKnown
+		t.Usage.CacheRead = v.Usage.InputDetails.Cached
+		t.Usage.ReasoningTokens = v.Usage.OutputDetails.Reasoning
 	}
 	for _, raw := range v.Output {
 		var item struct {

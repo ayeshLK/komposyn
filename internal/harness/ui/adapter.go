@@ -28,6 +28,7 @@ import (
 type Client struct {
 	Chat         *runtime.Chat
 	ProfileStore auth.Store
+	Version      string
 }
 
 func (c Client) Profiles(ctx context.Context) ([]ui.Profile, error) {
@@ -114,7 +115,7 @@ func (c Client) Select(ctx context.Context, key string, confirm bool) error {
 }
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
-	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Active: s.Active}
+	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Active: s.Active, Version: c.Version}
 	if s.Selected != nil {
 		out.Selected = convertModel(*s.Selected)
 	}

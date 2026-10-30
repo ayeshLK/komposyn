@@ -68,7 +68,7 @@ func TestDiscoverAndStreamResponsesWithNativeReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != p.OutcomeCompleted || res.RequestID != "resp-1" || res.ModelID != "text-model" || res.Text != "hello" || streamed != "hello" || !res.Usage.Known || res.Usage.InputTokens != 3 || res.Usage.ReasoningTokens != 2 {
+	if res.Outcome != p.OutcomeCompleted || res.RequestID != "resp-1" || res.ModelID != "text-model" || res.Text != "hello" || streamed != "hello" || !res.Usage.Known || !res.Usage.InputKnown || !res.Usage.OutputKnown || res.Usage.InputTokens != 3 || res.Usage.ReasoningTokens != 2 {
 		t.Fatalf("result=%+v streamed=%q", res, streamed)
 	}
 	if chatBody["store"] != false || chatBody["stream"] != true || chatBody["instructions"] != "be concise" || chatBody["max_output_tokens"] != float64(128) {
@@ -87,6 +87,16 @@ func TestDiscoverAndStreamResponsesWithNativeReplay(t *testing.T) {
 	native, _ := json.Marshal(items[1])
 	if !strings.Contains(string(native), "encrypted_content") || len(res.Native) != 2 {
 		t.Fatalf("native replay lost: %s %+v", native, res.Native)
+	}
+}
+
+func TestResultResponsePreservesPartialUsage(t *testing.T) {
+	response := resultResponse{Target: &p.Result{}}
+	if err := json.Unmarshal([]byte(`{"usage":{"input_tokens":7},"output":[]}`), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Target.Usage.InputKnown || response.Target.Usage.OutputKnown || response.Target.Usage.Known || response.Target.Usage.InputTokens != 7 {
+		t.Fatalf("partial usage was lost or treated as complete: %+v", response.Target.Usage)
 	}
 }
 

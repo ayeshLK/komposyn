@@ -92,7 +92,9 @@ type ChatRequest struct {
 }
 
 type Usage struct {
-	Known           bool
+	Known           bool // Both input and output counts were reported.
+	InputKnown      bool // The provider explicitly reported InputTokens, including zero.
+	OutputKnown     bool // The provider explicitly reported OutputTokens, including zero.
 	InputTokens     int64
 	OutputTokens    int64
 	CacheRead       int64
