@@ -227,6 +227,14 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			result.Outcome = provider.OutcomeUnsupported
 		}
 	}
+	if terminal == "response.completed" && finalResponse == nil {
+		result.Outcome = provider.OutcomeUnsupported
+		return result, nil
+	}
+	if terminal == "response.completed" && !finalResponse.HasReplayableMessage {
+		result.Outcome = provider.OutcomeUnsupported
+		return result, nil
+	}
 	switch terminal {
 	case "response.completed":
 		if result.Outcome != provider.OutcomeUnsupported && result.Outcome != provider.OutcomeRefused {
@@ -241,7 +249,9 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	case "response.failed":
 		result.Outcome = outcomeForCode(result.ProviderCode, provider.OutcomeService)
 	}
-	if result.Outcome == provider.OutcomeCompleted && result.StopReason != "completed" {
+	// The terminal event is authoritative when a compatible Responses route
+	// omits response.status. An explicit conflicting status remains invalid.
+	if result.Outcome == provider.OutcomeCompleted && result.StopReason != "" && result.StopReason != "completed" {
 		result.Outcome = provider.OutcomeUnsupported
 	}
 	return result, nil
@@ -249,8 +259,9 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 
 // resultResponse decodes only stable fields needed by the chat boundary.
 type resultResponse struct {
-	Target    *provider.Result
-	FinalText string
+	Target               *provider.Result
+	FinalText            string
+	HasReplayableMessage bool
 }
 
 func (r *resultResponse) UnmarshalJSON(b []byte) error {
@@ -268,7 +279,7 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 			Input        *int64 `json:"input_tokens"`
 			Output       *int64 `json:"output_tokens"`
 			InputDetails struct {
-				Cached int64 `json:"cached_tokens"`
+				Cached *int64 `json:"cached_tokens"`
 			} `json:"input_tokens_details"`
 			OutputDetails struct {
 				Reasoning int64 `json:"reasoning_tokens"`
@@ -301,12 +312,16 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 			t.Usage.OutputTokens = *v.Usage.Output
 		}
 		t.Usage.Known = t.Usage.InputKnown && t.Usage.OutputKnown
-		t.Usage.CacheRead = v.Usage.InputDetails.Cached
+		if v.Usage.InputDetails.Cached != nil {
+			t.Usage.CacheReadKnown = true
+			t.Usage.CacheRead = *v.Usage.InputDetails.Cached
+		}
 		t.Usage.ReasoningTokens = v.Usage.OutputDetails.Reasoning
 	}
 	for _, raw := range v.Output {
 		var item struct {
 			Type    string `json:"type"`
+			Role    string `json:"role"`
 			Content []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
@@ -322,6 +337,13 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 		if item.Type != "message" && item.Type != "reasoning" {
 			t.Outcome = provider.OutcomeUnsupported
 			continue
+		}
+		if item.Type == "message" {
+			if item.Role != "assistant" || len(item.Content) == 0 {
+				t.Outcome = provider.OutcomeUnsupported
+				continue
+			}
+			r.HasReplayableMessage = true
 		}
 		for _, c := range item.Content {
 			if c.Type == "refusal" {

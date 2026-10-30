@@ -182,8 +182,8 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 				Model string `json:"model"`
 				Usage struct {
 					Input      *int64 `json:"input_tokens"`
-					CacheRead  int64  `json:"cache_read_input_tokens"`
-					CacheWrite int64  `json:"cache_creation_input_tokens"`
+					CacheRead  *int64 `json:"cache_read_input_tokens"`
+					CacheWrite *int64 `json:"cache_creation_input_tokens"`
 				} `json:"usage"`
 			}
 			if json.Unmarshal(v.Message, &m) != nil {
@@ -196,9 +196,15 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			if m.Usage.Input != nil {
 				inputUsageKnown = true
 				result.Usage.InputKnown = true
-				result.Usage.InputTokens = *m.Usage.Input + m.Usage.CacheRead + m.Usage.CacheWrite
-				result.Usage.CacheRead = m.Usage.CacheRead
-				result.Usage.CacheWrite = m.Usage.CacheWrite
+				result.Usage.InputTokens = *m.Usage.Input
+				if m.Usage.CacheRead != nil {
+					result.Usage.CacheReadKnown = true
+					result.Usage.CacheRead = *m.Usage.CacheRead
+				}
+				if m.Usage.CacheWrite != nil {
+					result.Usage.CacheWriteKnown = true
+					result.Usage.CacheWrite = *m.Usage.CacheWrite
+				}
 			}
 		case "content_block_start":
 			var x struct {
@@ -252,8 +258,8 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			terminal = d.Stop
 			var u struct {
 				Output     *int64 `json:"output_tokens"`
-				CacheRead  int64  `json:"cache_read_input_tokens"`
-				CacheWrite int64  `json:"cache_creation_input_tokens"`
+				CacheRead  *int64 `json:"cache_read_input_tokens"`
+				CacheWrite *int64 `json:"cache_creation_input_tokens"`
 			}
 			if len(v.Usage) > 0 && json.Unmarshal(v.Usage, &u) == nil {
 				if u.Output != nil {
@@ -261,11 +267,13 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 					result.Usage.OutputKnown = true
 					outputUsageKnown = true
 				}
-				if u.CacheRead > 0 {
-					result.Usage.CacheRead = u.CacheRead
+				if u.CacheRead != nil {
+					result.Usage.CacheReadKnown = true
+					result.Usage.CacheRead = *u.CacheRead
 				}
-				if u.CacheWrite > 0 {
-					result.Usage.CacheWrite = u.CacheWrite
+				if u.CacheWrite != nil {
+					result.Usage.CacheWriteKnown = true
+					result.Usage.CacheWrite = *u.CacheWrite
 				}
 			}
 			result.Usage.Known = inputUsageKnown && outputUsageKnown

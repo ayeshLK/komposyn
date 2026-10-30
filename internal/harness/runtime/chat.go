@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,7 +52,18 @@ type Turn struct {
 type Snapshot struct {
 	Selected *model.Model
 	Turns    []Turn
+	Usage    []ModelUsage
 	Active   bool
+}
+type UsageMetric struct {
+	Tokens  int64
+	Known   bool
+	Partial bool
+	missing bool
+}
+type ModelUsage struct {
+	Provider, ModelID                     string
+	Input, Output, CachedRead, CacheWrite UsageMetric
 }
 type Chat struct {
 	mu                    sync.Mutex
@@ -61,6 +73,7 @@ type Chat struct {
 	oauth                 auth.OAuthCoordinator
 	history               []provider.Message
 	turns                 []Turn
+	usage                 map[string]*ModelUsage
 	selected              *model.Model
 	discovery             *model.Discovery
 	active                bool
@@ -262,7 +275,50 @@ func (c *Chat) Snapshot() Snapshot {
 		x := *c.selected
 		selected = &x
 	}
-	return Snapshot{Selected: selected, Turns: append([]Turn(nil), c.turns...), Active: c.active}
+	usage := make([]ModelUsage, 0, len(c.usage))
+	for _, item := range c.usage {
+		usage = append(usage, *item)
+	}
+	sort.Slice(usage, func(i, j int) bool {
+		if usage[i].Provider != usage[j].Provider {
+			return usage[i].Provider < usage[j].Provider
+		}
+		return usage[i].ModelID < usage[j].ModelID
+	})
+	return Snapshot{Selected: selected, Turns: append([]Turn(nil), c.turns...), Usage: usage, Active: c.active}
+}
+
+func (c *Chat) recordUsageLocked(providerID provider.ID, modelID string, usage provider.Usage) {
+	if modelID == "" {
+		return
+	}
+	if c.usage == nil {
+		c.usage = make(map[string]*ModelUsage)
+	}
+	key := string(providerID) + "\x00" + modelID
+	item := c.usage[key]
+	if item == nil {
+		item = &ModelUsage{Provider: string(providerID), ModelID: modelID}
+		c.usage[key] = item
+	}
+	inputKnown, outputKnown := usage.InputKnown, usage.OutputKnown
+	if usage.Known && !inputKnown && !outputKnown {
+		inputKnown, outputKnown = true, true
+	}
+	add := func(metric *UsageMetric, known bool, count int64) {
+		if !known || count < 0 {
+			metric.missing = true
+			metric.Partial = metric.Known
+			return
+		}
+		metric.Tokens += count
+		metric.Known = true
+		metric.Partial = metric.missing
+	}
+	add(&item.Input, inputKnown, usage.InputTokens)
+	add(&item.Output, outputKnown, usage.OutputTokens)
+	add(&item.CachedRead, usage.CacheReadKnown, usage.CacheRead)
+	add(&item.CacheWrite, usage.CacheWriteKnown, usage.CacheWrite)
 }
 
 func (c *Chat) AddProfile(ctx context.Context, id, providerID, label, key string, route map[string]string) error {
@@ -593,6 +649,11 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	if c.generation != generation {
 		return turn, errors.New("stale provider result discarded")
 	}
+	usageModelID := result.ModelID
+	if usageModelID == "" {
+		usageModelID = selection.ID
+	}
+	c.recordUsageLocked(selection.Provider, usageModelID, result.Usage)
 	c.active = false
 	c.activeProfile = ""
 	c.cancel = nil
