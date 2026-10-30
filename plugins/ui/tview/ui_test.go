@@ -779,6 +779,44 @@ func TestUsageRowsCanBePagedOnNarrowLayout(t *testing.T) {
 	}
 }
 
+func TestWideUsageRowsCanBePagedOnOrdinaryHeight(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(80, 24)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	client := &clientStub{usage: []ui.ModelUsage{
+		{Provider: "openai", ModelID: "model-one"},
+		{Provider: "openai", ModelID: "model-two"},
+		{Provider: "anthropic", ModelID: "model-three"},
+		{Provider: "anthropic", ModelID: "model-last"},
+	}}
+	finished := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { finished <- (Plugin{screen: safeScreen}).Run(ctx, client) }()
+	time.Sleep(150 * time.Millisecond)
+	screen.SetSize(110, 24)
+	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
+	waitForScreen(t, safeScreen, "Usage · this run", "")
+	waitForScreen(t, safeScreen, "model-one", "")
+	for range 3 {
+		screen.InjectKey(tcell.KeyCtrlN, 0, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	waitForScreen(t, safeScreen, "model-last", "")
+	if got := renderedScreen(safeScreen); !strings.Contains(got, "Model 4 of 4") {
+		t.Fatalf("wide usage paging did not reach the last model: %q", got)
+	}
+	screen.InjectKey(tcell.KeyCtrlC, 0, tcell.ModNone)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("wide usage terminal did not stop")
+	}
+}
+
 func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
 	u := &terminal{output: tv.NewTextView().SetDynamicColors(true), input: tv.NewInputField()}
 	u.writeAssistant("before clear")

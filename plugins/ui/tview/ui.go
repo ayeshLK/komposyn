@@ -410,10 +410,9 @@ func (u *terminal) updateUsage() {
 		return
 	}
 	usage := u.client.Snapshot().Usage
-	selected := -1
-	if !u.wide || len(usage) > 4 {
-		selected = u.usageCursor
-	}
+	// Page one model at a time in both layouts. A fixed column width does not
+	// imply enough height for every wrapped model row.
+	selected := u.usageCursor
 	text := renderUsage(usage, u.usageExact, selected)
 	if !u.wide && u.compactUsageShown {
 		text = renderUsage(usage, u.usageExact, u.usageCursor)

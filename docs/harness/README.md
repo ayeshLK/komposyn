@@ -220,10 +220,10 @@ stay unknown, not zero. The exact counter values are retained internally.
 
 Counts use compact integer formatting (`1K`, `1.2K`, `1M`, `2.5M`) by default.
 Ctrl+E toggles exact counts. On terminals at least 100 columns wide, the
-28-column usage pane shows provider/model rows by default. When the pane cannot
-show every row, Ctrl+N and Ctrl+P cycle through them. Below 100 columns it
+28-column usage pane shows one provider/model row at a time; Ctrl+N and Ctrl+P
+cycle through rows so wrapped counts remain reachable. Below 100 columns it
 collapses; Ctrl+U reveals one model row above the composer while leaving input
-available. Ctrl+N and Ctrl+P cycle through rows in that compact view. Ctrl+U
+available. Ctrl+N and Ctrl+P also cycle rows in that compact view. Ctrl+U
 collapses the compact view again. On wide terminals, Ctrl+U toggles the side
 pane. Resizing applies the automatic wide/narrow layout; the
 wide-terminal manual expanded/collapsed choice is retained across resizes.
