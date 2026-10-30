@@ -127,7 +127,7 @@ func (u *terminal) cancelCredentialOperation(op *credentialOperation) {
 func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	ctx, cancel := context.WithCancel(parent)
 	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true}
-	u.output = tv.NewTextView().SetDynamicColors(true).SetScrollable(true)
+	u.output = newTranscriptView()
 	u.usagePane = tv.NewTextView().SetScrollable(true)
 	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
@@ -254,6 +254,18 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	return nil
 }
 
+// The terminal owns the reading palette; fixed gray/white body text becomes
+// unreadable with some light or dark themes. Reserve emphasis for role cues.
+func newTranscriptView() *tv.TextView {
+	view := tv.NewTextView().SetDynamicColors(true).SetScrollable(true)
+	view.SetTextColor(tcell.ColorDefault).SetBackgroundColor(tcell.ColorDefault)
+	return view
+}
+
+func (u *terminal) writeUser(text string) {
+	u.writeMarkup("\n[::b]You:[-:-:-] " + tv.Escape(text) + "\n\n")
+}
+
 func (u *terminal) write(s string)          { u.appendOutput(s, false, false) }
 func (u *terminal) writeMarkup(s string)    { u.appendOutput(s, true, false) }
 func (u *terminal) writeAssistant(s string) { u.appendOutput(s, false, true) }
@@ -272,7 +284,7 @@ func (u *terminal) appendOutput(text string, markup, assistant bool) {
 		if part.markup {
 			fmt.Fprint(u.output, part.text)
 		} else if part.assistant {
-			fmt.Fprint(u.output, "[gray]"+escapeLiteralText(part.text)+"[-]")
+			fmt.Fprint(u.output, "[-:-:-]"+escapeLiteralText(part.text))
 		} else {
 			fmt.Fprint(u.output, escapeLiteralText(part.text))
 		}
@@ -631,7 +643,7 @@ func (u *terminal) submit() {
 		return
 	}
 	u.input.SetText("")
-	u.writeMarkup("\n[white::b]You:[-:-:-] " + tv.Escape(trimmed) + "\n")
+	u.writeUser(trimmed)
 	u.launch(func() {
 		turn, err := u.client.Send(u.ctx, trimmed, func(delta string) { u.writeAssistantAsync(delta) })
 		u.writeAsync("\n")
