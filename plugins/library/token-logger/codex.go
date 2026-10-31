@@ -132,6 +132,9 @@ var codexTokenUsageFields = map[string]struct{}{
 
 type codexTokenInfo struct {
 	TotalTokenUsage *codexUsage `json:"total_token_usage"`
+	// LastUsageIncludesReasoning is optional upstream context-count metadata.
+	// It is decoded and validated but never changes normalized token totals.
+	LastUsageIncludesReasoning *bool `json:"last_usage_includes_reasoning"`
 }
 
 type codexSession struct {
@@ -834,7 +837,7 @@ var codexUsageFields = map[string]struct{}{
 }
 
 var codexTokenInfoFields = map[string]struct{}{
-	"total_token_usage": {}, "last_token_usage": {}, "model_context_window": {},
+	"total_token_usage": {}, "last_token_usage": {}, "last_usage_includes_reasoning": {}, "model_context_window": {},
 }
 
 var codexTokenCountPayloadFields = map[string]struct{}{

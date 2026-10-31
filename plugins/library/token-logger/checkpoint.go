@@ -32,8 +32,10 @@ const (
 	// Codex. Invalidate checkpoints produced while that fallback was active so
 	// a later recognized append gets a verified full replay under the new
 	// classification contract. Revision 3 also reclassifies absent/null legacy
-	// token-count usage as informational, so old checkpoints must be rebuilt.
-	codexParserRevision          = 3
+	// token-count usage as informational. Revision 4 recognizes the optional
+	// last_usage_includes_reasoning field, so sources previously rejected for
+	// carrying it must be replayed to restore complete accounting.
+	codexParserRevision          = 4
 	maxCheckpointStateBytes      = 1 << 20
 	maxCheckpointScopes          = 4096
 	maxCheckpointResponses       = 16384
