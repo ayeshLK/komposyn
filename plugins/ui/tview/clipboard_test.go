@@ -22,6 +22,9 @@ import (
 	"testing"
 	"time"
 
+	modelprovider "github.com/ayeshLK/komposyn/plugins/model-provider"
+	"github.com/ayeshLK/komposyn/plugins/ui"
+	"github.com/gdamore/tcell/v2"
 	tv "github.com/rivo/tview"
 )
 
@@ -142,5 +145,44 @@ func TestClipboardQueueReportsNativeFailureWithoutFallback(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("failure status was not reported")
+	}
+}
+
+func TestClipboardFailureFallbackDoesNotRaceScreenRedraw(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	client := &clientStub{selected: &ui.Model{Key: "m", ID: "fixture"}}
+	client.sendHook = func(_ context.Context, _ string, delta func(string)) (ui.Turn, error) {
+		delta("copy me")
+		return ui.Turn{Text: "copy me", Outcome: modelprovider.OutcomeCompleted}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- (Plugin{screen: safe, clipboard: clipboardFunc(func(context.Context, string) error {
+			return errors.New("native helper failed")
+		})}).Run(ctx, client)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop")
+		}
+	}()
+	waitForScreen(t, safe, "KompoSyn", "")
+	for _, r := range "question" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+	}
+	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitForScreen(t, safe, "copy me", "")
+	for _, r := range "/copy" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+	}
+	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitForScreen(t, safe, "Clipboard request sent to the terminal", "")
+	if got := string(screen.GetClipboardData()); got != "copy me" {
+		t.Fatalf("OSC 52 fallback copied %q", got)
 	}
 }

@@ -88,6 +88,7 @@ type terminal struct {
 	cancel               context.CancelFunc
 	wg                   sync.WaitGroup
 	lifecycleMu          sync.Mutex
+	screenMu             sync.RWMutex
 	stopping             bool
 	stopOnce             sync.Once
 	closing              atomic.Bool
@@ -171,16 +172,21 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.updateBanner()
 	u.updateUsage()
 	u.app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		u.screenMu.Lock()
 		u.screen = screen
+		u.screenMu.Unlock()
 		width, _ := screen.Size()
 		u.setTerminalWidth(width)
 		return false
 	})
 	u.app.EnablePaste(true)
 	u.clipboard = newClipboardQueue(ctx, p.clipboard, func(text string) {
-		if u.screen != nil {
-			u.screen.SetClipboard([]byte(text))
+		u.screenMu.RLock()
+		screen := u.screen
+		if screen != nil {
+			screen.SetClipboard([]byte(text))
 		}
+		u.screenMu.RUnlock()
 	}, u.writeAsync)
 	u.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEnter {
