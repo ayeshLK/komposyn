@@ -50,6 +50,67 @@ func (v *transcriptView) PasteHandler() func(string, func(tv.Primitive)) {
 	return func(string, func(tv.Primitive)) {}
 }
 
+// MouseHandler keeps tview's internal TextArea from becoming the focused
+// primitive. The wrapper owns paste suppression, so focus must remain here.
+func (v *transcriptView) MouseHandler() func(tv.MouseAction, *tcell.EventMouse, func(tv.Primitive)) (bool, tv.Primitive) {
+	handler := v.TextArea.MouseHandler()
+	return func(action tv.MouseAction, event *tcell.EventMouse, setFocus func(tv.Primitive)) (bool, tv.Primitive) {
+		consumed, capture := handler(action, event, func(primitive tv.Primitive) {
+			if primitive == v.TextArea {
+				setFocus(v)
+				return
+			}
+			setFocus(primitive)
+		})
+		if capture == v.TextArea {
+			capture = v
+		}
+		return consumed, capture
+	}
+}
+
+func (v *transcriptView) InputHandler() func(*tcell.EventKey, func(tv.Primitive)) {
+	handler := v.TextArea.InputHandler()
+	return func(event *tcell.EventKey, setFocus func(tv.Primitive)) {
+		handler(event, func(primitive tv.Primitive) {
+			if primitive == v.TextArea {
+				setFocus(v)
+				return
+			}
+			setFocus(primitive)
+		})
+		if v.onNavigation != nil {
+			switch event.Key() {
+			case tcell.KeyUp, tcell.KeyDown, tcell.KeyHome, tcell.KeyEnd, tcell.KeyPgUp, tcell.KeyPgDn:
+				v.onNavigation(event)
+			}
+		}
+	}
+}
+
+func (u *terminal) updateTranscriptScrollAfterKeyboard(event *tcell.EventKey) {
+	_, _, cursorRow, _ := u.output.GetCursor()
+	height := u.output.innerHeight()
+	if event.Key() == tcell.KeyPgUp {
+		cursorRow = max(0, cursorRow-height)
+	} else if event.Key() == tcell.KeyPgDn {
+		cursorRow = min(max(0, visualRows(u.output.GetText(true), u.output.innerWidth())-1), cursorRow+height)
+	}
+	if event.Key() == tcell.KeyHome {
+		cursorRow = 0
+	} else if event.Key() == tcell.KeyEnd {
+		cursorRow = max(0, visualRows(u.output.GetText(true), u.output.innerWidth())-1)
+	}
+	maxOffset := u.maxTranscriptScroll()
+	if cursorRow < u.transcriptScrollRow {
+		u.transcriptScrollRow = cursorRow
+	} else if cursorRow >= u.transcriptScrollRow+height {
+		u.transcriptScrollRow = cursorRow - height + 1
+	}
+	u.transcriptScrollRow = max(0, min(maxOffset, u.transcriptScrollRow))
+	u.followingTranscript = u.transcriptScrollRow >= maxOffset
+}
+
 func selectByteRange(area *tv.TextArea, text string, start, end int, screen tcell.Screen) {
 	start = max(0, min(len(text), start))
 	end = max(start, min(len(text), end))

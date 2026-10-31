@@ -28,6 +28,75 @@ import (
 	tv "github.com/rivo/tview"
 )
 
+func TestTranscriptClickKeepsPasteSuppressionFocused(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(40, 10)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	view := newTranscriptView()
+	view.SetText("original reply", true)
+	root := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true)
+	app := tv.NewApplication().SetScreen(safe).EnableMouse(true).EnablePaste(true)
+	done := make(chan error, 1)
+	go func() { done <- app.SetRoot(root, true).SetFocus(view).Run() }()
+	defer func() {
+		app.Stop()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop")
+		}
+	}()
+	waitForScreen(t, safe, "original reply", "")
+	screen.InjectMouse(1, 1, tcell.ButtonPrimary, tcell.ModNone)
+	if err := screen.PostEvent(tcell.NewEventPaste(true)); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "INJECTED" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+	}
+	if err := screen.PostEvent(tcell.NewEventPaste(false)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if got := view.GetText(true); got != "original reply" {
+		t.Fatalf("transcript after click and paste=%q, want original reply", got)
+	}
+	if app.GetFocus() != view {
+		t.Fatalf("focused primitive=%T, want transcript wrapper", app.GetFocus())
+	}
+}
+
+func TestTranscriptKeyboardNavigationPausesAndResumesFollowing(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(20, 6)
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	view := newTranscriptView()
+	app := tv.NewApplication().SetScreen(screen)
+	u := &terminal{app: app, output: view, followingTranscript: true}
+	view.onNavigation = u.updateTranscriptScrollAfterKeyboard
+	view.SetRect(0, 0, 20, 6)
+	view.SetText(strings.Repeat("a long line that wraps\n", 20), true)
+	view.Draw(screen)
+	u.transcriptScrollRow = u.maxTranscriptScroll()
+	handler := view.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone), func(tv.Primitive) {})
+	if u.followingTranscript || u.transcriptScrollRow >= u.maxTranscriptScroll() {
+		t.Fatalf("PageUp did not pause following: following=%t offset=%d max=%d", u.followingTranscript, u.transcriptScrollRow, u.maxTranscriptScroll())
+	}
+	before := u.transcriptScrollRow
+	u.appendOutput("new streamed output\n", true)
+	if u.followingTranscript || u.transcriptScrollRow != before {
+		t.Fatalf("stream append changed paused scroll: following=%t offset=%d, want %d", u.followingTranscript, u.transcriptScrollRow, before)
+	}
+	handler(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone), func(tv.Primitive) {})
+	if !u.followingTranscript || u.transcriptScrollRow != u.maxTranscriptScroll() {
+		t.Fatalf("End did not resume following: following=%t offset=%d max=%d", u.followingTranscript, u.transcriptScrollRow, u.maxTranscriptScroll())
+	}
+}
+
 func TestClipboardQueueSerializesAndKeepsNewestPendingWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
