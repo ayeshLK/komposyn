@@ -1195,6 +1195,77 @@ func TestComposerArrowHistoryAndSlashSuggestionsOnSimulation(t *testing.T) {
 	}
 }
 
+func TestMultilinePromptHistoryTraversalRestoresDraftOnSimulation(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(80, 24)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	sent := make(chan string, 2)
+	client := &clientStub{selected: &ui.Model{Key: "fixture", ID: "fixture-model"}}
+	client.sendHook = func(_ context.Context, prompt string, _ func(string)) (ui.Turn, error) {
+		sent <- prompt
+		return ui.Turn{Text: "done", Outcome: modelprovider.OutcomeCompleted}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop")
+		}
+	}()
+	waitForScreen(t, safe, "KompoSyn", "")
+	typeText := func(text string) {
+		for _, r := range text {
+			screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+		}
+	}
+	press := func(key tcell.Key) { screen.InjectKey(key, 0, tcell.ModNone) }
+	paste := func(text string) {
+		screen.PostEventWait(tcell.NewEventPaste(true))
+		for _, r := range text {
+			if r == '\n' {
+				screen.PostEventWait(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+			} else {
+				screen.PostEventWait(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+			}
+		}
+		screen.PostEventWait(tcell.NewEventPaste(false))
+	}
+	submitPasted := func(text string) {
+		paste(text)
+		press(tcell.KeyEnter)
+		select {
+		case got := <-sent:
+			if got != text {
+				t.Fatalf("submitted prompt=%q, want %q", got, text)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("pasted prompt was not submitted")
+		}
+	}
+	submitPasted("older prompt")
+	submitPasted("first\nsecond")
+	typeText("keep draft")
+	waitForScreen(t, safe, "> keep draft", "")
+	press(tcell.KeyUp)
+	waitForScreen(t, safe, "> first", "")
+	waitForScreen(t, safe, "second", "")
+	press(tcell.KeyUp)
+	waitForScreen(t, safe, "> older prompt", "")
+	press(tcell.KeyDown)
+	waitForScreen(t, safe, "> first", "")
+	press(tcell.KeyDown)
+	waitForScreen(t, safe, "> keep draft", "")
+	select {
+	case got := <-sent:
+		t.Fatalf("history navigation submitted %q", got)
+	default:
+	}
+}
+
 func TestBracketedTrailingNewlineSlashPasteStaysLiteralUntilEnter(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(80, 24)

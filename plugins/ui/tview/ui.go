@@ -220,13 +220,13 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		}
 		switch event.Key() {
 		case tcell.KeyUp:
-			if strings.ContainsAny(u.input.GetText(), "\r\n") {
+			if !u.browsingPrompts && strings.ContainsAny(u.input.GetText(), "\r\n") {
 				return event
 			}
 			u.recallPrompt(-1)
 			return nil
 		case tcell.KeyDown:
-			if strings.ContainsAny(u.input.GetText(), "\r\n") {
+			if !u.browsingPrompts && strings.ContainsAny(u.input.GetText(), "\r\n") {
 				return event
 			}
 			u.recallPrompt(1)
