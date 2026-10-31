@@ -1474,3 +1474,121 @@ func TestCodexReasoningMetadataReimportRecoversPreviouslyUnsupportedSnapshot(t *
 		t.Fatalf("restart unchanged check = %+v detail=%+v pollErr=%v inspectErr=%v", unchanged, unchangedDetail.Condition, err, inspectErr)
 	}
 }
+
+func TestCodexReasoningMetadataRecoveryDoesNotDoubleCountLaterPersistedSnapshot(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "reasoning-recovery-later-event.db")
+	store, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	})
+	path := filepath.Join(t.TempDir(), "accepted-rejected-accepted.jsonl")
+	metadata := `{"type":"session_meta","timestamp":"2026-10-11T00:00:00Z","payload":{"id":"session-recovery-later","project_id":"project-recovery-later","model":"gpt-test"}}` + "\n"
+	snapshot := func(timestamp string, input, output int, reasoningField string) string {
+		return `{"type":"event_msg","timestamp":"` + timestamp + `","payload":{"type":"token_count","session_id":"session-recovery-later","info":{"total_token_usage":{"input_tokens":` + decimal(input) + `,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":` + decimal(output) + `,"reasoning_output_tokens":` + decimal(input/10) + `,"total_tokens":` + decimal(input+output) + `},"last_token_usage":{"input_tokens":` + decimal(input) + `,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":` + decimal(output) + `,"reasoning_output_tokens":` + decimal(input/10) + `,"total_tokens":` + decimal(input+output) + `},"model_context_window":258400` + reasoningField + `}}}` + "\n"
+	}
+	first := snapshot("2026-10-11T00:00:01Z", 100, 10, "")
+	second := snapshot("2026-10-11T00:00:02Z", 150, 15, `,"last_usage_includes_reasoning":false`)
+	third := snapshot("2026-10-11T00:00:03Z", 200, 20, "")
+	prefix := metadata + first
+	if err := os.WriteFile(path, []byte(prefix), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector, err := NewCollector(store, []string{path}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := collector.PollOnce()
+	if err != nil || initial.Receipt != (Receipt{Imported: 1}) {
+		t.Fatalf("initial historical event = %+v, err = %v", initial, err)
+	}
+
+	// Seed the durable state produced by the pre-fix parser: the middle
+	// snapshot was rejected, while the later stable record stored its full
+	// 100/10 delta from the previously accepted 100/10 baseline.
+	fullSource := prefix + second + third
+	thirdOffset := int64(len(prefix + second))
+	sourceID := "codex-file-" + digest([]byte(mustAbsPath(t, path)))
+	var persistedProjectID, persistedSessionID string
+	if err := store.db.QueryRow(`SELECT project_id, session_id FROM usage_events LIMIT 1`).Scan(&persistedProjectID, &persistedSessionID); err != nil {
+		t.Fatalf("read persisted references: %v", err)
+	}
+	thirdLine := strings.TrimSuffix(third, "\n")
+	thirdEvent := codexEventObserved(sourceID, digest([]byte(fullSource)), thirdOffset,
+		"offset-"+decimal(int(thirdOffset)), codexSession{ID: persistedSessionID, ProjectID: persistedProjectID, Model: "gpt-test"},
+		codexUsage{InputTokens: 100, OutputTokens: 10, ReasoningOutputTokens: 10},
+		time.Date(2026, 10, 11, 0, 0, 3, 0, time.UTC), []byte(thirdLine), nil)
+	if _, err := store.Append([]UsageEvent{thirdEvent}); err != nil {
+		t.Fatalf("seed pre-fix later event: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(fullSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE source_cursors SET file_fingerprint = ?, byte_offset = ?, snapshot_reusable = 0, pending_tail = 0 WHERE source_id = ?`,
+		digest([]byte(fullSource)), len(fullSource), sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DELETE FROM parser_checkpoints WHERE source_id = ?`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := collector.PollOnce()
+	if err != nil || recovered.Receipt != (Receipt{Duplicates: 3}) ||
+		recovered.Outcomes != (OutcomeCounts{IgnoredNonUsage: 1, UnchangedSnapshot: 1}) {
+		t.Fatalf("candidate upgrade replay = %+v, err = %v; want no new events and replay-equivalent duplicate accounting", recovered, err)
+	}
+	assertCodexRecoveryTotals(t, store, 2, 200, 20)
+
+	unchanged, err := collector.PollOnce()
+	if err != nil || unchanged.Receipt != (Receipt{}) || unchanged.Outcomes != (OutcomeCounts{UnchangedSnapshot: 1}) {
+		t.Fatalf("unchanged post-recovery poll = %+v, err = %v", unchanged, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err = NewCollector(store, []string{path}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := collector.PollOnce(); err != nil || result.Receipt != (Receipt{}) {
+		t.Fatalf("recreated collector poll = %+v, err = %v", result, err)
+	}
+
+	fourth := snapshot("2026-10-11T00:00:04Z", 250, 25, "")
+	if err := os.WriteFile(path, []byte(fullSource+fourth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appended, err := collector.PollOnce()
+	if err != nil || appended.Receipt != (Receipt{Imported: 1, Duplicates: 3}) {
+		t.Fatalf("append after recovered upgrade = %+v, err = %v", appended, err)
+	}
+	assertCodexRecoveryTotals(t, store, 3, 250, 25)
+}
+
+func assertCodexRecoveryTotals(t *testing.T, store *Store, count, input, output int64) {
+	t.Helper()
+	var gotCount, gotInput, gotOutput int64
+	if err := store.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM usage_events`).Scan(&gotCount, &gotInput, &gotOutput); err != nil {
+		t.Fatal(err)
+	}
+	if [3]int64{gotCount, gotInput, gotOutput} != [3]int64{count, input, output} {
+		t.Fatalf("Codex recovery totals = [%d %d %d], want [%d %d %d]", gotCount, gotInput, gotOutput, count, input, output)
+	}
+}
+
+func mustAbsPath(t *testing.T, path string) string {
+	t.Helper()
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return absolute
+}

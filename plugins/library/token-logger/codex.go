@@ -119,6 +119,102 @@ type codexUsageRecordSeen struct {
 	hasThread   bool
 }
 
+type codexLegacyEventAttempt struct {
+	index  int
+	scope  string
+	offset int64
+}
+
+// suppressAlreadyCoveredCodexLegacyEvents prevents an upgrade replay from
+// adding a newly supported intermediate cumulative snapshot when a later
+// stable event already stored by an older parser includes the same delta.
+// It only suppresses a contiguous per-scope candidate delta when exact token
+// arithmetic proves that a durable later event covers it. Unanchored or
+// ambiguous rows remain eligible for normal insertion.
+func suppressAlreadyCoveredCodexLegacyEvents(events []UsageEvent, attempts []codexLegacyEventAttempt,
+	persisted map[string]TokenUsage) ([]UsageEvent, []codexLegacyEventAttempt) {
+	type pendingScope struct {
+		attempts []codexLegacyEventAttempt
+		usage    TokenUsage
+		valid    bool
+	}
+	pending := make(map[string]*pendingScope)
+	suppressed := make(map[int]struct{})
+	var suppressedAttempts []codexLegacyEventAttempt
+	for _, attempt := range attempts {
+		if attempt.index < 0 || attempt.index >= len(events) {
+			continue
+		}
+		event := events[attempt.index]
+		scope := pending[attempt.scope]
+		if scope == nil {
+			scope = &pendingScope{valid: true}
+			pending[attempt.scope] = scope
+		}
+		if previous, exists := persisted[event.IngestionKey]; exists {
+			if len(scope.attempts) > 0 && scope.valid {
+				if covered, ok := tokenUsageDifference(previous, event.Usage); ok && covered == scope.usage {
+					for _, candidate := range scope.attempts {
+						suppressed[candidate.index] = struct{}{}
+						suppressedAttempts = append(suppressedAttempts, candidate)
+					}
+				}
+			}
+			delete(pending, attempt.scope)
+			continue
+		}
+		next, ok := addTokenUsage(scope.usage, event.Usage)
+		if !ok {
+			scope.valid = false
+		}
+		scope.usage = next
+		scope.attempts = append(scope.attempts, attempt)
+	}
+	if len(suppressed) == 0 {
+		return events, nil
+	}
+	filtered := make([]UsageEvent, 0, len(events)-len(suppressed))
+	for index, event := range events {
+		if _, skip := suppressed[index]; !skip {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered, suppressedAttempts
+}
+
+func addTokenUsage(left, right TokenUsage) (TokenUsage, bool) {
+	values := [7]int64{left.InputTokens, left.OutputTokens, left.CacheReadTokens, left.CacheWriteTokens,
+		left.CacheWrite5mTokens, left.CacheWrite1hTokens, left.ReasoningTokens}
+	additions := [7]int64{right.InputTokens, right.OutputTokens, right.CacheReadTokens, right.CacheWriteTokens,
+		right.CacheWrite5mTokens, right.CacheWrite1hTokens, right.ReasoningTokens}
+	for index, value := range additions {
+		if value < 0 || values[index] > int64(^uint64(0)>>1)-value {
+			return TokenUsage{}, false
+		}
+		values[index] += value
+	}
+	return TokenUsage{InputTokens: values[0], OutputTokens: values[1], CacheReadTokens: values[2],
+		CacheWriteTokens: values[3], CacheWrite5mTokens: values[4], CacheWrite1hTokens: values[5],
+		ReasoningTokens: values[6]}, true
+}
+
+func tokenUsageDifference(total, part TokenUsage) (TokenUsage, bool) {
+	totals := [7]int64{total.InputTokens, total.OutputTokens, total.CacheReadTokens, total.CacheWriteTokens,
+		total.CacheWrite5mTokens, total.CacheWrite1hTokens, total.ReasoningTokens}
+	parts := [7]int64{part.InputTokens, part.OutputTokens, part.CacheReadTokens, part.CacheWriteTokens,
+		part.CacheWrite5mTokens, part.CacheWrite1hTokens, part.ReasoningTokens}
+	var difference [7]int64
+	for index, value := range parts {
+		if value < 0 || totals[index] < value {
+			return TokenUsage{}, false
+		}
+		difference[index] = totals[index] - value
+	}
+	return TokenUsage{InputTokens: difference[0], OutputTokens: difference[1], CacheReadTokens: difference[2],
+		CacheWriteTokens: difference[3], CacheWrite5mTokens: difference[4], CacheWrite1hTokens: difference[5],
+		ReasoningTokens: difference[6]}, true
+}
+
 var codexUsageRecordFields = map[string]struct{}{
 	"thread_id": {}, "turn_id": {}, "session_id": {}, "root_turn_id": {},
 	"response_id": {}, "usage": {}, "turn_token_usage": {}, "thread_token_usage": {},
@@ -202,6 +298,7 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 	turnCumulative := map[string]codexUsage{}
 	seenResponses := map[string]codexUsageRecordSeen{}
 	var events []UsageEvent
+	var legacyEventAttempts []codexLegacyEventAttempt
 	var lastRecordID string
 	historicalAttempts := 0
 	boundaryOffset := int64(0)
@@ -461,6 +558,7 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 								break
 							}
 							events = append(events, codexEventObserved(sourceID, fingerprint, lineOffset, recordID, current, delta, occurredAt, line, store.benchmarkObserver))
+							legacyEventAttempts = append(legacyEventAttempts, codexLegacyEventAttempt{index: len(events) - 1, scope: legacyScope, offset: lineOffset})
 						default:
 							if codexUsageBearingType(codexRecordType(envelope, payload)) {
 								result.Outcomes.Add(OutcomeUnsupportedUsage)
@@ -500,9 +598,29 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 	if options != nil && !boundaryCaptured {
 		return ImportResult{}, true, errSourceSnapshotChanged
 	}
+	var suppressedLegacyAttempts []codexLegacyEventAttempt
+	if expectedCursor.exists && len(legacyEventAttempts) > 0 {
+		keys := make([]string, 0, len(legacyEventAttempts))
+		for _, attempt := range legacyEventAttempts {
+			if attempt.index >= 0 && attempt.index < len(events) {
+				keys = append(keys, events[attempt.index].IngestionKey)
+			}
+		}
+		persisted, readErr := store.existingCodexLegacyEventUsage(sourceID, keys)
+		if readErr != nil {
+			return result, false, fmt.Errorf("read existing Codex cumulative events: %w", readErr)
+		}
+		events, suppressedLegacyAttempts = suppressAlreadyCoveredCodexLegacyEvents(events, legacyEventAttempts, persisted)
+		for _, attempt := range suppressedLegacyAttempts {
+			result.Outcomes.Add(OutcomeUnchangedSnapshot)
+			if boundaryCaptured && attempt.offset <= boundaryOffset {
+				boundaryState.Outcomes.Add(OutcomeUnchangedSnapshot)
+			}
+		}
+	}
 	preFinalState := codexCheckpointSnapshot(current, activeSessionID, sessions, metadataCurrent, metadataSessions,
 		legacyPrevious, legacyHasPrevious, newStreamSessions, threadCumulative, turnCumulative, seenResponses,
-		historicalAttempts+len(events))
+		historicalAttempts+len(events)+len(suppressedLegacyAttempts))
 	if options != nil && options.allowResume && !codexAttributionCompatible(options.snapshot.checkpoint.State.Codex, preFinalState) {
 		return ImportResult{}, false, errParserCheckpointFallback
 	}
@@ -576,6 +694,10 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 			fmt.Errorf("persist Codex project, session, events, and cursor: %w", err),
 			sqliteDiagnosticClassification(err, DiagnosticOperationPersist))
 	}
+	// A suppressed recovered row is equivalent to a duplicate insertion
+	// attempt: a later durable cumulative event already accounts for it.
+	// Keep receipt accounting replay-equivalent without touching SQLite.
+	receipt.Duplicates += len(suppressedLegacyAttempts)
 	result.Receipt = receipt
 	return result, false, nil
 }
