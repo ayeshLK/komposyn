@@ -176,6 +176,12 @@ and omits unsupported `max_output_tokens` and API-key-only fields. KompoSyn
 does not enforce its API-key output-token bound on this route. It never
 silently switches between ChatGPT plan billing and an API key.
 
+For OpenAI streaming replies, completed `response.output_item.done` items are
+retained in output order. When a completed terminal response contains an empty
+output array, validated completed items provide native continuation; visible
+text alone is never used to invent replay data. Incomplete, conflicting, or
+gapped item sequences remain rejected.
+
 After a completed request, a follow-up includes the current conversation's
 completed user/assistant turns and provider-native continuation data. A failed,
 canceled, refused-without-replay-data, truncated, or unsupported response is
@@ -193,7 +199,7 @@ messages requires confirmation and clears the in-memory chat. Canceling that
 confirmation preserves the selection and chat. Restart begins with no selected
 model and an empty conversation while saved settings/credentials remain.
 
-The composer suggests `/model`, `/help`, `/cancel`, and `/exit` from the same
+The composer suggests `/model`, `/help`, `/cancel`, `/exit`, and `/copy` from the same
 command definitions used for dispatch. Type `/` and narrow the prefix, use
 Up/Down to highlight a suggestion, Tab to complete it, Enter to run the
 highlighted command, or Esc to dismiss suggestions while keeping the draft.
@@ -219,6 +225,26 @@ uses the terminal’s normal foreground and background rather than fixed gray,
 so the transcript follows the terminal’s light/dark palette without an assistant
 role label. Provider and user
 text is escaped as literal text across streaming chunks before rendering.
+
+### Copying replies and terminal text
+
+Press **Ctrl+Y** or run **`/copy`** to copy the latest assistant reply as plain
+text, including any text streamed so far. It remains available after Ctrl+L;
+starting a new question starts a new copy buffer. **`/copy all`** copies the
+current transcript (including text outside the viewport), without UI markup or
+composer input. Clipboard writes happen only on these explicit actions; the
+UI never reads the clipboard or copies credential-form contents.
+
+Copy uses the terminal clipboard protocol supplied by tcell (OSC 52 on
+compatible terminals). Terminals, remote sessions, and multiplexers may block
+it; the status confirms only that a request was sent, not that the clipboard
+changed. To select a portion using your terminal instead, press **Ctrl+T** to
+release mouse capture, drag to select, and use the terminal's Copy action
+(often Ctrl+Shift+C on Linux). Press Ctrl+T again to restore UI mouse controls.
+Terminal-native selection behavior depends on the terminal; keyboard UI
+navigation remains available with mouse capture released.
+
+### Token usage
 
 Input, output, cached-read, and cache-write token counts accumulate in memory
 for each provider/model pair for the lifetime of the process. Credential

@@ -354,3 +354,126 @@ func TestCanceledStreamIsInterrupted(t *testing.T) {
 		t.Fatalf("partial response lost: %+v", out.result)
 	}
 }
+
+func TestCompletedStreamItemsSupplyEmptyTerminalOutput(t *testing.T) {
+	message := `{"type":"message","id":"fixture-message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}`
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n")
+		fmt.Fprintf(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":%s}\n\n", message)
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n")
+	}))
+	defer server.Close()
+	plugin := Plugin{BaseURL: server.URL, Client: server.Client()}
+	cred := p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}
+	first, err := plugin.StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture-model", Credential: cred, Messages: []p.Message{{Role: p.RoleUser, Text: "Reply with OK"}}}, nil)
+	if err != nil || first.Outcome != p.OutcomeCompleted || first.Text != "OK" || len(first.Native) != 1 || first.Usage.InputTokens != 3 {
+		t.Fatalf("completed stream rejected: %+v %v", first, err)
+	}
+	_, err = plugin.StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture-model", Credential: cred, Messages: []p.Message{{Role: p.RoleUser, Text: "Reply with OK"}, {Role: p.RoleAssistant, Text: first.Text, Native: first.Native}, {Role: p.RoleUser, Text: "Follow up"}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := bodies[1]["input"].([]any)
+	if len(input) != 3 || input[1].(map[string]any)["id"] != "fixture-message" {
+		t.Fatalf("native continuation was lost: %v", input)
+	}
+	if bodies[0]["store"] != false || bodies[1]["store"] != false {
+		t.Fatal("storage enabled")
+	}
+}
+
+func TestStreamOutputAssemblyRejectsIncompleteAndConflictingItems(t *testing.T) {
+	valid := json.RawMessage(`{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}`)
+	empty := json.RawMessage(`{"status":"completed","output":[]}`)
+	for _, name := range []string{"unfinished message", "missing index", "gap", "pending item", "conflicting duplicate"} {
+		t.Run(name, func(t *testing.T) {
+			state := completedOutput{items: map[int]json.RawMessage{}, added: map[int]bool{}}
+			zero, one := 0, 1
+			switch name {
+			case "unfinished message":
+				state.observe("response.output_item.done", &zero, json.RawMessage(`{"type":"message","role":"assistant","status":"in_progress"}`))
+			case "missing index":
+				state.observe("response.output_item.done", nil, valid)
+			case "gap":
+				state.observe("response.output_item.done", &one, valid)
+			case "pending item":
+				state.observe("response.output_item.done", &zero, valid)
+				state.observe("response.output_item.added", &one, nil)
+			case "conflicting duplicate":
+				state.observe("response.output_item.done", &zero, valid)
+				state.observe("response.output_item.done", &zero, json.RawMessage(`{"type":"message","role":"assistant","status":"completed","content":[]}`))
+			}
+			if _, ok := state.fillEmptyOutput(empty); ok {
+				t.Fatal("unsafe stream assembly accepted")
+			}
+		})
+	}
+	// Exact repeats do not duplicate native output; authoritative final output is unchanged.
+	state := completedOutput{items: map[int]json.RawMessage{}, added: map[int]bool{}}
+	zero := 0
+	state.observe("response.output_item.done", &zero, valid)
+	state.observe("response.output_item.done", &zero, valid)
+	merged, ok := state.fillEmptyOutput(empty)
+	var obj struct{ Output []json.RawMessage }
+	json.Unmarshal(merged, &obj)
+	if !ok || len(obj.Output) != 1 {
+		t.Fatal("duplicate stream item counted twice")
+	}
+	final := json.RawMessage(`{"status":"in_progress","output":[{"type":"function_call"}]}`)
+	unchanged, ok := state.fillEmptyOutput(final)
+	if !ok || string(unchanged) != string(final) {
+		t.Fatal("explicit final output was replaced")
+	}
+}
+
+func TestStreamFallbackKeepsFailureGuards(t *testing.T) {
+	for _, tc := range []struct{ name, terminal, status, item, text string }{
+		{"unfinished item", "response.completed", "completed", `{"type":"message","role":"assistant","status":"in_progress","content":[]}`, "OK"},
+		{"conflicting status", "response.completed", "in_progress", `{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}`, "OK"},
+		{"tool only", "response.completed", "completed", `{"type":"function_call","name":"fixture","arguments":"{}"}`, "OK"},
+		{"invalid role", "response.completed", "completed", `{"type":"message","role":"user","status":"completed","content":[{"type":"output_text","text":"OK"}]}`, "OK"},
+		{"text mismatch", "response.completed", "completed", `{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Different"}]}`, "OK"},
+		{"incomplete terminal", "response.incomplete", "incomplete", `{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}`, "OK"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\n", tc.text)
+				fmt.Fprintf(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":%s}\n\n", tc.item)
+				fmt.Fprintf(w, "event: %s\ndata: {\"type\":%q,\"response\":{\"status\":%q,\"output\":[],\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n", tc.terminal, tc.terminal, tc.status)
+			}))
+			defer server.Close()
+			result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}, Messages: []p.Message{{Role: p.RoleUser, Text: "hi"}}}, nil)
+			if err != nil || result.Outcome != p.OutcomeUnsupported {
+				t.Fatalf("unsafe fallback accepted: %+v err=%v", result, err)
+			}
+			if result.Usage.InputTokens != 5 || !result.Usage.InputKnown {
+				t.Fatalf("rejected request lost reported usage: %+v", result.Usage)
+			}
+		})
+	}
+}
+
+func TestCompletedStreamOutputOrdersReasoningAndPreservesOpaqueFields(t *testing.T) {
+	state := completedOutput{items: map[int]json.RawMessage{}, added: map[int]bool{}}
+	zero, one := 0, 1
+	state.observe("response.output_item.done", &one, json.RawMessage(`{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}`))
+	state.observe("response.output_item.done", &zero, json.RawMessage(`{"type":"reasoning","encrypted_content":"fixture-opaque"}`))
+	raw, ok := state.fillEmptyOutput(json.RawMessage(`{"status":"completed","output":[],"usage":{"input_tokens":4}}`))
+	var response struct {
+		Output []map[string]any
+		Usage  struct {
+			Input int64 `json:"input_tokens"`
+		}
+	}
+	if json.Unmarshal(raw, &response) != nil || !ok || len(response.Output) != 2 || response.Output[0]["type"] != "reasoning" || response.Output[0]["encrypted_content"] != "fixture-opaque" || response.Output[1]["type"] != "message" || response.Usage.Input != 4 {
+		t.Fatalf("ordered native data or usage lost: %s", raw)
+	}
+}
