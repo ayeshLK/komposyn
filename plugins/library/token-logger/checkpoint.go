@@ -31,8 +31,9 @@ const (
 	// The Codex source classifier no longer treats an unrecognized source as
 	// Codex. Invalidate checkpoints produced while that fallback was active so
 	// a later recognized append gets a verified full replay under the new
-	// classification contract.
-	codexParserRevision          = 2
+	// classification contract. Revision 3 also reclassifies absent/null legacy
+	// token-count usage as informational, so old checkpoints must be rebuilt.
+	codexParserRevision          = 3
 	maxCheckpointStateBytes      = 1 << 20
 	maxCheckpointScopes          = 4096
 	maxCheckpointResponses       = 16384

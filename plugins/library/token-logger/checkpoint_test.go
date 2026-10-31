@@ -179,7 +179,11 @@ func TestParserCheckpointFallbackCases(t *testing.T) {
 				case "oversized-state":
 					_, err = store.db.Exec("UPDATE parser_checkpoints SET state_json = zeroblob(?)", maxCheckpointStateBytes+1)
 				case "old-parser":
-					_, err = store.db.Exec("UPDATE parser_checkpoints SET parser_revision = parser_revision + 1")
+					revision := claudeParserRevision - 1
+					if provider == "codex" {
+						revision = codexParserRevision - 1
+					}
+					_, err = store.db.Exec("UPDATE parser_checkpoints SET parser_revision = ?", revision)
 				case "old-format":
 					_, err = store.db.Exec("UPDATE parser_checkpoints SET format_version = format_version + 1")
 				case "prefix-mismatch":
