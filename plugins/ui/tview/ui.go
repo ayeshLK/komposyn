@@ -95,7 +95,6 @@ type terminal struct {
 	wide               bool
 	layoutReady        bool
 	compactUsageShown  bool
-	usageExact         bool
 	usageCursor        int
 	terminalWidth      int
 	pickerQuery        string
@@ -139,7 +138,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
-	u.footer = tv.NewTextView().SetText("Ctrl+Y copy · Ctrl+T select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · Ctrl+E exact · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
+	u.footer = tv.NewTextView().SetText("Ctrl+Y copy · Ctrl+T select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
@@ -224,11 +223,6 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		}
 		if event.Key() == tcell.KeyCtrlL {
 			u.clearTranscript()
-			return nil
-		}
-		if event.Key() == tcell.KeyCtrlE {
-			u.usageExact = !u.usageExact
-			u.updateUsage()
 			return nil
 		}
 		if event.Key() == tcell.KeyCtrlN || event.Key() == tcell.KeyCtrlP {
@@ -489,9 +483,9 @@ func (u *terminal) updateUsage() {
 	// Page one model at a time in both layouts. A fixed column width does not
 	// imply enough height for every wrapped model row.
 	selected := u.usageCursor
-	text := renderUsage(usage, u.usageExact, selected)
+	text := renderUsage(usage, selected)
 	if !u.wide && u.compactUsageShown {
-		text = renderUsage(usage, u.usageExact, u.usageCursor)
+		text = renderUsage(usage, u.usageCursor)
 	}
 	u.usagePane.SetText(text)
 	u.usagePane.ScrollToBeginning()
@@ -530,7 +524,7 @@ func (u *terminal) moveUsageCursor(delta int) {
 	}
 }
 
-func renderUsage(items []ui.ModelUsage, exact bool, selected int) string {
+func renderUsage(items []ui.ModelUsage, selected int) string {
 	if len(items) == 0 {
 		return "No model usage yet.\nCtrl+U: show usage"
 	}
@@ -543,23 +537,19 @@ func renderUsage(items []ui.ModelUsage, exact bool, selected int) string {
 	if selected >= 0 {
 		fmt.Fprintf(&b, "Model %d/%d · Ctrl+N/P\n", start+1, len(items))
 	}
-	b.WriteString("Ctrl+E: exact/compact\n")
 	for i := start; i < end; i++ {
 		item := items[i]
 		fmt.Fprintf(&b, "%s / %s\nInput: %s\nOutput: %s\nCached read: %s\nCache write: %s\n",
-			tv.Escape(item.Provider), tv.Escape(item.ModelID), formatMetric(item.Input, exact), formatMetric(item.Output, exact), formatMetric(item.CachedRead, exact), formatMetric(item.CacheWrite, exact))
+			tv.Escape(item.Provider), tv.Escape(item.ModelID), formatMetric(item.Input), formatMetric(item.Output), formatMetric(item.CachedRead), formatMetric(item.CacheWrite))
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-func formatMetric(metric ui.MetricUsage, exact bool) string {
+func formatMetric(metric ui.MetricUsage) string {
 	if !metric.Known {
 		return "unknown"
 	}
-	value := fmt.Sprintf("%d", metric.Tokens)
-	if !exact {
-		value = compactCount(metric.Tokens)
-	}
+	value := compactCount(metric.Tokens)
 	if metric.Partial {
 		value += " (partial)"
 	}
@@ -787,7 +777,7 @@ func (u *terminal) runCommand(text string) {
 		for _, item := range u.commands {
 			descriptions = append(descriptions, item.name+" "+item.description)
 		}
-		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+E toggles exact counts; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; Ctrl+Y copies the last reply; /copy all copies the transcript; Ctrl+T releases mouse capture for terminal selection.\n")
+		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; Ctrl+Y copies the last reply; /copy all copies the transcript; Ctrl+T releases mouse capture for terminal selection.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")

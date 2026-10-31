@@ -261,11 +261,12 @@ from cached-read and cache-write; those values remain separate. KompoSyn does
 not add cache categories to input or count them twice. Unsupported cache metrics
 stay unknown, not zero. The exact counter values are retained internally.
 
-Counts use compact integer formatting (`1K`, `1.2K`, `1M`, `2.5M`) by default.
-Ctrl+E toggles exact counts. On terminals at least 100 columns wide, the
+Counts always use compact integer formatting (`1K`, `1.2K`, `1M`, `2.5M`).
+Exact integer counters remain internal; there is no display-format toggle.
+On terminals at least 100 columns wide, the
 28-column usage pane shows one provider/model row at a time; Ctrl+N and Ctrl+P
 cycle through rows. PageUp and PageDown scroll within a row so long IDs and
-exact or partial metric values remain reachable. Below 100 columns the pane
+compact or partial metric values remain reachable. Below 100 columns the pane
 collapses; Ctrl+U reveals one model row above the composer while leaving input
 available. Ctrl+N and Ctrl+P cycle rows, and PageUp/PageDown scroll its details.
 Ctrl+U collapses the compact view again. On wide terminals, Ctrl+U toggles the
