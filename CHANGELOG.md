@@ -11,6 +11,13 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.13.1](https://github.com/ayeshLK/komposyn/compare/v0.13.0...v0.13.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **chat:** retain subscription stream output and add copy controls ([#192](https://github.com/ayeshLK/komposyn/issues/192)) ([381d4d3](https://github.com/ayeshLK/komposyn/commit/381d4d3609fd6d972c7443d4a2b757ad18ba19df))
+
 ## [0.13.0](https://github.com/ayeshLK/komposyn/compare/v0.12.0...v0.13.0) (2026-10-30)
 
 
