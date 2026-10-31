@@ -1195,6 +1195,58 @@ func TestComposerArrowHistoryAndSlashSuggestionsOnSimulation(t *testing.T) {
 	}
 }
 
+func TestBracketedTrailingNewlineSlashPasteStaysLiteralUntilEnter(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(80, 24)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	sent := make(chan string, 1)
+	client := &clientStub{selected: &ui.Model{Key: "fixture", ID: "fixture-model"}}
+	client.sendHook = func(_ context.Context, prompt string, _ func(string)) (ui.Turn, error) {
+		sent <- prompt
+		return ui.Turn{Text: "done", Outcome: modelprovider.OutcomeCompleted}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop")
+		}
+	}()
+	waitForScreen(t, safe, "KompoSyn", "")
+	if err := screen.PostEvent(tcell.NewEventPaste(true)); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "/exit\n" {
+		if r == '\n' {
+			screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+		} else {
+			screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+		}
+	}
+	if err := screen.PostEvent(tcell.NewEventPaste(false)); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, safe, "> /exit", "")
+	select {
+	case got := <-sent:
+		t.Fatalf("paste submitted before an explicit Enter: %q", got)
+	case <-time.After(40 * time.Millisecond):
+	}
+	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	select {
+	case got := <-sent:
+		if got != "/exit\n" {
+			t.Fatalf("pasted prompt=%q, want %q", got, "/exit\n")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("explicit Enter did not submit the pasted slash text as a prompt")
+	}
+}
+
 func TestExplicitClipboardCopyUsesPlainReplyAndTranscript(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {

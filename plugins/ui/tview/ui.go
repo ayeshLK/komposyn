@@ -184,9 +184,10 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	}, u.writeAsync)
 	u.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEnter {
-			if u.suggestionsActive() {
+			if u.suggestionsActive() && !strings.ContainsAny(u.input.GetText(), "\r\n") {
 				u.selectCommandSuggestion()
 			} else {
+				u.dismissCommandSuggestions()
 				u.submit()
 			}
 			return nil
@@ -439,8 +440,14 @@ func (u *terminal) refreshCommandSuggestions(text string) {
 	if u.commandList == nil || u.composer == nil {
 		return
 	}
+	if strings.ContainsAny(text, "\r\n") {
+		u.commandItems = nil
+		u.commandList.Clear()
+		u.composer.ResizeItem(u.commandList, 0, 0)
+		return
+	}
 	query := strings.TrimSpace(text)
-	if !strings.HasPrefix(query, "/") || strings.ContainsAny(query, " \t\n") {
+	if !strings.HasPrefix(query, "/") || strings.ContainsAny(query, " \t") {
 		u.commandItems = nil
 		u.commandList.Clear()
 		u.composer.ResizeItem(u.commandList, 0, 0)
