@@ -31,7 +31,10 @@ import (
 	tv "github.com/rivo/tview"
 )
 
-type Plugin struct{ screen tcell.Screen }
+type Plugin struct {
+	screen    tcell.Screen
+	clipboard clipboardWriter
+}
 
 func (Plugin) ID() string          { return "tview" }
 func (Plugin) DisplayName() string { return "tview" }
@@ -49,6 +52,24 @@ type outputPart struct {
 	text      string
 	markup    bool
 	assistant bool
+	message   bool
+}
+
+// composerInput adapts tview's multiline editor to the composer API.
+type composerInput struct{ *tv.TextArea }
+
+func newComposerInput() *composerInput {
+	return &composerInput{TextArea: tv.NewTextArea().SetLabel("> ").SetWrap(true).SetWordWrap(true)}
+}
+
+func (i *composerInput) SetText(text string) *composerInput {
+	i.TextArea.SetText(text, true)
+	return i
+}
+
+func (i *composerInput) SetChangedFunc(handler func(string)) *composerInput {
+	i.TextArea.SetChangedFunc(func() { handler(i.GetText()) })
+	return i
 }
 
 const usageWideThreshold = 100
@@ -60,53 +81,55 @@ type credentialOperation struct {
 }
 
 type terminal struct {
-	app                *tv.Application
-	done               chan struct{}
-	client             ui.Client
-	ctx                context.Context
-	cancel             context.CancelFunc
-	wg                 sync.WaitGroup
-	lifecycleMu        sync.Mutex
-	stopping           bool
-	stopOnce           sync.Once
-	closing            atomic.Bool
-	runReturned        atomic.Bool
-	output             *tv.TextView
-	transcript         []outputPart
-	screen             tcell.Screen
-	lastReply          string
-	mouseEnabled       bool
-	header             *tv.TextView
-	input              *tv.InputField
-	promptHistory      []string
-	promptHistoryIndex int
-	promptHistoryDraft string
-	browsingPrompts    bool
-	layout             *tv.Flex
-	body               *tv.Flex
-	usagePane          *tv.TextView
-	footer             *tv.TextView
-	composer           *tv.Flex
-	commandList        *tv.List
-	usageCompact       *tv.TextView
-	commands           []command
-	commandItems       []command
-	usageVisible       bool
-	wide               bool
-	layoutReady        bool
-	compactUsageShown  bool
-	usageCursor        int
-	terminalWidth      int
-	pickerQuery        string
-	picker             *tv.List
-	modelList          *tv.List
-	pickerInput        *tv.InputField
-	pickerStatus       *tv.TextView
-	pickerLayout       *tv.Flex
-	entries            []entry
-	modelEntries       []entry
-	discovery          ui.Discovery
-	credentialOp       *credentialOperation
+	app                  *tv.Application
+	done                 chan struct{}
+	client               ui.Client
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	wg                   sync.WaitGroup
+	lifecycleMu          sync.Mutex
+	screenMu             sync.RWMutex
+	stopping             bool
+	stopOnce             sync.Once
+	closing              atomic.Bool
+	runReturned          atomic.Bool
+	output               *tv.TextView
+	transcript           []outputPart
+	screen               tcell.Screen
+	latestCompletedReply string
+	clipboard            *clipboardQueue
+	mouseEnabled         bool
+	header               *tv.TextView
+	input                *composerInput
+	promptHistory        []string
+	promptHistoryIndex   int
+	promptHistoryDraft   string
+	browsingPrompts      bool
+	layout               *tv.Flex
+	body                 *tv.Flex
+	usagePane            *tv.TextView
+	footer               *tv.TextView
+	composer             *tv.Flex
+	commandList          *tv.List
+	usageCompact         *tv.TextView
+	commands             []command
+	commandItems         []command
+	usageVisible         bool
+	wide                 bool
+	layoutReady          bool
+	compactUsageShown    bool
+	usageCursor          int
+	terminalWidth        int
+	pickerQuery          string
+	picker               *tv.List
+	modelList            *tv.List
+	pickerInput          *tv.InputField
+	pickerStatus         *tv.TextView
+	pickerLayout         *tv.Flex
+	entries              []entry
+	modelEntries         []entry
+	discovery            ui.Discovery
+	credentialOp         *credentialOperation
 }
 
 func (u *terminal) beginCredentialOperation() *credentialOperation {
@@ -138,35 +161,47 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
-	u.footer = tv.NewTextView().SetText("Ctrl+Y copy · Ctrl+T select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
+	u.footer = tv.NewTextView().SetText("/copy reply · /copy all transcript · Ctrl+T select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
-	u.input = tv.NewInputField().SetLabel("> ").SetFieldWidth(0).SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
-	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
+	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
+	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
 	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
 	u.app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		u.screenMu.Lock()
 		u.screen = screen
+		u.screenMu.Unlock()
 		width, _ := screen.Size()
 		u.setTerminalWidth(width)
 		return false
 	})
-	u.input.SetDoneFunc(func(key tcell.Key) {
-		switch key {
-		case tcell.KeyEnter:
-			if u.suggestionsActive() {
+	u.app.EnablePaste(true)
+	u.clipboard = newClipboardQueue(ctx, p.clipboard, func(text string) {
+		u.screenMu.RLock()
+		screen := u.screen
+		if screen != nil {
+			screen.SetClipboard([]byte(text))
+		}
+		u.screenMu.RUnlock()
+	}, u.writeAsync)
+	u.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEnter {
+			if u.suggestionsActive() && !strings.ContainsAny(u.input.GetText(), "\r\n") {
 				u.selectCommandSuggestion()
 			} else {
+				u.dismissCommandSuggestions()
 				u.submit()
 			}
-		case tcell.KeyEscape:
-			u.dismissCommandSuggestions()
+			return nil
 		}
-	})
-	u.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEscape {
+			u.dismissCommandSuggestions()
+			return nil
+		}
 		if u.suggestionsActive() {
 			switch event.Key() {
 			case tcell.KeyUp:
@@ -185,9 +220,15 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		}
 		switch event.Key() {
 		case tcell.KeyUp:
+			if !u.browsingPrompts && strings.ContainsAny(u.input.GetText(), "\r\n") {
+				return event
+			}
 			u.recallPrompt(-1)
 			return nil
 		case tcell.KeyDown:
+			if !u.browsingPrompts && strings.ContainsAny(u.input.GetText(), "\r\n") {
+				return event
+			}
 			u.recallPrompt(1)
 			return nil
 		}
@@ -205,10 +246,6 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		}
 		if event.Key() == tcell.KeyCtrlU {
 			u.toggleUsage()
-			return nil
-		}
-		if event.Key() == tcell.KeyCtrlY {
-			u.copyTranscript(false)
 			return nil
 		}
 		if event.Key() == tcell.KeyCtrlT {
@@ -287,7 +324,7 @@ func newTranscriptView() *tv.TextView {
 }
 
 func (u *terminal) writeUser(text string) {
-	u.writeMarkup("\n[::b]You:[-:-:-] " + tv.Escape(text) + "\n\n")
+	u.appendMessage(text, false)
 }
 
 func (u *terminal) write(s string)          { u.appendOutput(s, false, false) }
@@ -298,20 +335,36 @@ func (u *terminal) appendOutput(text string, markup, assistant bool) {
 	if text == "" || u.output == nil {
 		return
 	}
-	if assistant {
-		u.lastReply += text
-	}
-	if !markup && len(u.transcript) > 0 && !u.transcript[len(u.transcript)-1].markup && u.transcript[len(u.transcript)-1].assistant == assistant {
+	message := assistant && !markup
+	if !markup && len(u.transcript) > 0 && !u.transcript[len(u.transcript)-1].markup && u.transcript[len(u.transcript)-1].assistant == assistant && u.transcript[len(u.transcript)-1].message == message {
 		u.transcript[len(u.transcript)-1].text += text
 	} else {
-		u.transcript = append(u.transcript, outputPart{text: text, markup: markup, assistant: assistant})
+		u.transcript = append(u.transcript, outputPart{text: text, markup: markup, assistant: assistant, message: message})
 	}
+	u.renderTranscript()
+}
+
+func (u *terminal) appendMessage(text string, assistant bool) {
+	if text == "" || u.output == nil {
+		return
+	}
+	u.transcript = append(u.transcript, outputPart{text: text, assistant: assistant, message: true})
+	u.renderTranscript()
+}
+
+func (u *terminal) renderTranscript() {
 	u.output.Clear()
 	for _, part := range u.transcript {
-		if part.markup {
+		if part.message {
+			if !part.assistant {
+				fmt.Fprint(u.output, "\n[::b]You:[-:-:-] ")
+			}
+			fmt.Fprint(u.output, escapeLiteralText(part.text))
+			if !part.assistant {
+				fmt.Fprint(u.output, "\n\n")
+			}
+		} else if part.markup {
 			fmt.Fprint(u.output, part.text)
-		} else if part.assistant {
-			fmt.Fprint(u.output, "[-:-:-]"+escapeLiteralText(part.text))
 		} else {
 			fmt.Fprint(u.output, escapeLiteralText(part.text))
 		}
@@ -322,20 +375,28 @@ func (u *terminal) appendOutput(text string, markup, assistant bool) {
 // Clipboard access is an explicit user action. tcell uses the terminal's
 // clipboard protocol; terminals can refuse it, so do not claim confirmation.
 func (u *terminal) copyTranscript(all bool) {
-	text := u.lastReply
-	if all && u.output != nil {
-		text = u.output.GetText(true)
+	text := u.latestCompletedReply
+	if all {
+		text = u.copyableTranscript()
 	}
 	if text == "" {
 		u.write("Nothing to copy yet.\n")
 		return
 	}
-	if u.screen == nil {
-		u.write("Clipboard is unavailable. Use Ctrl+T for terminal selection.\n")
+	if u.clipboard.enqueue(text) {
 		return
 	}
-	u.screen.SetClipboard([]byte(text))
-	u.write("Clipboard request sent. If your terminal blocks it, use Ctrl+T to select text with the terminal.\n")
+	u.write("Clipboard queue is busy. Try copying again shortly.\n")
+}
+
+func (u *terminal) copyableTranscript() string {
+	var messages []string
+	for _, part := range u.transcript {
+		if part.message {
+			messages = append(messages, part.text)
+		}
+	}
+	return strings.Join(messages, "\n\n")
 }
 
 func escapeLiteralText(text string) string {
@@ -373,7 +434,7 @@ func supportedCommands() []command {
 		{name: "/help", description: "show available commands", action: "help"},
 		{name: "/cancel", description: "stop the active reply", action: "cancel"},
 		{name: "/exit", description: "close KompoSyn", action: "exit"},
-		{name: "/copy", description: "copy last reply; /copy all copies the transcript", action: "copy"},
+		{name: "/copy", description: "copy latest completed reply; /copy all copies visible transcript text", action: "copy"},
 	}
 }
 
@@ -385,8 +446,14 @@ func (u *terminal) refreshCommandSuggestions(text string) {
 	if u.commandList == nil || u.composer == nil {
 		return
 	}
+	if strings.ContainsAny(text, "\r\n") {
+		u.commandItems = nil
+		u.commandList.Clear()
+		u.composer.ResizeItem(u.commandList, 0, 0)
+		return
+	}
 	query := strings.TrimSpace(text)
-	if !strings.HasPrefix(query, "/") || strings.ContainsAny(query, " \t\n") {
+	if !strings.HasPrefix(query, "/") || strings.ContainsAny(query, " \t") {
 		u.commandItems = nil
 		u.commandList.Clear()
 		u.composer.ResizeItem(u.commandList, 0, 0)
@@ -707,7 +774,7 @@ func (u *terminal) submit() {
 	if trimmed == "" {
 		return
 	}
-	if strings.HasPrefix(trimmed, "/") {
+	if !strings.ContainsAny(text, "\r\n") && strings.HasPrefix(trimmed, "/") {
 		u.runCommand(trimmed)
 		return
 	}
@@ -720,12 +787,18 @@ func (u *terminal) submit() {
 		u.write("A reply is active. Your draft is preserved; press Ctrl+C to cancel.\n")
 		return
 	}
-	u.lastReply = ""
-	u.rememberPrompt(trimmed)
+	u.rememberPrompt(text)
 	u.input.SetText("")
-	u.writeUser(trimmed)
+	u.writeUser(text)
 	u.launch(func() {
-		turn, err := u.client.Send(u.ctx, trimmed, func(delta string) { u.writeAssistantAsync(delta) })
+		turn, err := u.client.Send(u.ctx, text, func(delta string) { u.writeAssistantAsync(delta) })
+		if turn.Outcome == modelprovider.OutcomeCompleted && err == nil {
+			completed := turn.Text
+			if completed == "" {
+				completed = ""
+			}
+			u.queue(func() { u.latestCompletedReply = completed })
+		}
 		u.writeAsync("\n")
 		if turn.Outcome == modelprovider.OutcomeRefused {
 			if turn.Refusal != "" {
@@ -777,7 +850,7 @@ func (u *terminal) runCommand(text string) {
 		for _, item := range u.commands {
 			descriptions = append(descriptions, item.name+" "+item.description)
 		}
-		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; Ctrl+Y copies the last reply; /copy all copies the transcript; Ctrl+T releases mouse capture for terminal selection.\n")
+		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; /copy copies the latest completed reply; /copy all copies the visible transcript; Ctrl+T releases mouse capture for terminal selection.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
