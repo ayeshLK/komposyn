@@ -130,6 +130,117 @@ func TestMultilinePasteRemainsLiteralDraftAndDoesNotRunSlashCommands(t *testing.
 	}
 }
 
+func TestTranscriptSelectionSurvivesWrapResizeAndStreamingUnicode(t *testing.T) {
+	view := newTranscriptView()
+	view.SetRect(0, 0, 8, 4)
+	u := &terminal{output: view, app: tv.NewApplication()}
+	u.chatRootActive.Store(true)
+	u.layout = tv.NewFlex().AddItem(view, 0, 1, false)
+	u.app.SetRoot(u.layout, false).SetFocus(view)
+	initial := "abc😀def\nghi"
+	u.transcript = []outputPart{{text: initial, assistant: true, message: true}}
+	u.renderTranscript()
+	start, end := 1, len("abc😀d")
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	selectByteRange(view.TextArea, initial, start, end, screen)
+	if selected, _, _ := view.GetSelection(); selected != "bc😀d" {
+		t.Fatalf("initial selection=%q", selected)
+	}
+	view.MouseHandler()(tv.MouseScrollDown, tcell.NewEventMouse(1, 1, tcell.ButtonNone, tcell.ModNone), func(tv.Primitive) {})
+	if selected, _, _ := view.GetSelection(); selected != "bc😀d" {
+		t.Fatalf("scroll changed selection=%q", selected)
+	}
+	u.captureSelectionSnapshot()
+	view.Draw(screen)
+	u.restoreSelectionSnapshot(screen)
+	view.SetRect(0, 0, 5, 3)
+	u.captureSelectionSnapshot()
+	view.Draw(screen)
+	u.restoreSelectionSnapshot(screen)
+	u.transcript[0].text += " appended output"
+	u.renderTranscript()
+	view.Draw(screen)
+	u.restoreSelectionSnapshot(screen)
+	if selected, _, _ := view.GetSelection(); selected != "bc😀d" {
+		t.Fatalf("selection changed after resize and stream update: %q", selected)
+	}
+}
+
+func TestTranscriptNativeWordSelectionAndLogicalLineSelection(t *testing.T) {
+	view := newTranscriptView()
+	view.SetRect(0, 0, 8, 4)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	view.SetText("hello world\nsecond line", false)
+	view.Draw(screen)
+	selectTextAreaWord(view.TextArea, 1, 0)
+	if got, _, _ := view.GetSelection(); got != "hello" {
+		t.Fatalf("double-click word selection=%q", got)
+	}
+	u := &terminal{output: view}
+	u.screen = screen
+	lineText := "first logical line\nsecond line"
+	selectByteRange(view.TextArea, lineText, 10, 10, screen)
+	u.selectLogicalLine()
+	if got, _, _ := view.GetSelection(); got != "first logical line" {
+		t.Fatalf("triple-click line selection=%q", got)
+	}
+}
+
+func TestTranscriptSelectionCopiesThroughInjectedClipboard(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	written := make(chan string, 1)
+	u := &terminal{output: newTranscriptView()}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	u.output.SetRect(0, 0, 20, 4)
+	u.clipboard = newClipboardQueue(ctx, clipboardFunc(func(_ context.Context, text string) error {
+		written <- text
+		return nil
+	}), nil, nil)
+	u.output.SetText("selected text", false)
+	selectByteRange(u.output.TextArea, "selected text", 0, len("selected"), screen)
+	u.copySelection()
+	select {
+	case got := <-written:
+		if got != "selected" {
+			t.Fatalf("selection clipboard=%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("selection was not copied")
+	}
+}
+
+func TestEscapeDismissesTranscriptSelectionAndResumesFollowing(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	u := &terminal{output: newTranscriptView(), screen: screen}
+	u.output.SetRect(0, 0, 20, 4)
+	selectByteRange(u.output.TextArea, "selected text", 0, len("selected"), screen)
+	u.followingTranscript = false
+	u.dismissSelection()
+	if u.output.HasSelection() {
+		t.Fatal("Escape left the transcript selection active")
+	}
+	if !u.followingTranscript {
+		t.Fatal("dismissing selection did not resume following")
+	}
+}
+
 func TestClipboardQueueReportsNativeFailureWithoutFallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

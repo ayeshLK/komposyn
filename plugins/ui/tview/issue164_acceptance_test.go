@@ -486,7 +486,7 @@ func startAcceptanceTerminal(t *testing.T, client pluginui.Client) (*terminal, *
 	screen.SetSize(100, 32)
 	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
 	ctx, cancel := context.WithCancel(context.Background())
-	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, output: tv.NewTextView(), input: newComposerInput()}
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, output: newTranscriptView(), input: newComposerInput()}
 	u.app.SetScreen(safeScreen)
 	u.openPicker()
 	finished := make(chan error, 1)
