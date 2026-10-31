@@ -21,6 +21,11 @@ contains and releases a separate experimental temporary-chat executable named
 `komposyn`; see the [chat architecture](harness/phase-one-architecture.md) and
 [release verification](release-verification.md).
 
+Issue #198 tracks a separate experimental tool-use milestone. Its initial
+contract and in-memory permission foundation are under development; this
+foundation enables no tool execution, sandbox backend, or web service. The
+milestone does not establish a general harness runtime or plugin API.
+
 ```mermaid
 flowchart LR
   A[Codex / Claude local transcripts] --> B[Provider adapter]

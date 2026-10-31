@@ -1,5 +1,11 @@
 # Temporary chat data handling
 
+This describes the current text-chat baseline. The separate issue #198
+tool-use milestone has an evolving threat model and integration decisions in
+[tool-use phase-one architecture](tool-use-phase-one-architecture.md). Its
+contract and in-memory permission foundation is not an execution boundary and
+enables no tools.
+
 The experimental chat sends the user's submitted text and a short system
 instruction to the selected OpenAI or Anthropic API using the selected
 credential. OpenAI credentials can be an API key or an SIWC OAuth token for
