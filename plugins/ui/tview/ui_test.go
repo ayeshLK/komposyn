@@ -418,6 +418,61 @@ func renderedScreen(screen *synchronizedSimulation) string {
 	return b.String()
 }
 
+func TestTranscriptDragCopiesSelectionOnRelease(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(80, 24)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := tv.NewApplication().SetScreen(safe).EnableMouse(true)
+	view := newTranscriptView()
+	view.SetText("selectable reply", true)
+	copied := make(chan string, 1)
+	clipboard := clipboardFunc(func(_ context.Context, text string) error { copied <- text; return nil })
+	u := &terminal{app: app, output: view, ctx: ctx, clipboard: newClipboardQueue(ctx, clipboard, nil, nil)}
+	u.chatRootActive.Store(true)
+	view.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey { return event })
+	app.SetMouseCapture(u.captureTranscriptMouse)
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyCtrlC && u.transcriptFocused() && view.HasSelection() {
+			u.copySelection()
+			return nil
+		}
+		return event
+	})
+	done := make(chan error, 1)
+	go func() { done <- app.SetRoot(view, true).SetFocus(view).Run() }()
+	defer func() {
+		app.Stop()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop")
+		}
+	}()
+	waitForScreen(t, safe, "selectable reply", "")
+	screen.InjectMouse(0, 0, tcell.ButtonPrimary, tcell.ModNone)
+	screen.InjectMouse(10, 0, tcell.ButtonPrimary, tcell.ModNone)
+	screen.InjectMouse(10, 0, tcell.ButtonNone, tcell.ModNone)
+	select {
+	case got := <-copied:
+		if got != "selectable" {
+			t.Fatalf("drag copied %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("mouse release did not copy the transcript selection")
+	}
+	screen.InjectKey(tcell.KeyCtrlC, 0, tcell.ModNone)
+	select {
+	case got := <-copied:
+		if got != "selectable" {
+			t.Fatalf("Ctrl+C copied %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ctrl+C did not copy the active transcript selection")
+	}
+}
+
 func TestEscapeFromModelFilterReturnsToChatAndPreservesSelection(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(100, 32)
@@ -714,7 +769,7 @@ func stopSimulationTerminal(t *testing.T, u *terminal, runDone <-chan error) {
 
 func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 	client := &clientStub{version: "0.11.0"}
-	u := &terminal{client: client, commands: supportedCommands(), input: newComposerInput(), output: tv.NewTextView(), commandList: tv.NewList(), composer: tv.NewFlex()}
+	u := &terminal{client: client, commands: supportedCommands(), input: newComposerInput(), output: newTranscriptView(), commandList: tv.NewList(), composer: tv.NewFlex()}
 	u.composer.AddItem(u.commandList, 0, 0, false).AddItem(u.input, 1, 0, true)
 	u.input.SetChangedFunc(u.refreshCommandSuggestions)
 	u.refreshCommandSuggestions("/m")
@@ -877,7 +932,7 @@ func TestWideUsageMetricsScrollWithLongNamesAndPartialValues(t *testing.T) {
 }
 
 func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
-	u := &terminal{output: tv.NewTextView().SetDynamicColors(true), input: newComposerInput()}
+	u := &terminal{output: newTranscriptView(), input: newComposerInput()}
 	u.writeAssistant("before clear")
 	u.input.SetText("keep my draft")
 	u.clearTranscript()
@@ -1030,7 +1085,7 @@ func TestTranscriptSeparatesTurnsAndKeepsThemeForeground(t *testing.T) {
 			if view.GetBackgroundColor() != tcell.ColorDefault {
 				t.Fatal("transcript overrides terminal palette")
 			}
-			view.SetTextColor(theme.foreground).SetBackgroundColor(theme.background)
+			view.SetTextStyle(tcell.StyleDefault.Foreground(theme.foreground).Background(theme.background))
 			u := &terminal{output: view}
 			u.writeUser("Question [red]literal")
 			u.writeAssistant("Answer [re")
@@ -1106,7 +1161,7 @@ func TestPromptRecallBoundariesDraftAndEditedHistory(t *testing.T) {
 
 func TestPromptHistorySkipsUnsubmittedQuestions(t *testing.T) {
 	client := &clientStub{}
-	u := &terminal{input: newComposerInput(), output: tv.NewTextView(), client: client, commands: supportedCommands()}
+	u := &terminal{input: newComposerInput(), output: newTranscriptView(), client: client, commands: supportedCommands()}
 	u.input.SetText("  ")
 	u.submit()
 	u.input.SetText("not sent without a model")

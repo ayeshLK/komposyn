@@ -219,12 +219,12 @@ have separate headings in the same searchable picker; headings are not
 selectable rows, and actions remain available while filtering.
 
 The compact banner shows the KompoSyn name, build version, and selected model;
-before selection it says **No model selected**. User turns retain a bold `You:`
-label and a blank line separates each question from its answer. Assistant text
-uses the terminal’s normal foreground and background rather than fixed gray,
-so the transcript follows the terminal’s light/dark palette without an assistant
-role label. Provider and user
-text is escaped as literal text across streaming chunks before rendering.
+before selection it says **No model selected**. User turns have a `You:` label
+and a blank line separates each question from its answer. Transcript text uses
+the terminal’s normal foreground and background rather than fixed gray, so it
+follows the terminal’s light/dark palette without an assistant role label.
+Provider and user text is rendered as literal text, including markup-looking
+sequences.
 
 ### Copying replies and terminal text
 
@@ -249,10 +249,13 @@ Bracketed terminal paste inserts text into the draft. Multiline content,
 including slash-looking lines, is text only; paste never submits a request or
 runs a command. The composer wraps and shows several draft lines; review the
 draft and press Enter yourself to submit. Normal terminal paste remains
-available without clipboard read access. To select text
-using the terminal instead, press **Ctrl+T** to release mouse capture, select
-text, and use the terminal's Copy action (often Ctrl+Shift+C on Linux). Press
-Ctrl+T again to restore UI mouse controls.
+available without clipboard read access. Drag over transcript text to select
+and copy on release; double-click selects a word and triple-click selects a
+logical line. Escape clears the selection. Ctrl+C copies an active selection;
+otherwise it keeps its request-cancel behavior. To use terminal-native
+selection, press **Ctrl+T** to release mouse capture, select text, and use the
+terminal's Copy action (often Ctrl+Shift+C on Linux). Press Ctrl+T again to
+restore UI mouse controls.
 
 ### Token usage
 

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	modelprovider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/ui"
@@ -50,9 +51,29 @@ type command struct{ name, description, action string }
 
 type outputPart struct {
 	text      string
-	markup    bool
 	assistant bool
 	message   bool
+}
+
+type transcriptView struct {
+	*tv.TextArea
+	onNavigation func(*tcell.EventKey)
+}
+
+func newTranscriptView() *transcriptView {
+	area := tv.NewTextArea().SetWrap(true).SetWordWrap(false).SetTextStyle(tcell.StyleDefault.Foreground(tcell.ColorDefault).Background(tcell.ColorDefault))
+	area.SetBackgroundColor(tcell.ColorDefault)
+	return &transcriptView{TextArea: area}
+}
+
+func (v *transcriptView) GetText(_ bool) string { return v.TextArea.GetText() }
+func (v *transcriptView) Clear() *transcriptView {
+	v.TextArea.SetText("", false)
+	return v
+}
+func (v *transcriptView) ScrollToBeginning() *transcriptView {
+	v.TextArea.SetOffset(0, 0)
+	return v
 }
 
 // composerInput adapts tview's multiline editor to the composer API.
@@ -81,55 +102,71 @@ type credentialOperation struct {
 }
 
 type terminal struct {
-	app                  *tv.Application
-	done                 chan struct{}
-	client               ui.Client
-	ctx                  context.Context
-	cancel               context.CancelFunc
-	wg                   sync.WaitGroup
-	lifecycleMu          sync.Mutex
-	screenMu             sync.RWMutex
-	stopping             bool
-	stopOnce             sync.Once
-	closing              atomic.Bool
-	runReturned          atomic.Bool
-	output               *tv.TextView
-	transcript           []outputPart
-	screen               tcell.Screen
-	latestCompletedReply string
-	clipboard            *clipboardQueue
-	mouseEnabled         bool
-	header               *tv.TextView
-	input                *composerInput
-	promptHistory        []string
-	promptHistoryIndex   int
-	promptHistoryDraft   string
-	browsingPrompts      bool
-	layout               *tv.Flex
-	body                 *tv.Flex
-	usagePane            *tv.TextView
-	footer               *tv.TextView
-	composer             *tv.Flex
-	commandList          *tv.List
-	usageCompact         *tv.TextView
-	commands             []command
-	commandItems         []command
-	usageVisible         bool
-	wide                 bool
-	layoutReady          bool
-	compactUsageShown    bool
-	usageCursor          int
-	terminalWidth        int
-	pickerQuery          string
-	picker               *tv.List
-	modelList            *tv.List
-	pickerInput          *tv.InputField
-	pickerStatus         *tv.TextView
-	pickerLayout         *tv.Flex
-	entries              []entry
-	modelEntries         []entry
-	discovery            ui.Discovery
-	credentialOp         *credentialOperation
+	app                   *tv.Application
+	done                  chan struct{}
+	client                ui.Client
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	wg                    sync.WaitGroup
+	lifecycleMu           sync.Mutex
+	screenMu              sync.RWMutex
+	stopping              bool
+	stopOnce              sync.Once
+	closing               atomic.Bool
+	runReturned           atomic.Bool
+	output                *transcriptView
+	transcript            []outputPart
+	screen                tcell.Screen
+	latestCompletedReply  string
+	clipboard             *clipboardQueue
+	followingTranscript   bool
+	transcriptScrollRow   int
+	selectionDragging     atomic.Bool
+	chatRootActive        atomic.Bool
+	selectionMoved        atomic.Bool
+	selectionMouseY       atomic.Int32
+	selectionDownY        int
+	selectionDownX        int
+	selectionClickTime    time.Time
+	selectionClickX       int
+	selectionClickY       int
+	selectionClickCount   int
+	selectionSnapshot     bool
+	selectionNeedsRestore bool
+	selectionSnapshotFrom int
+	selectionSnapshotTo   int
+	mouseEnabled          bool
+	header                *tv.TextView
+	input                 *composerInput
+	promptHistory         []string
+	promptHistoryIndex    int
+	promptHistoryDraft    string
+	browsingPrompts       bool
+	layout                *tv.Flex
+	body                  *tv.Flex
+	usagePane             *tv.TextView
+	footer                *tv.TextView
+	composer              *tv.Flex
+	commandList           *tv.List
+	usageCompact          *tv.TextView
+	commands              []command
+	commandItems          []command
+	usageVisible          bool
+	wide                  bool
+	layoutReady           bool
+	compactUsageShown     bool
+	usageCursor           int
+	terminalWidth         int
+	pickerQuery           string
+	picker                *tv.List
+	modelList             *tv.List
+	pickerInput           *tv.InputField
+	pickerStatus          *tv.TextView
+	pickerLayout          *tv.Flex
+	entries               []entry
+	modelEntries          []entry
+	discovery             ui.Discovery
+	credentialOp          *credentialOperation
 }
 
 func (u *terminal) beginCredentialOperation() *credentialOperation {
@@ -155,13 +192,22 @@ func (u *terminal) cancelCredentialOperation(op *credentialOperation) {
 
 func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	ctx, cancel := context.WithCancel(parent)
-	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true, mouseEnabled: true}
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true, mouseEnabled: true, followingTranscript: true}
 	u.output = newTranscriptView()
+	u.output.onNavigation = u.updateTranscriptScrollAfterKeyboard
+	u.output.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyUp, tcell.KeyDown, tcell.KeyLeft, tcell.KeyRight, tcell.KeyHome, tcell.KeyEnd, tcell.KeyPgUp, tcell.KeyPgDn:
+			return event
+		default:
+			return nil
+		}
+	})
 	u.usagePane = tv.NewTextView().SetScrollable(true)
 	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
-	u.footer = tv.NewTextView().SetText("/copy reply · /copy all transcript · Ctrl+T select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
+	u.footer = tv.NewTextView().SetText("/copy reply · /copy all · drag/double/triple select · Ctrl+T terminal select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
@@ -172,6 +218,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.updateBanner()
 	u.updateUsage()
 	u.app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		u.captureSelectionSnapshot()
 		u.screenMu.Lock()
 		u.screen = screen
 		u.screenMu.Unlock()
@@ -180,6 +227,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		return false
 	})
 	u.app.EnablePaste(true)
+	u.app.SetMouseCapture(u.captureTranscriptMouse)
 	u.clipboard = newClipboardQueue(ctx, p.clipboard, func(text string) {
 		u.screenMu.RLock()
 		screen := u.screen
@@ -236,12 +284,20 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	})
 	u.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyCtrlC {
+			if u.transcriptFocused() && u.output.HasSelection() {
+				u.copySelection()
+				return nil
+			}
 			if u.client.Snapshot().Active {
 				u.client.Cancel()
 				u.write("\nCancelling the active request…\n")
 			} else {
 				u.stop()
 			}
+			return nil
+		}
+		if event.Key() == tcell.KeyEscape && u.transcriptFocused() && u.output.HasSelection() {
+			u.dismissSelection()
 			return nil
 		}
 		if event.Key() == tcell.KeyCtrlU {
@@ -283,11 +339,17 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		}
 		return event
 	})
-	u.writeMarkup("[gray]KompoSyn is ready. Chat state is temporary and will be cleared on exit. Run /model to connect a provider.[-]\n")
+	u.write("KompoSyn is ready. Chat state is temporary and will be cleared on exit. Run /model to connect a provider.\n")
 	u.done = make(chan struct{})
 	ready := make(chan struct{})
 	var readyOnce sync.Once
-	u.app.SetAfterDrawFunc(func(tcell.Screen) { readyOnce.Do(func() { close(ready) }) })
+	u.app.SetAfterDrawFunc(func(screen tcell.Screen) {
+		u.restoreSelectionSnapshot(screen)
+		if u.followingTranscript && !u.output.HasSelection() {
+			u.transcriptScrollRow = u.maxTranscriptScroll()
+		}
+		readyOnce.Do(func() { close(ready) })
+	})
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -304,6 +366,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		width, _ := p.screen.Size()
 		u.setTerminalWidth(width)
 	}
+	u.chatRootActive.Store(true)
 	err := u.app.SetRoot(u.layout, true).EnableMouse(true).SetFocus(u.input).Run()
 	u.runReturned.Store(true)
 	close(u.done)
@@ -315,31 +378,22 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	return nil
 }
 
-// The terminal owns the reading palette; fixed gray/white body text becomes
-// unreadable with some light or dark themes. Reserve emphasis for role cues.
-func newTranscriptView() *tv.TextView {
-	view := tv.NewTextView().SetDynamicColors(true).SetScrollable(true)
-	view.SetTextColor(tcell.ColorDefault).SetBackgroundColor(tcell.ColorDefault)
-	return view
-}
-
 func (u *terminal) writeUser(text string) {
 	u.appendMessage(text, false)
 }
 
-func (u *terminal) write(s string)          { u.appendOutput(s, false, false) }
-func (u *terminal) writeMarkup(s string)    { u.appendOutput(s, true, false) }
-func (u *terminal) writeAssistant(s string) { u.appendOutput(s, false, true) }
+func (u *terminal) write(s string)          { u.appendOutput(s, false) }
+func (u *terminal) writeAssistant(s string) { u.appendOutput(s, true) }
 
-func (u *terminal) appendOutput(text string, markup, assistant bool) {
+func (u *terminal) appendOutput(text string, assistant bool) {
 	if text == "" || u.output == nil {
 		return
 	}
-	message := assistant && !markup
-	if !markup && len(u.transcript) > 0 && !u.transcript[len(u.transcript)-1].markup && u.transcript[len(u.transcript)-1].assistant == assistant && u.transcript[len(u.transcript)-1].message == message {
+	message := assistant
+	if len(u.transcript) > 0 && u.transcript[len(u.transcript)-1].assistant == assistant && u.transcript[len(u.transcript)-1].message == message {
 		u.transcript[len(u.transcript)-1].text += text
 	} else {
-		u.transcript = append(u.transcript, outputPart{text: text, markup: markup, assistant: assistant, message: message})
+		u.transcript = append(u.transcript, outputPart{text: text, assistant: assistant, message: message})
 	}
 	u.renderTranscript()
 }
@@ -353,23 +407,35 @@ func (u *terminal) appendMessage(text string, assistant bool) {
 }
 
 func (u *terminal) renderTranscript() {
-	u.output.Clear()
+	var text strings.Builder
 	for _, part := range u.transcript {
 		if part.message {
 			if !part.assistant {
-				fmt.Fprint(u.output, "\n[::b]You:[-:-:-] ")
+				text.WriteString("\nYou: ")
 			}
-			fmt.Fprint(u.output, escapeLiteralText(part.text))
+			text.WriteString(part.text)
 			if !part.assistant {
-				fmt.Fprint(u.output, "\n\n")
+				text.WriteString("\n\n")
 			}
-		} else if part.markup {
-			fmt.Fprint(u.output, part.text)
 		} else {
-			fmt.Fprint(u.output, escapeLiteralText(part.text))
+			text.WriteString(part.text)
 		}
 	}
-	u.output.ScrollToEnd()
+	newText := text.String()
+	preserve := u.output.HasSelection()
+	start, end := 0, 0
+	if preserve {
+		_, start, end = u.output.GetSelection()
+	}
+	u.output.setContent(newText, preserve, u.followingTranscript, u.transcriptScrollRow)
+	if preserve {
+		u.selectionSnapshot = true
+		u.selectionNeedsRestore = true
+		u.selectionSnapshotFrom, u.selectionSnapshotTo = start, end
+	} else {
+		u.selectionSnapshot = false
+		u.selectionNeedsRestore = false
+	}
 }
 
 // Clipboard access is an explicit user action. tcell uses the terminal's
@@ -399,9 +465,6 @@ func (u *terminal) copyableTranscript() string {
 	return strings.Join(messages, "\n\n")
 }
 
-func escapeLiteralText(text string) string {
-	return tv.Escape(text)
-}
 func (u *terminal) queue(update func()) {
 	if u.closing.Load() || u.ctx.Err() != nil {
 		return
@@ -413,15 +476,19 @@ func (u *terminal) queue(update func()) {
 	})
 }
 func (u *terminal) writeAsync(s string) {
-	u.queue(func() { u.appendOutput(s, false, false) })
+	u.queue(func() { u.appendOutput(s, false) })
 }
 
 func (u *terminal) writeAssistantAsync(s string) {
-	u.queue(func() { u.appendOutput(s, false, true) })
+	u.queue(func() { u.appendOutput(s, true) })
 }
 
 func (u *terminal) clearTranscript() {
 	u.transcript = nil
+	u.followingTranscript = true
+	u.transcriptScrollRow = 0
+	u.selectionSnapshot = false
+	u.selectionNeedsRestore = false
 	if u.output != nil {
 		u.output.Clear()
 		u.output.ScrollToBeginning()
@@ -850,7 +917,7 @@ func (u *terminal) runCommand(text string) {
 		for _, item := range u.commands {
 			descriptions = append(descriptions, item.name+" "+item.description)
 		}
-		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; /copy copies the latest completed reply; /copy all copies the visible transcript; Ctrl+T releases mouse capture for terminal selection.\n")
+		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; /copy copies the latest completed reply; /copy all copies visible transcript text; drag selects text, double-click selects a word, triple-click selects a logical line, and Ctrl+C copies an active selection (otherwise it cancels); Escape clears selection; Ctrl+T releases mouse capture for terminal selection.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
@@ -861,6 +928,7 @@ func (u *terminal) runCommand(text string) {
 }
 
 func (u *terminal) openPicker() {
+	u.chatRootActive.Store(false)
 	u.pickerInput = tv.NewInputField().SetLabel("Filter models and actions: ").SetFieldWidth(0).SetText(u.pickerQuery).SetChangedFunc(func(v string) { u.pickerQuery = v; u.rebuildPicker() })
 	u.picker = tv.NewList().ShowSecondaryText(true)
 	u.modelList = tv.NewList().ShowSecondaryText(true)
@@ -1440,7 +1508,10 @@ func (u *terminal) confirmSelection(m ui.Model) {
 	u.app.SetRoot(modal, true)
 }
 
-func (u *terminal) returnToChat() { u.app.SetRoot(u.layout, true).SetFocus(u.input) }
+func (u *terminal) returnToChat() {
+	u.chatRootActive.Store(true)
+	u.app.SetRoot(u.layout, true).SetFocus(u.input)
+}
 func (u *terminal) writePickerNotice(s string) {
 	if u.pickerStatus != nil {
 		u.pickerStatus.SetText(s)
