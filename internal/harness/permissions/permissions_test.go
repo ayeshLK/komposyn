@@ -26,7 +26,7 @@ func TestRulePrecedenceAndGrantEvaluation(t *testing.T) {
 	root := t.TempDir()
 	resource := ResourceRequest{Kind: ResourceFilesystem, Target: filepath.Join(root, "file.txt"), Operation: OperationRead}
 	request := Request{ConversationID: "conv", CallID: "call", Requirements: []Requirement{{Kind: RequirementAction, Key: "r1", ToolID: "exec_command", Operation: OperationExecute, ActionKey: "exact-command", SessionAllowed: true}, {Kind: RequirementResource, Key: "r2", ToolID: "read_file", Operation: OperationRead, Resource: &resource, SessionAllowed: true}}}
-	grant := Grant{ID: "g1", ConversationID: "conv", ToolID: "read_file", Kind: RequirementResource, Operation: OperationRead, Lifetime: LifetimeConversation, Origin: "user", Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Recursive: true, Operations: []Operation{OperationRead, OperationWrite}}}
+	grant := Grant{ID: "g1", ConversationID: "conv", ToolID: "read_file", Kind: RequirementResource, Operation: OperationRead, Lifetime: LifetimeConversation, Origin: "user", ResourceTarget: root, Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Recursive: true, Operations: []Operation{OperationRead, OperationWrite}}}
 	if err := store.Add(grant); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestRulePrecedenceAndGrantEvaluation(t *testing.T) {
 func TestWriteGrantIncludesReadButNotDeleteExecuteOrOtherPath(t *testing.T) {
 	root := t.TempDir()
 	store := NewMemoryStore()
-	grant := Grant{ID: "g", ConversationID: "c", ToolID: "file", Kind: RequirementResource, Operation: OperationWrite, Lifetime: LifetimeConversation, Origin: "user", Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Recursive: true, Operations: []Operation{OperationWrite}}}
+	grant := Grant{ID: "g", ConversationID: "c", ToolID: "file", Kind: RequirementResource, Operation: OperationWrite, Lifetime: LifetimeConversation, Origin: "user", ResourceTarget: root, Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Recursive: true, Operations: []Operation{OperationWrite}}}
 	if err := store.Add(grant); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestOnceGrantIsCallBoundConsumedAndNotReusable(t *testing.T) {
 func TestDeleteRequiresPerInvocationGrantAndCannotReceiveSessionGrant(t *testing.T) {
 	store := NewMemoryStore()
 	root := filepath.Join(t.TempDir(), "file")
-	if err := store.Add(Grant{ID: "delete", ConversationID: "c", ToolID: "delete_path", Kind: RequirementResource, Operation: OperationDelete, Lifetime: LifetimeOnce, CallID: "call", RequirementKey: "delete-request", Origin: "user", Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Operations: []Operation{OperationDelete}}}); err != nil {
+	if err := store.Add(Grant{ID: "delete", ConversationID: "c", ToolID: "delete_path", Kind: RequirementResource, Operation: OperationDelete, Lifetime: LifetimeOnce, CallID: "call", RequirementKey: "delete-request", Origin: "user", ResourceTarget: root, Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Operations: []Operation{OperationDelete}}}); err != nil {
 		t.Fatal(err)
 	}
 	resource := ResourceRequest{Kind: ResourceFilesystem, Target: root, Operation: OperationDelete}
@@ -155,7 +155,7 @@ func TestDeleteRequiresPerInvocationGrantAndCannotReceiveSessionGrant(t *testing
 	if len(decision.Allowed) != 1 {
 		t.Fatalf("per-invocation delete grant not honored: %+v", decision)
 	}
-	err := store.Add(Grant{ID: "bad-delete-session", ConversationID: "c", ToolID: "delete_path", Kind: RequirementResource, Operation: OperationDelete, Lifetime: LifetimeConversation, Origin: "user", Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Operations: []Operation{OperationDelete}}})
+	err := store.Add(Grant{ID: "bad-delete-session", ConversationID: "c", ToolID: "delete_path", Kind: RequirementResource, Operation: OperationDelete, Lifetime: LifetimeConversation, Origin: "user", ResourceTarget: root, Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Operations: []Operation{OperationDelete}}})
 	if !errors.Is(err, ErrInvalidGrant) {
 		t.Fatalf("delete session grant error=%v", err)
 	}
@@ -228,7 +228,7 @@ func TestMemoryStoreRevisionRevokeClearAndConcurrentSnapshots(t *testing.T) {
 func TestNetworkSessionGrantMatchesExactOrigin(t *testing.T) {
 	store := NewMemoryStore()
 	scope := &ResourceScope{Kind: ResourceNetwork, Root: "https://example.test", Operations: []Operation{OperationNetwork}}
-	if err := store.Add(Grant{ID: "web", ConversationID: "c", ToolID: "web_fetch", Kind: RequirementResource, Operation: OperationNetwork, Lifetime: LifetimeConversation, Origin: "user", Resource: scope}); err != nil {
+	if err := store.Add(Grant{ID: "web", ConversationID: "c", ToolID: "web_fetch", Kind: RequirementResource, Operation: OperationNetwork, Lifetime: LifetimeConversation, Origin: "user", ResourceTarget: "https://example.test", Resource: scope}); err != nil {
 		t.Fatal(err)
 	}
 	request := func(target string) Request {

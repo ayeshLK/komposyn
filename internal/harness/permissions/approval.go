@@ -187,6 +187,7 @@ func grantsForApproval(pending PendingApproval, choice ApprovalChoice) ([]Grant,
 			Origin:         "user_approval",
 		}
 		if requirement.Kind == RequirementResource {
+			grant.ResourceTarget = requirement.Resource.Target
 			scope, err := exactScope(*requirement.Resource)
 			if err != nil {
 				return nil, err

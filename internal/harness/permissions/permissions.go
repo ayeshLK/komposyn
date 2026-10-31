@@ -122,6 +122,7 @@ type Grant struct {
 	ToolID         string
 	Operation      Operation
 	ActionKey      string
+	ResourceTarget string
 	Resource       *ResourceScope
 	Lifetime       Lifetime
 	Origin         string
@@ -250,7 +251,13 @@ func onceGrantCovers(grants []Grant, request Request, requirement Requirement) b
 }
 
 func onceGrantMatches(grant Grant, request Request, requirement Requirement) bool {
-	return grant.Operation == requirement.Operation && grant.CallID == request.CallID && grant.RequirementKey != "" && grant.RequirementKey == requirement.Key
+	if grant.Operation != requirement.Operation || grant.CallID != request.CallID || grant.RequirementKey == "" || grant.RequirementKey != requirement.Key {
+		return false
+	}
+	if requirement.Kind == RequirementAction {
+		return grant.ActionKey != "" && grant.ActionKey == requirement.ActionKey
+	}
+	return requirement.Resource != nil && grant.Resource != nil && grant.ResourceTarget == requirement.Resource.Target && grant.Resource.Kind == requirement.Resource.Kind && scopeCovers(*grant.Resource, *requirement.Resource)
 }
 
 var (
@@ -281,10 +288,10 @@ func (s *MemoryStore) AddMany(grants []Grant) error {
 	validated := make([]Grant, len(grants))
 	ids := make(map[string]struct{}, len(grants))
 	for i, grant := range grants {
-		if grant.ID == "" || grant.ConversationID == "" || grant.ToolID == "" || grant.Operation == "" || grant.Origin == "" || (grant.Kind != RequirementAction && grant.Kind != RequirementResource) {
+		if grant.ID == "" || grant.ConversationID == "" || grant.ToolID == "" || !validOperation(grant.Operation) || grant.Origin == "" || (grant.Kind != RequirementAction && grant.Kind != RequirementResource) {
 			return ErrInvalidGrant
 		}
-		if grant.Kind == RequirementAction && (grant.Resource != nil || grant.ActionKey == "") || grant.Kind == RequirementResource && (grant.Resource == nil || grant.ActionKey != "" || !validScope(*grant.Resource) || !containsOperation(grant.Resource.Operations, grant.Operation)) {
+		if grant.Kind == RequirementAction && (grant.Resource != nil || grant.ResourceTarget != "" || grant.ActionKey == "") || grant.Kind == RequirementResource && (grant.Resource == nil || grant.ResourceTarget == "" || grant.ActionKey != "" || !validScope(*grant.Resource) || !containsOperation(grant.Resource.Operations, grant.Operation) || !validResourceRequest(ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation}) || !scopeCovers(*grant.Resource, ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation})) {
 			return ErrInvalidGrant
 		}
 		if grant.Lifetime == LifetimeOnce {
@@ -319,7 +326,7 @@ func (s *MemoryStore) AddMany(grants []Grant) error {
 }
 
 func validRequirement(requirement Requirement) bool {
-	if requirement.Key == "" || requirement.ToolID == "" || requirement.Operation == "" {
+	if requirement.Key == "" || requirement.ToolID == "" || !validOperation(requirement.Operation) {
 		return false
 	}
 	switch requirement.Kind {
@@ -333,6 +340,9 @@ func validRequirement(requirement Requirement) bool {
 }
 
 func validResourceRequest(request ResourceRequest) bool {
+	if !validOperation(request.Operation) {
+		return false
+	}
 	switch request.Kind {
 	case ResourceFilesystem:
 		return request.Operation != OperationNetwork && filepath.IsAbs(request.Target) && filepath.Clean(request.Target) == request.Target
@@ -342,6 +352,15 @@ func validResourceRequest(request ResourceRequest) bool {
 		}
 		_, err := normalizeOrigin(request.Target)
 		return err == nil
+	default:
+		return false
+	}
+}
+
+func validOperation(operation Operation) bool {
+	switch operation {
+	case OperationRead, OperationWrite, OperationDelete, OperationExecute, OperationNetwork:
+		return true
 	default:
 		return false
 	}
@@ -450,7 +469,7 @@ func validScope(scope ResourceScope) bool {
 		return false
 	}
 	for _, operation := range scope.Operations {
-		if operation != OperationRead && operation != OperationWrite && operation != OperationDelete && operation != OperationExecute && operation != OperationNetwork {
+		if !validOperation(operation) {
 			return false
 		}
 	}

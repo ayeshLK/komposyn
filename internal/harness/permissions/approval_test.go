@@ -42,11 +42,43 @@ func TestApprovalCoordinatorCombinesRequirementsAndBindsOnceGrant(t *testing.T) 
 	if err != nil || response.Outcome != ApprovalGranted || !response.Decision.Ready() {
 		t.Fatalf("response=%+v err=%v", response, err)
 	}
+	changedAction := cloneRequest(request)
+	changedAction.Requirements[0].ActionKey = "changed-patch-digest"
+	if got := coordinator.evaluator.Evaluate(changedAction); got.Ready() {
+		t.Fatalf("once approval covered a changed action: %+v", got)
+	}
+	changedResource := cloneRequest(request)
+	changedResource.Requirements[1].Resource.Target = filepath.Join(t.TempDir(), "unapproved.txt")
+	if got := coordinator.evaluator.Evaluate(changedResource); got.Ready() {
+		t.Fatalf("once approval covered a changed resource target: %+v", got)
+	}
 	if err := store.ConsumeOnce("conversation", "call", []string{"a", "r"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := coordinator.evaluator.Evaluate(request); got.Ready() {
 		t.Fatalf("consumed once permissions were reusable: %+v", got)
+	}
+}
+
+func TestUnknownOperationsFailClosedEvenWithWildcardAllow(t *testing.T) {
+	for _, requirement := range []Requirement{
+		{Kind: RequirementAction, Key: "action", ToolID: "apply_patch", Operation: Operation("unknown_operation"), ActionKey: "digest"},
+		{Kind: RequirementResource, Key: "resource", ToolID: "read_file", Operation: Operation("unknown_operation"), Resource: &ResourceRequest{Kind: ResourceFilesystem, Target: filepath.Join(t.TempDir(), "file"), Operation: Operation("unknown_operation")}},
+	} {
+		decision := (Evaluator{Rules: []Rule{{Kind: requirement.Kind, ToolID: requirement.ToolID, Effect: EffectAllow}}}).Evaluate(Request{Requirements: []Requirement{requirement}})
+		if len(decision.Denied) != 1 || decision.Ready() {
+			t.Fatalf("unknown operation was authorized: requirement=%+v decision=%+v", requirement, decision)
+		}
+	}
+	store := NewMemoryStore()
+	err := store.Add(Grant{Kind: RequirementAction, ID: "unknown", ConversationID: "c", ToolID: "apply_patch", Operation: Operation("unknown_operation"), ActionKey: "digest", Lifetime: LifetimeConversation, Origin: "test"})
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("unknown grant operation error=%v", err)
+	}
+	resourceScope := &ResourceScope{Kind: ResourceFilesystem, Root: t.TempDir(), Operations: []Operation{Operation("unknown_operation")}}
+	err = store.Add(Grant{Kind: RequirementResource, ID: "unknown-resource", ConversationID: "c", ToolID: "read_file", Operation: Operation("unknown_operation"), ResourceTarget: resourceScope.Root, Resource: resourceScope, Lifetime: LifetimeConversation, Origin: "test"})
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("unknown resource grant operation error=%v", err)
 	}
 }
 
