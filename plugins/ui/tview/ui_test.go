@@ -714,7 +714,7 @@ func stopSimulationTerminal(t *testing.T, u *terminal, runDone <-chan error) {
 
 func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 	client := &clientStub{version: "0.11.0"}
-	u := &terminal{client: client, commands: supportedCommands(), input: tv.NewInputField(), output: tv.NewTextView(), commandList: tv.NewList(), composer: tv.NewFlex()}
+	u := &terminal{client: client, commands: supportedCommands(), input: newComposerInput(), output: tv.NewTextView(), commandList: tv.NewList(), composer: tv.NewFlex()}
 	u.composer.AddItem(u.commandList, 0, 0, false).AddItem(u.input, 1, 0, true)
 	u.input.SetChangedFunc(u.refreshCommandSuggestions)
 	u.refreshCommandSuggestions("/m")
@@ -877,7 +877,7 @@ func TestWideUsageMetricsScrollWithLongNamesAndPartialValues(t *testing.T) {
 }
 
 func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
-	u := &terminal{output: tv.NewTextView().SetDynamicColors(true), input: tv.NewInputField()}
+	u := &terminal{output: tv.NewTextView().SetDynamicColors(true), input: newComposerInput()}
 	u.writeAssistant("before clear")
 	u.input.SetText("keep my draft")
 	u.clearTranscript()
@@ -899,7 +899,7 @@ func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
 func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
 	client := &clientStub{version: "0.11.0"}
 	model := ui.Model{Key: "selected", ID: "model-y", DisplayName: "Model Y"}
-	u := &terminal{client: client, header: tv.NewTextView(), body: tv.NewFlex(), usagePane: tv.NewTextView(), usageCompact: tv.NewTextView(), composer: tv.NewFlex(), input: tv.NewInputField()}
+	u := &terminal{client: client, header: tv.NewTextView(), body: tv.NewFlex(), usagePane: tv.NewTextView(), usageCompact: tv.NewTextView(), composer: tv.NewFlex(), input: newComposerInput()}
 	u.body.AddItem(tv.NewTextView(), 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.composer.AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
 	u.updateBanner()
@@ -1062,7 +1062,7 @@ func TestTranscriptSeparatesTurnsAndKeepsThemeForeground(t *testing.T) {
 }
 
 func TestPromptRecallBoundariesDraftAndEditedHistory(t *testing.T) {
-	u := &terminal{input: tv.NewInputField()}
+	u := &terminal{input: newComposerInput()}
 	u.input.SetText("unsent draft")
 	u.recallPrompt(-1)
 	if u.input.GetText() != "unsent draft" {
@@ -1097,7 +1097,7 @@ func TestPromptRecallBoundariesDraftAndEditedHistory(t *testing.T) {
 	if u.input.GetText() != "second question" {
 		t.Fatal("display clear removed prompt history")
 	}
-	fresh := &terminal{input: tv.NewInputField()}
+	fresh := &terminal{input: newComposerInput()}
 	fresh.recallPrompt(-1)
 	if fresh.input.GetText() != "" {
 		t.Fatal("history escaped its terminal instance")
@@ -1106,7 +1106,7 @@ func TestPromptRecallBoundariesDraftAndEditedHistory(t *testing.T) {
 
 func TestPromptHistorySkipsUnsubmittedQuestions(t *testing.T) {
 	client := &clientStub{}
-	u := &terminal{input: tv.NewInputField(), output: tv.NewTextView(), client: client, commands: supportedCommands()}
+	u := &terminal{input: newComposerInput(), output: tv.NewTextView(), client: client, commands: supportedCommands()}
 	u.input.SetText("  ")
 	u.submit()
 	u.input.SetText("not sent without a model")
@@ -1201,7 +1201,15 @@ func TestExplicitClipboardCopyUsesPlainReplyAndTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer screen.Fini()
-	u := &terminal{screen: screen, output: newTranscriptView(), input: tv.NewInputField(), commands: supportedCommands()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	written := make(chan string, 4)
+	u := &terminal{screen: screen, output: newTranscriptView(), input: newComposerInput(), commands: supportedCommands()}
+	u.clipboard = newClipboardQueue(ctx, clipboardFunc(func(_ context.Context, text string) error {
+		screen.SetClipboard([]byte(text))
+		written <- text
+		return nil
+	}), nil, nil)
 	u.input.SetText("keep draft")
 	u.writeUser("Question")
 	u.writeAssistant("literal [re")
@@ -1209,7 +1217,11 @@ func TestExplicitClipboardCopyUsesPlainReplyAndTranscript(t *testing.T) {
 	if got := screen.GetClipboardData(); len(got) != 0 {
 		t.Fatal("output wrote clipboard without user action")
 	}
+	u.latestCompletedReply = "literal [red] answer"
 	u.copyTranscript(false)
+	if got := <-written; got != "literal [red] answer" {
+		t.Fatalf("written reply=%q", got)
+	}
 	if got := string(screen.GetClipboardData()); got != "literal [red] answer" {
 		t.Fatalf("clipboard reply=%q", got)
 	}
@@ -1219,15 +1231,21 @@ func TestExplicitClipboardCopyUsesPlainReplyAndTranscript(t *testing.T) {
 	u.clearTranscript()
 	u.writeAssistant(" tail")
 	u.copyTranscript(false)
-	if got := string(screen.GetClipboardData()); got != "literal [red] answer tail" {
-		t.Fatalf("clear truncated last reply copy=%q", got)
+	if got := <-written; got != "literal [red] answer" {
+		t.Fatalf("written reply after clear=%q", got)
 	}
-	before := u.output.GetText(true)
+	if got := string(screen.GetClipboardData()); got != "literal [red] answer" {
+		t.Fatalf("clear or streaming text changed completed reply copy=%q", got)
+	}
 	u.runCommand("/copy all")
-	if got := string(screen.GetClipboardData()); got != before {
-		t.Fatalf("transcript copied markup or composer: %q", got)
+	want := " tail"
+	if got := <-written; got != want {
+		t.Fatalf("logical transcript=%q, want %q", got, want)
 	}
-	u.lastReply = ""
+	if got := string(screen.GetClipboardData()); got != want {
+		t.Fatalf("clipboard transcript=%q, want %q", got, want)
+	}
+	u.latestCompletedReply = ""
 	screen.SetClipboard([]byte("existing"))
 	u.copyTranscript(false)
 	if string(screen.GetClipboardData()) != "existing" {
@@ -1235,17 +1253,26 @@ func TestExplicitClipboardCopyUsesPlainReplyAndTranscript(t *testing.T) {
 	}
 }
 
+type clipboardFunc func(context.Context, string) error
+
+func (f clipboardFunc) Write(ctx context.Context, text string) error { return f(ctx, text) }
+
 func TestCopyShortcutAndTerminalSelectionToggle(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	safe := &synchronizedSimulation{SimulationScreen: screen}
 	client := &clientStub{selected: &ui.Model{Key: "m", ID: "fixture"}}
 	client.sendHook = func(_ context.Context, _ string, delta func(string)) (ui.Turn, error) {
 		delta("copy me [red]literal")
-		return ui.Turn{Outcome: modelprovider.OutcomeCompleted}, nil
+		return ui.Turn{Text: "copy me [red]literal", Outcome: modelprovider.OutcomeCompleted}, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	go func() {
+		done <- (Plugin{screen: safe, clipboard: clipboardFunc(func(_ context.Context, text string) error {
+			screen.SetClipboard([]byte(text))
+			return nil
+		})}).Run(ctx, client)
+	}()
 	defer func() {
 		cancel()
 		select {
@@ -1260,10 +1287,13 @@ func TestCopyShortcutAndTerminalSelectionToggle(t *testing.T) {
 	}
 	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 	waitForScreen(t, safe, "copy me [red]literal", "")
-	screen.InjectKey(tcell.KeyCtrlY, 0, tcell.ModNone)
-	waitForScreen(t, safe, "Clipboard request sent", "")
+	for _, r := range "/copy" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+	}
+	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitForScreen(t, safe, "Copied using the native clipboard helper", "")
 	if got := string(screen.GetClipboardData()); got != "copy me [red]literal" {
-		t.Fatalf("Ctrl+Y copied %q", got)
+		t.Fatalf("/copy copied %q", got)
 	}
 	screen.InjectKey(tcell.KeyCtrlT, 0, tcell.ModNone)
 	waitForScreen(t, safe, "Mouse capture released", "")
