@@ -55,7 +55,10 @@ type outputPart struct {
 	message   bool
 }
 
-type transcriptView struct{ *tv.TextArea }
+type transcriptView struct {
+	*tv.TextArea
+	onNavigation func(*tcell.EventKey)
+}
 
 func newTranscriptView() *transcriptView {
 	area := tv.NewTextArea().SetWrap(true).SetWordWrap(false).SetTextStyle(tcell.StyleDefault.Foreground(tcell.ColorDefault).Background(tcell.ColorDefault))
@@ -191,6 +194,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	ctx, cancel := context.WithCancel(parent)
 	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true, mouseEnabled: true, followingTranscript: true}
 	u.output = newTranscriptView()
+	u.output.onNavigation = u.updateTranscriptScrollAfterKeyboard
 	u.output.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyUp, tcell.KeyDown, tcell.KeyLeft, tcell.KeyRight, tcell.KeyHome, tcell.KeyEnd, tcell.KeyPgUp, tcell.KeyPgDn:
