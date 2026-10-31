@@ -28,6 +28,75 @@ import (
 	tv "github.com/rivo/tview"
 )
 
+func TestTranscriptClickKeepsPasteSuppressionFocused(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(40, 10)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	view := newTranscriptView()
+	view.SetText("original reply", true)
+	root := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true)
+	app := tv.NewApplication().SetScreen(safe).EnableMouse(true).EnablePaste(true)
+	done := make(chan error, 1)
+	go func() { done <- app.SetRoot(root, true).SetFocus(view).Run() }()
+	defer func() {
+		app.Stop()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop")
+		}
+	}()
+	waitForScreen(t, safe, "original reply", "")
+	screen.InjectMouse(1, 1, tcell.ButtonPrimary, tcell.ModNone)
+	if err := screen.PostEvent(tcell.NewEventPaste(true)); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "INJECTED" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+	}
+	if err := screen.PostEvent(tcell.NewEventPaste(false)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if got := view.GetText(true); got != "original reply" {
+		t.Fatalf("transcript after click and paste=%q, want original reply", got)
+	}
+	if app.GetFocus() != view {
+		t.Fatalf("focused primitive=%T, want transcript wrapper", app.GetFocus())
+	}
+}
+
+func TestTranscriptKeyboardNavigationPausesAndResumesFollowing(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(20, 6)
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	view := newTranscriptView()
+	app := tv.NewApplication().SetScreen(screen)
+	u := &terminal{app: app, output: view, followingTranscript: true}
+	view.onNavigation = u.updateTranscriptScrollAfterKeyboard
+	view.SetRect(0, 0, 20, 6)
+	view.SetText(strings.Repeat("a long line that wraps\n", 20), true)
+	view.Draw(screen)
+	u.transcriptScrollRow = u.maxTranscriptScroll()
+	handler := view.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone), func(tv.Primitive) {})
+	if u.followingTranscript || u.transcriptScrollRow >= u.maxTranscriptScroll() {
+		t.Fatalf("PageUp did not pause following: following=%t offset=%d max=%d", u.followingTranscript, u.transcriptScrollRow, u.maxTranscriptScroll())
+	}
+	before := u.transcriptScrollRow
+	u.appendOutput("new streamed output\n", true)
+	if u.followingTranscript || u.transcriptScrollRow != before {
+		t.Fatalf("stream append changed paused scroll: following=%t offset=%d, want %d", u.followingTranscript, u.transcriptScrollRow, before)
+	}
+	handler(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone), func(tv.Primitive) {})
+	if !u.followingTranscript || u.transcriptScrollRow != u.maxTranscriptScroll() {
+		t.Fatalf("End did not resume following: following=%t offset=%d max=%d", u.followingTranscript, u.transcriptScrollRow, u.maxTranscriptScroll())
+	}
+}
+
 func TestClipboardQueueSerializesAndKeepsNewestPendingWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -127,6 +196,117 @@ func TestMultilinePasteRemainsLiteralDraftAndDoesNotRunSlashCommands(t *testing.
 	}
 	if len(u.transcript) != 1 || !strings.Contains(u.transcript[0].text, "Choose a model") {
 		t.Fatalf("pasted slash line was treated as a command: %#v", u.transcript)
+	}
+}
+
+func TestTranscriptSelectionSurvivesWrapResizeAndStreamingUnicode(t *testing.T) {
+	view := newTranscriptView()
+	view.SetRect(0, 0, 8, 4)
+	u := &terminal{output: view, app: tv.NewApplication()}
+	u.chatRootActive.Store(true)
+	u.layout = tv.NewFlex().AddItem(view, 0, 1, false)
+	u.app.SetRoot(u.layout, false).SetFocus(view)
+	initial := "abc😀def\nghi"
+	u.transcript = []outputPart{{text: initial, assistant: true, message: true}}
+	u.renderTranscript()
+	start, end := 1, len("abc😀d")
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	selectByteRange(view.TextArea, initial, start, end, screen)
+	if selected, _, _ := view.GetSelection(); selected != "bc😀d" {
+		t.Fatalf("initial selection=%q", selected)
+	}
+	view.MouseHandler()(tv.MouseScrollDown, tcell.NewEventMouse(1, 1, tcell.ButtonNone, tcell.ModNone), func(tv.Primitive) {})
+	if selected, _, _ := view.GetSelection(); selected != "bc😀d" {
+		t.Fatalf("scroll changed selection=%q", selected)
+	}
+	u.captureSelectionSnapshot()
+	view.Draw(screen)
+	u.restoreSelectionSnapshot(screen)
+	view.SetRect(0, 0, 5, 3)
+	u.captureSelectionSnapshot()
+	view.Draw(screen)
+	u.restoreSelectionSnapshot(screen)
+	u.transcript[0].text += " appended output"
+	u.renderTranscript()
+	view.Draw(screen)
+	u.restoreSelectionSnapshot(screen)
+	if selected, _, _ := view.GetSelection(); selected != "bc😀d" {
+		t.Fatalf("selection changed after resize and stream update: %q", selected)
+	}
+}
+
+func TestTranscriptNativeWordSelectionAndLogicalLineSelection(t *testing.T) {
+	view := newTranscriptView()
+	view.SetRect(0, 0, 8, 4)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	view.SetText("hello world\nsecond line", false)
+	view.Draw(screen)
+	selectTextAreaWord(view.TextArea, 1, 0)
+	if got, _, _ := view.GetSelection(); got != "hello" {
+		t.Fatalf("double-click word selection=%q", got)
+	}
+	u := &terminal{output: view}
+	u.screen = screen
+	lineText := "first logical line\nsecond line"
+	selectByteRange(view.TextArea, lineText, 10, 10, screen)
+	u.selectLogicalLine()
+	if got, _, _ := view.GetSelection(); got != "first logical line" {
+		t.Fatalf("triple-click line selection=%q", got)
+	}
+}
+
+func TestTranscriptSelectionCopiesThroughInjectedClipboard(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	written := make(chan string, 1)
+	u := &terminal{output: newTranscriptView()}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	u.output.SetRect(0, 0, 20, 4)
+	u.clipboard = newClipboardQueue(ctx, clipboardFunc(func(_ context.Context, text string) error {
+		written <- text
+		return nil
+	}), nil, nil)
+	u.output.SetText("selected text", false)
+	selectByteRange(u.output.TextArea, "selected text", 0, len("selected"), screen)
+	u.copySelection()
+	select {
+	case got := <-written:
+		if got != "selected" {
+			t.Fatalf("selection clipboard=%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("selection was not copied")
+	}
+}
+
+func TestEscapeDismissesTranscriptSelectionAndResumesFollowing(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	u := &terminal{output: newTranscriptView(), screen: screen}
+	u.output.SetRect(0, 0, 20, 4)
+	selectByteRange(u.output.TextArea, "selected text", 0, len("selected"), screen)
+	u.followingTranscript = false
+	u.dismissSelection()
+	if u.output.HasSelection() {
+		t.Fatal("Escape left the transcript selection active")
+	}
+	if !u.followingTranscript {
+		t.Fatal("dismissing selection did not resume following")
 	}
 }
 
