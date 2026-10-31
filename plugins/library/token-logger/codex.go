@@ -431,6 +431,10 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 								noteDiagnosticParserFailure(ctx, DiagnosticReasonUnsupportedUsage, lineOffset)
 								break
 							}
+							if !codexTokenCountHasUsage(envelope) {
+								result.Outcomes.Add(OutcomeIgnoredNonUsage)
+								break
+							}
 							usage, ok := codexCumulativeUsage(envelope, payload)
 							if !ok || current.Model == "" {
 								result.Outcomes.Add(OutcomeMalformedRecord)
@@ -842,7 +846,35 @@ var codexDirectUsageFields = map[string]struct{}{
 	"type": {}, "id": {}, "session_id": {}, "project_id": {}, "project_name": {},
 	"cwd": {}, "model": {}, "input_tokens": {}, "cached_input_tokens": {},
 	"cache_read_input_tokens": {}, "cache_write_tokens": {}, "cache_write_input_tokens": {},
-	"output_tokens": {}, "reasoning_output_tokens": {}, "total_tokens": {},
+	"output_tokens": {}, "reasoning_output_tokens": {}, "total_tokens": {}, "rate_limits": {},
+}
+
+// codexTokenCountHasUsage distinguishes an absent optional info snapshot from
+// a present but unusable usage structure. Only the legacy direct token_count
+// envelope may carry counters at the payload's top level; event_msg token_count
+// payloads use info or total_token_usage.
+func codexTokenCountHasUsage(envelope codexEnvelope) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(envelope.Payload, &fields); err != nil {
+		// Payload decoding has already succeeded. Treat any disagreement here as
+		// usage-bearing so malformed input is rejected by the normal path rather
+		// than silently discarded.
+		return true
+	}
+	if raw, present := fields["info"]; present && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return true
+	}
+	if _, present := fields["total_token_usage"]; present {
+		return true
+	}
+	if envelope.Type == "token_count" {
+		for field := range codexUsageFields {
+			if _, present := fields[field]; present {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func jsonObjectFieldsAllowed(raw json.RawMessage, allowed map[string]struct{}) bool {
