@@ -89,25 +89,11 @@ func (v *transcriptView) InputHandler() func(*tcell.EventKey, func(tv.Primitive)
 }
 
 func (u *terminal) updateTranscriptScrollAfterKeyboard(event *tcell.EventKey) {
-	_, _, cursorRow, _ := u.output.GetCursor()
-	height := u.output.innerHeight()
-	if event.Key() == tcell.KeyPgUp {
-		cursorRow = max(0, cursorRow-height)
-	} else if event.Key() == tcell.KeyPgDn {
-		cursorRow = min(max(0, visualRows(u.output.GetText(true), u.output.innerWidth())-1), cursorRow+height)
-	}
-	if event.Key() == tcell.KeyHome {
-		cursorRow = 0
-	} else if event.Key() == tcell.KeyEnd {
-		cursorRow = max(0, visualRows(u.output.GetText(true), u.output.innerWidth())-1)
-	}
+	// TextArea has already moved its viewport while processing the key. Record
+	// that actual offset instead of deriving another movement from the cursor.
+	offset, _ := u.output.GetOffset()
 	maxOffset := u.maxTranscriptScroll()
-	if cursorRow < u.transcriptScrollRow {
-		u.transcriptScrollRow = cursorRow
-	} else if cursorRow >= u.transcriptScrollRow+height {
-		u.transcriptScrollRow = cursorRow - height + 1
-	}
-	u.transcriptScrollRow = max(0, min(maxOffset, u.transcriptScrollRow))
+	u.transcriptScrollRow = max(0, offset)
 	u.followingTranscript = u.transcriptScrollRow >= maxOffset
 }
 

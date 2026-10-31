@@ -78,22 +78,36 @@ func TestTranscriptKeyboardNavigationPausesAndResumesFollowing(t *testing.T) {
 	u := &terminal{app: app, output: view, followingTranscript: true}
 	view.onNavigation = u.updateTranscriptScrollAfterKeyboard
 	view.SetRect(0, 0, 20, 6)
-	view.SetText(strings.Repeat("a long line that wraps\n", 20), true)
+	u.appendOutput(strings.Repeat("line\n", 30), true)
 	view.Draw(screen)
-	u.transcriptScrollRow = u.maxTranscriptScroll()
 	handler := view.InputHandler()
+	for range 40 {
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), func(tv.Primitive) {})
+	}
+	u.transcriptScrollRow = u.maxTranscriptScroll()
+	view.SetOffset(u.transcriptScrollRow, 0)
 	handler(tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone), func(tv.Primitive) {})
+	before, _ := view.GetOffset()
 	if u.followingTranscript || u.transcriptScrollRow >= u.maxTranscriptScroll() {
 		t.Fatalf("PageUp did not pause following: following=%t offset=%d max=%d", u.followingTranscript, u.transcriptScrollRow, u.maxTranscriptScroll())
 	}
-	before := u.transcriptScrollRow
-	u.appendOutput("new streamed output\n", true)
-	if u.followingTranscript || u.transcriptScrollRow != before {
-		t.Fatalf("stream append changed paused scroll: following=%t offset=%d, want %d", u.followingTranscript, u.transcriptScrollRow, before)
+	if u.transcriptScrollRow != before {
+		t.Fatalf("saved offset=%d, actual viewport=%d", u.transcriptScrollRow, before)
 	}
-	handler(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone), func(tv.Primitive) {})
-	if !u.followingTranscript || u.transcriptScrollRow != u.maxTranscriptScroll() {
-		t.Fatalf("End did not resume following: following=%t offset=%d max=%d", u.followingTranscript, u.transcriptScrollRow, u.maxTranscriptScroll())
+	u.appendOutput("tail\n", true)
+	after, _ := view.GetOffset()
+	if u.followingTranscript || u.transcriptScrollRow != before || after != before {
+		t.Fatalf("stream append changed paused viewport: following=%t saved=%d actual=%d, want %d", u.followingTranscript, u.transcriptScrollRow, after, before)
+	}
+	for range 40 {
+		if u.followingTranscript {
+			break
+		}
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModAlt), func(tv.Primitive) {})
+	}
+	endOffset, _ := view.GetOffset()
+	if !u.followingTranscript || u.transcriptScrollRow < u.maxTranscriptScroll() || endOffset != u.transcriptScrollRow {
+		t.Fatalf("scrolling to bottom did not resume following: following=%t saved=%d actual=%d max=%d", u.followingTranscript, u.transcriptScrollRow, endOffset, u.maxTranscriptScroll())
 	}
 }
 
