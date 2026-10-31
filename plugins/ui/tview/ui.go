@@ -73,6 +73,9 @@ type terminal struct {
 	runReturned        atomic.Bool
 	output             *tv.TextView
 	transcript         []outputPart
+	screen             tcell.Screen
+	lastReply          string
+	mouseEnabled       bool
 	header             *tv.TextView
 	input              *tv.InputField
 	promptHistory      []string
@@ -92,7 +95,6 @@ type terminal struct {
 	wide               bool
 	layoutReady        bool
 	compactUsageShown  bool
-	usageExact         bool
 	usageCursor        int
 	terminalWidth      int
 	pickerQuery        string
@@ -130,13 +132,13 @@ func (u *terminal) cancelCredentialOperation(op *credentialOperation) {
 
 func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	ctx, cancel := context.WithCancel(parent)
-	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true}
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, usageVisible: true, mouseEnabled: true}
 	u.output = newTranscriptView()
 	u.usagePane = tv.NewTextView().SetScrollable(true)
 	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
-	u.footer = tv.NewTextView().SetText("↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · Ctrl+E exact · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
+	u.footer = tv.NewTextView().SetText("Ctrl+Y copy · Ctrl+T select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
@@ -147,6 +149,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.updateBanner()
 	u.updateUsage()
 	u.app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		u.screen = screen
 		width, _ := screen.Size()
 		u.setTerminalWidth(width)
 		return false
@@ -204,13 +207,22 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 			u.toggleUsage()
 			return nil
 		}
-		if event.Key() == tcell.KeyCtrlL {
-			u.clearTranscript()
+		if event.Key() == tcell.KeyCtrlY {
+			u.copyTranscript(false)
 			return nil
 		}
-		if event.Key() == tcell.KeyCtrlE {
-			u.usageExact = !u.usageExact
-			u.updateUsage()
+		if event.Key() == tcell.KeyCtrlT {
+			u.mouseEnabled = !u.mouseEnabled
+			u.app.EnableMouse(u.mouseEnabled)
+			if u.mouseEnabled {
+				u.write("Mouse capture enabled. Ctrl+T releases it for terminal selection.\n")
+			} else {
+				u.write("Mouse capture released. Select text and use your terminal's Copy shortcut; Ctrl+T restores mouse controls.\n")
+			}
+			return nil
+		}
+		if event.Key() == tcell.KeyCtrlL {
+			u.clearTranscript()
 			return nil
 		}
 		if event.Key() == tcell.KeyCtrlN || event.Key() == tcell.KeyCtrlP {
@@ -286,6 +298,9 @@ func (u *terminal) appendOutput(text string, markup, assistant bool) {
 	if text == "" || u.output == nil {
 		return
 	}
+	if assistant {
+		u.lastReply += text
+	}
 	if !markup && len(u.transcript) > 0 && !u.transcript[len(u.transcript)-1].markup && u.transcript[len(u.transcript)-1].assistant == assistant {
 		u.transcript[len(u.transcript)-1].text += text
 	} else {
@@ -302,6 +317,25 @@ func (u *terminal) appendOutput(text string, markup, assistant bool) {
 		}
 	}
 	u.output.ScrollToEnd()
+}
+
+// Clipboard access is an explicit user action. tcell uses the terminal's
+// clipboard protocol; terminals can refuse it, so do not claim confirmation.
+func (u *terminal) copyTranscript(all bool) {
+	text := u.lastReply
+	if all && u.output != nil {
+		text = u.output.GetText(true)
+	}
+	if text == "" {
+		u.write("Nothing to copy yet.\n")
+		return
+	}
+	if u.screen == nil {
+		u.write("Clipboard is unavailable. Use Ctrl+T for terminal selection.\n")
+		return
+	}
+	u.screen.SetClipboard([]byte(text))
+	u.write("Clipboard request sent. If your terminal blocks it, use Ctrl+T to select text with the terminal.\n")
 }
 
 func escapeLiteralText(text string) string {
@@ -339,6 +373,7 @@ func supportedCommands() []command {
 		{name: "/help", description: "show available commands", action: "help"},
 		{name: "/cancel", description: "stop the active reply", action: "cancel"},
 		{name: "/exit", description: "close KompoSyn", action: "exit"},
+		{name: "/copy", description: "copy last reply; /copy all copies the transcript", action: "copy"},
 	}
 }
 
@@ -448,9 +483,9 @@ func (u *terminal) updateUsage() {
 	// Page one model at a time in both layouts. A fixed column width does not
 	// imply enough height for every wrapped model row.
 	selected := u.usageCursor
-	text := renderUsage(usage, u.usageExact, selected)
+	text := renderUsage(usage, selected)
 	if !u.wide && u.compactUsageShown {
-		text = renderUsage(usage, u.usageExact, u.usageCursor)
+		text = renderUsage(usage, u.usageCursor)
 	}
 	u.usagePane.SetText(text)
 	u.usagePane.ScrollToBeginning()
@@ -489,7 +524,7 @@ func (u *terminal) moveUsageCursor(delta int) {
 	}
 }
 
-func renderUsage(items []ui.ModelUsage, exact bool, selected int) string {
+func renderUsage(items []ui.ModelUsage, selected int) string {
 	if len(items) == 0 {
 		return "No model usage yet.\nCtrl+U: show usage"
 	}
@@ -502,23 +537,19 @@ func renderUsage(items []ui.ModelUsage, exact bool, selected int) string {
 	if selected >= 0 {
 		fmt.Fprintf(&b, "Model %d/%d · Ctrl+N/P\n", start+1, len(items))
 	}
-	b.WriteString("Ctrl+E: exact/compact\n")
 	for i := start; i < end; i++ {
 		item := items[i]
 		fmt.Fprintf(&b, "%s / %s\nInput: %s\nOutput: %s\nCached read: %s\nCache write: %s\n",
-			tv.Escape(item.Provider), tv.Escape(item.ModelID), formatMetric(item.Input, exact), formatMetric(item.Output, exact), formatMetric(item.CachedRead, exact), formatMetric(item.CacheWrite, exact))
+			tv.Escape(item.Provider), tv.Escape(item.ModelID), formatMetric(item.Input), formatMetric(item.Output), formatMetric(item.CachedRead), formatMetric(item.CacheWrite))
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-func formatMetric(metric ui.MetricUsage, exact bool) string {
+func formatMetric(metric ui.MetricUsage) string {
 	if !metric.Known {
 		return "unknown"
 	}
-	value := fmt.Sprintf("%d", metric.Tokens)
-	if !exact {
-		value = compactCount(metric.Tokens)
-	}
+	value := compactCount(metric.Tokens)
 	if metric.Partial {
 		value += " (partial)"
 	}
@@ -689,6 +720,7 @@ func (u *terminal) submit() {
 		u.write("A reply is active. Your draft is preserved; press Ctrl+C to cancel.\n")
 		return
 	}
+	u.lastReply = ""
 	u.rememberPrompt(trimmed)
 	u.input.SetText("")
 	u.writeUser(trimmed)
@@ -732,6 +764,12 @@ func (u *terminal) runCommand(text string) {
 		return
 	}
 	switch selected.action {
+	case "copy":
+		if trimmed != "/copy" && trimmed != "/copy all" {
+			u.write("Use /copy for the last reply or /copy all for the transcript.\n")
+		} else {
+			u.copyTranscript(trimmed == "/copy all")
+		}
 	case "picker":
 		u.openPicker()
 	case "help":
@@ -739,7 +777,7 @@ func (u *terminal) runCommand(text string) {
 		for _, item := range u.commands {
 			descriptions = append(descriptions, item.name+" "+item.description)
 		}
-		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+E toggles exact counts; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details.\n")
+		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; Ctrl+Y copies the last reply; /copy all copies the transcript; Ctrl+T releases mouse capture for terminal selection.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")

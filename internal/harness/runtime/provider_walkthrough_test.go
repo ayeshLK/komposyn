@@ -224,3 +224,71 @@ func writeAnthropicPartial(w http.ResponseWriter) {
 	fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n")
 	w.(http.Flusher).Flush()
 }
+
+func TestSubscriptionStreamItemContinuationWithEmptyFinalOutput(t *testing.T) {
+	requests := make(chan []json.RawMessage, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input     []json.RawMessage `json:"input"`
+			Store     bool              `json:"store"`
+			MaxOutput *int              `json:"max_output_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body.Store || body.MaxOutput != nil {
+			t.Error("subscription request changed storage/output-limit policy")
+		}
+		requests <- body.Input
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]}}\n\n")
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n")
+		fmt.Fprint(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"fixture-message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n")
+	}))
+	defer server.Close()
+	store := auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	host, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := auth.NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := auth.Profile{ID: "fixture-subscription", Provider: "openai", Label: "Fixture", Revision: revision, Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "fixture-client", Issuer: "https://auth.openai.com", Subject: "fixture-subject", HostID: host, AccessToken: "fixture-access", RefreshToken: "fixture-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(time.Hour)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	providers, err := model.NewRegistry(openai.Plugin{BaseURL: server.URL, Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat(providers, store)
+	if err := chat.authRegistry.Register("openai", auth.MethodOAuth, &rotatingOAuthResolver{store: store}); err != nil {
+		t.Fatal(err)
+	}
+	chat.selected = &model.Model{Provider: p.OpenAI, ProfileID: profile.ID, ID: "fixture-model", ProfileVersion: model.ProfileVersion(profile, "")}
+	for _, prompt := range []string{"Reply with OK", "Follow up"} {
+		var visible string
+		turn, err := chat.Send(context.Background(), prompt, func(delta string) { visible += delta })
+		if err != nil || turn.Outcome != p.OutcomeCompleted || visible != "OK" {
+			t.Fatalf("rejected turn: %+v visible=%q err=%v", turn, visible, err)
+		}
+	}
+	<-requests
+	second := <-requests
+	if len(second) != 3 {
+		t.Fatalf("second request did not retain context: %s", second)
+	}
+	var native struct {
+		Type, Role, ID string
+		Content        []struct{ Type, Text string }
+	}
+	if err := json.Unmarshal(second[1], &native); err != nil {
+		t.Fatal(err)
+	}
+	if native.ID != "fixture-message" || native.Role != "assistant" || len(native.Content) != 1 || native.Content[0].Text != "OK" {
+		t.Fatalf("native replay lost: %s", second[1])
+	}
+}

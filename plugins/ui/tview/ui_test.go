@@ -722,7 +722,7 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 		t.Fatalf("/m suggestions = %+v", u.commandItems)
 	}
 	u.refreshCommandSuggestions("/")
-	if len(u.commandItems) != 4 {
+	if len(u.commandItems) != 5 {
 		t.Fatalf("root slash suggestions = %+v", u.commandItems)
 	}
 	u.commandList.SetCurrentItem(1)
@@ -748,18 +748,15 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 	}
 }
 
-func TestUsageRenderingPreservesUnknownPartialAndExactCounts(t *testing.T) {
+func TestUsageRenderingPreservesUnknownPartialAndCompactCounts(t *testing.T) {
 	items := []ui.ModelUsage{{Provider: "openai", ModelID: "model-a",
 		Input:  ui.MetricUsage{Tokens: 1234, Known: true, Partial: true},
 		Output: ui.MetricUsage{Tokens: 0, Known: true}, CachedRead: ui.MetricUsage{}}}
-	compact := renderUsage(items, false, -1)
+	compact := renderUsage(items, -1)
 	if !strings.Contains(compact, "1.2K (partial)") || !strings.Contains(compact, "Output: 0") || !strings.Contains(compact, "Cached read: unknown") {
 		t.Fatalf("compact usage = %q", compact)
 	}
-	exact := renderUsage(items, true, -1)
-	if !strings.Contains(exact, "1234 (partial)") || !strings.Contains(exact, "Output: 0") {
-		t.Fatalf("exact usage = %q", exact)
-	}
+
 }
 
 func TestCompactCountUsesIntegerRounding(t *testing.T) {
@@ -824,11 +821,11 @@ func TestWideUsageRowsCanBePagedOnOrdinaryHeight(t *testing.T) {
 	}
 }
 
-func TestWideUsageMetricsScrollWithExactLongAndPartialValues(t *testing.T) {
+func TestWideUsageMetricsScrollWithLongNamesAndPartialValues(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(80, 24)
 	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
-	client := &clientStub{usage: []ui.ModelUsage{{Provider: "anthropic", ModelID: "model-example-long-name",
+	client := &clientStub{usage: []ui.ModelUsage{{Provider: "anthropic", ModelID: "model-example-long-name-that-wraps-over-multiple-lines",
 		Input:      ui.MetricUsage{Tokens: 1234567, Known: true, Partial: true},
 		Output:     ui.MetricUsage{Tokens: 2345678, Known: true},
 		CachedRead: ui.MetricUsage{Tokens: 3456789, Known: true, Partial: true},
@@ -841,9 +838,8 @@ func TestWideUsageMetricsScrollWithExactLongAndPartialValues(t *testing.T) {
 	screen.SetSize(110, 24)
 	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
 	waitForScreen(t, safeScreen, "Usage · this run", "")
-	screen.InjectKey(tcell.KeyCtrlE, 0, tcell.ModNone)
-	waitForScreen(t, safeScreen, "Input: 1234567 (partial)", "")
-	if strings.Contains(renderedScreen(safeScreen), "Cache write: 4567890") {
+	waitForScreen(t, safeScreen, "Input: 1.2M (partial)", "")
+	if strings.Contains(renderedScreen(safeScreen), "Cache write: 4.6M") {
 		t.Fatal("regression fixture should require scrolling to reveal cache write")
 	}
 	var observed strings.Builder
@@ -852,14 +848,14 @@ func TestWideUsageMetricsScrollWithExactLongAndPartialValues(t *testing.T) {
 		screen.InjectKey(tcell.KeyPgDn, 0, tcell.ModNone)
 		time.Sleep(25 * time.Millisecond)
 		observed.WriteString(renderedScreen(safeScreen))
-		if strings.Contains(observed.String(), "Cache write: 4567890") {
+		if strings.Contains(observed.String(), "Cache write: 4.6M") {
 			break
 		}
 	}
-	if !strings.Contains(observed.String(), "Cache write: 4567890") {
-		t.Fatalf("PageDown could not reveal the exact cache-write metric: %q", renderedScreen(safeScreen))
+	if !strings.Contains(observed.String(), "Cache write: 4.6M") {
+		t.Fatalf("PageDown could not reveal the compact cache-write metric: %q", renderedScreen(safeScreen))
 	}
-	for _, metric := range []string{"Output: 2345678", "Cached read: 3456789"} {
+	for _, metric := range []string{"Output: 2.3M", "Cached read: 3.5M"} {
 		if !strings.Contains(observed.String(), metric) {
 			t.Errorf("scrolling did not expose %q; observed %q", metric, observed.String())
 		}
@@ -1191,10 +1187,88 @@ func TestComposerArrowHistoryAndSlashSuggestionsOnSimulation(t *testing.T) {
 	typeText("/")
 	press(tcell.KeyUp)
 	press(tcell.KeyTab)
-	waitForScreen(t, safe, "> /exit", "") // Up navigates slash suggestions, not prompt history.
+	waitForScreen(t, safe, "> /copy", "") // Up navigates slash suggestions, not prompt history.
 	select {
 	case got := <-sent:
 		t.Fatalf("completion submitted %q", got)
 	default:
 	}
+}
+
+func TestExplicitClipboardCopyUsesPlainReplyAndTranscript(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	u := &terminal{screen: screen, output: newTranscriptView(), input: tv.NewInputField(), commands: supportedCommands()}
+	u.input.SetText("keep draft")
+	u.writeUser("Question")
+	u.writeAssistant("literal [re")
+	u.writeAssistant("d] answer")
+	if got := screen.GetClipboardData(); len(got) != 0 {
+		t.Fatal("output wrote clipboard without user action")
+	}
+	u.copyTranscript(false)
+	if got := string(screen.GetClipboardData()); got != "literal [red] answer" {
+		t.Fatalf("clipboard reply=%q", got)
+	}
+	if u.input.GetText() != "keep draft" {
+		t.Fatal("copy discarded draft")
+	}
+	u.clearTranscript()
+	u.writeAssistant(" tail")
+	u.copyTranscript(false)
+	if got := string(screen.GetClipboardData()); got != "literal [red] answer tail" {
+		t.Fatalf("clear truncated last reply copy=%q", got)
+	}
+	before := u.output.GetText(true)
+	u.runCommand("/copy all")
+	if got := string(screen.GetClipboardData()); got != before {
+		t.Fatalf("transcript copied markup or composer: %q", got)
+	}
+	u.lastReply = ""
+	screen.SetClipboard([]byte("existing"))
+	u.copyTranscript(false)
+	if string(screen.GetClipboardData()) != "existing" {
+		t.Fatal("empty reply cleared clipboard")
+	}
+}
+
+func TestCopyShortcutAndTerminalSelectionToggle(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	client := &clientStub{selected: &ui.Model{Key: "m", ID: "fixture"}}
+	client.sendHook = func(_ context.Context, _ string, delta func(string)) (ui.Turn, error) {
+		delta("copy me [red]literal")
+		return ui.Turn{Outcome: modelprovider.OutcomeCompleted}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop")
+		}
+	}()
+	waitForScreen(t, safe, "KompoSyn", "")
+	for _, r := range "question" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+	}
+	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitForScreen(t, safe, "copy me [red]literal", "")
+	screen.InjectKey(tcell.KeyCtrlY, 0, tcell.ModNone)
+	waitForScreen(t, safe, "Clipboard request sent", "")
+	if got := string(screen.GetClipboardData()); got != "copy me [red]literal" {
+		t.Fatalf("Ctrl+Y copied %q", got)
+	}
+	screen.InjectKey(tcell.KeyCtrlT, 0, tcell.ModNone)
+	waitForScreen(t, safe, "Mouse capture released", "")
+	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
+	waitForScreen(t, safe, "> x", "")
+	screen.InjectKey(tcell.KeyCtrlT, 0, tcell.ModNone)
+	waitForScreen(t, safe, "Mouse capture enabled", "")
 }

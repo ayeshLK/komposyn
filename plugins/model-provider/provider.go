@@ -125,6 +125,7 @@ const (
 type DiagnosticCode string
 
 const (
+	DiagnosticOpenAIStreamOutputInvalid         DiagnosticCode = "openai.response_completed.invalid_stream_output"
 	DiagnosticOpenAICompletedMissingResponse    DiagnosticCode = "openai.response_completed.missing_response"
 	DiagnosticOpenAICompletedNoAssistantMessage DiagnosticCode = "openai.response_completed.no_assistant_message"
 	DiagnosticOpenAICompletedFunctionCall       DiagnosticCode = "openai.response_completed.function_call"
@@ -148,7 +149,7 @@ const (
 // vocabulary suitable for display or copying into a bug report.
 func SafeDiagnosticCode(code DiagnosticCode) bool {
 	switch code {
-	case DiagnosticOpenAICompletedMissingResponse, DiagnosticOpenAICompletedNoAssistantMessage,
+	case DiagnosticOpenAIStreamOutputInvalid, DiagnosticOpenAICompletedMissingResponse, DiagnosticOpenAICompletedNoAssistantMessage,
 		DiagnosticOpenAICompletedFunctionCall, DiagnosticOpenAICompletedComputerCall,
 		DiagnosticOpenAICompletedOtherOutputItem, DiagnosticOpenAICompletedInvalidRole,
 		DiagnosticOpenAICompletedEmptyMessage, DiagnosticOpenAICompletedOtherContent,

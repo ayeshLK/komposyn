@@ -168,13 +168,16 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	result := provider.Result{RequestID: resp.Header.Get("x-request-id"), ModelID: in.ModelID}
 	var terminal string
 	var finalResponse *resultResponse
+	streamOutput := completedOutput{items: make(map[int]json.RawMessage), added: make(map[int]bool)}
 	err = readSSE(resp.Body, func(event string, raw []byte) error {
 		var v struct {
-			Type     string          `json:"type"`
-			Delta    string          `json:"delta"`
-			Response json.RawMessage `json:"response"`
-			Message  string          `json:"message"`
-			Error    json.RawMessage `json:"error"`
+			Type        string          `json:"type"`
+			OutputIndex *int            `json:"output_index"`
+			Item        json.RawMessage `json:"item"`
+			Delta       string          `json:"delta"`
+			Response    json.RawMessage `json:"response"`
+			Message     string          `json:"message"`
+			Error       json.RawMessage `json:"error"`
 		}
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return &provider.Error{Outcome: provider.OutcomeService}
@@ -183,6 +186,8 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			return &provider.Error{Outcome: provider.OutcomeService}
 		}
 		switch v.Type {
+		case "response.output_item.added", "response.output_item.done":
+			streamOutput.observe(v.Type, v.OutputIndex, v.Item)
 		case "response.output_text.delta":
 			result.Text += v.Delta
 			if delta != nil {
@@ -191,8 +196,18 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		case "response.completed", "response.incomplete", "response.failed":
 			terminal = v.Type
 			if len(v.Response) > 0 {
+				response := v.Response
+				if terminal == "response.completed" {
+					var valid bool
+					response, valid = streamOutput.fillEmptyOutput(response)
+					if !valid {
+						result.Outcome = provider.OutcomeUnsupported
+						result.DiagnosticCode = provider.DiagnosticOpenAIStreamOutputInvalid
+						response = v.Response // Retain reported metadata/usage even on rejection.
+					}
+				}
 				finalResponse = &resultResponse{Target: &result}
-				if err := json.Unmarshal(v.Response, finalResponse); err != nil {
+				if err := json.Unmarshal(response, finalResponse); err != nil {
 					return &provider.Error{Outcome: provider.OutcomeService}
 				}
 			}
@@ -215,6 +230,9 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	}
 	if terminal == "" {
 		return result, &provider.Error{Outcome: provider.OutcomeInterrupted, RequestID: result.RequestID}
+	}
+	if result.DiagnosticCode == provider.DiagnosticOpenAIStreamOutputInvalid {
+		return result, nil
 	}
 	if terminal == "response.completed" && finalResponse != nil && finalResponse.FinalText != result.Text {
 		if strings.HasPrefix(finalResponse.FinalText, result.Text) {
@@ -260,6 +278,75 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		result.DiagnosticCode = completedStatusDiagnostic(result.StopReason)
 	}
 	return result, nil
+}
+
+// Completed item events can carry the replay data even when the terminal
+// response omits its output. Use only complete, contiguous, consistent items;
+// never synthesize continuation from visible text or in-progress item events.
+type completedOutput struct {
+	items   map[int]json.RawMessage
+	added   map[int]bool
+	invalid bool
+}
+
+func (o *completedOutput) observe(kind string, index *int, item json.RawMessage) {
+	if index == nil || *index < 0 {
+		o.invalid = true
+		return
+	}
+	if kind == "response.output_item.added" {
+		o.added[*index] = true
+		return
+	}
+	var shape struct{ Type, Status string }
+	if json.Unmarshal(item, &shape) != nil || (shape.Type == "message" && shape.Status != "completed") || (shape.Type == "reasoning" && shape.Status != "" && shape.Status != "completed") {
+		o.invalid = true
+		return
+	}
+	if old, exists := o.items[*index]; exists && !bytes.Equal(old, item) {
+		o.invalid = true
+		return
+	}
+	o.items[*index] = append(json.RawMessage(nil), item...)
+}
+
+func (o *completedOutput) fillEmptyOutput(response json.RawMessage) (json.RawMessage, bool) {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(response, &object) != nil || object == nil {
+		return response, true
+	}
+	var output []json.RawMessage
+	if raw, exists := object["output"]; exists && json.Unmarshal(raw, &output) != nil {
+		return response, true
+	}
+	if len(output) > 0 {
+		return response, true
+	} // Explicit final content keeps its normal validation.
+	if o.invalid {
+		return response, false
+	}
+	if len(o.items) == 0 {
+		return response, true
+	}
+	for index := range o.added {
+		if _, ok := o.items[index]; !ok {
+			return response, false
+		}
+	}
+	for index := 0; index < len(o.items); index++ {
+		item, ok := o.items[index]
+		if !ok {
+			return response, false
+		}
+		output = append(output, item)
+	}
+	raw, err := json.Marshal(output)
+	if err != nil {
+		return response, false
+	}
+	object["output"] = raw
+	merged, err := json.Marshal(object)
+	return merged, err == nil
 }
 
 // resultResponse decodes only stable fields needed by the chat boundary.
