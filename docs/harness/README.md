@@ -228,21 +228,31 @@ text is escaped as literal text across streaming chunks before rendering.
 
 ### Copying replies and terminal text
 
-Press **Ctrl+Y** or run **`/copy`** to copy the latest assistant reply as plain
-text, including any text streamed so far. It remains available after Ctrl+L;
-starting a new question starts a new copy buffer. **`/copy all`** copies the
-current transcript (including text outside the viewport), without UI markup or
-composer input. Clipboard writes happen only on these explicit actions; the
-UI never reads the clipboard or copies credential-form contents.
+Run **`/copy`** to copy the latest successfully completed assistant reply as
+plain text. The target remains available after Ctrl+L and while a later reply
+streams or fails; it changes only after another reply completes successfully.
+Run **`/copy all`** to copy the retained visible conversation text, including
+partial assistant output, without role labels, UI notices, visual wrapping, or
+composer contents. Source whitespace, newlines, Unicode, and code indentation
+are preserved. Empty copy requests leave the system clipboard unchanged.
 
-Copy uses the terminal clipboard protocol supplied by tcell (OSC 52 on
-compatible terminals). Terminals, remote sessions, and multiplexers may block
-it; the status confirms only that a request was sent, not that the clipboard
-changed. To select a portion using your terminal instead, press **Ctrl+T** to
-release mouse capture, drag to select, and use the terminal's Copy action
-(often Ctrl+Shift+C on Linux). Press Ctrl+T again to restore UI mouse controls.
-Terminal-native selection behavior depends on the terminal; keyboard UI
-navigation remains available with mouse capture released.
+Copy uses an available native clipboard helper on local macOS, Linux, Windows,
+or WSL sessions. Helpers receive text through standard input and run outside the
+UI event loop. If a local helper is unavailable or fails, the UI requests a
+terminal clipboard write through OSC 52. A successful helper exit confirms its
+write; OSC 52 status confirms only that the terminal request was sent, since
+terminals, remote sessions, and multiplexers may block it. The UI never reads
+the clipboard or copies credential-form contents. Ctrl+Y is not a copy
+shortcut.
+
+Bracketed terminal paste inserts text into the draft. Multiline content,
+including slash-looking lines, is text only; paste never submits a request or
+runs a command. The composer wraps and shows several draft lines; review the
+draft and press Enter yourself to submit. Normal terminal paste remains
+available without clipboard read access. To select text
+using the terminal instead, press **Ctrl+T** to release mouse capture, select
+text, and use the terminal's Copy action (often Ctrl+Shift+C on Linux). Press
+Ctrl+T again to restore UI mouse controls.
 
 ### Token usage
 
