@@ -5,6 +5,12 @@ text chat. It does not implement the broader project/session/task architecture
 from the KompoSyn vision or issue #155. The latest implementation scope is
 [comment 6395039680](https://github.com/ayeshLK/komposyn/issues/155#issuecomment-6395039680).
 
+This document describes the text-chat baseline. The separate issue #198
+tool-use milestone is under development; its initial contracts and in-memory
+authorization foundation do not expose tools or change the behavior described
+below. Sandbox, provider capability, and web-service integrations require
+separate verification and decisions.
+
 ```text
 cmd/harness/                    explicit bundled registration, binary komposyn
 plugins/model-provider/         experimental provider contract and types

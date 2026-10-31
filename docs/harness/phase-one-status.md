@@ -1,6 +1,6 @@
 # Phase-one acceptance status
 
-Scope source: the latest phase-one decision on [issue #155](https://github.com/ayeshLK/komposyn/issues/155#issuecomment-6395039680).
+Scope source: the latest phase-one decision on [issue #155](https://github.com/ayeshLK/komposyn/issues/155#issuecomment-6395039680). This table records the original text-chat milestone; issue #198 is a separate tool-use milestone.
 Evidence below refers to deterministic tests and source paths in this branch.
 
 | Acceptance area | Status | Evidence / limit |
@@ -16,7 +16,7 @@ Evidence below refers to deterministic tests and source paths in this branch.
 | Model compatibility and output/context limits | Partial | Provider catalogs are correctly marked unknown; no capability is inferred from model names. API-key output is bounded to 4096 tokens; the SIWC OAuth preview request omits `max_output_tokens`, so that bound does not apply on the OAuth route. Provider context limits are not available from list APIs. |
 | OpenAI model-list pagination | Complete for current endpoint | Current OpenAI list endpoint returns a model list without a page cursor; the adapter decodes the complete result. |
 | Discovery partial failures and profile identity | Complete | `internal/harness/model/`; provider/profile/model tuple avoids account collisions and partial failures are represented by profile. |
-| Request options, tools, multimodal, automatic routing | Deferred by plan | Only text, minimal system instruction, API-key output limit, stream, and cancellation are sent. The SIWC OAuth preview route omits `max_output_tokens`. Tools are not advertised or executed. |
+| Request options, tools, multimodal, automatic routing | Deferred in this milestone | The text-chat baseline sends only text, minimal system instruction, API-key output limit, stream, and cancellation. The SIWC OAuth preview route omits `max_output_tokens`. Tool support is tracked separately by issue #198; its foundation does not advertise or execute tools. |
 | Windows private credential ACL | Implemented; hosted validation passed for the existing suite | Windows-specific DACL, lock, no-reparse open, and replacement paths are covered by the hosted Windows test matrix. The new issue-164 process-boundary tests still require this branch's hosted Windows run; see the [issue #164 acceptance matrix](issue-164-acceptance.md). |
 | Provider live verification | Not tested | No credentials were used. Fake HTTP tests do not claim real-provider connectivity. |
 | Both-provider UI walkthrough through a real provider | Not tested | Offline adapter/runtime/UI components are tested separately. A live/billable walkthrough requires explicit opt-in. |

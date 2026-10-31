@@ -18,9 +18,11 @@ Do not add a nested module or independently version core packages. Release
 Please owns one repository-wide version for core source and experimental
 `komposyn` binaries. The production `komposyn-lg` CLI remains independently
 versioned and depends on a tagged core release. Keep the dependency one-way.
-Keep this chat and its role-specific plugin contracts
-experimental; do not add projects, sessions, tasks, persistent conversations,
-tool execution, a marketplace, or a universal plugin API to this milestone.
+Keep this chat and its role-specific plugin contracts experimental. The
+scoped experimental tool-use milestone in issue #198 may add in-memory,
+host-authorized tools under its reviewed boundaries. Do not add projects,
+sessions, tasks, persistent conversations, MCP, subagents, a marketplace, or
+a universal plugin API.
 Read [docs/vision.md](docs/vision.md), [docs/architecture.md](docs/architecture.md),
 and [docs/harness/README.md](docs/harness/README.md).
 
@@ -63,13 +65,15 @@ declaration.
 - Harness protocol transport is owned by the standalone CLI. Core changes that
   affect event or schema compatibility must preserve its published protocol-v1
   semantics and be reviewed with the CLI compatibility checks.
-- The experimental chat sends submitted text only to the selected provider;
-  messages, selection, continuation data, discovery, and request usage remain
-  in memory. Persist only validated auth profiles and UI settings. Do not open
-  a chat database, require a workspace, or route through a session runtime.
+- The experimental chat sends submitted text and, only after the scoped
+  issue #198 milestone is implemented, approved tool results to the selected
+  provider. Messages, tool activity, permissions, selection, continuation
+  data, discovery, and request usage remain in memory. Persist only validated
+  auth profiles and UI settings. Do not open a chat database, require a
+  workspace, or route through a session runtime.
 - Keep provider and UI contracts role-specific. Providers receive one resolved
-  credential per operation, never load the credential store, and never expose
-  tools in the temporary chat path. Keep Responses and Messages continuation
+  credential per operation, never load the credential store, and never own
+  tool authorization or execution. Keep Responses and Messages continuation
   formats provider-owned.
 - Diagnostics remain sanitized, deduplicated, locally persisted, and
   destination-neutral. Public issue drafts require explicit review in the CLI;

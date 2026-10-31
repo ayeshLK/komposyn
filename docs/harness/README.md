@@ -167,7 +167,9 @@ compatibility guarantee this chat needs. Catalog entries therefore have
 **unknown** compatibility; the picker explains this and actual Responses or
 Messages requests report unsupported access without automatic fallback.
 Model names are not used to infer capability or context limits. Both adapters
-send plain text, one system instruction, streaming, and no tools. OpenAI
+send plain text, one system instruction, streaming, and no tools in the
+current text-chat baseline. Issue #198 tracks a separate experimental tool-use
+milestone; its in-memory contracts do not advertise or execute tools. OpenAI
 requests set `store: false`; Anthropic requests use Messages. OpenAI API-key
 requests retain the configured output-token bound and encrypted reasoning
 continuation. The ChatGPT plan route follows the current SIWC preview subset:
