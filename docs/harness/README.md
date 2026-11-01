@@ -393,3 +393,11 @@ Implementation follows the official [Sign in with ChatGPT open-source flow](http
 [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations),
 [account and session guidance](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions),
 and [UI/UX guidance](https://developers.openai.com/siwc/ui-ux-guidelines).
+# Filesystem enforcement foundation
+
+KompoSyn does not currently register model-facing filesystem tools. A
+Linux-only, host-owned enforcement foundation is under development for future
+reviewed operations; it is not wired into the executable. See
+[filesystem enforcement foundation](filesystem-enforcement-foundation.md) for
+its API, guarantees, limitations, and acceptance criteria for any later tool
+enablement.
