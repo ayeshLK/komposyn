@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package filesystem owns the narrow, host-only filesystem boundary for
-// reviewed bundled operations. It exposes no os.File or directory handle to
-// tools. Filesystem tools are not registered by this package.
+// Package filesystem owns a narrow, host-only filesystem operation prototype.
+// It exposes no os.File or directory handle to tools. Its current Linux
+// backend does not preserve pathname-scope confinement against concurrent
+// namespace changes and must not be connected to model-facing tools.
 package filesystem
 
 import (
@@ -98,7 +99,10 @@ type deleteBackend interface {
 // Root is an explicitly selected directory capability. Opening a Root never
 // authorizes it; callers must still obtain action and resource permission.
 // The native backend binds later operations to descriptors derived from this
-// directory. Callers own and must close Roots and every prepared target.
+// directory. Those descriptors pin objects, not their pathname ancestry;
+// concurrent namespace changes can move objects outside this root. This API
+// is not available for model-facing filesystem tools. Callers own and must
+// close Roots and every prepared target.
 type Root struct {
 	mu      sync.Mutex
 	path    string

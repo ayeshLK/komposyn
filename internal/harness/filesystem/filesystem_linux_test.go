@@ -611,3 +611,365 @@ func TestLinuxReadTruncatesOnlyAtUTF8Boundary(t *testing.T) {
 	}
 	_ = target.Close()
 }
+
+func TestLinuxCounterexampleRootRelocationAfterFinalCheck(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	file := filepath.Join(rootPath, "read.txt")
+	if err := os.WriteFile(file, []byte("read after relocation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := root.PrepareRead(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := root.backend.(*linuxRoot)
+	movedRoot := filepath.Join(filepath.Dir(rootPath), "moved-outside-root")
+	backend.hook = func(stage string) {
+		if stage == "read-after-revalidate" {
+			backend.hook = nil
+			if err := os.Rename(rootPath, movedRoot); err != nil {
+				t.Errorf("relocate approved root: %v", err)
+			}
+			if err := os.Mkdir(rootPath, 0o700); err != nil {
+				t.Errorf("replace selected root pathname: %v", err)
+			}
+		}
+	}
+	result, err := target.ReadText(context.Background(), MaxReadBytes)
+	_ = target.Close()
+	if err != nil || result.Outcome != OutcomeSucceeded || result.Text != "read after relocation" {
+		t.Fatalf("descriptor read after root relocation = %+v, %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(movedRoot, "read.txt")); err != nil {
+		t.Fatalf("root was not moved outside selected pathname: %v", err)
+	}
+}
+
+func TestLinuxCounterexampleTargetRelocationBetweenOpenAndWrite(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	file := filepath.Join(rootPath, "write.txt")
+	if err := os.WriteFile(file, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := root.PrepareWrite(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(filepath.Dir(rootPath), "moved-target.txt")
+	backend := root.backend.(*linuxRoot)
+	backend.hook = func(stage string) {
+		if stage == "write-after-open" {
+			backend.hook = nil
+			if err := os.Rename(file, outside); err != nil {
+				t.Errorf("move opened target outside root: %v", err)
+			}
+		}
+	}
+	result, err := target.WriteText(context.Background(), "write through retained descriptor")
+	_ = target.Close()
+	if err != nil || result.Outcome != OutcomeSucceeded {
+		t.Fatalf("write after target relocation = %+v, %v", result, err)
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "write through retained descriptor" {
+		t.Fatalf("relocated target contents = %q, %v", got, err)
+	}
+}
+
+func TestLinuxCounterexampleHardlinkCreatedAfterAliasCheck(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	file := filepath.Join(rootPath, "write.txt")
+	if err := os.WriteFile(file, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(filepath.Dir(rootPath), "outside-alias.txt")
+	target, err := root.PrepareWrite(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := root.backend.(*linuxRoot)
+	backend.hook = func(stage string) {
+		if stage == "write-after-open" {
+			backend.hook = nil
+			if err := os.Link(file, alias); err != nil {
+				t.Errorf("create hardlink outside selected root: %v", err)
+			}
+		}
+	}
+	result, err := target.WriteText(context.Background(), "mutated through alias")
+	_ = target.Close()
+	if err != nil || result.Outcome != OutcomeSucceeded {
+		t.Fatalf("write after alias creation = %+v, %v", result, err)
+	}
+	if got, err := os.ReadFile(alias); err != nil || string(got) != "mutated through alias" {
+		t.Fatalf("hardlinked outside alias = %q, %v", got, err)
+	}
+}
+
+func TestLinuxCounterexampleParentRelocationAfterFinalCheck(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	parent := filepath.Join(rootPath, "parent")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target, err := root.PrepareWrite(filepath.Join(parent, "created.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(filepath.Dir(rootPath), "outside-parent")
+	backend := root.backend.(*linuxRoot)
+	backend.hook = func(stage string) {
+		if stage == "write-after-revalidate" {
+			backend.hook = nil
+			if err := os.Rename(parent, outside); err != nil {
+				t.Errorf("move approved parent outside root: %v", err)
+			}
+		}
+	}
+	result, err := target.WriteText(context.Background(), "outside the approved pathname tree")
+	_ = target.Close()
+	if err != nil || result.Outcome != OutcomeSucceeded {
+		t.Fatalf("descriptor write after parent relocation = %+v, %v", result, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(outside, "created.txt")); err != nil || string(got) != "outside the approved pathname tree" {
+		t.Fatalf("relocated parent contents = %q, %v", got, err)
+	}
+}
+
+func TestLinuxFinalCheckRejectsWriteLinkAndTargetSubstitution(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	outside := filepath.Join(filepath.Dir(rootPath), "outside.txt")
+	if err := os.WriteFile(outside, []byte("protected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(rootPath, "target.txt")
+	if err := os.WriteFile(file, []byte("approved"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := root.backend.(*linuxRoot)
+	for _, substitute := range []struct {
+		name string
+		link bool
+	}{
+		{name: "replacement"},
+		{name: "symlink", link: true},
+	} {
+		t.Run(substitute.name, func(t *testing.T) {
+			if err := os.WriteFile(file, []byte("approved"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := root.PrepareWrite(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend.hook = func(stage string) {
+				if stage != "write-after-revalidate" {
+					return
+				}
+				backend.hook = nil
+				if err := os.Remove(file); err != nil {
+					t.Errorf("remove approved entry: %v", err)
+				}
+				if substitute.link {
+					if err := os.Symlink(outside, file); err != nil {
+						t.Errorf("substitute symlink: %v", err)
+					}
+				} else if err := os.WriteFile(file, []byte("unapproved replacement"), 0o600); err != nil {
+					t.Errorf("create replacement: %v", err)
+				}
+			}
+			result, err := prepared.WriteText(context.Background(), "must not write")
+			_ = prepared.Close()
+			if !errors.Is(err, ErrTargetChanged) || result.Outcome != OutcomeNotExecuted {
+				t.Fatalf("substitution write = %+v, %v", result, err)
+			}
+			if got, err := os.ReadFile(outside); err != nil || string(got) != "protected" {
+				t.Fatalf("outside target changed: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestLinuxCounterexampleDeleteLinkSubstitutionAfterFinalCheck(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	outside := filepath.Join(filepath.Dir(rootPath), "outside-delete-target.txt")
+	if err := os.WriteFile(outside, []byte("protected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(rootPath, "approved.txt")
+	if err := os.WriteFile(file, []byte("approved"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := root.PrepareDelete(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := root.backend.(*linuxRoot)
+	backend.hook = func(stage string) {
+		if stage == "delete-after-final-revalidate" {
+			backend.hook = nil
+			if err := os.Remove(file); err != nil {
+				t.Errorf("remove approved link entry: %v", err)
+			}
+			if err := os.Symlink(outside, file); err != nil {
+				t.Errorf("substitute deletion target with link: %v", err)
+			}
+		}
+	}
+	result, err := target.Delete(context.Background())
+	_ = target.Close()
+	if err != nil || result.Outcome != OutcomeSucceeded {
+		t.Fatalf("link substitution deletion = %+v, %v", result, err)
+	}
+	if _, err := os.Lstat(file); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("substituted link entry remains: %v", err)
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "protected" {
+		t.Fatalf("link target changed: %q, %v", got, err)
+	}
+}
+
+func TestLinuxCounterexampleDeleteParentRelocationAfterFinalCheck(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	parent := filepath.Join(rootPath, "parent")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(parent, "delete.txt")
+	if err := os.WriteFile(file, []byte("approved"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := root.PrepareDelete(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(filepath.Dir(rootPath), "moved-delete-parent")
+	backend := root.backend.(*linuxRoot)
+	backend.hook = func(stage string) {
+		if stage == "delete-after-final-revalidate" {
+			backend.hook = nil
+			if err := os.Rename(parent, outside); err != nil {
+				t.Errorf("move delete parent outside root: %v", err)
+			}
+		}
+	}
+	result, err := target.Delete(context.Background())
+	_ = target.Close()
+	if err != nil || result.Outcome != OutcomeSucceeded {
+		t.Fatalf("delete after parent relocation = %+v, %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "delete.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("relocated delete target remains: %v", err)
+	}
+}
+
+func TestLinuxCounterexampleRecursiveChildRelocation(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	tree := filepath.Join(rootPath, "tree")
+	child := filepath.Join(tree, "child")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	childFile := filepath.Join(child, "data.txt")
+	if err := os.WriteFile(childFile, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := root.PrepareDelete(tree, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(filepath.Dir(rootPath), "relocated-child")
+	backend := root.backend.(*linuxRoot)
+	backend.hook = func(stage string) {
+		if stage == "delete-child-opened" {
+			backend.hook = nil
+			if err := os.Rename(child, outside); err != nil {
+				t.Errorf("relocate recursive child outside root: %v", err)
+			}
+		}
+	}
+	result, err := target.Delete(context.Background())
+	_ = target.Close()
+	if err == nil || result.Outcome != OutcomePartial {
+		t.Fatalf("recursive child relocation = %+v, %v; want visible partial outcome", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "data.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recursive deletion did not demonstrate outside child effect: %v", err)
+	}
+}
+
+func TestLinuxHardlinkCreatedAfterFinalCheckIsRejectedForReadAndWrite(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	file := filepath.Join(rootPath, "target.txt")
+	alias := filepath.Join(rootPath, "late-alias.txt")
+	if err := os.WriteFile(file, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := root.backend.(*linuxRoot)
+	read, err := root.PrepareRead(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.hook = func(stage string) {
+		if stage == "read-after-revalidate" {
+			backend.hook = nil
+			if err := os.Link(file, alias); err != nil {
+				t.Errorf("create late read alias: %v", err)
+			}
+		}
+	}
+	readResult, err := read.ReadText(context.Background(), MaxReadBytes)
+	_ = read.Close()
+	if !errors.Is(err, ErrAliasedTarget) || readResult.Outcome != OutcomeNotExecuted {
+		t.Fatalf("read after hardlink creation = %+v, %v", readResult, err)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	write, err := root.PrepareWrite(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.hook = func(stage string) {
+		if stage == "write-after-revalidate" {
+			backend.hook = nil
+			if err := os.Link(file, alias); err != nil {
+				t.Errorf("create late write alias: %v", err)
+			}
+		}
+	}
+	writeResult, err := write.WriteText(context.Background(), "must not mutate aliases")
+	_ = write.Close()
+	if !errors.Is(err, ErrAliasedTarget) || writeResult.Outcome != OutcomeNotExecuted {
+		t.Fatalf("write after hardlink creation = %+v, %v", writeResult, err)
+	}
+	if got, err := os.ReadFile(file); err != nil || string(got) != "content" {
+		t.Fatalf("aliased file changed: %q, %v", got, err)
+	}
+}
+
+func TestLinuxMountBoundaryWhenAvailable(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	mountpoint := filepath.Join(rootPath, "mount")
+	if err := os.Mkdir(mountpoint, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := unix.Mount("tmpfs", mountpoint, "tmpfs", 0, "size=1048576")
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+		t.Skipf("native mount-boundary test requires mount capability unavailable here: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("mount disposable tmpfs fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Unmount(mountpoint, unix.MNT_DETACH); err != nil {
+			t.Errorf("unmount disposable tmpfs fixture: %v", err)
+		}
+	})
+	file := filepath.Join(mountpoint, "mounted.txt")
+	if err := os.WriteFile(file, []byte("mounted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.PrepareRead(file); !errors.Is(err, ErrOutOfScope) {
+		t.Fatalf("mounted filesystem read prep = %v, want ErrOutOfScope", err)
+	}
+}
