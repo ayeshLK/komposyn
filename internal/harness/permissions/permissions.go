@@ -95,7 +95,11 @@ type Requirement struct {
 type Request struct {
 	ConversationID string
 	CallID         string
-	Requirements   []Requirement
+	// Binding is an opaque digest of the immutable invocation and captured
+	// authorization context. It is not a substitute for re-preparing that
+	// context immediately before dispatch.
+	Binding      string
+	Requirements []Requirement
 }
 
 type Rule struct {
@@ -452,6 +456,37 @@ func (s *MemoryStore) ConsumeOnce(conversationID, callID string, requirementKeys
 		delete(s.grants, id)
 	}
 	s.revision++
+	return nil
+}
+
+// ConsumeOnceMatching removes any once grants that cover the supplied
+// requirements. Requirements already authorized by rules or conversation
+// grants need no once grant and are left unchanged. The operation is atomic.
+func (s *MemoryStore) ConsumeOnceMatching(request Request) error {
+	if s == nil || request.ConversationID == "" || request.CallID == "" || len(request.Requirements) == 0 {
+		return ErrOnceGrantMissing
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	consumed := make([]string, 0, len(request.Requirements))
+	for _, requirement := range request.Requirements {
+		matches := []string{}
+		for id, grant := range s.grants {
+			if grant.Lifetime == LifetimeOnce && grant.ConversationID == request.ConversationID && grant.CallID == request.CallID && grant.ToolID == requirement.ToolID && grant.Kind == requirement.Kind && onceGrantMatches(grant, request, requirement) {
+				matches = append(matches, id)
+			}
+		}
+		if len(matches) > 1 {
+			return ErrOnceGrantMissing
+		}
+		consumed = append(consumed, matches...)
+	}
+	if len(consumed) > 0 {
+		for _, id := range consumed {
+			delete(s.grants, id)
+		}
+		s.revision++
+	}
 	return nil
 }
 

@@ -48,6 +48,7 @@ type Turn struct {
 	ProviderCode       string
 	DiagnosticCode     provider.DiagnosticCode
 	Message            string
+	ToolActivities     []ToolActivity
 	At                 time.Time
 }
 type Snapshot struct {
@@ -87,6 +88,10 @@ type Chat struct {
 	loginMu               sync.Mutex
 	loginOwners           map[string]auth.LoginCoordinator
 	timeout               time.Duration
+	toolRuntime           *toolRuntime
+	conversationID        string
+	conversationIDErr     error
+	closed                bool
 }
 
 func NewChat(providers *model.Registry, profiles auth.Store) *Chat {
@@ -109,13 +114,50 @@ func NewChatWithAuth(providers *model.Registry, profiles auth.Store, registry *a
 	if registry == nil {
 		registry = auth.NewRegistry()
 	}
-	chat := &Chat{catalog: model.Catalog{Providers: providers, Profiles: profiles, Auth: registry}, profiles: profiles, authRegistry: registry, timeout: 2 * time.Minute}
+	conversationID, conversationErr := newConversationID()
+	chat := &Chat{catalog: model.Catalog{Providers: providers, Profiles: profiles, Auth: registry}, profiles: profiles, authRegistry: registry, timeout: 2 * time.Minute, conversationID: conversationID, conversationIDErr: conversationErr}
 	if implementation, ok := registry.Lookup("openai", auth.MethodOAuth); ok {
 		if coordinator, ok := implementation.(auth.OAuthCoordinator); ok {
 			chat.oauth = coordinator
 		}
 	}
 	return chat
+}
+
+// NewChatWithToolRuntime preserves the existing text-only constructors while
+// allowing a trusted caller to inject a fixture or reviewed tool runtime.
+// The shipped executable intentionally does not call this constructor.
+func NewChatWithToolRuntime(providers *model.Registry, profiles auth.Store, registry *auth.Registry, config ToolRuntimeConfig) *Chat {
+	var chat *Chat
+	if registry == nil {
+		chat = NewChat(providers, profiles)
+	} else {
+		chat = NewChatWithAuth(providers, profiles, registry)
+	}
+	chat.toolRuntime = newToolRuntime(config)
+	return chat
+}
+
+// Close cancels active work and clears the current conversation's grants and
+// pending approvals. It does not claim to roll back a running side effect.
+func (c *Chat) Close() {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.closed = true
+	cancel := c.cancel
+	conversationID := c.conversationID
+	c.history = nil
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if c.toolRuntime != nil && conversationID != "" {
+		c.toolRuntime.grants.Clear(conversationID)
+		c.toolRuntime.coordinator.CancelConversation(conversationID)
+	}
 }
 
 func NewChatWithOAuth(providers *model.Registry, profiles auth.Store, oauth auth.Implementation) *Chat {
@@ -286,7 +328,11 @@ func (c *Chat) Snapshot() Snapshot {
 		}
 		return usage[i].ModelID < usage[j].ModelID
 	})
-	return Snapshot{Selected: selected, Turns: append([]Turn(nil), c.turns...), Usage: usage, Active: c.active}
+	turns := append([]Turn(nil), c.turns...)
+	for i := range turns {
+		turns[i].ToolActivities = append([]ToolActivity(nil), turns[i].ToolActivities...)
+	}
+	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: c.active}
 }
 
 func (c *Chat) recordUsageLocked(providerID provider.ID, modelID string, usage provider.Usage) {
@@ -439,7 +485,7 @@ func (c *Chat) RemoveProfile(id string, confirmReset bool) error {
 
 func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error {
 	c.mu.Lock()
-	if c.active || c.credentialBusy {
+	if c.closed || c.active || c.credentialBusy {
 		c.mu.Unlock()
 		return ErrRequestActive
 	}
@@ -478,7 +524,16 @@ func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error 
 	c.selected = &selected
 	return nil
 }
-func (c *Chat) clearConversationLocked() { c.history = nil; c.turns = nil }
+func (c *Chat) clearConversationLocked() {
+	oldID := c.conversationID
+	c.history = nil
+	c.turns = nil
+	if c.toolRuntime != nil && oldID != "" {
+		c.toolRuntime.grants.Clear(oldID)
+		c.toolRuntime.coordinator.CancelConversation(oldID)
+	}
+	c.conversationID, c.conversationIDErr = newConversationID()
+}
 
 func (c *Chat) Cancel() {
 	c.mu.Lock()
@@ -496,6 +551,11 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	}
 	ctx, cancel := context.WithTimeout(parent, c.timeout)
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		cancel()
+		return Turn{}, errors.New("chat is closed")
+	}
 	if c.active || c.credentialBusy {
 		c.mu.Unlock()
 		cancel()
@@ -521,6 +581,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	history := append([]provider.Message(nil), c.history...)
 	history = append(history, provider.Message{Role: provider.RoleUser, Text: prompt})
 	requestID := fmt.Sprintf("chat-%d", generation)
+	conversationID, conversationIDErr := c.conversationID, c.conversationIDErr
 	c.mu.Unlock()
 	defer func() {
 		cancel()
@@ -545,7 +606,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	stateIsCurrent := func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return c.generation == generation && c.active && !(c.credentialBusy && c.credentialBusyProfile == selection.ProfileID) && c.selected != nil && *c.selected == selection && ctx.Err() == nil
+		return !c.closed && c.generation == generation && c.active && !(c.credentialBusy && c.credentialBusyProfile == selection.ProfileID) && c.selected != nil && *c.selected == selection && ctx.Err() == nil
 	}
 
 	prof, err := c.profiles.GetContext(ctx, selection.ProfileID)
@@ -618,14 +679,12 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		}
 		return Turn{}, errors.New("chat selection changed while resolving credentials")
 	}
-	result, callErr := plug.StreamChat(ctx, provider.ChatRequest{RequestID: requestID, ModelID: selection.ID, Credential: modelCredential(prof, key), Messages: history, Instructions: "You are KompoSyn, a helpful text assistant. Do not claim to call tools.", MaxOutput: 4096}, func(delta string) {
-		c.mu.Lock()
-		valid := c.active && c.generation == generation && ctx.Err() == nil
-		c.mu.Unlock()
-		if valid && onDelta != nil {
+	loop := c.runToolLoop(ctx, generation, selection, plug, modelCredential(prof, key), history, requestID, conversationID, conversationIDErr, stateIsCurrent, func(delta string) {
+		if stateIsCurrent() && onDelta != nil {
 			onDelta(delta)
 		}
 	})
+	result, callErr := loop.result, loop.err
 	turn.Text = result.Text
 	turn.Refusal = result.Refusal
 	turn.Outcome = result.Outcome
@@ -646,20 +705,21 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 			turn.Message = "request interrupted"
 		}
 	}
+	turn.ToolActivities = append([]ToolActivity(nil), loop.activities...)
+	if loop.message != "" && turn.Message == "" {
+		turn.Message = loop.message
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.generation != generation {
 		return turn, errors.New("stale provider result discarded")
 	}
-	usageModelID := result.ModelID
-	if usageModelID == "" {
-		usageModelID = selection.ID
-	}
-	c.recordUsageLocked(selection.Provider, usageModelID, result.Usage)
 	c.active = false
 	c.activeProfile = ""
 	c.cancel = nil
-	if turn.Outcome == provider.OutcomeCompleted || turn.Outcome == provider.OutcomeRefused {
+	if loop.persist {
+		c.history = cloneMessages(loop.history)
+	} else if turn.Outcome == provider.OutcomeCompleted || turn.Outcome == provider.OutcomeRefused {
 		if len(result.Native) == 0 {
 			turn.Outcome = provider.OutcomeUnsupported
 			turn.Message = "provider returned no replayable continuation data"
