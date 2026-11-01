@@ -73,7 +73,42 @@ type Turn struct {
 	DiagnosticCode                                                   modelprovider.DiagnosticCode
 	Outcome                                                          modelprovider.Outcome
 	Usage                                                            modelprovider.Usage
+	ToolActivities                                                   []ToolActivity
 }
+
+type ToolActivity struct {
+	CallID, ToolID, Phase, Outcome, Message string
+	Truncated                               bool
+}
+type ApprovalChoice string
+
+const (
+	ApprovalOnce         ApprovalChoice = "once"
+	ApprovalConversation ApprovalChoice = "conversation"
+	ApprovalDeny         ApprovalChoice = "deny"
+	ApprovalCancel       ApprovalChoice = "cancel"
+	ApprovalRedirect     ApprovalChoice = "redirect"
+)
+
+type ApprovalRequirement struct {
+	Kind, ToolID, Operation, Description, ResourceKind, ResourceScope string
+	ConversationAllowed                                               bool
+}
+type ApprovalRequest struct {
+	ID, ToolID, ToolDescription string
+	Requirements                []ApprovalRequirement
+	AllowConversation           bool
+}
+type ApprovalEvent struct {
+	Request     *ApprovalRequest
+	DismissedID string
+}
+type ApprovalResponse struct {
+	ID           string
+	Choice       ApprovalChoice
+	RedirectText string
+}
+type ToolGrant struct{ ID, ToolID, Action, ResourceKind, ResourceScope, Operation, Lifetime, Origin string }
 
 // MetricUsage retains exact reported counts and marks incomplete coverage.
 // A count may be known and partial when some requests omitted that metric.
@@ -91,11 +126,12 @@ type ModelUsage struct {
 	CachedRead, CacheWrite MetricUsage
 }
 type Snapshot struct {
-	Selected *Model
-	Turns    []Turn
-	Usage    []ModelUsage
-	Active   bool
-	Version  string
+	Selected       *Model
+	Turns          []Turn
+	Usage          []ModelUsage
+	Active         bool
+	ToolActivities []ToolActivity
+	Version        string
 }
 
 type Client interface {
@@ -113,4 +149,9 @@ type Client interface {
 	Snapshot() Snapshot
 	Send(context.Context, string, func(string)) (Turn, error)
 	Cancel()
+	ApprovalEvents() <-chan ApprovalEvent
+	RespondApproval(ApprovalResponse) error
+	Permissions(context.Context) ([]ToolGrant, error)
+	RevokePermission(context.Context, string) error
+	ClearPermissions(context.Context) (int, error)
 }

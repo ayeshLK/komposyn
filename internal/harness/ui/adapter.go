@@ -29,6 +29,51 @@ type Client struct {
 	Chat         *runtime.Chat
 	ProfileStore auth.Store
 	Version      string
+	Approval     *ApprovalBridge
+}
+
+func (c Client) ApprovalEvents() <-chan ui.ApprovalEvent {
+	if c.Approval == nil {
+		return nil
+	}
+	return c.Approval.Events()
+}
+func (c Client) RespondApproval(response ui.ApprovalResponse) error {
+	if c.Approval == nil {
+		return ErrApprovalResponse
+	}
+	return c.Approval.Respond(response)
+}
+func (c Client) Permissions(ctx context.Context) ([]ui.ToolGrant, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := []ui.ToolGrant{}
+	for _, grant := range c.Chat.ToolGrants() {
+		action := grant.ActionDescription
+		if action == "" {
+			action = grant.ToolID + " " + string(grant.Operation) + " action"
+		}
+		item := ui.ToolGrant{ID: grant.ID, ToolID: grant.ToolID, Action: action, Operation: string(grant.Operation), Lifetime: string(grant.Lifetime), Origin: grant.Origin}
+		if grant.Resource != nil {
+			item.ResourceKind = string(grant.Resource.Kind)
+			item.ResourceScope = grant.Resource.Root
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+func (c Client) RevokePermission(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.Chat.RevokeToolGrant(id)
+}
+func (c Client) ClearPermissions(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.Chat.ClearToolGrants(), nil
 }
 
 func (c Client) Profiles(ctx context.Context) ([]ui.Profile, error) {
@@ -116,11 +161,18 @@ func (c Client) Select(ctx context.Context, key string, confirm bool) error {
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
 	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, Version: c.Version}
+	for _, activity := range s.ToolActivities {
+		out.ToolActivities = append(out.ToolActivities, convertActivity(activity))
+	}
 	if s.Selected != nil {
 		out.Selected = convertModel(*s.Selected)
 	}
 	for _, t := range s.Turns {
-		out.Turns = append(out.Turns, ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, DiagnosticCode: t.DiagnosticCode, Outcome: t.Outcome, Usage: t.Usage})
+		turn := ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, DiagnosticCode: t.DiagnosticCode, Outcome: t.Outcome, Usage: t.Usage}
+		for _, activity := range t.ToolActivities {
+			turn.ToolActivities = append(turn.ToolActivities, convertActivity(activity))
+		}
+		out.Turns = append(out.Turns, turn)
 	}
 	for _, item := range s.Usage {
 		out.Usage = append(out.Usage, ui.ModelUsage{Provider: item.Provider, ModelID: item.ModelID,
@@ -133,7 +185,14 @@ func (c Client) Snapshot() ui.Snapshot {
 }
 func (c Client) Send(ctx context.Context, text string, delta func(string)) (ui.Turn, error) {
 	t, err := c.Chat.Send(ctx, text, delta)
-	return ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, DiagnosticCode: t.DiagnosticCode, Outcome: t.Outcome, Usage: t.Usage}, err
+	turn := ui.Turn{Prompt: t.Prompt, Text: t.Text, Refusal: t.Refusal, Message: t.Message, RequestID: t.RequestID, ModelID: t.ModelID, ProviderCode: t.ProviderCode, DiagnosticCode: t.DiagnosticCode, Outcome: t.Outcome, Usage: t.Usage}
+	for _, activity := range t.ToolActivities {
+		turn.ToolActivities = append(turn.ToolActivities, convertActivity(activity))
+	}
+	return turn, err
+}
+func convertActivity(activity runtime.ToolActivity) ui.ToolActivity {
+	return ui.ToolActivity{CallID: activity.CallID, ToolID: string(activity.ToolID), Phase: activity.Phase, Outcome: string(activity.Outcome), Message: activity.Message, Truncated: activity.Truncated}
 }
 func (c Client) Cancel() { c.Chat.Cancel() }
 

@@ -29,6 +29,7 @@ import (
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
+	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 )
 
@@ -52,10 +53,11 @@ type Turn struct {
 	At                 time.Time
 }
 type Snapshot struct {
-	Selected *model.Model
-	Turns    []Turn
-	Usage    []ModelUsage
-	Active   bool
+	Selected       *model.Model
+	Turns          []Turn
+	Usage          []ModelUsage
+	Active         bool
+	ToolActivities []ToolActivity
 }
 type UsageMetric struct {
 	Tokens  int64
@@ -92,6 +94,7 @@ type Chat struct {
 	conversationID        string
 	conversationIDErr     error
 	toolCallIDs           map[string]struct{}
+	activeToolActivities  []ToolActivity
 	closed                bool
 }
 
@@ -159,7 +162,61 @@ func (c *Chat) Close() {
 	if c.toolRuntime != nil && conversationID != "" {
 		c.toolRuntime.grants.Clear(conversationID)
 		c.toolRuntime.coordinator.CancelConversation(conversationID)
+		if invalidator, ok := c.toolRuntime.approval.(ToolApprovalInvalidator); ok {
+			invalidator.InvalidateConversation(conversationID)
+		}
 	}
+}
+
+// ToolGrants returns detached, in-memory grants for the current conversation.
+func (c *Chat) ToolGrants() []permissions.Grant {
+	c.mu.Lock()
+	id, runtime := c.conversationID, c.toolRuntime
+	c.mu.Unlock()
+	if runtime == nil {
+		return nil
+	}
+	_, grants := runtime.grants.Snapshot(id)
+	return grants
+}
+
+// RevokeToolGrant revokes one current-conversation grant and invalidates any
+// stale pending decision before it can authorize a later dispatch.
+func (c *Chat) RevokeToolGrant(id string) error {
+	c.mu.Lock()
+	conversation, runtime := c.conversationID, c.toolRuntime
+	c.mu.Unlock()
+	if runtime == nil {
+		return errors.New("tool permissions are unavailable")
+	}
+	if err := runtime.grants.Revoke(conversation, id); err != nil {
+		return err
+	}
+	runtime.coordinator.CancelConversation(conversation)
+	if invalidator, ok := runtime.approval.(ToolApprovalInvalidator); ok {
+		invalidator.InvalidateConversation(conversation)
+	}
+	return nil
+}
+
+// ClearToolGrants clears current-conversation grants and invalidates pending
+// approvals only when authority changed.
+func (c *Chat) ClearToolGrants() int {
+	c.mu.Lock()
+	conversation, runtime := c.conversationID, c.toolRuntime
+	c.mu.Unlock()
+	if runtime == nil {
+		return 0
+	}
+	_, before := runtime.grants.Snapshot(conversation)
+	runtime.grants.Clear(conversation)
+	if len(before) > 0 {
+		runtime.coordinator.CancelConversation(conversation)
+		if invalidator, ok := runtime.approval.(ToolApprovalInvalidator); ok {
+			invalidator.InvalidateConversation(conversation)
+		}
+	}
+	return len(before)
 }
 
 func NewChatWithOAuth(providers *model.Registry, profiles auth.Store, oauth auth.Implementation) *Chat {
@@ -334,7 +391,8 @@ func (c *Chat) Snapshot() Snapshot {
 	for i := range turns {
 		turns[i].ToolActivities = append([]ToolActivity(nil), turns[i].ToolActivities...)
 	}
-	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: c.active}
+	activities := append([]ToolActivity(nil), c.activeToolActivities...)
+	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: c.active, ToolActivities: activities}
 }
 
 func (c *Chat) recordUsageLocked(providerID provider.ID, modelID string, usage provider.Usage) {
@@ -534,6 +592,9 @@ func (c *Chat) clearConversationLocked() {
 	if c.toolRuntime != nil && oldID != "" {
 		c.toolRuntime.grants.Clear(oldID)
 		c.toolRuntime.coordinator.CancelConversation(oldID)
+		if invalidator, ok := c.toolRuntime.approval.(ToolApprovalInvalidator); ok {
+			invalidator.InvalidateConversation(oldID)
+		}
 	}
 	c.conversationID, c.conversationIDErr = newConversationID()
 }
@@ -582,6 +643,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	generation := c.sequence.Add(1)
 	c.generation = generation
 	c.active = true
+	c.activeToolActivities = nil
 	c.activeProfile = selection.ProfileID
 	c.cancel = cancel
 	history := append([]provider.Message(nil), c.history...)
@@ -739,6 +801,15 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		return turn, callErr
 	}
 	return turn, nil
+}
+
+func (c *Chat) updateToolActivity(generation uint64, activity ToolActivity) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generation != generation || !c.active {
+		return
+	}
+	c.activeToolActivities = append(c.activeToolActivities, activity)
 }
 
 func modelCredential(p auth.Profile, key string) provider.Credential {

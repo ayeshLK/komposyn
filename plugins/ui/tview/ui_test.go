@@ -28,21 +28,26 @@ import (
 )
 
 type clientStub struct {
-	mu            sync.Mutex
-	selected      *ui.Model
-	turns         []ui.Turn
-	usage         []ui.ModelUsage
-	version       string
-	selectedCh    chan struct{}
-	selectCalls   int
-	profiles      []ui.Profile
-	addHook       func(context.Context, string, string, string, string, map[string]string) error
-	replaceHook   func(context.Context, string, string, string, map[string]string, bool) error
-	snapshotHook  func() ui.Snapshot
-	sendHook      func(context.Context, string, func(string)) (ui.Turn, error)
-	methods       map[string][]string
-	loginHook     func(context.Context, string) (ui.LoginAttempt, error)
-	loginCanceled []string
+	mu                sync.Mutex
+	selected          *ui.Model
+	turns             []ui.Turn
+	usage             []ui.ModelUsage
+	version           string
+	selectedCh        chan struct{}
+	selectCalls       int
+	profiles          []ui.Profile
+	addHook           func(context.Context, string, string, string, string, map[string]string) error
+	replaceHook       func(context.Context, string, string, string, map[string]string, bool) error
+	snapshotHook      func() ui.Snapshot
+	sendHook          func(context.Context, string, func(string)) (ui.Turn, error)
+	methods           map[string][]string
+	loginHook         func(context.Context, string) (ui.LoginAttempt, error)
+	loginCanceled     []string
+	approvalEvents    chan ui.ApprovalEvent
+	approvalResponses chan ui.ApprovalResponse
+	toolGrants        []ui.ToolGrant
+	revoked           []string
+	cleared           int
 }
 
 // synchronizedSimulation protects the returned cell slice from tview's render
@@ -157,7 +162,85 @@ func (c *clientStub) Send(ctx context.Context, text string, delta func(string)) 
 	}
 	return ui.Turn{}, nil
 }
-func (c *clientStub) Cancel() {}
+func (c *clientStub) Cancel()                                 {}
+func (c *clientStub) ApprovalEvents() <-chan ui.ApprovalEvent { return c.approvalEvents }
+func (c *clientStub) RespondApproval(response ui.ApprovalResponse) error {
+	if c.approvalResponses != nil {
+		c.approvalResponses <- response
+	}
+	return nil
+}
+func (c *clientStub) Permissions(context.Context) ([]ui.ToolGrant, error) {
+	return append([]ui.ToolGrant(nil), c.toolGrants...), nil
+}
+func (c *clientStub) RevokePermission(_ context.Context, id string) error {
+	c.revoked = append(c.revoked, id)
+	return nil
+}
+func (c *clientStub) ClearPermissions(context.Context) (int, error) {
+	count := len(c.toolGrants)
+	c.toolGrants = nil
+	c.cleared += count
+	return count, nil
+}
+
+func TestApprovalDialogRequiresExplicitChoiceAndEscapeCancelsTurn(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 30)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	responses := make(chan ui.ApprovalResponse, 2)
+	events := make(chan ui.ApprovalEvent, 2)
+	client := &clientStub{approvalEvents: events, approvalResponses: responses}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	events <- ui.ApprovalEvent{Request: &ui.ApprovalRequest{ID: "pending-1", ToolID: "fixture", ToolDescription: "fixture requested access", AllowConversation: true, Requirements: []ui.ApprovalRequirement{{Kind: "resource", ToolID: "fixture", Operation: "read", Description: "read file", ResourceKind: "filesystem", ResourceScope: "/tmp/exact"}}}}
+	waitForScreen(t, safe, "/tmp/exact", "")
+	select {
+	case response := <-responses:
+		t.Fatalf("approval happened without a choice: %+v", response)
+	case <-time.After(80 * time.Millisecond):
+	}
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(35 * time.Millisecond)
+	}
+	press(tcell.KeyRune, 'j')
+	select {
+	case response := <-responses:
+		t.Fatalf("unrelated key accepted approval: %+v", response)
+	default:
+	}
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyEnter, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "pending-1" || response.Choice != ui.ApprovalOnce {
+			t.Fatalf("explicit choice = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("explicit Allow once choice was not delivered")
+	}
+	events <- ui.ApprovalEvent{Request: &ui.ApprovalRequest{ID: "pending-2", ToolID: "fixture", Requirements: []ui.ApprovalRequirement{{Kind: "action", Operation: "write"}}}}
+	waitForScreen(t, safe, "write", "")
+	press(tcell.KeyEscape, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "pending-2" || response.Choice != ui.ApprovalCancel {
+			t.Fatalf("Escape response = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Escape did not cancel the turn")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
 
 func TestPickerInteractionOnSimulationScreen(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
@@ -777,7 +860,7 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 		t.Fatalf("/m suggestions = %+v", u.commandItems)
 	}
 	u.refreshCommandSuggestions("/")
-	if len(u.commandItems) != 5 {
+	if len(u.commandItems) != 6 {
 		t.Fatalf("root slash suggestions = %+v", u.commandItems)
 	}
 	u.commandList.SetCurrentItem(1)

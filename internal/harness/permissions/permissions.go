@@ -86,6 +86,7 @@ type Requirement struct {
 	Kind           RequirementKind
 	Key            string
 	ToolID         string
+	Description    string
 	Operation      Operation
 	ActionKey      string
 	Resource       *ResourceRequest
@@ -118,18 +119,19 @@ const (
 )
 
 type Grant struct {
-	Kind           RequirementKind
-	ID             string
-	ConversationID string
-	CallID         string
-	RequirementKey string
-	ToolID         string
-	Operation      Operation
-	ActionKey      string
-	ResourceTarget string
-	Resource       *ResourceScope
-	Lifetime       Lifetime
-	Origin         string
+	Kind              RequirementKind
+	ID                string
+	ConversationID    string
+	CallID            string
+	RequirementKey    string
+	ToolID            string
+	ActionDescription string
+	Operation         Operation
+	ActionKey         string
+	ResourceTarget    string
+	Resource          *ResourceScope
+	Lifetime          Lifetime
+	Origin            string
 }
 
 type Decision struct {

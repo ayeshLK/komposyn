@@ -1,9 +1,9 @@
 # Tool use Phase 1 architecture and decision record
 
-Status: the contracts, evaluator, injected in-memory grant store, and bounded
-runtime integration are implemented in review changes. No shipped model tool
-is enabled and no process, file mutation, web request, or live model call is
-authorized by this document.
+Status: the contracts, evaluator, injected in-memory grant store, bounded
+runtime integration, and tview approval/permission controls are implemented in
+review changes. No shipped model tool is enabled and no process, file
+mutation, web request, or live model call is authorized by this document.
 Injected test/review adapters exercise the runtime boundary; they do not
 constitute a production enforcement backend.
 
@@ -98,11 +98,12 @@ stateDiagram-v2
 
 `Do something else` rejects the pending call and returns the user's
 instruction for replanning; any replacement is a new call and is independently
-checked. This differs from **deny**, whose user-facing continuation behavior
-remains an open decision below. Pending cancellation, shutdown, or absent
-interaction never silently approves. A running side effect is not erased from
-the in-memory action record if a later model request fails; recovery must never
-replay it automatically.
+checked. **Deny** returns a typed not-executed result and permits model
+continuation. **Cancel** stops the entire turn without another provider
+continuation; Escape in the approval UI explicitly cancels. Pending cancellation,
+shutdown, or absent interaction never silently approves. A running side effect
+is not erased from the in-memory action record if a later model request fails;
+recovery must never replay it automatically.
 
 `/permissions` lists in-memory grants with origin and lifetime; individual
 revocation or clear-all increments the policy revision and invalidates queued
@@ -110,6 +111,17 @@ approvals. Confirmation of a provider/model/profile change and process exit
 clear conversation grants. Tool credential material is injected only into the
 specific backend that needs it; it is not included in model-visible results or
 ordinary chat snapshots.
+
+The tview frontend receives detached approval and grant records through the UI
+contract. It submits an opaque pending ID and a choice; only the runtime
+coordinator validates the live request and creates grants. `/permissions` uses
+runtime-owned inspection/revocation calls and remains usable during an active
+turn. A pending dialog is invalidated when grant revision changes. The UI
+reports awaiting approval, authorized, running, and finished activity states;
+approval alone is never reported as execution. Final activity is copied into
+the completed turn so effects remain visible if later provider continuation
+fails. Tool read approval explicitly explains that retrieved data is returned
+to the selected model. The shipped executable still registers no real tools.
 
 ## Threat model
 
@@ -246,10 +258,11 @@ data if a subsequent provider request fails, preventing automatic replay.
 Provider timeouts apply independently to each request; approval waits inherit
 caller cancellation/deadlines and shutdown, not the internal provider timeout.
 Provider request usage is recorded once for every response, including failed
-continuations. The shipped
-`cmd/harness` remains text-only and registers no tools. No production adapter,
-permission UI, OS sandbox, shell, filesystem mutation, or network tool is
-implemented by this runtime layer.
+continuations. The shipped `cmd/harness` remains text-only and registers no
+tools. No production execution adapter, OS sandbox, shell, filesystem
+mutation, or network tool is implemented. The tview UI offers injected
+approval, conversation-grant management, and live in-memory activity reporting;
+that surface does not enable tools in the shipped executable.
 
 The contract foundation implements role-specific tool definitions, typed
 outcomes, deterministic registry snapshots, typed action/resource

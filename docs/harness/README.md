@@ -167,9 +167,10 @@ compatibility guarantee this chat needs. Catalog entries therefore have
 **unknown** compatibility; the picker explains this and actual Responses or
 Messages requests report unsupported access without automatic fallback.
 Model names are not used to infer capability or context limits. Both adapters
-send plain text, one system instruction, streaming, and no tools in the
-current text-chat baseline. Issue #198 tracks a separate experimental tool-use
-milestone; its in-memory contracts do not advertise or execute tools. OpenAI
+send plain text, one system instruction, and streaming. The experimental tool
+runtime can expose registered tools only when a supported route and trusted
+authorization/enforcement adapters are injected. The shipped executable
+registers no tools and remains text-only. OpenAI
 requests set `store: false`; Anthropic requests use Messages. OpenAI API-key
 requests retain the configured output-token bound and encrypted reasoning
 continuation. The ChatGPT plan route follows the current SIWC preview subset:
@@ -201,11 +202,16 @@ messages requires confirmation and clears the in-memory chat. Canceling that
 confirmation preserves the selection and chat. Restart begins with no selected
 model and an empty conversation while saved settings/credentials remain.
 
-The composer suggests `/model`, `/help`, `/cancel`, `/exit`, and `/copy` from the same
+The composer suggests `/model`, `/help`, `/cancel`, `/exit`, `/permissions`, and `/copy` from the same
 command definitions used for dispatch. Type `/` and narrow the prefix, use
 Up/Down to highlight a suggestion, Tab to complete it, Enter to run the
 highlighted command, or Esc to dismiss suggestions while keeping the draft.
 Command input is dispatched as a command and is never sent as provider text.
+`/permissions` shows temporary tool grants for this conversation, including
+their opaque IDs, operation, scope, lifetime, and origin. Select a grant and
+press Enter (or its `r` shortcut) to revoke it, or clear all grants. Revocation
+prevents future dispatch and invalidates pending approvals; it does not undo a
+completed effect or promise to stop running work.
 Outside an active suggestion list, Up/Down in the composer recalls previously
 submitted questions. Up moves toward older questions; Down moves toward newer
 ones and restores the draft that was present before browsing. Recalled text can
@@ -258,6 +264,25 @@ otherwise it keeps its request-cancel behavior. To use terminal-native
 selection, press **Ctrl+T** to release mouse capture, select text, and use the
 terminal's Copy action (often Ctrl+Shift+C on Linux). Press Ctrl+T again to
 restore UI mouse controls.
+
+When an injected tool runtime needs approval, KompoSyn shows every missing
+action and resource requirement together. Choose **Allow once**, **Allow for
+conversation** when offered, **Deny**, or **Do something else** with an
+instruction for replanning. **Cancel turn** and Escape stop the turn without a
+provider continuation. The dialog does not pre-approve; a keyboard choice must
+be made after it appears. Read access warns that retrieved data is returned to
+the selected model. Use `/permissions` to inspect or revoke temporary grants;
+OAuth permission metadata is separate. Revocation blocks future dispatch but
+does not roll back completed effects or claim to terminate running work.
+`/permissions` remains available during a turn, and an approval dialog links to
+it directly. Tool activity shows awaiting approval, authorized, running, and
+finished states, with the typed outcome and truncation status. Tool prompts,
+grants, and activity exist only in memory. The shipped CLI has no registered
+real tools, so this surface is exercised with injected test/review tools only.
+
+Escape in the approval dialog explicitly cancels the entire active turn. The
+first keyboard event after a dialog appears is consumed to prevent a composer
+key already in flight from accepting an option.
 
 ### Token usage
 

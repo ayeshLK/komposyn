@@ -73,6 +73,8 @@ type ToolApprovalInteraction interface {
 	Review(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error)
 }
 
+type ToolApprovalInvalidator interface{ InvalidateConversation(string) }
+
 type ToolApprovalFunc func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error)
 
 func (f ToolApprovalFunc) Review(ctx context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
@@ -101,6 +103,7 @@ type toolRuntime struct {
 type ToolActivity struct {
 	CallID    string
 	ToolID    tools.ID
+	Phase     string
 	Outcome   tools.Outcome
 	Truncated bool
 	Message   string
@@ -551,7 +554,9 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 				toolResult := fixedToolResult(call.CallID, tools.OutcomeNotExecuted, "Tool was not executed because the provider-request limit was reached.", available)
 				callResults = append(callResults, toolResult)
 				resultBytes += len(toolResult.Content)
-				batchActivities = append(batchActivities, ToolActivity{CallID: call.CallID, ToolID: call.ToolID, Outcome: tools.OutcomeNotExecuted, Message: "provider request limit reached"})
+				activity := ToolActivity{CallID: call.CallID, ToolID: call.ToolID, Phase: "finished", Outcome: tools.OutcomeNotExecuted, Message: "provider request limit reached"}
+				batchActivities = append(batchActivities, activity)
+				c.updateToolActivity(generation, activity)
 				continue
 			}
 			if stopTurn || !current() {
@@ -559,10 +564,12 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 				toolResult := fixedToolResult(call.CallID, tools.OutcomeNotExecuted, "Tool was not executed because the turn was cancelled.", available)
 				callResults = append(callResults, toolResult)
 				resultBytes += len(toolResult.Content)
-				batchActivities = append(batchActivities, ToolActivity{CallID: call.CallID, ToolID: call.ToolID, Outcome: tools.OutcomeNotExecuted, Message: "turn cancelled before execution"})
+				activity := ToolActivity{CallID: call.CallID, ToolID: call.ToolID, Phase: "finished", Outcome: tools.OutcomeNotExecuted, Message: "turn cancelled before execution"}
+				batchActivities = append(batchActivities, activity)
+				c.updateToolActivity(generation, activity)
 				continue
 			}
-			toolResult, activity, redirectText, cancelTurn := runtime.executeOne(ctx, conversationID, requestID, call, definitions, available, current)
+			toolResult, activity, redirectText, cancelTurn := runtime.executeOne(ctx, conversationID, requestID, call, definitions, available, current, func(activity ToolActivity) { c.updateToolActivity(generation, activity) })
 			callResults = append(callResults, toolResult)
 			resultBytes += len(toolResult.Content)
 			batchActivities = append(batchActivities, activity)
@@ -602,11 +609,18 @@ func fmtRequestID(base string, request int) string {
 	return base + "-request-" + strconv.Itoa(request)
 }
 
-func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID string, call provider.ToolCall, advertised []tools.Definition, maxBytes int, current func() bool) (provider.ToolResult, ToolActivity, string, bool) {
+func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID string, call provider.ToolCall, advertised []tools.Definition, maxBytes int, current func() bool, publish func(ToolActivity)) (provider.ToolResult, ToolActivity, string, bool) {
 	activity := ToolActivity{CallID: call.CallID, ToolID: call.ToolID}
+	update := func(phase string) {
+		activity.Phase = phase
+		if publish != nil {
+			publish(activity)
+		}
+	}
 	notExecuted := func(message string) (provider.ToolResult, ToolActivity, string, bool) {
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = message
+		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, message, maxBytes), activity, "", false
 	}
 	if !validToolCall(call) {
@@ -633,6 +647,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		return notExecuted("tool operation is denied by policy")
 	}
 	if len(decision.Missing) > 0 {
+		update("awaiting approval")
 		pending, _, beginErr := r.coordinator.Begin(request)
 		if beginErr != nil {
 			return notExecuted("tool approval is unavailable")
@@ -705,11 +720,13 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	if err := r.grants.ConsumeOnceMatchingAtRevision(prepared, freshDecision.Revision); err != nil {
 		return notExecuted("once permission could not be consumed")
 	}
+	update("authorized")
 	if !current() || ctx.Err() != nil {
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
+	update("running")
 	result, executionErr := r.enforcer.Execute(ctx, tool, cloneInvocation(invocation), prepared)
 	outcome := validateResultOutcome(result)
 	if executionErr != nil {
@@ -728,6 +745,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	activity.Outcome = outcome
 	activity.Truncated = truncated || result.Truncated
 	activity.Message = toolOutcomeMessage(outcome)
+	update("finished")
 	return provider.ToolResult{CallID: call.CallID, Content: content, IsError: outcome != tools.OutcomeSucceeded}, activity, "", ctx.Err() != nil
 }
 
