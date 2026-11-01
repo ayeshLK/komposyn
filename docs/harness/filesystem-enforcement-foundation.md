@@ -33,8 +33,13 @@ authorization context require fresh authorization.
 The Linux backend uses `openat2` relative to retained directory descriptors
 with `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`, and
 `RESOLVE_NO_XDEV`. It fails closed when the kernel or flags are unavailable.
-Reads use the opened file descriptor. Writes open without following links,
-verify the captured file identity, and mutate through that descriptor.
+Reads use the opened file descriptor. Prepared existing write and delete
+targets retain a close-on-exec `O_PATH` descriptor, which pins the target
+identity against inode reuse; writes also open the named target without
+following links, compare it with the pinned identity, and mutate through that
+opened descriptor. Duplicated directory descriptors are created atomically
+with close-on-exec. Bounded reads return a complete UTF-8 prefix when the byte
+limit cuts through a rune and reject malformed bytes in the returned range.
 Recursive deletion walks directory descriptors without traversing symlinks;
 an explicitly selected symlink may be removed as a link entry, never as its
 destination. Nonexistent write targets use a securely opened parent and

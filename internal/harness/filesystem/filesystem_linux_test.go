@@ -491,3 +491,123 @@ func TestLinuxUnknownOutcomeClassification(t *testing.T) {
 		t.Fatalf("interrupted delete classification result=%+v err=%v", result, err)
 	}
 }
+
+func TestLinuxPreparedWriteAndDeletePinTargetAcrossReplacement(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	writePath := filepath.Join(rootPath, "write.txt")
+	if err := os.WriteFile(writePath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write, err := root.PrepareWrite(writePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(writePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(writePath, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := write.WriteText(context.Background(), "must-not-overwrite")
+	if !errors.Is(err, ErrTargetChanged) || result.Outcome != OutcomeNotExecuted {
+		t.Fatalf("replacement write = %+v, %v", result, err)
+	}
+	if got, err := os.ReadFile(writePath); err != nil || string(got) != "replacement" {
+		t.Fatalf("replacement contents = %q, %v", got, err)
+	}
+	_ = write.Close()
+
+	deletePath := filepath.Join(rootPath, "delete.txt")
+	if err := os.WriteFile(deletePath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deletion, err := root.PrepareDelete(deletePath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(deletePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deletePath, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err = deletion.Delete(context.Background())
+	if !errors.Is(err, ErrTargetChanged) || result.Outcome != OutcomeNotExecuted {
+		t.Fatalf("replacement delete = %+v, %v", result, err)
+	}
+	if got, err := os.ReadFile(deletePath); err != nil || string(got) != "replacement" {
+		t.Fatalf("replacement survived = %q, %v", got, err)
+	}
+	_ = deletion.Close()
+}
+
+func TestLinuxPreparedDescriptorsAreCloseOnExec(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	file := filepath.Join(rootPath, "file.txt")
+	if err := os.WriteFile(file, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read, err := root.PrepareRead(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write, err := root.PrepareWrite(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletion, err := root.PrepareDelete(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootBackend := root.backend.(*linuxRoot)
+	readBackend := read.backend.(*linuxReadTarget)
+	writeBackend := write.backend.(*linuxWriteTarget)
+	deleteBackend := deletion.backend.(*linuxDeleteTarget)
+	for name, fd := range map[string]int{
+		"root": rootBackend.fd, "read root": readBackend.rootFD, "read parent": readBackend.parentFD,
+		"read file": readBackend.fileFD, "write root": writeBackend.rootFD, "write parent": writeBackend.parentFD,
+		"write target": writeBackend.targetFD, "delete root": deleteBackend.rootFD,
+		"delete parent": deleteBackend.parentFD, "delete target": deleteBackend.targetFD,
+	} {
+		flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+		if err != nil {
+			t.Fatalf("get descriptor flags for %s: %v", name, err)
+		}
+		if flags&unix.FD_CLOEXEC == 0 {
+			t.Errorf("%s descriptor %d is inheritable", name, fd)
+		}
+	}
+	_ = read.Close()
+	_ = write.Close()
+	_ = deletion.Close()
+}
+
+func TestLinuxReadTruncatesOnlyAtUTF8Boundary(t *testing.T) {
+	root, rootPath := openFixtureRoot(t)
+	file := filepath.Join(rootPath, "unicode.txt")
+	if err := os.WriteFile(file, []byte("雪雪"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := root.PrepareRead(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := target.ReadText(context.Background(), 4)
+	if err != nil || result.Outcome != OutcomeSucceeded || result.Text != "雪" || !result.Truncated {
+		t.Fatalf("UTF-8 boundary read = %+v, %v", result, err)
+	}
+	_ = target.Close()
+
+	if err := os.WriteFile(file, []byte{'a', 0xff, 'b'}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err = root.PrepareRead(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = target.ReadText(context.Background(), 2)
+	if !errors.Is(err, ErrInvalidText) || result.Outcome != OutcomeFailed {
+		t.Fatalf("malformed UTF-8 read = %+v, %v", result, err)
+	}
+	_ = target.Close()
+}

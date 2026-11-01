@@ -69,6 +69,7 @@ type linuxWriteTarget struct {
 	parentID       fileIdentity
 	exists         bool
 	targetID       fileIdentity
+	targetFD       int
 }
 
 type linuxDeleteTarget struct {
@@ -80,6 +81,7 @@ type linuxDeleteTarget struct {
 	leaf           string
 	parentID       fileIdentity
 	targetID       fileIdentity
+	targetFD       int
 	recursive      bool
 }
 
@@ -117,7 +119,7 @@ func (r *linuxRoot) runTestHook(stage string) {
 }
 
 func (r *linuxRoot) prepareRead(relative string) (readBackend, error) {
-	rootFD, err := unix.Dup(r.fd)
+	rootFD, err := dupCloexec(r.fd)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +154,7 @@ func (r *linuxRoot) prepareRead(relative string) (readBackend, error) {
 }
 
 func (r *linuxRoot) prepareWrite(relative string) (writeBackend, error) {
-	rootFD, err := unix.Dup(r.fd)
+	rootFD, err := dupCloexec(r.fd)
 	if err != nil {
 		return nil, err
 	}
@@ -186,12 +188,26 @@ func (r *linuxRoot) prepareWrite(relative string) (writeBackend, error) {
 			closeFDs(parentFD, rootFD)
 			return nil, ErrAliasedTarget
 		}
+		targetFD, err := openat2(parentFD, leaf, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0, resolveScoped)
+		if err != nil {
+			closeFDs(parentFD, rootFD)
+			return nil, mapOpenError(err)
+		}
+		var pinned unix.Stat_t
+		if err := unix.Fstat(targetFD, &pinned); err != nil || !sameIdentity(identityOf(&pinned), identityOf(&targetStat)) {
+			closeFDs(targetFD, parentFD, rootFD)
+			if err != nil {
+				return nil, err
+			}
+			return nil, ErrTargetChanged
+		}
+		return &linuxWriteTarget{owner: r, rootFD: rootFD, rootPath: r.rootPath, parentFD: parentFD, parentRelative: parentRelative, leaf: leaf, parentID: identityOf(&parentStat), exists: true, targetID: identityOf(&targetStat), targetFD: targetFD}, nil
 	}
-	return &linuxWriteTarget{owner: r, rootFD: rootFD, rootPath: r.rootPath, parentFD: parentFD, parentRelative: parentRelative, leaf: leaf, parentID: identityOf(&parentStat), exists: exists, targetID: identityOf(&targetStat)}, nil
+	return &linuxWriteTarget{owner: r, rootFD: rootFD, rootPath: r.rootPath, parentFD: parentFD, parentRelative: parentRelative, leaf: leaf, parentID: identityOf(&parentStat), targetFD: -1}, nil
 }
 
 func (r *linuxRoot) prepareDelete(relative string, recursive bool) (deleteBackend, error) {
-	rootFD, err := unix.Dup(r.fd)
+	rootFD, err := dupCloexec(r.fd)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +230,20 @@ func (r *linuxRoot) prepareDelete(relative string, recursive bool) (deleteBacken
 		closeFDs(parentFD, rootFD)
 		return nil, ErrRecursiveIntentNeeded
 	}
-	return &linuxDeleteTarget{owner: r, rootFD: rootFD, rootPath: r.rootPath, parentFD: parentFD, parentRelative: parentRelative, leaf: leaf, parentID: identityOf(&parentStat), targetID: identityOf(&targetStat), recursive: recursive}, nil
+	targetFD, err := openat2(parentFD, leaf, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0, resolveScoped)
+	if err != nil {
+		closeFDs(parentFD, rootFD)
+		return nil, mapOpenError(err)
+	}
+	var pinned unix.Stat_t
+	if err := unix.Fstat(targetFD, &pinned); err != nil || !sameIdentity(identityOf(&pinned), identityOf(&targetStat)) {
+		closeFDs(targetFD, parentFD, rootFD)
+		if err != nil {
+			return nil, err
+		}
+		return nil, ErrTargetChanged
+	}
+	return &linuxDeleteTarget{owner: r, rootFD: rootFD, rootPath: r.rootPath, parentFD: parentFD, parentRelative: parentRelative, leaf: leaf, parentID: identityOf(&parentStat), targetID: identityOf(&targetStat), targetFD: targetFD, recursive: recursive}, nil
 }
 
 func identityOf(stat *unix.Stat_t) fileIdentity {
@@ -241,6 +270,10 @@ func openat2(dirFD int, name string, flags int, mode uint32, resolve uint64) (in
 	return unix.Openat2(dirFD, name, how)
 }
 
+func dupCloexec(fd int) (int, error) {
+	return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
+}
+
 func mapOpenError(err error) error {
 	switch {
 	case errors.Is(err, unix.ELOOP):
@@ -265,6 +298,9 @@ func closeFDs(fds ...int) {
 func closeMany(fds ...int) error {
 	var first error
 	for _, fd := range fds {
+		if fd < 0 {
+			continue
+		}
 		if err := unix.Close(fd); err != nil && first == nil {
 			first = err
 		}
@@ -322,13 +358,33 @@ func (t *linuxReadTarget) read(ctx context.Context, maxBytes int) (ReadResult, e
 	if truncated {
 		content = content[:maxBytes]
 	}
-	if !utf8.Valid(content) {
+	if truncated {
+		prefix, err := validUTF8Prefix(content)
+		if err != nil {
+			return ReadResult{Outcome: OutcomeFailed}, err
+		}
+		content = prefix
+	} else if !utf8.Valid(content) {
 		return ReadResult{Outcome: OutcomeFailed}, ErrInvalidText
 	}
 	return ReadResult{Outcome: OutcomeSucceeded, Text: string(content), Truncated: truncated}, nil
 }
 
-func (t *linuxWriteTarget) close() error { return closeMany(t.parentFD, t.rootFD) }
+func validUTF8Prefix(content []byte) ([]byte, error) {
+	for offset := 0; offset < len(content); {
+		_, size := utf8.DecodeRune(content[offset:])
+		if size == 1 && content[offset] >= utf8.RuneSelf {
+			if !utf8.FullRune(content[offset:]) {
+				return content[:offset], nil
+			}
+			return nil, ErrInvalidText
+		}
+		offset += size
+	}
+	return content, nil
+}
+
+func (t *linuxWriteTarget) close() error { return closeMany(t.targetFD, t.parentFD, t.rootFD) }
 
 func (t *linuxWriteTarget) write(ctx context.Context, text []byte) (MutationResult, error) {
 	if err := revalidateParent(t.rootFD, t.rootPath, t.parentRelative, t.parentFD, t.parentID); err != nil {
@@ -431,7 +487,7 @@ func (t *linuxWriteTarget) openForWrite() (int, bool, error) {
 	return fd, true, nil
 }
 
-func (t *linuxDeleteTarget) close() error { return closeMany(t.parentFD, t.rootFD) }
+func (t *linuxDeleteTarget) close() error { return closeMany(t.targetFD, t.parentFD, t.rootFD) }
 
 func (t *linuxDeleteTarget) remove(ctx context.Context) (MutationResult, error) {
 	if err := revalidateParent(t.rootFD, t.rootPath, t.parentRelative, t.parentFD, t.parentID); err != nil {
@@ -497,7 +553,7 @@ func removeContents(ctx context.Context, dirFD int, depth int, entries *int, del
 	if depth > MaxDeleteDepth {
 		return ErrTooLarge
 	}
-	dup, err := unix.Dup(dirFD)
+	dup, err := dupCloexec(dirFD)
 	if err != nil {
 		return err
 	}
