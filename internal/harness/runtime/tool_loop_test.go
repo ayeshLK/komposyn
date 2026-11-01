@@ -325,6 +325,13 @@ func TestRuntimeApprovalOutcomesAndHeadlessFailure(t *testing.T) {
 			if len(tool.captured()) != test.wantCalls || len(fp.captured()) != test.wantReqs {
 				t.Fatalf("tool calls=%d provider requests=%d", len(tool.captured()), len(fp.captured()))
 			}
+			if len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Phase != "finished" || turn.ToolActivities[0].Outcome != tools.OutcomeNotExecuted {
+				t.Fatalf("completed turn lost terminal tool activity: %+v", turn.ToolActivities)
+			}
+			live := chat.Snapshot().ToolActivities
+			if len(live) == 0 || live[len(live)-1].Phase != "finished" || live[len(live)-1].Outcome != tools.OutcomeNotExecuted {
+				t.Fatalf("live snapshot lost terminal tool activity: %+v", live)
+			}
 			if test.wantPrompt != "" {
 				messages := fp.captured()[1].Messages
 				if messages[len(messages)-1].Role != p.RoleUser || messages[len(messages)-1].Text != test.wantPrompt {
@@ -745,8 +752,12 @@ func TestRuntimeCancellationWhileApprovalIsPending(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled chat turn did not return")
 	}
-	if turn.Outcome != p.OutcomeInterrupted || len(tool.captured()) != 0 || len(fp.captured()) != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeNotExecuted {
+	if turn.Outcome != p.OutcomeInterrupted || len(tool.captured()) != 0 || len(fp.captured()) != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeNotExecuted || turn.ToolActivities[0].Phase != "finished" {
 		t.Fatalf("cancellation did not prevent pending execution: turn=%+v calls=%d requests=%d", turn, len(tool.captured()), len(fp.captured()))
+	}
+	live := chat.Snapshot().ToolActivities
+	if len(live) == 0 || live[len(live)-1].Phase != "finished" {
+		t.Fatalf("context cancellation left stale live activity: %+v", live)
 	}
 }
 

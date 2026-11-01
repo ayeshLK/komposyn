@@ -1560,15 +1560,22 @@ func (u *terminal) approvalEventsLoop() {
 			}
 			if event.DismissedID != "" {
 				u.queue(func() {
-					if u.approvalRequest != nil && u.approvalRequest.ID == event.DismissedID {
-						u.approvalRequest = nil
-						if !u.permissionsFromApproval {
-							u.returnToChat()
-						}
-					}
+					u.dismissApproval(event.DismissedID)
 				})
 			}
 		}
+	}
+}
+
+func (u *terminal) dismissApproval(id string) {
+	if u.approvalRequest == nil || u.approvalRequest.ID != id {
+		return
+	}
+	u.approvalRequest = nil
+	if !u.permissionsVisible {
+		u.returnToChat()
+	} else {
+		u.permissionsFromApproval = false
 	}
 }
 
@@ -1620,6 +1627,7 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 	}
 	u.approvalRequest = request
 	u.permissionsVisible = false
+	u.permissionsFromApproval = false
 	u.approvalGuard.Store(true)
 	var details strings.Builder
 	fmt.Fprintf(&details, "Tool: %s\n%s\n\nRequested requirements:\n", safeTerminalText(request.ToolID), safeTerminalText(request.ToolDescription))
@@ -1714,25 +1722,25 @@ func (u *terminal) openPermissions(fromApproval bool) {
 func (u *terminal) returnPermissionView() {
 	u.permissionsVisible = false
 	if u.permissionsFromApproval && u.approvalRequest != nil {
+		u.permissionsFromApproval = false
 		u.showApproval(u.approvalRequest)
 	} else {
+		u.permissionsFromApproval = false
 		u.returnToChat()
 	}
 }
 func (u *terminal) showPermissions() {
 	u.permissionsVisible = true
+	details := tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
+	details.SetBorder(true).SetTitle(" Selected grant · full scope and origin ")
 	list := tv.NewList().ShowSecondaryText(true)
 	if len(u.permissionGrants) == 0 {
 		list.AddItem("No tool grants", "Grants are temporary and limited to this conversation.", 0, nil)
 	}
 	for _, grant := range u.permissionGrants {
 		g := grant
-		scope := g.ResourceKind + " " + g.ResourceScope
-		if scope == " " {
-			scope = "no resource scope"
-		}
-		summary := fmt.Sprintf("%s · %s · %s · %s · %s", safeTerminalText(g.Action), safeTerminalText(scope), safeTerminalText(g.Operation), safeTerminalText(g.Lifetime), safeTerminalText(g.Origin))
-		list.AddItem(safeTerminalText(g.ToolID)+" · "+safeTerminalText(g.ID), summary, 'r', func() {
+		summary := fmt.Sprintf("%s · %s · %s", safeTerminalText(g.Action), safeTerminalText(g.Operation), safeTerminalText(g.Lifetime))
+		list.AddItem(tv.Escape(safeTerminalText(g.ToolID)+" · "+safeTerminalText(g.ID)), tv.Escape(summary), 'r', func() {
 			u.launch(func() {
 				err := u.client.RevokePermission(u.ctx, g.ID)
 				grants, readErr := u.client.Permissions(u.ctx)
@@ -1748,6 +1756,20 @@ func (u *terminal) showPermissions() {
 			})
 		})
 	}
+	showDetails := func(index int) {
+		if index < 0 || index >= len(u.permissionGrants) {
+			details.SetText("No tool grants. Grants are temporary and limited to this conversation.")
+			return
+		}
+		grant := u.permissionGrants[index]
+		scope := grant.ResourceKind + " " + grant.ResourceScope
+		if scope == " " {
+			scope = "no resource scope"
+		}
+		details.SetText(safeTerminalText(fmt.Sprintf("Grant ID: %s\nTool: %s\nAction: %s\nResource scope: %s\nOperation: %s\nLifetime: %s\nTrusted origin: %s\n", grant.ID, grant.ToolID, grant.Action, scope, grant.Operation, grant.Lifetime, grant.Origin)))
+	}
+	list.SetChangedFunc(func(index int, _ string, _ string, _ rune) { showDetails(index) })
+	showDetails(0)
 	form := tv.NewForm().AddButton("Clear all", func() {
 		u.launch(func() {
 			count, err := u.client.ClearPermissions(u.ctx)
@@ -1762,6 +1784,10 @@ func (u *terminal) showPermissions() {
 		})
 	}).AddButton("Back", func() { u.returnPermissionView() })
 	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab || event.Key() == tcell.KeyBacktab {
+			u.app.SetFocus(form)
+			return nil
+		}
 		if event.Key() == tcell.KeyEscape {
 			u.returnPermissionView()
 			return nil
@@ -1786,7 +1812,14 @@ func (u *terminal) showPermissions() {
 		}
 		return event
 	})
-	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(list, 0, 1, true).AddItem(form, 3, 0, false)
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyBacktab {
+			u.app.SetFocus(list)
+			return nil
+		}
+		return event
+	})
+	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(list, 8, 0, true).AddItem(details, 0, 1, false).AddItem(form, 3, 0, false)
 	layout.SetBorder(true).SetTitle(" /permissions · revoking prevents future dispatch only ")
 	u.app.SetRoot(layout, true).SetFocus(list)
 }

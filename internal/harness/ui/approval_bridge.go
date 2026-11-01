@@ -37,6 +37,7 @@ type bridgeWait struct {
 	conversation string
 	request      ui.ApprovalRequest
 	response     chan ui.ApprovalResponse
+	invalidated  chan struct{}
 	answered     bool
 }
 
@@ -67,7 +68,7 @@ func (b *ApprovalBridge) Review(ctx context.Context, pending permissions.Pending
 	request.ToolID = pending.Request.Requirements[0].ToolID
 	request.ToolDescription = request.ToolID + " requested access"
 	request.AllowConversation = allowConversation
-	wait := &bridgeWait{conversation: pending.Request.ConversationID, request: request, response: make(chan ui.ApprovalResponse, 1)}
+	wait := &bridgeWait{conversation: pending.Request.ConversationID, request: request, response: make(chan ui.ApprovalResponse, 1), invalidated: make(chan struct{})}
 	b.mu.Lock()
 	if len(b.pending) != 0 {
 		b.mu.Unlock()
@@ -84,6 +85,8 @@ func (b *ApprovalBridge) Review(ctx context.Context, pending permissions.Pending
 	select {
 	case response := <-wait.response:
 		return permissions.ApprovalChoice(response.Choice), response.RedirectText, nil
+	case <-wait.invalidated:
+		return "", "", errors.New("approval was invalidated")
 	case <-ctx.Done():
 		return "", "", ctx.Err()
 	}
@@ -119,11 +122,11 @@ func (b *ApprovalBridge) InvalidateConversation(conversation string) {
 	for id, wait := range b.pending {
 		if wait.conversation == conversation {
 			delete(b.pending, id)
+			close(wait.invalidated)
 			select {
 			case b.events <- ui.ApprovalEvent{DismissedID: id}:
 			default:
 			}
-			wait.response <- ui.ApprovalResponse{ID: id, Choice: ui.ApprovalDeny}
 		}
 	}
 }

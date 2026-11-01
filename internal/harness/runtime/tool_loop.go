@@ -662,6 +662,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 				r.coordinator.CancelConversation(conversationID)
 				activity.Outcome = tools.OutcomeNotExecuted
 				activity.Message = "turn cancelled before execution"
+				update("finished")
 				return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 			}
 			if reviewErr != nil || choice == "" {
@@ -686,10 +687,12 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 			case permissions.ApprovalCancelled:
 				activity.Outcome = tools.OutcomeNotExecuted
 				activity.Message = "user cancelled the turn"
+				update("finished")
 				return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 			case permissions.ApprovalRedirected:
 				activity.Outcome = tools.OutcomeNotExecuted
 				activity.Message = "user redirected the turn; tool was not executed"
+				update("finished")
 				return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, redirectText, false
 			case permissions.ApprovalGranted:
 				if !approved.Decision.Ready() {
@@ -703,6 +706,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	if !current() || ctx.Err() != nil {
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
+		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
 	prepared, freshDecision, err := r.authorize(ctx, invocation)
@@ -715,6 +719,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	if !current() || ctx.Err() != nil {
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
+		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
 	if err := r.grants.ConsumeOnceMatchingAtRevision(prepared, freshDecision.Revision); err != nil {
@@ -724,6 +729,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	if !current() || ctx.Err() != nil {
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
+		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
 	update("running")

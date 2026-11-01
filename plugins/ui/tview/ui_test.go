@@ -242,6 +242,63 @@ func TestApprovalDialogRequiresExplicitChoiceAndEscapeCancelsTurn(t *testing.T) 
 	}
 }
 
+func TestPermissionsPanelKeyboardAndLiteralGrantRendering(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(110, 32)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	client := &clientStub{toolGrants: []ui.ToolGrant{{ID: "grant-1", ToolID: "file_read", Action: "Read [red] path", ResourceKind: "filesystem", ResourceScope: "/safe/[red]report[-].txt", Operation: "read", Lifetime: "conversation", Origin: "trusted [blue] origin"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	for _, r := range "/permissions" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "/safe/[red]report[-].txt", "")
+	waitForScreen(t, safe, "Read [red] path", "")
+	waitForScreen(t, safe, "trusted [blue] origin", "")
+	press(tcell.KeyTab, 0) // Move from the grants list to Clear all.
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "No tool grants", "")
+	press(tcell.KeyTab, 0) // List to Clear all.
+	press(tcell.KeyTab, 0) // Clear all to Back.
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "KompoSyn is ready", "revoking prevents future dispatch only")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop after leaving permissions")
+	}
+}
+
+func TestDismissedApprovalReturnsToChatAfterLeavingPermissions(t *testing.T) {
+	app := tv.NewApplication()
+	input := newComposerInput()
+	client := &clientStub{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	chatRoot := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(tv.NewTextView().SetText("CHAT ROOT"), 0, 1, false).AddItem(input, 1, 0, true)
+	u := &terminal{app: app, client: client, ctx: ctx, cancel: cancel, input: input, layout: chatRoot}
+	u.showApproval(&ui.ApprovalRequest{ID: "pending", ToolID: "fixture", Requirements: []ui.ApprovalRequirement{{Kind: "action", Operation: "read"}}})
+	u.permissionsFromApproval = true
+	u.permissionGrants = []ui.ToolGrant{}
+	u.showPermissions()
+	u.returnPermissionView()
+	if u.permissionsFromApproval || u.permissionsVisible || u.approvalRequest == nil {
+		t.Fatalf("return state before dismissal: approval=%+v fromApproval=%t permissionsVisible=%t", u.approvalRequest, u.permissionsFromApproval, u.permissionsVisible)
+	}
+	u.dismissApproval("pending")
+	if u.approvalRequest != nil || !u.chatRootActive.Load() || app.GetFocus() != input {
+		t.Fatalf("dismissal left stale approval root: approval=%+v chatActive=%t focus=%T", u.approvalRequest, u.chatRootActive.Load(), app.GetFocus())
+	}
+}
+
 func TestPickerInteractionOnSimulationScreen(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(100, 32)

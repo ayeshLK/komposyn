@@ -16,6 +16,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -84,7 +85,62 @@ func TestApprovalBridgeRejectsConversationChoiceForDelete(t *testing.T) {
 		t.Fatal("conversation choice accepted for delete")
 	}
 	bridge.InvalidateConversation("c")
-	if err := <-result; err != nil {
-		t.Fatalf("invalidation transport failed: %v", err)
+	if err := <-result; err == nil {
+		t.Fatal("invalidation returned an approval choice")
+	}
+}
+
+func TestApprovalBridgeInvalidationDoesNotBlockOnAnsweredWait(t *testing.T) {
+	bridge := NewApprovalBridge()
+	wait := &bridgeWait{conversation: "c", response: make(chan ui.ApprovalResponse, 1), invalidated: make(chan struct{}), answered: true}
+	wait.response <- ui.ApprovalResponse{ID: "pending", Choice: ui.ApprovalOnce}
+	bridge.pending = map[string]*bridgeWait{"pending": wait}
+	done := make(chan struct{})
+	go func() { bridge.InvalidateConversation("c"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("invalidation blocked on an already buffered response")
+	}
+	select {
+	case <-wait.invalidated:
+	default:
+		t.Fatal("invalidation signal was not closed")
+	}
+	cleanup := make(chan struct{})
+	go func() { bridge.finish("pending"); close(cleanup) }()
+	select {
+	case <-cleanup:
+	case <-time.After(time.Second):
+		t.Fatal("review cleanup blocked after invalidation")
+	}
+}
+
+func TestApprovalBridgeAnswerCancelInvalidateInterleavings(t *testing.T) {
+	for i := 0; i < 32; i++ {
+		bridge := NewApprovalBridge()
+		ctx, cancel := context.WithCancel(context.Background())
+		pending := permissions.PendingApproval{ID: fmt.Sprintf("pending-%d", i), Request: permissions.Request{ConversationID: "conversation", Requirements: []permissions.Requirement{{ToolID: "fixture"}}}, Decision: permissions.Decision{Missing: []permissions.Requirement{{ToolID: "fixture", SessionAllowed: true}}}}
+		done := make(chan error, 1)
+		go func() { _, _, err := bridge.Review(ctx, pending); done <- err }()
+		if event := <-bridge.Events(); event.Request == nil {
+			t.Fatal("missing approval request")
+		}
+		if err := bridge.Respond(ui.ApprovalResponse{ID: pending.ID, Choice: ui.ApprovalOnce}); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		invalidated := make(chan struct{})
+		go func() { bridge.InvalidateConversation("conversation"); close(invalidated) }()
+		select {
+		case <-invalidated:
+		case <-time.After(time.Second):
+			t.Fatal("invalidation blocked during answer/cancel race")
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Review did not finish during answer/cancel race")
+		}
 	}
 }
