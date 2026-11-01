@@ -778,6 +778,61 @@ type Receipt struct {
 	Duplicates int
 }
 
+// existingCodexLegacyEventUsage returns durable cumulative-snapshot events for
+// one source generation. It is used only while recovering historical Codex
+// rows that an older parser rejected; it never mutates those events.
+func (s *Store) existingCodexLegacyEventUsage(sourceID string, keys []string) (map[string]TokenUsage, error) {
+	uniqueKeys := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		uniqueKeys = append(uniqueKeys, key)
+	}
+	result := make(map[string]TokenUsage)
+	const keysPerQuery = 400
+	for start := 0; start < len(uniqueKeys); start += keysPerQuery {
+		end := start + keysPerQuery
+		if end > len(uniqueKeys) {
+			end = len(uniqueKeys)
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", end-start), ",")
+		args := make([]any, 0, end-start+1)
+		args = append(args, sourceID)
+		for _, key := range uniqueKeys[start:end] {
+			args = append(args, key)
+		}
+		query := `SELECT ingestion_key, input_tokens, output_tokens, cache_read_tokens,
+			cache_write_tokens, reasoning_tokens FROM usage_events
+			WHERE source_adapter = 'codex' AND source_id = ? AND event_id LIKE 'codex-event-%'
+			AND ingestion_key IN (` + placeholders + `)`
+		rows, err := s.db.Query(query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("query existing Codex cumulative events: %w", err)
+		}
+		for rows.Next() {
+			var key string
+			var usage TokenUsage
+			if err := rows.Scan(&key, &usage.InputTokens, &usage.OutputTokens, &usage.CacheReadTokens,
+				&usage.CacheWriteTokens, &usage.ReasoningTokens); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan existing Codex cumulative event: %w", err)
+			}
+			result[key] = usage
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate existing Codex cumulative events: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close existing Codex cumulative event query: %w", err)
+		}
+	}
+	return result, nil
+}
+
 // UpsertProject creates or updates a project identity.
 func (s *Store) UpsertProject(project Project) error {
 	if strings.TrimSpace(project.ID) == "" || strings.TrimSpace(project.DisplayName) == "" {
