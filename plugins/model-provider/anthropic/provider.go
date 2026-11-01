@@ -40,6 +40,13 @@ type Plugin struct {
 func (Plugin) ID() provider.ID                    { return provider.Anthropic }
 func (Plugin) AuthMethods() []provider.AuthMethod { return []provider.AuthMethod{provider.AuthAPIKey} }
 
+func (Plugin) RouteCapabilities(method provider.AuthMethod) provider.RouteCapabilities {
+	if method == provider.AuthAPIKey {
+		return provider.RouteCapabilities{ClientTools: provider.SupportSupported, Images: provider.SupportUnsupported}
+	}
+	return provider.RouteCapabilities{ClientTools: provider.SupportUnsupported, Images: provider.SupportUnsupported}
+}
+
 func (p Plugin) Authenticate(ctx context.Context, c provider.Credential) (provider.AuthResult, error) {
 	if strings.TrimSpace(c.APIKey) == "" {
 		return provider.AuthResult{}, &provider.Error{Outcome: provider.OutcomeAuthentication}
@@ -114,14 +121,22 @@ func (p Plugin) ListModels(ctx context.Context, c provider.Credential) ([]provid
 }
 
 func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
-	if in.ModelID == "" || in.MaxOutput <= 0 {
+	if in.ModelID == "" || in.MaxOutput <= 0 || in.Credential.Method != "" && in.Credential.Method != provider.AuthAPIKey || strings.TrimSpace(in.Credential.APIKey) == "" {
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 	}
+	if diagnostic := toolRequestDiagnostic(in); diagnostic != "" {
+		return toolProtocolUnsupported(diagnostic), nil
+	}
+	if err := validateToolHistory(in.Messages); err != nil {
+		return toolProtocolUnsupported(provider.DiagnosticToolProtocolInvalid), nil
+	}
 	msgs := make([]map[string]any, 0, len(in.Messages))
+	lastWasToolResults := false
 	for _, m := range in.Messages {
 		switch m.Role {
 		case provider.RoleUser:
 			msgs = append(msgs, map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": m.Text}}})
+			lastWasToolResults = false
 		case provider.RoleAssistant:
 			if len(m.Native) == 0 {
 				return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
@@ -134,11 +149,37 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 				blocks = append(blocks, raw)
 			}
 			msgs = append(msgs, map[string]any{"role": "assistant", "content": blocks})
+			lastWasToolResults = false
+		case provider.RoleTool:
+			if m.ToolResult == nil || m.ToolResult.CallID == "" {
+				return toolProtocolUnsupported(provider.DiagnosticToolProtocolInvalid), nil
+			}
+			block := map[string]any{"type": "tool_result", "tool_use_id": m.ToolResult.CallID, "content": m.ToolResult.Content}
+			if m.ToolResult.IsError {
+				block["is_error"] = true
+			}
+			if lastWasToolResults {
+				content := msgs[len(msgs)-1]["content"].([]any)
+				msgs[len(msgs)-1]["content"] = append(content, block)
+			} else {
+				msgs = append(msgs, map[string]any{"role": "user", "content": []any{block}})
+			}
+			lastWasToolResults = true
 		default:
 			return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 		}
 	}
 	payload := map[string]any{"model": in.ModelID, "max_tokens": in.MaxOutput, "messages": msgs, "stream": true}
+	if len(in.Tools) > 0 {
+		definitions := make([]map[string]any, 0, len(in.Tools))
+		for _, definition := range in.Tools {
+			definitions = append(definitions, map[string]any{
+				"name": string(definition.ID), "description": definition.Description,
+				"input_schema": definition.InputSchema,
+			})
+		}
+		payload["tools"] = definitions
+	}
 	if in.Instructions != "" {
 		payload["system"] = in.Instructions
 	}
@@ -158,6 +199,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	result := provider.Result{ModelID: in.ModelID}
 	blocks := map[int]*contentBlock{}
 	terminal := ""
+	messageStopped := false
 	inputUsageKnown := false
 	outputUsageKnown := false
 	err = readSSE(resp.Body, func(event string, raw []byte) error {
@@ -208,15 +250,19 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			}
 		case "content_block_start":
 			var x struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
-				Name string `json:"name"`
-				Text string `json:"text"`
+				Type  string          `json:"type"`
+				ID    string          `json:"id"`
+				Name  string          `json:"name"`
+				Text  string          `json:"text"`
+				Input json.RawMessage `json:"input"`
 			}
 			if json.Unmarshal(v.ContentBlock, &x) != nil {
 				return &provider.Error{Outcome: provider.OutcomeService}
 			}
-			blocks[v.Index] = &contentBlock{kind: x.Type, id: x.ID, name: x.Name, text: x.Text, raw: append(json.RawMessage(nil), v.ContentBlock...)}
+			if v.Index < 0 || blocks[v.Index] != nil {
+				return &provider.Error{Outcome: provider.OutcomeUnsupported}
+			}
+			blocks[v.Index] = &contentBlock{kind: x.Type, id: x.ID, name: x.Name, text: x.Text, input: append(json.RawMessage(nil), x.Input...), raw: append(json.RawMessage(nil), v.ContentBlock...)}
 		case "content_block_delta":
 			b := blocks[v.Index]
 			if b == nil {
@@ -278,6 +324,16 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			}
 			result.Usage.Known = inputUsageKnown && outputUsageKnown
 		case "message_stop", "content_block_stop", "ping":
+			if v.Type == "content_block_stop" {
+				if b := blocks[v.Index]; b == nil {
+					return &provider.Error{Outcome: provider.OutcomeService}
+				} else {
+					b.closed = true
+				}
+			}
+			if v.Type == "message_stop" {
+				messageStopped = true
+			}
 		default:
 			return &provider.Error{Outcome: provider.OutcomeUnsupported}
 		}
@@ -290,7 +346,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		}
 		return result, classify(err)
 	}
-	if terminal == "" {
+	if terminal == "" || !messageStopped {
 		return result, &provider.Error{Outcome: provider.OutcomeInterrupted, RequestID: result.RequestID}
 	}
 	indices := make([]int, 0, len(blocks))
@@ -314,7 +370,29 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			}
 		case "redacted_thinking":
 		case "tool_use":
-			b.unsupported = true
+			if terminal != "tool_use" || !b.closed {
+				b.unsupported = true
+				result.DiagnosticCode = provider.DiagnosticToolProtocolInvalid
+				break
+			}
+			arguments := strings.TrimSpace(b.partial)
+			if arguments == "" {
+				arguments = string(b.input)
+			}
+			definition, ok := toolDefinition(in.Tools, b.name)
+			if !ok {
+				b.unsupported = true
+				result.DiagnosticCode = provider.DiagnosticToolProtocolUnknown
+				break
+			}
+			parsed, err := provider.ParseToolArguments(arguments, definition)
+			if err != nil || b.id == "" || b.name == "" {
+				b.unsupported = true
+				result.DiagnosticCode = provider.DiagnosticToolProtocolInvalid
+				break
+			}
+			obj["input"] = parsed
+			result.ToolCalls = append(result.ToolCalls, provider.ToolCall{CallID: b.id, ToolID: definition.ID, Arguments: parsed})
 		default:
 			b.unsupported = true
 		}
@@ -340,16 +418,37 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	case "model_context_window_exceeded":
 		result.Outcome = provider.OutcomeUnsupported
 	case "tool_use", "pause_turn":
-		result.Outcome = provider.OutcomeUnsupported
+		if terminal == "pause_turn" || result.Outcome == provider.OutcomeUnsupported || len(result.ToolCalls) == 0 {
+			result.Outcome = provider.OutcomeUnsupported
+			if result.DiagnosticCode == "" {
+				result.DiagnosticCode = provider.DiagnosticToolProtocolInvalid
+			}
+		} else if code := provider.ToolCallsDiagnostic(result.ToolCalls, in.Tools); code != "" {
+			result.Outcome = provider.OutcomeUnsupported
+			result.DiagnosticCode = code
+			result.ToolCalls = nil
+		} else {
+			result.Outcome = provider.OutcomeCompleted
+			result.Completion = provider.CompletionToolCalls
+		}
 	default:
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
+	}
+	if result.Outcome == provider.OutcomeCompleted && result.Completion == "" {
+		result.Completion = provider.CompletionFinal
+	}
+	if result.Outcome != provider.OutcomeCompleted {
+		result.ToolCalls = nil
+		result.Completion = ""
 	}
 	return result, nil
 }
 
 type contentBlock struct {
 	kind, id, name, text, thinking, signature, partial string
+	input                                              json.RawMessage
 	raw                                                json.RawMessage
+	closed                                             bool
 	unsupported                                        bool
 }
 

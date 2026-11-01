@@ -21,6 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
+
+	chattools "github.com/ayeshLK/komposyn/plugins/tools"
 )
 
 type ID string
@@ -70,9 +74,10 @@ const (
 )
 
 type Message struct {
-	Role   Role
-	Text   string
-	Native []json.RawMessage
+	Role       Role
+	Text       string
+	Native     []json.RawMessage
+	ToolResult *ToolResult
 }
 
 type Role string
@@ -80,6 +85,7 @@ type Role string
 const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	RoleTool      Role = "tool"
 )
 
 type ChatRequest struct {
@@ -89,6 +95,56 @@ type ChatRequest struct {
 	Messages     []Message
 	Instructions string
 	MaxOutput    int64
+	Tools        []chattools.Definition
+}
+
+// ToolCall is a complete, provider-correlated request. Adapters return calls
+// only after successful response completion and bounded JSON argument parsing.
+type ToolCall struct {
+	CallID    string
+	ToolID    chattools.ID
+	Arguments json.RawMessage
+}
+
+// ToolResult is a correlated provider continuation value. It carries no
+// permission or execution authority.
+type ToolResult struct {
+	CallID  string
+	Content string
+	IsError bool
+}
+
+type CompletionKind string
+
+const (
+	CompletionFinal     CompletionKind = "final"
+	CompletionToolCalls CompletionKind = "tool_calls"
+)
+
+type Support string
+
+const (
+	SupportUnknown     Support = "unknown"
+	SupportUnsupported Support = "unsupported"
+	SupportSupported   Support = "supported"
+)
+
+type RouteCapabilities struct {
+	ClientTools Support
+	Images      Support
+}
+
+// RouteCapabilityProvider describes protocol support without receiving a
+// credential. Providers that do not implement it default to unknown support.
+type RouteCapabilityProvider interface {
+	RouteCapabilities(AuthMethod) RouteCapabilities
+}
+
+func CapabilitiesFor(p Provider, method AuthMethod) RouteCapabilities {
+	if capabilities, ok := p.(RouteCapabilityProvider); ok {
+		return capabilities.RouteCapabilities(method)
+	}
+	return RouteCapabilities{ClientTools: SupportUnknown, Images: SupportUnknown}
 }
 
 type Usage struct {
@@ -157,11 +213,79 @@ func SafeDiagnosticCode(code DiagnosticCode) bool {
 		DiagnosticOpenAICompletedStatusFailed, DiagnosticOpenAICompletedStatusCancelled,
 		DiagnosticOpenAICompletedStatusInProgress, DiagnosticOpenAICompletedStatusQueued,
 		DiagnosticOpenAICompletedStatusIncomplete, DiagnosticOpenAICompletedStatusOther,
-		DiagnosticOpenAIIncompleteOtherStopReason, DiagnosticRuntimeMissingNative:
+		DiagnosticOpenAIIncompleteOtherStopReason, DiagnosticRuntimeMissingNative,
+		DiagnosticToolProtocolInvalid, DiagnosticToolProtocolUnknown,
+		DiagnosticToolProtocolDuplicateCall, DiagnosticToolProtocolRouteUnsupported:
 		return true
 	default:
 		return false
 	}
+}
+
+var toolNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// ValidateToolDefinitions checks the provider-facing boundary independently
+// from registry registration.
+func ValidateToolDefinitions(definitions []chattools.Definition) error {
+	seen := make(map[chattools.ID]struct{}, len(definitions))
+	for _, definition := range definitions {
+		if !toolNamePattern.MatchString(string(definition.ID)) || strings.TrimSpace(definition.Description) == "" || definition.MaxInput <= 0 {
+			return errors.New("invalid provider tool definition")
+		}
+		if _, duplicate := seen[definition.ID]; duplicate {
+			return errors.New("duplicate provider tool definition")
+		}
+		seen[definition.ID] = struct{}{}
+		var schema map[string]json.RawMessage
+		if len(definition.InputSchema) == 0 || json.Unmarshal(definition.InputSchema, &schema) != nil || schema == nil {
+			return errors.New("provider tool schema must be a JSON object")
+		}
+		var rootType string
+		if json.Unmarshal(schema["type"], &rootType) != nil || rootType != "object" {
+			return errors.New("provider tool schema root type must be object")
+		}
+	}
+	return nil
+}
+
+// ParseToolArguments validates a complete, bounded JSON object. Full JSON
+// Schema validation remains the trusted tool adapter's responsibility.
+func ParseToolArguments(raw string, definition chattools.Definition) (json.RawMessage, error) {
+	if len(raw) == 0 || len(raw) > definition.MaxInput || !json.Valid([]byte(raw)) {
+		return nil, errors.New("invalid or oversized tool arguments")
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &object) != nil || object == nil {
+		return nil, errors.New("tool arguments must be a JSON object")
+	}
+	return append(json.RawMessage(nil), raw...), nil
+}
+
+// ToolCallsDiagnostic rejects malformed, duplicate, unknown, or oversized
+// calls without including provider-controlled values in the diagnostic.
+func ToolCallsDiagnostic(calls []ToolCall, definitions []chattools.Definition) DiagnosticCode {
+	byID := make(map[chattools.ID]chattools.Definition, len(definitions))
+	for _, definition := range definitions {
+		byID[definition.ID] = definition
+	}
+	seen := make(map[string]struct{}, len(calls))
+	for _, call := range calls {
+		if call.CallID == "" || call.ToolID == "" || len(call.Arguments) == 0 || !json.Valid(call.Arguments) {
+			return DiagnosticToolProtocolInvalid
+		}
+		if _, duplicate := seen[call.CallID]; duplicate {
+			return DiagnosticToolProtocolDuplicateCall
+		}
+		seen[call.CallID] = struct{}{}
+		definition, ok := byID[call.ToolID]
+		if !ok {
+			return DiagnosticToolProtocolUnknown
+		}
+		if _, err := ParseToolArguments(string(call.Arguments), definition); err != nil {
+			return DiagnosticToolProtocolInvalid
+		}
+	}
+	return ""
 }
 
 type Result struct {
@@ -175,7 +299,16 @@ type Result struct {
 	Native         []json.RawMessage
 	Usage          Usage
 	ProviderCode   string
+	Completion     CompletionKind
+	ToolCalls      []ToolCall
 }
+
+const (
+	DiagnosticToolProtocolInvalid          DiagnosticCode = "provider.tool_protocol.invalid_call"
+	DiagnosticToolProtocolUnknown          DiagnosticCode = "provider.tool_protocol.unknown_tool"
+	DiagnosticToolProtocolDuplicateCall    DiagnosticCode = "provider.tool_protocol.duplicate_call_id"
+	DiagnosticToolProtocolRouteUnsupported DiagnosticCode = "provider.tool_protocol.route_unsupported"
+)
 
 type Error struct {
 	Outcome      Outcome

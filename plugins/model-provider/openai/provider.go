@@ -29,6 +29,7 @@ import (
 	"time"
 
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
+	chattools "github.com/ayeshLK/komposyn/plugins/tools"
 )
 
 type Plugin struct {
@@ -39,6 +40,17 @@ type Plugin struct {
 func (Plugin) ID() provider.ID { return provider.OpenAI }
 func (Plugin) AuthMethods() []provider.AuthMethod {
 	return []provider.AuthMethod{provider.AuthAPIKey, provider.AuthOAuth}
+}
+
+func (Plugin) RouteCapabilities(method provider.AuthMethod) provider.RouteCapabilities {
+	switch method {
+	case provider.AuthAPIKey:
+		return provider.RouteCapabilities{ClientTools: provider.SupportSupported, Images: provider.SupportUnsupported}
+	case provider.AuthOAuth:
+		return provider.RouteCapabilities{ClientTools: provider.SupportUnknown, Images: provider.SupportUnknown}
+	default:
+		return provider.RouteCapabilities{ClientTools: provider.SupportUnsupported, Images: provider.SupportUnsupported}
+	}
 }
 
 func (p Plugin) Authenticate(ctx context.Context, c provider.Credential) (provider.AuthResult, error) {
@@ -121,7 +133,13 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	if in.ModelID == "" || (method == provider.AuthAPIKey && in.MaxOutput <= 0) || (method != provider.AuthAPIKey && method != provider.AuthOAuth) {
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 	}
+	if diagnostic := toolRequestDiagnostic(in, method); diagnostic != "" {
+		return toolProtocolUnsupported(diagnostic), nil
+	}
 	input := make([]json.RawMessage, 0, len(in.Messages))
+	if err := validateToolHistory(in.Messages); err != nil {
+		return toolProtocolUnsupported(provider.DiagnosticToolProtocolInvalid), nil
+	}
 	for _, m := range in.Messages {
 		switch m.Role {
 		case provider.RoleUser:
@@ -137,11 +155,30 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 				}
 				input = append(input, append(json.RawMessage(nil), raw...))
 			}
+		case provider.RoleTool:
+			if m.ToolResult == nil || m.ToolResult.CallID == "" {
+				return toolProtocolUnsupported(provider.DiagnosticToolProtocolInvalid), nil
+			}
+			b, err := json.Marshal(map[string]any{"type": "function_call_output", "call_id": m.ToolResult.CallID, "output": m.ToolResult.Content})
+			if err != nil {
+				return toolProtocolUnsupported(provider.DiagnosticToolProtocolInvalid), nil
+			}
+			input = append(input, b)
 		default:
 			return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 		}
 	}
 	payload := map[string]any{"model": in.ModelID, "input": input, "stream": true, "store": false}
+	if len(in.Tools) > 0 {
+		definitions := make([]map[string]any, 0, len(in.Tools))
+		for _, definition := range in.Tools {
+			definitions = append(definitions, map[string]any{
+				"type": "function", "name": string(definition.ID), "description": definition.Description,
+				"parameters": definition.InputSchema,
+			})
+		}
+		payload["tools"] = definitions
+	}
 	if method == provider.AuthAPIKey {
 		payload["max_output_tokens"] = in.MaxOutput
 		payload["include"] = []string{"reasoning.encrypted_content"}
@@ -169,11 +206,14 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	var terminal string
 	var finalResponse *resultResponse
 	streamOutput := completedOutput{items: make(map[int]json.RawMessage), added: make(map[int]bool)}
+	argumentStream := newToolArgumentStream()
 	err = readSSE(resp.Body, func(event string, raw []byte) error {
 		var v struct {
 			Type        string          `json:"type"`
 			OutputIndex *int            `json:"output_index"`
 			Item        json.RawMessage `json:"item"`
+			ItemID      string          `json:"item_id"`
+			Arguments   string          `json:"arguments"`
 			Delta       string          `json:"delta"`
 			Response    json.RawMessage `json:"response"`
 			Message     string          `json:"message"`
@@ -188,6 +228,13 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		switch v.Type {
 		case "response.output_item.added", "response.output_item.done":
 			streamOutput.observe(v.Type, v.OutputIndex, v.Item)
+			argumentStream.observeItem(v.Type, v.OutputIndex, v.Item)
+		case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+			value := v.Delta
+			if v.Type == "response.function_call_arguments.done" {
+				value = v.Arguments
+			}
+			argumentStream.observeArguments(v.Type, v.OutputIndex, v.ItemID, value)
 		case "response.output_text.delta":
 			result.Text += v.Delta
 			if delta != nil {
@@ -232,6 +279,8 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		return result, &provider.Error{Outcome: provider.OutcomeInterrupted, RequestID: result.RequestID}
 	}
 	if result.DiagnosticCode == provider.DiagnosticOpenAIStreamOutputInvalid {
+		result.ToolCalls = nil
+		result.Completion = ""
 		return result, nil
 	}
 	if terminal == "response.completed" && finalResponse != nil && finalResponse.FinalText != result.Text {
@@ -251,7 +300,12 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		result.DiagnosticCode = provider.DiagnosticOpenAICompletedMissingResponse
 		return result, nil
 	}
-	if terminal == "response.completed" && !finalResponse.HasReplayableMessage {
+	if terminal == "response.completed" && result.Outcome == provider.OutcomeUnsupported {
+		result.ToolCalls = nil
+		result.Completion = ""
+		return result, nil
+	}
+	if terminal == "response.completed" && !finalResponse.HasReplayableMessage && len(result.ToolCalls) == 0 {
 		result.Outcome = provider.OutcomeUnsupported
 		result.DiagnosticCode = provider.DiagnosticOpenAICompletedNoAssistantMessage
 		return result, nil
@@ -260,8 +314,27 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	case "response.completed":
 		if result.Outcome != provider.OutcomeUnsupported && result.Outcome != provider.OutcomeRefused {
 			result.Outcome = provider.OutcomeCompleted
+			if len(result.ToolCalls) > 0 {
+				if code := provider.ToolCallsDiagnostic(result.ToolCalls, in.Tools); code != "" {
+					result.Outcome = provider.OutcomeUnsupported
+					result.DiagnosticCode = code
+					result.ToolCalls = nil
+					return result, nil
+				}
+				if !argumentStream.validate(finalResponse.ToolItems) {
+					result.Outcome = provider.OutcomeUnsupported
+					result.DiagnosticCode = provider.DiagnosticToolProtocolInvalid
+					result.ToolCalls = nil
+					return result, nil
+				}
+				result.Completion = provider.CompletionToolCalls
+			} else {
+				result.Completion = provider.CompletionFinal
+			}
 		}
 	case "response.incomplete":
+		result.ToolCalls = nil
+		result.Completion = ""
 		if result.StopReason == "max_output_tokens" {
 			result.Outcome = provider.OutcomeTruncated
 		} else {
@@ -269,6 +342,8 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			result.DiagnosticCode = provider.DiagnosticOpenAIIncompleteOtherStopReason
 		}
 	case "response.failed":
+		result.ToolCalls = nil
+		result.Completion = ""
 		result.Outcome = outcomeForCode(result.ProviderCode, provider.OutcomeService)
 	}
 	// The terminal event is authoritative when a compatible Responses route
@@ -354,6 +429,13 @@ type resultResponse struct {
 	Target               *provider.Result
 	FinalText            string
 	HasReplayableMessage bool
+	ToolItems            []indexedToolCall
+}
+
+type indexedToolCall struct {
+	index     int
+	itemID    string
+	arguments string
 }
 
 func (r *resultResponse) UnmarshalJSON(b []byte) error {
@@ -410,11 +492,16 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 		}
 		t.Usage.ReasoningTokens = v.Usage.OutputDetails.Reasoning
 	}
-	for _, raw := range v.Output {
+	for index, raw := range v.Output {
 		var item struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			Content []struct {
+			Type      string `json:"type"`
+			Role      string `json:"role"`
+			ID        string `json:"id"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			Status    string `json:"status"`
+			Content   []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
@@ -422,13 +509,26 @@ func (r *resultResponse) UnmarshalJSON(b []byte) error {
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return err
 		}
-		if item.Type == "function_call" || item.Type == "computer_call" {
-			t.Outcome = provider.OutcomeUnsupported
-			if item.Type == "function_call" {
-				t.DiagnosticCode = provider.DiagnosticOpenAICompletedFunctionCall
-			} else {
-				t.DiagnosticCode = provider.DiagnosticOpenAICompletedComputerCall
+		if item.Type == "function_call" {
+			if item.Status != "" && item.Status != "completed" {
+				t.Outcome = provider.OutcomeUnsupported
+				t.DiagnosticCode = provider.DiagnosticToolProtocolInvalid
+				continue
 			}
+			var arguments map[string]json.RawMessage
+			if json.Unmarshal([]byte(item.Arguments), &arguments) != nil || arguments == nil {
+				t.Outcome = provider.OutcomeUnsupported
+				t.DiagnosticCode = provider.DiagnosticToolProtocolInvalid
+				continue
+			}
+			t.ToolCalls = append(t.ToolCalls, provider.ToolCall{CallID: item.CallID, ToolID: chattools.ID(item.Name), Arguments: json.RawMessage(item.Arguments)})
+			r.ToolItems = append(r.ToolItems, indexedToolCall{index: index, itemID: item.ID, arguments: item.Arguments})
+			t.Native = append(t.Native, append(json.RawMessage(nil), raw...))
+			continue
+		}
+		if item.Type == "computer_call" {
+			t.Outcome = provider.OutcomeUnsupported
+			t.DiagnosticCode = provider.DiagnosticOpenAICompletedComputerCall
 			continue
 		}
 		if item.Type != "message" && item.Type != "reasoning" {
