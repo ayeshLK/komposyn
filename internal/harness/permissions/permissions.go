@@ -95,7 +95,11 @@ type Requirement struct {
 type Request struct {
 	ConversationID string
 	CallID         string
-	Requirements   []Requirement
+	// Binding is an opaque digest of the immutable invocation and captured
+	// authorization context. It is not a substitute for re-preparing that
+	// context immediately before dispatch.
+	Binding      string
+	Requirements []Requirement
 }
 
 type Rule struct {
@@ -261,9 +265,10 @@ func onceGrantMatches(grant Grant, request Request, requirement Requirement) boo
 }
 
 var (
-	ErrInvalidGrant     = errors.New("invalid permission grant")
-	ErrGrantNotFound    = errors.New("permission grant not found")
-	ErrOnceGrantMissing = errors.New("once grant is missing or already consumed")
+	ErrInvalidGrant         = errors.New("invalid permission grant")
+	ErrGrantNotFound        = errors.New("permission grant not found")
+	ErrOnceGrantMissing     = errors.New("once grant is missing or already consumed")
+	ErrGrantRevisionChanged = errors.New("permission grants changed after authorization")
 )
 
 // MemoryStore is an injected in-memory grant store. It must only be handed to
@@ -452,6 +457,42 @@ func (s *MemoryStore) ConsumeOnce(conversationID, callID string, requirementKeys
 		delete(s.grants, id)
 	}
 	s.revision++
+	return nil
+}
+
+// ConsumeOnceMatchingAtRevision removes any once grants that cover the
+// supplied requirements only if the grant store still has the revision
+// evaluated by the caller. Requirements already authorized by rules or
+// conversation grants need no once grant and are left unchanged. Revision
+// validation and once-grant consumption happen atomically under the store lock.
+func (s *MemoryStore) ConsumeOnceMatchingAtRevision(request Request, expectedRevision uint64) error {
+	if s == nil || request.ConversationID == "" || request.CallID == "" || len(request.Requirements) == 0 {
+		return ErrOnceGrantMissing
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revision != expectedRevision {
+		return ErrGrantRevisionChanged
+	}
+	consumed := make([]string, 0, len(request.Requirements))
+	for _, requirement := range request.Requirements {
+		matches := []string{}
+		for id, grant := range s.grants {
+			if grant.Lifetime == LifetimeOnce && grant.ConversationID == request.ConversationID && grant.CallID == request.CallID && grant.ToolID == requirement.ToolID && grant.Kind == requirement.Kind && onceGrantMatches(grant, request, requirement) {
+				matches = append(matches, id)
+			}
+		}
+		if len(matches) > 1 {
+			return ErrOnceGrantMissing
+		}
+		consumed = append(consumed, matches...)
+	}
+	if len(consumed) > 0 {
+		for _, id := range consumed {
+			delete(s.grants, id)
+		}
+		s.revision++
+	}
 	return nil
 }
 

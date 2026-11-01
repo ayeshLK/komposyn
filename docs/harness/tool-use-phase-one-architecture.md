@@ -1,10 +1,11 @@
 # Tool use Phase 1 architecture and decision record
 
-Status: initial contracts, evaluator, and injected in-memory grant store are
-implemented on the feature branch. No model tool is enabled and no process,
-file mutation, web request, or live model call is authorized by this document.
-These foundations are not enforcement. Final execution and distribution
-choices remain subject to the decisions at the end of this record.
+Status: the contracts, evaluator, injected in-memory grant store, and bounded
+runtime integration are implemented in review changes. No shipped model tool
+is enabled and no process, file mutation, web request, or live model call is
+authorized by this document.
+Injected test/review adapters exercise the runtime boundary; they do not
+constitute a production enforcement backend.
 
 Authority: [issue #198](https://github.com/ayeshLK/komposyn/issues/198) and
 [the implementation plan](tool-use-phase-one-plan.md). This is a new,
@@ -214,13 +215,18 @@ These are not implied by approval of the issue's conceptual semantics:
    differences or the API rejects a supported operation. Unknown route support
    means tools remain unavailable on that route. Images require their own
    content-format support check.
-4. **Initial bounds (proposal, not implementation defaults):** one active user
-   turn; serial calls; at most 8 tool invocations and 4 provider requests per
-   turn; 30-second command runtime; 256 KiB output per invocation and 1 MiB
-   total tool output per turn; one owned process handle at a time with 5-minute
-   maximum lifetime. Approval may wait until explicit answer/cancel/shutdown,
-   but only one request may be pending. Approve/revise these ceilings before
-   runtime integration.
+4. **Bounds for the runtime integration:** one active user turn; serial tool
+   calls; at most 8 tool invocations and 4 provider requests per turn; at most
+   256 KiB of serialized tool-result content per invocation and 1 MiB total
+   across a turn; and one pending approval. The byte counter is
+   `len(ToolResult.Content)` for each UTF-8 envelope string after its JSON
+   envelope encoding; it excludes provider transport framing and raw tool
+   output discarded during truncation. Non-text result content is
+   replaced with a fixed explanatory text until a bounded content transport is
+   designed. Command runtime/process limits remain deferred with shell
+   execution. Approval waits until an explicit choice, cancellation, or
+   shutdown; the runtime does not start work when an approval surface is
+   absent.
 5. **Approval denial:** maintainer decision: deny returns a typed “not
    executed” result so the model can continue along a different path. Any
    replacement action is independently authorized; the denied action is never
@@ -228,16 +234,32 @@ These are not implied by approval of the issue's conceptual semantics:
    provider continuation. “Do something else” supplies explicit user text and
    independently checks any resulting action.
 
-This initial slice implements role-specific tool definitions, typed outcomes,
-deterministic registry snapshots, typed action/resource requirements, rule
-precedence, recursive scope matching, once/conversation grants, revocation,
-atomic once-grant consumption, and a coordinator for one combined pending
-approval bound to the request and grant revision. Focused unit tests exercise
-these contracts, including stale responses and deletion's once-only rule. It
-does not yet implement the permission UI, runtime dispatch, enforcement, or
-tool implementations. A separate protocol-only dependency change adds provider
-tool-call encoding and continuation for OpenAI API-key Responses and Anthropic
-Messages routes; OpenAI OAuth remains unknown and must not receive tool
+The runtime integration offers registry definitions only when the provider
+route reports supported client tools and trusted authorization and enforcement
+adapters are injected. It validates complete calls, rejects provider call IDs
+already processed in the current conversation, serializes dispatch, re-prepares
+and re-evaluates permission requests immediately before dispatch, and checks
+the grant-store revision atomically while consuming matching once grants. It
+returns bounded typed text envelopes. It keeps execution activity and
+conversation grants in memory and retains completed tool-result continuation
+data if a subsequent provider request fails, preventing automatic replay.
+Provider timeouts apply independently to each request; approval waits inherit
+caller cancellation/deadlines and shutdown, not the internal provider timeout.
+Provider request usage is recorded once for every response, including failed
+continuations. The shipped
+`cmd/harness` remains text-only and registers no tools. No production adapter,
+permission UI, OS sandbox, shell, filesystem mutation, or network tool is
+implemented by this runtime layer.
+
+The contract foundation implements role-specific tool definitions, typed
+outcomes, deterministic registry snapshots, typed action/resource
+requirements, rule precedence, recursive scope matching, once/conversation
+grants, revocation, atomic once-grant consumption, and a coordinator for one
+combined pending approval bound to the request and grant revision. Focused
+unit tests exercise these contracts, including stale responses and deletion's
+once-only rule. A separate protocol change adds provider tool-call encoding
+and continuation for OpenAI API-key Responses and Anthropic Messages routes;
+OpenAI OAuth remains unknown and must not receive tool
 definitions. This protocol support does not make tools available in chat. No
 shell, web, mutation, or image tool is registered until runtime authorization
 and enforcement pass their acceptance tests.

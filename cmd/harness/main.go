@@ -104,6 +104,7 @@ func newCommand() *cobra.Command {
 			}
 			chat := runtime.NewChatWithAuth(registry, profileStore, authRegistry)
 			runErr := frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore, Version: cliVersion})
+			chat.Close()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			return errors.Join(runErr, oauthManager.Close(shutdownCtx))
