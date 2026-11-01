@@ -328,6 +328,7 @@ func (t *linuxReadTarget) read(ctx context.Context, maxBytes int) (ReadResult, e
 	if stat.Nlink > 1 {
 		return ReadResult{Outcome: OutcomeNotExecuted}, ErrAliasedTarget
 	}
+	t.owner.runTestHook("read-after-alias-check")
 	buffer := make([]byte, min(maxBytes+1, 32<<10))
 	content := make([]byte, 0, min(maxBytes+1, 32<<10))
 	var offset int64
@@ -406,6 +407,7 @@ func (t *linuxWriteTarget) write(ctx context.Context, text []byte) (MutationResu
 		return MutationResult{Outcome: OutcomeNotExecuted}, err
 	}
 	defer unix.Close(fd)
+	t.owner.runTestHook("write-after-open")
 	if err := ctx.Err(); err != nil {
 		if created {
 			return MutationResult{Outcome: OutcomePartial}, err
@@ -500,6 +502,7 @@ func (t *linuxDeleteTarget) remove(ctx context.Context) (MutationResult, error) 
 	if err := revalidateEntry(t.parentFD, t.leaf, t.targetID); err != nil {
 		return MutationResult{Outcome: OutcomeNotExecuted}, err
 	}
+	t.owner.runTestHook("delete-after-final-revalidate")
 	if err := ctx.Err(); err != nil {
 		return MutationResult{Outcome: OutcomeCancelled}, err
 	}
@@ -588,6 +591,7 @@ func removeContents(ctx context.Context, dirFD int, depth int, entries *int, del
 					}
 					return ErrTargetChanged
 				}
+				owner.runTestHook("delete-child-opened")
 				if err := removeContents(ctx, childFD, depth+1, entries, deleted, owner); err != nil {
 					_ = unix.Close(childFD)
 					return err

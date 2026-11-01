@@ -395,9 +395,10 @@ Implementation follows the official [Sign in with ChatGPT open-source flow](http
 and [UI/UX guidance](https://developers.openai.com/siwc/ui-ux-guidelines).
 # Filesystem enforcement foundation
 
-KompoSyn does not currently register model-facing filesystem tools. A
-Linux-only, host-owned enforcement foundation is under development for future
-reviewed operations; it is not wired into the executable. See
-[filesystem enforcement foundation](filesystem-enforcement-foundation.md) for
-its API, guarantees, limitations, and acceptance criteria for any later tool
-enablement.
+KompoSyn does not register model-facing filesystem tools. The Linux-only
+host-owned primitives remain unavailable for model use because concurrent
+namespace changes can move retained objects outside the selected path scope.
+See the [filesystem enforcement foundation](filesystem-enforcement-foundation.md)
+and [enablement policy and evidence](filesystem-enablement-policy.md) for
+guarantees, counterexamples, protected-path policy proposals, root-selection
+UX proposals, and requirements for any later tool enablement.
