@@ -15,6 +15,7 @@
 package tokenlogger
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -195,6 +196,139 @@ func TestPrepareCodexRecoveryRefusesMonetaryReconciliation(t *testing.T) {
 	}
 	_, err := store.PrepareCodexRecovery(context.Background(), path)
 	assertRecoveryReason(t, err, CodexRecoveryReasonMonetaryReconciliation)
+}
+
+func TestPrepareCodexRecoveryRejectsOversizedAndOversizedLineBeforeReading(t *testing.T) {
+	for _, name := range []string{"oversized_file", "oversized_line"} {
+		t.Run(name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := filepath.Join(t.TempDir(), "source.jsonl")
+			if err := os.WriteFile(path, legacyRecoveryFixture("session", "project"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (CodexAdapter{}).Import(path, store); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.OpenFile(path, os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "oversized_file" {
+				if _, err := file.WriteAt([]byte("{}\n"), 0); err != nil {
+					t.Fatal(err)
+				}
+				if err := file.Truncate(CodexRecoveryMaxSnapshotBytes + 1); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := file.Truncate(0); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.Write([]byte(strings.Repeat("x", 128))); err != nil {
+					t.Fatal(err)
+				}
+				if err := file.Truncate(CodexRecoveryMaxSnapshotBytes + 1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			var bytesRead int64
+			store.sourceReadHook = func(pass int, count int64) {
+				if pass == 1 && count > bytesRead {
+					bytesRead = count
+				}
+			}
+			beforeWrites := recoveryTotalChanges(t, store)
+			_, err = store.PrepareCodexRecovery(context.Background(), path)
+			assertRecoveryReason(t, err, CodexRecoveryReasonLimitExceeded)
+			if bytesRead != 0 {
+				t.Fatalf("oversized input was read before refusal: %d bytes", bytesRead)
+			}
+			if got := recoveryTotalChanges(t, store); got != beforeWrites {
+				t.Fatalf("Prepare wrote to Store: total_changes %d -> %d", beforeWrites, got)
+			}
+		})
+	}
+}
+
+func TestPrepareCodexRecoveryStopsAtHardByteBudgetWhenSourceGrows(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	if err := os.WriteFile(path, legacyRecoveryFixture("session", "project"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(path, store); err != nil {
+		t.Fatal(err)
+	}
+	var maximumRead int64
+	grew := false
+	store.sourceReadHook = func(pass int, count int64) {
+		if pass != 1 {
+			return
+		}
+		if count > maximumRead {
+			maximumRead = count
+		}
+		if !grew && count > 0 {
+			grew = true
+			file, err := os.OpenFile(path, os.O_RDWR, 0o600)
+			if err != nil {
+				t.Errorf("open growing source: %v", err)
+				return
+			}
+			if err := file.Truncate(CodexRecoveryMaxSnapshotBytes + 1024); err != nil {
+				t.Errorf("grow source: %v", err)
+			}
+			_ = file.Close()
+		}
+	}
+	beforeWrites := recoveryTotalChanges(t, store)
+	_, err := store.PrepareCodexRecovery(context.Background(), path)
+	assertRecoveryReason(t, err, CodexRecoveryReasonLimitExceeded)
+	if maximumRead > CodexRecoveryMaxSnapshotBytes+1 || maximumRead <= CodexRecoveryMaxSnapshotBytes {
+		t.Fatalf("read pass exceeded hard byte budget: %d bytes, limit %d", maximumRead, CodexRecoveryMaxSnapshotBytes)
+	}
+	if got := recoveryTotalChanges(t, store); got != beforeWrites {
+		t.Fatalf("Prepare wrote to Store: total_changes %d -> %d", beforeWrites, got)
+	}
+}
+
+func TestPrepareCodexRecoveryStopsCountingAfterRecordBudget(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	base := legacyRecoveryFixture("session", "project")
+	if err := os.WriteFile(path, base, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(path, store); err != nil {
+		t.Fatal(err)
+	}
+	data := append(append([]byte(nil), base...), bytes.Repeat([]byte{'\n'}, CodexRecoveryMaxRecords*3)...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var countedBytes int64
+	store.sourceReadHook = func(pass int, count int64) {
+		if pass == 2 && count > countedBytes {
+			countedBytes = count
+		}
+	}
+	_, err := store.PrepareCodexRecovery(context.Background(), path)
+	assertRecoveryReason(t, err, CodexRecoveryReasonLimitExceeded)
+	if countedBytes <= CodexRecoveryMaxRecords || countedBytes >= int64(len(data)) {
+		t.Fatalf("record count pass was not bounded: read %d of %d bytes for %d records", countedBytes, len(data), CodexRecoveryMaxRecords)
+	}
+}
+
+func recoveryTotalChanges(t *testing.T, store *Store) int64 {
+	t.Helper()
+	var changes int64
+	if err := store.db.QueryRow("SELECT total_changes()").Scan(&changes); err != nil {
+		t.Fatal(err)
+	}
+	return changes
 }
 
 func legacyRecoveryFixture(session, project string) []byte {

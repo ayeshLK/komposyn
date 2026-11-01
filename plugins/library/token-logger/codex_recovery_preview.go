@@ -46,6 +46,7 @@ const (
 	CodexRecoveryReasonUnsupportedSource      = "unsupported_source"
 	CodexRecoveryReasonCollectorActive        = "collector_active"
 	CodexRecoveryReasonIncompleteSnapshot     = "incomplete_snapshot"
+	CodexRecoveryReasonSourceChanged          = "source_changed"
 	CodexRecoveryReasonGenerationChanged      = "generation_changed"
 	CodexRecoveryReasonLimitExceeded          = "limit_exceeded"
 	CodexRecoveryReasonUnsupportedRecords     = "unsupported_records"
@@ -192,10 +193,13 @@ func (s *Store) PrepareCodexRecovery(ctx context.Context, sourcePath string) (Co
 	if err := ctx.Err(); err != nil {
 		return refuse(CodexRecoveryReasonCancelled)
 	}
-	snapshot, err := acquireStreamingSourceSnapshot(ctx, sourcePath, s, "codex")
+	snapshot, err := acquireRecoverySourceSnapshot(ctx, sourcePath, s, "codex", CodexRecoveryMaxSnapshotBytes)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return refuse(CodexRecoveryReasonCancelled)
+		}
+		if errors.Is(err, errSourceReadLimitExceeded) {
+			return refuse(CodexRecoveryReasonLimitExceeded)
 		}
 		return refuse(CodexRecoveryReasonSourceUnavailable)
 	}
@@ -209,10 +213,13 @@ func (s *Store) PrepareCodexRecovery(ctx context.Context, sourcePath string) (Co
 	if snapshot.byteLength > CodexRecoveryMaxSnapshotBytes {
 		return refuse(CodexRecoveryReasonLimitExceeded)
 	}
-	lineCount, err := countRecoveryRecords(ctx, snapshot.file)
+	lineCount, err := countRecoveryRecords(ctx, snapshot.file, snapshot.byteLength, s.sourceReadHook)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return refuse(CodexRecoveryReasonCancelled)
+		}
+		if errors.Is(err, errSourceReadLimitExceeded) {
+			return refuse(CodexRecoveryReasonSourceChanged)
 		}
 		return refuse(CodexRecoveryReasonSourceUnavailable)
 	}
@@ -255,6 +262,9 @@ func (s *Store) PrepareCodexRecovery(ctx context.Context, sourcePath string) (Co
 	if err != nil || retry {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return refuse(CodexRecoveryReasonCancelled)
+		}
+		if errors.Is(err, errSourceReadLimitExceeded) || errors.Is(err, errSourceSnapshotChanged) || retry {
+			return refuse(CodexRecoveryReasonSourceChanged)
 		}
 		return refuse(CodexRecoveryReasonSourceUnavailable)
 	}
@@ -382,11 +392,13 @@ func recoveryCheckCandidateConflicts(tx *sql.Tx, events []UsageEvent) error {
 	return nil
 }
 
-func countRecoveryRecords(ctx context.Context, file *os.File) (int, error) {
+func countRecoveryRecords(ctx context.Context, file *os.File, byteLimit int64, hook func(int, int64)) (int, error) {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return 0, err
 	}
-	reader := bufio.NewReaderSize(file, 64*1024)
+	stream := newSourceStreamReader(ctx, file, nil, nil, hook, 2)
+	stream.maxBytes = byteLimit
+	reader := bufio.NewReaderSize(stream, 64*1024)
 	count, hasBytes := 0, false
 	for {
 		if err := ctx.Err(); err != nil {
@@ -421,7 +433,8 @@ func parseCodexRecoverySnapshot(ctx context.Context, path string, store *Store, 
 	if _, err := snapshot.file.Seek(0, io.SeekStart); err != nil {
 		return ImportResult{}, false, err
 	}
-	stream := newSourceStreamReader(ctx, snapshot.file, []int64{snapshot.expectedCursor.cursor.ByteOffset}, nil, nil, 1)
+	stream := newSourceStreamReader(ctx, snapshot.file, []int64{snapshot.expectedCursor.cursor.ByteOffset}, nil, store.sourceReadHook, 3)
+	stream.maxBytes = snapshot.byteLength
 	verify := func(offset int64) error {
 		if stream.read != snapshot.byteLength || offset != snapshot.byteLength || stream.fullFingerprint() != snapshot.fingerprint {
 			return errSourceSnapshotChanged

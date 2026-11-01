@@ -106,6 +106,13 @@ canonical audit-plan data. Limits must be validated and made explicit in the
 preview; an applicable plan is refused rather than silently truncated.
 Cancellation must stop planning before mutation.
 
+Preparation checks the opened file size before scanning and enforces the byte
+budget in the reader itself, including one sentinel byte to detect growth
+after the stat. The record-count pass stops at the first record beyond its
+limit. Parsing is bounded to the captured snapshot length plus one sentinel;
+growth between passes returns a controlled source-changed refusal. These
+limits apply only to explicit recovery, not ordinary ingestion.
+
 The existing monotonic covered-gap and trailing-uncovered Codex recovery paths
 remain ordinary ingestion behavior. Reset repair is never invoked implicitly
 by import, reporting, inspection, or Store.Open.

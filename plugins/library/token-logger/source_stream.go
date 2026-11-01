@@ -31,6 +31,7 @@ import (
 const sourceVerificationBufferSize = 64 * 1024
 
 var errSourceSnapshotChanged = errors.New("source changed between verification and parsing passes")
+var errSourceReadLimitExceeded = errors.New("source read limit exceeded")
 
 type sourceStreamReader struct {
 	ctx              context.Context
@@ -42,6 +43,7 @@ type sourceStreamReader struct {
 	observer         *collectorBenchmarkObserver
 	hook             func(int, int64)
 	pass             int
+	maxBytes         int64
 }
 
 func newSourceStreamReader(ctx context.Context, r io.Reader, prefixOffsets []int64, observer *collectorBenchmarkObserver, hook func(int, int64), pass int) *sourceStreamReader {
@@ -59,6 +61,21 @@ func newSourceStreamReader(ctx context.Context, r io.Reader, prefixOffsets []int
 func (r *sourceStreamReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	limitProbe := false
+	if r.maxBytes > 0 {
+		remaining := r.maxBytes - r.read
+		if remaining <= 0 {
+			// Read one sentinel byte so an append after the captured length is
+			// detected without draining a file that keeps growing.
+			p = p[:1]
+			limitProbe = true
+		} else if int64(len(p)) > remaining {
+			p = p[:remaining]
+		}
 	}
 	n, err := r.r.Read(p)
 	if n == 0 {
@@ -89,6 +106,9 @@ func (r *sourceStreamReader) Read(p []byte) (int, error) {
 	r.read += int64(n)
 	if r.hook != nil {
 		r.hook(r.pass, r.read)
+	}
+	if limitProbe {
+		return n, errSourceReadLimitExceeded
 	}
 	return n, err
 }
@@ -195,6 +215,14 @@ func collectorSourceIdentityOwner(store *Store, adapter, sourceID string) (strin
 }
 
 func acquireStreamingSourceSnapshot(ctx context.Context, path string, store *Store, knownAdapter string) (sourceSnapshot, error) {
+	return acquireStreamingSourceSnapshotWithByteLimit(ctx, path, store, knownAdapter, 0)
+}
+
+func acquireRecoverySourceSnapshot(ctx context.Context, path string, store *Store, knownAdapter string, maxBytes int64) (sourceSnapshot, error) {
+	return acquireStreamingSourceSnapshotWithByteLimit(ctx, path, store, knownAdapter, maxBytes)
+}
+
+func acquireStreamingSourceSnapshotWithByteLimit(ctx context.Context, path string, store *Store, knownAdapter string, maxBytes int64) (sourceSnapshot, error) {
 	for attempt := 1; attempt <= sourceCursorRetryLimit; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return sourceSnapshot{}, err
@@ -228,6 +256,13 @@ func acquireStreamingSourceSnapshot(ctx context.Context, path string, store *Sto
 			return sourceSnapshot{}, err
 		}
 		stream := newSourceStreamReader(ctx, file, streamCursorOffsets(expectations, openedInfo.Size()), store.benchmarkObserver, store.sourceReadHook, 1)
+		if maxBytes > 0 {
+			if openedInfo.Size() > maxBytes {
+				_ = file.Close()
+				return sourceSnapshot{}, errSourceReadLimitExceeded
+			}
+			stream.maxBytes = maxBytes
+		}
 		reader := bufio.NewReaderSize(stream, sourceVerificationBufferSize)
 		adapter := knownAdapter
 		var classificationOutcomes OutcomeCounts
