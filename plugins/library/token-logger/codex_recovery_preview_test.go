@@ -223,6 +223,122 @@ func TestApplyCodexRecoveryCommitsOrdinaryMissingEventAndEffectiveOverrideOnce(t
 	}
 }
 
+func TestConcurrentCodexRecoveryApplyReturnsOneCommittedReceiptAcrossStores(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	if err := os.WriteFile(path, legacyRecoveryFixture("session", "project"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(path, store); err != nil {
+		t.Fatal(err)
+	}
+	var middleKey, finalKey string
+	if err := store.db.QueryRow("SELECT ingestion_key FROM usage_events ORDER BY source_offset LIMIT 1 OFFSET 1").Scan(&middleKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT ingestion_key FROM usage_events ORDER BY source_offset DESC LIMIT 1").Scan(&finalKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM usage_events WHERE ingestion_key=?", middleKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE usage_events SET input_tokens=50,output_tokens=5 WHERE ingestion_key=?", finalKey); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := store.PrepareCodexRecovery(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStore, err := Open(store.databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondStore.Close() })
+
+	start := make(chan struct{})
+	type result struct {
+		receipt CodexRecoveryReceipt
+		err     error
+	}
+	results := make(chan result, 2)
+	for _, candidate := range []*Store{store, secondStore} {
+		go func(candidate *Store) {
+			<-start
+			receipt, applyErr := candidate.ApplyCodexRecovery(context.Background(), path, preview.PlanToken)
+			results <- result{receipt: receipt, err: applyErr}
+		}(candidate)
+	}
+	close(start)
+	first, second := <-results, <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent applies failed: first=%v second=%v", first.err, second.err)
+	}
+	if first.receipt != second.receipt || first.receipt.PlanToken != preview.PlanToken {
+		t.Fatalf("concurrent receipts differ: first=%+v second=%+v", first.receipt, second.receipt)
+	}
+	var runs, allocations, events int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM recovery_runs").Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM recovery_allocations").Scan(&allocations); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM usage_events").Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 || allocations != 2 || events != 3 {
+		t.Fatalf("concurrent apply counts: runs=%d allocations=%d events=%d", runs, allocations, events)
+	}
+}
+
+func TestApplyCodexRecoveryRejectsChangedSourceWithoutMutation(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	data := legacyRecoveryFixture("session", "project")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(path, store); err != nil {
+		t.Fatal(err)
+	}
+	var middleKey, finalKey string
+	if err := store.db.QueryRow("SELECT ingestion_key FROM usage_events ORDER BY source_offset LIMIT 1 OFFSET 1").Scan(&middleKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT ingestion_key FROM usage_events ORDER BY source_offset DESC LIMIT 1").Scan(&finalKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM usage_events WHERE ingestion_key=?", middleKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE usage_events SET input_tokens=50,output_tokens=5 WHERE ingestion_key=?", finalKey); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := store.PrepareCodexRecovery(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendix := []byte(`{"type":"event_msg","id":"D","timestamp":"2026-10-11T00:00:04Z","payload":{"type":"token_count","session_id":"session","info":{"total_token_usage":{"input_tokens":175,"output_tokens":20},"last_usage_includes_reasoning":null}}}` + "\n")
+	if err := os.WriteFile(path, append(data, appendix...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.ApplyCodexRecovery(context.Background(), path, preview.PlanToken)
+	assertRecoveryReason(t, err, CodexRecoveryReasonStalePreview)
+	var events, runs, allocations int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM usage_events").Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM recovery_runs").Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM recovery_allocations").Scan(&allocations); err != nil {
+		t.Fatal(err)
+	}
+	if events != 2 || runs != 0 || allocations != 0 {
+		t.Fatalf("stale Apply changed stored state: events=%d runs=%d allocations=%d", events, runs, allocations)
+	}
+}
+
 func TestApplyCodexRecoveryAllocationFailureRollsBackAccountingAndCanRetry(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "source.jsonl")

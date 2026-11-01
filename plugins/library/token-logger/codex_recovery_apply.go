@@ -88,6 +88,14 @@ func (s *Store) ApplyCodexRecovery(ctx context.Context, sourcePath, expectedPlan
 		defer prepared.snapshot.close()
 	}
 	if err != nil {
+		// Another Store handle may have committed this exact plan after the
+		// first receipt lookup but before preparation observed the database.
+		// In that case preparation can correctly report that no work remains;
+		// return the committed receipt instead of turning a successful
+		// concurrent apply into a retry error.
+		if receipt, found, receiptErr := recoveryReceipt(s.db, expectedPlanToken); receiptErr == nil && found {
+			return receipt, nil
+		}
 		return CodexRecoveryReceipt{}, err
 	}
 	if !hmac.Equal([]byte(preview.PlanToken), []byte(expectedPlanToken)) {

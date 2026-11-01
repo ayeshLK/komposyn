@@ -212,6 +212,7 @@ production database has this cause.
 | Preserve base event rows; effective accounting uses seven categories | Migration 19 view and accounting reader tests from PR 1; Apply public-API test asserts stable A/C IDs and vectors and 250/25 over three events. |
 | Preview is bounded, source-selected, read-only, and evidence-bound | `PrepareCodexRecovery`; `TestPrepareCodexRecoveryPreviewsLegacyCumulativeRepairWithoutWrites`, refusal and privacy tests. |
 | Apply only exact reviewed preview and return receipt idempotently | `ApplyCodexRecovery`; A/B/C test repeats the same token after deleting the source and checks the unchanged receipt and event count. |
+| Identical concurrent applies across Store handles commit once | `TestConcurrentCodexRecoveryApplyReturnsOneCommittedReceiptAcrossStores`; both callers receive the same committed receipt and the database contains one run, two journal entries, and three ordinary events. |
 | Commit all accounting state atomically | `TestApplyCodexRecoveryRollsBackAtEachTransactionalWriteBoundary` injects failures at run, event, journal, head, revision, cursor, and checkpoint writes and verifies the pre-apply state remains. |
 | Fence parser work started before Apply | `TestImporterAppendRejectsStaleAllocationRevision` validates the source-revision check in the ordinary append transaction. |
 | Reverify the effective allocation through normal import | A/B/C Apply test imports the same full snapshot again, asserts no new event, and checks snapshot reuse is restored only after that import. |
@@ -220,5 +221,7 @@ production database has this cause.
 
 The CLI handoff requires the reviewed public APIs in a published core tag and
 must retain explicit preview/consent, stale-token handling, and no automatic
-collector stop/resume. These checks do not claim cross-platform runtime
-evidence or establish the production cause reported in #197.
+collector stop/resume. Local validation includes native Linux unit/race tests
+and the standalone CLI suite with a temporary module replacement. Hosted
+macOS/Windows checks remain the evidence for native platform behavior; these
+checks do not establish the production cause reported in #197.
