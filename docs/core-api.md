@@ -40,6 +40,14 @@ module and distinguishes it from command policy.
   These APIs inspect stored evidence only. See
   [persisted diagnostic details](diagnostic-details.md) for privacy, bounds,
   migration side effects, and the production instrumentation dependency.
+- **Codex recovery preview:** `Store.PrepareCodexRecovery` explicitly reads one
+  selected existing Codex source and returns a bounded, versioned, opaque
+  preview or a typed privacy-safe refusal. It reuses the production parser,
+  resolves only existing stored project/session identities, and does not write
+  Store state. `Store.Open` may have applied migrations or synchronized the
+  catalog before the method is called. There is no recovery apply API until
+  the dependent transactional stage is reviewed. See
+  [Codex historical recovery](codex-historical-recovery-v1.md).
 
 SQLite migration mechanics, raw cursor internals, SQL helpers, provider parser
 types, pricing catalog synchronization details, and the mutable `Version`
@@ -116,6 +124,13 @@ the package remains independently usable by other consumers.
 `InspectionRecoveryCandidateNameReview`,
 `InspectionRecoveryInsufficientEvidence`,
 `InspectionRecoveryNoRepairIndicated`, and `Store.InspectProject`.
+
+Recovery preview declarations are `CodexRecoveryPreview`,
+`CodexRecoveryChange`, `CodexRecoveryTokenVector`, `CodexRecoveryError`,
+`CodexRecoveryPreviewFormatVersion`, `CodexRecoveryAlgorithmVersion`,
+`CodexRecoveryMaxSnapshotBytes`, `CodexRecoveryMaxRecords`,
+`CodexRecoveryMaxChanges`, `CodexRecoveryMaxPlanBytes`, the
+`CodexRecoveryReason*` constants, and `Store.PrepareCodexRecovery`.
 
 The separate `ProjectInspection` response is a versioned, bounded evidence
 contract. It does not alter the established JSON/CSV report or protocol

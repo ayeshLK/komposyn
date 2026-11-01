@@ -813,7 +813,7 @@ func (s *Store) existingCodexLegacyEventUsage(sourceID string, keys []string) (m
 			args = append(args, key)
 		}
 		query := `SELECT ingestion_key, input_tokens, output_tokens, cache_read_tokens,
-			cache_write_tokens, reasoning_tokens FROM effective_usage_events
+			cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens FROM effective_usage_events
 			WHERE source_adapter = 'codex' AND source_id = ? AND event_id LIKE 'codex-event-%'
 			AND ingestion_key IN (` + placeholders + `)`
 		rows, err := s.db.Query(query, args...)
@@ -824,7 +824,7 @@ func (s *Store) existingCodexLegacyEventUsage(sourceID string, keys []string) (m
 			var key string
 			var usage TokenUsage
 			if err := rows.Scan(&key, &usage.InputTokens, &usage.OutputTokens, &usage.CacheReadTokens,
-				&usage.CacheWriteTokens, &usage.ReasoningTokens); err != nil {
+				&usage.CacheWriteTokens, &usage.CacheWrite5mTokens, &usage.CacheWrite1hTokens, &usage.ReasoningTokens); err != nil {
 				rows.Close()
 				return nil, fmt.Errorf("scan existing Codex cumulative event: %w", err)
 			}
