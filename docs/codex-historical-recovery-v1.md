@@ -24,6 +24,22 @@ must use this projection. Raw `usage_events` reads are reserved for immutable
 evidence, migration, and writes. With no allocation pointers, the projection
 has the same values and report formats as the base table.
 
+The production read-path inventory is explicit:
+
+| Location | Accounting/read purpose | Source used |
+| --- | --- | --- |
+| `reporting.go` | Normal reports and range summaries | `effective_usage_events` |
+| `resources.go` | Project/session metrics and activity extents | `effective_usage_events` |
+| `project_inspection.go` | Selected/history/source activity metrics | `effective_usage_events` |
+| `storage.go` | Event count and Codex legacy replay comparison | `effective_usage_events` |
+| `codex_recovery_preview.go` | Recovery evidence matching; joins immutable identity/provenance with effective vectors | Both, intentionally |
+| `migrations.go` | Defines the effective projection from base rows and current allocation heads | `usage_events` plus journal |
+
+Other production reads and writes against `usage_events` are limited to
+migration/identity maintenance, ordinary event persistence, and explicit
+recovery evidence/conflict checks. Those paths intentionally operate on the
+immutable base evidence and do not calculate current accounting totals.
+
 For the accepted reset example, old stored deltas A=100/10 and C=50/5 stay
 unchanged. Recovery inserts missing B=50/5 as a normal event and points C to
 an effective 100/10 allocation. Accounting then reports 250/25 over three
@@ -168,6 +184,9 @@ check rather than commit stale events after recovery. A successful apply makes
 the captured snapshot non-reusable and invalidates the parser checkpoint until
 a normal full import verifies the effective allocation. Applying recovery is
 not evidence that a diagnostic condition has resolved.
+Core versions that predate schema 19 refuse databases upgraded by this
+recovery-capable version; operators must use a compatible core binary for
+subsequent opens. The migration has no down-migration.
 
 ## Compatibility and CLI handoff
 
