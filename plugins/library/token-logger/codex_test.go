@@ -1639,24 +1639,46 @@ func TestCodexReasoningMetadataRecoveryLeavesAmbiguousResetUncommitted(t *testin
 		t.Fatal(err)
 	}
 
-	result, err := collector.PollOnce()
-	if err == nil || !strings.Contains(err.Error(), errCodexLegacyRecoveryAmbiguous.Error()) || result.Outcomes.FailedSource != 1 {
-		t.Fatalf("ambiguous reset replay = %+v, err = %v; want explicit failed-source recovery", result, err)
+	assertBlocked := func(label string) {
+		t.Helper()
+		result, pollErr := collector.PollOnce()
+		if pollErr == nil || !strings.Contains(pollErr.Error(), errCodexLegacyRecoveryAmbiguous.Error()) || result.Outcomes.FailedSource != 1 {
+			t.Fatalf("%s ambiguous reset replay = %+v, err = %v; want explicit failed-source recovery", label, result, pollErr)
+		}
+		assertCodexDetailedTotals(t, store, [6]int64{2, 150, 30, 6, 15, 3})
+		var input, output, cached, writes, write5m, write1h, reasoning int64
+		if err := store.db.QueryRow(`SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+			cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens FROM usage_events WHERE ingestion_key = ?`,
+			thirdEvent.IngestionKey).Scan(&input, &output, &cached, &writes, &write5m, &write1h, &reasoning); err != nil {
+			t.Fatalf("%s read preserved later event: %v", label, err)
+		}
+		if got := [7]int64{input, output, cached, writes, write5m, write1h, reasoning}; got != [7]int64{50, 5, 10, 2, 0, 0, 1} {
+			t.Fatalf("%s ambiguous recovery changed the existing event vector: got %v", label, got)
+		}
+		afterCursor, err := store.Cursor(sourceID)
+		if err != nil || afterCursor != beforeCursor {
+			t.Fatalf("%s ambiguous recovery advanced cursor: before=%+v after=%+v err=%v", label, beforeCursor, afterCursor, err)
+		}
 	}
-	assertCodexDetailedTotals(t, store, [6]int64{2, 150, 30, 6, 15, 3})
-	var input, output, cached, writes, write5m, write1h, reasoning int64
-	if err := store.db.QueryRow(`SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-		cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens FROM usage_events WHERE ingestion_key = ?`,
-		thirdEvent.IngestionKey).Scan(&input, &output, &cached, &writes, &write5m, &write1h, &reasoning); err != nil {
-		t.Fatalf("read preserved later event: %v", err)
+	assertBlocked("first poll")
+	assertBlocked("repeat poll")
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if got := [7]int64{input, output, cached, writes, write5m, write1h, reasoning}; got != [7]int64{50, 5, 10, 2, 0, 0, 1} {
-		t.Fatalf("ambiguous recovery changed the existing event vector: got %v", got)
+	store, err = Open(database)
+	if err != nil {
+		t.Fatal(err)
 	}
-	afterCursor, err := store.Cursor(sourceID)
-	if err != nil || afterCursor != beforeCursor {
-		t.Fatalf("ambiguous recovery advanced cursor: before=%+v after=%+v err=%v", beforeCursor, afterCursor, err)
+	collector, err = NewCollector(store, []string{path}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertBlocked("recreated collector")
+	fourth := snapshot("2026-10-11T00:00:04Z", 200, 40, 8, 20, 4, "")
+	if err := os.WriteFile(path, []byte(fullSource+fourth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertBlocked("later append")
 }
 
 func assertCodexDetailedTotals(t *testing.T, store *Store, want [6]int64) {
