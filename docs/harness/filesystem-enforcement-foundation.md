@@ -46,20 +46,28 @@ destination. Nonexistent write targets use a securely opened parent and
 exclusive, no-follow leaf creation. Hard-linked read/write targets are
 rejected. Operations are bounded by size/depth/entry limits.
 
-These claims are supported by native behavioral tests on Linux using
-disposable fixtures, deterministic substitution checkpoints, and actual file
-operations. They are not a claim of isolation from an arbitrary concurrent
-same-user process. A retained descriptor remains bound to its directory
-object if that directory is renamed after validation; operations therefore
-do not follow a substituted pathname, but may act on the renamed object.
-Strict pathname-tree semantics against a concurrent namespace writer need a
-separately reviewed mechanism before model-facing use.
+The descriptor, symlink, mount-resolution, and ordinary target-substitution
+claims are supported by native behavioral tests on Linux using disposable
+fixtures. They are not a claim of pathname-tree confinement against a
+concurrent same-user namespace writer. The deterministic counterexample tests
+also show that a retained descriptor remains bound to its directory/file
+object if it is renamed outside the selected pathname tree after validation.
+Recursive deletion can continue through a relocated child directory, and a
+delete can unlink a substituted link entry if the replacement occurs after
+its last revalidation. A hard link added after the write alias check can
+receive the mutation. Those cases are deliberately recorded as passing
+counterexample tests: they demonstrate why the Linux implementation is not
+safe to expose to a model. Filesystem tools remain unavailable.
 
 Non-Linux builds return `ErrUnsupported`; they do not use weaker path-based
 I/O. Stub compilation is not enforcement evidence. macOS and Windows native
-behavior has not been validated, including Windows junction/reparse-point
-semantics. Cross-volume/mount traversal is refused on Linux through
-`RESOLVE_NO_XDEV`; native mount behavior was not exercised in this environment.
+filesystem enforcement is unavailable, including Windows
+junction/reparse-point handling. Linux cross-mount traversal is requested to
+be refused through `RESOLVE_NO_XDEV`; the native tmpfs test was attempted on
+Ubuntu Linux/amd64 kernel `7.0.0-38-generic` but skipped because the environment
+denied mount with `EPERM`. See the [filesystem enablement policy and evidence](filesystem-enablement-policy.md)
+for the threat model, tested counterexamples, protected-path proposal, and
+root-selection proposal.
 
 ## Authorization and protected data
 
@@ -70,11 +78,10 @@ before invoking the operation. It must preserve one-time deletion approval,
 revocation behavior, cancellation outcomes, and no-retry handling for
 uncertain mutations. Registration alone must never authorize an operation.
 
-No broad protected-path allow or deny list is invented here. Before enabling
-tools, maintainers must define how provider-owned source files, credentials,
-KompoSyn application data, and other protected locations are excluded or
-explicitly handled, without silently inferring a root such as the current
-directory or home directory.
+The proposed protected-path policy is not implemented and needs maintainer
+approval. Before enabling tools, the runtime must know the configured
+credential/settings paths and a reviewed list of other protected data; it
+must not infer a root such as the current directory or home directory.
 
 ## Acceptance conditions for later tools
 
