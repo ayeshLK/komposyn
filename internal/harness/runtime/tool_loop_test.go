@@ -21,9 +21,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
@@ -135,7 +138,7 @@ func (f *fixtureAuthorizer) Prepare(_ context.Context, invocation tools.Invocati
 	_ = json.Unmarshal(invocation.Arguments, &args)
 	target := args["target"]
 	if target == "" {
-		target = "/safe/fixture.txt"
+		target = fixturePath("/safe/fixture.txt")
 	}
 	digest := sha256.Sum256(invocation.Arguments)
 	return permissions.Request{ConversationID: invocation.ConversationID, CallID: invocation.ProviderCallID, Requirements: []permissions.Requirement{
@@ -189,9 +192,13 @@ func newToolConfig(tool *fixtureTool, approval ToolApprovalInteraction) ToolRunt
 }
 
 func callResult(callID string, target string) p.Result {
-	arguments, _ := json.Marshal(map[string]string{"target": target})
+	arguments, _ := json.Marshal(map[string]string{"target": fixturePath(target)})
 	callRaw, _ := json.Marshal(map[string]any{"type": "function_call", "id": "item-" + callID, "call_id": callID, "name": "lookup", "arguments": string(arguments), "status": "completed"})
 	return p.Result{Outcome: p.OutcomeCompleted, Completion: p.CompletionToolCalls, Text: "checking", Native: []json.RawMessage{callRaw}, ToolCalls: []p.ToolCall{{CallID: callID, ToolID: "lookup", Arguments: arguments}}, Usage: p.Usage{InputKnown: true, InputTokens: 2, OutputKnown: true, OutputTokens: 1, CacheReadKnown: true, CacheRead: 0}}
+}
+
+func fixturePath(path string) string {
+	return filepath.Join(os.TempDir(), "komposyn-fixture", filepath.FromSlash(strings.TrimLeft(path, "/")))
 }
 
 func finalResult(text string) p.Result {
@@ -398,7 +405,7 @@ func TestRuntimeRevalidatesAuthorizationAndStaleApproval(t *testing.T) {
 		authorizer.prepare = func(index int, invocation tools.Invocation) (permissions.Request, error) {
 			request, _ := (&fixtureAuthorizer{}).Prepare(context.Background(), invocation)
 			if index > 0 {
-				request.Requirements[1].Resource.Target = "/safe/changed.txt"
+				request.Requirements[1].Resource.Target = fixturePath("/safe/changed.txt")
 			}
 			return request, nil
 		}
@@ -594,12 +601,21 @@ func TestRuntimeCancellationWhileApprovalIsPending(t *testing.T) {
 		turn, _ := chat.Send(context.Background(), "cancel pending", nil)
 		done <- turn
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("approval callback was not reached")
+	}
 	// Snapshot takes the chat mutex. It must remain responsive while the
 	// approval adapter waits, proving Send does not hold that mutex here.
 	_ = chat.Snapshot()
 	chat.Cancel()
-	turn := <-done
+	var turn Turn
+	select {
+	case turn = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled chat turn did not return")
+	}
 	if turn.Outcome != p.OutcomeInterrupted || len(tool.captured()) != 0 || len(fp.captured()) != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeNotExecuted {
 		t.Fatalf("cancellation did not prevent pending execution: turn=%+v calls=%d requests=%d", turn, len(tool.captured()), len(fp.captured()))
 	}
@@ -632,9 +648,18 @@ func TestRuntimeCancellationAfterExecutionRetainsResultWithoutContinuation(t *te
 		turn, _ := chat.Send(context.Background(), "run", nil)
 		done <- turn
 	}()
-	<-started
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool execution did not start")
+	}
 	chat.Cancel()
-	turn := <-done
+	var turn Turn
+	select {
+	case turn = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled tool turn did not return")
+	}
 	if turn.Outcome != p.OutcomeInterrupted || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded || len(fp.captured()) != 1 {
 		t.Fatalf("cancellation lost completed side-effect truth: turn=%+v requests=%d", turn, len(fp.captured()))
 	}
