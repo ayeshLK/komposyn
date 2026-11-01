@@ -246,7 +246,7 @@ func TestPermissionsPanelKeyboardAndLiteralGrantRendering(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(110, 32)
 	safe := &synchronizedSimulation{SimulationScreen: screen}
-	client := &clientStub{toolGrants: []ui.ToolGrant{{ID: "grant-1", ToolID: "file_read", Action: "Read [red] path", ResourceKind: "filesystem", ResourceScope: "/safe/[red]report[-].txt", Operation: "read", Lifetime: "conversation", Origin: "trusted [blue] origin"}}}
+	client := &clientStub{toolGrants: []ui.ToolGrant{{ID: "grant-1", ToolID: "file_read", Action: "Read [red] path", ResourceKind: "filesystem", ResourceScope: "/safe/[red]report[-].txt", Operation: "read", Lifetime: "conversation", Origin: strings.Repeat("origin line\n", 40) + "trusted [blue] origin MARKER"}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
@@ -261,11 +261,14 @@ func TestPermissionsPanelKeyboardAndLiteralGrantRendering(t *testing.T) {
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, safe, "/safe/[red]report[-].txt", "")
 	waitForScreen(t, safe, "Read [red] path", "")
-	waitForScreen(t, safe, "trusted [blue] origin", "")
-	press(tcell.KeyTab, 0) // Move from the grants list to Clear all.
+	press(tcell.KeyTab, 0) // List -> full details.
+	press(tcell.KeyEnd, 0) // Scroll to the end of the full grant details.
+	waitForScreen(t, safe, "MARKER", "")
+	press(tcell.KeyTab, 0) // Details -> actions.
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, safe, "No tool grants", "")
-	press(tcell.KeyTab, 0) // List to Clear all.
+	press(tcell.KeyTab, 0) // List -> details.
+	press(tcell.KeyTab, 0) // Details -> Clear all.
 	press(tcell.KeyTab, 0) // Clear all to Back.
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, safe, "KompoSyn is ready", "revoking prevents future dispatch only")

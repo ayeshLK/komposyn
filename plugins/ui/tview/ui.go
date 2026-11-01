@@ -1784,7 +1784,11 @@ func (u *terminal) showPermissions() {
 		})
 	}).AddButton("Back", func() { u.returnPermissionView() })
 	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyTab || event.Key() == tcell.KeyBacktab {
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(details)
+			return nil
+		}
+		if event.Key() == tcell.KeyBacktab {
 			u.app.SetFocus(form)
 			return nil
 		}
@@ -1812,9 +1816,23 @@ func (u *terminal) showPermissions() {
 		}
 		return event
 	})
+	details.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyTab:
+			u.app.SetFocus(form)
+			return nil
+		case tcell.KeyBacktab:
+			u.app.SetFocus(list)
+			return nil
+		case tcell.KeyEscape:
+			u.returnPermissionView()
+			return nil
+		}
+		return event
+	})
 	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyBacktab {
-			u.app.SetFocus(list)
+			u.app.SetFocus(details)
 			return nil
 		}
 		return event
