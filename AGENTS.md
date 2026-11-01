@@ -44,7 +44,7 @@ declaration.
 - Projects and sessions use stable KompoSyn-owned identities. Provider IDs are
   scoped aliases; display names do not merge projects. Preserve path-free
   reconciliation warnings and synthetic Unattributed resources.
-- SQLite schema is version 18. Any schema change needs a new immutable,
+- SQLite schema is version 19. Any schema change needs a new immutable,
   numbered transactional migration, runner update, and complete upgrade tests.
   Do not add automatic down-migrations.
 - Migration backups use SQLite's online backup API, represent a consistent

@@ -600,6 +600,7 @@ func TestMigrationEighteenFailurePreservesSchemaAndVerifiedBackup(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	removeRecoveryMigrationForTest(t, db)
 	for _, statement := range []string{"DROP TABLE diagnostic_detail_findings", "DROP TABLE diagnostic_detail_samples", "DROP TABLE diagnostic_details", "DROP TABLE diagnostic_detail_meta", "DELETE FROM schema_migrations WHERE version=18"} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)

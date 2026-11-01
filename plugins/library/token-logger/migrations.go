@@ -413,3 +413,98 @@ CREATE TABLE diagnostic_detail_findings (
     UNIQUE(problem_id, finding_key)
 );
 `
+
+// Schema migration 19 adds the durable, append-only allocation history used
+// by explicit historical recovery. Base usage_events remain untouched.
+const schemaMigrationNineteenRecoveryAllocations = `
+CREATE TABLE recovery_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    namespace_key BLOB NOT NULL CHECK (length(namespace_key) = 32),
+    format_version INTEGER NOT NULL CHECK (format_version = 1)
+);
+INSERT INTO recovery_meta(singleton, namespace_key, format_version) VALUES (1, randomblob(32), 1);
+
+CREATE TABLE recovery_runs (
+    run_id TEXT PRIMARY KEY,
+    plan_digest TEXT NOT NULL UNIQUE CHECK (length(plan_digest) = 64),
+    format_version INTEGER NOT NULL CHECK (format_version = 1),
+    source_id TEXT NOT NULL,
+    source_generation INTEGER NOT NULL,
+    snapshot_digest TEXT NOT NULL CHECK (length(snapshot_digest) = 64),
+    snapshot_size INTEGER NOT NULL CHECK (snapshot_size >= 0),
+    inserted_event_count INTEGER NOT NULL CHECK (inserted_event_count >= 0),
+    overridden_event_count INTEGER NOT NULL CHECK (overridden_event_count >= 0),
+    audit_json BLOB NOT NULL CHECK (length(audit_json) <= 16777216),
+    committed_at TEXT NOT NULL
+);
+
+CREATE TABLE recovery_allocations (
+    allocation_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES recovery_runs(run_id),
+    event_id TEXT NOT NULL REFERENCES usage_events(event_id),
+    entry_kind TEXT NOT NULL CHECK (entry_kind IN ('override', 'inserted')),
+    previous_allocation_id TEXT REFERENCES recovery_allocations(allocation_id),
+    before_input_tokens INTEGER,
+    before_output_tokens INTEGER,
+    before_cache_read_tokens INTEGER,
+    before_cache_write_tokens INTEGER,
+    before_cache_write_5m_tokens INTEGER,
+    before_cache_write_1h_tokens INTEGER,
+    before_reasoning_tokens INTEGER,
+    after_input_tokens INTEGER NOT NULL CHECK (after_input_tokens >= 0),
+    after_output_tokens INTEGER NOT NULL CHECK (after_output_tokens >= 0),
+    after_cache_read_tokens INTEGER NOT NULL CHECK (after_cache_read_tokens >= 0),
+    after_cache_write_tokens INTEGER NOT NULL CHECK (after_cache_write_tokens >= 0),
+    after_cache_write_5m_tokens INTEGER NOT NULL CHECK (after_cache_write_5m_tokens >= 0),
+    after_cache_write_1h_tokens INTEGER NOT NULL CHECK (after_cache_write_1h_tokens >= 0),
+    after_reasoning_tokens INTEGER NOT NULL CHECK (after_reasoning_tokens >= 0),
+    created_at TEXT NOT NULL,
+    UNIQUE(allocation_id, event_id),
+    UNIQUE(run_id, event_id)
+);
+CREATE INDEX recovery_allocations_event_idx ON recovery_allocations(event_id, created_at, allocation_id);
+
+CREATE TABLE current_event_allocations (
+    event_id TEXT PRIMARY KEY REFERENCES usage_events(event_id),
+    allocation_id TEXT NOT NULL UNIQUE,
+    FOREIGN KEY (allocation_id, event_id) REFERENCES recovery_allocations(allocation_id, event_id)
+);
+CREATE TRIGGER current_event_allocations_override_only
+BEFORE INSERT ON current_event_allocations
+WHEN (SELECT entry_kind FROM recovery_allocations WHERE allocation_id = NEW.allocation_id) != 'override'
+BEGIN SELECT RAISE(ABORT, 'only override allocations can become current heads'); END;
+CREATE TRIGGER current_event_allocations_update_override_only
+BEFORE UPDATE ON current_event_allocations
+WHEN (SELECT entry_kind FROM recovery_allocations WHERE allocation_id = NEW.allocation_id) != 'override'
+BEGIN SELECT RAISE(ABORT, 'only override allocations can become current heads'); END;
+
+CREATE TABLE source_allocation_revisions (
+    source_id TEXT PRIMARY KEY,
+    source_generation INTEGER NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 0)
+);
+
+CREATE TRIGGER recovery_runs_no_update BEFORE UPDATE ON recovery_runs BEGIN SELECT RAISE(ABORT, 'recovery runs are append-only'); END;
+CREATE TRIGGER recovery_runs_no_delete BEFORE DELETE ON recovery_runs BEGIN SELECT RAISE(ABORT, 'recovery runs are append-only'); END;
+CREATE TRIGGER recovery_allocations_no_update BEFORE UPDATE ON recovery_allocations BEGIN SELECT RAISE(ABORT, 'recovery allocations are append-only'); END;
+CREATE TRIGGER recovery_allocations_no_delete BEFORE DELETE ON recovery_allocations BEGIN SELECT RAISE(ABORT, 'recovery allocations are append-only'); END;
+
+CREATE VIEW effective_usage_events AS
+SELECT e.event_id, e.schema_version, e.event_type, e.occurred_at, e.started_at, e.completed_at,
+       e.project_id, e.session_id, e.request_id, e.attempt, e.operation, e.client_name,
+       e.client_version, e.client_mode, e.provider_name, e.requested_model, e.resolved_model,
+       COALESCE(a.after_input_tokens, e.input_tokens) AS input_tokens,
+       COALESCE(a.after_output_tokens, e.output_tokens) AS output_tokens,
+       COALESCE(a.after_cache_read_tokens, e.cache_read_tokens) AS cache_read_tokens,
+       COALESCE(a.after_cache_write_tokens, e.cache_write_tokens) AS cache_write_tokens,
+       COALESCE(a.after_reasoning_tokens, e.reasoning_tokens) AS reasoning_tokens,
+       e.cost_status, e.cost_amount_micros, e.cost_currency, e.pricing_version,
+       e.provider_cost_amount_micros, e.provider_cost_currency, e.source_adapter, e.source_id,
+       e.source_record_id, e.source_offset, e.source_record_hash, e.ingestion_key,
+       e.attributes_json, e.billing_context_json,
+       COALESCE(a.after_cache_write_5m_tokens, e.cache_write_5m_tokens) AS cache_write_5m_tokens,
+       COALESCE(a.after_cache_write_1h_tokens, e.cache_write_1h_tokens) AS cache_write_1h_tokens
+FROM usage_events AS e
+LEFT JOIN current_event_allocations AS h ON h.event_id = e.event_id
+LEFT JOIN recovery_allocations AS a ON a.allocation_id = h.allocation_id AND a.event_id = e.event_id;
+`

@@ -143,6 +143,83 @@ func TestQueryUsesPersistedBillingContextSelectors(t *testing.T) {
 	}
 }
 
+func TestEffectiveAllocationProjectionFeedsAccountingWithoutChangingBaseEvent(t *testing.T) {
+	store := openTestStore(t)
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	if err := store.UpsertProject(Project{ID: "effective-project", DisplayName: "Effective"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertSession(Session{ID: "effective-session", ProjectID: "effective-project", Client: Client{Name: "codex-cli"}}); err != nil {
+		t.Fatal(err)
+	}
+	event := testEvent("effective-allocation-event")
+	event.EventID = "effective-allocation-event"
+	event.ProjectID, event.SessionID = "effective-project", "effective-session"
+	event.OccurredAt = from.Add(time.Hour)
+	event.Usage = TokenUsage{InputTokens: 300, OutputTokens: 200, CacheReadTokens: 30, CacheWriteTokens: 200,
+		CacheWrite5mTokens: 50, CacheWrite1hTokens: 60, ReasoningTokens: 70}
+	if _, err := store.Append([]UsageEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	// This test installs the storage representation directly. PR 1 deliberately
+	// has no public allocation writer; later recovery APIs own this transaction.
+	if _, err := store.db.Exec(`INSERT INTO recovery_runs(run_id, plan_digest, format_version, source_id, source_generation,
+		snapshot_digest, snapshot_size, inserted_event_count, overridden_event_count, audit_json, committed_at)
+		VALUES ('test-run', ?, 1, 'source', 1, ?, 1, 0, 1, '{}', ?)`, strings.Repeat("a", 64), strings.Repeat("b", 64), formatStoredTime(from)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO recovery_allocations(allocation_id, run_id, event_id, entry_kind,
+		before_input_tokens, before_output_tokens, before_cache_read_tokens, before_cache_write_tokens,
+		before_cache_write_5m_tokens, before_cache_write_1h_tokens, before_reasoning_tokens,
+		after_input_tokens, after_output_tokens, after_cache_read_tokens, after_cache_write_tokens,
+		after_cache_write_5m_tokens, after_cache_write_1h_tokens, after_reasoning_tokens, created_at)
+		VALUES ('test-allocation', 'test-run', ?, 'override', 300, 200, 30, 200, 50, 60, 70,
+		100, 20, 3, 20, 5, 6, 7, ?)`, event.EventID, formatStoredTime(from)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("INSERT INTO current_event_allocations(event_id, allocation_id) VALUES (?, 'test-allocation')", event.EventID); err != nil {
+		t.Fatal(err)
+	}
+	filter := UsageFilter{From: from, To: from.AddDate(0, 0, 1)}
+	report, err := store.Query(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := report.Summary; got.RequestCount != 1 || got.InputTokens != 100 || got.OutputTokens != 20 ||
+		got.CachedInputTokens != 3 || got.CacheWriteInputTokens != 20 || got.ReasoningOutputTokens != 7 || got.TotalTokens != 120 {
+		t.Fatalf("effective report summary = %+v", got)
+	}
+	var effective [7]int64
+	if err := store.db.QueryRow(`SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+		cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens FROM effective_usage_events WHERE event_id = ?`, event.EventID).
+		Scan(&effective[0], &effective[1], &effective[2], &effective[3], &effective[4], &effective[5], &effective[6]); err != nil {
+		t.Fatal(err)
+	}
+	if effective != [7]int64{100, 20, 3, 20, 5, 6, 7} {
+		t.Fatalf("effective vector = %v", effective)
+	}
+	var base [7]int64
+	if err := store.db.QueryRow(`SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+		cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens FROM usage_events WHERE event_id = ?`, event.EventID).
+		Scan(&base[0], &base[1], &base[2], &base[3], &base[4], &base[5], &base[6]); err != nil {
+		t.Fatal(err)
+	}
+	if base != [7]int64{300, 200, 30, 200, 50, 60, 70} {
+		t.Fatalf("base event changed: %v", base)
+	}
+	resource, err := store.ProjectResource("effective-project", ResourceFilter{From: filter.From, To: filter.To})
+	if err != nil || resource.Summary.InputTokens != 100 || resource.Summary.RequestCount != 1 {
+		t.Fatalf("project resource = %+v, %v", resource, err)
+	}
+	inspection, err := store.InspectProject(ProjectInspectionRequest{ProjectID: "effective-project", From: filter.From, To: filter.To})
+	if err != nil || inspection.SelectedActivity.EventCount != 1 || inspection.SelectedUsage.InputTokens != 100 {
+		t.Fatalf("project inspection = %+v, %v", inspection.SelectedActivity, err)
+	}
+	if count, err := store.EventCount(); err != nil || count != 1 {
+		t.Fatalf("event count = %d, %v", count, err)
+	}
+}
+
 func TestOpenAIPublicCatalogPricingRequiresExactModelAndObservedTier(t *testing.T) {
 	store := openTestStore(t)
 	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
@@ -487,6 +564,7 @@ func TestTimestampMigrationNormalizesLegacyValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	removeRecoveryMigrationForTest(t, store.db)
 	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
 		t.Fatal(err)
 	}

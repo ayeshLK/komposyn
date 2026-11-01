@@ -30,7 +30,7 @@ import (
 
 const (
 	// CurrentSchemaVersion is the SQLite schema written by this core version.
-	CurrentSchemaVersion = 18
+	CurrentSchemaVersion = 19
 	// OldestMigratableSchemaVersion is the oldest numbered schema supported by
 	// the forward migration history.
 	OldestMigratableSchemaVersion = 1

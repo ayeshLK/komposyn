@@ -262,7 +262,7 @@ func (s *Store) InspectProject(request ProjectInspectionRequest) (ProjectInspect
 		result.DisplayNameDigest = digest([]byte("Unattributed"))
 		var exists int
 		err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id IS NULL)
-			OR EXISTS(SELECT 1 FROM usage_events WHERE project_id IS NULL)`).Scan(&exists)
+			OR EXISTS(SELECT 1 FROM effective_usage_events WHERE project_id IS NULL)`).Scan(&exists)
 		result.Exists = exists != 0
 	} else {
 		var rawName string
@@ -355,7 +355,7 @@ func inspectionActivity(reader reportQueryer, projectID string, synthetic bool, 
 	}
 	query := `SELECT COUNT(*), COUNT(DISTINCT session_id),
 		COALESCE(SUM(CASE WHEN session_id IS NULL THEN 1 ELSE 0 END), 0),
-		MIN(occurred_at), MAX(occurred_at) FROM usage_events WHERE ` + conditions
+		MIN(occurred_at), MAX(occurred_at) FROM effective_usage_events WHERE ` + conditions
 	var activity ProjectInspectionActivity
 	var first, last sql.NullString
 	if err := reader.QueryRow(query, args...).Scan(&activity.EventCount, &activity.UsageBearingSessionCount,
@@ -560,7 +560,7 @@ func inspectWarnings(tx *sql.Tx, projectID string, synthetic bool, offset, limit
 func inspectSources(tx *sql.Tx, projectID string, synthetic bool, offset, limit int) (InspectionPage, []ProjectInspectionSource, error) {
 	predicate, args := inspectionProjectPredicate(projectID, synthetic)
 	base := `SELECT source_id, source_adapter, COUNT(*) AS event_count, MIN(occurred_at) AS first_event, MAX(occurred_at) AS last_event
-		FROM usage_events WHERE ` + predicate + " GROUP BY source_id, source_adapter"
+		FROM effective_usage_events WHERE ` + predicate + " GROUP BY source_id, source_adapter"
 	var total int64
 	if err := tx.QueryRow("SELECT COUNT(*) FROM ("+base+")", args...).Scan(&total); err != nil {
 		return InspectionPage{}, nil, err

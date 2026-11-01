@@ -27,6 +27,33 @@ import (
 	"time"
 )
 
+type testSQLExecutor interface {
+	Exec(string, ...any) (sql.Result, error)
+}
+
+func removeRecoveryMigrationForTest(t *testing.T, db testSQLExecutor) {
+	t.Helper()
+	for _, statement := range []string{
+		"DROP VIEW effective_usage_events",
+		"DROP TRIGGER current_event_allocations_override_only",
+		"DROP TRIGGER current_event_allocations_update_override_only",
+		"DROP TRIGGER recovery_runs_no_update",
+		"DROP TRIGGER recovery_runs_no_delete",
+		"DROP TRIGGER recovery_allocations_no_update",
+		"DROP TRIGGER recovery_allocations_no_delete",
+		"DROP TABLE current_event_allocations",
+		"DROP TABLE recovery_allocations",
+		"DROP TABLE recovery_runs",
+		"DROP TABLE source_allocation_revisions",
+		"DROP TABLE recovery_meta",
+		"DELETE FROM schema_migrations WHERE version = 19",
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("remove migration 19 object: %v", err)
+		}
+	}
+}
+
 func TestOpenRefusesNewerSchemaWithoutChangingDatabaseOrWAL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "newer.db")
 	owner, err := Open(path)
@@ -642,6 +669,7 @@ func TestMigrationSixteenFailurePreservesSchemaFifteenAndBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	removeRecoveryMigrationForTest(t, db)
 	if _, err := db.Exec("DROP TABLE parser_checkpoints"); err != nil {
 		t.Fatal(err)
 	}
@@ -711,6 +739,7 @@ func TestMigrationSeventeenNameSourceDefaultsLegacyRowsToUnknown(t *testing.T) {
 	if _, err := store.db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-name', '/legacy', 'Unattributed', '2026-01-01T00:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
+	removeRecoveryMigrationForTest(t, store.db)
 	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
 		t.Fatal(err)
 	}
@@ -745,8 +774,8 @@ func TestMigrationSeventeenNameSourceDefaultsLegacyRowsToUnknown(t *testing.T) {
 		t.Fatalf("legacy display name source = %q, want unknown", source)
 	}
 	var version int
-	if err := upgraded.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 18 {
-		t.Fatalf("schema version = %d, err = %v; want 18", version, err)
+	if err := upgraded.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 19 {
+		t.Fatalf("schema version = %d, err = %v; want 19", version, err)
 	}
 }
 
@@ -761,6 +790,7 @@ func TestMigrationSeventeenFailurePreservesSchemaSixteenAndBackup(t *testing.T) 
 	if _, err := store.db.Exec("INSERT INTO projects(id, root, display_name, created_at) VALUES ('legacy-name', '/legacy', 'Unattributed', '2026-01-01T00:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
+	removeRecoveryMigrationForTest(t, store.db)
 	if _, err := store.db.Exec("DROP TABLE diagnostic_detail_findings"); err != nil {
 		t.Fatal(err)
 	}
@@ -827,6 +857,104 @@ func TestMigrationSeventeenFailurePreservesSchemaSixteenAndBackup(t *testing.T) 
 			t.Fatalf("legacy name for %s = %q err=%v", filepath.Base(path), name, err)
 		}
 		if err := readOnly.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestMigrationNineteenFailurePreservesSchemaEighteenAndBackup(t *testing.T) {
+	tempDir := t.TempDir()
+	databasePath := filepath.Join(tempDir, "schema18.db")
+	backupPath := filepath.Join(tempDir, "schema18-backup.sqlite")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeRecoveryMigrationForTest(t, store.db)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_migration_nineteen BEFORE INSERT ON schema_migrations
+		WHEN NEW.version = 19 BEGIN SELECT RAISE(ABORT, 'injected migration 19 failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := OpenWithOptions(databasePath, OpenOptions{BackupPath: backupPath})
+	if opened != nil {
+		_ = opened.Close()
+		t.Fatal("open succeeded although migration 19 was rejected")
+	}
+	if err == nil || !strings.Contains(err.Error(), "injected migration 19 failure") {
+		t.Fatalf("migration failure=%v", err)
+	}
+	for _, path := range []string{databasePath, backupPath} {
+		readOnly, err := sql.Open("sqlite", sqliteFileURI(path, "mode=ro"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var integrity string
+		if err := readOnly.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+			readOnly.Close()
+			t.Fatalf("integrity_check for %s=%q, %v", filepath.Base(path), integrity, err)
+		}
+		var version int
+		if err := readOnly.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 18 {
+			readOnly.Close()
+			t.Fatalf("schema version for %s=%d, %v; want 18", filepath.Base(path), version, err)
+		}
+		var hasMeta bool
+		if err := readOnly.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='recovery_meta')").Scan(&hasMeta); err != nil || hasMeta {
+			readOnly.Close()
+			t.Fatalf("recovery metadata in pre-migration %s exists=%v err=%v", filepath.Base(path), hasMeta, err)
+		}
+		if err := readOnly.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if db, err := sql.Open("sqlite", databasePath); err != nil {
+		t.Fatal(err)
+	} else {
+		if _, err := db.Exec("DROP TRIGGER reject_migration_nineteen"); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{databasePath, filepath.Join(tempDir, "restored.db")} {
+		if path != databasePath {
+			if err := copyRegularFile(backupPath, path); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := restored.Exec("DROP TRIGGER reject_migration_nineteen"); err != nil {
+				restored.Close()
+				t.Fatal(err)
+			}
+			if err := restored.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		migrated, err := Open(path)
+		if err != nil {
+			t.Fatalf("reopen recovered %s: %v", filepath.Base(path), err)
+		}
+		var version int
+		if err := migrated.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 19 {
+			migrated.Close()
+			t.Fatalf("recovered schema version = %d, %v", version, err)
+		}
+		if err := migrated.Close(); err != nil {
 			t.Fatal(err)
 		}
 	}
