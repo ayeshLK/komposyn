@@ -102,8 +102,11 @@ func newCommand() *cobra.Command {
 			if err := authRegistry.Register(oauthManager.Provider(), oauthManager.Method(), oauthManager); err != nil {
 				return err
 			}
-			chat := runtime.NewChatWithAuth(registry, profileStore, authRegistry)
-			runErr := frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore, Version: cliVersion})
+			approvalBridge := harnessui.NewApprovalBridge()
+			clarificationBridge := harnessui.NewClarificationBridge()
+			toolRuntime := runtime.BundledConversationToolRuntimeConfig(approvalBridge, clarificationBridge)
+			chat := runtime.NewChatWithToolRuntime(registry, profileStore, authRegistry, toolRuntime)
+			runErr := frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore, Version: cliVersion, Approval: approvalBridge, Clarification: clarificationBridge})
 			chat.Close()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()

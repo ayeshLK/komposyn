@@ -1,9 +1,11 @@
 # Tool use Phase 1 architecture and decision record
 
-Status: the contracts, evaluator, injected in-memory grant store, bounded
-runtime integration, and tview approval/permission controls are implemented in
-review changes. No shipped model tool is enabled and no process, file
-mutation, web request, or live model call is authorized by this document.
+Status: the contracts, evaluator, in-memory grant store, bounded runtime,
+approval/permission controls, provider continuation, and two conversation-local
+tools are implemented. `cmd/harness` exposes `update_plan` and
+`request_user_input` only on explicitly supported API-key routes. This does not
+enable filesystem/project mutation, process execution, web access, or image
+tools, and it does not claim OS isolation for trusted in-process code.
 Injected test/review adapters exercise the runtime boundary; they do not
 constitute a production enforcement backend.
 
@@ -45,7 +47,7 @@ ownership. None is a general plugin API.
 | Tool definition | stable tool ID, description, JSON input schema, input bound, content/result bounds | exposure does not grant permission |
 | Tool call | conversation ID, user-turn ID, provider call ID, tool ID, complete argument bytes and digest | partial streamed arguments are never executable |
 | Action request | call identity, typed operation, validated arguments, captured cwd/environment identity, action key, requested permissions/resources | one request describes exactly what the host will run |
-| Requirement | action or resource kind, canonical scope, read/write/execute/delete/network operation, whether session scope is permitted | every requirement must pass; write implies read only in the same scope |
+| Requirement | action or resource kind, canonical scope, read/write/execute/delete/network/interact operation, whether session scope is permitted | every requirement must pass; write implies read only in the same filesystem scope |
 | Approval request | opaque pending ID, conversation/call identity, argument/context digest, policy/grant revision, displayed requirements, creation state | response must match the live pending request and its unchanged revision |
 | Grant | opaque grant ID, trusted origin, action key or resource scope, conversation ID, once/session lifetime, revision | only coordinator decisions can create it; delete has no session lifetime |
 | Tool result | provider call ID, typed outcome, bounded text/image/source content, truncation metadata | reports execution truth; never carries authority or credentials |
@@ -121,7 +123,45 @@ reports awaiting approval, authorized, running, and finished activity states;
 approval alone is never reported as execution. Final activity is copied into
 the completed turn so effects remain visible if later provider continuation
 fails. Tool read approval explicitly explains that retrieved data is returned
-to the selected model. The shipped executable still registers no real tools.
+to the selected model. The shipped executable registers only the two bundled
+conversation-local tools described below when route support is explicit.
+
+## Approved conversation-local tools
+
+Maintainer approval on 2026-11-01 selected the conversation resource contract
+described here.
+
+The first enabled implementations are `update_plan` and
+`request_user_input`. The permission resource kind `conversation` is bound by
+exact equality to the runtime's opaque current conversation ID. Its scope is
+exact and nonrecursive; it is not a filesystem path or network destination.
+Both tools require the usual action and resource requirements with the
+dedicated `interact` operation. The existing coordinator still controls
+once/conversation grants, revision validation, revocation, and dispatch. A
+conversation grant cannot match another conversation or a host resource.
+
+`update_plan` takes a strict object containing `plan`, a complete replacement
+array of at most 32 `{step,status}` records. `status` is `pending`,
+`in_progress`, or `completed`; at most one step may be in progress. Each step
+is at most 160 Unicode characters and all step text is at most 8 KiB. The
+serialized input is at most 16 KiB. The entire request is validated before
+atomic replacement; an empty array clears the current plan. Plan state is
+memory-only, shown in the UI, and closed on confirmed conversation reset and
+shutdown. Its result lists the applied plan within the existing tool-result
+budget.
+
+`request_user_input` takes a strict object containing a question (at most 500
+Unicode characters) and up to three `{label,description}` suggestions (at most
+80 and 160 Unicode characters). Its serialized input is at most 4 KiB. The UI
+requires an explicit suggested choice, free-text submission, decline, or
+cancel; silence and initial focus submit nothing. The opaque request and
+conversation IDs must match the live wait. Answers are returned byte-for-byte
+as entered up to 4 KiB and are sent to the selected model. Decline maps to the
+typed `declined` outcome and allows provider continuation without an answer;
+cancel maps to `cancelled` and stops the turn without a continuation request.
+The wait inherits the caller's context and deadline, not the provider timeout.
+Clarification uses no permission-control response and cannot change grants.
+`/permissions` remains usable while the clarification UI is open.
 
 ## Threat model
 
@@ -246,33 +286,30 @@ These are not implied by approval of the issue's conceptual semantics:
    provider continuation. “Do something else” supplies explicit user text and
    independently checks any resulting action.
 
-The runtime integration offers registry definitions only when the provider
-route reports supported client tools and trusted authorization and enforcement
-adapters are injected. It validates complete calls, rejects provider call IDs
-already processed in the current conversation, serializes dispatch, re-prepares
-and re-evaluates permission requests immediately before dispatch, and checks
-the grant-store revision atomically while consuming matching once grants. It
-returns bounded typed text envelopes. It keeps execution activity and
-conversation grants in memory and retains completed tool-result continuation
-data if a subsequent provider request fails, preventing automatic replay.
-Provider timeouts apply independently to each request; approval waits inherit
-caller cancellation/deadlines and shutdown, not the internal provider timeout.
-Provider request usage is recorded once for every response, including failed
-continuations. The shipped `cmd/harness` remains text-only and registers no
-tools. No production execution adapter, OS sandbox, shell, filesystem
-mutation, or network tool is implemented. The tview UI offers injected
-approval, conversation-grant management, and live in-memory activity reporting;
-that surface does not enable tools in the shipped executable.
+The runtime offers definitions only when the provider route explicitly reports
+client-tool support and trusted authorization, execution, approval, and
+clarification adapters are present. The executable's restricted production
+adapter accepts only the two bundled conversation-local implementations. It
+validates complete calls, rejects provider call IDs already processed in the
+current conversation, serializes dispatch, re-prepares and re-evaluates
+permission requests immediately before dispatch, and checks the grant-store
+revision atomically while consuming matching once grants. It returns bounded
+typed text envelopes. Execution activity, plans, and conversation grants are
+in memory. Completed results remain in continuation state if a later provider
+request fails, preventing automatic replay. Provider timeouts apply
+independently to each request; approval and clarification waits inherit caller
+cancellation/deadlines and shutdown, not the internal provider timeout. No
+filesystem/project mutation, shell, web, or image tool is implemented. The
+bundled tools are in-process trusted code, not an OS sandbox.
 
 The contract foundation implements role-specific tool definitions, typed
 outcomes, deterministic registry snapshots, typed action/resource
-requirements, rule precedence, recursive scope matching, once/conversation
-grants, revocation, atomic once-grant consumption, and a coordinator for one
-combined pending approval bound to the request and grant revision. Focused
-unit tests exercise these contracts, including stale responses and deletion's
-once-only rule. A separate protocol change adds provider tool-call encoding
-and continuation for OpenAI API-key Responses and Anthropic Messages routes;
-OpenAI OAuth remains unknown and must not receive tool
-definitions. This protocol support does not make tools available in chat. No
-shell, web, mutation, or image tool is registered until runtime authorization
-and enforcement pass their acceptance tests.
+requirements, rule precedence, recursive filesystem and exact conversation
+scope matching, once/conversation grants, revocation, atomic once-grant
+consumption, and a coordinator for one combined pending approval bound to the
+request and grant revision. Focused tests exercise these contracts, including
+stale responses, cross-conversation rejection, and deletion's once-only rule.
+Provider tool-call encoding and continuation are supported for OpenAI API-key
+Responses and Anthropic Messages. OpenAI OAuth remains unknown and receives no
+tool definitions. The tool surface remains exactly the two bundled tools
+above; shell, filesystem/project mutation, web, and image tools are deferred.

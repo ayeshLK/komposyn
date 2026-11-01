@@ -167,10 +167,12 @@ compatibility guarantee this chat needs. Catalog entries therefore have
 **unknown** compatibility; the picker explains this and actual Responses or
 Messages requests report unsupported access without automatic fallback.
 Model names are not used to infer capability or context limits. Both adapters
-send plain text, one system instruction, and streaming. The experimental tool
-runtime can expose registered tools only when a supported route and trusted
-authorization/enforcement adapters are injected. The shipped executable
-registers no tools and remains text-only. OpenAI
+send plain text, one system instruction, and streaming. On provider/auth routes
+that explicitly support client tools, the executable registers exactly
+`update_plan` and `request_user_input` behind centralized approval. OpenAI
+API-key Responses and Anthropic Messages support these tools. OpenAI OAuth and
+unknown routes remain text-only. No filesystem, process, or network tools are
+available. OpenAI
 requests set `store: false`; Anthropic requests use Messages. OpenAI API-key
 requests retain the configured output-token bound and encrypted reasoning
 continuation. The ChatGPT plan route follows the current SIWC preview subset:
@@ -202,7 +204,8 @@ messages requires confirmation and clears the in-memory chat. Canceling that
 confirmation preserves the selection and chat. Restart begins with no selected
 model and an empty conversation while saved settings/credentials remain.
 
-The composer suggests `/model`, `/help`, `/cancel`, `/exit`, `/permissions`, and `/copy` from the same
+The composer suggests `/model`, `/help`, `/cancel`, `/exit`, `/permissions`,
+`/plan`, and `/copy` from the same
 command definitions used for dispatch. Type `/` and narrow the prefix, use
 Up/Down to highlight a suggestion, Tab to complete it, Enter to run the
 highlighted command, or Esc to dismiss suggestions while keeping the draft.
@@ -212,6 +215,44 @@ their opaque IDs, operation, scope, lifetime, and origin. Select a grant and
 press Enter (or its `r` shortcut) to revoke it, or clear all grants. Revocation
 prevents future dispatch and invalidates pending approvals; it does not undo a
 completed effect or promise to stop running work.
+
+### Conversation-local tools
+
+The experimental executable exposes exactly two tools, and only on routes that
+explicitly support client tools: OpenAI API-key Responses and Anthropic
+Messages. OpenAI OAuth and unknown routes remain text-only. Each tool requires
+the normal action and resource authorization. The resource is the exact opaque
+ID of the current conversation, with once or current-conversation approval;
+these grants cannot authorize filesystem, process, or network access. The
+approval dialog and `/permissions` label this scope as “current conversation.”
+
+`update_plan` replaces the entire current plan atomically. Each of at most 32
+steps has a `step` string (up to 160 Unicode characters) and one of `pending`,
+`in_progress`, or `completed`; at most one step may be in progress. The plan
+input is limited to 16 KiB and 8 KiB of combined step text. An empty plan clears
+the current plan. `/plan` opens the full plan; the compact plan pane also shows
+it in chat. Plans exist only in memory and are cleared on confirmed
+conversation reset and process shutdown.
+
+`request_user_input` asks one question (up to 500 Unicode characters) and may
+offer up to three suggested answers. Suggestions never count as answers until
+chosen. The user can choose a suggestion, enter free text, or explicitly
+decline. A decline returns the typed `declined` outcome and the model may
+continue without an answer. Cancel or Escape returns `cancelled` and stops the
+turn without another provider request. No default, timeout, or silence is
+treated as a response. Free-text answers are returned exactly as submitted,
+up to 4 KiB, and are sent to the selected model. Clarification does not grant,
+revoke, or widen permissions. Its wait follows caller cancellation and
+deadlines, not the provider request timeout. `/permissions` remains reachable
+while clarification is open; returning preserves any answer draft for that
+request. From the answer editor, Shift+Tab focuses the question, arrow keys or
+PageUp/PageDown/Home/End scroll it, and Tab returns to the editor.
+
+Both tools share the runtime limits described below: eight invocations, four
+provider requests, 256 KiB per serialized result, and 1 MiB of result envelopes
+per turn. Tool activity distinguishes approval, authorization, execution, and
+the final outcome. Updating a plan is an in-memory conversation effect, not a
+persistent task, project, session, or goal.
 Outside an active suggestion list, Up/Down in the composer recalls previously
 submitted questions. Up moves toward older questions; Down moves toward newer
 ones and restores the draft that was present before browsing. Recalled text can
@@ -274,11 +315,12 @@ be made after it appears. Read access warns that retrieved data is returned to
 the selected model. Use `/permissions` to inspect or revoke temporary grants;
 OAuth permission metadata is separate. Revocation blocks future dispatch but
 does not roll back completed effects or claim to terminate running work.
-`/permissions` remains available during a turn, and an approval dialog links to
-it directly. Tool activity shows awaiting approval, authorized, running, and
-finished states, with the typed outcome and truncation status. Tool prompts,
-grants, and activity exist only in memory. The shipped CLI has no registered
-real tools, so this surface is exercised with injected test/review tools only.
+`/permissions` remains available during a turn, and approval and clarification
+dialogs link to it directly. Tool activity shows awaiting approval,
+authorized, running, and finished states, with the typed outcome and
+truncation status. Tool prompts, plans, grants, and activity exist only in
+memory. The two bundled conversation tools are the only available tools;
+filesystem, project mutation, process, web, and image tools remain unavailable.
 
 Escape in the approval dialog explicitly cancels the entire active turn. The
 first keyboard event after a dialog appears is consumed to prevent a composer

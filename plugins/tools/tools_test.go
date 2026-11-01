@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -97,4 +98,55 @@ func TestRegisteredExposureDoesNotImplyExecutionOrAuthorization(t *testing.T) {
 	}
 	// The contract registry intentionally has no executor, grant store, or
 	// approval method. The central runtime is the only execution caller.
+}
+
+func TestConversationToolSchemasAndBounds(t *testing.T) {
+	for _, definition := range []Definition{UpdatePlanDefinition(), RequestUserInputDefinition()} {
+		if definition.MaxInput <= 0 || json.Unmarshal(definition.InputSchema, new(map[string]any)) != nil {
+			t.Fatalf("invalid bundled definition: %+v", definition)
+		}
+	}
+
+	plan, err := ParseUpdatePlan([]byte(`{"plan":[{"step":"inspect","status":"completed"},{"step":"implement","status":"in_progress"}]}`))
+	if err != nil || len(plan.Plan) != 2 || plan.Plan[1].Status != PlanInProgress {
+		t.Fatalf("valid plan parse = %+v, %v", plan, err)
+	}
+	for _, raw := range []string{
+		`{"plan":[{"step":"one","status":"in_progress"},{"step":"two","status":"in_progress"}]}`,
+		`{"plan":[{"step":"one","status":"unknown"}]}`,
+		`{"plan":[],"extra":true}`,
+		`{"plan":[],"plan":[]}`,
+		`{"plan":[]} {}`,
+		`{"plan":null}`,
+	} {
+		if parsed, err := ParseUpdatePlan([]byte(raw)); err == nil {
+			t.Fatalf("invalid plan accepted: %s as %+v", raw, parsed)
+		}
+	}
+	nested := `{"plan":` + strings.Repeat("[", 40) + "0" + strings.Repeat("]", 40) + `}`
+	if _, err := ParseUpdatePlan([]byte(nested)); err == nil {
+		t.Fatal("excessively nested tool input accepted")
+	}
+	if _, err := ParseUpdatePlan([]byte(`{"plan":[]}` + strings.Repeat(" ", MaxPlanInputBytes))); err == nil {
+		t.Fatal("oversized plan accepted")
+	}
+
+	clarification, err := ParseRequestUserInput([]byte(`{"question":"Which format?","options":[{"label":"JSON","description":"Machine-readable"}]}`))
+	if err != nil || len(clarification.Options) != 1 || clarification.Options[0].Label != "JSON" {
+		t.Fatalf("valid clarification parse = %+v, %v", clarification, err)
+	}
+	if freeText, err := ParseRequestUserInput([]byte(`{"question":"What should I know?","options":[]}`)); err != nil || len(freeText.Options) != 0 {
+		t.Fatalf("free-text-only clarification = %+v, %v", freeText, err)
+	}
+	for _, raw := range []string{
+		`{"question":" ","options":[]}`,
+		`{"question":"Choose","options":[{"label":"","description":""}]}`,
+		`{"question":"Choose","options":[],"default":"first"}`,
+		`{"question":"Choose","question":"Again","options":[]}`,
+		`{"question":"Choose","options":null}`,
+	} {
+		if parsed, err := ParseRequestUserInput([]byte(raw)); err == nil {
+			t.Fatalf("invalid clarification accepted: %s as %+v", raw, parsed)
+		}
+	}
 }

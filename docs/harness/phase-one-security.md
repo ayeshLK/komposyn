@@ -1,17 +1,20 @@
 # Temporary chat data handling
 
-This describes the current text-chat baseline. The separate issue #198
-tool-use milestone has an evolving threat model and integration decisions in
-[tool-use phase-one architecture](tool-use-phase-one-architecture.md). Its
-contract and in-memory permission foundation is not an execution boundary and
-enables no tools.
+This describes the experimental temporary chat and its narrow issue #198
+tool-use slice. The [tool-use phase-one architecture](tool-use-phase-one-architecture.md)
+records its threat model and limits. The executable exposes only the bundled
+`update_plan` and `request_user_input` tools on explicitly supported routes.
+Their in-memory authorization is not an OS isolation boundary.
 
-The experimental chat sends the user's submitted text and a short system
-instruction to the selected OpenAI or Anthropic API using the selected
-credential. OpenAI credentials can be an API key or an SIWC OAuth token for
-ChatGPT plan usage; Anthropic remains API-key based. It does not read workspace
-files, load `AGENTS.md` or skills, run tools, send MCP requests, or write
-messages to Token Logger. OpenAI Responses requests set `store: false`.
+The experimental chat sends the user's submitted text, a short system
+instruction, and—on supported routes—the two registered tool definitions to
+the selected OpenAI or Anthropic API using the selected credential. OpenAI
+credentials can be an API key or an SIWC OAuth token for ChatGPT plan usage;
+Anthropic remains API-key based. OpenAI OAuth and unknown routes stay
+text-only. Approved `request_user_input` answers and bounded tool results are
+sent to the selected model. The tools do not read workspace files, load
+`AGENTS.md` or skills, run subprocesses, access the network, send MCP requests,
+or write messages to Token Logger. OpenAI Responses requests set `store: false`.
 Anthropic Messages requests do not create a KompoSyn conversation resource.
 
 API keys and OpenAI OAuth access, refresh, and retained ID tokens are stored as
@@ -46,10 +49,12 @@ then removes local tokens; the UI distinguishes confirmed remote revocation
 from local-only removal. Removing an API-key profile does not revoke that key.
 
 All chat state, selected model, provider-native continuation data, partial
-output, discovery results, and request usage are process memory only. Restart
+output, discovery results, request usage, plans, grants, approval prompts,
+clarification prompts, and tool activity are process memory only. Restart
 starts an empty chat with no selected model. On exit, active work is canceled
-and joined, then memory is discarded. A failure or partial response is not
-automatically retried or appended to follow-up provider context.
+and the terminal workers are joined, then memory is discarded. A failure or
+partial response is not automatically retried or appended to follow-up
+provider context.
 
 Provider credentials can authorize billable inference. OAuth login makes no
 inference request. ChatGPT plan usage is enabled only when the token response

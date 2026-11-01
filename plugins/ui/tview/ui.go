@@ -102,77 +102,86 @@ type credentialOperation struct {
 }
 
 type terminal struct {
-	app                     *tv.Application
-	done                    chan struct{}
-	client                  ui.Client
-	ctx                     context.Context
-	cancel                  context.CancelFunc
-	wg                      sync.WaitGroup
-	lifecycleMu             sync.Mutex
-	screenMu                sync.RWMutex
-	stopping                bool
-	stopOnce                sync.Once
-	closing                 atomic.Bool
-	runReturned             atomic.Bool
-	output                  *transcriptView
-	transcript              []outputPart
-	screen                  tcell.Screen
-	latestCompletedReply    string
-	clipboard               *clipboardQueue
-	followingTranscript     bool
-	transcriptScrollRow     int
-	selectionDragging       atomic.Bool
-	chatRootActive          atomic.Bool
-	selectionMoved          atomic.Bool
-	selectionMouseY         atomic.Int32
-	selectionDownY          int
-	selectionDownX          int
-	selectionClickTime      time.Time
-	selectionClickX         int
-	selectionClickY         int
-	selectionClickCount     int
-	selectionSnapshot       bool
-	selectionNeedsRestore   bool
-	selectionSnapshotFrom   int
-	selectionSnapshotTo     int
-	mouseEnabled            bool
-	header                  *tv.TextView
-	input                   *composerInput
-	promptHistory           []string
-	promptHistoryIndex      int
-	promptHistoryDraft      string
-	browsingPrompts         bool
-	layout                  *tv.Flex
-	body                    *tv.Flex
-	usagePane               *tv.TextView
-	footer                  *tv.TextView
-	composer                *tv.Flex
-	commandList             *tv.List
-	usageCompact            *tv.TextView
-	commands                []command
-	commandItems            []command
-	usageVisible            bool
-	wide                    bool
-	layoutReady             bool
-	compactUsageShown       bool
-	usageCursor             int
-	terminalWidth           int
-	pickerQuery             string
-	picker                  *tv.List
-	modelList               *tv.List
-	pickerInput             *tv.InputField
-	pickerStatus            *tv.TextView
-	pickerLayout            *tv.Flex
-	entries                 []entry
-	modelEntries            []entry
-	discovery               ui.Discovery
-	credentialOp            *credentialOperation
-	approvalRequest         *ui.ApprovalRequest
-	approvalGuard           atomic.Bool
-	permissionGrants        []ui.ToolGrant
-	activitySeen            map[string]bool
-	permissionsFromApproval bool
-	permissionsVisible      bool
+	app                          *tv.Application
+	done                         chan struct{}
+	client                       ui.Client
+	ctx                          context.Context
+	cancel                       context.CancelFunc
+	wg                           sync.WaitGroup
+	lifecycleMu                  sync.Mutex
+	screenMu                     sync.RWMutex
+	stopping                     bool
+	stopOnce                     sync.Once
+	closing                      atomic.Bool
+	runReturned                  atomic.Bool
+	output                       *transcriptView
+	transcript                   []outputPart
+	screen                       tcell.Screen
+	latestCompletedReply         string
+	clipboard                    *clipboardQueue
+	followingTranscript          bool
+	transcriptScrollRow          int
+	selectionDragging            atomic.Bool
+	chatRootActive               atomic.Bool
+	selectionMoved               atomic.Bool
+	selectionMouseY              atomic.Int32
+	selectionDownY               int
+	selectionDownX               int
+	selectionClickTime           time.Time
+	selectionClickX              int
+	selectionClickY              int
+	selectionClickCount          int
+	selectionSnapshot            bool
+	selectionNeedsRestore        bool
+	selectionSnapshotFrom        int
+	selectionSnapshotTo          int
+	mouseEnabled                 bool
+	header                       *tv.TextView
+	input                        *composerInput
+	promptHistory                []string
+	promptHistoryIndex           int
+	promptHistoryDraft           string
+	browsingPrompts              bool
+	layout                       *tv.Flex
+	body                         *tv.Flex
+	usagePane                    *tv.TextView
+	footer                       *tv.TextView
+	composer                     *tv.Flex
+	commandList                  *tv.List
+	usageCompact                 *tv.TextView
+	commands                     []command
+	commandItems                 []command
+	usageVisible                 bool
+	wide                         bool
+	layoutReady                  bool
+	compactUsageShown            bool
+	usageCursor                  int
+	terminalWidth                int
+	pickerQuery                  string
+	picker                       *tv.List
+	modelList                    *tv.List
+	pickerInput                  *tv.InputField
+	pickerStatus                 *tv.TextView
+	pickerLayout                 *tv.Flex
+	entries                      []entry
+	modelEntries                 []entry
+	discovery                    ui.Discovery
+	credentialOp                 *credentialOperation
+	approvalRequest              *ui.ApprovalRequest
+	approvalGuard                atomic.Bool
+	clarificationRequest         *ui.ClarificationRequest
+	clarificationGuard           atomic.Bool
+	clarificationStatus          *tv.TextView
+	clarificationAnswer          *composerInput
+	clarificationDraftID         string
+	clarificationDraft           string
+	permissionGrants             []ui.ToolGrant
+	activitySeen                 map[string]bool
+	permissionsFromApproval      bool
+	permissionsFromClarification bool
+	permissionsVisible           bool
+	planPane                     *tv.TextView
+	planSnapshot                 string
 }
 
 func (u *terminal) beginCredentialOperation() *credentialOperation {
@@ -213,16 +222,19 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.usagePane.SetBorder(true).SetTitle(" Usage · this run ")
 	u.body = tv.NewFlex().SetDirection(tv.FlexColumn).AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
+	u.planPane = tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
+	u.planPane.SetBorder(true).SetTitle(" Plan · this conversation only ")
 	u.footer = tv.NewTextView().SetText("/copy reply · /copy all · drag/double/triple select · Ctrl+T terminal select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
 	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
+	u.updatePlanDisplay(client.Snapshot().Plan)
 	u.app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
 		u.captureSelectionSnapshot()
 		u.screenMu.Lock()
@@ -303,6 +315,33 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 			}
 			return event
 		}
+		if u.clarificationRequest != nil {
+			if event.Key() == tcell.KeyEscape {
+				if u.permissionsVisible {
+					u.returnPermissionView()
+				} else {
+					u.answerClarification(ui.ClarificationCancel, "")
+				}
+				return nil
+			}
+			if u.clarificationGuard.Load() {
+				// Ignore only a potentially stale acceptance key while focus is
+				// outside the answer editor. Ordinary input and cancellation must
+				// work immediately after the clarification appears.
+				focus := u.app.GetFocus()
+				accept := event.Key() == tcell.KeyEnter || (event.Key() == tcell.KeyRune && event.Rune() == ' ')
+				u.clarificationGuard.Store(false)
+				if accept && focus != u.clarificationAnswer {
+					return nil
+				}
+			}
+			if event.Key() == tcell.KeyCtrlC {
+				u.client.Cancel()
+				u.write("\nCancelling the active request…\n")
+				return nil
+			}
+			return event
+		}
 		if event.Key() == tcell.KeyCtrlC {
 			if u.transcriptFocused() && u.output.HasSelection() {
 				u.copySelection()
@@ -362,6 +401,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.write("KompoSyn is ready. Chat state is temporary and will be cleared on exit. Run /model to connect a provider.\n")
 	u.done = make(chan struct{})
 	u.launch(u.approvalEventsLoop)
+	u.launch(u.clarificationEventsLoop)
 	u.launch(u.activityLoop)
 	ready := make(chan struct{})
 	var readyOnce sync.Once
@@ -524,6 +564,7 @@ func supportedCommands() []command {
 		{name: "/cancel", description: "stop the active reply", action: "cancel"},
 		{name: "/exit", description: "close KompoSyn", action: "exit"},
 		{name: "/permissions", description: "inspect and revoke tool grants for this conversation", action: "permissions"},
+		{name: "/plan", description: "show the current conversation plan", action: "plan"},
 		{name: "/copy", description: "copy latest completed reply; /copy all copies visible transcript text", action: "copy"},
 	}
 }
@@ -630,6 +671,59 @@ func (u *terminal) updateBanner() {
 		version = "dev"
 	}
 	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]", tv.Escape(version), tv.Escape(modelName)))
+}
+
+func renderPlan(steps []ui.PlanStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	var text strings.Builder
+	for i, step := range steps {
+		if i > 0 {
+			text.WriteByte('\n')
+		}
+		fmt.Fprintf(&text, "[%s] %s", safeTerminalText(step.Status), safeTerminalText(step.Step))
+	}
+	return text.String()
+}
+
+func (u *terminal) updatePlanDisplay(steps []ui.PlanStep) {
+	if u.planPane == nil || u.layout == nil {
+		return
+	}
+	text := renderPlan(steps)
+	if text == "" {
+		u.planPane.SetText("No active plan.")
+		u.layout.ResizeItem(u.planPane, 0, 0)
+		return
+	}
+	u.planPane.SetText(text)
+	u.layout.ResizeItem(u.planPane, 4, 0)
+}
+
+func (u *terminal) showPlan() {
+	steps := u.client.Snapshot().Plan
+	text := renderPlan(steps)
+	if text == "" {
+		text = "No plan has been set in this conversation."
+	}
+	view := tv.NewTextView().SetScrollable(true).SetDynamicColors(false).SetText(text)
+	view.SetBorder(true).SetTitle(" Current conversation plan · memory only ")
+	form := tv.NewForm().AddButton("Back", func() { u.returnToChat() })
+	view.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(form)
+			return nil
+		}
+		if event.Key() == tcell.KeyEscape {
+			u.returnToChat()
+			return nil
+		}
+		return event
+	})
+	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true).AddItem(form, 3, 0, false)
+	layout.SetBorder(true).SetTitle(" /plan ")
+	u.app.SetRoot(layout, true).SetFocus(view)
 }
 
 func (u *terminal) updateUsage() {
@@ -934,11 +1028,13 @@ func (u *terminal) runCommand(text string) {
 			u.copyTranscript(trimmed == "/copy all")
 		}
 	case "permissions":
-		u.openPermissions(false)
+		u.openPermissions(false, false)
+	case "plan":
+		u.showPlan()
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model, /help, /cancel, /exit, /permissions, /copy, and /copy all.\nKeyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; drag selects text, double-click selects a word, triple-click selects a logical line, and Ctrl+C copies an active selection (otherwise it cancels); Escape clears selection; Ctrl+T releases mouse capture for terminal selection.\n")
+		u.write("Commands: /model, /help, /cancel, /exit, /permissions, /plan, /copy, /copy all.\nTools on supported API-key routes: update_plan and request_user_input. Clarification answers are sent to the selected model.\nKeyboard: Up/Down recalls prompts; Ctrl+L clears display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scrolls usage; Ctrl+C copies a selection or cancels; Escape clears selection; Ctrl+T releases mouse capture.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
@@ -1531,6 +1627,8 @@ func (u *terminal) confirmSelection(m ui.Model) {
 
 func (u *terminal) returnToChat() {
 	u.permissionsVisible = false
+	u.permissionsFromApproval = false
+	u.permissionsFromClarification = false
 	u.chatRootActive.Store(true)
 	u.app.SetRoot(u.layout, true).SetFocus(u.input)
 }
@@ -1567,6 +1665,27 @@ func (u *terminal) approvalEventsLoop() {
 	}
 }
 
+func (u *terminal) clarificationEventsLoop() {
+	for {
+		select {
+		case <-u.ctx.Done():
+			return
+		case event, ok := <-u.client.ClarificationEvents():
+			if !ok {
+				return
+			}
+			if event.Request != nil {
+				request := *event.Request
+				request.Options = append([]ui.SuggestedAnswer(nil), event.Request.Options...)
+				u.queue(func() { u.showClarification(&request) })
+			}
+			if event.DismissedID != "" {
+				u.queue(func() { u.dismissClarification(event.DismissedID) })
+			}
+		}
+	}
+}
+
 func (u *terminal) dismissApproval(id string) {
 	if u.approvalRequest == nil || u.approvalRequest.ID != id {
 		return
@@ -1582,12 +1701,20 @@ func (u *terminal) dismissApproval(id string) {
 func (u *terminal) activityLoop() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	lastPlan := ""
 	for {
 		select {
 		case <-u.ctx.Done():
 			return
 		case <-ticker.C:
-			activities := u.client.Snapshot().ToolActivities
+			snapshot := u.client.Snapshot()
+			activities := snapshot.ToolActivities
+			planText := renderPlan(snapshot.Plan)
+			if planText != lastPlan {
+				lastPlan = planText
+				plan := append([]ui.PlanStep(nil), snapshot.Plan...)
+				u.queue(func() { u.updatePlanDisplay(plan) })
+			}
 			current := make(map[string]bool, len(activities))
 			for _, activity := range activities {
 				key := activity.CallID + "\x00" + activity.Phase + "\x00" + activity.Outcome + fmt.Sprint(activity.Truncated)
@@ -1628,6 +1755,7 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 	u.approvalRequest = request
 	u.permissionsVisible = false
 	u.permissionsFromApproval = false
+	u.permissionsFromClarification = false
 	u.approvalGuard.Store(true)
 	var details strings.Builder
 	fmt.Fprintf(&details, "Tool: %s\n%s\n\nRequested requirements:\n", safeTerminalText(request.ToolID), safeTerminalText(request.ToolDescription))
@@ -1647,7 +1775,7 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 	form.AddButton("Deny", func() { u.answerApproval(ui.ApprovalDeny, "") })
 	form.AddButton("Cancel turn", func() { u.answerApproval(ui.ApprovalCancel, "") })
 	form.AddButton("Do something else", func() { u.redirectApproval() })
-	form.AddButton("/permissions", func() { u.openPermissions(true) })
+	form.AddButton("/permissions", func() { u.openPermissions(true, false) })
 	view.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyTab {
 			u.app.SetFocus(form)
@@ -1680,6 +1808,137 @@ func (u *terminal) answerApproval(choice ui.ApprovalChoice, redirect string) {
 	u.returnToChat()
 }
 
+func (u *terminal) showClarification(request *ui.ClarificationRequest) {
+	if request == nil || u.closing.Load() {
+		return
+	}
+	if u.clarificationDraftID != request.ID {
+		u.clarificationDraftID = request.ID
+		u.clarificationDraft = ""
+	}
+	u.clarificationRequest = request
+	u.permissionsVisible = false
+	u.permissionsFromClarification = false
+	u.clarificationGuard.Store(true)
+	question := tv.NewTextView().SetScrollable(true).SetDynamicColors(false).SetText(safeTerminalText("Your answer will be sent to the selected model.\n\n" + request.Question))
+	question.SetBorder(true).SetTitle(" Question · Shift+Tab to review; arrows/PgUp/PgDn/Home/End scroll; Tab returns ")
+	u.clarificationStatus = tv.NewTextView().SetDynamicColors(false)
+	answer := newComposerInput()
+	answer.SetLabel("Your answer: ")
+	answer.SetText(u.clarificationDraft)
+	u.clarificationAnswer = answer
+	answer.SetChangedFunc(func(text string) {
+		if u.clarificationRequest != nil && u.clarificationRequest.ID == request.ID {
+			u.clarificationDraftID = request.ID
+			u.clarificationDraft = text
+		}
+	})
+	options := tv.NewList().ShowSecondaryText(true)
+	for _, option := range request.Options {
+		selected := option
+		options.AddItem(tv.Escape(safeTerminalText(selected.Label)), tv.Escape(safeTerminalText(selected.Description)), 0, func() {
+			u.answerClarification(ui.ClarificationAnswer, selected.Label)
+		})
+	}
+	form := tv.NewForm().SetButtonsAlign(tv.AlignCenter)
+	form.AddButton("Submit answer", func() { u.answerClarification(ui.ClarificationAnswer, answer.GetText()) })
+	form.AddButton("Decline", func() { u.answerClarification(ui.ClarificationDecline, "") })
+	form.AddButton("Cancel turn", func() { u.answerClarification(ui.ClarificationCancel, "") })
+	form.AddButton("/permissions", func() { u.openPermissions(false, true) })
+	answer.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			if options.GetItemCount() > 0 {
+				u.app.SetFocus(options)
+			} else {
+				u.app.SetFocus(form)
+			}
+			return nil
+		}
+		if event.Key() == tcell.KeyBacktab {
+			u.app.SetFocus(question)
+			return nil
+		}
+		return event
+	})
+	question.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(answer)
+			return nil
+		}
+		return event
+	})
+	options.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(form)
+			return nil
+		}
+		if event.Key() == tcell.KeyBacktab {
+			u.app.SetFocus(answer)
+			return nil
+		}
+		return event
+	})
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyBacktab {
+			if options.GetItemCount() > 0 {
+				u.app.SetFocus(options)
+			} else {
+				u.app.SetFocus(answer)
+			}
+			return nil
+		}
+		return event
+	})
+	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(question, 5, 0, false).AddItem(answer, 4, 0, true)
+	if len(request.Options) > 0 {
+		layout.AddItem(options, min(len(request.Options)+2, 6), 0, true)
+	}
+	layout.AddItem(u.clarificationStatus, 1, 0, false).AddItem(form, 3, 0, false)
+	layout.SetBorder(true).SetTitle(" User input · Escape cancels the entire turn ")
+	u.app.SetRoot(layout, true).SetFocus(answer)
+}
+
+func (u *terminal) answerClarification(choice ui.ClarificationChoice, answer string) {
+	request := u.clarificationRequest
+	if request == nil {
+		return
+	}
+	if choice == ui.ClarificationAnswer && len(answer) > request.MaxAnswerBytes {
+		if u.clarificationStatus != nil {
+			u.clarificationStatus.SetText(fmt.Sprintf("Answer is too long; the limit is %d UTF-8 bytes.", request.MaxAnswerBytes))
+		}
+		return
+	}
+	err := u.client.RespondClarification(ui.ClarificationResponse{ID: request.ID, ConversationID: request.ConversationID, Choice: choice, Answer: answer})
+	if err != nil {
+		if u.clarificationStatus != nil {
+			u.clarificationStatus.SetText("Clarification is no longer current; no answer was sent.")
+		}
+		return
+	}
+	u.clarificationRequest = nil
+	u.clarificationStatus = nil
+	u.clarificationAnswer = nil
+	u.clarificationDraftID = ""
+	u.clarificationDraft = ""
+	u.returnToChat()
+}
+
+func (u *terminal) dismissClarification(id string) {
+	if u.clarificationRequest == nil || u.clarificationRequest.ID != id {
+		return
+	}
+	u.clarificationRequest = nil
+	u.clarificationAnswer = nil
+	u.clarificationDraftID = ""
+	u.clarificationDraft = ""
+	if !u.permissionsVisible {
+		u.returnToChat()
+	} else {
+		u.permissionsFromClarification = false
+	}
+}
+
 func (u *terminal) redirectApproval() {
 	request := u.approvalRequest
 	if request == nil {
@@ -1705,8 +1964,9 @@ func (u *terminal) redirectApproval() {
 	u.app.SetRoot(form, true).SetFocus(form)
 }
 
-func (u *terminal) openPermissions(fromApproval bool) {
+func (u *terminal) openPermissions(fromApproval, fromClarification bool) {
 	u.permissionsFromApproval = fromApproval
+	u.permissionsFromClarification = fromClarification
 	u.launch(func() {
 		grants, err := u.client.Permissions(u.ctx)
 		u.queue(func() {
@@ -1724,8 +1984,12 @@ func (u *terminal) returnPermissionView() {
 	if u.permissionsFromApproval && u.approvalRequest != nil {
 		u.permissionsFromApproval = false
 		u.showApproval(u.approvalRequest)
+	} else if u.permissionsFromClarification && u.clarificationRequest != nil {
+		u.permissionsFromClarification = false
+		u.showClarification(u.clarificationRequest)
 	} else {
 		u.permissionsFromApproval = false
+		u.permissionsFromClarification = false
 		u.returnToChat()
 	}
 }

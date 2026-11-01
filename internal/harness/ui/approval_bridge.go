@@ -62,6 +62,9 @@ func (b *ApprovalBridge) Review(ctx context.Context, pending permissions.Pending
 		}
 		if req.Resource != nil {
 			item.ResourceKind, item.ResourceScope = string(req.Resource.Kind), req.Resource.Target
+			if req.Resource.Kind == permissions.ResourceConversation {
+				item.ResourceScope = "current conversation"
+			}
 		}
 		request.Requirements = append(request.Requirements, item)
 	}

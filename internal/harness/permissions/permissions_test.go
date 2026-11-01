@@ -105,6 +105,46 @@ func TestMalformedRequirementFailsClosed(t *testing.T) {
 	}
 }
 
+func TestConversationResourceIsBoundToExactOpaqueConversation(t *testing.T) {
+	store := NewMemoryStore()
+	grant := Grant{ID: "conversation-grant", ConversationID: "conv-a", ToolID: "update_plan", Kind: RequirementResource, Operation: OperationInteract, Lifetime: LifetimeConversation, Origin: "user_approval", ResourceTarget: "conv-a", Resource: &ResourceScope{Kind: ResourceConversation, Root: "conv-a", Operations: []Operation{OperationInteract}}}
+	if err := store.Add(grant); err != nil {
+		t.Fatal(err)
+	}
+	request := func(conversationID, target string) Request {
+		resource := ResourceRequest{Kind: ResourceConversation, Target: target, Operation: OperationInteract}
+		return Request{ConversationID: conversationID, CallID: "call", Requirements: []Requirement{{Kind: RequirementResource, Key: "conversation", ToolID: "update_plan", Operation: OperationInteract, Resource: &resource, SessionAllowed: true}}}
+	}
+	if decision := (Evaluator{Grants: store}).Evaluate(request("conv-a", "conv-a")); !decision.Ready() {
+		t.Fatalf("exact conversation grant did not apply: %+v", decision)
+	}
+	for _, wrong := range []Request{request("conv-a", "conv-b"), request("conv-b", "conv-a")} {
+		if decision := (Evaluator{Grants: store}).Evaluate(wrong); len(decision.Denied) != 1 || decision.Ready() {
+			t.Fatalf("cross-conversation resource was not rejected: %+v", decision)
+		}
+	}
+	badOperation := request("conv-a", "conv-a")
+	badOperation.Requirements[0].Operation = OperationWrite
+	badOperation.Requirements[0].Resource.Operation = OperationWrite
+	if decision := (Evaluator{Grants: store}).Evaluate(badOperation); len(decision.Denied) != 1 {
+		t.Fatalf("conversation resource accepted a host operation: %+v", decision)
+	}
+	filesystem := ResourceRequest{Kind: ResourceFilesystem, Target: filepath.Join(t.TempDir(), "target"), Operation: OperationInteract}
+	if decision := (Evaluator{}).Evaluate(Request{ConversationID: "conv-a", Requirements: []Requirement{{Kind: RequirementResource, Key: "host", ToolID: "update_plan", Operation: OperationInteract, Resource: &filesystem}}}); len(decision.Denied) != 1 {
+		t.Fatalf("filesystem resource accepted conversation interaction: %+v", decision)
+	}
+	badGrant := grant
+	badGrant.ID, badGrant.ResourceTarget = "cross-grant", "conv-b"
+	if err := store.Add(badGrant); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("cross-conversation grant error=%v", err)
+	}
+	badGrant.ID, badGrant.ResourceTarget = "recursive-grant", "conv-a"
+	badGrant.Resource = &ResourceScope{Kind: ResourceConversation, Root: "conv-a", Recursive: true, Operations: []Operation{OperationInteract}}
+	if err := store.Add(badGrant); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("recursive conversation grant error=%v", err)
+	}
+}
+
 func TestDuplicateRequirementKeysFailClosed(t *testing.T) {
 	request := Request{Requirements: []Requirement{
 		{Kind: RequirementAction, Key: "same", ToolID: "exec_command", Operation: OperationExecute, ActionKey: "one"},

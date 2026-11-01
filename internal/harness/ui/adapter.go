@@ -21,15 +21,17 @@ import (
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
+	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/plugins/ui"
 )
 
 type Client struct {
-	Chat         *runtime.Chat
-	ProfileStore auth.Store
-	Version      string
-	Approval     *ApprovalBridge
+	Chat          *runtime.Chat
+	ProfileStore  auth.Store
+	Version       string
+	Approval      *ApprovalBridge
+	Clarification *ClarificationBridge
 }
 
 func (c Client) ApprovalEvents() <-chan ui.ApprovalEvent {
@@ -43,6 +45,18 @@ func (c Client) RespondApproval(response ui.ApprovalResponse) error {
 		return ErrApprovalResponse
 	}
 	return c.Approval.Respond(response)
+}
+func (c Client) ClarificationEvents() <-chan ui.ClarificationEvent {
+	if c.Clarification == nil {
+		return nil
+	}
+	return c.Clarification.Events()
+}
+func (c Client) RespondClarification(response ui.ClarificationResponse) error {
+	if c.Clarification == nil {
+		return ErrClarificationResponse
+	}
+	return c.Clarification.Respond(response)
 }
 func (c Client) Permissions(ctx context.Context) ([]ui.ToolGrant, error) {
 	if err := ctx.Err(); err != nil {
@@ -58,6 +72,9 @@ func (c Client) Permissions(ctx context.Context) ([]ui.ToolGrant, error) {
 		if grant.Resource != nil {
 			item.ResourceKind = string(grant.Resource.Kind)
 			item.ResourceScope = grant.Resource.Root
+			if grant.Resource.Kind == permissions.ResourceConversation {
+				item.ResourceScope = "current conversation"
+			}
 		}
 		out = append(out, item)
 	}
@@ -161,6 +178,9 @@ func (c Client) Select(ctx context.Context, key string, confirm bool) error {
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
 	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, Version: c.Version}
+	for _, step := range s.Plan {
+		out.Plan = append(out.Plan, ui.PlanStep{Step: step.Step, Status: string(step.Status)})
+	}
 	for _, activity := range s.ToolActivities {
 		out.ToolActivities = append(out.ToolActivities, convertActivity(activity))
 	}

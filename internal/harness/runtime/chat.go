@@ -31,6 +31,7 @@ import (
 	"github.com/ayeshLK/komposyn/internal/harness/model"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
+	"github.com/ayeshLK/komposyn/plugins/tools"
 )
 
 var (
@@ -58,6 +59,7 @@ type Snapshot struct {
 	Usage          []ModelUsage
 	Active         bool
 	ToolActivities []ToolActivity
+	Plan           []tools.PlanStep
 }
 type UsageMetric struct {
 	Tokens  int64
@@ -161,8 +163,12 @@ func (c *Chat) Close() {
 	}
 	if c.toolRuntime != nil && conversationID != "" {
 		c.toolRuntime.grants.Clear(conversationID)
+		c.toolRuntime.plans.Close(conversationID)
 		c.toolRuntime.coordinator.CancelConversation(conversationID)
 		if invalidator, ok := c.toolRuntime.approval.(ToolApprovalInvalidator); ok {
+			invalidator.InvalidateConversation(conversationID)
+		}
+		if invalidator, ok := c.toolRuntime.clarification.(ToolClarificationInvalidator); ok {
 			invalidator.InvalidateConversation(conversationID)
 		}
 	}
@@ -392,7 +398,11 @@ func (c *Chat) Snapshot() Snapshot {
 		turns[i].ToolActivities = append([]ToolActivity(nil), turns[i].ToolActivities...)
 	}
 	activities := append([]ToolActivity(nil), c.activeToolActivities...)
-	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: c.active, ToolActivities: activities}
+	var plan []tools.PlanStep
+	if c.toolRuntime != nil {
+		plan = c.toolRuntime.plans.Snapshot(c.conversationID)
+	}
+	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: c.active, ToolActivities: activities, Plan: plan}
 }
 
 func (c *Chat) recordUsageLocked(providerID provider.ID, modelID string, usage provider.Usage) {
@@ -591,8 +601,12 @@ func (c *Chat) clearConversationLocked() {
 	c.toolCallIDs = nil
 	if c.toolRuntime != nil && oldID != "" {
 		c.toolRuntime.grants.Clear(oldID)
+		c.toolRuntime.plans.Close(oldID)
 		c.toolRuntime.coordinator.CancelConversation(oldID)
 		if invalidator, ok := c.toolRuntime.approval.(ToolApprovalInvalidator); ok {
+			invalidator.InvalidateConversation(oldID)
+		}
+		if invalidator, ok := c.toolRuntime.clarification.(ToolClarificationInvalidator); ok {
 			invalidator.InvalidateConversation(oldID)
 		}
 	}

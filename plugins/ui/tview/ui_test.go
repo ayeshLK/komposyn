@@ -28,26 +28,29 @@ import (
 )
 
 type clientStub struct {
-	mu                sync.Mutex
-	selected          *ui.Model
-	turns             []ui.Turn
-	usage             []ui.ModelUsage
-	version           string
-	selectedCh        chan struct{}
-	selectCalls       int
-	profiles          []ui.Profile
-	addHook           func(context.Context, string, string, string, string, map[string]string) error
-	replaceHook       func(context.Context, string, string, string, map[string]string, bool) error
-	snapshotHook      func() ui.Snapshot
-	sendHook          func(context.Context, string, func(string)) (ui.Turn, error)
-	methods           map[string][]string
-	loginHook         func(context.Context, string) (ui.LoginAttempt, error)
-	loginCanceled     []string
-	approvalEvents    chan ui.ApprovalEvent
-	approvalResponses chan ui.ApprovalResponse
-	toolGrants        []ui.ToolGrant
-	revoked           []string
-	cleared           int
+	mu                     sync.Mutex
+	selected               *ui.Model
+	turns                  []ui.Turn
+	usage                  []ui.ModelUsage
+	version                string
+	selectedCh             chan struct{}
+	selectCalls            int
+	profiles               []ui.Profile
+	addHook                func(context.Context, string, string, string, string, map[string]string) error
+	replaceHook            func(context.Context, string, string, string, map[string]string, bool) error
+	snapshotHook           func() ui.Snapshot
+	sendHook               func(context.Context, string, func(string)) (ui.Turn, error)
+	methods                map[string][]string
+	loginHook              func(context.Context, string) (ui.LoginAttempt, error)
+	loginCanceled          []string
+	approvalEvents         chan ui.ApprovalEvent
+	approvalResponses      chan ui.ApprovalResponse
+	clarificationEvents    chan ui.ClarificationEvent
+	clarificationResponses chan ui.ClarificationResponse
+	toolGrants             []ui.ToolGrant
+	plan                   []ui.PlanStep
+	revoked                []string
+	cleared                int
 }
 
 // synchronizedSimulation protects the returned cell slice from tview's render
@@ -146,7 +149,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...)}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -167,6 +170,13 @@ func (c *clientStub) ApprovalEvents() <-chan ui.ApprovalEvent { return c.approva
 func (c *clientStub) RespondApproval(response ui.ApprovalResponse) error {
 	if c.approvalResponses != nil {
 		c.approvalResponses <- response
+	}
+	return nil
+}
+func (c *clientStub) ClarificationEvents() <-chan ui.ClarificationEvent { return c.clarificationEvents }
+func (c *clientStub) RespondClarification(response ui.ClarificationResponse) error {
+	if c.clarificationResponses != nil {
+		c.clarificationResponses <- response
 	}
 	return nil
 }
@@ -233,6 +243,260 @@ func TestApprovalDialogRequiresExplicitChoiceAndEscapeCancelsTurn(t *testing.T) 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Escape did not cancel the turn")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestClarificationRequiresExplicitAnswerDeclineOrCancel(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(105, 32)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	events := make(chan ui.ClarificationEvent, 4)
+	responses := make(chan ui.ClarificationResponse, 4)
+	client := &clientStub{clarificationEvents: events, clarificationResponses: responses}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "request-choice", ConversationID: "conversation-a", Question: "Choose [red] a format", MaxAnswerBytes: 4096, Options: []ui.SuggestedAnswer{{Label: "JSON [blue]", Description: "structured"}}}}
+	waitForScreen(t, safe, "Choose [red] a format", "")
+	waitForScreen(t, safe, "Your answer will be sent to the selected model.", "")
+	waitForScreen(t, safe, "JSON [blue]", "")
+	select {
+	case response := <-responses:
+		t.Fatalf("silence or suggestion focus submitted an answer: %+v", response)
+	case <-time.After(80 * time.Millisecond):
+	}
+	press(tcell.KeyTab, 0) // Focus the suggestion list; no option is accepted merely by focus.
+	press(tcell.KeyEnter, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "request-choice" || response.ConversationID != "conversation-a" || response.Choice != ui.ClarificationAnswer || response.Answer != "JSON [blue]" {
+			t.Fatalf("suggested answer response = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("explicit suggested answer was not submitted")
+	}
+	waitForScreen(t, safe, "KompoSyn is ready", "")
+
+	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "request-free-text", ConversationID: "conversation-a", Question: "What should I know?", MaxAnswerBytes: 4096}}
+	waitForScreen(t, safe, "What should I know?", "")
+	select {
+	case response := <-responses:
+		t.Fatalf("free-text prompt submitted without input: %+v", response)
+	case <-time.After(60 * time.Millisecond):
+	}
+	answer := "  literal [green] 雪  "
+	for _, r := range answer {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyTab, 0) // Submit is a separate explicit action; Enter in the editor adds a newline.
+	press(tcell.KeyEnter, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "request-free-text" || response.Choice != ui.ClarificationAnswer || response.Answer != answer {
+			t.Fatalf("free-text response changed: %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("explicit free-text answer was not submitted")
+	}
+	waitForScreen(t, safe, "KompoSyn is ready", "")
+
+	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "request-decline", ConversationID: "conversation-a", Question: "Decline this?", MaxAnswerBytes: 4096}}
+	waitForScreen(t, safe, "Decline this?", "")
+	press(tcell.KeyTab, 0) // Input -> action form.
+	press(tcell.KeyTab, 0) // Submit -> Decline.
+	press(tcell.KeyEnter, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "request-decline" || response.Choice != ui.ClarificationDecline || response.Answer != "" {
+			t.Fatalf("decline response = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("explicit decline was not submitted")
+	}
+	waitForScreen(t, safe, "KompoSyn is ready", "")
+
+	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "request-cancel", ConversationID: "conversation-a", Question: "Cancel this turn?", MaxAnswerBytes: 4096}}
+	waitForScreen(t, safe, "Cancel this turn?", "")
+	press(tcell.KeyEscape, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "request-cancel" || response.Choice != ui.ClarificationCancel {
+			t.Fatalf("Escape response = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Escape did not cancel the clarification turn")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestCurrentConversationPlanIsVisibleAndRenderedLiterally(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 28)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	client := &clientStub{plan: []ui.PlanStep{{Step: "Inspect [red] input", Status: "in_progress"}, {Step: "Finish", Status: "pending"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "[in_progress] Inspect [red] input", "")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestPermissionsRemainReachableDuringClarificationWait(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 30)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	events := make(chan ui.ClarificationEvent, 2)
+	responses := make(chan ui.ClarificationResponse, 2)
+	client := &clientStub{clarificationEvents: events, clarificationResponses: responses}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "pending", ConversationID: "conversation", Question: "Still waiting?", MaxAnswerBytes: 4096}}
+	waitForScreen(t, safe, "Still waiting?", "")
+	press := func(key tcell.Key) {
+		screen.InjectKey(key, 0, tcell.ModNone)
+		time.Sleep(30 * time.Millisecond)
+	}
+	for _, r := range "draft survives permissions" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+		time.Sleep(10 * time.Millisecond)
+	}
+	press(tcell.KeyTab) // Input -> action form.
+	press(tcell.KeyTab) // Submit -> Decline.
+	press(tcell.KeyTab) // Decline -> Cancel.
+	press(tcell.KeyTab) // Cancel -> /permissions.
+	press(tcell.KeyEnter)
+	waitForScreen(t, safe, "No tool grants", "")
+	press(tcell.KeyEscape)
+	waitForScreen(t, safe, "Still waiting?", "")
+	select {
+	case response := <-responses:
+		t.Fatalf("opening permissions answered clarification: %+v", response)
+	default:
+	}
+	press(tcell.KeyTab) // Return to Submit answer.
+	press(tcell.KeyEnter)
+	select {
+	case response := <-responses:
+		if response.ID != "pending" || response.Choice != ui.ClarificationAnswer || response.Answer != "draft survives permissions" {
+			t.Fatalf("answer after returning from permissions = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("preserved answer was not submitted after returning from permissions")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestClarificationAnswerLimitDoesNotDismissPendingPrompt(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(90, 26)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	events := make(chan ui.ClarificationEvent, 1)
+	responses := make(chan ui.ClarificationResponse, 1)
+	client := &clientStub{clarificationEvents: events, clarificationResponses: responses}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "limited", ConversationID: "conversation", Question: "Short answer?", MaxAnswerBytes: 3}}
+	waitForScreen(t, safe, "Short answer?", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, r := range "long" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "limit is 3 UTF-8 bytes", "")
+	select {
+	case response := <-responses:
+		t.Fatalf("oversized answer submitted: %+v", response)
+	case <-time.After(50 * time.Millisecond):
+	}
+	press(tcell.KeyEscape, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "limited" || response.Choice != ui.ClarificationCancel {
+			t.Fatalf("cancel after oversized answer = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending prompt could not be cancelled")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestLongClarificationQuestionCanBeScrolledAndReturnedToAnswer(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(86, 20)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	events := make(chan ui.ClarificationEvent, 1)
+	responses := make(chan ui.ClarificationResponse, 1)
+	client := &clientStub{clarificationEvents: events, clarificationResponses: responses}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	question := strings.Repeat("A clarification line that needs scrolling.\n", 8) + "QUESTION_END_MARKER"
+	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "long-question", ConversationID: "conversation", Question: question, MaxAnswerBytes: 4096}}
+	waitForScreen(t, safe, "A clarification line", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	press(tcell.KeyBacktab, 0) // Review the question from the answer editor.
+	press(tcell.KeyEnd, 0)
+	waitForScreen(t, safe, "QUESTION_END_MARKER", "")
+	press(tcell.KeyTab, 0) // Return to the answer without changing it.
+	for _, r := range "answer intact" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyEnter, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "long-question" || response.Choice != ui.ClarificationAnswer || response.Answer != "answer intact" {
+			t.Fatalf("answer after question navigation = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("answer was not submitted after scrolling the question")
 	}
 	cancel()
 	select {
@@ -920,7 +1184,7 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 		t.Fatalf("/m suggestions = %+v", u.commandItems)
 	}
 	u.refreshCommandSuggestions("/")
-	if len(u.commandItems) != 6 {
+	if len(u.commandItems) != 7 {
 		t.Fatalf("root slash suggestions = %+v", u.commandItems)
 	}
 	u.commandList.SetCurrentItem(1)

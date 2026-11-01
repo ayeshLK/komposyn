@@ -56,6 +56,7 @@ const (
 	OutcomePartial     Outcome = "partial"
 	OutcomeUnknown     Outcome = "unknown"
 	OutcomeCancelled   Outcome = "cancelled"
+	OutcomeDeclined    Outcome = "declined"
 )
 
 type ContentKind string
