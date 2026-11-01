@@ -110,6 +110,12 @@ the selected file, then revalidates the evidence inside the SQLite write
 transaction. A mismatch is a controlled stale-preview refusal; the operation
 does not silently prepare a replacement token.
 
+The writer-transaction file verifier reads no more than the captured snapshot
+length plus one sentinel byte, bounded by the 64 MiB recovery cap. It detects
+appended or growing input without draining it while holding SQLite's writer
+lock; any excess byte makes Apply return `stale_preview` and rolls back before
+accounting mutation.
+
 The commit contains the run receipt and bounded audit, inserted ordinary
 events, append-only allocation rows and override heads, the incremented
 source allocation revision, cursor update, and parser-checkpoint deletion.
@@ -230,8 +236,10 @@ production database has this cause.
 | --- | --- |
 | Preserve base event rows; effective accounting uses seven categories | Migration 19 view and accounting reader tests from PR 1; Apply public-API test asserts stable A/C IDs and vectors and 250/25 over three events. |
 | Preview is bounded, source-selected, read-only, and evidence-bound | `PrepareCodexRecovery`; `TestPrepareCodexRecoveryPreviewsLegacyCumulativeRepairWithoutWrites`, refusal and privacy tests. |
+| Enforce source/record budgets during preparation | `TestPrepareCodexRecoveryRejectsOversizedAndOversizedLineBeforeReading`, `TestPrepareCodexRecoveryStopsAtHardByteBudgetWhenSourceGrows`, and `TestPrepareCodexRecoveryStopsCountingAfterRecordBudget`. |
 | Apply only exact reviewed preview and return receipt idempotently | `ApplyCodexRecovery`; A/B/C test repeats the same token after deleting the source and checks the unchanged receipt and event count. |
 | Identical concurrent applies across Store handles commit once | `TestConcurrentCodexRecoveryApplyReturnsOneCommittedReceiptAcrossStores`; both callers receive the same committed receipt and the database contains one run, two journal entries, and three ordinary events. |
+| Bound source growth during Apply's writer-locked verification | `TestApplyCodexRecoveryBoundsGrowthDuringFinalVerification` asserts only the captured bytes plus one sentinel are read, all accounting state rolls back, and the writer lock is released. |
 | Commit all accounting state atomically | `TestApplyCodexRecoveryRollsBackAtEachTransactionalWriteBoundary` injects failures at run, event, journal, head, revision, cursor, and checkpoint writes and verifies the pre-apply state remains. |
 | Fence parser work started before Apply | `TestImporterAppendRejectsStaleAllocationRevision` validates the source-revision check in the ordinary append transaction. |
 | Reverify the effective allocation through normal import | A/B/C Apply test imports the same full snapshot again, asserts no new event, and checks snapshot reuse is restored only after that import. |

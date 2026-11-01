@@ -339,6 +339,82 @@ func TestApplyCodexRecoveryRejectsChangedSourceWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestApplyCodexRecoveryBoundsGrowthDuringFinalVerification(t *testing.T) {
+	store := openTestStore(t)
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	data := legacyRecoveryFixture("session", "project")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CodexAdapter{}).Import(path, store); err != nil {
+		t.Fatal(err)
+	}
+	var middleKey, finalKey string
+	if err := store.db.QueryRow("SELECT ingestion_key FROM usage_events ORDER BY source_offset LIMIT 1 OFFSET 1").Scan(&middleKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT ingestion_key FROM usage_events ORDER BY source_offset DESC LIMIT 1").Scan(&finalKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM usage_events WHERE ingestion_key=?", middleKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE usage_events SET input_tokens=50,output_tokens=5 WHERE ingestion_key=?", finalKey); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := store.PrepareCodexRecovery(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeWrites := recoveryTotalChanges(t, store)
+	var bytesRead int64
+	grew := false
+	store.sourceReadHook = func(pass int, count int64) {
+		if pass != 4 {
+			return
+		}
+		if count > bytesRead {
+			bytesRead = count
+		}
+		if grew {
+			return
+		}
+		grew = true
+		file, err := os.OpenFile(path, os.O_RDWR, 0o600)
+		if err != nil {
+			t.Errorf("open source during final verification: %v", err)
+			return
+		}
+		if err := file.Truncate(CodexRecoveryMaxSnapshotBytes + 1024); err != nil {
+			t.Errorf("grow source during final verification: %v", err)
+		}
+		_ = file.Close()
+	}
+	_, err = store.ApplyCodexRecovery(context.Background(), path, preview.PlanToken)
+	assertRecoveryReason(t, err, CodexRecoveryReasonStalePreview)
+	if !grew || bytesRead != preview.SnapshotBytes+1 {
+		t.Fatalf("final verification read %d bytes for %d-byte snapshot (growth injected=%t)", bytesRead, preview.SnapshotBytes, grew)
+	}
+	var events, runs, allocations, heads, revisions int
+	for query, target := range map[string]*int{
+		"SELECT COUNT(*) FROM usage_events":                &events,
+		"SELECT COUNT(*) FROM recovery_runs":               &runs,
+		"SELECT COUNT(*) FROM recovery_allocations":        &allocations,
+		"SELECT COUNT(*) FROM current_event_allocations":   &heads,
+		"SELECT COUNT(*) FROM source_allocation_revisions": &revisions,
+	} {
+		if err := store.db.QueryRow(query).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if events != 2 || runs != 0 || allocations != 0 || heads != 0 || revisions != 0 || recoveryTotalChanges(t, store) != beforeWrites {
+		t.Fatalf("stale final verification changed Store state: events=%d runs=%d allocations=%d heads=%d revisions=%d", events, runs, allocations, heads, revisions)
+	}
+	if _, err := store.db.Exec("UPDATE collector_runtime SET state=state WHERE singleton=1"); err != nil {
+		t.Fatalf("final verifier retained writer lock: %v", err)
+	}
+}
+
 func TestApplyCodexRecoveryAllocationFailureRollsBackAccountingAndCanRetry(t *testing.T) {
 	store := openTestStore(t)
 	path := filepath.Join(t.TempDir(), "source.jsonl")
