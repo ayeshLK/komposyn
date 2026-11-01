@@ -269,6 +269,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		return nil
 	})
 	if err != nil {
+		clearToolCompletion(&result)
 		var typed *provider.Error
 		if errors.As(err, &typed) {
 			return result, err
@@ -276,6 +277,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		return result, classify(err, 0, result.RequestID)
 	}
 	if terminal == "" {
+		clearToolCompletion(&result)
 		return result, &provider.Error{Outcome: provider.OutcomeInterrupted, RequestID: result.RequestID}
 	}
 	if result.DiagnosticCode == provider.DiagnosticOpenAIStreamOutputInvalid {
@@ -296,16 +298,17 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		}
 	}
 	if terminal == "response.completed" && finalResponse == nil {
+		clearToolCompletion(&result)
 		result.Outcome = provider.OutcomeUnsupported
 		result.DiagnosticCode = provider.DiagnosticOpenAICompletedMissingResponse
 		return result, nil
 	}
 	if terminal == "response.completed" && result.Outcome == provider.OutcomeUnsupported {
-		result.ToolCalls = nil
-		result.Completion = ""
+		clearToolCompletion(&result)
 		return result, nil
 	}
 	if terminal == "response.completed" && !finalResponse.HasReplayableMessage && len(result.ToolCalls) == 0 {
+		clearToolCompletion(&result)
 		result.Outcome = provider.OutcomeUnsupported
 		result.DiagnosticCode = provider.DiagnosticOpenAICompletedNoAssistantMessage
 		return result, nil
@@ -352,7 +355,15 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		result.Outcome = provider.OutcomeUnsupported
 		result.DiagnosticCode = completedStatusDiagnostic(result.StopReason)
 	}
+	if result.Outcome != provider.OutcomeCompleted {
+		clearToolCompletion(&result)
+	}
 	return result, nil
+}
+
+func clearToolCompletion(result *provider.Result) {
+	result.ToolCalls = nil
+	result.Completion = ""
 }
 
 // Completed item events can carry the replay data even when the terminal

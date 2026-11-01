@@ -70,3 +70,16 @@ func TestOAuthToolRequestIsRejectedBeforeNetwork(t *testing.T) {
 		t.Fatalf("result=%+v called=%v err=%v", result, called, err)
 	}
 }
+
+func TestConflictingCompletedStatusClearsToolDispatchData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"in_progress\",\"output\":[{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{}\",\"status\":\"completed\"}]}}\n\n")
+	}))
+	defer server.Close()
+	definition := chattools.Definition{ID: "lookup", Description: "Look up a value", InputSchema: json.RawMessage(`{"type":"object"}`), MaxInput: 32}
+	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{APIKey: "fixture"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}, MaxOutput: 32}, nil)
+	if err != nil || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != p.DiagnosticOpenAICompletedStatusInProgress || result.Completion != "" || len(result.ToolCalls) != 0 {
+		t.Fatalf("rejected response retained dispatch data: result=%+v err=%v", result, err)
+	}
+}

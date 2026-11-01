@@ -217,6 +217,9 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		if event != "" && v.Type != "" && event != v.Type {
 			return &provider.Error{Outcome: provider.OutcomeService}
 		}
+		if messageStopped || terminal != "" && v.Type != "message_stop" {
+			return &provider.Error{Outcome: provider.OutcomeUnsupported, RequestID: result.RequestID}
+		}
 		switch v.Type {
 		case "message_start":
 			var m struct {
@@ -265,7 +268,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			blocks[v.Index] = &contentBlock{kind: x.Type, id: x.ID, name: x.Name, text: x.Text, input: append(json.RawMessage(nil), x.Input...), raw: append(json.RawMessage(nil), v.ContentBlock...)}
 		case "content_block_delta":
 			b := blocks[v.Index]
-			if b == nil {
+			if b == nil || b.closed {
 				return &provider.Error{Outcome: provider.OutcomeService}
 			}
 			var d struct {
