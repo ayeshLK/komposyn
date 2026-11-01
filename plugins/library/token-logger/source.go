@@ -67,21 +67,26 @@ func collectorSourceMatchesOpenFile(path string, source collectorSource, openedI
 }
 
 type sourceCursorExpectation struct {
-	sourceID   string
-	cursor     Cursor
-	exists     bool
-	checkpoint sourceCheckpointExpectation
+	sourceID           string
+	cursor             Cursor
+	exists             bool
+	checkpoint         sourceCheckpointExpectation
+	allocationRevision int64
 }
 
 func currentSourceCursorExpectation(store *Store, sourceID string) (sourceCursorExpectation, error) {
+	revision, err := sourceAllocationRevision(store.db, sourceID)
+	if err != nil {
+		return sourceCursorExpectation{}, err
+	}
 	cursor, err := store.Cursor(sourceID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return sourceCursorExpectation{sourceID: sourceID}, nil
+		return sourceCursorExpectation{sourceID: sourceID, allocationRevision: revision}, nil
 	}
 	if err != nil {
 		return sourceCursorExpectation{}, err
 	}
-	return sourceCursorExpectation{sourceID: sourceID, cursor: cursor, exists: true}, nil
+	return sourceCursorExpectation{sourceID: sourceID, cursor: cursor, exists: true, allocationRevision: revision}, nil
 }
 
 // sourceGeneration returns the generation for the current source contents.

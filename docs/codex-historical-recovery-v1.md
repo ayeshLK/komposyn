@@ -86,7 +86,30 @@ and effective vectors, the complete snapshot digest, source identity,
 generation, cursor/checkpoint expectations, parser/algorithm revisions, and
 allocation revision.
 
-Stage 3 remains unavailable: there is still no production recovery writer.
+Stage 3 adds `(*Store).ApplyCodexRecovery(ctx, sourcePath, expectedPlanToken)`.
+It first returns an existing receipt for an already committed plan, allowing
+retries after a lost response without rereading the source. For a new plan it
+repeats preparation, verifies the caller's exact token, rereads and verifies
+the selected file, then revalidates the evidence inside the SQLite write
+transaction. A mismatch is a controlled stale-preview refusal; the operation
+does not silently prepare a replacement token.
+
+The commit contains the run receipt and bounded audit, inserted ordinary
+events, append-only allocation rows and override heads, the incremented
+source allocation revision, cursor update, and parser-checkpoint deletion.
+Any failure before commit rolls all of these back. The updated cursor records
+the verified snapshot but marks it non-reusable, so a normal full import must
+verify the post-recovery allocation. The importer captures the source
+allocation revision with its cursor/checkpoint expectations and rechecks it
+inside its own write transaction. Thus work parsed before Apply cannot commit
+after recovery using a stale allocation basis.
+
+The allocation revision is monotonic per stable source identity across
+generations. It is a concurrency fence, not an event count. Recovery remains
+limited to the bounded snapshot and plan sizes above; the plan and audit are
+fully refused if their encoded representation exceeds the cap. A committed
+receipt is keyed by the exact evidence-bound token. A rolled-back attempt has
+no receipt and can be retried with the same still-current token.
 
 ## Eligibility and refusal
 
@@ -158,13 +181,44 @@ surface refusal and stale-preview outcomes without regenerating consent.
 
 ## Implementation status
 
-Stage 1 is implemented by the current PR: migration 19 and the effective
-accounting projection are present. Stage 2 and stage 3 are follow-on stacked
-PRs; until they are reviewed and integrated, there is no public recovery
-preview or apply API. The accepted resource limits and eligibility rules above
-are implemented as `CodexRecoveryMaxSnapshotBytes` (64 MiB),
+The implementation is split into three dependent reviews: storage and
+effective accounting, bounded preparation and preview, and transactional
+application. The preview API is `PrepareCodexRecovery`; the apply API is
+`ApplyCodexRecovery`. Each later change is based on its predecessor so the
+writer is never reviewed without the effective accounting readers and
+evidence-bound preparation it depends on. The accepted resource limits and
+eligibility rules above are implemented as `CodexRecoveryMaxSnapshotBytes` (64 MiB),
 `CodexRecoveryMaxRecords` (100,000), `CodexRecoveryMaxChanges` (10,000), and
 `CodexRecoveryMaxPlanBytes` (16 MiB). No applicable preview is truncated; a
-bound breach returns a controlled refusal. The current parser capture retains
-at most 100,000 normalized events in memory, in addition to the bounded source
-stream reader.
+bound breach returns a controlled refusal. Parser capture retains at most
+100,000 normalized events in memory, in addition to the bounded source stream
+reader. Tests using candidate-generated pre-state are reconstructed-state
+tests, not evidence of opening a database created by a pre-fix binary; that
+distinction matters: the A/B/C version-transition was also exercised with a
+temporary database created by the public importer at commit
+`acbe54c6c81af456756d14c3235c3d0aaafd1496` (the parent of #203). Its synthetic
+source had no optional reasoning field on A/C and had that field on B; the old
+binary imported A/C only. Candidate core opened and migrated that database,
+previewed one insertion and one override, applied the plan, and read effective
+totals of 250/25 over three events. The database and source remained under
+`/tmp` and are not committed. This verifies the historical importer-to-current
+core transition on this platform; it does not establish that any particular
+production database has this cause.
+
+## Acceptance coverage map
+
+| Requirement | Implementation / evidence |
+| --- | --- |
+| Preserve base event rows; effective accounting uses seven categories | Migration 19 view and accounting reader tests from PR 1; Apply public-API test asserts stable A/C IDs and vectors and 250/25 over three events. |
+| Preview is bounded, source-selected, read-only, and evidence-bound | `PrepareCodexRecovery`; `TestPrepareCodexRecoveryPreviewsLegacyCumulativeRepairWithoutWrites`, refusal and privacy tests. |
+| Apply only exact reviewed preview and return receipt idempotently | `ApplyCodexRecovery`; A/B/C test repeats the same token after deleting the source and checks the unchanged receipt and event count. |
+| Commit all accounting state atomically | `TestApplyCodexRecoveryRollsBackAtEachTransactionalWriteBoundary` injects failures at run, event, journal, head, revision, cursor, and checkpoint writes and verifies the pre-apply state remains. |
+| Fence parser work started before Apply | `TestImporterAppendRejectsStaleAllocationRevision` validates the source-revision check in the ordinary append transaction. |
+| Reverify the effective allocation through normal import | A/B/C Apply test imports the same full snapshot again, asserts no new event, and checks snapshot reuse is restored only after that import. |
+| Open a real historical database transition | Synthetic SQLite database generated by the public importer at the pre-#203 commit above; candidate preview/apply produced the accepted totals. |
+| CLI compatibility | Standalone `komposyn-lg` test suite run against this candidate with an isolated temporary module replacement; no replacement directive is committed. |
+
+The CLI handoff requires the reviewed public APIs in a published core tag and
+must retain explicit preview/consent, stale-token handling, and no automatic
+collector stop/resume. These checks do not claim cross-platform runtime
+evidence or establish the production cause reported in #197.

@@ -642,6 +642,11 @@ func collectorSourceCursorExpectations(store *Store, source collectorSource) (ma
 		return nil, err
 	}
 	for sourceID, expectation := range expectations {
+		revision, revisionErr := sourceAllocationRevision(store.db, sourceID)
+		if revisionErr != nil {
+			return nil, fmt.Errorf("read source allocation revision: %w", revisionErr)
+		}
+		expectation.allocationRevision = revision
 		checkpoint, err := parserCheckpointExpectation(store, sourceID)
 		if err != nil {
 			return nil, fmt.Errorf("read parser checkpoint %q: %w", sourceID, err)
