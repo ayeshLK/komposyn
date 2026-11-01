@@ -244,7 +244,9 @@ treated as a response. Free-text answers are returned exactly as submitted,
 up to 4 KiB, and are sent to the selected model. Clarification does not grant,
 revoke, or widen permissions. Its wait follows caller cancellation and
 deadlines, not the provider request timeout. `/permissions` remains reachable
-while clarification is open.
+while clarification is open; returning preserves any answer draft for that
+request. From the answer editor, Shift+Tab focuses the question, arrow keys or
+PageUp/PageDown/Home/End scroll it, and Tab returns to the editor.
 
 Both tools share the runtime limits described below: eight invocations, four
 provider requests, 256 KiB per serialized result, and 1 MiB of result envelopes

@@ -172,7 +172,9 @@ type terminal struct {
 	clarificationRequest         *ui.ClarificationRequest
 	clarificationGuard           atomic.Bool
 	clarificationStatus          *tv.TextView
-	clarificationAnswer          *tv.TextArea
+	clarificationAnswer          *composerInput
+	clarificationDraftID         string
+	clarificationDraft           string
 	permissionGrants             []ui.ToolGrant
 	activitySeen                 map[string]bool
 	permissionsFromApproval      bool
@@ -1810,15 +1812,27 @@ func (u *terminal) showClarification(request *ui.ClarificationRequest) {
 	if request == nil || u.closing.Load() {
 		return
 	}
+	if u.clarificationDraftID != request.ID {
+		u.clarificationDraftID = request.ID
+		u.clarificationDraft = ""
+	}
 	u.clarificationRequest = request
 	u.permissionsVisible = false
 	u.permissionsFromClarification = false
 	u.clarificationGuard.Store(true)
 	question := tv.NewTextView().SetScrollable(true).SetDynamicColors(false).SetText(safeTerminalText("Your answer will be sent to the selected model.\n\n" + request.Question))
-	question.SetBorder(true).SetTitle(" Clarification · choose an answer or enter free text ")
+	question.SetBorder(true).SetTitle(" Question · Shift+Tab to review; arrows/PgUp/PgDn/Home/End scroll; Tab returns ")
 	u.clarificationStatus = tv.NewTextView().SetDynamicColors(false)
-	answer := newComposerInput().SetLabel("Your answer: ")
+	answer := newComposerInput()
+	answer.SetLabel("Your answer: ")
+	answer.SetText(u.clarificationDraft)
 	u.clarificationAnswer = answer
+	answer.SetChangedFunc(func(text string) {
+		if u.clarificationRequest != nil && u.clarificationRequest.ID == request.ID {
+			u.clarificationDraftID = request.ID
+			u.clarificationDraft = text
+		}
+	})
 	options := tv.NewList().ShowSecondaryText(true)
 	for _, option := range request.Options {
 		selected := option
@@ -1841,7 +1855,14 @@ func (u *terminal) showClarification(request *ui.ClarificationRequest) {
 			return nil
 		}
 		if event.Key() == tcell.KeyBacktab {
-			u.app.SetFocus(form)
+			u.app.SetFocus(question)
+			return nil
+		}
+		return event
+	})
+	question.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(answer)
 			return nil
 		}
 		return event
@@ -1898,6 +1919,8 @@ func (u *terminal) answerClarification(choice ui.ClarificationChoice, answer str
 	u.clarificationRequest = nil
 	u.clarificationStatus = nil
 	u.clarificationAnswer = nil
+	u.clarificationDraftID = ""
+	u.clarificationDraft = ""
 	u.returnToChat()
 }
 
@@ -1907,6 +1930,8 @@ func (u *terminal) dismissClarification(id string) {
 	}
 	u.clarificationRequest = nil
 	u.clarificationAnswer = nil
+	u.clarificationDraftID = ""
+	u.clarificationDraft = ""
 	if !u.permissionsVisible {
 		u.returnToChat()
 	} else {

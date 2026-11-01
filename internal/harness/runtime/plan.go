@@ -15,7 +15,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"errors"
 	"sync"
 
@@ -41,15 +40,10 @@ func (p *ConversationPlans) Replace(conversationID string, steps []tools.PlanSte
 	if p == nil || conversationID == "" {
 		return errors.New("conversation plan store and identity are required")
 	}
-	raw, err := json.Marshal(tools.UpdatePlanInput{Plan: steps})
-	if err != nil {
+	if err := tools.ValidatePlanSteps(steps); err != nil {
 		return err
 	}
-	validated, err := tools.ParseUpdatePlan(raw)
-	if err != nil {
-		return err
-	}
-	copy := append(make([]tools.PlanStep, 0, len(validated.Plan)), validated.Plan...)
+	copy := append(make([]tools.PlanStep, 0, len(steps)), steps...)
 	p.mu.Lock()
 	if p.plans == nil {
 		p.plans = make(map[string][]tools.PlanStep)

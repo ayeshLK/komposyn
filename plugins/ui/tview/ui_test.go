@@ -381,6 +381,10 @@ func TestPermissionsRemainReachableDuringClarificationWait(t *testing.T) {
 		screen.InjectKey(key, 0, tcell.ModNone)
 		time.Sleep(30 * time.Millisecond)
 	}
+	for _, r := range "draft survives permissions" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+		time.Sleep(10 * time.Millisecond)
+	}
 	press(tcell.KeyTab) // Input -> action form.
 	press(tcell.KeyTab) // Submit -> Decline.
 	press(tcell.KeyTab) // Decline -> Cancel.
@@ -394,14 +398,15 @@ func TestPermissionsRemainReachableDuringClarificationWait(t *testing.T) {
 		t.Fatalf("opening permissions answered clarification: %+v", response)
 	default:
 	}
-	press(tcell.KeyEscape)
+	press(tcell.KeyTab) // Return to Submit answer.
+	press(tcell.KeyEnter)
 	select {
 	case response := <-responses:
-		if response.ID != "pending" || response.Choice != ui.ClarificationCancel {
-			t.Fatalf("Escape after returning from permissions = %+v", response)
+		if response.ID != "pending" || response.Choice != ui.ClarificationAnswer || response.Answer != "draft survives permissions" {
+			t.Fatalf("answer after returning from permissions = %+v", response)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Escape did not cancel the pending clarification")
+		t.Fatal("preserved answer was not submitted after returning from permissions")
 	}
 	cancel()
 	select {
@@ -429,7 +434,6 @@ func TestClarificationAnswerLimitDoesNotDismissPendingPrompt(t *testing.T) {
 		screen.InjectKey(key, r, tcell.ModNone)
 		time.Sleep(20 * time.Millisecond)
 	}
-	press(tcell.KeyRune, 'x') // Initial-key guard.
 	for _, r := range "long" {
 		press(tcell.KeyRune, r)
 	}
@@ -449,6 +453,50 @@ func TestClarificationAnswerLimitDoesNotDismissPendingPrompt(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pending prompt could not be cancelled")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestLongClarificationQuestionCanBeScrolledAndReturnedToAnswer(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(86, 20)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	events := make(chan ui.ClarificationEvent, 1)
+	responses := make(chan ui.ClarificationResponse, 1)
+	client := &clientStub{clarificationEvents: events, clarificationResponses: responses}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	question := strings.Repeat("A clarification line that needs scrolling.\n", 8) + "QUESTION_END_MARKER"
+	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "long-question", ConversationID: "conversation", Question: question, MaxAnswerBytes: 4096}}
+	waitForScreen(t, safe, "A clarification line", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	press(tcell.KeyBacktab, 0) // Review the question from the answer editor.
+	press(tcell.KeyEnd, 0)
+	waitForScreen(t, safe, "QUESTION_END_MARKER", "")
+	press(tcell.KeyTab, 0) // Return to the answer without changing it.
+	for _, r := range "answer intact" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyEnter, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "long-question" || response.Choice != ui.ClarificationAnswer || response.Answer != "answer intact" {
+			t.Fatalf("answer after question navigation = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("answer was not submitted after scrolling the question")
 	}
 	cancel()
 	select {

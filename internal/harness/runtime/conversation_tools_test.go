@@ -143,6 +143,51 @@ func TestUpdatePlanToolClearsExistingPlanWithEmptyArray(t *testing.T) {
 	}
 }
 
+func TestUpdatePlanToolAcceptsDecodedValuesWhoseStoreEncodingExpands(t *testing.T) {
+	var arguments strings.Builder
+	arguments.WriteString(`{"plan":[`)
+	stepText := strings.Repeat("<", tools.MaxPlanStepRunes)
+	for i := 0; i < tools.MaxPlanSteps; i++ {
+		if i > 0 {
+			arguments.WriteByte(',')
+		}
+		arguments.WriteString(`{"step":"`)
+		arguments.WriteString(stepText)
+		arguments.WriteString(`","status":"pending"}`)
+	}
+	arguments.WriteString(`]}`)
+	raw := json.RawMessage(arguments.String())
+	if len(raw) >= tools.MaxPlanInputBytes {
+		t.Fatalf("fixture wire size=%d, should be below %d", len(raw), tools.MaxPlanInputBytes)
+	}
+	input, err := tools.ParseUpdatePlan(raw)
+	if err != nil {
+		t.Fatalf("valid decoded plan rejected: %v", err)
+	}
+	encoded, err := json.Marshal(tools.UpdatePlanInput{Plan: input.Plan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) <= tools.MaxPlanInputBytes {
+		t.Fatalf("fixture internal encoding size=%d, expected expansion beyond wire bound", len(encoded))
+	}
+
+	plans := NewConversationPlans()
+	tool := &updatePlanTool{plans: conversationPlanUpdater{plans: plans}}
+	result := tool.Execute(context.Background(), tools.Invocation{
+		ConversationID: "conversation",
+		ProviderCallID: "expanded-call",
+		ToolID:         tools.UpdatePlanID,
+		Arguments:      raw,
+	})
+	if result.Outcome != tools.OutcomeSucceeded {
+		t.Fatalf("expanded internal encoding update result = %+v", result)
+	}
+	if got := plans.Snapshot("conversation"); len(got) != tools.MaxPlanSteps || got[0].Step != stepText {
+		t.Fatalf("expanded internal encoding snapshot has %d steps, first=%+v", len(got), got[:min(len(got), 1)])
+	}
+}
+
 func TestClarificationDeclineContinuesAndCancelStopsProvider(t *testing.T) {
 	for _, test := range []struct {
 		name        string

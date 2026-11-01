@@ -94,14 +94,25 @@ func ParseUpdatePlan(raw []byte) (UpdatePlanInput, error) {
 	if err := decodeStrictObject(raw, MaxPlanInputBytes, &input); err != nil {
 		return UpdatePlanInput{}, err
 	}
-	if input.Plan == nil || len(input.Plan) > MaxPlanSteps {
-		return UpdatePlanInput{}, errors.New("plan must contain at most 32 steps")
+	if err := ValidatePlanSteps(input.Plan); err != nil {
+		return UpdatePlanInput{}, err
+	}
+	input.Plan = append(make([]PlanStep, 0, len(input.Plan)), input.Plan...)
+	return input, nil
+}
+
+// ValidatePlanSteps validates the semantic bounds shared by provider input and
+// the in-memory conversation plan store. It does not apply the provider wire
+// encoding limit to already-decoded values.
+func ValidatePlanSteps(plan []PlanStep) error {
+	if plan == nil || len(plan) > MaxPlanSteps {
+		return errors.New("plan must contain at most 32 steps")
 	}
 	inProgress := 0
 	textBytes := 0
-	for _, step := range input.Plan {
+	for _, step := range plan {
 		if !validBoundedText(step.Step, MaxPlanStepRunes) || strings.TrimSpace(step.Step) == "" {
-			return UpdatePlanInput{}, errors.New("plan step text is invalid")
+			return errors.New("plan step text is invalid")
 		}
 		textBytes += len(step.Step)
 		switch step.Status {
@@ -109,16 +120,13 @@ func ParseUpdatePlan(raw []byte) (UpdatePlanInput, error) {
 		case PlanInProgress:
 			inProgress++
 		default:
-			return UpdatePlanInput{}, errors.New("plan step status is invalid")
+			return errors.New("plan step status is invalid")
 		}
 	}
 	if inProgress > 1 || textBytes > MaxPlanTextBytes {
-		return UpdatePlanInput{}, errors.New("plan exceeds its status or text bound")
+		return errors.New("plan exceeds its status or text bound")
 	}
-	// Keep an explicit empty array distinct from a missing/null plan. Empty
-	// means clear the current plan and must survive the store validation pass.
-	input.Plan = append(make([]PlanStep, 0, len(input.Plan)), input.Plan...)
-	return input, nil
+	return nil
 }
 
 // ParseRequestUserInput validates a bounded clarification request. Suggested
