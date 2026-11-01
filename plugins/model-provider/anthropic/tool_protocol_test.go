@@ -123,3 +123,25 @@ func TestToolUseRejectsDeltaAfterBlockClose(t *testing.T) {
 		t.Fatalf("post-close delta yielded a tool call: result=%+v err=%v", result, err)
 	}
 }
+
+func TestTextStreamAllowsPingAfterTerminalDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"fixture\",\"usage\":{\"input_tokens\":1}}}\n\n",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+			"event: ping\ndata: {\"type\":\"ping\"}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		} {
+			fmt.Fprint(w, event)
+		}
+	}))
+	defer server.Close()
+	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{APIKey: "fixture"}, Messages: []p.Message{{Role: p.RoleUser, Text: "hi"}}, MaxOutput: 32}, nil)
+	if err != nil || result.Outcome != p.OutcomeCompleted || result.Completion != p.CompletionFinal || result.Text != "done" || len(result.Native) != 1 {
+		t.Fatalf("valid ping disrupted terminal text response: result=%+v err=%v", result, err)
+	}
+}

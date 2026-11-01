@@ -217,7 +217,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 		if event != "" && v.Type != "" && event != v.Type {
 			return &provider.Error{Outcome: provider.OutcomeService}
 		}
-		if messageStopped || terminal != "" && v.Type != "message_stop" {
+		if messageStopped || terminal != "" && v.Type != "message_stop" && v.Type != "ping" {
 			return &provider.Error{Outcome: provider.OutcomeUnsupported, RequestID: result.RequestID}
 		}
 		switch v.Type {
