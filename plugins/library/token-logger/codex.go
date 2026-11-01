@@ -125,14 +125,16 @@ type codexLegacyEventAttempt struct {
 	offset int64
 }
 
+var errCodexLegacyRecoveryAmbiguous = errors.New("ambiguous legacy Codex cumulative recovery")
+
 // suppressAlreadyCoveredCodexLegacyEvents prevents an upgrade replay from
 // adding a newly supported intermediate cumulative snapshot when a later
 // stable event already stored by an older parser includes the same delta.
 // It only suppresses a contiguous per-scope candidate delta when exact token
-// arithmetic proves that a durable later event covers it. Unanchored or
-// ambiguous rows remain eligible for normal insertion.
+// arithmetic proves that a durable later event covers it. Unanchored rows
+// remain eligible for normal insertion; ambiguous mismatches fail recovery.
 func suppressAlreadyCoveredCodexLegacyEvents(events []UsageEvent, attempts []codexLegacyEventAttempt,
-	persisted map[string]TokenUsage) ([]UsageEvent, []codexLegacyEventAttempt) {
+	persisted map[string]TokenUsage) ([]UsageEvent, []codexLegacyEventAttempt, error) {
 	type pendingScope struct {
 		attempts []codexLegacyEventAttempt
 		usage    TokenUsage
@@ -152,12 +154,17 @@ func suppressAlreadyCoveredCodexLegacyEvents(events []UsageEvent, attempts []cod
 			pending[attempt.scope] = scope
 		}
 		if previous, exists := persisted[event.IngestionKey]; exists {
-			if len(scope.attempts) > 0 && scope.valid {
-				if covered, ok := tokenUsageDifference(previous, event.Usage); ok && covered == scope.usage {
-					for _, candidate := range scope.attempts {
-						suppressed[candidate.index] = struct{}{}
-						suppressedAttempts = append(suppressedAttempts, candidate)
-					}
+			if previous != event.Usage {
+				if len(scope.attempts) == 0 || !scope.valid {
+					return nil, nil, errCodexLegacyRecoveryAmbiguous
+				}
+				covered, ok := tokenUsageDifference(previous, event.Usage)
+				if !ok || covered != scope.usage {
+					return nil, nil, errCodexLegacyRecoveryAmbiguous
+				}
+				for _, candidate := range scope.attempts {
+					suppressed[candidate.index] = struct{}{}
+					suppressedAttempts = append(suppressedAttempts, candidate)
 				}
 			}
 			delete(pending, attempt.scope)
@@ -171,7 +178,7 @@ func suppressAlreadyCoveredCodexLegacyEvents(events []UsageEvent, attempts []cod
 		scope.attempts = append(scope.attempts, attempt)
 	}
 	if len(suppressed) == 0 {
-		return events, nil
+		return events, nil, nil
 	}
 	filtered := make([]UsageEvent, 0, len(events)-len(suppressed))
 	for index, event := range events {
@@ -179,7 +186,7 @@ func suppressAlreadyCoveredCodexLegacyEvents(events []UsageEvent, attempts []cod
 			filtered = append(filtered, event)
 		}
 	}
-	return filtered, suppressedAttempts
+	return filtered, suppressedAttempts, nil
 }
 
 func addTokenUsage(left, right TokenUsage) (TokenUsage, bool) {
@@ -610,7 +617,11 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 		if readErr != nil {
 			return result, false, fmt.Errorf("read existing Codex cumulative events: %w", readErr)
 		}
-		events, suppressedLegacyAttempts = suppressAlreadyCoveredCodexLegacyEvents(events, legacyEventAttempts, persisted)
+		var recoveryErr error
+		events, suppressedLegacyAttempts, recoveryErr = suppressAlreadyCoveredCodexLegacyEvents(events, legacyEventAttempts, persisted)
+		if recoveryErr != nil {
+			return result, false, fmt.Errorf("preserve source state during ambiguous Codex recovery: %w", recoveryErr)
+		}
 		for _, attempt := range suppressedLegacyAttempts {
 			result.Outcomes.Add(OutcomeUnchangedSnapshot)
 			if boundaryCaptured && attempt.offset <= boundaryOffset {
