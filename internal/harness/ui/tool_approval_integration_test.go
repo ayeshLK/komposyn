@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -89,13 +90,13 @@ func (t *approvalTestTool) Execute(ctx context.Context, inv tools.Invocation) to
 }
 
 func TestInjectedToolApprovalFlowsThroughUIAdapterExactlyOnce(t *testing.T) {
-	target := t.TempDir() + "/report.txt"
+	target := filepath.Join(t.TempDir(), "report.txt")
 	fakeProvider := &approvalTestProvider{target: target}
 	providers, err := model.NewRegistry(fakeProvider)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	store := auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}
 	bridge := NewApprovalBridge()
 	tool := &approvalTestTool{calls: make(chan struct{}, 2), release: make(chan struct{})}
 	registry := tools.NewRegistry()
