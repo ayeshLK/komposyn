@@ -175,16 +175,17 @@ func grantsForApproval(pending PendingApproval, choice ApprovalChoice) ([]Grant,
 			lifetime = LifetimeConversation
 		}
 		grant := Grant{
-			Kind:           requirement.Kind,
-			ID:             "approval-" + pending.ID + "-" + requirement.Key,
-			ConversationID: pending.Request.ConversationID,
-			CallID:         pending.Request.CallID,
-			RequirementKey: requirement.Key,
-			ToolID:         requirement.ToolID,
-			Operation:      requirement.Operation,
-			ActionKey:      requirement.ActionKey,
-			Lifetime:       lifetime,
-			Origin:         "user_approval",
+			Kind:              requirement.Kind,
+			ID:                "approval-" + pending.ID + "-" + requirement.Key,
+			ConversationID:    pending.Request.ConversationID,
+			CallID:            pending.Request.CallID,
+			RequirementKey:    requirement.Key,
+			ToolID:            requirement.ToolID,
+			ActionDescription: requirement.Description,
+			Operation:         requirement.Operation,
+			ActionKey:         requirement.ActionKey,
+			Lifetime:          lifetime,
+			Origin:            "user_approval",
 		}
 		if requirement.Kind == RequirementResource {
 			grant.ResourceTarget = requirement.Resource.Target
@@ -219,7 +220,7 @@ func sameRequirements(a, b []Requirement) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].Kind != b[i].Kind || a[i].Key != b[i].Key || a[i].ToolID != b[i].ToolID || a[i].Operation != b[i].Operation || a[i].ActionKey != b[i].ActionKey || !sameResource(a[i].Resource, b[i].Resource) {
+		if a[i].Kind != b[i].Kind || a[i].Key != b[i].Key || a[i].ToolID != b[i].ToolID || a[i].Description != b[i].Description || a[i].Operation != b[i].Operation || a[i].ActionKey != b[i].ActionKey || !sameResource(a[i].Resource, b[i].Resource) {
 			return false
 		}
 	}

@@ -102,71 +102,77 @@ type credentialOperation struct {
 }
 
 type terminal struct {
-	app                   *tv.Application
-	done                  chan struct{}
-	client                ui.Client
-	ctx                   context.Context
-	cancel                context.CancelFunc
-	wg                    sync.WaitGroup
-	lifecycleMu           sync.Mutex
-	screenMu              sync.RWMutex
-	stopping              bool
-	stopOnce              sync.Once
-	closing               atomic.Bool
-	runReturned           atomic.Bool
-	output                *transcriptView
-	transcript            []outputPart
-	screen                tcell.Screen
-	latestCompletedReply  string
-	clipboard             *clipboardQueue
-	followingTranscript   bool
-	transcriptScrollRow   int
-	selectionDragging     atomic.Bool
-	chatRootActive        atomic.Bool
-	selectionMoved        atomic.Bool
-	selectionMouseY       atomic.Int32
-	selectionDownY        int
-	selectionDownX        int
-	selectionClickTime    time.Time
-	selectionClickX       int
-	selectionClickY       int
-	selectionClickCount   int
-	selectionSnapshot     bool
-	selectionNeedsRestore bool
-	selectionSnapshotFrom int
-	selectionSnapshotTo   int
-	mouseEnabled          bool
-	header                *tv.TextView
-	input                 *composerInput
-	promptHistory         []string
-	promptHistoryIndex    int
-	promptHistoryDraft    string
-	browsingPrompts       bool
-	layout                *tv.Flex
-	body                  *tv.Flex
-	usagePane             *tv.TextView
-	footer                *tv.TextView
-	composer              *tv.Flex
-	commandList           *tv.List
-	usageCompact          *tv.TextView
-	commands              []command
-	commandItems          []command
-	usageVisible          bool
-	wide                  bool
-	layoutReady           bool
-	compactUsageShown     bool
-	usageCursor           int
-	terminalWidth         int
-	pickerQuery           string
-	picker                *tv.List
-	modelList             *tv.List
-	pickerInput           *tv.InputField
-	pickerStatus          *tv.TextView
-	pickerLayout          *tv.Flex
-	entries               []entry
-	modelEntries          []entry
-	discovery             ui.Discovery
-	credentialOp          *credentialOperation
+	app                     *tv.Application
+	done                    chan struct{}
+	client                  ui.Client
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	wg                      sync.WaitGroup
+	lifecycleMu             sync.Mutex
+	screenMu                sync.RWMutex
+	stopping                bool
+	stopOnce                sync.Once
+	closing                 atomic.Bool
+	runReturned             atomic.Bool
+	output                  *transcriptView
+	transcript              []outputPart
+	screen                  tcell.Screen
+	latestCompletedReply    string
+	clipboard               *clipboardQueue
+	followingTranscript     bool
+	transcriptScrollRow     int
+	selectionDragging       atomic.Bool
+	chatRootActive          atomic.Bool
+	selectionMoved          atomic.Bool
+	selectionMouseY         atomic.Int32
+	selectionDownY          int
+	selectionDownX          int
+	selectionClickTime      time.Time
+	selectionClickX         int
+	selectionClickY         int
+	selectionClickCount     int
+	selectionSnapshot       bool
+	selectionNeedsRestore   bool
+	selectionSnapshotFrom   int
+	selectionSnapshotTo     int
+	mouseEnabled            bool
+	header                  *tv.TextView
+	input                   *composerInput
+	promptHistory           []string
+	promptHistoryIndex      int
+	promptHistoryDraft      string
+	browsingPrompts         bool
+	layout                  *tv.Flex
+	body                    *tv.Flex
+	usagePane               *tv.TextView
+	footer                  *tv.TextView
+	composer                *tv.Flex
+	commandList             *tv.List
+	usageCompact            *tv.TextView
+	commands                []command
+	commandItems            []command
+	usageVisible            bool
+	wide                    bool
+	layoutReady             bool
+	compactUsageShown       bool
+	usageCursor             int
+	terminalWidth           int
+	pickerQuery             string
+	picker                  *tv.List
+	modelList               *tv.List
+	pickerInput             *tv.InputField
+	pickerStatus            *tv.TextView
+	pickerLayout            *tv.Flex
+	entries                 []entry
+	modelEntries            []entry
+	discovery               ui.Discovery
+	credentialOp            *credentialOperation
+	approvalRequest         *ui.ApprovalRequest
+	approvalGuard           atomic.Bool
+	permissionGrants        []ui.ToolGrant
+	activitySeen            map[string]bool
+	permissionsFromApproval bool
+	permissionsVisible      bool
 }
 
 func (u *terminal) beginCredentialOperation() *credentialOperation {
@@ -283,6 +289,20 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		return event
 	})
 	u.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if u.approvalRequest != nil {
+			if event.Key() == tcell.KeyEscape {
+				if u.permissionsVisible {
+					u.returnPermissionView()
+					return nil
+				}
+				u.answerApproval(ui.ApprovalCancel, "")
+				return nil
+			}
+			if u.approvalGuard.Swap(false) {
+				return nil
+			}
+			return event
+		}
 		if event.Key() == tcell.KeyCtrlC {
 			if u.transcriptFocused() && u.output.HasSelection() {
 				u.copySelection()
@@ -341,6 +361,8 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	})
 	u.write("KompoSyn is ready. Chat state is temporary and will be cleared on exit. Run /model to connect a provider.\n")
 	u.done = make(chan struct{})
+	u.launch(u.approvalEventsLoop)
+	u.launch(u.activityLoop)
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	u.app.SetAfterDrawFunc(func(screen tcell.Screen) {
@@ -501,6 +523,7 @@ func supportedCommands() []command {
 		{name: "/help", description: "show available commands", action: "help"},
 		{name: "/cancel", description: "stop the active reply", action: "cancel"},
 		{name: "/exit", description: "close KompoSyn", action: "exit"},
+		{name: "/permissions", description: "inspect and revoke tool grants for this conversation", action: "permissions"},
 		{name: "/copy", description: "copy latest completed reply; /copy all copies visible transcript text", action: "copy"},
 	}
 }
@@ -910,14 +933,12 @@ func (u *terminal) runCommand(text string) {
 		} else {
 			u.copyTranscript(trimmed == "/copy all")
 		}
+	case "permissions":
+		u.openPermissions(false)
 	case "picker":
 		u.openPicker()
 	case "help":
-		var descriptions []string
-		for _, item := range u.commands {
-			descriptions = append(descriptions, item.name+" "+item.description)
-		}
-		u.write("Commands: " + strings.Join(descriptions, "; ") + ". Keyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; /copy copies the latest completed reply; /copy all copies visible transcript text; drag selects text, double-click selects a word, triple-click selects a logical line, and Ctrl+C copies an active selection (otherwise it cancels); Escape clears selection; Ctrl+T releases mouse capture for terminal selection.\n")
+		u.write("Commands: /model, /help, /cancel, /exit, /permissions, /copy, and /copy all.\nKeyboard: Up/Down recalls submitted questions and restores your draft; Ctrl+L clears the display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scroll usage details; drag selects text, double-click selects a word, triple-click selects a logical line, and Ctrl+C copies an active selection (otherwise it cancels); Escape clears selection; Ctrl+T releases mouse capture for terminal selection.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
@@ -1509,6 +1530,7 @@ func (u *terminal) confirmSelection(m ui.Model) {
 }
 
 func (u *terminal) returnToChat() {
+	u.permissionsVisible = false
 	u.chatRootActive.Store(true)
 	u.app.SetRoot(u.layout, true).SetFocus(u.input)
 }
@@ -1520,6 +1542,318 @@ func (u *terminal) writePickerNotice(s string) {
 func (u *terminal) showMessage(title, message string, done func()) {
 	modal := tv.NewModal().SetText(title + "\n" + message).AddButtons([]string{"OK"}).SetDoneFunc(func(int, string) { done() })
 	u.app.SetRoot(modal, true)
+}
+
+func (u *terminal) approvalEventsLoop() {
+	for {
+		select {
+		case <-u.ctx.Done():
+			return
+		case event, ok := <-u.client.ApprovalEvents():
+			if !ok {
+				return
+			}
+			if event.Request != nil {
+				request := *event.Request
+				request.Requirements = append([]ui.ApprovalRequirement(nil), event.Request.Requirements...)
+				u.queue(func() { u.showApproval(&request) })
+			}
+			if event.DismissedID != "" {
+				u.queue(func() {
+					u.dismissApproval(event.DismissedID)
+				})
+			}
+		}
+	}
+}
+
+func (u *terminal) dismissApproval(id string) {
+	if u.approvalRequest == nil || u.approvalRequest.ID != id {
+		return
+	}
+	u.approvalRequest = nil
+	if !u.permissionsVisible {
+		u.returnToChat()
+	} else {
+		u.permissionsFromApproval = false
+	}
+}
+
+func (u *terminal) activityLoop() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-u.ctx.Done():
+			return
+		case <-ticker.C:
+			activities := u.client.Snapshot().ToolActivities
+			current := make(map[string]bool, len(activities))
+			for _, activity := range activities {
+				key := activity.CallID + "\x00" + activity.Phase + "\x00" + activity.Outcome + fmt.Sprint(activity.Truncated)
+				current[key] = true
+				if u.activitySeen == nil {
+					u.activitySeen = map[string]bool{}
+				}
+				if u.activitySeen[key] {
+					continue
+				}
+				u.activitySeen[key] = true
+				line := fmt.Sprintf("\nTool %s · %s", safeTerminalText(activity.ToolID), safeTerminalText(activity.Phase))
+				if activity.Outcome != "" {
+					line += " · " + safeTerminalText(activity.Outcome)
+				}
+				if activity.Message != "" {
+					line += " · " + safeTerminalText(activity.Message)
+				}
+				if activity.Truncated {
+					line += " · result truncated"
+				}
+				line += "\n"
+				u.writeAsync(line)
+			}
+			for key := range u.activitySeen {
+				if !current[key] {
+					delete(u.activitySeen, key)
+				}
+			}
+		}
+	}
+}
+
+func (u *terminal) showApproval(request *ui.ApprovalRequest) {
+	if request == nil || u.closing.Load() {
+		return
+	}
+	u.approvalRequest = request
+	u.permissionsVisible = false
+	u.permissionsFromApproval = false
+	u.approvalGuard.Store(true)
+	var details strings.Builder
+	fmt.Fprintf(&details, "Tool: %s\n%s\n\nRequested requirements:\n", safeTerminalText(request.ToolID), safeTerminalText(request.ToolDescription))
+	for i, item := range request.Requirements {
+		fmt.Fprintf(&details, "%d. %s · %s · %s\n   Scope: %s %s\n", i+1, safeTerminalText(item.Kind), safeTerminalText(item.Operation), safeTerminalText(item.Description), safeTerminalText(item.ResourceKind), safeTerminalText(item.ResourceScope))
+		if item.Operation == "read" {
+			details.WriteString("   Read permission includes returning retrieved data to the selected model.\n")
+		}
+	}
+	view := tv.NewTextView().SetScrollable(true).SetDynamicColors(false).SetText(safeTerminalText(details.String()))
+	view.SetBorder(true).SetTitle(" Review requested access · scroll for full scope ")
+	form := tv.NewForm().SetButtonsAlign(tv.AlignCenter)
+	form.AddButton("Allow once", func() { u.answerApproval(ui.ApprovalOnce, "") })
+	if request.AllowConversation {
+		form.AddButton("Allow for conversation", func() { u.answerApproval(ui.ApprovalConversation, "") })
+	}
+	form.AddButton("Deny", func() { u.answerApproval(ui.ApprovalDeny, "") })
+	form.AddButton("Cancel turn", func() { u.answerApproval(ui.ApprovalCancel, "") })
+	form.AddButton("Do something else", func() { u.redirectApproval() })
+	form.AddButton("/permissions", func() { u.openPermissions(true) })
+	view.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(form)
+			return nil
+		}
+		return event
+	})
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEscape {
+			u.answerApproval(ui.ApprovalCancel, "")
+			return nil
+		}
+		return event
+	})
+	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true).AddItem(form, 3, 0, false)
+	layout.SetBorder(true).SetTitle(" Tool approval · Escape cancels the entire turn ")
+	u.app.SetRoot(layout, true).SetFocus(view)
+}
+
+func (u *terminal) answerApproval(choice ui.ApprovalChoice, redirect string) {
+	request := u.approvalRequest
+	if request == nil {
+		return
+	}
+	err := u.client.RespondApproval(ui.ApprovalResponse{ID: request.ID, Choice: choice, RedirectText: redirect})
+	if err != nil {
+		u.writeAsync("Approval is no longer current; no permission was granted.\n")
+	}
+	u.approvalRequest = nil
+	u.returnToChat()
+}
+
+func (u *terminal) redirectApproval() {
+	request := u.approvalRequest
+	if request == nil {
+		return
+	}
+	form := tv.NewForm().AddInputField("Instruction for replanning: ", "", 40, nil, nil)
+	form.AddButton("Send instruction", func() {
+		field := form.GetFormItem(0).(*tv.InputField)
+		instruction := strings.TrimSpace(field.GetText())
+		if instruction != "" {
+			u.answerApproval(ui.ApprovalRedirect, instruction)
+		}
+	})
+	form.AddButton("Back", func() { u.showApproval(request) })
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEscape {
+			u.showApproval(request)
+			return nil
+		}
+		return event
+	})
+	form.SetBorder(true).SetTitle(" Original tool call will be rejected; replacement is checked again ")
+	u.app.SetRoot(form, true).SetFocus(form)
+}
+
+func (u *terminal) openPermissions(fromApproval bool) {
+	u.permissionsFromApproval = fromApproval
+	u.launch(func() {
+		grants, err := u.client.Permissions(u.ctx)
+		u.queue(func() {
+			if err != nil {
+				u.showMessage("Tool permissions", safeTerminalText(err.Error()), func() { u.returnPermissionView() })
+				return
+			}
+			u.permissionGrants = grants
+			u.showPermissions()
+		})
+	})
+}
+func (u *terminal) returnPermissionView() {
+	u.permissionsVisible = false
+	if u.permissionsFromApproval && u.approvalRequest != nil {
+		u.permissionsFromApproval = false
+		u.showApproval(u.approvalRequest)
+	} else {
+		u.permissionsFromApproval = false
+		u.returnToChat()
+	}
+}
+func (u *terminal) showPermissions() {
+	u.permissionsVisible = true
+	details := tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
+	details.SetBorder(true).SetTitle(" Selected grant · full scope and origin ")
+	list := tv.NewList().ShowSecondaryText(true)
+	if len(u.permissionGrants) == 0 {
+		list.AddItem("No tool grants", "Grants are temporary and limited to this conversation.", 0, nil)
+	}
+	for _, grant := range u.permissionGrants {
+		g := grant
+		summary := fmt.Sprintf("%s · %s · %s", safeTerminalText(g.Action), safeTerminalText(g.Operation), safeTerminalText(g.Lifetime))
+		list.AddItem(tv.Escape(safeTerminalText(g.ToolID)+" · "+safeTerminalText(g.ID)), tv.Escape(summary), 'r', func() {
+			u.launch(func() {
+				err := u.client.RevokePermission(u.ctx, g.ID)
+				grants, readErr := u.client.Permissions(u.ctx)
+				u.queue(func() {
+					if err != nil && !errors.Is(err, context.Canceled) {
+						u.write("Grant is already revoked or unavailable.\n")
+					}
+					if readErr == nil {
+						u.permissionGrants = grants
+					}
+					u.showPermissions()
+				})
+			})
+		})
+	}
+	showDetails := func(index int) {
+		if index < 0 || index >= len(u.permissionGrants) {
+			details.SetText("No tool grants. Grants are temporary and limited to this conversation.")
+			return
+		}
+		grant := u.permissionGrants[index]
+		scope := grant.ResourceKind + " " + grant.ResourceScope
+		if scope == " " {
+			scope = "no resource scope"
+		}
+		details.SetText(safeTerminalText(fmt.Sprintf("Grant ID: %s\nTool: %s\nAction: %s\nResource scope: %s\nOperation: %s\nLifetime: %s\nTrusted origin: %s\n", grant.ID, grant.ToolID, grant.Action, scope, grant.Operation, grant.Lifetime, grant.Origin)))
+	}
+	list.SetChangedFunc(func(index int, _ string, _ string, _ rune) { showDetails(index) })
+	showDetails(0)
+	form := tv.NewForm().AddButton("Clear all", func() {
+		u.launch(func() {
+			count, err := u.client.ClearPermissions(u.ctx)
+			grants, _ := u.client.Permissions(u.ctx)
+			u.queue(func() {
+				if err == nil {
+					u.write(fmt.Sprintf("Cleared %d conversation tool grant(s).\n", count))
+				}
+				u.permissionGrants = grants
+				u.showPermissions()
+			})
+		})
+	}).AddButton("Back", func() { u.returnPermissionView() })
+	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(details)
+			return nil
+		}
+		if event.Key() == tcell.KeyBacktab {
+			u.app.SetFocus(form)
+			return nil
+		}
+		if event.Key() == tcell.KeyEscape {
+			u.returnPermissionView()
+			return nil
+		}
+		if event.Key() == tcell.KeyEnter && len(u.permissionGrants) > 0 {
+			idx := list.GetCurrentItem()
+			if idx >= 0 && idx < len(u.permissionGrants) {
+				grant := u.permissionGrants[idx]
+				u.launch(func() {
+					err := u.client.RevokePermission(u.ctx, grant.ID)
+					grants, _ := u.client.Permissions(u.ctx)
+					u.queue(func() {
+						if err != nil {
+							u.write("Grant is already revoked or unavailable.\n")
+						}
+						u.permissionGrants = grants
+						u.showPermissions()
+					})
+				})
+				return nil
+			}
+		}
+		return event
+	})
+	details.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyTab:
+			u.app.SetFocus(form)
+			return nil
+		case tcell.KeyBacktab:
+			u.app.SetFocus(list)
+			return nil
+		case tcell.KeyEscape:
+			u.returnPermissionView()
+			return nil
+		}
+		return event
+	})
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyBacktab {
+			u.app.SetFocus(details)
+			return nil
+		}
+		return event
+	})
+	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(list, 8, 0, true).AddItem(details, 0, 1, false).AddItem(form, 3, 0, false)
+	layout.SetBorder(true).SetTitle(" /permissions · revoking prevents future dispatch only ")
+	u.app.SetRoot(layout, true).SetFocus(list)
+}
+
+func safeTerminalText(text string) string {
+	var out strings.Builder
+	for _, r := range text {
+		if r == '\n' || r == '\t' {
+			out.WriteRune(r)
+		} else if r < 0x20 || r == 0x7f {
+			fmt.Fprintf(&out, "\\x%02x", r)
+		} else {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
 }
 func profileID(providerID, label string, profiles []ui.Profile) string {
 	slug := regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(strings.ToLower(label), "-")
