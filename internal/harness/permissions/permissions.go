@@ -265,9 +265,10 @@ func onceGrantMatches(grant Grant, request Request, requirement Requirement) boo
 }
 
 var (
-	ErrInvalidGrant     = errors.New("invalid permission grant")
-	ErrGrantNotFound    = errors.New("permission grant not found")
-	ErrOnceGrantMissing = errors.New("once grant is missing or already consumed")
+	ErrInvalidGrant         = errors.New("invalid permission grant")
+	ErrGrantNotFound        = errors.New("permission grant not found")
+	ErrOnceGrantMissing     = errors.New("once grant is missing or already consumed")
+	ErrGrantRevisionChanged = errors.New("permission grants changed after authorization")
 )
 
 // MemoryStore is an injected in-memory grant store. It must only be handed to
@@ -459,15 +460,20 @@ func (s *MemoryStore) ConsumeOnce(conversationID, callID string, requirementKeys
 	return nil
 }
 
-// ConsumeOnceMatching removes any once grants that cover the supplied
-// requirements. Requirements already authorized by rules or conversation
-// grants need no once grant and are left unchanged. The operation is atomic.
-func (s *MemoryStore) ConsumeOnceMatching(request Request) error {
+// ConsumeOnceMatchingAtRevision removes any once grants that cover the
+// supplied requirements only if the grant store still has the revision
+// evaluated by the caller. Requirements already authorized by rules or
+// conversation grants need no once grant and are left unchanged. Revision
+// validation and once-grant consumption happen atomically under the store lock.
+func (s *MemoryStore) ConsumeOnceMatchingAtRevision(request Request, expectedRevision uint64) error {
 	if s == nil || request.ConversationID == "" || request.CallID == "" || len(request.Requirements) == 0 {
 		return ErrOnceGrantMissing
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.revision != expectedRevision {
+		return ErrGrantRevisionChanged
+	}
 	consumed := make([]string, 0, len(request.Requirements))
 	for _, requirement := range request.Requirements {
 		matches := []string{}

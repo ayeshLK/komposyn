@@ -236,13 +236,17 @@ These are not implied by approval of the issue's conceptual semantics:
 
 The runtime integration offers registry definitions only when the provider
 route reports supported client tools and trusted authorization and enforcement
-adapters are injected. It validates complete calls, serializes dispatch,
-re-prepares and re-evaluates permission requests immediately before dispatch,
-consumes matching once grants atomically, and returns bounded typed text
-envelopes. It keeps execution activity and conversation grants in memory and
-retains completed tool-result continuation data if a subsequent provider
-request fails, preventing automatic replay. Provider request usage is recorded
-once for every response, including failed continuations. The shipped
+adapters are injected. It validates complete calls, rejects provider call IDs
+already processed in the current conversation, serializes dispatch, re-prepares
+and re-evaluates permission requests immediately before dispatch, and checks
+the grant-store revision atomically while consuming matching once grants. It
+returns bounded typed text envelopes. It keeps execution activity and
+conversation grants in memory and retains completed tool-result continuation
+data if a subsequent provider request fails, preventing automatic replay.
+Provider timeouts apply independently to each request; approval waits inherit
+caller cancellation/deadlines and shutdown, not the internal provider timeout.
+Provider request usage is recorded once for every response, including failed
+continuations. The shipped
 `cmd/harness` remains text-only and registers no tools. No production adapter,
 permission UI, OS sandbox, shell, filesystem mutation, or network tool is
 implemented by this runtime layer.

@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -138,7 +137,7 @@ func (f *fixtureAuthorizer) Prepare(_ context.Context, invocation tools.Invocati
 	_ = json.Unmarshal(invocation.Arguments, &args)
 	target := args["target"]
 	if target == "" {
-		target = fixturePath("/safe/fixture.txt")
+		return permissions.Request{}, errors.New("fixture target is missing")
 	}
 	digest := sha256.Sum256(invocation.Arguments)
 	return permissions.Request{ConversationID: invocation.ConversationID, CallID: invocation.ProviderCallID, Requirements: []permissions.Requirement{
@@ -191,14 +190,24 @@ func newToolConfig(tool *fixtureTool, approval ToolApprovalInteraction) ToolRunt
 	}), Approval: approval, Grants: permissions.NewMemoryStore()}
 }
 
-func callResult(callID string, target string) p.Result {
-	arguments, _ := json.Marshal(map[string]string{"target": fixturePath(target)})
+func callResult(t *testing.T, callID string, target string) p.Result {
+	t.Helper()
+	arguments, _ := json.Marshal(map[string]string{"target": fixturePath(t, target)})
 	callRaw, _ := json.Marshal(map[string]any{"type": "function_call", "id": "item-" + callID, "call_id": callID, "name": "lookup", "arguments": string(arguments), "status": "completed"})
 	return p.Result{Outcome: p.OutcomeCompleted, Completion: p.CompletionToolCalls, Text: "checking", Native: []json.RawMessage{callRaw}, ToolCalls: []p.ToolCall{{CallID: callID, ToolID: "lookup", Arguments: arguments}}, Usage: p.Usage{InputKnown: true, InputTokens: 2, OutputKnown: true, OutputTokens: 1, CacheReadKnown: true, CacheRead: 0}}
 }
 
-func fixturePath(path string) string {
-	return filepath.Join(os.TempDir(), "komposyn-fixture", filepath.FromSlash(strings.TrimLeft(path, "/")))
+var fixtureRoots sync.Map
+
+func fixturePath(t *testing.T, path string) string {
+	t.Helper()
+	root, found := fixtureRoots.Load(t)
+	if !found {
+		created := t.TempDir()
+		root, _ = fixtureRoots.LoadOrStore(t, created)
+		t.Cleanup(func() { fixtureRoots.Delete(t) })
+	}
+	return filepath.Join(root.(string), "komposyn-fixture", filepath.FromSlash(strings.TrimLeft(path, "/")))
 }
 
 func finalResult(text string) p.Result {
@@ -216,8 +225,8 @@ func TestRuntimeToolLoopSerializesCorrelatedCallsAndContinues(t *testing.T) {
 	fp := &toolLoopProvider{step: func(index int, request p.ChatRequest) (p.Result, error) {
 		switch index {
 		case 0:
-			first := callResult("call-a", "/safe/a")
-			second := callResult("call-b", "/safe/b")
+			first := callResult(t, "call-a", "/safe/a")
+			second := callResult(t, "call-b", "/safe/b")
 			first.Text = "checking both"
 			first.Native = append(first.Native, second.Native...)
 			first.ToolCalls = append(first.ToolCalls, second.ToolCalls...)
@@ -292,7 +301,7 @@ func TestRuntimeApprovalOutcomesAndHeadlessFailure(t *testing.T) {
 			config := newToolConfig(tool, approval)
 			fp := &toolLoopProvider{step: func(index int, request p.ChatRequest) (p.Result, error) {
 				if index == 0 {
-					return callResult("call-a", "/safe/a"), nil
+					return callResult(t, "call-a", "/safe/a"), nil
 				}
 				for _, message := range request.Messages {
 					if message.Role == p.RoleUser && message.Text == test.wantPrompt && test.wantPrompt != "" {
@@ -348,7 +357,7 @@ func TestRuntimeFailsClosedForUnknownRouteOrMissingEnforcement(t *testing.T) {
 				if len(request.Tools) != 0 {
 					t.Errorf("tool definitions leaked to unavailable runtime: %+v", request.Tools)
 				}
-				return callResult("unknown-call", "/safe/a"), nil
+				return callResult(t, "unknown-call", "/safe/a"), nil
 			}}
 			fp.routeSupport = test.capability
 			chat, _ := makeToolLoopChat(t, fp, config)
@@ -368,7 +377,7 @@ func TestRuntimeDoesNotReplaySideEffectAfterContinuationFailure(t *testing.T) {
 	var failed bool
 	fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
 		if index == 0 {
-			return callResult("call-side-effect", "/safe/a"), nil
+			return callResult(t, "call-side-effect", "/safe/a"), nil
 		}
 		if !failed {
 			failed = true
@@ -395,6 +404,126 @@ func TestRuntimeDoesNotReplaySideEffectAfterContinuationFailure(t *testing.T) {
 	}
 }
 
+func TestRuntimeRejectsToolCallIDsReusedAcrossResponsesAndTurns(t *testing.T) {
+	tool := &fixtureTool{content: "executed once"}
+	config := newToolConfig(tool, ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalConversation, "", nil
+	}))
+	fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
+		switch index {
+		case 0, 1:
+			return callResult(t, "reused-call", "/safe/a"), nil
+		default:
+			return callResult(t, "reused-call", "/safe/a"), nil
+		}
+	}}
+	chat, _ := makeToolLoopChat(t, fp, config)
+	first, err := chat.Send(context.Background(), "run once", nil)
+	if err != nil || first.Outcome != p.OutcomeUnsupported || !strings.Contains(first.Message, "reused a tool call identity") {
+		t.Fatalf("initial call turn=%+v err=%v", first, err)
+	}
+	if len(tool.captured()) != 1 {
+		t.Fatalf("duplicate provider response replayed the side effect: calls=%d", len(tool.captured()))
+	}
+	turn, err := chat.Send(context.Background(), "try duplicate in next turn", nil)
+	if err != nil || turn.Outcome != p.OutcomeUnsupported || !strings.Contains(turn.Message, "reused a tool call identity") {
+		t.Fatalf("cross-turn duplicate turn=%+v err=%v", turn, err)
+	}
+	if len(tool.captured()) != 1 {
+		t.Fatalf("cross-turn duplicate replayed the side effect: calls=%d", len(tool.captured()))
+	}
+	if len(fp.captured()) != 3 {
+		t.Fatalf("duplicate calls were continued to the provider: requests=%d", len(fp.captured()))
+	}
+}
+
+func TestRuntimeApprovalWaitIsNotBoundedByInternalProviderTimeout(t *testing.T) {
+	tool := &fixtureTool{content: "approved"}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	approvalCanceled := make(chan struct{})
+	config := newToolConfig(tool, ToolApprovalFunc(func(ctx context.Context, _ permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		close(entered)
+		select {
+		case <-release:
+			return permissions.ApprovalOnce, "", nil
+		case <-ctx.Done():
+			close(approvalCanceled)
+			return permissions.ApprovalCancel, "", ctx.Err()
+		}
+	}))
+	fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
+		if index == 0 {
+			return callResult(t, "approval-timeout", "/safe/a"), nil
+		}
+		return finalResult("done"), nil
+	}}
+	chat, _ := makeToolLoopChat(t, fp, config)
+	chat.timeout = 10 * time.Millisecond
+	done := make(chan Turn, 1)
+	go func() {
+		turn, _ := chat.Send(context.Background(), "wait for approval", nil)
+		done <- turn
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("approval callback was not reached")
+	}
+	// Wait well beyond the internal provider timeout while approval remains
+	// pending. Only a caller deadline, Cancel, or Close should release it.
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-approvalCanceled:
+		t.Fatal("internal provider timeout cancelled approval")
+	default:
+	}
+	close(release)
+	var turn Turn
+	select {
+	case turn = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("approved tool turn did not return")
+	}
+	if turn.Outcome != p.OutcomeCompleted || len(tool.captured()) != 1 || len(fp.captured()) != 2 {
+		t.Fatalf("approval wait did not complete: turn=%+v calls=%d requests=%d", turn, len(tool.captured()), len(fp.captured()))
+	}
+}
+
+func TestRuntimeApprovalHonorsExplicitCallerDeadline(t *testing.T) {
+	tool := &fixtureTool{}
+	entered := make(chan struct{})
+	config := newToolConfig(tool, ToolApprovalFunc(func(ctx context.Context, _ permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		close(entered)
+		<-ctx.Done()
+		return permissions.ApprovalOnce, "", ctx.Err()
+	}))
+	fp := &toolLoopProvider{step: func(_ int, _ p.ChatRequest) (p.Result, error) {
+		return callResult(t, "caller-deadline", "/safe/a"), nil
+	}}
+	chat, _ := makeToolLoopChat(t, fp, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	turnDone := make(chan Turn, 1)
+	go func() {
+		turn, _ := chat.Send(ctx, "caller deadline", nil)
+		turnDone <- turn
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("approval callback was not reached")
+	}
+	select {
+	case turn := <-turnDone:
+		if turn.Outcome != p.OutcomeInterrupted || len(tool.captured()) != 0 || len(fp.captured()) != 1 {
+			t.Fatalf("caller deadline did not cancel pending approval: turn=%+v calls=%d requests=%d", turn, len(tool.captured()), len(fp.captured()))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("caller deadline did not release approval wait")
+	}
+}
+
 func TestRuntimeRevalidatesAuthorizationAndStaleApproval(t *testing.T) {
 	t.Run("changed target", func(t *testing.T) {
 		tool := &fixtureTool{}
@@ -405,14 +534,14 @@ func TestRuntimeRevalidatesAuthorizationAndStaleApproval(t *testing.T) {
 		authorizer.prepare = func(index int, invocation tools.Invocation) (permissions.Request, error) {
 			request, _ := (&fixtureAuthorizer{}).Prepare(context.Background(), invocation)
 			if index > 0 {
-				request.Requirements[1].Resource.Target = fixturePath("/safe/changed.txt")
+				request.Requirements[1].Resource.Target = fixturePath(t, "/safe/changed.txt")
 			}
 			return request, nil
 		}
 		config.Authorizer = authorizer
 		fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
 			if index == 0 {
-				return callResult("call-a", "/safe/original.txt"), nil
+				return callResult(t, "call-a", "/safe/original.txt"), nil
 			}
 			return finalResult("not executed"), nil
 		}}
@@ -435,7 +564,7 @@ func TestRuntimeRevalidatesAuthorizationAndStaleApproval(t *testing.T) {
 		})
 		fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
 			if index == 0 {
-				return callResult("call-a", "/safe/a"), nil
+				return callResult(t, "call-a", "/safe/a"), nil
 			}
 			return finalResult("no execution"), nil
 		}}
@@ -470,7 +599,7 @@ func TestRuntimeCallLimitAndProviderLimitAreBounded(t *testing.T) {
 		}))
 		fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
 			if index < MaxProviderRequestsPerTurn {
-				return callResult(fmt.Sprintf("call-%d", index), "/safe/a"), nil
+				return callResult(t, fmt.Sprintf("call-%d", index), "/safe/a"), nil
 			}
 			return finalResult("too many"), nil
 		}}
@@ -488,9 +617,9 @@ func TestRuntimeCallLimitAndProviderLimitAreBounded(t *testing.T) {
 		}))
 		fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
 			if index == 0 {
-				calls := callResult("call-1", "/safe/a")
+				calls := callResult(t, "call-1", "/safe/a")
 				for n := 2; n <= MaxToolInvocationsPerTurn+1; n++ {
-					extra := callResult(fmt.Sprintf("call-%d", n), "/safe/a")
+					extra := callResult(t, fmt.Sprintf("call-%d", n), "/safe/a")
 					calls.ToolCalls = append(calls.ToolCalls, extra.ToolCalls...)
 					calls.Native = append(calls.Native, extra.Native...)
 				}
@@ -516,7 +645,7 @@ func TestRuntimeConversationGrantReuseAndCloseClear(t *testing.T) {
 	fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
 		switch index {
 		case 0, 2:
-			return callResult(fmt.Sprintf("call-%d", index), "/safe/same"), nil
+			return callResult(t, fmt.Sprintf("call-%d", index), "/safe/same"), nil
 		default:
 			return finalResult("done"), nil
 		}
@@ -572,7 +701,7 @@ func TestRuntimeRejectsUnknownAndMalformedProviderCalls(t *testing.T) {
 				return permissions.ApprovalOnce, "", nil
 			}))
 			fp := &toolLoopProvider{step: func(_ int, _ p.ChatRequest) (p.Result, error) {
-				result := callResult("call-a", "/safe/a")
+				result := callResult(t, "call-a", "/safe/a")
 				result.ToolCalls[0].ToolID = test.toolID
 				result.Completion = test.completion
 				return result, nil
@@ -594,7 +723,7 @@ func TestRuntimeCancellationWhileApprovalIsPending(t *testing.T) {
 		<-ctx.Done()
 		return permissions.ApprovalOnce, "", nil
 	}))
-	fp := &toolLoopProvider{step: func(_ int, _ p.ChatRequest) (p.Result, error) { return callResult("call-a", "/safe/a"), nil }}
+	fp := &toolLoopProvider{step: func(_ int, _ p.ChatRequest) (p.Result, error) { return callResult(t, "call-a", "/safe/a"), nil }}
 	chat, _ := makeToolLoopChat(t, fp, config)
 	done := make(chan Turn, 1)
 	go func() {
@@ -635,7 +764,7 @@ func TestRuntimeCancellationAfterExecutionRetainsResultWithoutContinuation(t *te
 	})
 	fp := &toolLoopProvider{step: func(index int, request p.ChatRequest) (p.Result, error) {
 		if index == 0 {
-			return callResult("call-a", "/safe/a"), nil
+			return callResult(t, "call-a", "/safe/a"), nil
 		}
 		if len(request.Messages) < 3 || request.Messages[2].ToolResult == nil {
 			t.Errorf("follow-up omitted the completed tool result: %+v", request.Messages)
@@ -680,7 +809,7 @@ func TestRuntimePreservesPartialAndUnknownOutcomes(t *testing.T) {
 			}))
 			fp := &toolLoopProvider{step: func(index int, request p.ChatRequest) (p.Result, error) {
 				if index == 0 {
-					return callResult("call-a", "/safe/a"), nil
+					return callResult(t, "call-a", "/safe/a"), nil
 				}
 				toolResult := request.Messages[2].ToolResult
 				if toolResult == nil || !toolResult.IsError || !strings.Contains(toolResult.Content, `"outcome":"`+string(outcome)+`"`) {
@@ -704,9 +833,9 @@ func TestRuntimeEnforcesPerResultAndPerTurnResultBudgets(t *testing.T) {
 	}))
 	fp := &toolLoopProvider{step: func(index int, request p.ChatRequest) (p.Result, error) {
 		if index == 0 {
-			result := callResult("call-1", "/safe/a")
+			result := callResult(t, "call-1", "/safe/a")
 			for n := 2; n <= 5; n++ {
-				extra := callResult(fmt.Sprintf("call-%d", n), "/safe/a")
+				extra := callResult(t, fmt.Sprintf("call-%d", n), "/safe/a")
 				result.ToolCalls = append(result.ToolCalls, extra.ToolCalls...)
 				result.Native = append(result.Native, extra.Native...)
 			}
@@ -747,7 +876,7 @@ func TestRuntimeUnmatchedToolResultIDBecomesUnknownAndIsNotReplayed(t *testing.T
 	})
 	fp := &toolLoopProvider{step: func(index int, request p.ChatRequest) (p.Result, error) {
 		if index == 0 {
-			return callResult("expected-call", "/safe/a"), nil
+			return callResult(t, "expected-call", "/safe/a"), nil
 		}
 		if len(request.Messages) > 2 && !strings.Contains(request.Messages[2].ToolResult.Content, `"outcome":"unknown"`) {
 			t.Errorf("mismatched result was not downgraded: %+v", request.Messages[2].ToolResult)

@@ -143,6 +143,42 @@ func TestOnceGrantIsCallBoundConsumedAndNotReusable(t *testing.T) {
 	}
 }
 
+func TestAtomicGrantConsumptionRejectsRevocationAfterEvaluation(t *testing.T) {
+	for _, lifetime := range []Lifetime{LifetimeOnce, LifetimeConversation} {
+		t.Run(string(lifetime), func(t *testing.T) {
+			store := NewMemoryStore()
+			grant := Grant{
+				ID: "grant", ConversationID: "c", ToolID: "lookup", Kind: RequirementAction,
+				Operation: OperationRead, ActionKey: "digest", Lifetime: lifetime, Origin: "user",
+			}
+			request := Request{ConversationID: "c", CallID: "call", Requirements: []Requirement{{
+				Kind: RequirementAction, Key: "action", ToolID: "lookup", Operation: OperationRead,
+				ActionKey: "digest", SessionAllowed: true,
+			}}}
+			if lifetime == LifetimeOnce {
+				grant.CallID = request.CallID
+				grant.RequirementKey = request.Requirements[0].Key
+			}
+			if err := store.Add(grant); err != nil {
+				t.Fatal(err)
+			}
+			decision := (Evaluator{Grants: store}).Evaluate(request)
+			if !decision.Ready() {
+				t.Fatalf("grant did not authorize request before revocation: %+v", decision)
+			}
+			if err := store.Revoke("c", grant.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.ConsumeOnceMatchingAtRevision(request, decision.Revision); !errors.Is(err, ErrGrantRevisionChanged) {
+				t.Fatalf("stale authorization was accepted: %v", err)
+			}
+			if after := (Evaluator{Grants: store}).Evaluate(request); after.Ready() {
+				t.Fatalf("revoked grant still authorized request: %+v", after)
+			}
+		})
+	}
+}
+
 func TestDeleteRequiresPerInvocationGrantAndCannotReceiveSessionGrant(t *testing.T) {
 	store := NewMemoryStore()
 	root := filepath.Join(t.TempDir(), "file")

@@ -91,6 +91,7 @@ type Chat struct {
 	toolRuntime           *toolRuntime
 	conversationID        string
 	conversationIDErr     error
+	toolCallIDs           map[string]struct{}
 	closed                bool
 }
 
@@ -150,6 +151,7 @@ func (c *Chat) Close() {
 	cancel := c.cancel
 	conversationID := c.conversationID
 	c.history = nil
+	c.toolCallIDs = nil
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -528,6 +530,7 @@ func (c *Chat) clearConversationLocked() {
 	oldID := c.conversationID
 	c.history = nil
 	c.turns = nil
+	c.toolCallIDs = nil
 	if c.toolRuntime != nil && oldID != "" {
 		c.toolRuntime.grants.Clear(oldID)
 		c.toolRuntime.coordinator.CancelConversation(oldID)
@@ -549,7 +552,10 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	if prompt == "" {
 		return Turn{}, errors.New("message is empty")
 	}
-	ctx, cancel := context.WithTimeout(parent, c.timeout)
+	// The turn lifetime follows caller cancellation/deadlines. The internal
+	// provider timeout is applied separately to each provider operation so an
+	// approval prompt is not silently expired by time spent in the turn.
+	ctx, cancel := context.WithCancel(parent)
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
