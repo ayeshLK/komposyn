@@ -207,7 +207,7 @@ func queryUsage(reader reportQueryer, filter UsageFilter) (UsageReport, error) {
 		requested_model, resolved_model, input_tokens, output_tokens, cache_read_tokens,
 		cache_write_tokens, reasoning_tokens, provider_cost_amount_micros,
 		provider_cost_currency, cost_status, cost_amount_micros, cost_currency
-		, billing_context_json, cache_write_5m_tokens, cache_write_1h_tokens FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?`
+		, billing_context_json, cache_write_5m_tokens, cache_write_1h_tokens FROM effective_usage_events WHERE occurred_at >= ? AND occurred_at < ?`
 	args := []any{formatStoredTime(filter.From), formatStoredTime(filter.To)}
 	if filter.ProjectID != "" {
 		query += " AND project_id = ?"

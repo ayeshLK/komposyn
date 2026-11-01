@@ -149,6 +149,12 @@ func TestMigrationEightRemapsCrossNamespaceSyntheticIDCollisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	statements := []string{
+		`DROP VIEW effective_usage_events`,
+		`DROP TRIGGER current_event_allocations_override_only`,
+		`DROP TRIGGER recovery_runs_no_update`, `DROP TRIGGER recovery_runs_no_delete`,
+		`DROP TRIGGER recovery_allocations_no_update`, `DROP TRIGGER recovery_allocations_no_delete`,
+		`DROP TABLE current_event_allocations`, `DROP TABLE recovery_allocations`, `DROP TABLE recovery_runs`,
+		`DROP TABLE source_allocation_revisions`, `DROP TABLE recovery_meta`,
 		`INSERT INTO projects(id, root, display_name, created_at) SELECT '` + UnattributedSessionID + `', root, display_name, created_at FROM projects WHERE id = 'legacy-project'`,
 		`UPDATE sessions SET project_id = '` + UnattributedSessionID + `' WHERE project_id = 'legacy-project'`,
 		`UPDATE usage_events SET project_id = '` + UnattributedSessionID + `' WHERE project_id = 'legacy-project'`,
@@ -176,7 +182,7 @@ func TestMigrationEightRemapsCrossNamespaceSyntheticIDCollisions(t *testing.T) {
 		`DROP TABLE diagnostic_detail_samples`,
 		`DROP TABLE diagnostic_details`,
 		`DROP TABLE diagnostic_detail_meta`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -244,6 +250,12 @@ func TestMigrationEightRemapsSyntheticIDCollisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	statements := []string{
+		`DROP VIEW effective_usage_events`,
+		`DROP TRIGGER current_event_allocations_override_only`,
+		`DROP TRIGGER recovery_runs_no_update`, `DROP TRIGGER recovery_runs_no_delete`,
+		`DROP TRIGGER recovery_allocations_no_update`, `DROP TRIGGER recovery_allocations_no_delete`,
+		`DROP TABLE current_event_allocations`, `DROP TABLE recovery_allocations`, `DROP TABLE recovery_runs`,
+		`DROP TABLE source_allocation_revisions`, `DROP TABLE recovery_meta`,
 		`INSERT INTO projects(id, root, display_name, created_at) SELECT '` + UnattributedProjectID + `', root, display_name, created_at FROM projects WHERE id = 'legacy-project'`,
 		`UPDATE sessions SET project_id = '` + UnattributedProjectID + `' WHERE project_id = 'legacy-project'`,
 		`UPDATE usage_events SET project_id = '` + UnattributedProjectID + `' WHERE project_id = 'legacy-project'`,
@@ -273,7 +285,7 @@ func TestMigrationEightRemapsSyntheticIDCollisions(t *testing.T) {
 		`DROP TABLE diagnostic_detail_samples`,
 		`DROP TABLE diagnostic_details`,
 		`DROP TABLE diagnostic_detail_meta`,
-		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)`,
+		`DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.db.Exec(statement); err != nil {
@@ -459,6 +471,7 @@ func TestMigrationTenAddsCollectorIdentityMapWithoutChangingCursors(t *testing.T
 	if _, err := store.db.Exec("DROP TABLE collector_source_identities"); err != nil {
 		t.Fatal(err)
 	}
+	removeRecoveryMigrationForTest(t, store.db)
 	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = 10"); err != nil {
 		t.Fatal(err)
 	}

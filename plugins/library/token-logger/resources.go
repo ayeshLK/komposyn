@@ -265,7 +265,7 @@ func (s *Store) ListSessions(projectID string, filter ResourceFilter) (SessionRe
 }
 
 func (s *Store) unattributedProjectEventsExist(filter ResourceFilter) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM usage_events WHERE project_id IS NULL AND occurred_at >= ? AND occurred_at < ?`
+	query := `SELECT EXISTS(SELECT 1 FROM effective_usage_events WHERE project_id IS NULL AND occurred_at >= ? AND occurred_at < ?`
 	args := []any{formatStoredTime(filter.From), formatStoredTime(filter.To)}
 	query, args = appendResourceConditions(query, args, filter)
 	query += ")"
@@ -275,7 +275,7 @@ func (s *Store) unattributedProjectEventsExist(filter ResourceFilter) (bool, err
 }
 
 func (s *Store) missingSessionEventsExist(projectID string, filter ResourceFilter) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM usage_events WHERE session_id IS NULL`
+	query := `SELECT EXISTS(SELECT 1 FROM effective_usage_events WHERE session_id IS NULL`
 	args := []any{}
 	if projectID == UnattributedProjectID {
 		query += " AND project_id IS NULL"
@@ -342,7 +342,7 @@ func (s *Store) activityBounds(column, id, projectID string, filter ResourceFilt
 			condition, args = "session_id IS NULL AND project_id IS NULL", nil
 		}
 	}
-	query := "SELECT MIN(occurred_at), MAX(occurred_at) FROM usage_events WHERE " + condition + " AND occurred_at >= ? AND occurred_at < ?"
+	query := "SELECT MIN(occurred_at), MAX(occurred_at) FROM effective_usage_events WHERE " + condition + " AND occurred_at >= ? AND occurred_at < ?"
 	args = append(args, formatStoredTime(filter.From), formatStoredTime(filter.To))
 	query, args = appendResourceConditions(query, args, filter)
 	var first, last sql.NullString
@@ -369,7 +369,7 @@ func (s *Store) resourceDimensions(column, id, projectID string, filter Resource
 		}
 	}
 	query := `SELECT DISTINCT client_name, CASE WHEN resolved_model <> '' THEN resolved_model ELSE requested_model END
-		FROM usage_events WHERE ` + condition + ` AND occurred_at >= ? AND occurred_at < ?`
+		FROM effective_usage_events WHERE ` + condition + ` AND occurred_at >= ? AND occurred_at < ?`
 	args = append(args, formatStoredTime(filter.From), formatStoredTime(filter.To))
 	query, args = appendResourceConditions(query, args, filter)
 	rows, err := s.db.Query(query, args...)

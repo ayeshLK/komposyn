@@ -377,6 +377,14 @@ func (s *Store) migrate() (resultErr error) {
 			return fmt.Errorf("record migration 18: %w", err)
 		}
 	}
+	if applied < 19 {
+		if _, err := tx.Exec(schemaMigrationNineteenRecoveryAllocations); err != nil {
+			return fmt.Errorf("apply migration 19: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 19, formatStoredTime(time.Now())); err != nil {
+			return fmt.Errorf("record migration 19: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
 	}
@@ -805,7 +813,7 @@ func (s *Store) existingCodexLegacyEventUsage(sourceID string, keys []string) (m
 			args = append(args, key)
 		}
 		query := `SELECT ingestion_key, input_tokens, output_tokens, cache_read_tokens,
-			cache_write_tokens, reasoning_tokens FROM usage_events
+			cache_write_tokens, reasoning_tokens FROM effective_usage_events
 			WHERE source_adapter = 'codex' AND source_id = ? AND event_id LIKE 'codex-event-%'
 			AND ingestion_key IN (` + placeholders + `)`
 		rows, err := s.db.Query(query, args...)
@@ -1320,7 +1328,7 @@ func cursorInTransaction(tx *sql.Tx, sourceID string) (Cursor, error) {
 // EventCount returns the number of persisted usage events.
 func (s *Store) EventCount() (int, error) {
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM usage_events").Scan(&count)
+	err := s.db.QueryRow("SELECT COUNT(*) FROM effective_usage_events").Scan(&count)
 	return count, err
 }
 
