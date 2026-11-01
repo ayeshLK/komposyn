@@ -96,6 +96,10 @@ func (s *Store) ApplyCodexRecovery(ctx context.Context, sourcePath, expectedPlan
 		if receipt, found, receiptErr := recoveryReceipt(s.db, expectedPlanToken); receiptErr == nil && found {
 			return receipt, nil
 		}
+		var recoveryErr *CodexRecoveryError
+		if errors.As(err, &recoveryErr) && (recoveryErr.Reason == CodexRecoveryReasonLimitExceeded || recoveryErr.Reason == CodexRecoveryReasonSourceChanged) {
+			return refuse(CodexRecoveryReasonStalePreview)
+		}
 		return CodexRecoveryReceipt{}, err
 	}
 	if !hmac.Equal([]byte(preview.PlanToken), []byte(expectedPlanToken)) {
@@ -124,7 +128,7 @@ func (s *Store) ApplyCodexRecovery(ctx context.Context, sourcePath, expectedPlan
 	} else if found {
 		return receipt, nil
 	}
-	if err := verifyRecoverySnapshotFile(ctx, sourcePath, prepared.snapshot); err != nil {
+	if err := verifyRecoverySnapshotFile(ctx, sourcePath, prepared.snapshot, s.sourceReadHook); err != nil {
 		return refuse(CodexRecoveryReasonStalePreview)
 	}
 	if err := recoveryStoreStateMatches(tx, prepared.snapshot); err != nil {
@@ -264,12 +268,16 @@ func recoveryReceipt(queryer allocationRevisionQueryer, planToken string) (Codex
 	return receipt, true, nil
 }
 
-func verifyRecoverySnapshotFile(ctx context.Context, path string, snapshot sourceSnapshot) error {
+func verifyRecoverySnapshotFile(ctx context.Context, path string, snapshot sourceSnapshot, hook func(int, int64)) error {
 	if _, err := snapshot.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	stream := newSourceStreamReader(ctx, snapshot.file, nil, nil, nil, 1)
+	stream := newSourceStreamReader(ctx, snapshot.file, nil, nil, hook, 4)
+	stream.maxBytes = min(snapshot.byteLength, int64(CodexRecoveryMaxSnapshotBytes))
 	if _, err := io.Copy(io.Discard, stream); err != nil {
+		if errors.Is(err, errSourceReadLimitExceeded) {
+			return errSourceSnapshotChanged
+		}
 		return err
 	}
 	if err := ctx.Err(); err != nil {
