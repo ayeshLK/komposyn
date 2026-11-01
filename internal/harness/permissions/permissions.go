@@ -44,18 +44,20 @@ const (
 type Operation string
 
 const (
-	OperationRead    Operation = "read"
-	OperationWrite   Operation = "write"
-	OperationDelete  Operation = "delete"
-	OperationExecute Operation = "execute"
-	OperationNetwork Operation = "network"
+	OperationRead     Operation = "read"
+	OperationWrite    Operation = "write"
+	OperationDelete   Operation = "delete"
+	OperationExecute  Operation = "execute"
+	OperationNetwork  Operation = "network"
+	OperationInteract Operation = "interact"
 )
 
 type ResourceKind string
 
 const (
-	ResourceFilesystem ResourceKind = "filesystem"
-	ResourceNetwork    ResourceKind = "network"
+	ResourceFilesystem   ResourceKind = "filesystem"
+	ResourceNetwork      ResourceKind = "network"
+	ResourceConversation ResourceKind = "conversation"
 )
 
 type RequirementKind string
@@ -163,7 +165,7 @@ func (e Evaluator) Evaluate(request Request) Decision {
 		keyCounts[requirement.Key]++
 	}
 	for _, requirement := range request.Requirements {
-		if !validRequirement(requirement) || keyCounts[requirement.Key] != 1 {
+		if !validRequirement(requirement) || keyCounts[requirement.Key] != 1 || requirement.Resource != nil && requirement.Resource.Kind == ResourceConversation && requirement.Resource.Target != request.ConversationID {
 			decision.Denied = append(decision.Denied, requirement)
 			continue
 		}
@@ -298,7 +300,7 @@ func (s *MemoryStore) AddMany(grants []Grant) error {
 		if grant.ID == "" || grant.ConversationID == "" || grant.ToolID == "" || !validOperation(grant.Operation) || grant.Origin == "" || (grant.Kind != RequirementAction && grant.Kind != RequirementResource) {
 			return ErrInvalidGrant
 		}
-		if grant.Kind == RequirementAction && (grant.Resource != nil || grant.ResourceTarget != "" || grant.ActionKey == "") || grant.Kind == RequirementResource && (grant.Resource == nil || grant.ResourceTarget == "" || grant.ActionKey != "" || !validScope(*grant.Resource) || !containsOperation(grant.Resource.Operations, grant.Operation) || !validResourceRequest(ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation}) || !scopeCovers(*grant.Resource, ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation})) {
+		if grant.Kind == RequirementAction && (grant.Resource != nil || grant.ResourceTarget != "" || grant.ActionKey == "") || grant.Kind == RequirementResource && (grant.Resource == nil || grant.ResourceTarget == "" || grant.ActionKey != "" || !validScope(*grant.Resource) || !containsOperation(grant.Resource.Operations, grant.Operation) || !validResourceRequest(ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation}) || !scopeCovers(*grant.Resource, ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation}) || grant.Resource.Kind == ResourceConversation && (grant.ConversationID != grant.ResourceTarget || grant.Resource.Root != grant.ConversationID)) {
 			return ErrInvalidGrant
 		}
 		if grant.Lifetime == LifetimeOnce {
@@ -352,13 +354,15 @@ func validResourceRequest(request ResourceRequest) bool {
 	}
 	switch request.Kind {
 	case ResourceFilesystem:
-		return request.Operation != OperationNetwork && filepath.IsAbs(request.Target) && filepath.Clean(request.Target) == request.Target
+		return request.Operation != OperationNetwork && request.Operation != OperationInteract && filepath.IsAbs(request.Target) && filepath.Clean(request.Target) == request.Target
 	case ResourceNetwork:
 		if request.Operation != OperationNetwork {
 			return false
 		}
 		_, err := normalizeOrigin(request.Target)
 		return err == nil
+	case ResourceConversation:
+		return request.Operation == OperationInteract && request.Target != ""
 	default:
 		return false
 	}
@@ -366,7 +370,7 @@ func validResourceRequest(request ResourceRequest) bool {
 
 func validOperation(operation Operation) bool {
 	switch operation {
-	case OperationRead, OperationWrite, OperationDelete, OperationExecute, OperationNetwork:
+	case OperationRead, OperationWrite, OperationDelete, OperationExecute, OperationNetwork, OperationInteract:
 		return true
 	default:
 		return false
@@ -518,10 +522,12 @@ func validScope(scope ResourceScope) bool {
 	}
 	switch scope.Kind {
 	case ResourceFilesystem:
-		return filepath.IsAbs(scope.Root) && filepath.Clean(scope.Root) == scope.Root && !containsOperation(scope.Operations, OperationNetwork)
+		return filepath.IsAbs(scope.Root) && filepath.Clean(scope.Root) == scope.Root && !containsOperation(scope.Operations, OperationNetwork) && !containsOperation(scope.Operations, OperationInteract)
 	case ResourceNetwork:
 		_, err := normalizeOrigin(scope.Root)
 		return err == nil && isNetworkOrigin(scope.Root) && !scope.Recursive && len(scope.Operations) == 1 && scope.Operations[0] == OperationNetwork
+	case ResourceConversation:
+		return !scope.Recursive && len(scope.Operations) == 1 && scope.Operations[0] == OperationInteract
 	default:
 		return false
 	}
@@ -551,6 +557,8 @@ func scopeCovers(scope ResourceScope, request ResourceRequest) bool {
 		}
 		target, err := normalizeOrigin(request.Target)
 		return err == nil && root == target
+	case ResourceConversation:
+		return !scope.Recursive && scope.Root != "" && scope.Root == request.Target && request.Operation == OperationInteract
 	default:
 		return false
 	}

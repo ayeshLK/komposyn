@@ -80,6 +80,7 @@ type ToolActivity struct {
 	CallID, ToolID, Phase, Outcome, Message string
 	Truncated                               bool
 }
+type PlanStep struct{ Step, Status string }
 type ApprovalChoice string
 
 const (
@@ -110,6 +111,30 @@ type ApprovalResponse struct {
 }
 type ToolGrant struct{ ID, ToolID, Action, ResourceKind, ResourceScope, Operation, Lifetime, Origin string }
 
+type ClarificationChoice string
+
+const (
+	ClarificationAnswer  ClarificationChoice = "answer"
+	ClarificationDecline ClarificationChoice = "decline"
+	ClarificationCancel  ClarificationChoice = "cancel"
+)
+
+type SuggestedAnswer struct{ Label, Description string }
+type ClarificationRequest struct {
+	ID, ConversationID, Question string
+	MaxAnswerBytes               int
+	Options                      []SuggestedAnswer
+}
+type ClarificationEvent struct {
+	Request     *ClarificationRequest
+	DismissedID string
+}
+type ClarificationResponse struct {
+	ID, ConversationID string
+	Choice             ClarificationChoice
+	Answer             string
+}
+
 // MetricUsage retains exact reported counts and marks incomplete coverage.
 // A count may be known and partial when some requests omitted that metric.
 type MetricUsage struct {
@@ -131,6 +156,7 @@ type Snapshot struct {
 	Usage          []ModelUsage
 	Active         bool
 	ToolActivities []ToolActivity
+	Plan           []PlanStep
 	Version        string
 }
 
@@ -151,6 +177,8 @@ type Client interface {
 	Cancel()
 	ApprovalEvents() <-chan ApprovalEvent
 	RespondApproval(ApprovalResponse) error
+	ClarificationEvents() <-chan ClarificationEvent
+	RespondClarification(ClarificationResponse) error
 	Permissions(context.Context) ([]ToolGrant, error)
 	RevokePermission(context.Context, string) error
 	ClearPermissions(context.Context) (int, error)

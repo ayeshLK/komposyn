@@ -132,6 +132,43 @@ func TestApprovalCoordinatorSessionScopeAndDeleteRestriction(t *testing.T) {
 	}
 }
 
+func TestConversationToolApprovalSupportsOnceAndConversationLifetime(t *testing.T) {
+	for _, choice := range []ApprovalChoice{ApprovalOnce, ApprovalConversation} {
+		store := NewMemoryStore()
+		coordinator := NewCoordinator(Evaluator{}, store)
+		resource := ResourceRequest{Kind: ResourceConversation, Target: "opaque-conversation-a", Operation: OperationInteract}
+		request := Request{ConversationID: resource.Target, CallID: "call", Requirements: []Requirement{
+			{Kind: RequirementAction, Key: "action", ToolID: "request_user_input", Operation: OperationInteract, ActionKey: "request-digest", SessionAllowed: true},
+			{Kind: RequirementResource, Key: "conversation", ToolID: "request_user_input", Operation: OperationInteract, Resource: &resource, SessionAllowed: true},
+		}}
+		pending, _, err := coordinator.Begin(request)
+		if err != nil || pending.ID == "" {
+			t.Fatalf("begin choice=%s pending=%+v err=%v", choice, pending, err)
+		}
+		response, err := coordinator.Respond(pending.ID, choice, "")
+		if err != nil || response.Outcome != ApprovalGranted || !response.Decision.Ready() {
+			t.Fatalf("response choice=%s response=%+v err=%v", choice, response, err)
+		}
+		if decision := (Evaluator{Grants: store}).Evaluate(request); !decision.Ready() {
+			t.Fatalf("approved call not authorized for choice=%s: %+v", choice, decision)
+		}
+		cross := cloneRequest(request)
+		cross.ConversationID = "opaque-conversation-b"
+		cross.Requirements[1].Resource.Target = "opaque-conversation-b"
+		if decision := (Evaluator{Grants: store}).Evaluate(cross); decision.Ready() {
+			t.Fatalf("choice=%s grant crossed conversation: %+v", choice, decision)
+		}
+		if choice == ApprovalOnce {
+			if err := store.ConsumeOnceMatchingAtRevision(request, response.Decision.Revision); err != nil {
+				t.Fatalf("consume once grant: %v", err)
+			}
+			if decision := (Evaluator{Grants: store}).Evaluate(request); decision.Ready() {
+				t.Fatalf("once grant remained reusable: %+v", decision)
+			}
+		}
+	}
+}
+
 func TestApprovalCoordinatorRejectsStaleRedirectAndClearsPending(t *testing.T) {
 	store := NewMemoryStore()
 	coordinator := NewCoordinator(Evaluator{}, store)

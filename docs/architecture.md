@@ -21,10 +21,13 @@ contains and releases a separate experimental temporary-chat executable named
 `komposyn`; see the [chat architecture](harness/phase-one-architecture.md) and
 [release verification](release-verification.md).
 
-Issue #198 tracks a separate experimental tool-use milestone. Its initial
-contract and in-memory permission foundation are under development; this
-foundation enables no tool execution, sandbox backend, or web service. The
-milestone does not establish a general harness runtime or plugin API.
+Issue #198 tracks a separate experimental tool-use milestone. The temporary
+chat currently enables only the bundled conversation-local `update_plan` and
+`request_user_input` tools on explicitly supported provider/auth routes. They
+use centralized action and exact conversation-resource authorization and keep
+their state in memory. Filesystem, process, web, and image tools remain
+unavailable. This milestone does not establish a general harness runtime or
+plugin API.
 
 ```mermaid
 flowchart LR
