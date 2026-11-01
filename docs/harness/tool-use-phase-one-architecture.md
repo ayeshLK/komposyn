@@ -234,7 +234,10 @@ precedence, recursive scope matching, once/conversation grants, revocation,
 atomic once-grant consumption, and a coordinator for one combined pending
 approval bound to the request and grant revision. Focused unit tests exercise
 these contracts, including stale responses and deletion's once-only rule. It
-does not yet implement the permission UI, provider tool protocol, runtime
-dispatch, enforcement, or tool implementations. No shell, web, mutation, or
-image tool is registered until dependencies and enforcement pass their
-acceptance tests.
+does not yet implement the permission UI, runtime dispatch, enforcement, or
+tool implementations. A separate protocol-only dependency change adds provider
+tool-call encoding and continuation for OpenAI API-key Responses and Anthropic
+Messages routes; OpenAI OAuth remains unknown and must not receive tool
+definitions. This protocol support does not make tools available in chat. No
+shell, web, mutation, or image tool is registered until runtime authorization
+and enforcement pass their acceptance tests.

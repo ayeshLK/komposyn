@@ -172,7 +172,7 @@ func TestCompletedEventUnsupportedOutputUsesBoundedDiagnostic(t *testing.T) {
 		name, output string
 		code         p.DiagnosticCode
 	}{
-		{"function call", `{"type":"function_call","name":"private-tool-name","arguments":"private arguments"}`, p.DiagnosticOpenAICompletedFunctionCall},
+		{"malformed function call", `{"type":"function_call","name":"private-tool-name","arguments":"private arguments"}`, p.DiagnosticToolProtocolInvalid},
 		{"unknown output", `{"type":"private-output-kind"}`, p.DiagnosticOpenAICompletedOtherOutputItem},
 		{"unknown content", `{"type":"message","role":"assistant","content":[{"type":"private-content-kind","text":"private response text"}]}`, p.DiagnosticOpenAICompletedOtherContent},
 	} {
