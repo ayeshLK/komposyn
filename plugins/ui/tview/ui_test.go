@@ -277,8 +277,7 @@ func TestClarificationRequiresExplicitAnswerDeclineOrCancel(t *testing.T) {
 		t.Fatalf("silence or suggestion focus submitted an answer: %+v", response)
 	case <-time.After(80 * time.Millisecond):
 	}
-	press(tcell.KeyRune, 'x') // The guard consumes any key that was already queued when the dialog appeared.
-	press(tcell.KeyTab, 0)    // Focus the suggestion list; no option is accepted merely by focus.
+	press(tcell.KeyTab, 0) // Focus the suggestion list; no option is accepted merely by focus.
 	press(tcell.KeyEnter, 0)
 	select {
 	case response := <-responses:
@@ -297,7 +296,6 @@ func TestClarificationRequiresExplicitAnswerDeclineOrCancel(t *testing.T) {
 		t.Fatalf("free-text prompt submitted without input: %+v", response)
 	case <-time.After(60 * time.Millisecond):
 	}
-	press(tcell.KeyRune, 'x') // Guard key is not inserted into the answer field.
 	answer := "  literal [green] 雪  "
 	for _, r := range answer {
 		press(tcell.KeyRune, r)
@@ -316,7 +314,6 @@ func TestClarificationRequiresExplicitAnswerDeclineOrCancel(t *testing.T) {
 
 	events <- ui.ClarificationEvent{Request: &ui.ClarificationRequest{ID: "request-decline", ConversationID: "conversation-a", Question: "Decline this?", MaxAnswerBytes: 4096}}
 	waitForScreen(t, safe, "Decline this?", "")
-	press(tcell.KeyTab, 0) // First key is guarded.
 	press(tcell.KeyTab, 0) // Input -> action form.
 	press(tcell.KeyTab, 0) // Submit -> Decline.
 	press(tcell.KeyEnter, 0)
@@ -384,7 +381,6 @@ func TestPermissionsRemainReachableDuringClarificationWait(t *testing.T) {
 		screen.InjectKey(key, 0, tcell.ModNone)
 		time.Sleep(30 * time.Millisecond)
 	}
-	press(tcell.KeyTab) // The initial-key guard consumes the first event.
 	press(tcell.KeyTab) // Input -> action form.
 	press(tcell.KeyTab) // Submit -> Decline.
 	press(tcell.KeyTab) // Decline -> Cancel.

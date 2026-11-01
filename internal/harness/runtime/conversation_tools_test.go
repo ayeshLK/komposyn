@@ -123,6 +123,26 @@ func TestBundledConversationToolsAuthorizeExecuteAndContinue(t *testing.T) {
 	}
 }
 
+func TestUpdatePlanToolClearsExistingPlanWithEmptyArray(t *testing.T) {
+	plans := NewConversationPlans()
+	tool := &updatePlanTool{plans: conversationPlanUpdater{plans: plans}}
+	if err := plans.Replace("conversation", []tools.PlanStep{{Step: "existing step", Status: tools.PlanInProgress}}); err != nil {
+		t.Fatal(err)
+	}
+	result := tool.Execute(context.Background(), tools.Invocation{
+		ConversationID: "conversation",
+		ProviderCallID: "clear-call",
+		ToolID:         tools.UpdatePlanID,
+		Arguments:      json.RawMessage(`{"plan":[]}`),
+	})
+	if result.Outcome != tools.OutcomeSucceeded || result.ErrorCode != "" {
+		t.Fatalf("empty-plan update result = %+v", result)
+	}
+	if got := plans.Snapshot("conversation"); got == nil || len(got) != 0 {
+		t.Fatalf("empty-plan update snapshot = %#v, want non-nil empty plan", got)
+	}
+}
+
 func TestClarificationDeclineContinuesAndCancelStopsProvider(t *testing.T) {
 	for _, test := range []struct {
 		name        string

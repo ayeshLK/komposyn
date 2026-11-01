@@ -115,7 +115,9 @@ func ParseUpdatePlan(raw []byte) (UpdatePlanInput, error) {
 	if inProgress > 1 || textBytes > MaxPlanTextBytes {
 		return UpdatePlanInput{}, errors.New("plan exceeds its status or text bound")
 	}
-	input.Plan = append([]PlanStep(nil), input.Plan...)
+	// Keep an explicit empty array distinct from a missing/null plan. Empty
+	// means clear the current plan and must survive the store validation pass.
+	input.Plan = append(make([]PlanStep, 0, len(input.Plan)), input.Plan...)
 	return input, nil
 }
 

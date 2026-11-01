@@ -172,6 +172,7 @@ type terminal struct {
 	clarificationRequest         *ui.ClarificationRequest
 	clarificationGuard           atomic.Bool
 	clarificationStatus          *tv.TextView
+	clarificationAnswer          *tv.TextArea
 	permissionGrants             []ui.ToolGrant
 	activitySeen                 map[string]bool
 	permissionsFromApproval      bool
@@ -321,8 +322,16 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 				}
 				return nil
 			}
-			if u.clarificationGuard.Swap(false) {
-				return nil
+			if u.clarificationGuard.Load() {
+				// Ignore only a potentially stale acceptance key while focus is
+				// outside the answer editor. Ordinary input and cancellation must
+				// work immediately after the clarification appears.
+				focus := u.app.GetFocus()
+				accept := event.Key() == tcell.KeyEnter || (event.Key() == tcell.KeyRune && event.Rune() == ' ')
+				u.clarificationGuard.Store(false)
+				if accept && focus != u.clarificationAnswer {
+					return nil
+				}
 			}
 			if event.Key() == tcell.KeyCtrlC {
 				u.client.Cancel()
@@ -1809,6 +1818,7 @@ func (u *terminal) showClarification(request *ui.ClarificationRequest) {
 	question.SetBorder(true).SetTitle(" Clarification · choose an answer or enter free text ")
 	u.clarificationStatus = tv.NewTextView().SetDynamicColors(false)
 	answer := newComposerInput().SetLabel("Your answer: ")
+	u.clarificationAnswer = answer
 	options := tv.NewList().ShowSecondaryText(true)
 	for _, option := range request.Options {
 		selected := option
@@ -1887,6 +1897,7 @@ func (u *terminal) answerClarification(choice ui.ClarificationChoice, answer str
 	}
 	u.clarificationRequest = nil
 	u.clarificationStatus = nil
+	u.clarificationAnswer = nil
 	u.returnToChat()
 }
 
@@ -1895,6 +1906,7 @@ func (u *terminal) dismissClarification(id string) {
 		return
 	}
 	u.clarificationRequest = nil
+	u.clarificationAnswer = nil
 	if !u.permissionsVisible {
 		u.returnToChat()
 	} else {

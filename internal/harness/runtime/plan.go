@@ -49,7 +49,7 @@ func (p *ConversationPlans) Replace(conversationID string, steps []tools.PlanSte
 	if err != nil {
 		return err
 	}
-	copy := append([]tools.PlanStep(nil), validated.Plan...)
+	copy := append(make([]tools.PlanStep, 0, len(validated.Plan)), validated.Plan...)
 	p.mu.Lock()
 	if p.plans == nil {
 		p.plans = make(map[string][]tools.PlanStep)
@@ -70,7 +70,11 @@ func (p *ConversationPlans) Snapshot(conversationID string) []tools.PlanStep {
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return append([]tools.PlanStep(nil), p.plans[conversationID]...)
+	steps, exists := p.plans[conversationID]
+	if !exists {
+		return nil
+	}
+	return append(make([]tools.PlanStep, 0, len(steps)), steps...)
 }
 
 // Clear removes one conversation plan. It is used on confirmed reset and
