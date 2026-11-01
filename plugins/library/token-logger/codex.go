@@ -278,18 +278,25 @@ func importCodexSnapshotAttempt(ctx context.Context, contents []byte, store *Sto
 
 func importCodexReaderAttempt(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
 	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
-	return importCodexReaderAttemptWithCheckpoint(ctx, source, store, baseSourceID, expectedCursor, fingerprint, generation, classifier, verify, nil)
+	return importCodexReaderAttemptWithCheckpoint(ctx, source, store, baseSourceID, expectedCursor, fingerprint, generation, classifier, verify, nil, nil)
 }
 
 func importCodexReaderContinuation(ctx context.Context, source io.Reader, store *Store, snapshot sourceSnapshot,
 	classifier *adapterClassifier, verify func(int64) error) (ImportResult, bool, error) {
 	options := &parserContinuationOptions{snapshot: snapshot, allowResume: snapshot.checkpointUsable}
 	return importCodexReaderAttemptWithCheckpoint(ctx, source, store, snapshot.baseSourceID, snapshot.expectedCursor,
-		snapshot.fingerprint, snapshot.generation, classifier, verify, options)
+		snapshot.fingerprint, snapshot.generation, classifier, verify, options, nil)
+}
+
+func importCodexReaderForRecovery(ctx context.Context, source io.Reader, store *Store, snapshot sourceSnapshot,
+	verify func(int64) error, captured *[]UsageEvent) (ImportResult, bool, error) {
+	return importCodexReaderAttemptWithCheckpoint(ctx, source, store, snapshot.baseSourceID, snapshot.expectedCursor,
+		snapshot.fingerprint, snapshot.generation, nil, verify, nil, captured)
 }
 
 func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reader, store *Store, baseSourceID string, expectedCursor sourceCursorExpectation,
-	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error, options *parserContinuationOptions) (ImportResult, bool, error) {
+	fingerprint string, generation int64, classifier *adapterClassifier, verify func(int64) error, options *parserContinuationOptions,
+	captured *[]UsageEvent) (ImportResult, bool, error) {
 	sourceID := generationSourceID(baseSourceID, generation)
 	result := ImportResult{}
 	var offset int64
@@ -604,6 +611,10 @@ func importCodexReaderAttemptWithCheckpoint(ctx context.Context, source io.Reade
 	}
 	if options != nil && !boundaryCaptured {
 		return ImportResult{}, true, errSourceSnapshotChanged
+	}
+	if captured != nil {
+		*captured = append((*captured)[:0], events...)
+		return result, false, nil
 	}
 	var suppressedLegacyAttempts []codexLegacyEventAttempt
 	if expectedCursor.exists && len(legacyEventAttempts) > 0 {

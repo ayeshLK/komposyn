@@ -72,7 +72,21 @@ The core workflow is intentionally split into three reviewable changes:
    receipt on retry. Diagnostics and observer delivery remain best effort and
    cannot undo or retry committed accounting.
 
-Until stage 3 is available, no production recovery writer exists.
+Stage 2 exposes `(*Store).PrepareCodexRecovery(ctx, sourcePath)` and a typed
+`CodexRecoveryError` with controlled refusal reasons. It uses the existing
+Codex parser in a capture-only mode, resolves project/session aliases through
+already stored identity mappings, and performs no Store writes. It requires an
+existing cursor and source identity. It does not allocate missing identities.
+The exact bounded preview currently includes the seven-category before/after
+totals, ordinary request counts, changed event references, affected model and
+session counts, and the UTC extent of changes. The evidence-bound plan token is
+domain separated and keyed by the persistent recovery namespace. The canonical
+binding includes every parsed event, its stable identity and provenance, base
+and effective vectors, the complete snapshot digest, source identity,
+generation, cursor/checkpoint expectations, parser/algorithm revisions, and
+allocation revision.
+
+Stage 3 remains unavailable: there is still no production recovery writer.
 
 ## Eligibility and refusal
 
@@ -141,6 +155,9 @@ Stage 1 is implemented by the current PR: migration 19 and the effective
 accounting projection are present. Stage 2 and stage 3 are follow-on stacked
 PRs; until they are reviewed and integrated, there is no public recovery
 preview or apply API. The accepted resource limits and eligibility rules above
-are the design contract; later implementation documentation must identify any
-validated final constants or explicit limitation rather than silently
-weakening them.
+are implemented as `CodexRecoveryMaxSnapshotBytes` (64 MiB),
+`CodexRecoveryMaxRecords` (100,000), `CodexRecoveryMaxChanges` (10,000), and
+`CodexRecoveryMaxPlanBytes` (16 MiB). No applicable preview is truncated; a
+bound breach returns a controlled refusal. The current parser capture retains
+at most 100,000 normalized events in memory, in addition to the bounded source
+stream reader.
