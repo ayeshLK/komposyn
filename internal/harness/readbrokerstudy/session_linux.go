@@ -49,23 +49,24 @@ type fixtureSession struct {
 }
 
 type readOperation struct {
-	id               string
-	gen              GenerationSet
-	state            OperationState
-	worker           SandboxWorker
-	cancel           context.CancelFunc
-	revoked          bool
-	released         bool
-	workerJoined     bool
-	cleanupRequired  bool
-	evidenceRecorded bool
-	waitOnce         sync.Once
-	waitDone         chan struct{}
-	waitErr          error
-	completed        bool
-	done             chan struct{}
-	probe            WorkerProbe
-	evidence         ReadEvidence
+	id                string
+	gen               GenerationSet
+	state             OperationState
+	worker            SandboxWorker
+	cancel            context.CancelFunc
+	revoked           bool
+	released          bool
+	workerJoined      bool
+	cleanupRequired   bool
+	cleanupObligation bool
+	evidenceRecorded  bool
+	waitOnce          sync.Once
+	waitDone          chan struct{}
+	waitErr           error
+	completed         bool
+	done              chan struct{}
+	probe             WorkerProbe
+	evidence          ReadEvidence
 }
 
 var _ FixtureSession = (*fixtureSession)(nil)
@@ -471,6 +472,7 @@ func (s *fixtureSession) invalidateLocked(selectOp func(*readOperation) bool) []
 		}
 		op.revoked = true
 		op.cancel()
+		op.cleanupObligation = true
 		if op.state != StateJoined {
 			op.state = StateTerminating
 			s.cleanupBlocked = true
@@ -485,7 +487,7 @@ func (s *fixtureSession) invalidateLocked(selectOp func(*readOperation) bool) []
 func (s *fixtureSession) refreshCleanupBarrierLocked() {
 	s.cleanupBlocked = false
 	for _, op := range s.active {
-		if op.state == StateTerminating && !op.workerJoined {
+		if op.cleanupObligation && !op.workerJoined {
 			s.cleanupBlocked = true
 			return
 		}
@@ -570,6 +572,7 @@ func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
 	s.mu.Lock()
 	if op.cleanupRequired && !op.workerJoined {
 		s.cleanupBlocked = true
+		op.cleanupObligation = true
 		op.state = StateTerminating
 		op.completed = false
 		op.evidence.Outcome = ReadUnknown
@@ -583,6 +586,7 @@ func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
 			}
 			other.revoked = true
 			other.cancel()
+			other.cleanupObligation = true
 			other.state = StateTerminating
 			if other.worker != nil {
 				terminate = append(terminate, other.worker)

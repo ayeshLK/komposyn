@@ -33,26 +33,29 @@ import (
 // duplicated capability in this process and MUST NOT be counted as sandbox
 // enforcement evidence. Native cases use the real Bubblewrap WorkerLauncher.
 type fakeWorker struct {
-	mu              sync.Mutex
-	capability      *os.File
-	identity        FileIdentity
-	result          WorkerResult
-	started         bool
-	transferred     bool
-	readStarted     bool
-	terminated      bool
-	joined          bool
-	transferErr     error
-	readStartedErr  error
-	resultErr       error
-	resultOverride  *WorkerResult
-	terminateErr    error
-	waitErr         error
-	joinUnconfirmed bool
-	waitEntered     chan struct{}
-	waitRelease     chan struct{}
-	waitEnteredOnce sync.Once
-	waitCalls       int
+	mu               sync.Mutex
+	capability       *os.File
+	identity         FileIdentity
+	result           WorkerResult
+	started          bool
+	transferred      bool
+	readStarted      bool
+	terminated       bool
+	joined           bool
+	transferErr      error
+	readStartedErr   error
+	resultErr        error
+	resultOverride   *WorkerResult
+	terminateErr     error
+	waitErr          error
+	joinUnconfirmed  bool
+	waitEntered      chan struct{}
+	waitRelease      chan struct{}
+	waitEnteredOnce  sync.Once
+	waitCalls        int
+	ackReturnEntered chan struct{}
+	ackReturnRelease chan struct{}
+	ackReturnOnce    sync.Once
 }
 
 func (w *fakeWorker) Ready(ctx context.Context) error {
@@ -110,11 +113,12 @@ func (w *fakeWorker) AwaitReadStarted(ctx context.Context) error {
 		return err
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.readStartedErr != nil {
+		defer w.mu.Unlock()
 		return w.readStartedErr
 	}
 	if w.capability == nil || !w.transferred {
+		defer w.mu.Unlock()
 		return ErrProtocol
 	}
 	data := make([]byte, MaxReadBytes+1)
@@ -131,6 +135,17 @@ func (w *fakeWorker) AwaitReadStarted(ctx context.Context) error {
 		w.result = cloneWorkerResult(*w.resultOverride)
 	}
 	w.readStarted = true
+	entered, release := w.ackReturnEntered, w.ackReturnRelease
+	w.mu.Unlock()
+	if entered != nil {
+		w.ackReturnOnce.Do(func() { close(entered) })
+	}
+	if release != nil {
+		// The controlled fake reports a successful acknowledgement even if
+		// cancellation races the return, matching the coordinator edge under
+		// review. The next coordinator state check must observe invalidation.
+		<-release
+	}
 	return nil
 }
 
@@ -617,6 +632,111 @@ func TestRootChangeBlocksAdmissionUntilInvalidatedWorkerJoins(t *testing.T) {
 	}
 	if fixture.launcher.starts != 2 || len(fixture.session.PublishedResults()) != 1 {
 		t.Fatal("admission did not resume exactly once after cleanup confirmation")
+	}
+}
+
+func TestCleanupBarrierSurvivesInvalidatedWorkerStateTransition(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	paths := []string{
+		filepath.Join(rootA, "read-a.fixture"),
+		filepath.Join(rootA, "read-b.fixture"),
+		filepath.Join(rootB, "read-c.fixture"),
+	}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("state transition fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture := newSessionFixture(t, rootA)
+	workerA := fixture.worker
+	workerA.resultOverride = &WorkerResult{Outcome: ReadFailed}
+	workerA.ackReturnEntered = make(chan struct{})
+	workerA.ackReturnRelease = make(chan struct{})
+	workerA.waitEntered = make(chan struct{})
+	workerA.waitRelease = make(chan struct{})
+	workerB := &fakeWorker{}
+	workerC := &fakeWorker{}
+	fixture.launcher.mu.Lock()
+	fixture.launcher.workers = []*fakeWorker{workerA, workerB, workerC}
+	fixture.launcher.mu.Unlock()
+	hookEntered := make(chan struct{})
+	hookRelease := make(chan struct{})
+	fixture.session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		if checkpoint == CheckpointAfterCapture {
+			close(hookEntered)
+			<-hookRelease
+		}
+		return nil
+	})
+	if err := fixture.authorizer.ApproveOnce("state-read-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.authorizer.ApproveOnce("state-read-b"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	readADone := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), rootA, paths[0], "state-read-a")
+		readADone <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-workerA.ackReturnEntered:
+	case <-time.After(time.Second):
+		t.Fatal("read A did not reach the successful acknowledgement return gate")
+	}
+	readBDone := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), rootA, paths[1], "state-read-b")
+		readBDone <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-hookEntered:
+	case <-time.After(time.Second):
+		t.Fatal("read B did not reach the post-capture gate")
+	}
+	if err := fixture.session.SelectRoot(rootB); !errors.Is(err, ErrCleanupPending) {
+		t.Fatalf("root change error=%v, want pending cleanup", err)
+	}
+	close(workerA.ackReturnRelease)
+	select {
+	case <-workerA.waitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("read A did not reach its blocked Wait after acknowledgement")
+	}
+	close(hookRelease)
+	select {
+	case got := <-readBDone:
+		if got.err != nil || got.result.Outcome != ReadCancelled {
+			t.Fatalf("read B=(%q,%v), want cancellation after root change", got.result.Outcome, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("read B did not finish after release")
+	}
+	if err := fixture.authorizer.ApproveOnce("state-read-blocked"); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := fixture.session.Read(context.Background(), rootB, paths[2], "state-read-blocked")
+	if err != nil || blocked.Outcome != ReadNotExecuted || fixture.launcher.starts != 2 {
+		t.Fatalf("new-root read while A is still unjoined=(%q,%v), starts=%d", blocked.Outcome, err, fixture.launcher.starts)
+	}
+	close(workerA.waitRelease)
+	select {
+	case <-readADone:
+	case <-time.After(time.Second):
+		t.Fatal("read A did not finish after join")
+	}
+	fixture.session.SetCheckpointHook(nil)
+	if err := fixture.authorizer.ApproveOnce("state-read-after-join"); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := fixture.session.Read(context.Background(), rootB, paths[2], "state-read-after-join")
+	if err != nil || accepted.Outcome != ReadSucceeded || fixture.launcher.starts != 3 {
+		t.Fatalf("new-root read after A joins=(%q,%v), starts=%d", accepted.Outcome, err, fixture.launcher.starts)
 	}
 }
 
