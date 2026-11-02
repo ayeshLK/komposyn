@@ -332,7 +332,8 @@ func (r *Registry) InspectRegisteredLocations(candidate FileIdentity) (ResourceC
 // directory location. A directory pin is not a descendant inventory: on the
 // same filesystem, an unregistered child could have been moved or hard-linked
 // outside the directory before preparation. Exact pinned regular-file
-// identities remain classifiable by their own policy registration.
+// identities are exempt only when their registration is at least as strong
+// as every potentially covering protected-directory registration.
 func (r *Registry) DirectoryCoverageIncomplete(candidate FileIdentity) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -340,7 +341,31 @@ func (r *Registry) DirectoryCoverageIncomplete(candidate FileIdentity) bool {
 		return true
 	}
 	if candidate.Type == unix.S_IFREG {
-		if _, pinned := r.byIdentity[candidate]; pinned {
+		if candidateClass, pinned := r.byIdentity[candidate]; pinned {
+			// A direct registration must not weaken a stronger directory rule.
+			// In particular, a provider-source pin nested under a settings or
+			// credential directory remains protected if it is moved elsewhere.
+			for _, entry := range r.entries {
+				if !entry.registration.Directory || classPriority(candidateClass) >= classPriority(entry.registration.Class) {
+					continue
+				}
+				if candidate.Device == entry.identity.Device || (entry.locationDevice != 0 && candidate.Device == entry.locationDevice) {
+					return true
+				}
+				fd, err := openAbsolute(entry.registration.Path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
+				if errors.Is(err, unix.ENOENT) {
+					continue
+				}
+				if err != nil {
+					return true
+				}
+				var stat unix.Stat_t
+				statErr := unix.Fstat(fd, &stat)
+				_ = unix.Close(fd)
+				if statErr != nil || candidate.Device == uint64(stat.Dev) {
+					return true
+				}
+			}
 			return false
 		}
 	}
@@ -366,6 +391,21 @@ func (r *Registry) DirectoryCoverageIncomplete(candidate FileIdentity) bool {
 		}
 	}
 	return false
+}
+
+func classPriority(class ResourceClass) int {
+	switch class {
+	case ClassCredential:
+		return 4
+	case ClassSettings:
+		return 3
+	case ClassTokenDatabase:
+		return 2
+	case ClassProvider:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func scanDirectoryForIdentity(rootFD int, candidate FileIdentity, remaining int) (bool, int, error) {
@@ -446,21 +486,7 @@ func scanDirectoryNode(directoryFD int, candidate FileIdentity, remaining, depth
 }
 
 func stricterClass(a, b ResourceClass) ResourceClass {
-	priority := func(class ResourceClass) int {
-		switch class {
-		case ClassCredential:
-			return 4
-		case ClassSettings:
-			return 3
-		case ClassTokenDatabase:
-			return 2
-		case ClassProvider:
-			return 1
-		default:
-			return 0
-		}
-	}
-	if priority(b) > priority(a) {
+	if classPriority(b) > classPriority(a) {
 		return b
 	}
 	return a

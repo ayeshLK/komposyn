@@ -207,6 +207,50 @@ func TestRegistryDirectoryPinDoesNotImplyDescendantIdentityCoverage(t *testing.T
 	t.Log("known limitation: directory identity plus ancestry protects descendants while they remain inside the directory; unpinned child identities remain incomplete, so same-device scopes fail closed rather than claim per-child protection")
 }
 
+func TestRegistryDirectoryRuleCannotBeWeakenedByPinnedProviderChild(t *testing.T) {
+	root := t.TempDir()
+	protectedDir := filepath.Join(root, "settings")
+	outsideDir := filepath.Join(root, "ordinary")
+	if err := os.Mkdir(protectedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outsideDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(protectedDir, "provider-source.fixture")
+	if err := os.WriteFile(child, []byte("synthetic provider source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(OwnerRegistration{Owner: "settings-fixture", Class: ClassSettings, Path: protectedDir, Directory: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(OwnerRegistration{Owner: "provider-fixture", Class: ClassProvider, Path: child}); err != nil {
+		t.Fatal(err)
+	}
+	childID := identityAt(t, child)
+	moved := filepath.Join(outsideDir, filepath.Base(child))
+	if err := os.Rename(child, moved); err != nil {
+		t.Fatal(err)
+	}
+	if !registry.DirectoryCoverageIncomplete(childID) {
+		t.Fatal("weaker provider pin bypassed protected settings-directory coverage")
+	}
+	broker := NewBroker(registry)
+	prepared, err := broker.PrepareRead(root, moved, GenerationSet{Root: 1, Policy: registry.View().Generation})
+	if err == nil {
+		_ = prepared.Close()
+		t.Fatal("moved provider child under protected settings directory was preparable")
+	}
+	if !errors.Is(err, ErrDirectoryCoverage) {
+		t.Fatalf("moved provider child refusal=%v, want ErrDirectoryCoverage", err)
+	}
+}
+
 func TestRegistryReservesLocationBeforeCreationAndRetainsRotatedObjects(t *testing.T) {
 	root := t.TempDir()
 	credentialPath := filepath.Join(root, "auth.fixture")

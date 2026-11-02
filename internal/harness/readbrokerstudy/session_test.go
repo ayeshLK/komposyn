@@ -33,21 +33,22 @@ import (
 // duplicated capability in this process and MUST NOT be counted as sandbox
 // enforcement evidence. Native cases use the real Bubblewrap WorkerLauncher.
 type fakeWorker struct {
-	mu             sync.Mutex
-	capability     *os.File
-	identity       FileIdentity
-	result         WorkerResult
-	started        bool
-	transferred    bool
-	readStarted    bool
-	terminated     bool
-	joined         bool
-	transferErr    error
-	readStartedErr error
-	resultErr      error
-	resultOverride *WorkerResult
-	terminateErr   error
-	waitErr        error
+	mu              sync.Mutex
+	capability      *os.File
+	identity        FileIdentity
+	result          WorkerResult
+	started         bool
+	transferred     bool
+	readStarted     bool
+	terminated      bool
+	joined          bool
+	transferErr     error
+	readStartedErr  error
+	resultErr       error
+	resultOverride  *WorkerResult
+	terminateErr    error
+	waitErr         error
+	joinUnconfirmed bool
 }
 
 func (w *fakeWorker) Ready(ctx context.Context) error {
@@ -154,12 +155,20 @@ func (w *fakeWorker) Terminate() error {
 func (w *fakeWorker) Wait() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.joined = true
-	if w.capability != nil {
+	if !w.joinUnconfirmed {
+		w.joined = true
+	}
+	if w.joined && w.capability != nil {
 		_ = w.capability.Close()
 		w.capability = nil
 	}
 	return w.waitErr
+}
+
+func (w *fakeWorker) Joined() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.joined
 }
 
 func cloneWorkerResult(result WorkerResult) WorkerResult {
@@ -273,6 +282,121 @@ func TestFixtureSessionRequiresExplicitOnceApprovalAndPublishesExactObject(t *te
 	defer fixture.worker.mu.Unlock()
 	if !fixture.worker.started || !fixture.worker.transferred || !fixture.worker.readStarted || !fixture.worker.joined {
 		t.Fatalf("fake worker lifecycle flags: %+v", fixture.worker)
+	}
+}
+
+func TestUnconfirmedWorkerJoinBlocksFurtherReadsAndResourceRelease(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "cleanup.fixture")
+	if err := os.WriteFile(target, []byte("synthetic cleanup fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.joinUnconfirmed = true
+	if err := fixture.authorizer.ApproveOnce("cleanup-first"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := fixture.session.Read(context.Background(), root, target, "cleanup-first")
+	if err != nil || first.Outcome != ReadUnknown {
+		t.Fatalf("first read=(%q,%v), want unknown without confirmed join", first.Outcome, err)
+	}
+	if got := fixture.session.Evidence(); len(got) != 1 || got[0].Outcome != ReadUnknown {
+		t.Fatalf("unresolved cleanup evidence=%+v, want one unknown record", got)
+	}
+	if err := fixture.authorizer.ApproveOnce("cleanup-second"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := fixture.session.Read(context.Background(), root, target, "cleanup-second")
+	if err != nil || second.Outcome != ReadNotExecuted || second.Detail != ErrCleanupPending.Error() {
+		t.Fatalf("second read=(%q,%q,%v), want cleanup-pending not-executed", second.Outcome, second.Detail, err)
+	}
+	if fixture.launcher.starts != 1 || fixture.authorizer.ConsumptionCount("cleanup-second") != 0 {
+		t.Fatal("unresolved worker did not block dispatch and once-grant consumption")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err = fixture.session.Close(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrCleanupPending) {
+		t.Fatalf("close with unresolved join=%v, want bounded cleanup refusal", err)
+	}
+	fixture.registry.mu.RLock()
+	registryClosed := fixture.registry.closed
+	fixture.registry.mu.RUnlock()
+	if registryClosed {
+		t.Fatal("registry resources were released while worker join remained unconfirmed")
+	}
+
+	// A later positive join observation lets Close finish cleanup. Until then,
+	// the record remains active and continues to block resource release.
+	fixture.worker.mu.Lock()
+	fixture.worker.joinUnconfirmed = false
+	fixture.worker.mu.Unlock()
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := fixture.session.Close(ctx); err != nil {
+		t.Fatalf("close after join confirmation: %v", err)
+	}
+	fixture.registry.mu.RLock()
+	registryClosed = fixture.registry.closed
+	fixture.registry.mu.RUnlock()
+	if !registryClosed {
+		t.Fatal("registry resources were not released after join confirmation")
+	}
+}
+
+func TestNonzeroWorkerExitIsReapedAndDoesNotMasqueradeAsPendingCleanup(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "nonzero-exit.fixture")
+	if err := os.WriteFile(target, []byte("synthetic worker exit fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.waitErr = errors.New("synthetic nonzero worker exit")
+	if err := fixture.authorizer.ApproveOnce("nonzero-exit"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.session.Read(context.Background(), root, target, "nonzero-exit")
+	if err != nil || result.Outcome != ReadUnknown {
+		t.Fatalf("read=(%q,%v), want unknown result after nonzero process exit", result.Outcome, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := fixture.session.Close(ctx); err != nil {
+		t.Fatalf("close after confirmed process reaping: %v", err)
+	}
+}
+
+func TestProviderPinCannotOverrideMovedChildOfProtectedSettingsDirectory(t *testing.T) {
+	root := t.TempDir()
+	protectedDir := filepath.Join(root, "settings")
+	if err := os.Mkdir(protectedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(protectedDir, "provider-source.fixture")
+	if err := os.WriteFile(target, []byte("synthetic protected provider source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	if err := fixture.session.Register(OwnerRegistration{Owner: "settings-fixture", Class: ClassSettings, Path: protectedDir, Directory: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.session.Register(OwnerRegistration{Owner: "provider-fixture", Class: ClassProvider, Path: target}); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(root, "provider-source-moved.fixture")
+	if err := os.Rename(target, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.authorizer.ApproveOnce("provider-under-settings"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.session.Read(context.Background(), root, moved, "provider-under-settings")
+	if err != nil || result.Outcome != ReadNotExecuted {
+		t.Fatalf("moved child read=(%q,%v), want not-executed refusal", result.Outcome, err)
+	}
+	if fixture.launcher.starts != 0 || fixture.authorizer.ConsumptionCount("provider-under-settings") != 0 || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatal("provider invocation approval overrode protected-directory policy")
 	}
 }
 

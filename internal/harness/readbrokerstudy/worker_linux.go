@@ -18,7 +18,9 @@ package readbrokerstudy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,16 +37,81 @@ import (
 )
 
 const (
-	frameReady        byte = 'R'
-	frameHandoff      byte = 'H'
-	frameStarted      byte = 'S'
-	frameRefused      byte = 'X'
-	frameData         byte = 'D'
-	frameFinish       byte = 'F'
-	workerMode             = "--readbrokerstudy-worker"
-	workerStderrLimit      = 4 << 10
-	workerWaitDelay        = 500 * time.Millisecond
+	frameReady          byte = 'R'
+	frameHandoff        byte = 'H'
+	frameStarted        byte = 'S'
+	frameRefused        byte = 'X'
+	frameData           byte = 'D'
+	frameFinish         byte = 'F'
+	workerMode               = "--readbrokerstudy-worker"
+	workerStderrLimit        = 4 << 10
+	workerWaitDelay          = 500 * time.Millisecond
+	backendProbeTimeout      = 2 * time.Second
+	backendHashLimit         = 512 << 20
 )
+
+// BackendInspection contains bounded, non-secret metadata about the selected
+// Bubblewrap candidate. Version execution occurs only after the complete
+// executable path passes the same root-owned, non-writable trust check used
+// by NewWorkerLauncher.
+type BackendInspection struct {
+	Path    string
+	UID     uint32
+	Mode    uint32
+	SHA256  string
+	Version string
+	Trusted bool
+	Error   string
+}
+
+func InspectBubblewrap(path string) BackendInspection {
+	result := BackendInspection{Path: path}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		result.Error = "configured backend is missing or not a regular file"
+		return result
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		result.UID = stat.Uid
+		result.Mode = stat.Mode & 0o7777
+	}
+	if err := validateTrustedExecutable(path, true); err != nil {
+		result.Error = "backend trust validation failed; executable was not run"
+		return result
+	}
+	result.Trusted = true
+	if info.Size() <= backendHashLimit {
+		if data, readErr := os.ReadFile(path); readErr == nil {
+			sum := sha256.Sum256(data)
+			result.SHA256 = hex.EncodeToString(sum[:])
+		}
+	}
+	version, err := probeBubblewrapVersion(path)
+	if err != nil {
+		result.Error = "trusted backend version probe failed or timed out"
+		return result
+	}
+	result.Version = version
+	return result
+}
+
+func probeBubblewrapVersion(path string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), backendProbeTimeout)
+	defer cancel()
+	output := &limitedOutput{}
+	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd.Stdout = output
+	cmd.Stderr = output
+	if err := cmd.Run(); err != nil || ctx.Err() != nil || output.n > workerStderrLimit {
+		return "", ErrUnavailable
+	}
+	value := strings.TrimSpace(output.String())
+	fields := strings.Fields(value)
+	if len(fields) != 2 || fields[0] != "bubblewrap" {
+		return "", ErrUnavailable
+	}
+	return value, nil
+}
 
 type workerLauncher struct {
 	bwrapPath  string
@@ -78,11 +145,11 @@ func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
 }
 
 func requireBindFDOption(path string) error {
-	output, err := exec.Command(path, "--version").Output()
+	output, err := probeBubblewrapVersion(path)
 	if err != nil {
 		return ErrUnavailable
 	}
-	fields := strings.Fields(string(output))
+	fields := strings.Fields(output)
 	if len(fields) != 2 || fields[0] != "bubblewrap" {
 		return ErrUnavailable
 	}
@@ -125,6 +192,7 @@ type sandboxWorker struct {
 	probe    WorkerProbe
 	waitOnce sync.Once
 	waitErr  error
+	joined   bool
 }
 
 type limitedOutput struct {
@@ -436,8 +504,9 @@ func (w *sandboxWorker) Terminate() error {
 
 func (w *sandboxWorker) Wait() error {
 	w.waitOnce.Do(func() {
+		var waitErr error
 		if w.cmd != nil {
-			w.waitErr = w.cmd.Wait()
+			waitErr = w.cmd.Wait()
 		}
 		if w.control != nil {
 			_ = w.control.Close()
@@ -445,8 +514,18 @@ func (w *sandboxWorker) Wait() error {
 		if w.cancel != nil {
 			w.cancel()
 		}
+		w.mu.Lock()
+		w.waitErr = waitErr
+		w.joined = w.cmd == nil || w.cmd.ProcessState != nil
+		w.mu.Unlock()
 	})
 	return w.waitErr
+}
+
+func (w *sandboxWorker) Joined() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.joined
 }
 
 func identityFrame(kind byte, identity FileIdentity) []byte {

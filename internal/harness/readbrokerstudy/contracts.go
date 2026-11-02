@@ -230,6 +230,7 @@ type SandboxWorker interface {
 	ReadResult(context.Context) (WorkerResult, error)
 	Terminate() error
 	Wait() error
+	Joined() bool
 }
 
 type WorkerLauncher interface {

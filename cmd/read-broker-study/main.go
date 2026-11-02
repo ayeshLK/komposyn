@@ -29,11 +29,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
@@ -95,20 +93,21 @@ type launchPolicy struct {
 }
 
 type caseResult struct {
-	Name                  string `json:"name"`
-	Status                string `json:"status"`
-	Expected              string `json:"expected"`
-	Observed              string `json:"observed"`
-	WorkerStarted         bool   `json:"worker_started"`
-	CapabilitySent        bool   `json:"capability_sent"`
-	ReadStarted           bool   `json:"read_started"`
-	Published             bool   `json:"published"`
-	BytesMatchTarget      bool   `json:"bytes_match_target"`
-	OnceGrantConsumptions int    `json:"once_grant_consumptions"`
-	FixtureEffect         string `json:"fixture_effect"`
-	AuthorityA            string `json:"authority_a"`
-	AuthorityB            string `json:"authority_b"`
-	Detail                string `json:"detail,omitempty"`
+	Name                  string                      `json:"name"`
+	Status                string                      `json:"status"`
+	Expected              string                      `json:"expected"`
+	Observed              string                      `json:"observed"`
+	WorkerStarted         bool                        `json:"worker_started"`
+	CapabilitySent        bool                        `json:"capability_sent"`
+	ReadStarted           bool                        `json:"read_started"`
+	Published             bool                        `json:"published"`
+	BytesMatchTarget      bool                        `json:"bytes_match_target"`
+	OnceGrantConsumptions int                         `json:"once_grant_consumptions"`
+	WorkerProbe           readbrokerstudy.WorkerProbe `json:"worker_probe,omitempty"`
+	FixtureEffect         string                      `json:"fixture_effect"`
+	AuthorityA            string                      `json:"authority_a"`
+	AuthorityB            string                      `json:"authority_b"`
+	Detail                string                      `json:"detail,omitempty"`
 }
 
 func main() {
@@ -491,7 +490,7 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 	if detail == "" {
 		detail = "fixture result bytes and filesystem paths omitted"
 	}
-	return caseResult{Name: name, Status: status, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, CapabilitySent: ev.CapabilitySent, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, OnceGrantConsumptions: consumptionCount, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
+	return caseResult{Name: name, Status: status, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, CapabilitySent: ev.CapabilitySent, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, OnceGrantConsumptions: consumptionCount, WorkerProbe: ev.Probe, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
 }
 
 func boundText(value string, limit int) string {
@@ -502,7 +501,7 @@ func boundText(value string, limit int) string {
 }
 
 func inspectEnvironment(bwrap string) environment {
-	result := environment{OS: runtime.GOOS, Architecture: runtime.GOARCH, GoVersion: runtime.Version(), Restrictions: map[string]string{}, NamespaceProbeStatus: "not run; candidate backend failed trust preflight", CgroupDelegationStatus: "not tested; host cgroup hierarchy is not modified", AppArmorProfileStatus: "unavailable until read-only profile listing succeeds"}
+	result := environment{OS: runtime.GOOS, Architecture: runtime.GOARCH, GoVersion: runtime.Version(), Restrictions: map[string]string{}, NamespaceProbeStatus: "not independently probed; worker startup availability and worker-level probes are recorded per case", CgroupDelegationStatus: "not tested; host cgroup hierarchy is not modified", AppArmorProfileStatus: "unavailable until read-only profile listing succeeds"}
 	result.UID = uint32(os.Getuid())
 	if executable, err := os.Executable(); err == nil {
 		if data, readErr := os.ReadFile(executable); readErr == nil {
@@ -545,28 +544,16 @@ func inspectEnvironment(bwrap string) environment {
 			}
 		}
 	}
-	var uid syscall.Stat_t
-	if err := syscall.Stat(bwrap, &uid); err == nil {
-		result.BubblewrapPath = bwrap
-		result.BubblewrapUID = uid.Uid
-		result.BubblewrapMode = fmt.Sprintf("%04o", uid.Mode&0o7777)
-		if data, err := os.ReadFile(bwrap); err == nil {
-			sum := sha256.Sum256(data)
-			result.BubblewrapSHA256 = hex.EncodeToString(sum[:])
-		}
-		version, versionErr := exec.Command(bwrap, "--version").CombinedOutput()
-		if versionErr == nil {
-			result.BubblewrapVersion = strings.TrimSpace(string(version))
-		} else {
-			result.BubblewrapError = "version command unavailable"
-		}
-		if !result.BubblewrapTrusted {
-			result.BubblewrapError = "backend did not pass root-owner and non-writable-path validation; version probe only, no sandbox launch"
-		}
-		result.BubblewrapTrusted = uid.Uid == 0 && uid.Mode&0o022 == 0
-	} else {
-		result.BubblewrapError = "configured path unavailable"
+	backend := readbrokerstudy.InspectBubblewrap(bwrap)
+	result.BubblewrapPath = backend.Path
+	result.BubblewrapUID = backend.UID
+	if backend.Mode != 0 {
+		result.BubblewrapMode = fmt.Sprintf("%04o", backend.Mode)
 	}
+	result.BubblewrapSHA256 = backend.SHA256
+	result.BubblewrapVersion = backend.Version
+	result.BubblewrapTrusted = backend.Trusted
+	result.BubblewrapError = backend.Error
 	return result
 }
 
