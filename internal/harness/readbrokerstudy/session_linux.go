@@ -278,10 +278,11 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	}
 	if err := worker.Ready(ctx); err != nil {
 		cleanupErr := s.terminateAndWait(op, worker)
+		diagnostic := workerFailureDiagnostic(worker, err)
 		if cleanupErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "startup refused and worker cleanup is incomplete: " + boundedText(err.Error(), 768)}
+			return WorkerResult{Outcome: ReadUnknown, Detail: "startup refused and worker cleanup is incomplete: " + diagnostic}
 		}
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: "sandbox worker did not acknowledge startup: " + boundedText(err.Error(), 768)}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: "sandbox worker did not acknowledge startup: " + diagnostic}
 	}
 	op.probe = worker.Probe()
 	op.evidence.Probe = op.probe
@@ -398,6 +399,18 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	op.evidence.Published = true
 	op.evidence.Outcome = ReadSucceeded
 	return WorkerResult{Outcome: ReadSucceeded, Bytes: append([]byte(nil), copyForSink...), Detail: workerResult.Detail}
+}
+
+func workerFailureDiagnostic(worker SandboxWorker, fallback error) string {
+	if source, ok := worker.(interface{ FailureDetail() string }); ok {
+		if detail := source.FailureDetail(); detail != "" {
+			return boundedText(detail, 768)
+		}
+	}
+	if fallback == nil {
+		return "worker startup failed"
+	}
+	return boundedText(fallback.Error(), 768)
 }
 
 func validWorkerProbe(probe WorkerProbe) bool {

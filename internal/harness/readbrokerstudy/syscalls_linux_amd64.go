@@ -19,5 +19,5 @@ package readbrokerstudy
 import "golang.org/x/sys/unix"
 
 func workerArchDeniedSyscalls() []uint32 {
-	return []uint32{unix.SYS_OPEN, unix.SYS_FORK, unix.SYS_VFORK}
+	return []uint32{unix.SYS_OPEN, unix.SYS_CREAT, unix.SYS_ACCESS, unix.SYS_READLINK, unix.SYS_FORK, unix.SYS_VFORK}
 }
