@@ -111,13 +111,7 @@ func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observ
 		}
 		result.ActualEffect, result.Status = verifyObserved(test.name, scope, result)
 		if test.name == "private-scratch" {
-			if _, err := os.Stat(filepath.Join(scope, "scratch.bin")); errors.Is(err, os.ErrNotExist) {
-				result.ActualEffect = "worker scratch remained inside private /tmp; no host fixture file appeared"
-				result.Status = "measured_pass"
-			} else {
-				result.ActualEffect = "scratch escaped private tmpfs or fixture state was unexpected"
-				result.Status = "observed_violation"
-			}
+			result.ActualEffect, result.Status = verifyScratch(scope, result)
 		}
 		observations = append(observations, result)
 	}
@@ -421,6 +415,20 @@ func verifyObserved(name, scope string, result Observation) (string, string) {
 	default:
 		return result.ActualEffect, "measured"
 	}
+}
+
+func verifyScratch(scope string, result Observation) (string, string) {
+	_, err := os.Lstat(filepath.Join(scope, "scratch.bin"))
+	if err == nil {
+		return "host-visible scratch fixture exists", "observed_violation"
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "could not confirm host scratch fixture absence: " + sanitize(err.Error()), "unavailable"
+	}
+	if result.WorkerOutcome != "succeeded" {
+		return "worker scratch write did not succeed; no host fixture was observed", "unavailable"
+	}
+	return "worker scratch write succeeded in its private /tmp; no host fixture file appeared", "measured_pass"
 }
 
 func classifyEffect(effect bool) string {

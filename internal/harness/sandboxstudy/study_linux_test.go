@@ -196,6 +196,22 @@ func TestPrivateHomeProbeProductionAndClassification(t *testing.T) {
 	}
 }
 
+func TestScratchPassRequiresSuccessfulPrivateWriteAndNoHostFixture(t *testing.T) {
+	root := t.TempDir()
+	if actual, status := verifyScratch(root, Observation{WorkerOutcome: "succeeded"}); status != "measured_pass" || !strings.Contains(actual, "private /tmp") {
+		t.Fatalf("successful private scratch result: actual=%q status=%q", actual, status)
+	}
+	if actual, status := verifyScratch(root, Observation{WorkerOutcome: "failed"}); status != "unavailable" || !strings.Contains(actual, "did not succeed") {
+		t.Fatalf("failed private scratch result: actual=%q status=%q", actual, status)
+	}
+	if err := os.WriteFile(filepath.Join(root, "scratch.bin"), []byte("host leak fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if actual, status := verifyScratch(root, Observation{WorkerOutcome: "succeeded"}); status != "observed_violation" || !strings.Contains(actual, "host-visible") {
+		t.Fatalf("host-visible scratch fixture: actual=%q status=%q", actual, status)
+	}
+}
+
 func TestEvidenceClassificationNeverTreatsAnObservedEffectAsAPass(t *testing.T) {
 	if got := classifyEffect(true); got != "observed_violation" {
 		t.Fatalf("outside effect classified as %q", got)
