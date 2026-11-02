@@ -5,6 +5,11 @@ security gap after #212, presents proposed policy and root-selection behavior,
 and records native test evidence. No filesystem tool is registered, and no
 policy in this document is silently treated as approved.
 
+Issue #215 adds a [disposable Linux sandbox feasibility study](sandbox-feasibility-study.md).
+Its candidate tests were blocked by the surrounding command launcher in the
+recorded environment; they provide no bubblewrap enforcement result and do not
+change the authority gate described here.
+
 ## Threat model
 
 The relevant adversary is an untrusted model invocation while another process

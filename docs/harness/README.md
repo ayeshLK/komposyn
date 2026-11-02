@@ -402,3 +402,7 @@ See the [filesystem enforcement foundation](filesystem-enforcement-foundation.md
 and [enablement policy and evidence](filesystem-enablement-policy.md) for
 guarantees, counterexamples, protected-path policy proposals, root-selection
 UX proposals, and requirements for any later tool enablement.
+The [Linux sandbox feasibility study](sandbox-feasibility-study.md) is
+disposable research infrastructure only; its native tests are separate from Go
+unit/race tests, and filesystem tools remain unavailable until the strict
+pathname-scope gate has native evidence and maintainer review.

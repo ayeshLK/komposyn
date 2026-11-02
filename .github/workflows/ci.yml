@@ -51,6 +51,14 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Cross-compile Linux sandbox study for arm64
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          CGO_ENABLED: '0'
+          GOARCH: arm64
+          GOOS: linux
+        run: go build -o "$RUNNER_TEMP/komposyn-sandbox-study-arm64" ./cmd/sandbox-study
+
   standalone-cli-compatibility:
     name: Standalone CLI compatibility
     runs-on: ubuntu-latest
