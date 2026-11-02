@@ -40,14 +40,20 @@ module and distinguishes it from command policy.
   These APIs inspect stored evidence only. See
   [persisted diagnostic details](diagnostic-details.md) for privacy, bounds,
   migration side effects, and the production instrumentation dependency.
-- **Codex recovery preview:** `Store.PrepareCodexRecovery` explicitly reads one
+- **Codex recovery:** `Store.PrepareCodexRecovery` explicitly reads one
   selected existing Codex source and returns a bounded, versioned, opaque
-  preview or a typed privacy-safe refusal. It reuses the production parser,
-  resolves only existing stored project/session identities, and does not write
-  Store state. `Store.Open` may have applied migrations or synchronized the
-  catalog before the method is called. There is no recovery apply API until
-  the dependent transactional stage is reviewed. See
-  [Codex historical recovery](codex-historical-recovery-v1.md).
+  preview or a typed privacy-safe refusal. `Store.ApplyCodexRecovery` commits
+  only the exact preview token after revalidating its evidence and returns an
+  idempotent receipt. `Store.ListCodexRecoveries` provides bounded discovery
+  of committed runs, and `Store.InspectCodexRecovery` pages through normalized
+  allocation evidence for one opaque run reference. Inspection is read-only
+  after `Store.Open`; none of these history calls reads provider files or
+  parses private audit JSON. `Store.Open` may have applied migrations or
+  synchronized the catalog before any of these methods is called. The history
+  methods are additive in the current source and are not included in the latest
+  published core release, v0.13.1. See
+  [Codex historical recovery](codex-historical-recovery-v1.md) for exact
+  signatures, bounds, evidence semantics and limitations.
 
 SQLite migration mechanics, raw cursor internals, SQL helpers, provider parser
 types, pricing catalog synchronization details, and the mutable `Version`
@@ -131,6 +137,24 @@ Recovery preview declarations are `CodexRecoveryPreview`,
 `CodexRecoveryMaxSnapshotBytes`, `CodexRecoveryMaxRecords`,
 `CodexRecoveryMaxChanges`, `CodexRecoveryMaxPlanBytes`, the
 `CodexRecoveryReason*` constants, and `Store.PrepareCodexRecovery`.
+
+Transactional recovery declarations are `CodexRecoveryReceipt` and
+`Store.ApplyCodexRecovery`. Bounded recovery-history declarations are
+`CodexRecoveryHistoryQuery`, `CodexRecoveryHistoryPage`,
+`CodexRecoveryRunSummary`, `CodexRecoveryInspectionRequest`,
+`CodexRecoveryInspection`, `CodexRecoveryAllocationDetail`,
+`CodexRecoveryAllocationOverride`, `CodexRecoveryAllocationInserted`,
+`CodexRecoveryHistoryContractVersion`, `DefaultCodexRecoveryHistoryPageSize`,
+`MaxCodexRecoveryHistoryPageSize`, `MaxCodexRecoveryHistoryTokenBytes`,
+`MaxCodexRecoveryHistoryResponseBytes`, `Store.ListCodexRecoveries`, and
+`Store.InspectCodexRecovery`. Invalid requests, missing runs and unavailable
+or corrupt evidence have distinct fixed errors:
+`ErrInvalidCodexRecoveryHistoryQuery`, `ErrCodexRecoveryRunNotFound`, and
+`ErrCodexRecoveryHistoryUnavailable`. History tokens are versioned, encrypted
+and authenticated with the database's existing recovery namespace; they are
+bound to the store, API, query/run and page size. See the recovery guide for
+the default of 20 items, maximum of 50, 1 KiB token limit and 256 KiB response
+limit.
 
 The separate `ProjectInspection` response is a versioned, bounded evidence
 contract. It does not alter the established JSON/CSV report or protocol
