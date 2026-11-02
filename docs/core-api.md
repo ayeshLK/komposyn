@@ -142,11 +142,12 @@ Transactional recovery declarations are `CodexRecoveryReceipt` and
 `Store.ApplyCodexRecovery`. Bounded recovery-history declarations are
 `CodexRecoveryHistoryQuery`, `CodexRecoveryHistoryPage`,
 `CodexRecoveryRunSummary`, `CodexRecoveryInspectionRequest`,
-`CodexRecoveryInspection`, `CodexRecoveryAllocationDetail`,
+`CodexRecoveryInspection`, `CodexRecoveryAllocationKind`,
+`CodexRecoveryAllocationDetail`,
 `CodexRecoveryAllocationOverride`, `CodexRecoveryAllocationInserted`,
 `CodexRecoveryHistoryContractVersion`, `DefaultCodexRecoveryHistoryPageSize`,
 `MaxCodexRecoveryHistoryPageSize`, `MaxCodexRecoveryHistoryTokenBytes`,
-`MaxCodexRecoveryHistoryResponseBytes`, `Store.ListCodexRecoveries`, and
+`MaxCodexRecoveryHistoryReferenceBytes`, `MaxCodexRecoveryHistoryResponseBytes`, `Store.ListCodexRecoveries`, and
 `Store.InspectCodexRecovery`. Invalid requests, missing runs and unavailable
 or corrupt evidence have distinct fixed errors:
 `ErrInvalidCodexRecoveryHistoryQuery`, `ErrCodexRecoveryRunNotFound`, and
