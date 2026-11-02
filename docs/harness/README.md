@@ -406,3 +406,9 @@ The [Linux sandbox feasibility study](sandbox-feasibility-study.md) is
 disposable research infrastructure only; its native tests are separate from Go
 unit/race tests, and filesystem tools remain unavailable until the strict
 pathname-scope gate has native evidence and maintainer review.
+
+The [brokered read feasibility harness](read-broker-feasibility.md) adds an
+experimental host-owned protected-object registry and a fixed Bubblewrap worker
+that receives one authorized read descriptor. It is not production dispatch;
+owner registration, sandbox execution and native actor-race evidence remain
+limited as described in the report, and no filesystem tool is enabled.
