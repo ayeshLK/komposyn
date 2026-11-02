@@ -32,19 +32,20 @@ var (
 )
 
 type fixtureSession struct {
-	mu         sync.Mutex
-	registry   PolicyRegistry
-	broker     ReadBroker
-	launcher   WorkerLauncher
-	authorizer FixtureAuthorizer
-	root       string
-	gen        GenerationSet
-	closed     bool
-	claimed    map[string]struct{}
-	active     map[string]*readOperation
-	hook       CheckpointHook
-	published  [][]byte
-	evidence   []ReadEvidence
+	mu             sync.Mutex
+	registry       PolicyRegistry
+	broker         ReadBroker
+	launcher       WorkerLauncher
+	authorizer     FixtureAuthorizer
+	root           string
+	gen            GenerationSet
+	closed         bool
+	cleanupBlocked bool
+	claimed        map[string]struct{}
+	active         map[string]*readOperation
+	hook           CheckpointHook
+	published      [][]byte
+	evidence       []ReadEvidence
 }
 
 type readOperation struct {
@@ -58,6 +59,9 @@ type readOperation struct {
 	workerJoined     bool
 	cleanupRequired  bool
 	evidenceRecorded bool
+	waitOnce         sync.Once
+	waitDone         chan struct{}
+	waitErr          error
 	completed        bool
 	done             chan struct{}
 	probe            WorkerProbe
@@ -186,11 +190,9 @@ func (s *fixtureSession) Read(ctx context.Context, root, target, invocationID st
 		s.mu.Unlock()
 		return WorkerResult{Outcome: ReadRefused, Detail: ErrSessionClosed.Error()}, nil
 	}
-	for _, active := range s.active {
-		if active.state == StateTerminating && active.cleanupRequired && !active.workerJoined {
-			s.mu.Unlock()
-			return WorkerResult{Outcome: ReadNotExecuted, Detail: ErrCleanupPending.Error()}, nil
-		}
+	if s.cleanupBlocked {
+		s.mu.Unlock()
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: ErrCleanupPending.Error()}, nil
 	}
 	if s.root == "" {
 		s.mu.Unlock()
@@ -455,7 +457,7 @@ func refusalFor(err error) WorkerResult {
 }
 
 func (s *fixtureSession) currentLocked(op *readOperation) bool {
-	if s.closed || op == nil || op.revoked || op.gen != s.gen {
+	if s.closed || s.cleanupBlocked || op == nil || op.revoked || op.gen != s.gen {
 		return false
 	}
 	return s.registry.View().Generation == s.gen.Policy
@@ -510,15 +512,39 @@ func (s *fixtureSession) waitWorker(op *readOperation, worker SandboxWorker) err
 	if worker == nil {
 		return nil
 	}
-	err := worker.Wait()
-	joined := worker.Joined()
-	s.mu.Lock()
-	op.workerJoined = joined
-	s.mu.Unlock()
-	if !joined && err == nil {
-		return ErrCleanupPending
+	<-s.startWorkerWait(op, worker)
+	return op.waitErr
+}
+
+func (s *fixtureSession) waitWorkerContext(ctx context.Context, op *readOperation, worker SandboxWorker) error {
+	if worker == nil {
+		return nil
 	}
-	return err
+	select {
+	case <-s.startWorkerWait(op, worker):
+		return op.waitErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *fixtureSession) startWorkerWait(op *readOperation, worker SandboxWorker) <-chan struct{} {
+	op.waitOnce.Do(func() {
+		op.waitDone = make(chan struct{})
+		go func() {
+			err := worker.Wait()
+			joined := worker.Joined()
+			if !joined && err == nil {
+				err = ErrCleanupPending
+			}
+			s.mu.Lock()
+			op.waitErr = err
+			op.workerJoined = joined
+			s.mu.Unlock()
+			close(op.waitDone)
+		}()
+	})
+	return op.waitDone
 }
 
 func (s *fixtureSession) terminateAndWait(op *readOperation, worker SandboxWorker) error {
@@ -529,9 +555,10 @@ func (s *fixtureSession) terminateAndWait(op *readOperation, worker SandboxWorke
 }
 
 func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
+	var terminate []SandboxWorker
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if op.cleanupRequired && !op.workerJoined {
+		s.cleanupBlocked = true
 		op.state = StateTerminating
 		op.completed = false
 		op.evidence.Outcome = ReadUnknown
@@ -539,9 +566,23 @@ func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
 			s.evidence = append(s.evidence, op.evidence)
 			op.evidenceRecorded = true
 		}
+		for _, other := range s.active {
+			if other == op || other.completed {
+				continue
+			}
+			other.revoked = true
+			other.cancel()
+			other.state = StateTerminating
+			if other.worker != nil {
+				terminate = append(terminate, other.worker)
+			}
+		}
+		s.mu.Unlock()
+		_ = terminateWorkers(terminate)
 		return
 	}
 	s.completeJoinedLocked(op, result)
+	s.mu.Unlock()
 }
 
 func (s *fixtureSession) completeJoinedLocked(op *readOperation, result WorkerResult) {
@@ -596,9 +637,12 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 	terminateErr := terminateWorkers(workers)
 	for _, item := range waits {
 		if item.worker.Joined() {
+			s.mu.Lock()
+			item.op.workerJoined = true
+			s.mu.Unlock()
 			continue
 		}
-		if err := s.waitWorker(item.op, item.worker); err != nil {
+		if err := s.waitWorkerContext(ctx, item.op, item.worker); err != nil {
 			if !item.worker.Joined() {
 				terminateErr = errors.Join(terminateErr, ErrCleanupPending)
 			} else {

@@ -49,6 +49,10 @@ type fakeWorker struct {
 	terminateErr    error
 	waitErr         error
 	joinUnconfirmed bool
+	waitEntered     chan struct{}
+	waitRelease     chan struct{}
+	waitEnteredOnce sync.Once
+	waitCalls       int
 }
 
 func (w *fakeWorker) Ready(ctx context.Context) error {
@@ -154,6 +158,16 @@ func (w *fakeWorker) Terminate() error {
 
 func (w *fakeWorker) Wait() error {
 	w.mu.Lock()
+	w.waitCalls++
+	entered, release := w.waitEntered, w.waitRelease
+	w.mu.Unlock()
+	if entered != nil {
+		w.waitEnteredOnce.Do(func() { close(entered) })
+	}
+	if release != nil {
+		<-release
+	}
+	w.mu.Lock()
 	defer w.mu.Unlock()
 	if !w.joinUnconfirmed {
 		w.joined = true
@@ -171,6 +185,25 @@ func (w *fakeWorker) Joined() bool {
 	return w.joined
 }
 
+type blockingFixtureAuthorizer struct {
+	delegate *OnceGrantFixture
+	blockID  string
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func (a *blockingFixtureAuthorizer) AuthorizeAndConsume(ctx context.Context, request AuthorizationRequest) (AuthorizationReceipt, error) {
+	if request.InvocationID == a.blockID {
+		close(a.entered)
+		select {
+		case <-a.release:
+		case <-ctx.Done():
+			return AuthorizationReceipt{}, ctx.Err()
+		}
+	}
+	return a.delegate.AuthorizeAndConsume(ctx, request)
+}
+
 func cloneWorkerResult(result WorkerResult) WorkerResult {
 	result.Bytes = append([]byte(nil), result.Bytes...)
 	return result
@@ -182,6 +215,7 @@ type fakeLauncher struct {
 	workers  []*fakeWorker
 	starts   int
 	startErr error
+	closed   bool
 }
 
 func (l *fakeLauncher) Start(ctx context.Context) (SandboxWorker, error) {
@@ -204,7 +238,12 @@ func (l *fakeLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	return l.worker, nil
 }
 
-func (l *fakeLauncher) Close() error { return nil }
+func (l *fakeLauncher) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.closed = true
+	return nil
+}
 
 type sessionFixture struct {
 	session    FixtureSession
@@ -331,6 +370,11 @@ func TestUnconfirmedWorkerJoinBlocksFurtherReadsAndResourceRelease(t *testing.T)
 	// the record remains active and continues to block resource release.
 	fixture.worker.mu.Lock()
 	fixture.worker.joinUnconfirmed = false
+	fixture.worker.joined = true
+	if fixture.worker.capability != nil {
+		_ = fixture.worker.capability.Close()
+		fixture.worker.capability = nil
+	}
 	fixture.worker.mu.Unlock()
 	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -364,6 +408,149 @@ func TestNonzeroWorkerExitIsReapedAndDoesNotMasqueradeAsPendingCleanup(t *testin
 	defer cancel()
 	if err := fixture.session.Close(ctx); err != nil {
 		t.Fatalf("close after confirmed process reaping: %v", err)
+	}
+}
+
+func TestUnresolvedCleanupInvalidatesReadAlreadyWaitingForAuthorization(t *testing.T) {
+	root := t.TempDir()
+	targetA := filepath.Join(root, "read-a.fixture")
+	targetB := filepath.Join(root, "read-b.fixture")
+	for _, path := range []string{targetA, targetB} {
+		if err := os.WriteFile(path, []byte("overlap fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseAuthorizer := NewOnceGrantFixture()
+	blocked := &blockingFixtureAuthorizer{delegate: baseAuthorizer, blockID: "read-b", entered: make(chan struct{}), release: make(chan struct{})}
+	workerA := &fakeWorker{joinUnconfirmed: true}
+	launcher := &fakeLauncher{workers: []*fakeWorker{workerA, &fakeWorker{}}}
+	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, blocked)
+	if err != nil {
+		_ = registry.Close()
+		t.Fatal(err)
+	}
+	if err := session.SelectRoot(root); err != nil {
+		_ = registry.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = session.Close(ctx)
+		_ = registry.Close()
+	})
+	if err := baseAuthorizer.ApproveOnce("read-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseAuthorizer.ApproveOnce("read-b"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	readBDone := make(chan readResult, 1)
+	go func() {
+		result, readErr := session.Read(context.Background(), root, targetB, "read-b")
+		readBDone <- readResult{result: result, err: readErr}
+	}()
+	select {
+	case <-blocked.entered:
+	case <-time.After(time.Second):
+		t.Fatal("read B did not reach the controlled authorization wait")
+	}
+	readA, err := session.Read(context.Background(), root, targetA, "read-a")
+	if err != nil || readA.Outcome != ReadUnknown {
+		t.Fatalf("read A=(%q,%v), want unknown with unconfirmed cleanup", readA.Outcome, err)
+	}
+	close(blocked.release)
+	select {
+	case got := <-readBDone:
+		if got.err != nil || got.result.Outcome != ReadNotExecuted {
+			t.Fatalf("read B=(%q,%v), want stale not-executed result", got.result.Outcome, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("read B did not resume after authorization release")
+	}
+	if launcher.starts != 1 || baseAuthorizer.ConsumptionCount("read-b") != 1 || len(session.PublishedResults()) != 0 {
+		t.Fatal("read B escaped the unresolved-cleanup admission barrier")
+	}
+	workerA.mu.Lock()
+	workerA.joined = true
+	if workerA.capability != nil {
+		_ = workerA.capability.Close()
+		workerA.capability = nil
+	}
+	workerA.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Close(ctx); err != nil {
+		t.Fatalf("close after test confirms worker join: %v", err)
+	}
+}
+
+func TestCloseDeadlineDoesNotBlockOnWorkerJoinOrReleaseResources(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "blocking-wait.fixture")
+	if err := os.WriteFile(target, []byte("synthetic blocking wait"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.waitEntered = make(chan struct{})
+	fixture.worker.waitRelease = make(chan struct{})
+	if err := fixture.authorizer.ApproveOnce("blocking-wait"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), root, target, "blocking-wait")
+		readDone <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-fixture.worker.waitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not enter its controlled blocking Wait")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	closeStarted := time.Now()
+	err := fixture.session.Close(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close with blocked Wait=%v, want context deadline", err)
+	}
+	if elapsed := time.Since(closeStarted); elapsed > 500*time.Millisecond {
+		t.Fatalf("Close ignored its 20ms deadline for %s", elapsed)
+	}
+	fixture.registry.mu.RLock()
+	registryClosed := fixture.registry.closed
+	fixture.registry.mu.RUnlock()
+	fixture.launcher.mu.Lock()
+	launcherClosed := fixture.launcher.closed
+	fixture.launcher.mu.Unlock()
+	fixture.worker.mu.Lock()
+	waitCalls := fixture.worker.waitCalls
+	fixture.worker.mu.Unlock()
+	if registryClosed || launcherClosed || waitCalls != 1 {
+		t.Fatalf("incomplete close released resources or duplicated waiter: registry=%t launcher=%t waitCalls=%d", registryClosed, launcherClosed, waitCalls)
+	}
+	close(fixture.worker.waitRelease)
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("read did not finish after controlled worker join")
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := fixture.session.Close(ctx); err != nil {
+		t.Fatalf("Close after worker join: %v", err)
 	}
 }
 
