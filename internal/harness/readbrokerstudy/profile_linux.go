@@ -104,6 +104,32 @@ func validateStaticWorkerFile(f *os.File) error {
 // process inspection and selected privilege-changing syscalls. This is a
 // feasibility filter around one trusted worker, not a general sandbox policy.
 func workerSeccompFilter() (*os.File, error) {
+	data, err := workerSeccompFilterBytes()
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.CreateTemp("", "komposyn-readbroker-seccomp-*.bpf")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func(err error) (*os.File, error) {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return cleanup(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		return cleanup(err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return cleanup(err)
+	}
+	return f, nil
+}
+
+func workerSeccompFilterBytes() ([]byte, error) {
 	arch, err := workerAuditArch(runtime.GOARCH)
 	if err != nil {
 		return nil, err
@@ -129,25 +155,7 @@ func workerSeccompFilter() (*os.File, error) {
 		data[offset+3] = filter.Jf
 		binary.NativeEndian.PutUint32(data[offset+4:offset+8], filter.K)
 	}
-	f, err := os.CreateTemp("", "komposyn-readbroker-seccomp-*.bpf")
-	if err != nil {
-		return nil, err
-	}
-	cleanup := func(err error) (*os.File, error) {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-		return nil, err
-	}
-	if err := f.Chmod(0o600); err != nil {
-		return cleanup(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		return cleanup(err)
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return cleanup(err)
-	}
-	return f, nil
+	return data, nil
 }
 
 func workerAuditArch(goArch string) (uint32, error) {
@@ -163,6 +171,7 @@ func workerAuditArch(goArch string) (uint32, error) {
 
 func workerDeniedSyscalls() []uint32 {
 	denied := []uint32{
+		unix.SYS_CLONE, unix.SYS_CLONE3, unix.SYS_EXECVE,
 		unix.SYS_OPENAT, unix.SYS_OPENAT2, unix.SYS_NEWFSTATAT,
 		unix.SYS_STATX, unix.SYS_READLINKAT, unix.SYS_GETDENTS64,
 		unix.SYS_FACCESSAT2,

@@ -17,6 +17,7 @@
 package readbrokerstudy
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -27,41 +28,68 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
 const (
-	frameReady          byte = 'R'
-	frameHandoff        byte = 'H'
-	frameStarted        byte = 'S'
-	frameRefused        byte = 'X'
-	frameData           byte = 'D'
-	frameFinish         byte = 'F'
-	workerMode               = "--readbrokerstudy-worker"
-	workerStderrLimit        = 4 << 10
-	workerWaitDelay          = 500 * time.Millisecond
-	backendProbeTimeout      = 2 * time.Second
-	backendHashLimit         = 512 << 20
+	frameReady              byte = 'R'
+	frameHandoff            byte = 'H'
+	frameStarted            byte = 'S'
+	frameRefused            byte = 'X'
+	frameData               byte = 'D'
+	frameFinish             byte = 'F'
+	workerBootstrapMode          = "--readbrokerstudy-bootstrap"
+	workerStderrLimit            = 4 << 10
+	workerWaitDelay              = 500 * time.Millisecond
+	backendProbeTimeout          = 2 * time.Second
+	backendHashLimit             = 512 << 20
+	backendProbeOutputLimit      = 64 << 10
 )
+
+type BindMode string
+
+const (
+	BindModeDescriptor BindMode = "ro-bind-fd"
+	BindModeProcFD     BindMode = "ro-bind-proc-fd-verified"
+)
+
+// BubblewrapCapabilities records options reported by the trusted executable's
+// bounded --help response. These are feature checks, not version assumptions.
+type BubblewrapCapabilities struct {
+	Options  []string
+	BindMode BindMode
+}
+
+var requiredBubblewrapOptions = []string{
+	"--as-pid-1", "--cap-drop", "--chdir", "--clearenv", "--die-with-parent",
+	"--disable-userns", "--hostname", "--new-session", "--ro-bind", "--size",
+	"--sync-fd", "--tmpfs", "--unshare-ipc", "--unshare-net", "--unshare-pid",
+	"--unshare-user", "--unshare-uts",
+}
 
 // BackendInspection contains bounded, non-secret metadata about the selected
 // Bubblewrap candidate. Version execution occurs only after the complete
 // executable path passes the same root-owned, non-writable trust check used
 // by NewWorkerLauncher.
 type BackendInspection struct {
-	Path    string
-	UID     uint32
-	Mode    uint32
-	SHA256  string
-	Version string
-	Trusted bool
-	Error   string
+	Path         string
+	UID          uint32
+	Mode         uint32
+	SHA256       string
+	Version      string
+	Capabilities []string
+	BindMode     BindMode
+	Trusted      bool
+	Error        string
 }
 
 func InspectBubblewrap(path string) BackendInspection {
@@ -86,35 +114,158 @@ func InspectBubblewrap(path string) BackendInspection {
 			result.SHA256 = hex.EncodeToString(sum[:])
 		}
 	}
-	version, err := probeBubblewrapVersion(path)
+	version, capabilities, err := probeBubblewrap(path)
+	result.Version = version
+	result.Capabilities = capabilities.Options
+	result.BindMode = capabilities.BindMode
 	if err != nil {
-		result.Error = "trusted backend version probe failed or timed out"
+		result.Error = boundedText("trusted backend capability preflight failed: "+err.Error(), 512)
 		return result
 	}
-	result.Version = version
 	return result
 }
 
-func probeBubblewrapVersion(path string) (string, error) {
+func probeBubblewrap(path string) (string, BubblewrapCapabilities, error) {
+	return probeBubblewrapWith(func(argument string) (string, error) {
+		return runBoundedProbe(path, argument)
+	})
+}
+
+func probeBubblewrapWith(run func(argument string) (string, error)) (string, BubblewrapCapabilities, error) {
+	versionOutput, err := run("--version")
+	if err != nil {
+		return "", BubblewrapCapabilities{}, err
+	}
+	help, err := run("--help")
+	if err != nil {
+		version := strings.TrimSpace(versionOutput)
+		fields := strings.Fields(version)
+		if len(fields) == 2 && fields[0] == "bubblewrap" && validVersion(fields[1]) {
+			return version, BubblewrapCapabilities{}, err
+		}
+		return "", BubblewrapCapabilities{}, err
+	}
+	return bubblewrapCapabilities(versionOutput, help)
+}
+
+func bubblewrapCapabilities(versionOutput, help string) (string, BubblewrapCapabilities, error) {
+	version := strings.TrimSpace(versionOutput)
+	fields := strings.Fields(version)
+	if len(fields) != 2 || fields[0] != "bubblewrap" || !validVersion(fields[1]) {
+		return "", BubblewrapCapabilities{}, ErrUnavailable
+	}
+	options := parseBubblewrapOptions(help)
+	ordered := make([]string, 0, len(options))
+	for option := range options {
+		ordered = append(ordered, option)
+	}
+	slices.Sort(ordered)
+	missing := make([]string, 0)
+	for _, option := range requiredBubblewrapOptions {
+		if _, ok := options[option]; !ok {
+			missing = append(missing, option)
+		}
+	}
+	if len(missing) != 0 {
+		return version, BubblewrapCapabilities{Options: ordered}, fmt.Errorf("%w: missing required Bubblewrap features: %s", ErrUnavailable, strings.Join(missing, ", "))
+	}
+	mode := BindModeProcFD
+	if _, ok := options["--ro-bind-fd"]; ok {
+		mode = BindModeDescriptor
+	}
+	return version, BubblewrapCapabilities{Options: ordered, BindMode: mode}, nil
+}
+
+// EffectiveBubblewrapArguments returns the exact reviewed launch argument
+// sequence for the selected descriptor mount compatibility path.
+func EffectiveBubblewrapArguments(mode BindMode) []string {
+	args := []string{
+		"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+		"--hostname", "komposyn-readbroker", "--unshare-net", "--as-pid-1", "--disable-userns", "--cap-drop", "ALL", "--clearenv",
+		"--size", "8388608", "--tmpfs", "/",
+	}
+	switch mode {
+	case BindModeDescriptor:
+		args = append(args, "--ro-bind-fd", "5", "/worker")
+	case BindModeProcFD:
+		args = append(args, "--ro-bind", "/proc/self/fd/5", "/worker")
+	default:
+		return []string{}
+	}
+	return append(args, "--sync-fd", "5", "--chdir", "/", "--", "/worker", workerBootstrapMode,
+		"--control-fd", fmt.Sprint(controlFD), "--worker-fd", fmt.Sprint(workerFileFD), "--seccomp-fd", fmt.Sprint(seccompInputFD))
+}
+
+func runBoundedProbe(path, argument string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), backendProbeTimeout)
 	defer cancel()
-	output := &limitedOutput{}
-	cmd := exec.CommandContext(ctx, path, "--version")
+	output := &boundedProbeOutput{}
+	cmd := exec.CommandContext(ctx, path, argument)
+	cmd.Dir = "/"
+	cmd.Env = []string{}
+	cmd.WaitDelay = workerWaitDelay
 	cmd.Stdout = output
 	cmd.Stderr = output
-	if err := cmd.Run(); err != nil || ctx.Err() != nil || output.n > workerStderrLimit {
+	if err := cmd.Run(); err != nil || ctx.Err() != nil || output.overflow {
 		return "", ErrUnavailable
 	}
-	value := strings.TrimSpace(output.String())
-	fields := strings.Fields(value)
-	if len(fields) != 2 || fields[0] != "bubblewrap" {
-		return "", ErrUnavailable
+	return output.String(), nil
+}
+
+type boundedProbeOutput struct {
+	mu       sync.Mutex
+	bytes    []byte
+	overflow bool
+}
+
+func (o *boundedProbeOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	n := len(p)
+	if len(o.bytes)+len(p) > backendProbeOutputLimit {
+		o.overflow = true
+		p = p[:backendProbeOutputLimit-len(o.bytes)]
 	}
-	return value, nil
+	o.bytes = append(o.bytes, p...)
+	return n, nil
+}
+
+func (o *boundedProbeOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return string(o.bytes)
+}
+
+func parseBubblewrapOptions(help string) map[string]struct{} {
+	options := make(map[string]struct{})
+	for _, line := range strings.Split(help, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && strings.HasPrefix(fields[0], "--") {
+			options[fields[0]] = struct{}{}
+		}
+	}
+	return options
+}
+
+func validVersion(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if _, err := strconv.Atoi(part); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 type workerLauncher struct {
 	bwrapPath  string
+	capability BubblewrapCapabilities
 	workerFile *os.File
 	closeOnce  sync.Once
 	closeErr   error
@@ -127,8 +278,9 @@ func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
 	if err := validateTrustedExecutable(bwrapPath, true); err != nil {
 		return nil, fmt.Errorf("%w: trusted Bubblewrap validation failed", ErrUnavailable)
 	}
-	if err := requireBindFDOption(bwrapPath); err != nil {
-		return nil, fmt.Errorf("%w: trusted Bubblewrap lacks required descriptor-bind support", ErrUnavailable)
+	_, capability, err := probeBubblewrap(bwrapPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: Bubblewrap compatibility preflight failed: %v", ErrUnavailable, err)
 	}
 	if err := validateTrustedExecutable(workerPath, false); err != nil {
 		return nil, fmt.Errorf("%w: fixed worker validation failed", ErrUnavailable)
@@ -141,31 +293,7 @@ func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
 		_ = workerFile.Close()
 		return nil, fmt.Errorf("%w: fixed worker validation failed", ErrUnavailable)
 	}
-	return &workerLauncher{bwrapPath: bwrapPath, workerFile: workerFile}, nil
-}
-
-func requireBindFDOption(path string) error {
-	output, err := probeBubblewrapVersion(path)
-	if err != nil {
-		return ErrUnavailable
-	}
-	fields := strings.Fields(output)
-	if len(fields) != 2 || fields[0] != "bubblewrap" {
-		return ErrUnavailable
-	}
-	version := strings.Split(fields[1], ".")
-	if len(version) < 2 {
-		return ErrUnavailable
-	}
-	major, majorErr := strconv.Atoi(version[0])
-	minor, minorErr := strconv.Atoi(version[1])
-	if majorErr != nil || minorErr != nil || major < 0 || minor < 0 {
-		return ErrUnavailable
-	}
-	if major == 0 && minor < 10 {
-		return ErrUnavailable
-	}
-	return nil
+	return &workerLauncher{bwrapPath: bwrapPath, capability: capability, workerFile: workerFile}, nil
 }
 
 func (l *workerLauncher) Close() error {
@@ -271,16 +399,12 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		return nil, fmt.Errorf("%w: control socket setup failed", ErrUnavailable)
 	}
 	workerCtx, cancel := context.WithTimeout(ctx, time.Duration(workerDeadline))
-	args := []string{
-		"--die-with-parent", "--new-session",
-		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-		"--hostname", "komposyn-readbroker", "--unshare-net",
-		"--disable-userns", "--cap-drop", "ALL", "--clearenv",
-		"--size", "8388608", "--tmpfs", "/",
-		"--ro-bind-fd", "5", "/worker",
-		"--seccomp", fmt.Sprint(seccompInputFD),
-		"--chdir", "/", "--", "/worker", workerMode,
-		"--control-fd", fmt.Sprint(controlFD),
+	args := EffectiveBubblewrapArguments(l.capability.BindMode)
+	if args == nil {
+		cancel()
+		_ = parentSocket.Close()
+		_ = childSocket.Close()
+		return nil, fmt.Errorf("%w: no verified worker bind mode is available", ErrUnavailable)
 	}
 	cmd := exec.CommandContext(workerCtx, l.bwrapPath, args...)
 	cmd.Dir = "/"
@@ -600,15 +724,117 @@ func sendPacket(fd int, packet []byte) error {
 	return nil
 }
 
-// WorkerMain is selected only by the study command's private worker mode. It
-// reads no path and accepts no shell or arbitrary payload. The sole protocol
-// descriptor is fd 4; an approved read-only file descriptor arrives later via
-// SCM_RIGHTS.
+// WorkerMain is selected only by the study command's private bootstrap mode.
+// It authenticates the mounted executable and installs seccomp before the
+// worker reports readiness. The sole protocol descriptor is fd 4; an approved
+// read-only file descriptor arrives later via SCM_RIGHTS.
 func WorkerMain() int {
-	if len(os.Args) != 4 || os.Args[1] != workerMode || os.Args[2] != "--control-fd" || os.Args[3] != "4" {
+	if len(os.Args) != 8 || os.Args[1] != workerBootstrapMode || os.Args[2] != "--control-fd" || os.Args[3] != "4" ||
+		os.Args[4] != "--worker-fd" || os.Args[5] != "5" || os.Args[6] != "--seccomp-fd" || os.Args[7] != "3" {
+		return 70
+	}
+	if err := verifyDescriptorMounts([]DescriptorMount{{FD: workerFileFD, Destination: "/worker"}}); err != nil {
+		return 70
+	}
+	if err := installWorkerSeccomp(seccompInputFD); err != nil {
 		return 70
 	}
 	return workerMainFD(controlFD)
+}
+
+const workerFileFD = 5
+
+type DescriptorMount struct {
+	FD          int
+	Destination string
+}
+
+// verifyDescriptorMounts consumes every distinct non-standard verification
+// descriptor and compares the mounted entry with the retained object before
+// seccomp denies pathname inspection. It is deliberately limited to startup
+// verification; no verification descriptor is retained by the worker.
+func verifyDescriptorMounts(mounts []DescriptorMount) (result error) {
+	seen := make(map[int]struct{}, len(mounts))
+	defer func() {
+		for fd := range seen {
+			if err := unix.Close(fd); err != nil && result == nil {
+				result = err
+			}
+		}
+	}()
+	for _, mount := range mounts {
+		if mount.FD > 2 {
+			if _, duplicate := seen[mount.FD]; duplicate {
+				return ErrProtocol
+			}
+			seen[mount.FD] = struct{}{}
+		}
+		if mount.FD <= 2 || mount.Destination == "" || mount.Destination[0] != '/' {
+			return ErrProtocol
+		}
+	}
+	for _, mount := range mounts {
+		var source unix.Stat_t
+		if err := unix.Fstat(mount.FD, &source); err != nil || source.Mode&unix.S_IFMT != unix.S_IFREG {
+			return ErrProtocol
+		}
+		flags, err := unix.FcntlInt(uintptr(mount.FD), unix.F_GETFL, 0)
+		if err != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
+			return ErrProtocol
+		}
+		var mounted unix.Stat_t
+		if err := unix.Lstat(mount.Destination, &mounted); err != nil || mounted.Mode&unix.S_IFMT != unix.S_IFREG ||
+			mounted.Dev != source.Dev || mounted.Ino != source.Ino {
+			return ErrStaleReceipt
+		}
+	}
+	return nil
+}
+
+func installWorkerSeccomp(fd int) error {
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size <= 0 || stat.Size > 64<<10 || stat.Size%unix.SizeofSockFilter != 0 {
+		return ErrProtocol
+	}
+	data := make([]byte, stat.Size)
+	for offset := 0; offset < len(data); {
+		count, err := unix.Pread(fd, data[offset:], int64(offset))
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil || count == 0 {
+			return ErrProtocol
+		}
+		offset += count
+	}
+	expected, err := workerSeccompFilterBytes()
+	if err != nil || !bytes.Equal(data, expected) {
+		return ErrProtocol
+	}
+	filters := make([]unix.SockFilter, len(data)/unix.SizeofSockFilter)
+	for index := range filters {
+		offset := index * unix.SizeofSockFilter
+		filters[index] = unix.SockFilter{
+			Code: binary.NativeEndian.Uint16(data[offset : offset+2]),
+			Jt:   data[offset+2], Jf: data[offset+3],
+			K: binary.NativeEndian.Uint32(data[offset+4 : offset+8]),
+		}
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return err
+	}
+	program := unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
+	result, _, errno := unix.Syscall(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER, unix.SECCOMP_FILTER_FLAG_TSYNC, uintptr(unsafe.Pointer(&program)))
+	runtime.KeepAlive(filters)
+	runtime.KeepAlive(program)
+	if errno != 0 || result != 0 {
+		if errno == 0 {
+			return fmt.Errorf("seccomp thread synchronization failed for thread %d", result)
+		}
+		return errno
+	}
+	return nil
 }
 
 func workerMainFD(fd int) int {
@@ -626,7 +852,7 @@ func workerMainFD(fd int) int {
 }
 
 func collectWorkerProbe(control int) WorkerProbe {
-	probe := WorkerProbe{Details: []string{"required namespaces requested: user,pid,ipc,uts,net (no try/fallback flags)", "bubblewrap mount namespace created with empty tmpfs root"}}
+	probe := WorkerProbe{Details: []string{"required namespaces requested: user,pid,ipc,uts,net (no try/fallback flags)", "bubblewrap mount namespace created with empty tmpfs root", "worker mount identity verified before seccomp; verification descriptors closed", "worker installed seccomp with thread synchronization before readiness"}}
 	if mode, _, errno := unix.Syscall6(unix.SYS_PRCTL, unix.PR_GET_SECCOMP, 0, 0, 0, 0, 0); errno == 0 {
 		probe.SeccompMode = int(mode)
 	}
