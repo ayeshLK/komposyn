@@ -54,6 +54,9 @@ const (
 	CodexRecoveryReasonAttributionChanged     = "attribution_changed"
 	CodexRecoveryReasonMonetaryReconciliation = "monetary_reconciliation_required"
 	CodexRecoveryReasonNoChanges              = "no_changes"
+	CodexRecoveryReasonInvalidPlanToken       = "invalid_plan_token"
+	CodexRecoveryReasonStalePreview           = "stale_preview"
+	CodexRecoveryReasonApplyFailed            = "apply_failed"
 	CodexRecoveryReasonCancelled              = "cancelled"
 	CodexRecoveryReasonUnavailable            = "recovery_unavailable"
 )
@@ -174,10 +177,32 @@ type recoveryPlanBinding struct {
 	Events             []recoveryPlanEvent `json:"events"`
 }
 
+type preparedCodexRecovery struct {
+	snapshot           sourceSnapshot
+	providerEvents     []UsageEvent
+	events             []UsageEvent
+	lastRecordID       string
+	stored             map[string]recoveryStoredEvent
+	namespaceKey       []byte
+	allocationRevision int64
+	binding            recoveryPlanBinding
+	bindingJSON        []byte
+	planToken          string
+}
+
 // PrepareCodexRecovery explicitly reads one selected source and returns a
 // bounded plan. It does not write to the Store; Open may already have applied
 // migrations or synchronized the catalog.
 func (s *Store) PrepareCodexRecovery(ctx context.Context, sourcePath string) (CodexRecoveryPreview, error) {
+	prepared := &preparedCodexRecovery{}
+	preview, err := s.prepareCodexRecovery(ctx, sourcePath, prepared)
+	if prepared.snapshot.file != nil {
+		_ = prepared.snapshot.close()
+	}
+	return preview, err
+}
+
+func (s *Store) prepareCodexRecovery(ctx context.Context, sourcePath string, prepared *preparedCodexRecovery) (CodexRecoveryPreview, error) {
 	preview := CodexRecoveryPreview{FormatVersion: CodexRecoveryPreviewFormatVersion,
 		AlgorithmVersion: CodexRecoveryAlgorithmVersion, ParserRevision: codexParserRevision,
 		Changes: []CodexRecoveryChange{}}
@@ -203,7 +228,12 @@ func (s *Store) PrepareCodexRecovery(ctx context.Context, sourcePath string) (Co
 		}
 		return refuse(CodexRecoveryReasonSourceUnavailable)
 	}
-	defer snapshot.close()
+	keepSnapshot := false
+	defer func() {
+		if !keepSnapshot {
+			_ = snapshot.close()
+		}
+	}()
 	if snapshot.adapter != "codex" {
 		return refuse(CodexRecoveryReasonUnsupportedSource)
 	}
@@ -258,7 +288,8 @@ func (s *Store) PrepareCodexRecovery(ctx context.Context, sourcePath string) (Co
 	}
 
 	events := make([]UsageEvent, 0)
-	parsed, retry, err := parseCodexRecoverySnapshot(ctx, sourcePath, s, snapshot, &events)
+	var lastRecordID string
+	parsed, retry, err := parseCodexRecoverySnapshot(ctx, sourcePath, s, snapshot, &events, &lastRecordID)
 	if err != nil || retry {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return refuse(CodexRecoveryReasonCancelled)
@@ -271,6 +302,7 @@ func (s *Store) PrepareCodexRecovery(ctx context.Context, sourcePath string) (Co
 	if parsed.Outcomes.Incomplete() || parsed.Outcomes.Pending() {
 		return refuse(CodexRecoveryReasonIncompleteSnapshot)
 	}
+	providerEvents := append([]UsageEvent(nil), events...)
 	for _, event := range events {
 		if !strings.HasPrefix(event.EventID, "codex-event-") || event.Provenance.Adapter != "codex" || event.Provenance.SourceID != generationSourceID(snapshot.baseSourceID, snapshot.generation) {
 			return refuse(CodexRecoveryReasonUnsupportedRecords)
@@ -315,6 +347,19 @@ func (s *Store) PrepareCodexRecovery(ctx context.Context, sourcePath string) (Co
 	}
 	if err := tx.Commit(); err != nil {
 		return refuse(CodexRecoveryReasonUnavailable)
+	}
+	if prepared != nil {
+		prepared.snapshot = snapshot
+		prepared.providerEvents = providerEvents
+		prepared.events = append([]UsageEvent(nil), events...)
+		prepared.lastRecordID = lastRecordID
+		prepared.stored = stored
+		prepared.namespaceKey = append([]byte(nil), namespaceKey...)
+		prepared.allocationRevision = allocationRevision
+		prepared.binding = binding
+		prepared.bindingJSON = append([]byte(nil), encoded...)
+		prepared.planToken = preview.PlanToken
+		keepSnapshot = true
 	}
 	return preview, nil
 }
@@ -429,7 +474,7 @@ func countRecoveryRecords(ctx context.Context, file *os.File, byteLimit int64, h
 	}
 }
 
-func parseCodexRecoverySnapshot(ctx context.Context, path string, store *Store, snapshot sourceSnapshot, events *[]UsageEvent) (ImportResult, bool, error) {
+func parseCodexRecoverySnapshot(ctx context.Context, path string, store *Store, snapshot sourceSnapshot, events *[]UsageEvent, lastRecordID *string) (ImportResult, bool, error) {
 	if _, err := snapshot.file.Seek(0, io.SeekStart); err != nil {
 		return ImportResult{}, false, err
 	}
@@ -454,7 +499,7 @@ func parseCodexRecoverySnapshot(ctx context.Context, path string, store *Store, 
 		}
 		return nil
 	}
-	return importCodexReaderForRecovery(ctx, stream, store, snapshot, verify, events)
+	return importCodexReaderForRecovery(ctx, stream, store, snapshot, verify, events, lastRecordID)
 }
 
 func recoveryStoreStateMatches(tx *sql.Tx, snapshot sourceSnapshot) error {
@@ -505,15 +550,21 @@ func recoveryCollectorActive(tx *sql.Tx) (bool, error) {
 }
 
 func recoveryAllocationRevision(tx *sql.Tx, sourceID string, generation int64) (int64, error) {
-	var storedGeneration, revision int64
-	err := tx.QueryRow("SELECT source_generation, revision FROM source_allocation_revisions WHERE source_id=?", sourceID).Scan(&storedGeneration, &revision)
+	_ = generation // Revisions are monotonic per stable source identity across generations.
+	return sourceAllocationRevision(tx, sourceID)
+}
+
+type allocationRevisionQueryer interface {
+	QueryRow(string, ...any) *sql.Row
+}
+
+func sourceAllocationRevision(queryer allocationRevisionQueryer, sourceID string) (int64, error) {
+	var revision int64
+	err := queryer.QueryRow("SELECT revision FROM source_allocation_revisions WHERE source_id=?", sourceID).Scan(&revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
-	if err != nil || storedGeneration != generation {
-		return 0, errors.New("allocation revision unavailable")
-	}
-	return revision, nil
+	return revision, err
 }
 
 func recoveryReadSourceEvents(tx *sql.Tx, baseSourceID string, generation int64) (map[string]recoveryStoredEvent, error) {
@@ -815,6 +866,7 @@ func sourceCursorToken(expectation sourceCursorExpectation) string {
 		RecordID              string
 		Generation            int64
 		Pending, Reusable     bool
-	}{expectation.exists, expectation.cursor.SourceID, expectation.cursor.FileFingerprint, expectation.cursor.ByteOffset, expectation.cursor.LastProviderRecordID, expectation.cursor.SourceGeneration, expectation.cursor.PendingTail, expectation.cursor.SnapshotReusable})
+		AllocationRevision    int64
+	}{expectation.exists, expectation.cursor.SourceID, expectation.cursor.FileFingerprint, expectation.cursor.ByteOffset, expectation.cursor.LastProviderRecordID, expectation.cursor.SourceGeneration, expectation.cursor.PendingTail, expectation.cursor.SnapshotReusable, expectation.allocationRevision})
 	return digest(encoded)
 }

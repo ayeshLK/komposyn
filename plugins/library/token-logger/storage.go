@@ -1048,6 +1048,11 @@ func (s *Store) appendInternalWithProjectNameSources(events []UsageEvent, cursor
 		insertSQL = legacyEventInsertSQL
 	}
 	if expected != nil {
+		allocationRevision, revisionErr := sourceAllocationRevision(tx, expected.sourceID)
+		if revisionErr != nil || allocationRevision != expected.allocationRevision {
+			tx.Rollback()
+			return Receipt{}, errSourceCursorChanged
+		}
 		current, currentErr := cursorInTransaction(tx, expected.sourceID)
 		if errors.Is(currentErr, sql.ErrNoRows) {
 			if expected.exists {
