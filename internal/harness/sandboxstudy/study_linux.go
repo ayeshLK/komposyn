@@ -1,0 +1,629 @@
+// Copyright 2026 Ayesh Almeida
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//go:build linux
+
+package sandboxstudy
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+const maxLineBytes = workerOutputLimit
+
+var errCancelBeforeRelease = errors.New("cancel before operation release")
+
+// Observation separates what a fixture observed from expected authority A and
+// the narrower observation that would be consistent with authority B.
+type Observation struct {
+	Case          string `json:"case"`
+	Attempt       string `json:"attempted_operation"`
+	ActualEffect  string `json:"actual_host_effect"`
+	ExpectedA     string `json:"expected_A"`
+	ObservedB     string `json:"observed_B"`
+	Status        string `json:"status"`
+	WorkerOutcome string `json:"worker_outcome,omitempty"`
+	Limitation    string `json:"limitation,omitempty"`
+}
+
+type workerResult struct {
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type scenario struct {
+	name      string
+	action    string
+	path      string
+	setup     func(string, string) (func() (string, error), error)
+	protected string
+}
+
+// RunNativeSuite runs disposable same-user fixtures against the requested
+// system bubblewrap binary. It never retries outside the sandbox.
+func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observation, error) {
+	backend, err := filepath.Abs(bwrapPath)
+	if err != nil {
+		return nil, err
+	}
+	worker, err := filepath.Abs(workerPath)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.MkdirTemp("", "komposyn-issue215-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(root)
+
+	cases := []scenario{
+		{name: "selected-root-relocation", action: "create-parent", path: "root-effect", setup: setupRootRelocation},
+		{name: "selected-root-relocation-read", action: "read-open", path: "secret.txt", setup: setupRootRelocationRead},
+		{name: "parent-relocation-before-create", action: "create-parent", path: "parent/new.txt", setup: setupParentRelocation},
+		{name: "parent-relocation-before-delete", action: "delete-parent", path: "parent/target.txt", setup: setupParentDelete},
+		{name: "opened-target-relocation-before-write", action: "write-open", path: "target.txt", setup: setupTargetRelocation},
+		{name: "existing-hardlink-alias", action: "write-open", path: "target.txt", setup: setupExistingHardlink},
+		{name: "late-hardlink-alias", action: "write-open", path: "target.txt", setup: setupLateHardlink},
+		{name: "deletion-target-substitution", action: "delete-parent", path: "target.txt", setup: setupDeleteSubstitution},
+		{name: "recursive-child-relocation", action: "recursive-child", path: "child", setup: setupRecursiveMove},
+		{name: "rename-crosses-unmounted-scope", action: "rename-out", path: "source.txt", setup: setupRenameOut},
+		{name: "symlink-to-unmounted-host-path", action: "read-path", path: "link.txt", setup: setupSymlinkEscape},
+		{name: "nested-protected-path", action: "read-path", path: "protected/secret.txt", setup: setupProtectedAlias, protected: "protected"},
+		{name: "protected-path-and-alias", action: "read-path", path: "protected-alias.txt", setup: setupProtectedAlias, protected: "protected"},
+		{name: "network-host-path-and-runtime-probes", action: "probe", path: strconv.Itoa(os.Getpid()), setup: setupNoop},
+		{name: "private-scratch", action: "scratch", path: "scratch.bin", setup: setupNoop},
+		{name: "bounded-output", action: "flood", path: "fixture", setup: setupNoop},
+		{name: "partial-write-outcome", action: "partial-create", path: "partial.txt", setup: setupNoop},
+		{name: "cancel-before-release", action: "hold", path: "fixture", setup: setupCancel},
+	}
+	observations := make([]Observation, 0, len(cases))
+	for _, test := range cases {
+		caseRoot := filepath.Join(root, test.name)
+		if err := os.Mkdir(caseRoot, 0o700); err != nil {
+			return observations, err
+		}
+		afterReady, err := test.setup(caseRoot, root)
+		if err != nil {
+			return observations, fmt.Errorf("fixture %s: %w", test.name, err)
+		}
+		result, runErr := runGated(ctx, backend, worker, caseRoot, test.protected, test.action, test.path, afterReady)
+		if runErr != nil {
+			observations = append(observations, Observation{Case: test.name, Attempt: test.action + " " + test.path,
+				ExpectedA: "no effect outside the approved host pathname; refuse changed target/context",
+				Status:    "unavailable", WorkerOutcome: "not_executed", Limitation: sanitize(runErr.Error())})
+			return observations, runErr
+		}
+		result.Case = test.name
+		if result.Status == "unknown" {
+			observations = append(observations, result)
+			continue
+		}
+		result.ActualEffect, result.Status = verifyObserved(test.name, caseRoot, result)
+		if test.name == "private-scratch" {
+			if _, err := os.Stat(filepath.Join(caseRoot, "scratch.bin")); errors.Is(err, os.ErrNotExist) {
+				result.ActualEffect = "worker scratch remained inside private /tmp; no host fixture file appeared"
+				result.Status = "measured_pass"
+			} else {
+				result.ActualEffect = "scratch escaped private tmpfs or fixture state was unexpected"
+				result.Status = "violation"
+			}
+		}
+		observations = append(observations, result)
+	}
+	observations = append(observations,
+		Observation{Case: "mount-boundary", Attempt: "cross an independently mounted child filesystem", ExpectedA: "reject a mount crossing", Status: "unavailable", Limitation: "no native mount fixture was created; the surrounding launcher denies namespace setup"},
+		Observation{Case: "aggregate-resource-limits", Attempt: "verify pids/memory/CPU subtree enforcement", ExpectedA: "effective aggregate controls before any exhaustion test", Status: "unavailable", Limitation: "study does not create or write cgroups; visible controllers are not proof of delegation"},
+		Observation{Case: "parent-death-and-descendant-cleanup", Attempt: "kill the coordinator while descendants are active", ExpectedA: "all worker descendants terminated and joined", Status: "unavailable", Limitation: "not run because no delegated cgroup kill boundary is established"},
+		Observation{Case: "shell-experiment", Attempt: "execute a shell command", ExpectedA: "separate shell-specific isolation evidence", Status: "unavailable", Limitation: "not implemented; typed worker findings do not establish shell safety"},
+		Observation{Case: "revocation-after-operation-release", Attempt: "revoke immediately after release", ExpectedA: "request worker termination and classify possible effects partial/unknown", Status: "unavailable", Limitation: "synchronization ordering is exercised by deterministic Go gate tests only; no native live mutation test"},
+	)
+	return observations, nil
+}
+
+func runGated(ctx context.Context, backend, worker, scope, protected, action, target string, afterReady func() (string, error)) (Observation, error) {
+	args, seccompFile, err := Profile(backend, worker, scope, protected)
+	if err != nil {
+		return Observation{}, err
+	}
+	defer func() { _ = seccompFile.Close(); _ = os.Remove(seccompFile.Name()) }()
+	args = append(args, action, target)
+	commandCtx, cancel := context.WithTimeout(ctx, time.Duration(workerRuntimeLimit))
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, backend, args...)
+	// The sole inherited environment value is synthetic and exists only to
+	// verify that --clearenv removes it before the worker starts.
+	cmd.Env = []string{"KOMPOSYN_STUDY_SECRET=fixture-secret"}
+	cmd.ExtraFiles = []*os.File{seccompFile}
+	cmd.WaitDelay = time.Second
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return Observation{}, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return Observation{}, err
+	}
+	var stderr boundedBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return Observation{}, fmt.Errorf("candidate launch refused: %w", err)
+	}
+	gate := newOperationGate(1, true) // The current runtime already consumes once grants before ToolEnforcer.Execute.
+	childID := fmt.Sprintf("pid-%d", cmd.Process.Pid)
+	if err := gate.RegisterChild(childID); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return Observation{}, err
+	}
+	reader := bufio.NewReaderSize(stdout, maxLineBytes)
+	ready, err := readLineBounded(reader)
+	if err != nil || strings.TrimSpace(ready) != "READY" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		if err == nil {
+			err = fmt.Errorf("worker startup acknowledgement was %q", sanitize(ready))
+		}
+		return Observation{}, fmt.Errorf("candidate startup failed: %w: %s", err, stderr.String())
+	}
+	if err := gate.AcknowledgeStartup(childID); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return Observation{}, err
+	}
+	actualEffect, effectErr := afterReady()
+	if effectErr != nil {
+		_ = gate.Cancel()
+		_, _ = io.WriteString(stdin, "CANCEL\n")
+		_ = stdin.Close()
+		waitErr := cmd.Wait()
+		if errors.Is(effectErr, errCancelBeforeRelease) && waitErr != nil {
+			return Observation{Attempt: action + " " + target, ActualEffect: "startup acknowledged; cancellation before release; no operation was permitted", ExpectedA: "no fixture effect",
+				ObservedB: "not applicable", Status: "measured", WorkerOutcome: "not_executed", Limitation: "parent cancellation was requested before release"}, nil
+		}
+		return Observation{}, effectErr
+	}
+	if err := gate.Release(childID); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return Observation{}, err
+	}
+	if _, err := io.WriteString(stdin, "RELEASE\n"); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return Observation{}, err
+	}
+	_ = stdin.Close()
+	started, startedErr := readLineBounded(reader)
+	if startedErr != nil || strings.TrimSpace(started) != "STARTED" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return unknownAfterRelease(action, target, "worker did not acknowledge operation start: "+sanitize(started)), nil
+	}
+	line, readErr := readLineBounded(reader)
+	if readErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		if action == "flood" {
+			return Observation{Attempt: action + " " + target, ActualEffect: "worker output exceeded the 64 KiB line bound; child was killed and reaped", ExpectedA: "bounded output without unbounded host memory growth", ObservedB: "not applicable", Status: "measured_pass", WorkerOutcome: "unknown", Limitation: "fixed 128 KiB fixture output only"}, nil
+		}
+		return unknownAfterRelease(action, target, fmt.Sprintf("worker result unavailable: %v: %s", readErr, stderr.String())), nil
+	}
+	var result workerResult
+	if err := json.Unmarshal([]byte(line), &result); err != nil {
+		return unknownAfterRelease(action, target, "invalid worker fixture result: "+err.Error()), nil
+	}
+	if waitErr != nil {
+		if commandCtx.Err() != nil {
+			return unknownAfterRelease(action, target, "bounded execution deadline elapsed"), nil
+		}
+		return unknownAfterRelease(action, target, fmt.Sprintf("worker exit: %v: %s", waitErr, stderr.String())), nil
+	}
+	return Observation{
+		Case:          action + " " + target,
+		Attempt:       action + " " + target,
+		ActualEffect:  actualEffect + "; worker=" + result.Status + " " + result.Detail,
+		ExpectedA:     "deny the effect if the approved host pathname, object binding, or protected identity changed",
+		ObservedB:     "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+		Status:        "measured",
+		WorkerOutcome: result.Status,
+		Limitation:    "one disposable same-user fixture; does not prove general backend safety or satisfy A",
+	}, nil
+}
+
+func unknownAfterRelease(action, target, reason string) Observation {
+	return Observation{Attempt: action + " " + target,
+		ActualEffect: "worker failed after the operation gate was released; an effect may have occurred",
+		ExpectedA:    "classify as partial/unknown unless no-effect evidence exists",
+		ObservedB:    "not applicable", Status: "unknown", WorkerOutcome: "unknown",
+		Limitation: sanitize(reason)}
+}
+
+func readLineBounded(reader *bufio.Reader) (string, error) {
+	var out bytes.Buffer
+	for out.Len() <= maxLineBytes {
+		fragment, err := reader.ReadSlice('\n')
+		if out.Len()+len(fragment) > maxLineBytes {
+			return "", errors.New("worker output line exceeded 64 KiB")
+		}
+		_, _ = out.Write(fragment)
+		if err == nil {
+			return strings.TrimSuffix(out.String(), "\n"), nil
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return "", err
+		}
+	}
+	return "", errors.New("worker output exceeded 64 KiB")
+}
+
+type boundedBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if b.limit == 0 {
+		b.limit = workerOutputLimit
+	}
+	remaining := b.limit - b.buffer.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = b.buffer.Write(p[:remaining])
+		return len(p), nil
+	}
+	return b.buffer.Write(p)
+}
+
+func (b *boundedBuffer) String() string { return sanitize(b.buffer.String()) }
+
+func sanitize(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\t' {
+			return ' '
+		}
+		return r
+	}, value)
+	if len(value) > 512 {
+		value = value[:512]
+	}
+	return value
+}
+
+func verifyObserved(name, scope string, result Observation) (string, string) {
+	outside := filepath.Dir(scope)
+	read := func(path string) (string, bool) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "absent (" + sanitize(err.Error()) + ")", false
+		}
+		return fmt.Sprintf("present (%d fixture bytes)", len(data)), true
+	}
+	status := result.WorkerOutcome
+	switch name {
+	case "selected-root-relocation":
+		effect, present := read(filepath.Join(outside, "moved-root", "root-effect"))
+		return "moved root effect=" + effect + "; worker=" + status, classifyEffect(present)
+	case "selected-root-relocation-read":
+		_, present := read(filepath.Join(outside, "moved-root", "secret.txt"))
+		return fmt.Sprintf("read through opened file after root move=%t; worker=%s", status == "succeeded" && present, status), classifyEffect(status == "succeeded")
+	case "parent-relocation-before-create":
+		effect, present := read(filepath.Join(outside, "moved-parent", "new.txt"))
+		return "moved parent effect=" + effect + "; worker=" + status, classifyEffect(present)
+	case "parent-relocation-before-delete":
+		_, movedPresent := read(filepath.Join(outside, "moved-parent", "target.txt"))
+		_, replacementPresent := read(filepath.Join(scope, "parent", "target.txt"))
+		return fmt.Sprintf("opened moved-parent target removed=%t; replacement at authorized pathname remains=%t; worker=%s", !movedPresent, replacementPresent, status), classifyEffect(!movedPresent)
+	case "opened-target-relocation-before-write":
+		data, err := os.ReadFile(filepath.Join(outside, "moved-target"))
+		changed := err == nil && string(data) != "before"
+		return fmt.Sprintf("moved target changed=%t; worker=%s", changed, status), classifyEffect(changed)
+	case "existing-hardlink-alias", "late-hardlink-alias":
+		data, err := os.ReadFile(filepath.Join(outside, "alias.txt"))
+		changed := err == nil && string(data) != "before"
+		return fmt.Sprintf("outside alias changed=%t; worker=%s", changed, status), classifyEffect(changed)
+	case "deletion-target-substitution":
+		_, err := os.Lstat(filepath.Join(scope, "target.txt"))
+		displaced, _ := read(filepath.Join(outside, "displaced.txt"))
+		removed := errors.Is(err, os.ErrNotExist)
+		return fmt.Sprintf("replacement link removed=%t; original displaced entry=%s; worker=%s", removed, displaced, status), classifyEffect(removed)
+	case "recursive-child-relocation":
+		_, present := read(filepath.Join(outside, "moved-child", "item.txt"))
+		return fmt.Sprintf("moved child file removed=%t; worker=%s", !present, status), classifyEffect(!present)
+	case "rename-crosses-unmounted-scope":
+		_, present := read(filepath.Join(scope, "source.txt"))
+		return fmt.Sprintf("source remains=%t; destination is unmounted; worker=%s", present, status), classifyDenied(status == "failed")
+	case "symlink-to-unmounted-host-path":
+		secret, present := read(filepath.Join(outside, "secret.txt"))
+		return "worker attempted read through symlink; host fixture=" + secret + "; worker=" + status, classifyDenied(status == "failed" && present)
+	case "protected-path-and-alias":
+		_, aliasPresent := read(filepath.Join(scope, "protected-alias.txt"))
+		return fmt.Sprintf("direct path masked; alias exists=%t; worker=%s", aliasPresent, status), classifyDenied(status == "failed")
+	case "nested-protected-path":
+		return "masked nested path direct read; worker=" + status, classifyDenied(status == "failed")
+	case "network-host-path-and-runtime-probes":
+		return "sandbox capability probe=" + result.ActualEffect, classifyProbe(result.ActualEffect)
+	case "bounded-output":
+		return result.ActualEffect, "measured_pass"
+	case "partial-write-outcome":
+		data, err := os.ReadFile(filepath.Join(scope, "partial.txt"))
+		if result.WorkerOutcome == "partial" && err == nil && string(data) == "prefix" {
+			return "injected post-effect failure left a known partial fixture; worker outcome=partial", "measured_pass"
+		}
+		return "partial outcome fixture mismatch", "observed_violation"
+	case "cancel-before-release":
+		return result.ActualEffect, "measured_pass"
+	default:
+		return result.ActualEffect, "measured"
+	}
+}
+
+func classifyEffect(effect bool) string {
+	if effect {
+		return "observed_violation"
+	}
+	return "observed_prevented"
+}
+
+func classifyDenied(denied bool) string {
+	if denied {
+		return "observed_prevented"
+	}
+	return "observed_violation"
+}
+
+func classifyProbe(detail string) string {
+	for _, violation := range []string{"environment_leak", "fd3_open", "socket_allowed", "shell_lookup_available", "host_pid_visible", "host_root_mounted", "proc_mounted", "home_mounted", "no_new_privs=0", "no_new_privs=unavailable", "seccomp_mode=0"} {
+		if strings.Contains(detail, violation) {
+			return "observed_violation"
+		}
+	}
+	if !strings.Contains(detail, "no_new_privs=1") || !strings.Contains(detail, "seccomp_mode=2") || !strings.Contains(detail, "fd3_closed") || !strings.Contains(detail, "socket_denied") || !strings.Contains(detail, "host_root_not_mounted") || !strings.Contains(detail, "proc_not_mounted") || !strings.Contains(detail, "home_not_mounted") || !strings.Contains(detail, "home_config_not_present") || !strings.Contains(detail, "environment_clear") || !strings.Contains(detail, "shell_lookup_unavailable") || !strings.Contains(detail, "host_pid_unreachable") {
+		return "unavailable"
+	}
+	return "measured_pass"
+}
+
+// WorkerMain is called by the study command's private worker mode. It is a
+// typed fixture worker and never invokes a shell or accepts arbitrary commands.
+func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
+	if len(args) != 2 {
+		return 2
+	}
+	action, relative := args[0], args[1]
+	if !filepath.IsLocal(relative) || relative == "." {
+		return 2
+	}
+	var target *os.File
+	var parent *os.File
+	deleteEntryValidated := false
+	var err error
+	switch action {
+	case "write-open", "read-open":
+		mode := os.O_RDONLY
+		if action == "write-open" {
+			mode = os.O_WRONLY | os.O_APPEND
+		}
+		target, err = os.OpenFile(filepath.Join("/scope", relative), mode, 0)
+	case "create-parent", "delete-parent":
+		parentPath := filepath.Dir(filepath.Join("/scope", relative))
+		parent, err = os.Open(parentPath)
+		if err == nil && action == "delete-parent" {
+			var identity unix.Stat_t
+			err = unix.Fstatat(int(parent.Fd()), filepath.Base(relative), &identity, unix.AT_SYMLINK_NOFOLLOW)
+			deleteEntryValidated = err == nil
+		}
+	case "recursive-child":
+		parent, err = os.Open(filepath.Join("/scope", relative))
+	case "read-path":
+		// Resolution intentionally happens only after release for link/mask probes.
+	case "probe", "scratch", "flood", "hold", "rename-out", "partial-create":
+	default:
+		return 2
+	}
+	if err != nil {
+		result := workerResult{Status: "setup_refused", Detail: sanitize(err.Error())}
+		_ = json.NewEncoder(stdout).Encode(result)
+		return 0
+	}
+	_, _ = io.WriteString(stdout, "READY\n")
+	line, err := bufio.NewReader(io.LimitReader(stdin, 64)).ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != "RELEASE" {
+		if target != nil {
+			_ = target.Close()
+		}
+		if parent != nil {
+			_ = parent.Close()
+		}
+		return 3
+	}
+	_, _ = io.WriteString(stdout, "STARTED\n")
+	result := workerResult{Status: "succeeded"}
+	switch action {
+	case "write-open":
+		var written int
+		written, err = target.Write([]byte("changed"))
+		if err == nil && written != len("changed") {
+			err = io.ErrShortWrite
+		}
+		if written > 0 && err != nil {
+			result.Status = "partial"
+		}
+	case "read-open":
+		data, readErr := io.ReadAll(io.LimitReader(target, 1024))
+		err = readErr
+		result.Detail = fmt.Sprintf("read %d fixture bytes", len(data))
+	case "create-parent":
+		name := filepath.Base(relative)
+		var fd int
+		fd, err = unix.Openat(int(parent.Fd()), name, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_CLOEXEC, 0o600)
+		if err == nil {
+			file := os.NewFile(uintptr(fd), name)
+			var written int
+			written, err = file.Write([]byte("created"))
+			if err == nil && written != len("created") {
+				err = io.ErrShortWrite
+			}
+			if err != nil {
+				result.Status = "partial"
+			}
+			_ = file.Close()
+		}
+	case "delete-parent":
+		name := filepath.Base(relative)
+		err = unix.Unlinkat(int(parent.Fd()), name, 0)
+		if err == nil && deleteEntryValidated {
+			result.Detail = "entry identity checked before operation gate"
+		}
+	case "recursive-child":
+		entries, readErr := parent.ReadDir(-1)
+		err = readErr
+		deleted := 0
+		for _, entry := range entries {
+			if err != nil {
+				break
+			}
+			if entry.IsDir() {
+				err = unix.Unlinkat(int(parent.Fd()), entry.Name(), unix.AT_REMOVEDIR)
+			} else {
+				err = unix.Unlinkat(int(parent.Fd()), entry.Name(), 0)
+			}
+			if err == nil {
+				deleted++
+			}
+		}
+		if deleted > 0 && err != nil {
+			result.Status = "partial"
+		}
+	case "rename-out":
+		err = os.Rename(filepath.Join("/scope", relative), filepath.Join("/outside", "renamed.txt"))
+	case "read-path":
+		var data []byte
+		data, err = os.ReadFile(filepath.Join("/scope", relative))
+		result.Detail = fmt.Sprintf("read %d fixture bytes", len(data))
+	case "probe":
+		result.Detail = sandboxProbe(relative)
+	case "scratch":
+		result.Detail = "private scratch write"
+		err = os.WriteFile(filepath.Join("/tmp", relative), []byte("scratch fixture"), 0o600)
+	case "flood":
+		_, err = io.WriteString(stdout, strings.Repeat("x", 128*1024))
+	case "partial-create":
+		var file *os.File
+		file, err = os.OpenFile(filepath.Join("/scope", relative), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, err = file.Write([]byte("prefix"))
+			result.Status = "partial"
+			result.Detail = "injected fixture failure after creating and writing the prefix"
+			_ = file.Close()
+		}
+	case "hold":
+		result.Detail = "cancelled before effect"
+	}
+	if target != nil {
+		_ = target.Close()
+	}
+	if parent != nil {
+		_ = parent.Close()
+	}
+	if err != nil && result.Status != "partial" {
+		result.Status = "failed"
+		result.Detail = sanitize(err.Error())
+	} else if err != nil {
+		result.Detail = sanitize(err.Error())
+	}
+	_ = json.NewEncoder(stdout).Encode(result)
+	return 0
+}
+
+func sandboxProbe(hostPIDText string) string {
+	var details []string
+	if os.Getenv("KOMPOSYN_STUDY_SECRET") == "fixture-secret" {
+		details = append(details, "environment_leak")
+	} else {
+		details = append(details, "environment_clear")
+	}
+	if _, err := os.Stat("/etc/passwd"); err != nil {
+		details = append(details, "host_root_not_mounted")
+	} else {
+		details = append(details, "host_root_mounted")
+	}
+	if _, err := os.Stat("/proc/self"); err != nil {
+		details = append(details, "proc_not_mounted")
+	} else {
+		details = append(details, "proc_mounted")
+	}
+	if _, err := os.Stat("/home"); err != nil {
+		details = append(details, "home_not_mounted")
+	} else {
+		details = append(details, "home_mounted")
+	}
+	if home, err := os.ReadDir(os.Getenv("HOME")); err != nil || len(home) != 0 {
+		details = append(details, "home_config_not_present")
+	}
+	if _, err := unix.FcntlInt(uintptr(3), unix.F_GETFD, 0); err != nil {
+		details = append(details, "fd3_closed")
+	} else {
+		details = append(details, "fd3_open")
+	}
+	for _, family := range []int{unix.AF_INET, unix.AF_UNIX} {
+		fd, err := unix.Socket(family, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+		if err == nil {
+			_ = unix.Close(fd)
+			details = append(details, "socket_allowed")
+		} else {
+			details = append(details, "socket_denied")
+		}
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		details = append(details, "shell_lookup_unavailable")
+	} else {
+		details = append(details, "shell_lookup_available")
+	}
+	noNewPrivs, _, noNewPrivsErr := unix.Syscall(unix.SYS_PRCTL, unix.PR_GET_NO_NEW_PRIVS, 0, 0)
+	if noNewPrivsErr == 0 {
+		details = append(details, fmt.Sprintf("no_new_privs=%d", noNewPrivs))
+	} else {
+		details = append(details, "no_new_privs=unavailable")
+	}
+	seccomp, _, seccompErr := unix.Syscall(unix.SYS_PRCTL, unix.PR_GET_SECCOMP, 0, 0)
+	if seccompErr == 0 {
+		details = append(details, fmt.Sprintf("seccomp_mode=%d", seccomp))
+	}
+	if hostPID, err := strconv.Atoi(hostPIDText); err == nil {
+		if err := unix.Kill(hostPID, 0); err != nil {
+			details = append(details, "host_pid_unreachable")
+		} else {
+			details = append(details, "host_pid_visible")
+		}
+	}
+	return strings.Join(details, ",")
+}
