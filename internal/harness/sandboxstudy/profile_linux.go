@@ -204,7 +204,7 @@ func auditArch(goArch string) (uint32, error) {
 }
 
 func deniedSyscalls() []int {
-	return []int{
+	denied := []int{
 		unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_LISTEN,
 		unix.SYS_ACCEPT, unix.SYS_ACCEPT4, unix.SYS_SENDTO, unix.SYS_RECVFROM, unix.SYS_SENDMSG,
 		unix.SYS_RECVMSG, unix.SYS_SETSOCKOPT, unix.SYS_GETSOCKOPT, unix.SYS_SHUTDOWN,
@@ -213,8 +213,9 @@ func deniedSyscalls() []int {
 		unix.SYS_PROCESS_VM_WRITEV, unix.SYS_PROCESS_MADVISE, unix.SYS_PROCESS_MRELEASE,
 		unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_PIDFD_GETFD, unix.SYS_PIDFD_OPEN, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_KCMP,
 		unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT,
-		unix.SYS_KEXEC_LOAD, unix.SYS_KEXEC_FILE_LOAD, unix.SYS_IOPL, unix.SYS_IOPERM,
+		unix.SYS_KEXEC_LOAD, unix.SYS_KEXEC_FILE_LOAD,
 		unix.SYS_ACCT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_KEYCTL,
 		unix.SYS_PERF_EVENT_OPEN, unix.SYS_BPF,
 	}
+	return append(denied, extraDeniedSyscalls()...)
 }

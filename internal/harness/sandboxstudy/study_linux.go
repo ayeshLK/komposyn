@@ -81,7 +81,58 @@ func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observ
 	}
 	defer os.RemoveAll(root)
 
-	cases := []scenario{
+	cases := scenarios()
+	observations := make([]Observation, 0, len(cases))
+	for _, test := range cases {
+		caseRoot := filepath.Join(root, test.name)
+		scope := filepath.Join(caseRoot, "scope")
+		outside := filepath.Join(caseRoot, "outside")
+		if err := os.MkdirAll(scope, 0o700); err != nil {
+			return observations, err
+		}
+		if err := os.Mkdir(outside, 0o700); err != nil {
+			return observations, err
+		}
+		afterReady, err := test.setup(scope, outside)
+		if err != nil {
+			return observations, fmt.Errorf("fixture %s: %w", test.name, err)
+		}
+		result, runErr := runGated(ctx, backend, worker, scope, test.protected, test.action, test.path, afterReady)
+		if runErr != nil {
+			observations = append(observations, Observation{Case: test.name, Attempt: test.action + " " + test.path,
+				ExpectedA: "no effect outside the approved host pathname; refuse changed target/context",
+				Status:    "unavailable", WorkerOutcome: "not_executed", Limitation: sanitize(runErr.Error())})
+			return observations, runErr
+		}
+		result.Case = test.name
+		if result.Status == "unknown" || result.Status == "unavailable" {
+			observations = append(observations, result)
+			continue
+		}
+		result.ActualEffect, result.Status = verifyObserved(test.name, scope, result)
+		if test.name == "private-scratch" {
+			if _, err := os.Stat(filepath.Join(scope, "scratch.bin")); errors.Is(err, os.ErrNotExist) {
+				result.ActualEffect = "worker scratch remained inside private /tmp; no host fixture file appeared"
+				result.Status = "measured_pass"
+			} else {
+				result.ActualEffect = "scratch escaped private tmpfs or fixture state was unexpected"
+				result.Status = "observed_violation"
+			}
+		}
+		observations = append(observations, result)
+	}
+	observations = append(observations,
+		Observation{Case: "mount-boundary", Attempt: "cross an independently mounted child filesystem", ExpectedA: "reject a mount crossing", Status: "unavailable", Limitation: "no native mount fixture was created; the surrounding launcher denies namespace setup"},
+		Observation{Case: "aggregate-resource-limits", Attempt: "verify pids/memory/CPU subtree enforcement", ExpectedA: "effective aggregate controls before any exhaustion test", Status: "unavailable", Limitation: "study does not create or write cgroups; visible controllers are not proof of delegation"},
+		Observation{Case: "parent-death-and-descendant-cleanup", Attempt: "kill the coordinator while descendants are active", ExpectedA: "all worker descendants terminated and joined", Status: "unavailable", Limitation: "not run because no delegated cgroup kill boundary is established"},
+		Observation{Case: "shell-experiment", Attempt: "execute a shell command", ExpectedA: "separate shell-specific isolation evidence", Status: "unavailable", Limitation: "not implemented; typed worker findings do not establish shell safety"},
+		Observation{Case: "revocation-after-operation-release", Attempt: "revoke immediately after release", ExpectedA: "request worker termination and classify possible effects partial/unknown", Status: "unavailable", Limitation: "synchronization ordering is exercised by deterministic Go gate tests only; no native live mutation test"},
+	)
+	return observations, nil
+}
+
+func scenarios() []scenario {
+	return []scenario{
 		{name: "selected-root-relocation", action: "create-parent", path: "root-effect", setup: setupRootRelocation},
 		{name: "selected-root-relocation-read", action: "read-open", path: "secret.txt", setup: setupRootRelocationRead},
 		{name: "parent-relocation-before-create", action: "create-parent", path: "parent/new.txt", setup: setupParentRelocation},
@@ -101,48 +152,6 @@ func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observ
 		{name: "partial-write-outcome", action: "partial-create", path: "partial.txt", setup: setupNoop},
 		{name: "cancel-before-release", action: "hold", path: "fixture", setup: setupCancel},
 	}
-	observations := make([]Observation, 0, len(cases))
-	for _, test := range cases {
-		caseRoot := filepath.Join(root, test.name)
-		if err := os.Mkdir(caseRoot, 0o700); err != nil {
-			return observations, err
-		}
-		afterReady, err := test.setup(caseRoot, root)
-		if err != nil {
-			return observations, fmt.Errorf("fixture %s: %w", test.name, err)
-		}
-		result, runErr := runGated(ctx, backend, worker, caseRoot, test.protected, test.action, test.path, afterReady)
-		if runErr != nil {
-			observations = append(observations, Observation{Case: test.name, Attempt: test.action + " " + test.path,
-				ExpectedA: "no effect outside the approved host pathname; refuse changed target/context",
-				Status:    "unavailable", WorkerOutcome: "not_executed", Limitation: sanitize(runErr.Error())})
-			return observations, runErr
-		}
-		result.Case = test.name
-		if result.Status == "unknown" {
-			observations = append(observations, result)
-			continue
-		}
-		result.ActualEffect, result.Status = verifyObserved(test.name, caseRoot, result)
-		if test.name == "private-scratch" {
-			if _, err := os.Stat(filepath.Join(caseRoot, "scratch.bin")); errors.Is(err, os.ErrNotExist) {
-				result.ActualEffect = "worker scratch remained inside private /tmp; no host fixture file appeared"
-				result.Status = "measured_pass"
-			} else {
-				result.ActualEffect = "scratch escaped private tmpfs or fixture state was unexpected"
-				result.Status = "violation"
-			}
-		}
-		observations = append(observations, result)
-	}
-	observations = append(observations,
-		Observation{Case: "mount-boundary", Attempt: "cross an independently mounted child filesystem", ExpectedA: "reject a mount crossing", Status: "unavailable", Limitation: "no native mount fixture was created; the surrounding launcher denies namespace setup"},
-		Observation{Case: "aggregate-resource-limits", Attempt: "verify pids/memory/CPU subtree enforcement", ExpectedA: "effective aggregate controls before any exhaustion test", Status: "unavailable", Limitation: "study does not create or write cgroups; visible controllers are not proof of delegation"},
-		Observation{Case: "parent-death-and-descendant-cleanup", Attempt: "kill the coordinator while descendants are active", ExpectedA: "all worker descendants terminated and joined", Status: "unavailable", Limitation: "not run because no delegated cgroup kill boundary is established"},
-		Observation{Case: "shell-experiment", Attempt: "execute a shell command", ExpectedA: "separate shell-specific isolation evidence", Status: "unavailable", Limitation: "not implemented; typed worker findings do not establish shell safety"},
-		Observation{Case: "revocation-after-operation-release", Attempt: "revoke immediately after release", ExpectedA: "request worker termination and classify possible effects partial/unknown", Status: "unavailable", Limitation: "synchronization ordering is exercised by deterministic Go gate tests only; no native live mutation test"},
-	)
-	return observations, nil
 }
 
 func runGated(ctx context.Context, backend, worker, scope, protected, action, target string, afterReady func() (string, error)) (Observation, error) {
@@ -225,18 +234,22 @@ func runGated(ctx context.Context, backend, worker, scope, protected, action, ta
 		return unknownAfterRelease(action, target, "worker did not acknowledge operation start: "+sanitize(started)), nil
 	}
 	line, readErr := readLineBounded(reader)
+	var killErr error
 	if readErr != nil {
-		_ = cmd.Process.Kill()
+		killErr = cmd.Process.Kill()
 	}
 	waitErr := cmd.Wait()
 	if readErr != nil {
-		if action == "flood" {
-			return Observation{Attempt: action + " " + target, ActualEffect: "worker output exceeded the 64 KiB line bound; child was killed and reaped", ExpectedA: "bounded output without unbounded host memory growth", ObservedB: "not applicable", Status: "measured_pass", WorkerOutcome: "unknown", Limitation: "fixed 128 KiB fixture output only"}, nil
+		if action == "flood" && errors.Is(readErr, errOutputLimit) {
+			if classifyOutputBound(action, readErr, cmd.ProcessState != nil) == "measured_pass" {
+				return Observation{Attempt: action + " " + target, ActualEffect: "oversized protocol line rejected; worker command was reaped", ExpectedA: "bounded output without unbounded host memory growth", ObservedB: "not applicable", Status: "measured_pass", WorkerOutcome: "unknown", Limitation: "fixed 128 KiB fixture output only; process-tree cleanup is not established"}, nil
+			}
+			return Observation{Attempt: action + " " + target, ActualEffect: "oversized line observed but worker reaping was not confirmed", ExpectedA: "bound output and confirm worker cleanup", ObservedB: "not applicable", Status: "unavailable", WorkerOutcome: "unknown", Limitation: sanitize(fmt.Sprintf("kill=%v wait=%v", killErr, waitErr))}, nil
 		}
 		return unknownAfterRelease(action, target, fmt.Sprintf("worker result unavailable: %v: %s", readErr, stderr.String())), nil
 	}
-	var result workerResult
-	if err := json.Unmarshal([]byte(line), &result); err != nil {
+	result, err := parseWorkerResult(line)
+	if err != nil {
 		return unknownAfterRelease(action, target, "invalid worker fixture result: "+err.Error()), nil
 	}
 	if waitErr != nil {
@@ -257,6 +270,12 @@ func runGated(ctx context.Context, backend, worker, scope, protected, action, ta
 	}, nil
 }
 
+func parseWorkerResult(line string) (workerResult, error) {
+	var result workerResult
+	err := json.Unmarshal([]byte(line), &result)
+	return result, err
+}
+
 func unknownAfterRelease(action, target, reason string) Observation {
 	return Observation{Attempt: action + " " + target,
 		ActualEffect: "worker failed after the operation gate was released; an effect may have occurred",
@@ -270,7 +289,7 @@ func readLineBounded(reader *bufio.Reader) (string, error) {
 	for out.Len() <= maxLineBytes {
 		fragment, err := reader.ReadSlice('\n')
 		if out.Len()+len(fragment) > maxLineBytes {
-			return "", errors.New("worker output line exceeded 64 KiB")
+			return "", fmt.Errorf("worker output line exceeded 64 KiB: %w", errOutputLimit)
 		}
 		_, _ = out.Write(fragment)
 		if err == nil {
@@ -281,6 +300,18 @@ func readLineBounded(reader *bufio.Reader) (string, error) {
 		}
 	}
 	return "", errors.New("worker output exceeded 64 KiB")
+}
+
+var errOutputLimit = errors.New("worker output limit exceeded")
+
+func classifyOutputBound(action string, readErr error, reaped bool) string {
+	if action == "flood" && errors.Is(readErr, errOutputLimit) && reaped {
+		return "measured_pass"
+	}
+	if action == "flood" {
+		return "unavailable"
+	}
+	return "not_applicable"
 }
 
 type boundedBuffer struct {
@@ -319,7 +350,7 @@ func sanitize(value string) string {
 }
 
 func verifyObserved(name, scope string, result Observation) (string, string) {
-	outside := filepath.Dir(scope)
+	outside := filepath.Join(filepath.Dir(scope), "outside")
 	read := func(path string) (string, bool) {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -372,7 +403,13 @@ func verifyObserved(name, scope string, result Observation) (string, string) {
 	case "network-host-path-and-runtime-probes":
 		return "sandbox capability probe=" + result.ActualEffect, classifyProbe(result.ActualEffect)
 	case "bounded-output":
-		return result.ActualEffect, "measured_pass"
+		if result.Status == "measured_pass" && strings.Contains(result.ActualEffect, "oversized protocol line rejected") {
+			return result.ActualEffect, "measured_pass"
+		}
+		if result.Status == "observed_violation" {
+			return result.ActualEffect, "observed_violation"
+		}
+		return result.ActualEffect, "unavailable"
 	case "partial-write-outcome":
 		data, err := os.ReadFile(filepath.Join(scope, "partial.txt"))
 		if result.WorkerOutcome == "partial" && err == nil && string(data) == "prefix" {
@@ -401,7 +438,7 @@ func classifyDenied(denied bool) string {
 }
 
 func classifyProbe(detail string) string {
-	for _, violation := range []string{"environment_leak", "fd3_open", "socket_allowed", "shell_lookup_available", "host_pid_visible", "host_root_mounted", "proc_mounted", "home_mounted", "no_new_privs=0", "no_new_privs=unavailable", "seccomp_mode=0"} {
+	for _, violation := range []string{"environment_leak", "fd3_open", "socket_allowed", "shell_lookup_available", "host_pid_visible", "host_root_mounted", "proc_mounted", "home_mounted", "home_dir_missing", "home_read_error", "home_config_present", "no_new_privs=0", "no_new_privs=unavailable", "seccomp_mode=0"} {
 		if strings.Contains(detail, violation) {
 			return "observed_violation"
 		}
@@ -586,9 +623,7 @@ func sandboxProbe(hostPIDText string) string {
 	} else {
 		details = append(details, "home_mounted")
 	}
-	if home, err := os.ReadDir(os.Getenv("HOME")); err != nil || len(home) != 0 {
-		details = append(details, "home_config_not_present")
-	}
+	details = append(details, probeHome(os.Getenv("HOME")))
 	if _, err := unix.FcntlInt(uintptr(3), unix.F_GETFD, 0); err != nil {
 		details = append(details, "fd3_closed")
 	} else {
@@ -626,4 +661,18 @@ func sandboxProbe(hostPIDText string) string {
 		}
 	}
 	return strings.Join(details, ",")
+}
+
+func probeHome(path string) string {
+	entries, err := os.ReadDir(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "home_dir_missing"
+	}
+	if err != nil {
+		return "home_read_error"
+	}
+	if len(entries) == 0 {
+		return "home_config_not_present"
+	}
+	return "home_config_present"
 }

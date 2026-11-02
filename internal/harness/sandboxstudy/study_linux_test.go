@@ -18,7 +18,9 @@ package sandboxstudy
 
 import (
 	"bufio"
+	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,8 +86,113 @@ func TestBoundedOutputAndLiteralSanitization(t *testing.T) {
 
 func TestReadLineBoundedRejectsOversizeFixture(t *testing.T) {
 	line := strings.Repeat("x", maxLineBytes+1) + "\n"
-	if _, err := readLineBounded(bufio.NewReader(strings.NewReader(line))); err == nil {
+	if _, err := readLineBounded(bufio.NewReader(strings.NewReader(line))); !errors.Is(err, errOutputLimit) {
 		t.Fatal("oversized protocol line accepted")
+	}
+}
+
+func TestOutputLimitRequiresExactLimitAndConfirmedReap(t *testing.T) {
+	if got := classifyOutputBound("flood", errOutputLimit, true); got != "measured_pass" {
+		t.Fatalf("confirmed oversized line classified as %q", got)
+	}
+	for _, readErr := range []error{io.EOF, context.DeadlineExceeded, errors.New("worker failed")} {
+		if got := classifyOutputBound("flood", readErr, true); got != "unavailable" {
+			t.Errorf("read error %v classified as %q", readErr, got)
+		}
+	}
+	if got := classifyOutputBound("flood", errOutputLimit, false); got != "unavailable" {
+		t.Fatalf("unreaped worker classified as %q", got)
+	}
+	actual, status := verifyObserved("bounded-output", t.TempDir(), Observation{WorkerOutcome: "failed"})
+	if status != "unavailable" || actual != "" {
+		t.Fatalf("failed worker became output pass: actual=%q status=%q", actual, status)
+	}
+	actual, status = verifyObserved("bounded-output", t.TempDir(), Observation{ActualEffect: "premature EOF", WorkerOutcome: "failed", Status: "unknown"})
+	if status != "unavailable" || actual != "premature EOF" {
+		t.Fatalf("premature EOF classification: actual=%q status=%q", actual, status)
+	}
+	if _, err := parseWorkerResult("not-json"); err == nil {
+		t.Fatal("malformed worker result was accepted")
+	}
+	malformed := unknownAfterRelease("flood", "fixture", "malformed worker result")
+	actual, status = verifyObserved("bounded-output", t.TempDir(), malformed)
+	if status != "unavailable" || !strings.Contains(malformed.Limitation, "malformed worker result") {
+		t.Fatalf("malformed worker result classification: actual=%q status=%q limitation=%q", actual, status, malformed.Limitation)
+	}
+	actual, status = verifyObserved("bounded-output", t.TempDir(), Observation{ActualEffect: "worker exited early", WorkerOutcome: "failed", Status: "measured"})
+	if status != "unavailable" || actual != "worker exited early" {
+		t.Fatalf("failed worker result classification: actual=%q status=%q", actual, status)
+	}
+}
+
+func TestScenarioFixtureDirectoriesAreIsolatedSequentially(t *testing.T) {
+	suite := t.TempDir()
+	for _, test := range scenarios() {
+		t.Run(test.name, func(t *testing.T) {
+			caseRoot := filepath.Join(suite, test.name)
+			scope := filepath.Join(caseRoot, "scope")
+			outside := filepath.Join(caseRoot, "outside")
+			if err := os.MkdirAll(scope, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(outside, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			afterReady, err := test.setup(scope, outside)
+			if err != nil {
+				t.Fatalf("scenario setup: %v", err)
+			}
+			if _, err := afterReady(); err != nil && !errors.Is(err, errCancelBeforeRelease) {
+				t.Fatalf("outside actor setup: %v", err)
+			}
+			if test.name == "selected-root-relocation" {
+				if err := os.WriteFile(filepath.Join(outside, "moved-root", "root-effect"), []byte("synthetic worker effect"), 0o600); err != nil {
+					t.Fatalf("simulate first worker effect: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestPrivateHomeProbeProductionAndClassification(t *testing.T) {
+	empty := t.TempDir()
+	if got := probeHome(empty); got != "home_config_not_present" {
+		t.Fatalf("empty private HOME marker = %q", got)
+	}
+	t.Setenv("HOME", empty)
+	if probe := sandboxProbe("0"); !strings.Contains(probe, "home_config_not_present") {
+		t.Fatalf("production probe omitted empty HOME marker: %s", probe)
+	}
+	if got := classifyProbe("environment_clear fd3_closed socket_denied no_new_privs=1 seccomp_mode=2 host_root_not_mounted proc_not_mounted home_not_mounted " + probeHome(empty) + " shell_lookup_unavailable host_pid_unreachable"); got != "measured_pass" {
+		t.Fatalf("clean private HOME did not classify as pass: %q", got)
+	}
+	populated := t.TempDir()
+	if err := os.WriteFile(filepath.Join(populated, "fixture-config"), []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := probeHome(populated); got != "home_config_present" {
+		t.Fatalf("populated private HOME marker = %q", got)
+	}
+	t.Setenv("HOME", populated)
+	if probe := sandboxProbe("0"); !strings.Contains(probe, "home_config_present") {
+		t.Fatalf("production probe omitted populated HOME marker: %s", probe)
+	}
+	if got := classifyProbe("home_config_present"); got != "observed_violation" {
+		t.Fatalf("populated private HOME classified as %q", got)
+	}
+	if got := probeHome(filepath.Join(t.TempDir(), "missing")); got != "home_dir_missing" {
+		t.Fatalf("missing private HOME marker = %q", got)
+	}
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := probeHome(filepath.Join(file, "child")); got != "home_read_error" {
+		t.Fatalf("unreadable private HOME marker = %q", got)
+	}
+	t.Setenv("HOME", filepath.Join(file, "child"))
+	if probe := sandboxProbe("0"); !strings.Contains(probe, "home_read_error") {
+		t.Fatalf("production probe omitted HOME read-error marker: %s", probe)
 	}
 }
 

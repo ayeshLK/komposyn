@@ -7,10 +7,10 @@ Authority contract A remains the existing enablement gate.
 
 ## Reproduce
 
-Run from the repository root on Linux/amd64 with Go 1.26.10 or newer and a
-root-owned, non-group/world-writable system bubblewrap executable. The filter
-has an arm64 encoding path, but Linux/arm64 has not been compiled or natively
-exercised for this study and is not part of the evidence-backed environment.
+Build on Linux/amd64 or Linux/arm64 with Go 1.26.10 or newer. Native study
+execution additionally needs a root-owned, non-group/world-writable system
+bubblewrap executable and functioning user namespaces/seccomp. The arm64
+command and test package cross-compile; no arm64 host execution was performed.
 The executable path is explicit and absolute; the harness does not search
 `PATH`. No installation, privilege escalation, host security-setting change,
 credential, or external service is required.
@@ -283,10 +283,11 @@ separate resource-control decision, not an assumed product prerequisite.
   unavailable. System bubblewrap plus Go orchestration is enough for this
   feasibility harness; native results are required before deciding whether a
   narrower launcher is needed. No Codex helper was extracted or added.
-- **Platform:** Linux/amd64 is the only intended study platform. Linux/arm64
-  filter encoding is architecture-gated but was not exercised. macOS and
-  Windows are outside this Linux study and remain unavailable. A version or
-  compile check is not behavioral evidence.
+- **Platform:** the harness has Linux/amd64 and Linux/arm64 build paths; arm64
+  was cross-compiled only and its native behavior is unverified. The host facts
+  and attempted native launch in this report are amd64 only. macOS and Windows
+  are outside this Linux study and remain unavailable. A version or compile
+  check is not behavioral evidence.
 
 No root-selection UX, protected-path policy, B contract, production sandbox
 service, shell, filesystem tool, or new permission semantics are approved by
@@ -298,7 +299,8 @@ choosing any product contract or minimum supported environment.
 
 Automated Go checks and race tests validate the harness's bounded readers,
 trusted-path validation, BPF serialization shape, fixture construction, and
-operation-gate ordering. They do not validate kernel enforcement. The native
+operation-gate ordering. Linux/arm64 command and test-package cross-builds
+validate compilation only. They do not validate kernel enforcement. The native
 suite must be run separately using the commands above on an eligible disposable
 Linux host; this execution could not run it.
 
