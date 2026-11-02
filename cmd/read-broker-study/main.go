@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build linux
+
 // Command read-broker-study runs a disposable Linux broker-plus-sandbox
 // feasibility experiment. It never connects to a provider or registers a
 // production tool.
