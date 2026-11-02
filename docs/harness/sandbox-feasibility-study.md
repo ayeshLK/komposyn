@@ -169,6 +169,11 @@ fixture state. The execution environment used for this draft blocked the
 outer command launcher before the study executable ran, so **none of the
 candidate rows below has a native observation yet**.
 
+The latest execution attempt is documented in the dated
+[2026-11-02 report](sandbox-feasibility-execution-2026-11-02.md), with a
+[machine-readable record](sandbox-feasibility-execution-2026-11-02.json) that
+distinguishes the outer launcher failure from candidate-backend results.
+
 | Fixture | Expected under A | What would be consistent with B | Current result |
 | --- | --- | --- | --- |
 | Selected-root relocation/replacement after open | No read or create through moved root; reject replacement | Read/write through retained root or file object | Unavailable: candidate not started |

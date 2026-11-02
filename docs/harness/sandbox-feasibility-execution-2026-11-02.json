@@ -1,0 +1,116 @@
+{
+  "schema": "komposyn.sandbox-study-execution.v1",
+  "date": "2026-11-02",
+  "repository": "ayeshLK/komposyn",
+  "study_source_commit": "cdb904b0d4353b4362a8b6508e7363b9d1d40e64",
+  "baseline_checkout_clean_before_report": true,
+  "study_executable": {
+    "built": true,
+    "source_commit": "cdb904b0d4353b4362a8b6508e7363b9d1d40e64",
+    "go_version": "go1.26.10 linux/amd64",
+    "goos": "linux",
+    "goarch": "amd64",
+    "cgo_enabled": false,
+    "sha256": "6c8ced131cb4dad832a69983e31e8284e389afe00c57391bd80d1c5c240105c8"
+  },
+  "native_attempt": {
+    "command": "/tmp/komposyn-sandbox-study --commit \"$(git rev-parse HEAD)\" > /tmp/komposyn-sandbox-study-report.json",
+    "execution_route": "normal restricted command launcher; not elevated",
+    "launcher_exit_status": 1,
+    "launcher_diagnostic": "bwrap: setting up uid map: Permission denied",
+    "study_cli_started": false,
+    "study_cli_exit_status": null,
+    "candidate_bubblewrap_invoked": false,
+    "candidate_workers_started": 0,
+    "fixture_operations_run": 0,
+    "study_json_written": false,
+    "evidence_status": "unavailable_before_candidate_start",
+    "elevated_or_unrestricted_retry": false
+  },
+  "host": {
+    "os": "Ubuntu 24.04.5 LTS",
+    "kernel": "7.0.0-38-generic",
+    "architecture": "amd64",
+    "go_version": "go1.26.10 linux/amd64",
+    "bubblewrap": {
+      "path": "/usr/bin/bwrap",
+      "package": "bubblewrap",
+      "package_version": "0.9.0-1ubuntu0.3",
+      "package_owns_path": true,
+      "owner_uid": 0,
+      "owner_gid": 0,
+      "mode": "0755",
+      "sha256": "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71",
+      "executable_version_output_captured": false
+    },
+    "namespace_configuration": {
+      "user_max_namespaces": "55603",
+      "unprivileged_userns_clone": "1",
+      "apparmor_restrict_unprivileged_userns": "1",
+      "inspected_uid_map": "0 0 4294967295",
+      "candidate_user_namespace_functionality": "unverified"
+    },
+    "seccomp": {
+      "kernel_config_seccomp": true,
+      "kernel_config_seccomp_filter": true,
+      "kernel_actions_available": "kill_process kill_thread trap errno user_notif trace log allow",
+      "inspected_process_seccomp_mode": "0",
+      "inspected_process_no_new_privs": "0",
+      "candidate_filter_installed_or_exercised": false
+    },
+    "cgroups": {
+      "filesystem": "cgroup v2",
+      "root_controllers": "cpuset cpu io memory hugetlb pids rdma misc dmem",
+      "app_slice_controllers": "cpu memory pids",
+      "app_slice_subtree_control": "memory pids",
+      "inspected_process_controllers": "memory pids",
+      "inspected_process_subtree_control": "",
+      "read_only_access_checks": {
+        "parent_subtree_control_access_writable": true,
+        "current_cgroup_procs_access_writable": true
+      },
+      "child_cgroup_created": false,
+      "controls_written": false,
+      "usable_delegation_and_effective_limits": "unverified"
+    },
+    "fact_collection_caveat": "Host facts were collected through separate read-only inspection because the normal command launcher could not start the study; they are not the study process's own snapshot."
+  },
+  "requested_profile_effective": false,
+  "authority_contract_A": "no_conclusion",
+  "authority_contract_B": "no_observation",
+  "scenarios": [
+    {"name":"selected-root-relocation","operation":"create through opened root after moving and replacing its pathname","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"selected-root-relocation-read","operation":"read opened file after moving root","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"parent-relocation-before-create","operation":"create relative to retained parent moved outside scope","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"parent-relocation-before-delete","operation":"unlink relative to moved parent after target substitution","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"opened-target-relocation-before-write","operation":"write through opened file after moving its pathname","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"existing-hardlink-alias","operation":"write object with pre-existing outside hard-link alias","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"late-hardlink-alias","operation":"write object after outside hard-link creation","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"deletion-target-substitution","operation":"unlink replacement symlink after validating original entry","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"recursive-child-relocation","operation":"remove contents through child directory moved outside scope","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"rename-crosses-unmounted-scope","operation":"rename from fixture scope to absent sandbox path","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"symlink-to-unmounted-host-path","operation":"read through absolute symlink to unmounted host fixture","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"nested-protected-path","operation":"read direct path masked by nested tmpfs","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"protected-path-and-alias","operation":"read hard-link alias after protected path mask","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"network-host-path-and-runtime-probes","operation":"probe environment, descriptors, sockets, host PID, host paths and seccomp","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"},
+    {"name":"private-scratch","operation":"write private tmpfs scratch and verify host fixture absence","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"not_applicable","B":"no_observation"},
+    {"name":"bounded-output","operation":"emit 128 KiB line and verify 64 KiB cap/reap","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"not_applicable","B":"no_observation"},
+    {"name":"partial-write-outcome","operation":"create a prefix then return partial outcome","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"not_applicable","B":"no_observation"},
+    {"name":"cancel-before-release","operation":"cancel after READY before operation release","status":"not_run","actual_host_effect":"none observed; fixture setup did not start","A":"no_conclusion","B":"no_observation"}
+  ],
+  "implemented_but_unavailable": [
+    "mount-boundary: no nested mount fixture attempted",
+    "aggregate PID/memory/CPU limits: no delegated cgroup created; no exhaustion attempted",
+    "parent-death and descendant cleanup: no live worker tree or cgroup kill test",
+    "revocation after release: only synchronization model tests exist, no live worker integration",
+    "stale output suppression: no native worker output/revocation integration"
+  ],
+  "not_implemented_or_not_a_dedicated_case": [
+    "shell worker and shell acceptance study",
+    "protected-resource ancestor move/removal as a dedicated protected-path scenario",
+    "Unix control-socket connection by pathname",
+    "native macOS, Windows, or Linux/arm64 enforcement"
+  ],
+  "repository_check_status": "documentation-only evidence change; merged source was built, but no repository Go test suite is claimed as native enforcement evidence",
+  "issue_215_state": "open"
+}

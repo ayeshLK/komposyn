@@ -406,3 +406,6 @@ The [Linux sandbox feasibility study](sandbox-feasibility-study.md) is
 disposable research infrastructure only; its native tests are separate from Go
 unit/race tests, and filesystem tools remain unavailable until the strict
 pathname-scope gate has native evidence and maintainer review.
+The latest execution attempt is recorded in the dated
+[2026-11-02 report](sandbox-feasibility-execution-2026-11-02.md), alongside a
+[sanitized machine-readable record](sandbox-feasibility-execution-2026-11-02.json).
