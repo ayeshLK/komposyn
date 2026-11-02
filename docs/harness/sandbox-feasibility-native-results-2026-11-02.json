@@ -1,0 +1,374 @@
+{
+  "schema": "komposyn.native-sandbox-evidence.v1",
+  "archive": {
+    "sha256": "c48639ab24f081ca6c53f8cf17896dbc55ae3c897686f5fa103005dc9587721d",
+    "internal_checksums_verified": true,
+    "executable_members_run": false
+  },
+  "provenance": {
+    "schema": "komposyn.manual-sandbox-run.v1",
+    "started_at_utc": "2026-11-02T08:04:21.413212+00:00",
+    "requested_source_commit": "cdb904b0d4353b4362a8b6508e7363b9d1d40e64",
+    "runner_sha256": "3801d5e2f18cef90bcfe86499f68c3fa748f75ffb19cd7d8217104c4204294a6",
+    "collect_only": false,
+    "stages": {
+      "source-archive": {
+        "started": true,
+        "exit_status": 0,
+        "timed_out": false,
+        "output_limit_reached": false,
+        "interrupted": false,
+        "reaped": true,
+        "elapsed_seconds": 0.022
+      },
+      "go-version": {
+        "started": true,
+        "exit_status": 0,
+        "timed_out": false,
+        "output_limit_reached": false,
+        "interrupted": false,
+        "reaped": true,
+        "elapsed_seconds": 0.008
+      },
+      "build": {
+        "started": true,
+        "exit_status": 0,
+        "timed_out": false,
+        "output_limit_reached": false,
+        "interrupted": false,
+        "reaped": true,
+        "elapsed_seconds": 0.348
+      },
+      "study": {
+        "started": true,
+        "exit_status": 0,
+        "timed_out": false,
+        "output_limit_reached": false,
+        "interrupted": false,
+        "reaped": true,
+        "elapsed_seconds": 0.098
+      }
+    },
+    "host_security_settings_changed": false,
+    "privileged_or_unrestricted_fallback": false,
+    "source_route": "exact committed Git archive from local repository; working files ignored",
+    "source_archive_sha256": "30dcd194d9cc7c2c12368e85490618abc3d878a5faf620ea1bc0a982ce27f0b9",
+    "study_executable_sha256": "9bdbfd3a27e2bda556877cf02164414170eaf27108a2edd82851a4b36853e955",
+    "verdict": "observed violations; containment is not established",
+    "observation_status_counts": {
+      "observed_violation": 10,
+      "observed_prevented": 3,
+      "measured_pass": 5,
+      "unavailable": 5
+    },
+    "study_json_produced": true,
+    "finished_at_utc": "2026-11-02T08:04:21.973215+00:00"
+  },
+  "host": {
+    "os_release": "PRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.5 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo",
+    "user_max_namespaces": "55603",
+    "unprivileged_userns_clone": "1",
+    "apparmor_restrict_unprivileged_userns": "1",
+    "apparmor_enabled": "Y",
+    "process_apparmor_label": "unconfined",
+    "cgroup_controllers": "cpuset cpu io memory hugetlb pids rdma misc dmem",
+    "cgroup_subtree_control": "cpuset cpu io memory hugetlb pids rdma misc dmem",
+    "uid_map": "0          0 4294967295",
+    "kernel": "7.0.0-38-generic",
+    "architecture": "x86_64",
+    "note": "Configuration only; no namespace/delegation/enforcement proof. No environment dump or hostname collected.",
+    "process_status": [
+      "CapEff:\t0000000000000000",
+      "NoNewPrivs:\t0",
+      "Seccomp:\t0"
+    ],
+    "backend": {
+      "path": "/usr/bin/bwrap",
+      "uid": 0,
+      "gid": 0,
+      "mode": "0o755",
+      "sha256": "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71"
+    }
+  },
+  "study": {
+    "study": "issue-215 disposable Linux feasibility study",
+    "host": {
+      "repository_commit": "cdb904b0d4353b4362a8b6508e7363b9d1d40e64",
+      "os": "linux",
+      "os_release": "Ubuntu 24.04.5 LTS",
+      "go_version": "go1.26.10",
+      "architecture": "amd64",
+      "kernel": "7.0.0-38-generic",
+      "bubblewrap_path": "/usr/bin/bwrap",
+      "bubblewrap_version": "bubblewrap 0.9.0",
+      "bubblewrap_sha256": "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71",
+      "bubblewrap_owner": "uid:0 gid:0",
+      "bubblewrap_mode": "-rwxr-xr-x",
+      "user_namespace_max": "55603",
+      "uid_map": "0          0 4294967295",
+      "cgroup_path": "0::<CGROUP_PATH_REDACTED>",
+      "host_cgroup_controllers": "cpuset cpu io memory hugetlb pids rdma misc dmem",
+      "cgroup_controllers": "memory pids",
+      "current_cgroup_control_file_writable": true,
+      "cgroup_parent_subtree_control": "memory pids",
+      "cgroup_parent_control_file_writable": true,
+      "no_new_privs": "0",
+      "seccomp_mode": "0",
+      "effective_capabilities": "0000000000000000"
+    },
+    "effective_candidate_policy": [
+      "unshare user, PID, IPC, UTS, and network namespaces (all required; no try/fallback flags)",
+      "die-with-parent; new session; disable nested user namespaces; drop all capabilities",
+      "empty tmpfs root; read-only bind of this statically linked worker; only fixture root is writable",
+      "fixture protected subpath may be hidden with a private tmpfs mask; alias behavior is tested separately",
+      "clear environment; set HOME=/tmp/home TMPDIR=/tmp PATH=/nonexistent LANG=C.UTF-8",
+      "no proc, sys, dev, host home, host root, host sockets, or inherited descriptors; stdio is the framed control channel",
+      "architecture-checked seccomp filter denies socket/IPC, mount, namespace, ptrace, process inspection, and privilege-changing syscalls; remaining syscalls allowed",
+      "private /tmp tmpfs is limited to 16 MiB; host enforces 5-second runtime and 64 KiB per output line",
+      "no cgroup is configured; no exhaustion test is run; aggregate process/memory/CPU limits are unproven"
+    ],
+    "typed_worker": "candidate typed Go worker only; no arbitrary arguments or shell parsing",
+    "shell": "not implemented or run; typed-worker evidence cannot establish shell safety",
+    "observations": [
+      {
+        "case": "selected-root-relocation",
+        "attempted_operation": "create-parent root-effect",
+        "actual_host_effect": "moved root effect=present (7 fixture bytes); worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "selected-root-relocation-read",
+        "attempted_operation": "read-open secret.txt",
+        "actual_host_effect": "read through opened file after root move=true; worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "parent-relocation-before-create",
+        "attempted_operation": "create-parent parent/new.txt",
+        "actual_host_effect": "moved parent effect=present (7 fixture bytes); worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "parent-relocation-before-delete",
+        "attempted_operation": "delete-parent parent/target.txt",
+        "actual_host_effect": "opened moved-parent target removed=true; replacement at authorized pathname remains=true; worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "opened-target-relocation-before-write",
+        "attempted_operation": "write-open target.txt",
+        "actual_host_effect": "moved target changed=true; worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "existing-hardlink-alias",
+        "attempted_operation": "write-open target.txt",
+        "actual_host_effect": "outside alias changed=true; worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "late-hardlink-alias",
+        "attempted_operation": "write-open target.txt",
+        "actual_host_effect": "outside alias changed=true; worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "deletion-target-substitution",
+        "attempted_operation": "delete-parent target.txt",
+        "actual_host_effect": "replacement link removed=true; original displaced entry=present (14 fixture bytes); worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "recursive-child-relocation",
+        "attempted_operation": "recursive-child child",
+        "actual_host_effect": "moved child file removed=true; worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "rename-crosses-unmounted-scope",
+        "attempted_operation": "rename-out source.txt",
+        "actual_host_effect": "source remains=true; destination is unmounted; worker=failed",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_prevented",
+        "worker_outcome": "failed",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "symlink-to-unmounted-host-path",
+        "attempted_operation": "read-path link.txt",
+        "actual_host_effect": "worker attempted read through symlink; host fixture=present (15 fixture bytes); worker=failed",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_prevented",
+        "worker_outcome": "failed",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "nested-protected-path",
+        "attempted_operation": "read-path protected/secret.txt",
+        "actual_host_effect": "masked nested path direct read; worker=failed",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_prevented",
+        "worker_outcome": "failed",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "protected-path-and-alias",
+        "attempted_operation": "read-path protected-alias.txt",
+        "actual_host_effect": "direct path masked; alias exists=true; worker=succeeded",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "observed_violation",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "network-host-path-and-runtime-probes",
+        "attempted_operation": "probe 342108",
+        "actual_host_effect": "sandbox capability probe=no host mutation before release; worker=succeeded environment_clear,host_root_not_mounted,proc_not_mounted,home_not_mounted,home_config_not_present,fd3_closed,socket_denied,socket_denied,shell_lookup_unavailable,no_new_privs=1,seccomp_mode=2,host_pid_unreachable",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "measured_pass",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "private-scratch",
+        "attempted_operation": "scratch scratch.bin",
+        "actual_host_effect": "worker scratch write succeeded in its private /tmp; no host fixture file appeared",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "measured_pass",
+        "worker_outcome": "succeeded",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "bounded-output",
+        "attempted_operation": "flood fixture",
+        "actual_host_effect": "oversized protocol line rejected; worker command was reaped",
+        "expected_A": "bounded output without unbounded host memory growth",
+        "observed_B": "not applicable",
+        "status": "measured_pass",
+        "worker_outcome": "unknown",
+        "limitation": "fixed 128 KiB fixture output only; process-tree cleanup is not established"
+      },
+      {
+        "case": "partial-write-outcome",
+        "attempted_operation": "partial-create partial.txt",
+        "actual_host_effect": "injected post-effect failure left a known partial fixture; worker outcome=partial",
+        "expected_A": "deny the effect if the approved host pathname, object binding, or protected identity changed",
+        "observed_B": "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+        "status": "measured_pass",
+        "worker_outcome": "partial",
+        "limitation": "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+      },
+      {
+        "case": "cancel-before-release",
+        "attempted_operation": "hold fixture",
+        "actual_host_effect": "startup acknowledged; cancellation before release; no operation was permitted",
+        "expected_A": "no fixture effect",
+        "observed_B": "not applicable",
+        "status": "measured_pass",
+        "worker_outcome": "not_executed",
+        "limitation": "parent cancellation was requested before release"
+      },
+      {
+        "case": "mount-boundary",
+        "attempted_operation": "cross an independently mounted child filesystem",
+        "actual_host_effect": "",
+        "expected_A": "reject a mount crossing",
+        "observed_B": "",
+        "status": "unavailable",
+        "limitation": "no native mount fixture was created; the surrounding launcher denies namespace setup"
+      },
+      {
+        "case": "aggregate-resource-limits",
+        "attempted_operation": "verify pids/memory/CPU subtree enforcement",
+        "actual_host_effect": "",
+        "expected_A": "effective aggregate controls before any exhaustion test",
+        "observed_B": "",
+        "status": "unavailable",
+        "limitation": "study does not create or write cgroups; visible controllers are not proof of delegation"
+      },
+      {
+        "case": "parent-death-and-descendant-cleanup",
+        "attempted_operation": "kill the coordinator while descendants are active",
+        "actual_host_effect": "",
+        "expected_A": "all worker descendants terminated and joined",
+        "observed_B": "",
+        "status": "unavailable",
+        "limitation": "not run because no delegated cgroup kill boundary is established"
+      },
+      {
+        "case": "shell-experiment",
+        "attempted_operation": "execute a shell command",
+        "actual_host_effect": "",
+        "expected_A": "separate shell-specific isolation evidence",
+        "observed_B": "",
+        "status": "unavailable",
+        "limitation": "not implemented; typed worker findings do not establish shell safety"
+      },
+      {
+        "case": "revocation-after-operation-release",
+        "attempted_operation": "revoke immediately after release",
+        "actual_host_effect": "",
+        "expected_A": "request worker termination and classify possible effects partial/unknown",
+        "observed_B": "",
+        "status": "unavailable",
+        "limitation": "synchronization ordering is exercised by deterministic Go gate tests only; no native live mutation test"
+      }
+    ],
+    "resource_controls": [
+      "Bwrap namespace and mount setup is attempted by the native suite only; setup refusal is unavailable evidence, never a pass.",
+      "No cgroup files are written; visible controllers and control-file write access do not prove a usable delegated subtree.",
+      "Parent death, descendant escape, mount-crossing and aggregate cgroup resource tests are unavailable unless individually run by a native follow-up."
+    ]
+  },
+  "review_notes": {
+    "study_exit_zero_is_not_enforcement_pass": true,
+    "runner_verdict": "observed violations; containment is not established",
+    "mount_boundary_row_is_stale_unavailable_placeholder": true,
+    "mount_boundary_attempted": false,
+    "apparmor_profile_file_present_but_loaded_state_unverified": true,
+    "no_host_security_settings_changed_by_runner": true,
+    "no_privileged_or_unrestricted_fallback": true
+  }
+}

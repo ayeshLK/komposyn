@@ -1,5 +1,10 @@
 # Experimental temporary chat
 
+The Linux sandbox feasibility study has a separate research-only harness.
+Its [reproduction guide](sandbox-feasibility-study.md) and
+[2026-11-02 native results](sandbox-feasibility-native-results-2026-11-02.md)
+record evidence; filesystem and shell tools remain unavailable.
+
 This repository contains a small, experimental `komposyn` chat under
 `plugins/model-provider/`, `plugins/ui/`, and `internal/harness/`. It proves
 the OpenAI and Anthropic provider boundary and a replaceable UI client. It is

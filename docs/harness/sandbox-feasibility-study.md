@@ -7,6 +7,10 @@ Authority contract A remains the existing enablement gate.
 
 ## Reproduce
 
+For the measured 2026-11-02 native run and its limitations, see the
+[native execution report](sandbox-feasibility-native-results-2026-11-02.md)
+and [sanitized machine-readable observations](sandbox-feasibility-native-results-2026-11-02.json).
+
 Build on Linux/amd64 or Linux/arm64 with Go 1.26.10 or newer. Native study
 execution additionally needs a root-owned, non-group/world-writable system
 bubblewrap executable and functioning user namespaces/seccomp. The arm64
@@ -163,11 +167,12 @@ behavior.
 
 ## Evidence matrix
 
-The following are the intended candidate fixture cases. A native case is a
-measured pass only when the JSON output includes its `measured` result and
-fixture state. The execution environment used for this draft blocked the
-outer command launcher before the study executable ran, so **none of the
-candidate rows below has a native observation yet**.
+The following matrix records the original blocked attempt and is retained as
+historical context. In that attempt, no candidate row had a native
+observation. A later successful study execution is recorded in the
+[native execution report](sandbox-feasibility-native-results-2026-11-02.md).
+Do not read this “Current result” column as the latest evidence; the later run
+is distinct and does not overwrite this history.
 
 | Fixture | Expected under A | What would be consistent with B | Current result |
 | --- | --- | --- | --- |
@@ -189,11 +194,12 @@ candidate rows below has a native observation yet**.
 | Aggregate pids/memory/CPU | Effective configured limit must be demonstrated | Not applicable | Unavailable: no delegated cgroup was created or modified |
 | Shell execution | Separate explicit shell policy | Typed worker result cannot establish shell behavior | Not implemented or run |
 
-No namespace, network, protected-path, alias, output, or cleanup test is
-classified as passed. The tool integration remains blocked by A and by missing
-native evidence for the other isolation properties.
+This paragraph describes the original blocked attempt only. The later run
+records measured fixture observations, including violations; see the linked
+report. Tool integration remains blocked by A and by missing evidence for
+other isolation properties.
 
-## Environment recorded for this draft
+## Environment recorded for the original blocked attempt
 
 The repository base was merged PR #213, `84aeadc21ee137ab418d75b3edeb56a17a61927e`.
 The study source itself was built statically with Go 1.26.10 on Ubuntu
@@ -228,8 +234,11 @@ attempted.
 
 ## Integration findings and decisions still open
 
-**Recommendation for the next review:** preserve A as the enablement gate and
-keep every filesystem/process tool unavailable. For the next native study run,
+This was the recommendation before the successful run documented in the
+[native results report](sandbox-feasibility-native-results-2026-11-02.md). The
+report supersedes the “run on a disposable host” next step below. Preserve A as
+the enablement gate and keep every filesystem/process tool unavailable. For any
+additional native study run,
 use a disposable Linux/amd64 host equivalent to Ubuntu 24.04.5, kernel
 `7.0.0-38-generic`, with working unprivileged user namespaces, seccomp filter
 support, and root-owned bubblewrap 0.9.0. These are the measured host's
@@ -262,9 +271,9 @@ separate resource-control decision, not an assumed product prerequisite.
   scans. A recommended eligibility rule is to refuse a requested capability
   when an owner required for its protected category has not registered its
   effective paths. This does not claim that every unrelated application file
-  can be discovered. A path mask alone does not cover hard-link aliases,
-  ancestor moves or mount aliases; the native alias experiment is still
-  unavailable.
+  can be discovered. The later native run demonstrated that a path mask alone
+  did not cover its tested hard-link alias. Other aliases, ancestor movement,
+  and mount aliases remain untested or incomplete.
 - **Launching and running:** creating/registering bubblewrap is `launching`;
   startup acknowledgement alone is still not execution; only a released
   operation gate plus the worker's `STARTED` acknowledgement is `running`.
@@ -277,8 +286,9 @@ separate resource-control decision, not an assumed product prerequisite.
   coordinator must serialize revision validation, admission and release with
   revoke/reset/shutdown; duplicate consumption is prohibited.
 - **Resources/provisioning:** delegated cgroup v2 is only an evaluated proposal,
-  not an approved product prerequisite. Here, process counts and aggregate
-  memory/CPU were not enforced or tested. Before supporting arbitrary worker
+  not an approved product prerequisite. The later run did not configure
+  cgroups, and process counts and aggregate memory/CPU were not enforced or
+  tested. Before supporting arbitrary worker
   code or shell, demonstrate effective aggregate bounds or keep that profile
   unavailable. System bubblewrap plus Go orchestration is enough for this
   feasibility harness; native results are required before deciding whether a
@@ -291,18 +301,17 @@ separate resource-control decision, not an assumed product prerequisite.
 
 No root-selection UX, protected-path policy, B contract, production sandbox
 service, shell, filesystem tool, or new permission semantics are approved by
-this study. The next decision is whether to provide a native disposable host
-where the exact test can run, and then review measured A/B outcomes before
-choosing any product contract or minimum supported environment.
+this study. The next decision is to review measured A/B outcomes and the
+separate protected-object alias and exact-entry requirements in the linked
+native report before choosing any product contract or minimum supported
+environment.
 
 ## Validation for this change
 
-Automated Go checks and race tests validate the harness's bounded readers,
-trusted-path validation, BPF serialization shape, fixture construction, and
-operation-gate ordering. Linux/arm64 command and test-package cross-builds
-validate compilation only. They do not validate kernel enforcement. The native
-suite must be run separately using the commands above on an eligible disposable
-Linux host; this execution could not run it.
+Automated Go checks and race tests described here validate harness mechanics;
+they do not validate kernel enforcement. Linux/arm64 command and test-package
+cross-builds validate compilation only. The later native evidence is recorded
+in the linked report and is not a repository test result.
 
 Primary references: [bubblewrap 0.9 manual](https://github.com/containers/bubblewrap/blob/v0.9.0/bwrap.xml),
 [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html),
