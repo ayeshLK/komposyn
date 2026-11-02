@@ -58,8 +58,8 @@ const (
 type BindMode string
 
 const (
-	BindModeDescriptor BindMode = "ro-bind-fd"
-	BindModeProcFD     BindMode = "ro-bind-proc-fd-verified"
+	BindModeDescriptor    BindMode = "ro-bind-fd"
+	BindModeLegacyRefused BindMode = "legacy-path-bind-refused"
 )
 
 // BubblewrapCapabilities records options reported by the trusted executable's
@@ -71,7 +71,7 @@ type BubblewrapCapabilities struct {
 
 var requiredBubblewrapOptions = []string{
 	"--as-pid-1", "--cap-drop", "--chdir", "--clearenv", "--die-with-parent",
-	"--disable-userns", "--hostname", "--new-session", "--ro-bind", "--size",
+	"--disable-userns", "--hostname", "--new-session", "--size",
 	"--sync-fd", "--tmpfs", "--unshare-ipc", "--unshare-net", "--unshare-pid",
 	"--unshare-user", "--unshare-uts",
 }
@@ -169,11 +169,11 @@ func bubblewrapCapabilities(versionOutput, help string) (string, BubblewrapCapab
 	if len(missing) != 0 {
 		return version, BubblewrapCapabilities{Options: ordered}, fmt.Errorf("%w: missing required Bubblewrap features: %s", ErrUnavailable, strings.Join(missing, ", "))
 	}
-	mode := BindModeProcFD
-	if _, ok := options["--ro-bind-fd"]; ok {
-		mode = BindModeDescriptor
+	if _, ok := options["--ro-bind-fd"]; !ok {
+		return version, BubblewrapCapabilities{Options: ordered, BindMode: BindModeLegacyRefused},
+			fmt.Errorf("%w: legacy --ro-bind /proc/self/fd worker launch is refused because Bubblewrap resolves its source pathname before mounting; use a backend with --ro-bind-fd", ErrUnavailable)
 	}
-	return version, BubblewrapCapabilities{Options: ordered, BindMode: mode}, nil
+	return version, BubblewrapCapabilities{Options: ordered, BindMode: BindModeDescriptor}, nil
 }
 
 // EffectiveBubblewrapArguments returns the exact reviewed launch argument
@@ -187,13 +187,11 @@ func EffectiveBubblewrapArguments(mode BindMode) []string {
 	switch mode {
 	case BindModeDescriptor:
 		args = append(args, "--ro-bind-fd", "5", "/worker")
-	case BindModeProcFD:
-		args = append(args, "--ro-bind", "/proc/self/fd/5", "/worker")
 	default:
 		return []string{}
 	}
-	return append(args, "--sync-fd", "5", "--chdir", "/", "--", "/worker", workerBootstrapMode,
-		"--control-fd", fmt.Sprint(controlFD), "--worker-fd", fmt.Sprint(workerFileFD), "--seccomp-fd", fmt.Sprint(seccompInputFD))
+	return append(args, "--sync-fd", "6", "--chdir", "/", "--", "/worker", workerBootstrapMode,
+		"--control-fd", fmt.Sprint(controlFD), "--worker-fd", fmt.Sprint(workerVerificationFD), "--seccomp-fd", fmt.Sprint(seccompInputFD))
 }
 
 func runBoundedProbe(path, argument string) (string, error) {
@@ -399,6 +397,22 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		return nil, fmt.Errorf("%w: control socket setup failed", ErrUnavailable)
 	}
 	workerCtx, cancel := context.WithTimeout(ctx, time.Duration(workerDeadline))
+	verificationFD, err := unix.Dup(int(l.workerFile.Fd()))
+	if err != nil {
+		cancel()
+		_ = parentSocket.Close()
+		_ = childSocket.Close()
+		return nil, fmt.Errorf("%w: worker verification descriptor could not be duplicated", ErrUnavailable)
+	}
+	verificationFile := os.NewFile(uintptr(verificationFD), "readbroker-worker-verification")
+	if verificationFile == nil {
+		_ = unix.Close(verificationFD)
+		cancel()
+		_ = parentSocket.Close()
+		_ = childSocket.Close()
+		return nil, fmt.Errorf("%w: worker verification descriptor could not be wrapped", ErrUnavailable)
+	}
+	defer verificationFile.Close()
 	args := EffectiveBubblewrapArguments(l.capability.BindMode)
 	if args == nil {
 		cancel()
@@ -409,7 +423,7 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	cmd := exec.CommandContext(workerCtx, l.bwrapPath, args...)
 	cmd.Dir = "/"
 	cmd.Env = []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"}
-	cmd.ExtraFiles = []*os.File{filter, childSocket, l.workerFile}
+	cmd.ExtraFiles = []*os.File{filter, childSocket, l.workerFile, verificationFile}
 	cmd.Stdout = io.Discard
 	stderr := &limitedOutput{}
 	cmd.Stderr = stderr
@@ -730,10 +744,10 @@ func sendPacket(fd int, packet []byte) error {
 // read-only file descriptor arrives later via SCM_RIGHTS.
 func WorkerMain() int {
 	if len(os.Args) != 8 || os.Args[1] != workerBootstrapMode || os.Args[2] != "--control-fd" || os.Args[3] != "4" ||
-		os.Args[4] != "--worker-fd" || os.Args[5] != "5" || os.Args[6] != "--seccomp-fd" || os.Args[7] != "3" {
+		os.Args[4] != "--worker-fd" || os.Args[5] != "6" || os.Args[6] != "--seccomp-fd" || os.Args[7] != "3" {
 		return 70
 	}
-	if err := verifyDescriptorMounts([]DescriptorMount{{FD: workerFileFD, Destination: "/worker"}}); err != nil {
+	if err := verifyDescriptorMounts([]DescriptorMount{{FD: workerVerificationFD, Destination: "/worker"}}); err != nil {
 		return 70
 	}
 	if err := installWorkerSeccomp(seccompInputFD); err != nil {
@@ -742,7 +756,8 @@ func WorkerMain() int {
 	return workerMainFD(controlFD)
 }
 
-const workerFileFD = 5
+const workerMountFD = 5
+const workerVerificationFD = 6
 
 type DescriptorMount struct {
 	FD          int

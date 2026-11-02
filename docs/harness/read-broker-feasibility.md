@@ -34,38 +34,43 @@ version is retained only as provenance. Missing required launch options,
 malformed probe output, timeout, and output overflow refuse the worker before
 any target-data descriptor is sent.
 
-When `--ro-bind-fd` is available, the launcher uses it. For older Bubblewrap,
-the fallback binds `/proc/self/fd/5` read-only at `/worker` and retains FD 5
-through startup using `--sync-fd 5 --as-pid-1`. In both modes the fixed worker
-starts as a small trusted bootstrap with the pinned executable still at FD 5.
-Before reporting readiness it checks that `/worker` is a regular file whose
-device and inode match FD 5. It rejects malformed, standard, missing, duplicate,
-or mismatched verification descriptors and closes FD 5 on every verification
-path. The worker then reads the exact host-prepared BPF program from FD 3,
-checks it against the compiled policy, sets `no_new_privs`, and installs it
-with `SECCOMP_FILTER_FLAG_TSYNC`. A failed thread synchronization or filter
-installation aborts startup. The worker closes FD 3, then runs its isolation
-probes; readiness is sent only after verification descriptors are gone and the
-probe contract passes. No target-data descriptor is transferred until the
-runtime has separately authorized and revalidated the operation.
+When `--ro-bind-fd` is available, the launcher gives Bubblewrap FD 5 as the
+mount source and a separate duplicate of the pinned worker at FD 6. Bubblewrap
+consumes FD 5 after mounting; `--sync-fd 6 --as-pid-1` retains only the
+independent verifier descriptor through exec. The trusted fixed executable
+then checks that `/worker` is a regular file whose device and inode match FD 6,
+and closes FD 6. Missing, standard, duplicate, symlinked, or mismatched
+verification descriptors fail startup. The worker then reads the exact
+host-prepared BPF program from FD 3, checks it against the compiled policy,
+sets `no_new_privs`, and installs it with `SECCOMP_FILTER_FLAG_TSYNC`. Failed
+thread synchronization or filter installation aborts startup. FD 3 is closed
+before isolation probes and readiness. The startup descriptor inventory also
+requires Bubblewrap's consumed FD 5 to be absent. No target-data descriptor is
+transferred until verification, probes, authorization, and generation checks
+have succeeded.
 
-The fixed worker is the executable mounted at `/worker`, so the host's pinned
-executable is the trust anchor for both the bootstrap and normal operation.
-The `--as-pid-1` mode is required to retain FD 5 through exec on Bubblewrap
-0.9.0; the worker filter denies `clone`, `clone3`, `fork`, `vfork`, and `execve`
-before readiness, preventing it from creating descendants. The sandbox root
-still has no `/proc` mount: `/proc/self/fd/5` is used only by Bubblewrap while
-constructing the mount, and verification uses `/worker` and FD 5 directly.
-The legacy translation follows the descriptor verification approach in the
-Codex Linux sandbox at checkout `970111f6cb62cc02fe36a82ea7d71b37a2889c97`
+The older path-based compatibility proposal is deliberately refused. Bubblewrap
+0.9 handles `--ro-bind /proc/self/fd/5 /worker` as a pathname source; its setup
+resolves source pathnames before mounting. A same-user actor can replace the
+mount candidate between path resolution and mount, causing an unverified
+executable to run before its own verifier or seccomp code. Comparing that
+already-running image to FD 6 cannot establish trust in the verifier. When
+`--ro-bind-fd` is absent, capability inspection reports
+`legacy-path-bind-refused` and the launcher returns unavailable without
+producing launch arguments. No weaker fallback is attempted.
+
+The compatibility proposal was compared with the Codex Linux sandbox at
+checkout `970111f6cb62cc02fe36a82ea7d71b37a2889c97`
 (`linux-sandbox/src/launcher.rs`, `fd_mount.rs`, and `linux_run_main.rs`); no
-Codex source was copied. See the upstream [Bubblewrap 0.9.0 source](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c)
-for its `--sync-fd`, `--as-pid-1`, and option behavior, and the [0.10.0
-release](https://github.com/containers/bubblewrap/releases/tag/v0.10.0) for
-descriptor-bind support.
+Codex source was copied. Its in-worker verification sequence does not by itself
+solve the older Bubblewrap pathname replacement race. See upstream
+[Bubblewrap 0.9.0 source](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c)
+for path resolution and [0.10.0 source](https://github.com/containers/bubblewrap/blob/v0.10.0/bubblewrap.c)
+for descriptor bind setup and source-FD consumption.
 
-This verification binds the worker mount to the pinned executable object; it
-does not strengthen target-path containment or broker protected-object scans.
+This verification binds the worker mount to the separate pinned executable
+object; it does not strengthen target-path containment or broker
+protected-object scans.
 The broker retains the opened target and parent directory descriptors. A
 pathname change after open therefore does not redirect the bytes read by the
 worker; it also does not prove strict live host-path containment. The worker
@@ -164,8 +169,9 @@ no optional `try` flags; a new session; dropped capabilities; disabled nested
 user namespaces; an 8 MiB empty tmpfs root; one read-only, descriptor-pinned
 worker executable; cleared environment; no host home, root, sockets, proc, or
 device mounts; `--die-with-parent`; and `--as-pid-1`. It passes only seccomp FD
-3, control socket FD 4, and pinned worker executable FD 5. Bubblewrap uses
-`--sync-fd 5` to retain the worker descriptor across exec, and the startup
+3, control socket FD 4, pinned worker mount-source FD 5, and its independent
+duplicate verifier FD 6. Bubblewrap consumes FD 5 for `--ro-bind-fd` and uses
+`--sync-fd 6` to retain the verifier across exec, and the startup
 bootstrap closes it after checking `/worker` identity. The bootstrap also
 closes seccomp FD 3 after installing the exact architecture-checked filter.
 Before operation release, the worker probes `no_new_privs`, seccomp mode 2,
@@ -186,9 +192,9 @@ deadline is five seconds, and captured stderr is capped at 4 KiB.
 ## Running the study
 
 On Linux amd64 or arm64 with a trusted absolute root-owned Bubblewrap binary
-whose bounded `--help` output includes the required options and usable required
-namespaces. A feature-compatible backend may use either `--ro-bind-fd` or the
-verified `/proc/self/fd` fallback:
+whose bounded `--help` output includes `--ro-bind-fd`, all other required
+options, and usable required namespaces. A backend without `--ro-bind-fd` is
+refused:
 
 ```sh
 mkdir -m 700 .read-broker-study-tmp

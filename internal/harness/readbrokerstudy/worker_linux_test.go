@@ -34,35 +34,65 @@ func TestBubblewrapCapabilitySelection(t *testing.T) {
 		t.Fatalf("modern capability selection: version=%q mode=%q err=%v", version, modern.BindMode, err)
 	}
 	_, legacy, err := bubblewrapCapabilities("bubblewrap 0.9.0\n", bubblewrapHelp(""))
-	if err != nil || legacy.BindMode != BindModeProcFD {
-		t.Fatalf("legacy capability selection: mode=%q err=%v", legacy.BindMode, err)
+	if !errors.Is(err, ErrUnavailable) || legacy.BindMode != BindModeLegacyRefused || !strings.Contains(err.Error(), "pathname before mounting") {
+		t.Fatalf("unsafe legacy compatibility path was not refused: mode=%q err=%v", legacy.BindMode, err)
 	}
 	if !slices.Contains(legacy.Options, "--as-pid-1") || !slices.Contains(legacy.Options, "--sync-fd") {
-		t.Fatalf("legacy required capabilities omitted: %#v", legacy.Options)
+		t.Fatalf("legacy capabilities missing from report: %#v", legacy.Options)
 	}
 }
 
-func TestBubblewrapArgumentsSelectVerifiedMountPath(t *testing.T) {
+func TestBubblewrapArgumentsSelectModernMountAndSeparateVerifierFD(t *testing.T) {
 	modern := strings.Join(EffectiveBubblewrapArguments(BindModeDescriptor), " ")
 	if !strings.Contains(modern, "--ro-bind-fd 5 /worker") || strings.Contains(modern, "/proc/self/fd") {
 		t.Fatalf("unexpected modern mount arguments: %s", modern)
 	}
-	legacy := strings.Join(EffectiveBubblewrapArguments(BindModeProcFD), " ")
-	if !strings.Contains(legacy, "--ro-bind /proc/self/fd/5 /worker") || strings.Contains(legacy, "--ro-bind-fd") {
-		t.Fatalf("unexpected legacy mount arguments: %s", legacy)
-	}
-	for _, value := range []string{"--as-pid-1", "--sync-fd 5", "--readbrokerstudy-bootstrap", "--seccomp-fd 3"} {
-		if !strings.Contains(legacy, value) {
-			t.Fatalf("legacy arguments missing %q: %s", value, legacy)
+	for _, value := range []string{"--as-pid-1", "--sync-fd 6", "--readbrokerstudy-bootstrap", "--worker-fd 6", "--seccomp-fd 3"} {
+		if !strings.Contains(modern, value) {
+			t.Fatalf("modern arguments missing %q: %s", value, modern)
 		}
 	}
-	if len(EffectiveBubblewrapArguments("")) != 0 {
-		t.Fatal("unknown mount path must fail closed")
+	if workerMountFD == workerVerificationFD {
+		t.Fatal("mount source and retained verifier descriptors must be distinct")
+	}
+	if len(EffectiveBubblewrapArguments(BindModeLegacyRefused)) != 0 {
+		t.Fatal("refused legacy mount path must not produce launch arguments")
+	}
+}
+
+func TestModernBindConsumptionLeavesIndependentVerifierDescriptor(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "worker")
+	if err := os.WriteFile(path, []byte("fixture"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	mountFD, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationFD, err := unix.Dup(mountFD)
+	if err != nil {
+		_ = unix.Close(mountFD)
+		t.Fatal(err)
+	}
+	if mountFD == verificationFD {
+		t.Fatal("descriptor duplication reused the mount FD")
+	}
+	// Bubblewrap's --ro-bind-fd consumes the mount source after setting up the
+	// mount. The bootstrap must rely on the separately duplicated FD instead.
+	if err := unix.Close(mountFD); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyDescriptorMounts([]DescriptorMount{{FD: verificationFD, Destination: path}}); err != nil {
+		t.Fatalf("modern bootstrap could not verify after mount FD consumption: %v", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(verificationFD), unix.F_GETFD, 0); err == nil {
+		t.Fatal("retained verification descriptor survived bootstrap verification")
 	}
 }
 
 func TestBubblewrapCapabilityProbeRejectsMissingAndMalformedFeatures(t *testing.T) {
-	_, partial, err := bubblewrapCapabilities("bubblewrap 0.9.0", "--ro-bind --tmpfs\n")
+	_, partial, err := bubblewrapCapabilities("bubblewrap 0.9.0", "--ro-bind --ro-bind-fd --tmpfs\n")
 	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "missing required Bubblewrap features") {
 		t.Fatalf("missing required options were not actionable: %v", err)
 	}
