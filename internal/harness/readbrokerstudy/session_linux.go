@@ -473,12 +473,23 @@ func (s *fixtureSession) invalidateLocked(selectOp func(*readOperation) bool) []
 		op.cancel()
 		if op.state != StateJoined {
 			op.state = StateTerminating
+			s.cleanupBlocked = true
 		}
 		if op.worker != nil {
 			workers = append(workers, op.worker)
 		}
 	}
 	return workers
+}
+
+func (s *fixtureSession) refreshCleanupBarrierLocked() {
+	s.cleanupBlocked = false
+	for _, op := range s.active {
+		if op.state == StateTerminating && !op.workerJoined {
+			s.cleanupBlocked = true
+			return
+		}
+	}
 }
 
 func terminateWorkers(workers []SandboxWorker) error {
@@ -606,6 +617,7 @@ func (s *fixtureSession) completeJoinedLocked(op *readOperation, result WorkerRe
 	}
 	delete(s.active, op.id)
 	close(op.done)
+	s.refreshCleanupBarrierLocked()
 }
 
 func (s *fixtureSession) Close(ctx context.Context) error {

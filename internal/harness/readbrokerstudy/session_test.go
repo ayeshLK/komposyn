@@ -554,6 +554,72 @@ func TestCloseDeadlineDoesNotBlockOnWorkerJoinOrReleaseResources(t *testing.T) {
 	}
 }
 
+func TestRootChangeBlocksAdmissionUntilInvalidatedWorkerJoins(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	targetA := filepath.Join(rootA, "old-root.fixture")
+	targetB := filepath.Join(rootB, "new-root.fixture")
+	for _, path := range []string{targetA, targetB} {
+		if err := os.WriteFile(path, []byte("root transition fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture := newSessionFixture(t, rootA)
+	workerA := fixture.worker
+	workerA.waitEntered = make(chan struct{})
+	workerA.waitRelease = make(chan struct{})
+	workerB := &fakeWorker{}
+	fixture.launcher.mu.Lock()
+	fixture.launcher.workers = []*fakeWorker{workerA, workerB}
+	fixture.launcher.mu.Unlock()
+	if err := fixture.authorizer.ApproveOnce("old-root-read"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	oldReadDone := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), rootA, targetA, "old-root-read")
+		oldReadDone <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-workerA.waitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("old-root worker did not reach blocked join")
+	}
+	if err := fixture.session.SelectRoot(rootB); !errors.Is(err, ErrCleanupPending) {
+		t.Fatalf("root change error=%v, want cleanup pending", err)
+	}
+	if err := fixture.authorizer.ApproveOnce("new-root-blocked"); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := fixture.session.Read(context.Background(), rootB, targetB, "new-root-blocked")
+	if err != nil || blocked.Outcome != ReadNotExecuted {
+		t.Fatalf("new-root read while old worker is unjoined=(%q,%v), want not-executed", blocked.Outcome, err)
+	}
+	if fixture.launcher.starts != 1 || fixture.authorizer.ConsumptionCount("new-root-blocked") != 0 {
+		t.Fatal("new-root read started or consumed approval while invalidated worker was unjoined")
+	}
+	close(workerA.waitRelease)
+	select {
+	case <-oldReadDone:
+	case <-time.After(time.Second):
+		t.Fatal("old-root read did not finish after worker join")
+	}
+	if err := fixture.authorizer.ApproveOnce("new-root-after-join"); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := fixture.session.Read(context.Background(), rootB, targetB, "new-root-after-join")
+	if err != nil || accepted.Outcome != ReadSucceeded {
+		t.Fatalf("new-root read after confirmed join=(%q,%v), want success", accepted.Outcome, err)
+	}
+	if fixture.launcher.starts != 2 || len(fixture.session.PublishedResults()) != 1 {
+		t.Fatal("admission did not resume exactly once after cleanup confirmation")
+	}
+}
+
 func TestProviderPinCannotOverrideMovedChildOfProtectedSettingsDirectory(t *testing.T) {
 	root := t.TempDir()
 	protectedDir := filepath.Join(root, "settings")
