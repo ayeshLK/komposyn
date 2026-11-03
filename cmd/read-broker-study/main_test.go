@@ -39,8 +39,8 @@ func TestInspectEnvironmentDoesNotRunUntrustedBubblewrapCandidate(t *testing.T) 
 	if observed.BubblewrapVersion != "" {
 		t.Fatalf("untrusted backend version was reported: %q", observed.BubblewrapVersion)
 	}
-	if !strings.Contains(observed.BubblewrapError, "not run") {
-		t.Fatalf("trust diagnostic=%q, want explicit no-execution status", observed.BubblewrapError)
+	if !strings.Contains(observed.BubblewrapError, "skipped backend probes and sandbox launch") {
+		t.Fatalf("trust diagnostic=%q, want explicit skipped-probe and launch status", observed.BubblewrapError)
 	}
 	if _, err := os.Lstat(marker); !os.IsNotExist(err) {
 		t.Fatalf("untrusted candidate executed and created marker: %v", err)

@@ -53,13 +53,14 @@ const (
 	backendProbeTimeout          = 2 * time.Second
 	backendHashLimit             = 512 << 20
 	backendProbeOutputLimit      = 64 << 10
+	maxWorkerSnapshotBytes       = 7 << 20
 )
 
 type BindMode string
 
 const (
-	BindModeDescriptor    BindMode = "ro-bind-fd"
-	BindModeLegacyRefused BindMode = "legacy-path-bind-refused"
+	BindModeDescriptor   BindMode = "ro-bind-fd"
+	BindModeFileSnapshot BindMode = "file-snapshot"
 )
 
 // BubblewrapCapabilities records options reported by the trusted executable's
@@ -104,7 +105,7 @@ func InspectBubblewrap(path string) BackendInspection {
 		result.Mode = stat.Mode & 0o7777
 	}
 	if err := validateTrustedExecutable(path, true); err != nil {
-		result.Error = "backend trust validation failed; executable was not run"
+		result.Error = "backend trust validation failed; harness skipped backend probes and sandbox launch"
 		return result
 	}
 	result.Trusted = true
@@ -169,11 +170,16 @@ func bubblewrapCapabilities(versionOutput, help string) (string, BubblewrapCapab
 	if len(missing) != 0 {
 		return version, BubblewrapCapabilities{Options: ordered}, fmt.Errorf("%w: missing required Bubblewrap features: %s", ErrUnavailable, strings.Join(missing, ", "))
 	}
-	if _, ok := options["--ro-bind-fd"]; !ok {
-		return version, BubblewrapCapabilities{Options: ordered, BindMode: BindModeLegacyRefused},
-			fmt.Errorf("%w: legacy --ro-bind /proc/self/fd worker launch is refused because Bubblewrap resolves its source pathname before mounting; use a backend with --ro-bind-fd", ErrUnavailable)
+	if _, ok := options["--ro-bind-fd"]; ok {
+		return version, BubblewrapCapabilities{Options: ordered, BindMode: BindModeDescriptor}, nil
 	}
-	return version, BubblewrapCapabilities{Options: ordered, BindMode: BindModeDescriptor}, nil
+	if _, hasFile := options["--ro-bind-data"]; hasFile {
+		if _, hasPerms := options["--perms"]; hasPerms {
+			return version, BubblewrapCapabilities{Options: ordered, BindMode: BindModeFileSnapshot}, nil
+		}
+	}
+	return version, BubblewrapCapabilities{Options: ordered},
+		fmt.Errorf("%w: Bubblewrap supports neither descriptor binds nor the secure --perms/--ro-bind-data snapshot path", ErrUnavailable)
 }
 
 // EffectiveBubblewrapArguments returns the exact reviewed launch argument
@@ -187,11 +193,21 @@ func EffectiveBubblewrapArguments(mode BindMode) []string {
 	switch mode {
 	case BindModeDescriptor:
 		args = append(args, "--ro-bind-fd", "5", "/worker")
+	case BindModeFileSnapshot:
+		args = append(args, "--perms", "0500", "--ro-bind-data", "5", "/worker")
 	default:
-		return []string{}
+		return nil
 	}
 	return append(args, "--sync-fd", "6", "--chdir", "/", "--", "/worker", workerBootstrapMode,
-		"--control-fd", fmt.Sprint(controlFD), "--worker-fd", fmt.Sprint(workerVerificationFD), "--seccomp-fd", fmt.Sprint(seccompInputFD))
+		"--control-fd", fmt.Sprint(controlFD), "--worker-mode", workerVerificationMode(mode),
+		"--worker-fd", fmt.Sprint(workerVerificationFD), "--seccomp-fd", fmt.Sprint(seccompInputFD))
+}
+
+func workerVerificationMode(mode BindMode) string {
+	if mode == BindModeFileSnapshot {
+		return "snapshot"
+	}
+	return "descriptor"
 }
 
 func runBoundedProbe(path, argument string) (string, error) {
@@ -270,8 +286,9 @@ type workerLauncher struct {
 }
 
 // NewWorkerLauncher constructs the only launch path in this feasibility
-// package. It requires an absolute root-owned Bubblewrap executable and a
-// statically linked fixed-purpose worker; it never chooses a weaker fallback.
+// package. It requires an absolute root-owned Bubblewrap executable and uses
+// either descriptor bind or a sealed byte snapshot; it never falls back to a
+// pathname-based worker source.
 func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
 	if err := validateTrustedExecutable(bwrapPath, true); err != nil {
 		return nil, fmt.Errorf("%w: trusted Bubblewrap validation failed", ErrUnavailable)
@@ -280,18 +297,182 @@ func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: Bubblewrap compatibility preflight failed: %v", ErrUnavailable, err)
 	}
-	if err := validateTrustedExecutable(workerPath, false); err != nil {
-		return nil, fmt.Errorf("%w: fixed worker validation failed", ErrUnavailable)
-	}
-	workerFile, err := os.Open(workerPath)
+	workerFile, err := snapshotCurrentExecutable(workerPath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: fixed worker could not be pinned", ErrUnavailable)
-	}
-	if err := validateStaticWorkerFile(workerFile); err != nil {
-		_ = workerFile.Close()
-		return nil, fmt.Errorf("%w: fixed worker validation failed", ErrUnavailable)
+		return nil, fmt.Errorf("%w: running fixed worker could not be snapshotted: %v", ErrUnavailable, err)
 	}
 	return &workerLauncher{bwrapPath: bwrapPath, capability: capability, workerFile: workerFile}, nil
+}
+
+// snapshotCurrentExecutable binds the worker bytes to the already-running
+// study image, not to a mutable pathname. The supplied path is only checked as
+// an identity hint; the snapshot source is the kernel's /proc/self/exe handle.
+func snapshotCurrentExecutable(workerPath string) (*os.File, error) {
+	if workerPath == "" {
+		return nil, errors.New("worker path identity hint is empty")
+	}
+	pathFile, err := os.Open(workerPath)
+	if err != nil {
+		return nil, errors.New("worker path could not be opened for identity comparison")
+	}
+	defer pathFile.Close()
+	runningFile, err := os.Open("/proc/self/exe")
+	if err != nil {
+		return nil, errors.New("the running executable handle is unavailable")
+	}
+	defer runningFile.Close()
+	var pathStat, runningStat unix.Stat_t
+	if err := unix.Fstat(int(pathFile.Fd()), &pathStat); err != nil {
+		return nil, errors.New("worker path identity could not be checked")
+	}
+	if err := unix.Fstat(int(runningFile.Fd()), &runningStat); err != nil ||
+		pathStat.Dev != runningStat.Dev || pathStat.Ino != runningStat.Ino {
+		return nil, errors.New("worker path no longer names the running executable")
+	}
+	if err := validateStaticWorkerFile(runningFile); err != nil {
+		return nil, err
+	}
+	snapshot, err := createSealedWorkerSnapshot(runningFile)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStaticWorkerFile(snapshot); err != nil {
+		_ = snapshot.Close()
+		return nil, errors.New("sealed worker snapshot is not a static ELF executable")
+	}
+	if _, err := snapshot.Seek(0, io.SeekStart); err != nil {
+		_ = snapshot.Close()
+		return nil, errors.New("sealed worker snapshot could not be rewound")
+	}
+	return snapshot, nil
+}
+
+// openSealedWorkerSnapshot returns a new read-only open-file description at
+// offset zero. A dup would share the source offset, which Bubblewrap advances
+// while consuming --file/--ro-bind-data input.
+func openSealedWorkerSnapshot(snapshot *os.File) (*os.File, error) {
+	if snapshot == nil {
+		return nil, errors.New("sealed worker snapshot is missing")
+	}
+	var expected unix.Stat_t
+	if err := unix.Fstat(int(snapshot.Fd()), &expected); err != nil || expected.Mode&unix.S_IFMT != unix.S_IFREG ||
+		expected.Size <= 0 || expected.Size > maxWorkerSnapshotBytes {
+		return nil, errors.New("sealed worker snapshot identity is invalid")
+	}
+	originalFlags, err := unix.FcntlInt(snapshot.Fd(), unix.F_GETFL, 0)
+	if err != nil || originalFlags&unix.O_ACCMODE != unix.O_RDONLY {
+		return nil, errors.New("sealed worker snapshot is not held read-only")
+	}
+	seals := unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
+	gotSeals, err := unix.FcntlInt(snapshot.Fd(), unix.F_GET_SEALS, 0)
+	if err != nil || gotSeals&seals != seals {
+		return nil, errors.New("worker snapshot is not fully sealed")
+	}
+	fd, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", snapshot.Fd()), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, errors.New("fresh read-only worker descriptor could not be opened")
+	}
+	file := os.NewFile(uintptr(fd), "readbroker-worker-launch-snapshot")
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("fresh worker snapshot descriptor could not be wrapped")
+	}
+	var actual unix.Stat_t
+	flags, flagErr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err := unix.Fstat(fd, &actual); err != nil || actual.Dev != expected.Dev || actual.Ino != expected.Ino ||
+		actual.Size != expected.Size || flagErr != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
+		_ = file.Close()
+		return nil, errors.New("fresh worker snapshot descriptor failed validation")
+	}
+	if offset, err := file.Seek(0, io.SeekCurrent); err != nil || offset != 0 {
+		_ = file.Close()
+		return nil, errors.New("fresh worker snapshot descriptor is not at offset zero")
+	}
+	return file, nil
+}
+
+// createSealedWorkerSnapshot copies a bounded open file into anonymous memory
+// and seals the resulting memfd before returning a read-only descriptor. It
+// never reopens the source pathname and never trusts source mode bits as an
+// integrity check.
+func createSealedWorkerSnapshot(source *os.File) (_ *os.File, resultErr error) {
+	if source == nil {
+		return nil, errors.New("snapshot source is missing")
+	}
+	var before unix.Stat_t
+	if err := unix.Fstat(int(source.Fd()), &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFREG ||
+		before.Size <= 0 || before.Size > maxWorkerSnapshotBytes {
+		return nil, errors.New("snapshot source is not a bounded regular file")
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return nil, errors.New("snapshot source cannot be rewound")
+	}
+	fd, err := unix.MemfdCreate("komposyn-readbroker-worker", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	if err != nil {
+		return nil, fmt.Errorf("sealed worker snapshot is unavailable: %w", err)
+	}
+	writable := os.NewFile(uintptr(fd), "readbroker-worker-snapshot-writable")
+	if writable == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("sealed worker snapshot descriptor could not be wrapped")
+	}
+	defer func() {
+		if writable != nil {
+			_ = writable.Close()
+		}
+	}()
+	count, err := io.CopyN(writable, source, before.Size)
+	if err != nil || count != before.Size {
+		return nil, errors.New("worker snapshot copy was incomplete")
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(int(source.Fd()), &after); err != nil || after.Dev != before.Dev || after.Ino != before.Ino ||
+		after.Size != before.Size || after.Mtim != before.Mtim || after.Ctim != before.Ctim {
+		return nil, errors.New("worker snapshot source changed during copy")
+	}
+	var copied unix.Stat_t
+	if err := unix.Fstat(fd, &copied); err != nil || copied.Size != before.Size {
+		return nil, errors.New("worker snapshot size does not match the source")
+	}
+	seals := unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_ADD_SEALS, seals); err != nil {
+		return nil, fmt.Errorf("worker snapshot could not be sealed: %w", err)
+	}
+	gotSeals, err := unix.FcntlInt(uintptr(fd), unix.F_GET_SEALS, 0)
+	if err != nil || gotSeals&seals != seals {
+		return nil, errors.New("worker snapshot seals could not be verified")
+	}
+	readOnlyFD, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", fd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, errors.New("read-only worker snapshot descriptor could not be opened")
+	}
+	readOnly := os.NewFile(uintptr(readOnlyFD), "readbroker-worker-snapshot")
+	if readOnly == nil {
+		_ = unix.Close(readOnlyFD)
+		return nil, errors.New("read-only worker snapshot descriptor could not be wrapped")
+	}
+	var reopened unix.Stat_t
+	flags, flagErr := unix.FcntlInt(uintptr(readOnlyFD), unix.F_GETFL, 0)
+	if err := unix.Fstat(readOnlyFD, &reopened); err != nil || reopened.Dev != copied.Dev || reopened.Ino != copied.Ino ||
+		flagErr != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
+		_ = readOnly.Close()
+		return nil, errors.New("read-only worker snapshot descriptor failed identity validation")
+	}
+	readOnlySeals, err := unix.FcntlInt(uintptr(readOnlyFD), unix.F_GET_SEALS, 0)
+	if err != nil || readOnlySeals&seals != seals {
+		_ = readOnly.Close()
+		return nil, errors.New("read-only worker snapshot is not fully sealed")
+	}
+	if _, err := readOnly.Seek(0, io.SeekStart); err != nil {
+		_ = readOnly.Close()
+		return nil, errors.New("read-only worker snapshot could not be rewound")
+	}
+	if err := writable.Close(); err != nil {
+		_ = readOnly.Close()
+		return nil, errors.New("writable worker snapshot descriptor could not be closed")
+	}
+	writable = nil
+	return readOnly, nil
 }
 
 func (l *workerLauncher) Close() error {
@@ -396,23 +577,21 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		_ = childSocket.Close()
 		return nil, fmt.Errorf("%w: control socket setup failed", ErrUnavailable)
 	}
-	workerCtx, cancel := context.WithTimeout(ctx, time.Duration(workerDeadline))
-	verificationFD, err := unix.Dup(int(l.workerFile.Fd()))
+	mountFile, err := openSealedWorkerSnapshot(l.workerFile)
 	if err != nil {
-		cancel()
 		_ = parentSocket.Close()
 		_ = childSocket.Close()
-		return nil, fmt.Errorf("%w: worker verification descriptor could not be duplicated", ErrUnavailable)
+		return nil, fmt.Errorf("%w: worker mount snapshot could not be reopened", ErrUnavailable)
 	}
-	verificationFile := os.NewFile(uintptr(verificationFD), "readbroker-worker-verification")
-	if verificationFile == nil {
-		_ = unix.Close(verificationFD)
-		cancel()
+	defer mountFile.Close()
+	verificationFile, err := openSealedWorkerSnapshot(l.workerFile)
+	if err != nil {
 		_ = parentSocket.Close()
 		_ = childSocket.Close()
-		return nil, fmt.Errorf("%w: worker verification descriptor could not be wrapped", ErrUnavailable)
+		return nil, fmt.Errorf("%w: worker verification snapshot could not be reopened", ErrUnavailable)
 	}
 	defer verificationFile.Close()
+	workerCtx, cancel := context.WithTimeout(ctx, time.Duration(workerDeadline))
 	args := EffectiveBubblewrapArguments(l.capability.BindMode)
 	if args == nil {
 		cancel()
@@ -423,7 +602,7 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	cmd := exec.CommandContext(workerCtx, l.bwrapPath, args...)
 	cmd.Dir = "/"
 	cmd.Env = []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"}
-	cmd.ExtraFiles = []*os.File{filter, childSocket, l.workerFile, verificationFile}
+	cmd.ExtraFiles = []*os.File{filter, childSocket, mountFile, verificationFile}
 	cmd.Stdout = io.Discard
 	stderr := &limitedOutput{}
 	cmd.Stderr = stderr
@@ -743,11 +922,21 @@ func sendPacket(fd int, packet []byte) error {
 // worker reports readiness. The sole protocol descriptor is fd 4; an approved
 // read-only file descriptor arrives later via SCM_RIGHTS.
 func WorkerMain() int {
-	if len(os.Args) != 8 || os.Args[1] != workerBootstrapMode || os.Args[2] != "--control-fd" || os.Args[3] != "4" ||
-		os.Args[4] != "--worker-fd" || os.Args[5] != "6" || os.Args[6] != "--seccomp-fd" || os.Args[7] != "3" {
+	if len(os.Args) != 10 || os.Args[1] != workerBootstrapMode || os.Args[2] != "--control-fd" || os.Args[3] != "4" ||
+		os.Args[4] != "--worker-mode" || os.Args[6] != "--worker-fd" || os.Args[7] != "6" ||
+		os.Args[8] != "--seccomp-fd" || os.Args[9] != "3" {
 		return 70
 	}
-	if err := verifyDescriptorMounts([]DescriptorMount{{FD: workerVerificationFD, Destination: "/worker"}}); err != nil {
+	var verifyErr error
+	switch os.Args[5] {
+	case "descriptor":
+		verifyErr = verifyDescriptorMounts([]DescriptorMount{{FD: workerVerificationFD, Destination: "/worker"}})
+	case "snapshot":
+		verifyErr = verifySnapshotExecutable(workerVerificationFD, "/worker")
+	default:
+		return 70
+	}
+	if verifyErr != nil {
 		return 70
 	}
 	if err := installWorkerSeccomp(seccompInputFD); err != nil {
@@ -762,6 +951,85 @@ const workerVerificationFD = 6
 type DescriptorMount struct {
 	FD          int
 	Destination string
+}
+
+// verifySnapshotExecutable checks that Bubblewrap's private-root file contains
+// the exact bytes from the sealed host snapshot. The trust anchor is the
+// already-running parent image plus the sealed descriptor and trusted
+// Bubblewrap file-copy operation, not this post-exec comparison by itself.
+func verifySnapshotExecutable(fd int, destination string) (result error) {
+	if fd <= 2 || destination == "" || destination[0] != '/' {
+		return ErrProtocol
+	}
+	defer func() {
+		if err := unix.Close(fd); err != nil && result == nil {
+			result = err
+		}
+	}()
+	var source unix.Stat_t
+	if err := unix.Fstat(fd, &source); err != nil || source.Mode&unix.S_IFMT != unix.S_IFREG ||
+		source.Size <= 0 || source.Size > maxWorkerSnapshotBytes {
+		return ErrProtocol
+	}
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
+		return ErrProtocol
+	}
+	seals := unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
+	gotSeals, err := unix.FcntlInt(uintptr(fd), unix.F_GET_SEALS, 0)
+	if err != nil || gotSeals&seals != seals {
+		return ErrProtocol
+	}
+	var entry unix.Stat_t
+	if err := unix.Lstat(destination, &entry); err != nil || entry.Mode&unix.S_IFMT != unix.S_IFREG || entry.Mode&0o111 == 0 || entry.Size != source.Size {
+		return ErrStaleReceipt
+	}
+	workerFD, err := unix.Open(destination, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return ErrStaleReceipt
+	}
+	defer func() {
+		if err := unix.Close(workerFD); err != nil && result == nil {
+			result = err
+		}
+	}()
+	var mounted unix.Stat_t
+	if err := unix.Fstat(workerFD, &mounted); err != nil || mounted.Mode&unix.S_IFMT != unix.S_IFREG ||
+		mounted.Dev != entry.Dev || mounted.Ino != entry.Ino || mounted.Size != source.Size {
+		return ErrStaleReceipt
+	}
+	sourceDigest, err := digestDescriptor(fd, source.Size)
+	if err != nil {
+		return ErrProtocol
+	}
+	workerDigest, err := digestDescriptor(workerFD, mounted.Size)
+	if err != nil || sourceDigest != workerDigest {
+		return ErrStaleReceipt
+	}
+	return nil
+}
+
+func digestDescriptor(fd int, size int64) ([sha256.Size]byte, error) {
+	hash := sha256.New()
+	buffer := make([]byte, 32<<10)
+	for offset := int64(0); offset < size; {
+		want := int64(len(buffer))
+		if remaining := size - offset; want > remaining {
+			want = remaining
+		}
+		count, err := unix.Pread(fd, buffer[:int(want)], offset)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil || count == 0 {
+			return [sha256.Size]byte{}, ErrProtocol
+		}
+		_, _ = hash.Write(buffer[:count])
+		offset += int64(count)
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
 }
 
 // verifyDescriptorMounts consumes every distinct non-standard verification

@@ -86,6 +86,7 @@ type launchPolicy struct {
 	Network               string                   `json:"network"`
 	Root                  string                   `json:"root"`
 	WorkerMount           string                   `json:"worker_mount"`
+	WorkerSnapshot        string                   `json:"worker_snapshot"`
 	RuntimeReadExceptions []string                 `json:"runtime_read_exceptions"`
 	Environment           string                   `json:"environment"`
 	InheritedDescriptors  []string                 `json:"inherited_descriptors"`
@@ -137,6 +138,7 @@ func run() error {
 	}
 	started := time.Now().UTC()
 	backend := readbrokerstudy.InspectBubblewrap(*bwrap)
+	workerMount, workerVerification := workerMountPolicy(backend.BindMode)
 	report := report{
 		Schema: "komposyn.read-broker-study.v1", StartedUTC: started.Format(time.RFC3339),
 		Commit: *commit, Source: "cmd/read-broker-study; internal/harness/readbrokerstudy",
@@ -145,17 +147,18 @@ func run() error {
 			Backend:               "system Bubblewrap; fixed static Go worker; Linux only",
 			Namespaces:            []string{"user", "mount", "pid", "ipc", "uts", "net"},
 			Network:               "unshared network namespace; worker seccomp denies socket creation and network syscalls",
-			Root:                  "private 8 MiB tmpfs; no host root or home mount",
-			WorkerMount:           "Bubblewrap consumes FD 5 for the read-only /worker descriptor bind; the fixed bootstrap verifies /worker using separate pinned FD 6 before closing it and installing seccomp",
+			Root:                  "private 8 MiB worker tmpfs; no host root or home mount",
+			WorkerMount:           workerMount,
+			WorkerSnapshot:        "host opens /proc/self/exe, confirms the supplied executable path names that same device/inode, copies at most 7 MiB into a sealed memfd, reopens it read-only, and verifies size/seals; user-owned path permissions are not the trust anchor",
 			EffectiveArguments:    effectiveBubblewrapArguments(backend.BindMode),
 			WorkerBindMode:        backend.BindMode,
 			RuntimeReadExceptions: []string{"none"},
 			Environment:           "host command environment contains only synthetic sentinel; Bubblewrap --clearenv; worker verifies sentinel absent and any PWD is /",
-			InheritedDescriptors:  []string{"0 /dev/null input", "1 output discarded", "2 bounded stderr capture", "3 exact seccomp program read then closed by bootstrap before ready", "4 AF_UNIX SOCK_SEQPACKET control; no read capability at startup", "5 pinned worker mount source consumed by Bubblewrap", "6 independent pinned worker verifier retained by --sync-fd through bootstrap, then closed before ready"},
+			InheritedDescriptors:  []string{"0 /dev/null input", "1 output discarded", "2 bounded stderr capture", "3 exact seccomp program read then closed by bootstrap before ready", "4 AF_UNIX SOCK_SEQPACKET control; no read capability at startup", "5 fresh read-only sealed snapshot description consumed by Bubblewrap during descriptor bind or byte construction", "6 independent read-only sealed snapshot description retained by --sync-fd through bootstrap, then closed before seccomp/readiness"},
 			CapabilityHandoff:     "one read-only regular-file FD by SCM_RIGHTS after readiness, authorization, and generation revalidation",
-			WorkerVerification:    "fixed worker starts as PID 1; compares /worker device/inode with independent fd 6 before installing seccomp; fd 6 and seccomp fd 3 are closed before readiness; consumed fd 5 is absent",
+			WorkerVerification:    workerVerification,
 			Seccomp:               "fixed worker sets no_new_privs and installs architecture-checked BPF with SECCOMP_FILTER_FLAG_TSYNC; pathname opens, socket creation, clone3, and process-like clone flags are denied; only the exact Go runtime thread clone flag sets are allowed; probes run before readiness",
-			ResourceLimits:        map[string]string{"wall_clock": "5 seconds per worker", "result": "64 KiB", "stderr": "4 KiB captured", "scratch": "8 MiB empty private root", "aggregate_process_memory_cpu": "not provisioned or tested"},
+			ResourceLimits:        map[string]string{"wall_clock": "5 seconds per worker", "result": "64 KiB", "stderr": "4 KiB captured", "worker_snapshot": "7 MiB maximum; sealed memfd plus Bubblewrap's transient descriptor-fed copy; larger worker images refused", "scratch": "8 MiB private worker root", "aggregate_process_memory_cpu": "not provisioned or tested"},
 			UnrestrictedFallback:  false,
 		},
 		Limitations: []string{
@@ -165,7 +168,8 @@ func run() error {
 			"policy scans are bounded observations and do not serialize independent namespace writers",
 			"a pinned directory does not pin every current or future descendant; unpinned same-device files are refused",
 			"the bootstrap uses --as-pid-1 so Bubblewrap's --sync-fd can pass verifier FD 6; worker seccomp allows only the Go runtime's exact shared-thread clone flag sets, denies clone3 and process-like clone, and needs native startup validation",
-			"Bubblewrap without --ro-bind-fd is refused: the legacy /proc/self/fd pathname bind has a resolution-to-mount race that can execute an unverified worker image",
+			"Bubblewrap 0.9 file-snapshot mode requires host /proc/self/exe and sealed memfd support; it refuses the worker if the running image exceeds 7 MiB or snapshot/copy verification fails",
+			"the 0.9 staging verifier runs inside the copied worker, so its independent trust comes from the already-running parent image, sealed memfd bytes, and trusted Bubblewrap copy; the self-comparison is an integrity check, not its own trust anchor",
 			"the command's protected-object cases use disposable fixtures; independent-actor namespace races are currently covered only by package tests with injected workers, not by this Bubblewrap command",
 			"replacement after open/classification, root/parent movement, mount crossing, ancestor replacement, and recursive-child relocation have no integrated sandboxed-actor scenario",
 		},
@@ -568,6 +572,19 @@ func inspectEnvironmentWithBackend(bwrap string, backend readbrokerstudy.Backend
 
 func effectiveBubblewrapArguments(mode readbrokerstudy.BindMode) []string {
 	return readbrokerstudy.EffectiveBubblewrapArguments(mode)
+}
+
+func workerMountPolicy(mode readbrokerstudy.BindMode) (string, string) {
+	switch mode {
+	case readbrokerstudy.BindModeDescriptor:
+		return "Bubblewrap consumes sealed memfd FD 5 as a read-only descriptor bind at /worker; the fixed bootstrap compares /worker device/inode to independent FD 6 before seccomp",
+			"fixed worker starts as PID 1; compares /worker device/inode with independent fd 6 before installing seccomp; fd 6 and seccomp fd 3 close before readiness; consumed fd 5 is absent"
+	case readbrokerstudy.BindModeFileSnapshot:
+		return "Bubblewrap 0.9 uses --perms 0500 --ro-bind-data FD 5 /worker: it copies sealed memfd bytes to a private staging file, applies executable mode, read-only bind-mounts it into the empty worker root, then consumes FD 5",
+			"trusted parent snapshot and Bubblewrap copy establish the executable bytes before first execution; copied bootstrap hashes /worker against sealed verifier FD 6, closes it, installs seccomp, and probes before readiness; self-hash is not an independent trust anchor"
+	default:
+		return "unavailable", "unavailable"
+	}
 }
 
 func stableError(err error) string {

@@ -17,7 +17,10 @@
 package readbrokerstudy
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,12 +36,16 @@ func TestBubblewrapCapabilitySelection(t *testing.T) {
 	if err != nil || version != "bubblewrap 0.10.0" || modern.BindMode != BindModeDescriptor {
 		t.Fatalf("modern capability selection: version=%q mode=%q err=%v", version, modern.BindMode, err)
 	}
-	_, legacy, err := bubblewrapCapabilities("bubblewrap 0.9.0\n", bubblewrapHelp(""))
-	if !errors.Is(err, ErrUnavailable) || legacy.BindMode != BindModeLegacyRefused || !strings.Contains(err.Error(), "pathname before mounting") {
-		t.Fatalf("unsafe legacy compatibility path was not refused: mode=%q err=%v", legacy.BindMode, err)
+	_, legacy, err := bubblewrapCapabilities("bubblewrap 0.9.0\n", bubblewrapHelp("--ro-bind-data", "--perms"))
+	if err != nil || legacy.BindMode != BindModeFileSnapshot {
+		t.Fatalf("secure 0.9 file-snapshot selection: mode=%q err=%v", legacy.BindMode, err)
 	}
 	if !slices.Contains(legacy.Options, "--as-pid-1") || !slices.Contains(legacy.Options, "--sync-fd") {
 		t.Fatalf("legacy capabilities missing from report: %#v", legacy.Options)
+	}
+	_, incomplete, err := bubblewrapCapabilities("bubblewrap 0.9.0\n", bubblewrapHelp("--ro-bind-data"))
+	if !errors.Is(err, ErrUnavailable) || incomplete.BindMode != "" {
+		t.Fatalf("read-only data snapshot without explicit permissions must be refused: mode=%q err=%v", incomplete.BindMode, err)
 	}
 }
 
@@ -55,8 +62,17 @@ func TestBubblewrapArgumentsSelectModernMountAndSeparateVerifierFD(t *testing.T)
 	if workerMountFD == workerVerificationFD {
 		t.Fatal("mount source and retained verifier descriptors must be distinct")
 	}
-	if len(EffectiveBubblewrapArguments(BindModeLegacyRefused)) != 0 {
-		t.Fatal("refused legacy mount path must not produce launch arguments")
+	snapshot := strings.Join(EffectiveBubblewrapArguments(BindModeFileSnapshot), " ")
+	for _, value := range []string{"--perms 0500 --ro-bind-data 5 /worker", "--sync-fd 6", "--worker-mode snapshot"} {
+		if !strings.Contains(snapshot, value) {
+			t.Fatalf("Bubblewrap 0.9 snapshot arguments missing %q: %s", value, snapshot)
+		}
+	}
+	if strings.Contains(snapshot, "/proc/self/fd") {
+		t.Fatalf("file snapshot mode must not resolve a source pathname: %s", snapshot)
+	}
+	if len(EffectiveBubblewrapArguments("unknown")) != 0 {
+		t.Fatal("unknown bind mode must produce no launch arguments")
 	}
 }
 
@@ -88,6 +104,181 @@ func TestModernBindConsumptionLeavesIndependentVerifierDescriptor(t *testing.T) 
 	}
 	if _, err := unix.FcntlInt(uintptr(verificationFD), unix.F_GETFD, 0); err == nil {
 		t.Fatal("retained verification descriptor survived bootstrap verification")
+	}
+}
+
+func TestSealedSnapshotSurvivesSourcePathAndAncestorReplacement(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "selected", "bin")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(parent, "worker")
+	want := []byte("reviewed executable snapshot")
+	if err := os.WriteFile(sourcePath, want, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	snapshot, err := createSealedWorkerSnapshot(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	seals, err := unix.FcntlInt(snapshot.Fd(), unix.F_GET_SEALS, 0)
+	if err != nil || seals&(unix.F_SEAL_WRITE|unix.F_SEAL_GROW|unix.F_SEAL_SHRINK|unix.F_SEAL_SEAL) !=
+		unix.F_SEAL_WRITE|unix.F_SEAL_GROW|unix.F_SEAL_SHRINK|unix.F_SEAL_SEAL {
+		t.Fatalf("snapshot is not immutable: seals=%#x err=%v", seals, err)
+	}
+	writeFD, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", snapshot.Fd()), unix.O_RDWR|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open sealed memfd for rejected-write check: %v", err)
+	}
+	if _, err := unix.Pwrite(writeFD, []byte("x"), 0); !errors.Is(err, unix.EPERM) {
+		_ = unix.Close(writeFD)
+		t.Fatalf("sealed snapshot accepted a write: %v", err)
+	}
+	if err := unix.Close(writeFD); err != nil {
+		t.Fatal(err)
+	}
+
+	movedParent := filepath.Join(base, "moved")
+	if err := os.Rename(filepath.Join(base, "selected"), movedParent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("replacement at original pathname"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	movedPath := filepath.Join(movedParent, "bin", "worker")
+	if err := os.Chmod(movedPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(movedPath, []byte("same inode changed after snapshot"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate Bubblewrap's descriptor-fed copy after the source pathname and
+	// its ancestor have both been replaced. Only the sealed descriptor is used.
+	mountInput, err := openSealedWorkerSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateRoot := t.TempDir()
+	workerPath := filepath.Join(privateRoot, "worker")
+	destination, err := os.Create(workerPath)
+	if err != nil {
+		_ = mountInput.Close()
+		t.Fatal(err)
+	}
+	copied, copyErr := io.CopyN(destination, mountInput, int64(len(want)))
+	closeInputErr := mountInput.Close()
+	closeDestinationErr := destination.Close()
+	if copyErr != nil || closeInputErr != nil || closeDestinationErr != nil || copied != int64(len(want)) {
+		t.Fatalf("snapshot copy failed: copied=%d copy=%v input_close=%v destination_close=%v", copied, copyErr, closeInputErr, closeDestinationErr)
+	}
+	if err := os.Chmod(workerPath, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := openSealedWorkerSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifierFD := int(verifier.Fd())
+	if err := verifySnapshotExecutable(verifierFD, workerPath); err != nil {
+		t.Fatalf("copied private worker did not match sealed source: %v", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(verifierFD), unix.F_GETFD, 0); err == nil {
+		t.Fatal("snapshot verifier descriptor was not closed")
+	}
+	if got, err := os.ReadFile(workerPath); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("path/ancestor replacement changed copied worker: %q err=%v", got, err)
+	}
+}
+
+func TestSnapshotCurrentExecutableRejectsReplacementPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "replacement")
+	if err := os.WriteFile(path, []byte("replacement executable"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot, err := snapshotCurrentExecutable(path); err == nil {
+		_ = snapshot.Close()
+		t.Fatal("replacement pathname was accepted as the running executable")
+	}
+}
+
+func TestSealedSnapshotDescriptorsHaveIndependentOffsetsAndMismatchCloses(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(sourcePath, []byte("bounded executable fixture"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	snapshot, err := createSealedWorkerSnapshot(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	first, err := openSealedWorkerSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := openSealedWorkerSnapshot(snapshot)
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	var prefix [4]byte
+	if _, err := first.Read(prefix[:]); err != nil {
+		t.Fatal(err)
+	}
+	if offset, err := second.Seek(0, io.SeekCurrent); err != nil || offset != 0 {
+		t.Fatalf("fresh descriptor shares source offset: offset=%d err=%v", offset, err)
+	}
+	_ = first.Close()
+	_ = second.Close()
+
+	privateWorker := filepath.Join(t.TempDir(), "worker")
+	if err := os.WriteFile(privateWorker, []byte("altered fixture"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := openSealedWorkerSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifierFD := int(verifier.Fd())
+	if err := verifySnapshotExecutable(verifierFD, privateWorker); !errors.Is(err, ErrStaleReceipt) {
+		t.Fatalf("integrity mismatch was accepted: %v", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(verifierFD), unix.F_GETFD, 0); err == nil {
+		t.Fatal("mismatched snapshot verifier descriptor was not closed")
+	}
+}
+
+func TestSealedSnapshotRejectsOversizedSource(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "oversized")
+	if err := os.WriteFile(sourcePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.OpenFile(sourcePath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if err := source.Truncate(maxWorkerSnapshotBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot, err := createSealedWorkerSnapshot(source); err == nil {
+		_ = snapshot.Close()
+		t.Fatal("oversized worker snapshot was accepted")
 	}
 }
 
@@ -261,11 +452,9 @@ func TestInstallWorkerSeccompRejectsInvalidProgramAndClosesFD(t *testing.T) {
 	}
 }
 
-func bubblewrapHelp(extra string) string {
+func bubblewrapHelp(extra ...string) string {
 	options := slices.Clone(requiredBubblewrapOptions)
-	if extra != "" {
-		options = append(options, extra)
-	}
+	options = append(options, extra...)
 	var help strings.Builder
 	for _, option := range options {
 		help.WriteString("  ")
