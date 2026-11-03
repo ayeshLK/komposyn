@@ -509,6 +509,57 @@ func TestCancellationBeforeHandoffRemainsUnknownWhenWorkerIsNotJoined(t *testing
 	}
 }
 
+func TestRevocationAfterReadStartRemainsUnknownWhenResultWasNotEstablished(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "revoked-after-read-start.fixture")
+	if err := os.WriteFile(target, []byte("synthetic post-release fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.waitErr = errors.New("signal: killed")
+	fixture.worker.ackReturnEntered = make(chan struct{})
+	fixture.worker.ackReturnRelease = make(chan struct{})
+	if err := fixture.authorizer.ApproveOnce("revoked-after-read-start"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), root, target, "revoked-after-read-start")
+		done <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-fixture.worker.ackReturnEntered:
+	case <-time.After(time.Second):
+		t.Fatal("read did not reach the controlled post-acknowledgement point")
+	}
+	if err := fixture.session.Revoke("revoked-after-read-start"); !errors.Is(err, ErrCleanupPending) {
+		t.Fatalf("revocation cleanup result=%v, want pending while worker has not joined", err)
+	}
+	close(fixture.worker.ackReturnRelease)
+	select {
+	case got := <-done:
+		if got.err != nil || got.result.Outcome != ReadUnknown {
+			t.Fatalf("read after release/revocation=(%q,%q,%v), want unknown", got.result.Outcome, got.result.Detail, got.err)
+		}
+		if !strings.Contains(got.result.Detail, "read result was not established") || !strings.Contains(got.result.Detail, "exit error after the direct process was reaped") {
+			t.Fatalf("post-release uncertainty diagnostics missing: %q", got.result.Detail)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("revoked read did not finish after the direct worker joined")
+	}
+	evidence := fixture.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != ReadUnknown || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].Published {
+		t.Fatalf("post-release revocation evidence=%+v, want unknown after transfer/start and before publication", evidence)
+	}
+	if fixture.authorizer.ConsumptionCount("revoked-after-read-start") != 1 || len(fixture.session.PublishedResults()) != 0 || !fixture.worker.Joined() {
+		t.Fatal("revoked post-release read replayed, published data, or failed to confirm direct-process join")
+	}
+}
+
 func TestDirectoryCoverageIsSpecificPreAuthorizationRefusal(t *testing.T) {
 	result := refusalFor(fmt.Errorf("wrapped policy check: %w", ErrDirectoryCoverage))
 	if result.Outcome != ReadRefused || result.Detail != ErrDirectoryCoverage.Error() || len(result.Bytes) != 0 {

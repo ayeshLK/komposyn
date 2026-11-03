@@ -420,9 +420,9 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	if stale {
 		cleanup := s.terminateAndWait(op, worker)
 		if !cleanup.cleanupConfirmed() {
-			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("read started after its authorization generation became stale; cleanup is incomplete", cleanup)}
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("read capability was released before its authorization generation became stale; read outcome and cleanup are unconfirmed", cleanup)}
 		}
-		return WorkerResult{Outcome: ReadCancelled, Detail: withTerminationDiagnostic("read started after its authorization generation became stale; captured bytes were not published", cleanup)}
+		return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("read capability and start acknowledgement were received before revocation; read result was not established and no data was published", cleanup)}
 	}
 
 	workerResult, readErr := worker.ReadResult(ctx)

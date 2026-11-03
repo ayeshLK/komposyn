@@ -142,10 +142,11 @@ after that join, such as when the direct process was intentionally killed before
 target-data release. A known cancellation before the read descriptor is
 released remains `cancelled` when the direct-process join is confirmed; the
 exit error remains a diagnostic. After target-data release, a missing
-acknowledgement or worker result/exit error remains `unknown` when the read
-outcome cannot be established. Direct-process join does not prove that every
-namespace descendant has terminated; descendant cleanup requires separate
-launcher guarantees and evidence.
+acknowledgement, a stale generation before a complete result, or a worker
+result/exit error remains `unknown` when the read outcome cannot be established.
+Direct-process join does not prove that every namespace descendant has
+terminated; descendant cleanup requires separate launcher guarantees and
+evidence.
 
 ## Protected registrations and directory limits
 
