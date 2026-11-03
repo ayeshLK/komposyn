@@ -228,6 +228,13 @@ seconds, and captured stderr is capped at 4 KiB.
 
 ## Running the study
 
+For an isolated clean source snapshot, bounded build/run capture, and a
+checksummed review archive, use the
+[manual native-validation runner](read-broker-manual-runner.md). It defaults to
+the merged Bubblewrap 0.9 compatibility baseline and delegates backend trust
+and capability checks to this command; it does not run an independent version
+probe or retry with weaker isolation.
+
 On Linux amd64 or arm64 with a trusted absolute root-owned Bubblewrap binary
 whose bounded `--help` output includes all required options and either
 `--ro-bind-fd` or both `--perms` and `--ro-bind-data`, plus usable required
