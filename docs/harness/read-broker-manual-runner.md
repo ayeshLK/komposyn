@@ -66,8 +66,11 @@ The archive includes:
 - `study-report.json` when the CLI produced valid study JSON.
 - Bounded stdout/stderr logs and capture-status JSON for Go version, build, and
   study execution. Each stream is capped at 2 MiB; subprocesses have finite
-  deadlines. On timeout the runner signals the process group, escalates to
-  `SIGKILL` after three seconds, drains output, and waits for the direct child.
+  deadlines. The capture helper becomes a Linux child subreaper, tracks adopted
+  descendants (including detached sessions), sends `SIGTERM`, escalates to
+  `SIGKILL`, and bounds output draining. It reports incomplete cleanup or
+  undrained output explicitly instead of waiting forever or claiming the child
+  tree was joined.
 - `summary.md`, per-file `SHA256SUMS`, and a separate archive SHA-256 sidecar.
 
 The runner does not save the full environment, process command lines, shell
@@ -79,7 +82,11 @@ Review the archive before sharing it.
 
 `manifest.json` distinguishes source/setup refusal, Go-version refusal, build
 failure, timeout, study failure, missing report, malformed report, and the study's own
-`availability`. If the Bubblewrap owner is UID 65534 or another trust
+`availability`. Backend probe classification follows the study's explicit
+trusted flag and error fields. An unavailable report after successful trust
+validation is not labeled as a pre-probe refusal.
+
+If the Bubblewrap owner is UID 65534 or another trust
 restriction fails, the study records the refusal and skips backend probes,
 worker startup, and fixture operations. A refusal in a restricted agent
 launcher is not evidence that the host itself cannot run the study; rerun the
@@ -94,6 +101,19 @@ cover the integrated independent-actor, protected-owner rotation,
 mount-boundary, parent-death, or cleanup scenarios listed as native gaps in the
 report. It does not establish shell safety, production readiness, or
 acceptance of any filesystem tool.
+
+The runner finalizes the partial manifest, summary, checksums, and archive
+after `SIGINT`, `SIGTERM`, or `SIGHUP`, then exits with the corresponding signal
+status. Further signals are ignored while finalization is in progress. Archive
+and checksum-sidecar creation uses exclusive links, and pre-existing files or
+symlinks at either output path are preserved.
+
+Run disposable regression checks for detached pipe holders, output bounds,
+preflight classification, sidecar collisions, and interruption finalization:
+
+```sh
+python3 scripts/test-read-broker-study-runner.py
+```
 
 `SHA256SUMS` validates the collected files; validate the archive itself with
 the adjacent `.sha256` file before extracting. Share the archive privately
