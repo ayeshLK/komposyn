@@ -411,4 +411,6 @@ The [brokered read feasibility harness](read-broker-feasibility.md) adds an
 experimental host-owned protected-object registry and a fixed Bubblewrap worker
 that receives one authorized read descriptor. It is not production dispatch;
 owner registration, sandbox execution and native actor-race evidence remain
-limited as described in the report, and no filesystem tool is enabled.
+limited as described in the report, and no filesystem tool is enabled. To
+produce a bounded, checksummed evidence archive from a normal Linux host
+terminal, follow the [manual read-broker runner guide](read-broker-manual-runner.md).
