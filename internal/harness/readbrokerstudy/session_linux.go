@@ -576,7 +576,7 @@ func (s *fixtureSession) waitWorker(op *readOperation, worker SandboxWorker) wor
 		return workerWaitResult{Joined: true}
 	}
 	<-s.startWorkerWait(op, worker)
-	return workerWaitResult{ExitErr: op.waitErr, Joined: op.workerJoined}
+	return s.workerWaitSnapshot(op)
 }
 
 func (s *fixtureSession) waitWorkerContext(ctx context.Context, op *readOperation, worker SandboxWorker) (workerWaitResult, error) {
@@ -585,10 +585,19 @@ func (s *fixtureSession) waitWorkerContext(ctx context.Context, op *readOperatio
 	}
 	select {
 	case <-s.startWorkerWait(op, worker):
-		return workerWaitResult{ExitErr: op.waitErr, Joined: op.workerJoined}, nil
+		return s.workerWaitSnapshot(op), nil
 	case <-ctx.Done():
 		return workerWaitResult{}, ctx.Err()
 	}
+}
+
+// workerWaitSnapshot reads mutable join state under the same lock used by
+// Close. waitDone publishes the waiter goroutine's writes, but Close may
+// independently confirm a join after that channel has closed.
+func (s *fixtureSession) workerWaitSnapshot(op *readOperation) workerWaitResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return workerWaitResult{ExitErr: op.waitErr, Joined: op.workerJoined}
 }
 
 func (s *fixtureSession) startWorkerWait(op *readOperation, worker SandboxWorker) <-chan struct{} {

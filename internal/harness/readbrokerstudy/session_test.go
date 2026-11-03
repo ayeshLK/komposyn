@@ -58,6 +58,12 @@ type fakeWorker struct {
 	ackReturnEntered chan struct{}
 	ackReturnRelease chan struct{}
 	ackReturnOnce    sync.Once
+	resultEntered    chan struct{}
+	resultRelease    chan struct{}
+	resultOnce       sync.Once
+	joinedEntered    chan struct{}
+	joinedRelease    chan struct{}
+	joinedOnce       sync.Once
 }
 
 func (w *fakeWorker) Ready(ctx context.Context) error {
@@ -155,6 +161,12 @@ func (w *fakeWorker) ReadResult(ctx context.Context) (WorkerResult, error) {
 	if err := ctx.Err(); err != nil {
 		return WorkerResult{}, err
 	}
+	if w.resultEntered != nil {
+		w.resultOnce.Do(func() { close(w.resultEntered) })
+	}
+	if w.resultRelease != nil {
+		<-w.resultRelease
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.resultErr != nil {
@@ -197,6 +209,12 @@ func (w *fakeWorker) Wait() error {
 }
 
 func (w *fakeWorker) Joined() bool {
+	if w.joinedEntered != nil {
+		w.joinedOnce.Do(func() { close(w.joinedEntered) })
+	}
+	if w.joinedRelease != nil {
+		<-w.joinedRelease
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.joined
@@ -557,6 +575,75 @@ func TestRevocationAfterReadStartRemainsUnknownWhenResultWasNotEstablished(t *te
 	}
 	if fixture.authorizer.ConsumptionCount("revoked-after-read-start") != 1 || len(fixture.session.PublishedResults()) != 0 || !fixture.worker.Joined() {
 		t.Fatal("revoked post-release read replayed, published data, or failed to confirm direct-process join")
+	}
+}
+
+func TestConcurrentReadAndCloseSynchronizeJoinCompletion(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "overlapping-close.fixture")
+	if err := os.WriteFile(target, []byte("synthetic overlapping close fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.resultEntered = make(chan struct{})
+	fixture.worker.resultRelease = make(chan struct{})
+	fixture.worker.joinedEntered = make(chan struct{})
+	fixture.worker.joinedRelease = make(chan struct{})
+	if err := fixture.authorizer.ApproveOnce("overlapping-close"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), root, target, "overlapping-close")
+		readDone <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-fixture.worker.resultEntered:
+	case <-time.After(time.Second):
+		t.Fatal("read did not reach the controlled result boundary")
+	}
+
+	// Model a process whose direct-child reap becomes observable while Read is
+	// still consuming its protocol result. Close's independent join observation
+	// and Read's waiter snapshot then overlap on the operation's join state.
+	fixture.worker.mu.Lock()
+	fixture.worker.joined = true
+	fixture.worker.mu.Unlock()
+	closeDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		closeDone <- fixture.session.Close(ctx)
+	}()
+	select {
+	case <-fixture.worker.joinedEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not reach the independent join observation")
+	}
+
+	// Release both controlled edges together so the waiter completion and
+	// Close's positive join update contend in the same Read/Close window.
+	close(fixture.worker.resultRelease)
+	close(fixture.worker.joinedRelease)
+	select {
+	case got := <-readDone:
+		if got.err != nil || (got.result.Outcome != ReadCancelled && got.result.Outcome != ReadUnknown) {
+			t.Fatalf("overlapping read=(%q,%v), want suppressed cancellation/uncertain result", got.result.Outcome, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("overlapping read did not finish")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close during joined read: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after join confirmation")
 	}
 }
 
