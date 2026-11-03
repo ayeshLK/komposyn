@@ -53,43 +53,47 @@ type report struct {
 }
 
 type environment struct {
-	OS                     string            `json:"os"`
-	Architecture           string            `json:"architecture"`
-	Kernel                 string            `json:"kernel"`
-	GoVersion              string            `json:"go_version"`
-	UID                    uint32            `json:"uid"`
-	StudyExecutableSHA256  string            `json:"study_executable_sha256"`
-	UserNamespaceClone     string            `json:"unprivileged_userns_clone_sysctl"`
-	NamespaceProbeStatus   string            `json:"namespace_functional_probe_status"`
-	SeccompActionAvailable bool              `json:"seccomp_action_available"`
-	CgroupV2               bool              `json:"cgroup_v2"`
-	CgroupControllers      []string          `json:"cgroup_controllers,omitempty"`
-	CgroupDelegationStatus string            `json:"cgroup_delegation_status"`
-	AppArmorProfileStatus  string            `json:"apparmor_profile_status"`
-	BubblewrapPath         string            `json:"bubblewrap_path,omitempty"`
-	BubblewrapVersion      string            `json:"bubblewrap_version,omitempty"`
-	BubblewrapSHA256       string            `json:"bubblewrap_sha256,omitempty"`
-	BubblewrapUID          uint32            `json:"bubblewrap_uid,omitempty"`
-	BubblewrapMode         string            `json:"bubblewrap_mode,omitempty"`
-	BubblewrapTrusted      bool              `json:"bubblewrap_trusted"`
-	BubblewrapError        string            `json:"bubblewrap_error,omitempty"`
-	Restrictions           map[string]string `json:"host_restrictions,omitempty"`
+	OS                     string                   `json:"os"`
+	Architecture           string                   `json:"architecture"`
+	Kernel                 string                   `json:"kernel"`
+	GoVersion              string                   `json:"go_version"`
+	UID                    uint32                   `json:"uid"`
+	StudyExecutableSHA256  string                   `json:"study_executable_sha256"`
+	UserNamespaceClone     string                   `json:"unprivileged_userns_clone_sysctl"`
+	NamespaceProbeStatus   string                   `json:"namespace_functional_probe_status"`
+	SeccompActionAvailable bool                     `json:"seccomp_action_available"`
+	CgroupV2               bool                     `json:"cgroup_v2"`
+	CgroupControllers      []string                 `json:"cgroup_controllers,omitempty"`
+	CgroupDelegationStatus string                   `json:"cgroup_delegation_status"`
+	AppArmorProfileStatus  string                   `json:"apparmor_profile_status"`
+	BubblewrapPath         string                   `json:"bubblewrap_path,omitempty"`
+	BubblewrapVersion      string                   `json:"bubblewrap_version,omitempty"`
+	BubblewrapSHA256       string                   `json:"bubblewrap_sha256,omitempty"`
+	BubblewrapUID          uint32                   `json:"bubblewrap_uid,omitempty"`
+	BubblewrapMode         string                   `json:"bubblewrap_mode,omitempty"`
+	BubblewrapTrusted      bool                     `json:"bubblewrap_trusted"`
+	BubblewrapCapabilities []string                 `json:"bubblewrap_capabilities,omitempty"`
+	BubblewrapBindMode     readbrokerstudy.BindMode `json:"bubblewrap_bind_mode,omitempty"`
+	BubblewrapError        string                   `json:"bubblewrap_error,omitempty"`
+	Restrictions           map[string]string        `json:"host_restrictions,omitempty"`
 }
 
 type launchPolicy struct {
-	Backend               string            `json:"backend"`
-	EffectiveArguments    []string          `json:"effective_bubblewrap_arguments"`
-	Namespaces            []string          `json:"required_namespaces"`
-	Network               string            `json:"network"`
-	Root                  string            `json:"root"`
-	WorkerMount           string            `json:"worker_mount"`
-	RuntimeReadExceptions []string          `json:"runtime_read_exceptions"`
-	Environment           string            `json:"environment"`
-	InheritedDescriptors  []string          `json:"inherited_descriptors"`
-	CapabilityHandoff     string            `json:"capability_handoff"`
-	Seccomp               string            `json:"seccomp"`
-	ResourceLimits        map[string]string `json:"resource_limits"`
-	UnrestrictedFallback  bool              `json:"unrestricted_fallback"`
+	Backend               string                   `json:"backend"`
+	EffectiveArguments    []string                 `json:"effective_bubblewrap_arguments"`
+	WorkerBindMode        readbrokerstudy.BindMode `json:"worker_bind_mode,omitempty"`
+	Namespaces            []string                 `json:"required_namespaces"`
+	Network               string                   `json:"network"`
+	Root                  string                   `json:"root"`
+	WorkerMount           string                   `json:"worker_mount"`
+	RuntimeReadExceptions []string                 `json:"runtime_read_exceptions"`
+	Environment           string                   `json:"environment"`
+	InheritedDescriptors  []string                 `json:"inherited_descriptors"`
+	CapabilityHandoff     string                   `json:"capability_handoff"`
+	WorkerVerification    string                   `json:"worker_mount_verification"`
+	Seccomp               string                   `json:"seccomp"`
+	ResourceLimits        map[string]string        `json:"resource_limits"`
+	UnrestrictedFallback  bool                     `json:"unrestricted_fallback"`
 }
 
 type caseResult struct {
@@ -111,7 +115,7 @@ type caseResult struct {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--readbrokerstudy-worker" {
+	if len(os.Args) > 1 && os.Args[1] == "--readbrokerstudy-bootstrap" {
 		os.Exit(readbrokerstudy.WorkerMain())
 	}
 	if err := run(); err != nil {
@@ -132,27 +136,25 @@ func run() error {
 		return errors.New("--commit is required and positional arguments are not accepted")
 	}
 	started := time.Now().UTC()
+	backend := readbrokerstudy.InspectBubblewrap(*bwrap)
 	report := report{
 		Schema: "komposyn.read-broker-study.v1", StartedUTC: started.Format(time.RFC3339),
 		Commit: *commit, Source: "cmd/read-broker-study; internal/harness/readbrokerstudy",
-		Environment: inspectEnvironment(*bwrap),
+		Environment: inspectEnvironmentWithBackend(*bwrap, backend),
 		LaunchPolicy: launchPolicy{
-			Backend:     "system Bubblewrap; fixed static Go worker; Linux only",
-			Namespaces:  []string{"user", "mount", "pid", "ipc", "uts", "net"},
-			Network:     "unshared network namespace; worker seccomp denies socket creation and network syscalls",
-			Root:        "private 8 MiB tmpfs; no host root or home mount",
-			WorkerMount: "one pinned executable descriptor mounted read-only at /worker; no arguments beyond private worker mode",
-			EffectiveArguments: []string{
-				"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-				"--hostname", "komposyn-readbroker", "--unshare-net", "--disable-userns", "--cap-drop", "ALL", "--clearenv",
-				"--size", "8388608", "--tmpfs", "/", "--ro-bind-fd", "5", "/worker", "--seccomp", "3",
-				"--chdir", "/", "--", "/worker", "--readbrokerstudy-worker", "--control-fd", "4",
-			},
+			Backend:               "system Bubblewrap; fixed static Go worker; Linux only",
+			Namespaces:            []string{"user", "mount", "pid", "ipc", "uts", "net"},
+			Network:               "unshared network namespace; worker seccomp denies socket creation and network syscalls",
+			Root:                  "private 8 MiB tmpfs; no host root or home mount",
+			WorkerMount:           "Bubblewrap consumes FD 5 for the read-only /worker descriptor bind; the fixed bootstrap verifies /worker using separate pinned FD 6 before closing it and installing seccomp",
+			EffectiveArguments:    effectiveBubblewrapArguments(backend.BindMode),
+			WorkerBindMode:        backend.BindMode,
 			RuntimeReadExceptions: []string{"none"},
 			Environment:           "host command environment contains only synthetic sentinel; Bubblewrap --clearenv; worker verifies sentinel absent and any PWD is /",
-			InheritedDescriptors:  []string{"0 /dev/null input", "1 output discarded", "2 bounded stderr capture", "3 seccomp program consumed by bubblewrap", "4 AF_UNIX SOCK_SEQPACKET control; no read capability at startup", "5 pinned fixed-worker executable consumed by bubblewrap"},
+			InheritedDescriptors:  []string{"0 /dev/null input", "1 output discarded", "2 bounded stderr capture", "3 exact seccomp program read then closed by bootstrap before ready", "4 AF_UNIX SOCK_SEQPACKET control; no read capability at startup", "5 pinned worker mount source consumed by Bubblewrap", "6 independent pinned worker verifier retained by --sync-fd through bootstrap, then closed before ready"},
 			CapabilityHandoff:     "one read-only regular-file FD by SCM_RIGHTS after readiness, authorization, and generation revalidation",
-			Seccomp:               "architecture-checked BPF; no_new_privs; worker probes seccomp mode 2, pathname opens and socket creation denied",
+			WorkerVerification:    "fixed worker starts as PID 1; compares /worker device/inode with independent fd 6 before installing seccomp; fd 6 and seccomp fd 3 are closed before readiness; consumed fd 5 is absent",
+			Seccomp:               "fixed worker sets no_new_privs and installs architecture-checked BPF with SECCOMP_FILTER_FLAG_TSYNC; pathname opens, socket creation, clone3, and process-like clone flags are denied; only the exact Go runtime thread clone flag sets are allowed; probes run before readiness",
 			ResourceLimits:        map[string]string{"wall_clock": "5 seconds per worker", "result": "64 KiB", "stderr": "4 KiB captured", "scratch": "8 MiB empty private root", "aggregate_process_memory_cpu": "not provisioned or tested"},
 			UnrestrictedFallback:  false,
 		},
@@ -162,6 +164,8 @@ func run() error {
 			"object identity cannot recognize independent copies of sensitive bytes",
 			"policy scans are bounded observations and do not serialize independent namespace writers",
 			"a pinned directory does not pin every current or future descendant; unpinned same-device files are refused",
+			"the bootstrap uses --as-pid-1 so Bubblewrap's --sync-fd can pass verifier FD 6; worker seccomp allows only the Go runtime's exact shared-thread clone flag sets, denies clone3 and process-like clone, and needs native startup validation",
+			"Bubblewrap without --ro-bind-fd is refused: the legacy /proc/self/fd pathname bind has a resolution-to-mount race that can execute an unverified worker image",
 			"the command's protected-object cases use disposable fixtures; independent-actor namespace races are currently covered only by package tests with injected workers, not by this Bubblewrap command",
 			"replacement after open/classification, root/parent movement, mount crossing, ancestor replacement, and recursive-child relocation have no integrated sandboxed-actor scenario",
 		},
@@ -501,6 +505,10 @@ func boundText(value string, limit int) string {
 }
 
 func inspectEnvironment(bwrap string) environment {
+	return inspectEnvironmentWithBackend(bwrap, readbrokerstudy.InspectBubblewrap(bwrap))
+}
+
+func inspectEnvironmentWithBackend(bwrap string, backend readbrokerstudy.BackendInspection) environment {
 	result := environment{OS: runtime.GOOS, Architecture: runtime.GOARCH, GoVersion: runtime.Version(), Restrictions: map[string]string{}, NamespaceProbeStatus: "not independently probed; worker startup availability and worker-level probes are recorded per case", CgroupDelegationStatus: "not tested; host cgroup hierarchy is not modified", AppArmorProfileStatus: "unavailable until read-only profile listing succeeds"}
 	result.UID = uint32(os.Getuid())
 	if executable, err := os.Executable(); err == nil {
@@ -544,7 +552,6 @@ func inspectEnvironment(bwrap string) environment {
 			}
 		}
 	}
-	backend := readbrokerstudy.InspectBubblewrap(bwrap)
 	result.BubblewrapPath = backend.Path
 	result.BubblewrapUID = backend.UID
 	if backend.Mode != 0 {
@@ -553,8 +560,14 @@ func inspectEnvironment(bwrap string) environment {
 	result.BubblewrapSHA256 = backend.SHA256
 	result.BubblewrapVersion = backend.Version
 	result.BubblewrapTrusted = backend.Trusted
+	result.BubblewrapCapabilities = append([]string(nil), backend.Capabilities...)
+	result.BubblewrapBindMode = backend.BindMode
 	result.BubblewrapError = backend.Error
 	return result
+}
+
+func effectiveBubblewrapArguments(mode readbrokerstudy.BindMode) []string {
+	return readbrokerstudy.EffectiveBubblewrapArguments(mode)
 }
 
 func stableError(err error) string {

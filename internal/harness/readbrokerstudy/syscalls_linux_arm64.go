@@ -16,8 +16,4 @@
 
 package readbrokerstudy
 
-import "golang.org/x/sys/unix"
-
-func workerArchDeniedSyscalls() []uint32 {
-	return []uint32{unix.SYS_CLONE3}
-}
+func workerArchDeniedSyscalls() []uint32 { return nil }
