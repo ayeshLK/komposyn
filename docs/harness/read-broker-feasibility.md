@@ -23,47 +23,76 @@ only after startup probes, authorization, generation checks, broker
 revalidation, and the coordinator's release gate. The worker accepts no path,
 shell command, provider data, grant store, or owner registry. It performs one
 bounded `pread` from the transferred regular-file descriptor and returns a
-bounded result packet. There is no fallback launch path.
+bounded result packet. There is no unrestricted or pathname-based fallback.
 
-The worker executable is opened and pinned by the launcher, validated as a
-static ELF, and passed to Bubblewrap through a feature-selected read-only bind.
 The trusted backend is first checked for path ownership and permissions; only
-then do bounded `--version` and `--help` probes run. The parsed help options,
-not the reported version, determine whether `--ro-bind-fd` is available. The
-version is retained only as provenance. Missing required launch options,
-malformed probe output, timeout, and output overflow refuse the worker before
-any target-data descriptor is sent.
+then do bounded `--version` and `--help` probes run. Parsed help options, not
+the reported version, choose the launch mode. The version is provenance only.
+The host opens `/proc/self/exe`, verifies the supplied `os.Executable` path
+refers to that same device/inode, and validates the running image as a static
+ELF. The worker path is only an identity hint; restrictive mode bits on a
+user-owned pathname is not the trust anchor. The hint is inspected through a
+non-following `O_PATH` handle, so a substituted FIFO or device is rejected
+without opening it for data or blocking for a peer. A 7 MiB image ceiling
+applies to both launch modes.
 
-When `--ro-bind-fd` is available, the launcher gives Bubblewrap FD 5 as the
-mount source and a separate duplicate of the pinned worker at FD 6. Bubblewrap
-consumes FD 5 after mounting; `--sync-fd 6 --as-pid-1` retains only the
-independent verifier descriptor through exec. The trusted fixed executable
-then checks that `/worker` is a regular file whose device and inode match FD 6,
-and closes FD 6. Missing, standard, duplicate, symlinked, or mismatched
-verification descriptors fail startup. The worker then reads the exact
-host-prepared BPF program from FD 3, checks it against the compiled policy,
-sets `no_new_privs`, and installs it with `SECCOMP_FILTER_FLAG_TSYNC`. Failed
-thread synchronization or filter installation aborts startup. FD 3 is closed
-before isolation probes and readiness. The startup descriptor inventory also
-requires Bubblewrap's consumed FD 5 to be absent. No target-data descriptor is
-transferred until verification, probes, authorization, and generation checks
-have succeeded.
+When `--ro-bind-fd` is available and the running executable has a resolvable
+host path, the launcher passes independent read-only opens of the running
+executable at FD 5 and FD 6. Each `Start` gets fresh open-file descriptions at
+offset zero; `dup` is not used because it shares offsets. Bubblewrap 0.10
+resolves `/proc/self/fd/5`, mounts the resolved source, then compares the
+mounted object's device/inode with the still-open FD before it execs the
+worker. A replacement that changes the mounted object fails that check before
+untrusted bootstrap code can run. This ordering is visible in upstream
+[Bubblewrap 0.10 source](https://github.com/containers/bubblewrap/blob/v0.10.0/bubblewrap.c).
+The running executable's write exclusion prevents in-place writes while it is
+executing (`ETXTBSY` in [`open(2)`](https://man7.org/linux/man-pages/man2/open.2.html)
+and [`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html)).
+`--sync-fd 6 --as-pid-1` retains FD 6 through exec, and the bootstrap checks
+`/worker` is a regular file with the same device/inode before closing FD 6.
+If Bubblewrap's descriptor source cannot resolve to an existing path, the
+launcher chooses descriptor-fed snapshot construction when supported; it
+never runs the unresolved descriptor-bind path.
 
-The older path-based compatibility proposal is deliberately refused. Bubblewrap
-0.9 handles `--ro-bind /proc/self/fd/5 /worker` as a pathname source; its setup
-resolves source pathnames before mounting. A same-user actor can replace the
-mount candidate between path resolution and mount, causing an unverified
-executable to run before its own verifier or seccomp code. Comparing that
-already-running image to FD 6 cannot establish trust in the verifier. When
-`--ro-bind-fd` is absent, capability inspection reports
-`legacy-path-bind-refused` and the launcher returns unavailable without
-producing launch arguments. No weaker fallback is attempted.
+Bubblewrap 0.9 without a compatible `--ro-bind-fd` source uses
+`--perms 0500 --ro-bind-data 5 /worker`. Upstream 0.9 source shows this option
+creates a temporary file, applies the requested mode with `fchmod`, copies
+bytes from FD 5, closes that FD, then read-only bind-mounts the file into the
+new root and unlinks its staging name. This source is descriptor-fed, not a
+resolved host source pathname. Before launch, the host copies the running
+image into a sealed memfd and passes independent fresh read-only opens at FD 5
+and FD 6. FD 6 is retained with `--sync-fd 6 --as-pid-1`. The already-running
+parent image, sealed memfd, and trusted Bubblewrap copy make the first executed
+bytes the same bounded snapshot; the copied bootstrap additionally hashes
+`/worker` against FD 6 and closes it before installing seccomp. That post-exec
+hash is an integrity check, not an independent authentication stage by itself.
 
-The compatibility proposal was compared with the Codex Linux sandbox at
+Bubblewrap's copy loop has no intrinsic byte ceiling, so the launcher enforces
+a 7 MiB source bound before passing a descriptor. The 0.9 path temporarily
+stores another copy in Bubblewrap's private setup tmpfs while binding it into
+the 8 MiB worker root; setup failure such as ENOSPC refuses before worker
+readiness. The worker root contains only the executable and receives no host
+procfs or other runtime filesystem.
+
+Both modes close or consume FD 5, verify/close FD 6, validate/install the
+host-prepared BPF from FD 3 with `SECCOMP_FILTER_FLAG_TSYNC`, and complete
+isolation probes before readiness. Missing, standard, duplicate, symlinked,
+mismatched, or unsealed descriptors fail startup. The startup descriptor
+inventory requires that only protocol FD 4 remains after bootstrap. No
+target-data descriptor is transferred until verification, probes,
+authorization, and generation checks have succeeded.
+
+The legacy pathname-based `--ro-bind /proc/self/fd/5 /worker` remains
+prohibited. Bubblewrap 0.9 resolves path sources before mounting and has no
+post-mount descriptor identity check for that operation, so replacement
+between resolution and mount could execute an unverified image. The secure
+compatibility mode never uses that path.
+
+The compatibility design was compared with the Codex Linux sandbox at
 checkout `970111f6cb62cc02fe36a82ea7d71b37a2889c97`
 (`linux-sandbox/src/launcher.rs`, `fd_mount.rs`, and `linux_run_main.rs`); no
-Codex source was copied. Its in-worker verification sequence does not by itself
-solve the older Bubblewrap pathname replacement race. See upstream
+Codex source was copied. Its older path-bind fallback does not by itself solve
+the pathname replacement race. See upstream
 [Bubblewrap 0.9.0 source](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c)
 for path resolution and [0.10.0 source](https://github.com/containers/bubblewrap/blob/v0.10.0/bubblewrap.c)
 for descriptor bind setup and source-FD consumption.
@@ -166,21 +195,20 @@ are not wired into this package.
 
 The launcher requests user, mount, PID, IPC, UTS, and network namespaces with
 no optional `try` flags; a new session; dropped capabilities; disabled nested
-user namespaces; an 8 MiB empty tmpfs root; one read-only, descriptor-pinned
-worker executable; cleared environment; no host home, root, sockets, proc, or
+user namespaces; an 8 MiB empty tmpfs root; one read-only worker executable
+bound either by inode (`--ro-bind-fd`) or from the sealed byte snapshot
+(`--ro-bind-data`); cleared environment; no host home, root, sockets, proc, or
 device mounts; `--die-with-parent`; and `--as-pid-1`. It passes only seccomp FD
-3, control socket FD 4, pinned worker mount-source FD 5, and its independent
-duplicate verifier FD 6. Bubblewrap consumes FD 5 for `--ro-bind-fd` and uses
-`--sync-fd 6` to retain the verifier across exec, and the startup
-bootstrap closes it after checking `/worker` identity. The bootstrap also
+3, control socket FD 4, sealed snapshot source FD 5, and an independent
+read-only verifier FD 6. Bubblewrap consumes FD 5 using the selected feature
+and uses `--sync-fd 6` to retain the verifier across exec; the startup
+bootstrap closes FD 6 after checking the mounted worker. The bootstrap also
 closes seccomp FD 3 after installing the exact architecture-checked filter.
 Before operation release, the worker probes `no_new_privs`, seccomp mode 2,
 denied path opens/socket creation, absence of the synthetic inherited
-environment marker, and absence of any non-protocol descriptor. The exact BPF
-program includes process-creation denials; the study does not issue a process
-creation syscall as a behavioral probe, so this part is established only by
-the program construction and must not be reported as a measured syscall test. The
-host command receives only that synthetic marker; Bubblewrap applies
+environment marker, and absence of any non-protocol descriptor. The same
+filter's process-creation denials are exercised separately by the real-filter
+subprocess test described below. The host command receives only that synthetic marker; Bubblewrap applies
 `--clearenv`. Standard input is `/dev/null`, stdout is discarded, and stderr
 is captured with a 4 KiB cap.
 
@@ -201,9 +229,11 @@ seconds, and captured stderr is capped at 4 KiB.
 ## Running the study
 
 On Linux amd64 or arm64 with a trusted absolute root-owned Bubblewrap binary
-whose bounded `--help` output includes `--ro-bind-fd`, all other required
-options, and usable required namespaces. A backend without `--ro-bind-fd` is
-refused:
+whose bounded `--help` output includes all required options and either
+`--ro-bind-fd` or both `--perms` and `--ro-bind-data`, plus usable required
+namespaces. Feature detection selects descriptor binding when available and
+otherwise selects the bounded sealed-file snapshot mode. A backend without
+either complete feature set is refused:
 
 ```sh
 mkdir -m 700 .read-broker-study-tmp
@@ -214,7 +244,7 @@ CGO_ENABLED=0 go build -buildvcs=false -o "$PWD/.read-broker-study-tmp/worker" .
 ```
 
 The JSON report records version and feature capabilities, the selected bind
-path, policy, case statuses, and whether a worker started, received a
+mode, worker snapshot provenance and bound, policy, case statuses, and whether a worker started, received a
 descriptor, read bytes, or published. It also records the exact planned launch
 arguments and FD roles. An unavailable result is not a pass. The command
 refuses an untrusted backend or worker and never tries an unrestricted
