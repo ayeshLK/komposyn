@@ -355,9 +355,14 @@ func openCurrentExecutable(workerPath string) (*os.File, error) {
 	if workerPath == "" {
 		return nil, errors.New("worker path identity hint is empty")
 	}
-	pathFile, err := os.Open(workerPath)
+	pathFD, err := unix.Open(workerPath, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, errors.New("worker path could not be opened for identity comparison")
+	}
+	pathFile := os.NewFile(uintptr(pathFD), "readbroker-worker-identity-hint")
+	if pathFile == nil {
+		_ = unix.Close(pathFD)
+		return nil, errors.New("worker path identity handle could not be wrapped")
 	}
 	defer pathFile.Close()
 	runningFile, err := os.Open("/proc/self/exe")
@@ -365,7 +370,7 @@ func openCurrentExecutable(workerPath string) (*os.File, error) {
 		return nil, errors.New("the running executable handle is unavailable")
 	}
 	var pathStat, runningStat unix.Stat_t
-	if err := unix.Fstat(int(pathFile.Fd()), &pathStat); err != nil {
+	if err := unix.Fstat(int(pathFile.Fd()), &pathStat); err != nil || pathStat.Mode&unix.S_IFMT != unix.S_IFREG {
 		_ = runningFile.Close()
 		return nil, errors.New("worker path identity could not be checked")
 	}

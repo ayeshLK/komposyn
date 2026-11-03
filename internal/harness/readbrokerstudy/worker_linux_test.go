@@ -18,14 +18,17 @@ package readbrokerstudy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -288,6 +291,32 @@ func TestSnapshotCurrentExecutableRejectsReplacementPath(t *testing.T) {
 	if snapshot, err := snapshotCurrentExecutable(path); err == nil {
 		_ = snapshot.Close()
 		t.Fatal("replacement pathname was accepted as the running executable")
+	}
+}
+
+func TestExecutableIdentityHintFIFOIsNonblocking(t *testing.T) {
+	const childPath = "KOMPOSYN_READBROKER_FIFO_IDENTITY_HINT"
+	if fifoPath := os.Getenv(childPath); fifoPath != "" {
+		if _, err := openCurrentExecutable(fifoPath); err == nil {
+			t.Fatal("FIFO was accepted as the running executable identity hint")
+		}
+		fmt.Print("FIFO_HINT_REFUSED_PROMPTLY")
+		return
+	}
+	fifoPath := filepath.Join(t.TempDir(), "worker")
+	if err := unix.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestExecutableIdentityHintFIFOIsNonblocking$")
+	command.Env = append(os.Environ(), childPath+"="+fifoPath)
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("identity-hint inspection blocked on FIFO until timeout: %s", output)
+	}
+	if err != nil || !bytes.Contains(output, []byte("FIFO_HINT_REFUSED_PROMPTLY")) {
+		t.Fatalf("FIFO identity-hint subprocess did not refuse promptly: err=%v output=%s", err, output)
 	}
 }
 

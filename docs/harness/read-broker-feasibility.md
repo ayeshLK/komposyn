@@ -31,8 +31,10 @@ the reported version, choose the launch mode. The version is provenance only.
 The host opens `/proc/self/exe`, verifies the supplied `os.Executable` path
 refers to that same device/inode, and validates the running image as a static
 ELF. The worker path is only an identity hint; restrictive mode bits on a
-user-owned pathname are not the trust anchor. A 7 MiB image ceiling applies
-to both launch modes.
+user-owned pathname is not the trust anchor. The hint is inspected through a
+non-following `O_PATH` handle, so a substituted FIFO or device is rejected
+without opening it for data or blocking for a peer. A 7 MiB image ceiling
+applies to both launch modes.
 
 When `--ro-bind-fd` is available and the running executable has a resolvable
 host path, the launcher passes independent read-only opens of the running
