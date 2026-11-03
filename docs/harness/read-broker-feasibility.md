@@ -29,36 +29,41 @@ The trusted backend is first checked for path ownership and permissions; only
 then do bounded `--version` and `--help` probes run. Parsed help options, not
 the reported version, choose the launch mode. The version is provenance only.
 The host opens `/proc/self/exe`, verifies the supplied `os.Executable` path
-refers to that same device/inode, validates the running image as a static ELF,
-and copies at most 7 MiB into a sealed memfd. The worker path is only an
-identity hint; restrictive mode bits on a user-owned pathname are not the
-trust anchor. Linux rejects opening an executing image for writing with
-`ETXTBSY`; this is the kernel write-exclusion relied on while copying the
-running executable ([`open(2)`](https://man7.org/linux/man-pages/man2/open.2.html),
-[`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html)). After the
-bounded copy, memfd write/grow/shrink/seal protections make the byte snapshot
-immutable. Procfs or memfd/sealing unavailability, mismatch, oversize, copy
-error, or missing required options refuses launch before target-data handoff.
+refers to that same device/inode, and validates the running image as a static
+ELF. The worker path is only an identity hint; restrictive mode bits on a
+user-owned pathname are not the trust anchor. A 7 MiB image ceiling applies
+to both launch modes.
 
-When `--ro-bind-fd` is available, the launcher gives Bubblewrap FD 5 as the
-mount source and a separately reopened read-only descriptor at FD 6 as the
-verifier. Each `Start` gets a fresh open-file description at offset zero;
-`dup` is not used because it shares offsets. Bubblewrap consumes FD 5 after
-mounting. `--sync-fd 6 --as-pid-1` retains FD 6 through exec, and the bootstrap
-checks `/worker` is a regular file with the same device/inode as the sealed
-snapshot before closing FD 6.
+When `--ro-bind-fd` is available and the running executable has a resolvable
+host path, the launcher passes independent read-only opens of the running
+executable at FD 5 and FD 6. Each `Start` gets fresh open-file descriptions at
+offset zero; `dup` is not used because it shares offsets. Bubblewrap 0.10
+resolves `/proc/self/fd/5`, mounts the resolved source, then compares the
+mounted object's device/inode with the still-open FD before it execs the
+worker. A replacement that changes the mounted object fails that check before
+untrusted bootstrap code can run. This ordering is visible in upstream
+[Bubblewrap 0.10 source](https://github.com/containers/bubblewrap/blob/v0.10.0/bubblewrap.c).
+The running executable's write exclusion prevents in-place writes while it is
+executing (`ETXTBSY` in [`open(2)`](https://man7.org/linux/man-pages/man2/open.2.html)
+and [`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html)).
+`--sync-fd 6 --as-pid-1` retains FD 6 through exec, and the bootstrap checks
+`/worker` is a regular file with the same device/inode before closing FD 6.
+If Bubblewrap's descriptor source cannot resolve to an existing path, the
+launcher chooses descriptor-fed snapshot construction when supported; it
+never runs the unresolved descriptor-bind path.
 
-Bubblewrap 0.9 without `--ro-bind-fd` uses
+Bubblewrap 0.9 without a compatible `--ro-bind-fd` source uses
 `--perms 0500 --ro-bind-data 5 /worker`. Upstream 0.9 source shows this option
 creates a temporary file, applies the requested mode with `fchmod`, copies
 bytes from FD 5, closes that FD, then read-only bind-mounts the file into the
 new root and unlinks its staging name. This source is descriptor-fed, not a
-resolved host source pathname. FD 6 is a separate freshly opened verifier
-description retained with `--sync-fd 6 --as-pid-1`. The already-running parent
-image, sealed memfd, and trusted Bubblewrap copy make the first executed bytes
-the same bounded snapshot; the copied bootstrap additionally hashes `/worker`
-against FD 6 and closes it before installing seccomp. That post-exec hash is an
-integrity check, not an independent authentication stage by itself.
+resolved host source pathname. Before launch, the host copies the running
+image into a sealed memfd and passes independent fresh read-only opens at FD 5
+and FD 6. FD 6 is retained with `--sync-fd 6 --as-pid-1`. The already-running
+parent image, sealed memfd, and trusted Bubblewrap copy make the first executed
+bytes the same bounded snapshot; the copied bootstrap additionally hashes
+`/worker` against FD 6 and closes it before installing seccomp. That post-exec
+hash is an integrity check, not an independent authentication stage by itself.
 
 Bubblewrap's copy loop has no intrinsic byte ceiling, so the launcher enforces
 a 7 MiB source bound before passing a descriptor. The 0.9 path temporarily
@@ -75,10 +80,11 @@ inventory requires that only protocol FD 4 remains after bootstrap. No
 target-data descriptor is transferred until verification, probes,
 authorization, and generation checks have succeeded.
 
-The legacy `/proc/self/fd/5` path bind remains prohibited. Bubblewrap 0.9
-resolves path sources before mounting, so replacement between resolution and
-mount could execute an unverified image. The secure compatibility mode never
-uses that path.
+The legacy pathname-based `--ro-bind /proc/self/fd/5 /worker` remains
+prohibited. Bubblewrap 0.9 resolves path sources before mounting and has no
+post-mount descriptor identity check for that operation, so replacement
+between resolution and mount could execute an unverified image. The secure
+compatibility mode never uses that path.
 
 The compatibility design was compared with the Codex Linux sandbox at
 checkout `970111f6cb62cc02fe36a82ea7d71b37a2889c97`

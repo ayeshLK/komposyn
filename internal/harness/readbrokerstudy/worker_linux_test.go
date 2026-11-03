@@ -49,6 +49,85 @@ func TestBubblewrapCapabilitySelection(t *testing.T) {
 	}
 }
 
+func TestModernDescriptorModeRequiresResolvableSourceAndFallsBackToDataCopy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker-source")
+	if err := os.WriteFile(path, []byte("path-backed running image"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	pathSource, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pathSource.Close()
+	modern := BubblewrapCapabilities{
+		Options: []string{"--ro-bind-fd", "--ro-bind-data", "--perms"}, BindMode: BindModeDescriptor,
+	}
+	if !descriptorBindSourcePathCompatible(pathSource) {
+		t.Fatal("ordinary path-backed descriptor should resolve for Bubblewrap's modern mount path")
+	}
+	if mode, err := selectWorkerBindMode(modern, pathSource); err != nil || mode != BindModeDescriptor {
+		t.Fatalf("modern descriptor path selection: mode=%q err=%v", mode, err)
+	}
+
+	snapshot, err := createSealedWorkerSnapshot(pathSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	if descriptorBindSourcePathCompatible(snapshot) {
+		t.Fatal("anonymous memfd must not be selected for Bubblewrap's realpath-based descriptor bind")
+	}
+	if descriptorSource, err := openWorkerMountDescriptor(snapshot, BindModeDescriptor); err == nil {
+		_ = descriptorSource.Close()
+		t.Fatal("anonymous memfd was accepted directly by the realpath-based descriptor mode")
+	}
+	if mode, err := selectWorkerBindMode(modern, snapshot); err != nil || mode != BindModeFileSnapshot {
+		t.Fatalf("memfd source did not select descriptor-fed byte copy: mode=%q err=%v", mode, err)
+	}
+	modernWithoutCopy := BubblewrapCapabilities{
+		Options: []string{"--ro-bind-fd"}, BindMode: BindModeDescriptor,
+	}
+	if mode, err := selectWorkerBindMode(modernWithoutCopy, snapshot); err == nil || mode != "" {
+		t.Fatalf("unresolvable memfd source did not fail closed: mode=%q err=%v", mode, err)
+	}
+}
+
+func TestModernDescriptorBindUsesFreshPathBackedDescriptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker")
+	want := []byte("pinned path-backed worker")
+	if err := os.WriteFile(path, want, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	first, err := openWorkerMountDescriptor(source, BindModeDescriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := openWorkerMountDescriptor(source, BindModeDescriptor)
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	var prefix [4]byte
+	if _, err := first.Read(prefix[:]); err != nil {
+		t.Fatal(err)
+	}
+	if offset, err := second.Seek(0, io.SeekCurrent); err != nil || offset != 0 {
+		t.Fatalf("descriptor source shared offsets: offset=%d err=%v", offset, err)
+	}
+	var got []byte
+	got, err = io.ReadAll(second)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("fresh descriptor did not read pinned object: got=%q err=%v", got, err)
+	}
+	_ = first.Close()
+	_ = second.Close()
+}
+
 func TestBubblewrapArgumentsSelectModernMountAndSeparateVerifierFD(t *testing.T) {
 	modern := strings.Join(EffectiveBubblewrapArguments(BindModeDescriptor), " ")
 	if !strings.Contains(modern, "--ro-bind-fd 5 /worker") || strings.Contains(modern, "/proc/self/fd") {

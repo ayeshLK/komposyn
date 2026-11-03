@@ -149,16 +149,16 @@ func run() error {
 			Network:               "unshared network namespace; worker seccomp denies socket creation and network syscalls",
 			Root:                  "private 8 MiB worker tmpfs; no host root or home mount",
 			WorkerMount:           workerMount,
-			WorkerSnapshot:        "host opens /proc/self/exe, confirms the supplied executable path names that same device/inode, copies at most 7 MiB into a sealed memfd, reopens it read-only, and verifies size/seals; user-owned path permissions are not the trust anchor",
+			WorkerSnapshot:        workerSnapshotPolicy(backend.BindMode),
 			EffectiveArguments:    effectiveBubblewrapArguments(backend.BindMode),
 			WorkerBindMode:        backend.BindMode,
 			RuntimeReadExceptions: []string{"none"},
 			Environment:           "host command environment contains only synthetic sentinel; Bubblewrap --clearenv; worker verifies sentinel absent and any PWD is /",
-			InheritedDescriptors:  []string{"0 /dev/null input", "1 output discarded", "2 bounded stderr capture", "3 exact seccomp program read then closed by bootstrap before ready", "4 AF_UNIX SOCK_SEQPACKET control; no read capability at startup", "5 fresh read-only sealed snapshot description consumed by Bubblewrap during descriptor bind or byte construction", "6 independent read-only sealed snapshot description retained by --sync-fd through bootstrap, then closed before seccomp/readiness"},
+			InheritedDescriptors:  workerDescriptors(backend.BindMode),
 			CapabilityHandoff:     "one read-only regular-file FD by SCM_RIGHTS after readiness, authorization, and generation revalidation",
 			WorkerVerification:    workerVerification,
 			Seccomp:               "fixed worker sets no_new_privs and installs architecture-checked BPF with SECCOMP_FILTER_FLAG_TSYNC; pathname opens, socket creation, clone3, and process-like clone flags are denied; only the exact Go runtime thread clone flag sets are allowed; probes run before readiness",
-			ResourceLimits:        map[string]string{"wall_clock": "5 seconds per worker", "result": "64 KiB", "stderr": "4 KiB captured", "worker_snapshot": "7 MiB maximum; sealed memfd plus Bubblewrap's transient descriptor-fed copy; larger worker images refused", "scratch": "8 MiB private worker root", "aggregate_process_memory_cpu": "not provisioned or tested"},
+			ResourceLimits:        workerResourceLimits(backend.BindMode),
 			UnrestrictedFallback:  false,
 		},
 		Limitations: []string{
@@ -577,7 +577,7 @@ func effectiveBubblewrapArguments(mode readbrokerstudy.BindMode) []string {
 func workerMountPolicy(mode readbrokerstudy.BindMode) (string, string) {
 	switch mode {
 	case readbrokerstudy.BindModeDescriptor:
-		return "Bubblewrap consumes sealed memfd FD 5 as a read-only descriptor bind at /worker; the fixed bootstrap compares /worker device/inode to independent FD 6 before seccomp",
+		return "Bubblewrap consumes path-backed running-executable FD 5 as a read-only descriptor bind at /worker, checks mounted device/inode against FD 5 before exec, and bootstrap rechecks against independent FD 6 before seccomp",
 			"fixed worker starts as PID 1; compares /worker device/inode with independent fd 6 before installing seccomp; fd 6 and seccomp fd 3 close before readiness; consumed fd 5 is absent"
 	case readbrokerstudy.BindModeFileSnapshot:
 		return "Bubblewrap 0.9 uses --perms 0500 --ro-bind-data FD 5 /worker: it copies sealed memfd bytes to a private staging file, applies executable mode, read-only bind-mounts it into the empty worker root, then consumes FD 5",
@@ -585,6 +585,50 @@ func workerMountPolicy(mode readbrokerstudy.BindMode) (string, string) {
 	default:
 		return "unavailable", "unavailable"
 	}
+}
+
+func workerSnapshotPolicy(mode readbrokerstudy.BindMode) string {
+	switch mode {
+	case readbrokerstudy.BindModeDescriptor:
+		return "host opens /proc/self/exe and confirms the supplied executable path names the same device/inode; FD 5 and FD 6 are independently reopened read-only descriptions of that running executable; Bubblewrap resolves the FD path, then compares the mounted inode with FD 5 before exec; user-owned path permissions are not the trust anchor"
+	case readbrokerstudy.BindModeFileSnapshot:
+		return "host opens /proc/self/exe, confirms the supplied executable path names the same device/inode, copies at most 7 MiB into a fully sealed memfd, and independently reopens read-only descriptions for FD 5 and FD 6; user-owned path permissions are not the trust anchor"
+	default:
+		return "unavailable"
+	}
+}
+
+func workerDescriptors(mode readbrokerstudy.BindMode) []string {
+	descriptors := []string{
+		"0 /dev/null input", "1 output discarded", "2 bounded stderr capture",
+		"3 exact seccomp program read then closed by bootstrap before ready",
+		"4 AF_UNIX SOCK_SEQPACKET control; no read capability at startup",
+	}
+	switch mode {
+	case readbrokerstudy.BindModeDescriptor:
+		descriptors = append(descriptors,
+			"5 fresh read-only description of the running executable; consumed by Bubblewrap descriptor bind",
+			"6 independent read-only description retained by --sync-fd through bootstrap, then closed before seccomp/readiness")
+	case readbrokerstudy.BindModeFileSnapshot:
+		descriptors = append(descriptors,
+			"5 fresh read-only sealed memfd description consumed by Bubblewrap byte construction",
+			"6 independent read-only sealed memfd description retained by --sync-fd through bootstrap, then closed before seccomp/readiness")
+	default:
+		descriptors = append(descriptors, "worker source descriptors unavailable")
+	}
+	return descriptors
+}
+
+func workerResourceLimits(mode readbrokerstudy.BindMode) map[string]string {
+	limits := map[string]string{
+		"wall_clock": "5 seconds per worker", "result": "64 KiB", "stderr": "4 KiB captured",
+		"worker_image": "7 MiB maximum", "scratch": "8 MiB private worker root",
+		"aggregate_process_memory_cpu": "not provisioned or tested",
+	}
+	if mode == readbrokerstudy.BindModeFileSnapshot {
+		limits["worker_snapshot"] = "7 MiB maximum; sealed memfd plus Bubblewrap's transient descriptor-fed copy; larger worker images refused"
+	}
+	return limits
 }
 
 func stableError(err error) string {

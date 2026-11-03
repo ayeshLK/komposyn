@@ -28,6 +28,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -118,11 +119,27 @@ func InspectBubblewrap(path string) BackendInspection {
 	version, capabilities, err := probeBubblewrap(path)
 	result.Version = version
 	result.Capabilities = capabilities.Options
-	result.BindMode = capabilities.BindMode
 	if err != nil {
 		result.Error = boundedText("trusted backend capability preflight failed: "+err.Error(), 512)
 		return result
 	}
+	workerPath, err := os.Executable()
+	if err != nil {
+		result.Error = "running worker source is unavailable"
+		return result
+	}
+	workerFile, err := openCurrentExecutable(workerPath)
+	if err != nil {
+		result.Error = "running worker source could not be opened"
+		return result
+	}
+	mode, modeErr := selectWorkerBindMode(capabilities, workerFile)
+	closeErr := workerFile.Close()
+	if modeErr != nil || closeErr != nil {
+		result.Error = "trusted Bubblewrap has no compatible executable source mechanism"
+		return result
+	}
+	result.BindMode = mode
 	return result
 }
 
@@ -286,9 +303,11 @@ type workerLauncher struct {
 }
 
 // NewWorkerLauncher constructs the only launch path in this feasibility
-// package. It requires an absolute root-owned Bubblewrap executable and uses
-// either descriptor bind or a sealed byte snapshot; it never falls back to a
-// pathname-based worker source.
+// package. Modern Bubblewrap receives the held descriptor for the currently
+// executing image through its /proc/self/fd interface and verifies the
+// mounted inode before exec. The 0.9 compatibility path uses an immutable byte
+// snapshot and descriptor-fed file construction. No user-controlled pathname
+// is passed as an executable source.
 func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
 	if err := validateTrustedExecutable(bwrapPath, true); err != nil {
 		return nil, fmt.Errorf("%w: trusted Bubblewrap validation failed", ErrUnavailable)
@@ -297,17 +316,42 @@ func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: Bubblewrap compatibility preflight failed: %v", ErrUnavailable, err)
 	}
-	workerFile, err := snapshotCurrentExecutable(workerPath)
+	workerFile, err := openCurrentExecutable(workerPath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: running fixed worker could not be snapshotted: %v", ErrUnavailable, err)
+		return nil, fmt.Errorf("%w: running fixed worker could not be opened: %v", ErrUnavailable, err)
+	}
+	mode, err := selectWorkerBindMode(capability, workerFile)
+	if err != nil {
+		_ = workerFile.Close()
+		return nil, fmt.Errorf("%w: no safe mount source is available: %v", ErrUnavailable, err)
+	}
+	capability.BindMode = mode
+	if mode == BindModeFileSnapshot {
+		snapshot, snapshotErr := createSealedWorkerSnapshot(workerFile)
+		closeErr := workerFile.Close()
+		if snapshotErr != nil || closeErr != nil {
+			if snapshot != nil {
+				_ = snapshot.Close()
+			}
+			return nil, fmt.Errorf("%w: running fixed worker could not be snapshotted", ErrUnavailable)
+		}
+		if err := validateStaticWorkerFile(snapshot); err != nil {
+			_ = snapshot.Close()
+			return nil, fmt.Errorf("%w: sealed worker snapshot is not static ELF", ErrUnavailable)
+		}
+		if _, err := snapshot.Seek(0, io.SeekStart); err != nil {
+			_ = snapshot.Close()
+			return nil, fmt.Errorf("%w: sealed worker snapshot could not be rewound", ErrUnavailable)
+		}
+		workerFile = snapshot
 	}
 	return &workerLauncher{bwrapPath: bwrapPath, capability: capability, workerFile: workerFile}, nil
 }
 
-// snapshotCurrentExecutable binds the worker bytes to the already-running
-// study image, not to a mutable pathname. The supplied path is only checked as
-// an identity hint; the snapshot source is the kernel's /proc/self/exe handle.
-func snapshotCurrentExecutable(workerPath string) (*os.File, error) {
+// openCurrentExecutable binds the worker source to the already-running study
+// image, not a later lookup of the supplied pathname. The pathname is checked
+// only as an identity hint; the opened source is /proc/self/exe.
+func openCurrentExecutable(workerPath string) (*os.File, error) {
 	if workerPath == "" {
 		return nil, errors.New("worker path identity hint is empty")
 	}
@@ -320,18 +364,29 @@ func snapshotCurrentExecutable(workerPath string) (*os.File, error) {
 	if err != nil {
 		return nil, errors.New("the running executable handle is unavailable")
 	}
-	defer runningFile.Close()
 	var pathStat, runningStat unix.Stat_t
 	if err := unix.Fstat(int(pathFile.Fd()), &pathStat); err != nil {
+		_ = runningFile.Close()
 		return nil, errors.New("worker path identity could not be checked")
 	}
 	if err := unix.Fstat(int(runningFile.Fd()), &runningStat); err != nil ||
 		pathStat.Dev != runningStat.Dev || pathStat.Ino != runningStat.Ino {
+		_ = runningFile.Close()
 		return nil, errors.New("worker path no longer names the running executable")
 	}
 	if err := validateStaticWorkerFile(runningFile); err != nil {
+		_ = runningFile.Close()
 		return nil, err
 	}
+	return runningFile, nil
+}
+
+func snapshotCurrentExecutable(workerPath string) (*os.File, error) {
+	runningFile, err := openCurrentExecutable(workerPath)
+	if err != nil {
+		return nil, err
+	}
+	defer runningFile.Close()
 	snapshot, err := createSealedWorkerSnapshot(runningFile)
 	if err != nil {
 		return nil, err
@@ -345,6 +400,86 @@ func snapshotCurrentExecutable(workerPath string) (*os.File, error) {
 		return nil, errors.New("sealed worker snapshot could not be rewound")
 	}
 	return snapshot, nil
+}
+
+func selectWorkerBindMode(capability BubblewrapCapabilities, source *os.File) (BindMode, error) {
+	if capability.BindMode == BindModeDescriptor && descriptorBindSourcePathCompatible(source) {
+		return BindModeDescriptor, nil
+	}
+	if supportsFileSnapshot(capability.Options) {
+		return BindModeFileSnapshot, nil
+	}
+	if capability.BindMode == BindModeDescriptor {
+		return "", errors.New("Bubblewrap descriptor bind cannot resolve this executable source and descriptor-fed file construction is unavailable")
+	}
+	if capability.BindMode == BindModeFileSnapshot {
+		return BindModeFileSnapshot, nil
+	}
+	return "", ErrUnavailable
+}
+
+func supportsFileSnapshot(options []string) bool {
+	return slices.Contains(options, "--ro-bind-data") && slices.Contains(options, "--perms")
+}
+
+// Bubblewrap's --ro-bind-fd resolves /proc/self/fd/N to a host pathname,
+// mounts that path, then compares the mounted object's device/inode with the
+// retained descriptor before exec. Require that the trusted input can resolve
+// to its existing inode; anonymous memfds need the descriptor-fed copy mode.
+func descriptorBindSourcePathCompatible(source *os.File) bool {
+	if source == nil {
+		return false
+	}
+	fdPath := fmt.Sprintf("/proc/self/fd/%d", source.Fd())
+	resolved, err := filepath.EvalSymlinks(fdPath)
+	if err != nil {
+		return false
+	}
+	pathInfo, err := os.Stat(resolved)
+	if err != nil {
+		return false
+	}
+	var fdInfo unix.Stat_t
+	if err := unix.Fstat(int(source.Fd()), &fdInfo); err != nil {
+		return false
+	}
+	pathStat, ok := pathInfo.Sys().(*syscall.Stat_t)
+	return ok && uint64(pathStat.Dev) == uint64(fdInfo.Dev) && pathStat.Ino == fdInfo.Ino
+}
+
+func openWorkerMountDescriptor(source *os.File, mode BindMode) (*os.File, error) {
+	if mode == BindModeFileSnapshot {
+		return openSealedWorkerSnapshot(source)
+	}
+	if mode != BindModeDescriptor || !descriptorBindSourcePathCompatible(source) {
+		return nil, errors.New("descriptor-bind worker source has no stable host pathname")
+	}
+	var expected unix.Stat_t
+	if err := unix.Fstat(int(source.Fd()), &expected); err != nil || expected.Mode&unix.S_IFMT != unix.S_IFREG ||
+		expected.Size <= 0 || expected.Size > maxWorkerSnapshotBytes {
+		return nil, errors.New("descriptor-bind worker source identity is invalid")
+	}
+	fd, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", source.Fd()), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, errors.New("fresh descriptor-bind worker source could not be opened")
+	}
+	file := os.NewFile(uintptr(fd), "readbroker-worker-mount-source")
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("descriptor-bind worker source could not be wrapped")
+	}
+	var actual unix.Stat_t
+	flags, flagErr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err := unix.Fstat(fd, &actual); err != nil || actual.Dev != expected.Dev || actual.Ino != expected.Ino ||
+		actual.Size != expected.Size || flagErr != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
+		_ = file.Close()
+		return nil, errors.New("fresh descriptor-bind source failed identity validation")
+	}
+	if offset, err := file.Seek(0, io.SeekCurrent); err != nil || offset != 0 {
+		_ = file.Close()
+		return nil, errors.New("fresh descriptor-bind source is not at offset zero")
+	}
+	return file, nil
 }
 
 // openSealedWorkerSnapshot returns a new read-only open-file description at
@@ -577,14 +712,14 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		_ = childSocket.Close()
 		return nil, fmt.Errorf("%w: control socket setup failed", ErrUnavailable)
 	}
-	mountFile, err := openSealedWorkerSnapshot(l.workerFile)
+	mountFile, err := openWorkerMountDescriptor(l.workerFile, l.capability.BindMode)
 	if err != nil {
 		_ = parentSocket.Close()
 		_ = childSocket.Close()
 		return nil, fmt.Errorf("%w: worker mount snapshot could not be reopened", ErrUnavailable)
 	}
 	defer mountFile.Close()
-	verificationFile, err := openSealedWorkerSnapshot(l.workerFile)
+	verificationFile, err := openWorkerMountDescriptor(l.workerFile, l.capability.BindMode)
 	if err != nil {
 		_ = parentSocket.Close()
 		_ = childSocket.Close()

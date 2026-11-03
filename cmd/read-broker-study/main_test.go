@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 )
 
 func TestInspectEnvironmentDoesNotRunUntrustedBubblewrapCandidate(t *testing.T) {
@@ -60,5 +62,23 @@ func TestInspectEnvironmentDoesNotRunUntrustedBubblewrapCandidate(t *testing.T) 
 	}
 	if decoded.Environment.BubblewrapTrusted || decoded.Environment.BubblewrapVersion != "" {
 		t.Fatalf("serialized report inconsistently claims trust/version: %+v", decoded.Environment)
+	}
+}
+
+func TestWorkerPolicyReportsPathBackedAndSnapshotModesAccurately(t *testing.T) {
+	modernMount, modernVerification := workerMountPolicy(readbrokerstudy.BindModeDescriptor)
+	if !strings.Contains(modernMount, "path-backed running-executable") ||
+		!strings.Contains(modernMount, "mounted device/inode") || !strings.Contains(modernVerification, "/worker device/inode") {
+		t.Fatalf("modern descriptor mode report is inaccurate: mount=%q verify=%q", modernMount, modernVerification)
+	}
+	modernSource := workerSnapshotPolicy(readbrokerstudy.BindModeDescriptor)
+	if !strings.Contains(modernSource, "independently reopened read-only") || strings.Contains(modernSource, "sealed memfd") {
+		t.Fatalf("modern worker source report is inaccurate: %q", modernSource)
+	}
+	legacyMount, legacyVerification := workerMountPolicy(readbrokerstudy.BindModeFileSnapshot)
+	legacySource := workerSnapshotPolicy(readbrokerstudy.BindModeFileSnapshot)
+	if !strings.Contains(legacyMount, "--ro-bind-data") || !strings.Contains(legacyVerification, "sealed verifier") ||
+		!strings.Contains(legacySource, "sealed memfd") {
+		t.Fatalf("snapshot mode report is inaccurate: mount=%q verify=%q", legacyMount, legacyVerification)
 	}
 }
