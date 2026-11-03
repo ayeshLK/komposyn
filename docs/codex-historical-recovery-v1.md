@@ -66,9 +66,109 @@ Audit data is bounded and must contain controlled fields only: it does not
 store source bytes, prompts, responses, paths, aliases, raw errors, or
 credentials.
 
+## Bounded committed-history inspection
+
+The history API is a read-only projection over committed normalized tables.
+It does not deserialize `recovery_runs.audit_json`. A caller can discover a
+committed run without retaining a preview token, then inspect its allocation
+entries by opaque local run reference:
+
+```go
+func (s *Store) ListCodexRecoveries(query CodexRecoveryHistoryQuery) (CodexRecoveryHistoryPage, error)
+func (s *Store) InspectCodexRecovery(request CodexRecoveryInspectionRequest) (CodexRecoveryInspection, error)
+```
+
+An application first lists recent committed runs, then passes the returned
+opaque reference to inspection. This synthetic example does not assume a
+particular real database contains a recovery:
+
+```go
+func inspectLatestRecovery(store *tokenlogger.Store) (tokenlogger.CodexRecoveryInspection, bool, error) {
+	page, err := store.ListCodexRecoveries(tokenlogger.CodexRecoveryHistoryQuery{PageSize: 20})
+	if err != nil {
+		return tokenlogger.CodexRecoveryInspection{}, false, err
+	}
+	if len(page.Runs) > 0 {
+		return store.InspectCodexRecovery(tokenlogger.CodexRecoveryInspectionRequest{
+			RunReference: page.Runs[0].RunReference,
+			PageSize:     20,
+		})
+	}
+	return tokenlogger.CodexRecoveryInspection{}, false, nil
+}
+```
+
+The list query contains `PageSize` and `ContinuationToken`. Its page contains
+the contract version, newest-first `Runs`, and `NextToken`. Each
+`CodexRecoveryRunSummary` reports an opaque run reference, opaque source
+reference, generation, snapshot byte count, committed run format version,
+inserted/overridden event counts, and commit time. Parser and algorithm
+revisions are retained in the private audit payload but are not copied into
+the public projection: the normalized run table does not expose them, and the
+history reader intentionally avoids loading the audit payload. Before/after
+request totals are also private-audit-only and are not returned; event counts
+must not be mistaken for total request counts. Missing public metadata is not
+inferred.
+
+The inspection request contains `RunReference`, `PageSize`, and
+`ContinuationToken`. Its response contains the same summary, a page of
+`CodexRecoveryAllocationDetail` values, `NextToken`, and `EvidenceAsOf` for the
+consistent read transaction that produced the page. Allocation details
+provide opaque allocation and event references, the closed `override` or
+`inserted` kind, an opaque prior-allocation reference when present, and four
+separately named values: `Original` is the immutable `usage_events` vector;
+`Before` and `After` are the historical vectors recorded by that journal row
+(`Before` is unavailable for an insertion); `CurrentEffective` is the current
+effective vector at `EvidenceAsOf`. `CurrentAllocationReference` identifies a
+current override head when one exists, and `IsCurrentAllocation` says whether
+that head is this journal row. An earlier row's `After` is not presented as
+the current allocation after a later recovery. An inserted allocation is an
+audit entry for an ordinary event, not a request; its `Original` and `After`
+vectors agree unless a later override changes its current value.
+
+Each response uses one consistent SQLite read transaction and performs no
+writes, provider-file reads, recovery planning, source verification, collector
+operation, diagnostic review, or pricing synchronization. Listing follows the
+append-only run table's internal row order and captures a high-water row on
+the first page. Its authenticated continuation token carries that bound and
+the last row, so runs committed after the first page are excluded; start a
+fresh list to see them. Allocation rows within a committed run are immutable
+and paged by the indexed `(run_id, event_id)` key. Current effective vectors
+are evaluated anew in each inspection page's read transaction, so a later
+recovery may change `CurrentEffective` between pages; historical `Original`,
+`Before`, and `After` remain stable.
+
+The default page size is 20, the hard maximum is 50, allocation detail is
+separately paginated at the same 50-entry cap, continuation tokens are limited
+to 1 KiB, references are exactly 64 lowercase hexadecimal characters, and
+each serialized page is limited to 256 KiB. Invalid page sizes and malformed
+or oversized tokens are rejected before history queries.
+Continuation tokens are encrypted and authenticated with a domain-separated
+key derived from the store's existing recovery namespace and bind the API
+version, store, page size, and list snapshot or inspected run. They contain no
+plaintext database identifiers. Run references must be exactly 64 lowercase
+hexadecimal characters; malformed references and nonexistent runs return the
+same fixed not-found error. Corrupt or unavailable persisted evidence returns
+a fixed generic error. A response that exceeds its bound fails as a whole;
+the API never drops allocation details to fit. Allocation pages use the
+existing unique `(run_id, event_id)` index; run listing uses SQLite row order
+and does not scan audit blobs. Inspection cross-checks each run's stored
+insert/override counts against its allocation rows and verifies that every
+allocation still joins to an ordinary event before returning any page;
+inconsistent evidence fails the request instead of being silently omitted.
+
+Opaque references, exact local timestamps, token vectors, counts, and
+generations are identifying operational metadata, not anonymization. Do not
+publish these responses without review. A committed receipt confirms a
+transaction committed; it does not prove that the source remains present,
+unchanged, healthy, or verified now. `Store.Open` can still migrate the
+database and synchronize its catalog before these read-only calls. The history
+API is unreleased on this branch; the latest published core release remains
+v0.13.1.
+
 ## Staged workflow
 
-The core workflow is intentionally split into three reviewable changes:
+The core workflow is intentionally split into four reviewable changes:
 
 1. **Storage and effective accounting.** Add the immutable migration and
    effective projection; move all accounting readers to it. No allocation
@@ -87,6 +187,9 @@ The core workflow is intentionally split into three reviewable changes:
    checkpoint invalidation together. A committed plan returns its original
    receipt on retry. Diagnostics and observer delivery remain best effort and
    cannot undo or retry committed accounting.
+4. **Committed history inspection.** Discover committed runs and inspect their
+   normalized allocation journal through bounded, store-scoped pages. This
+   projection does not make private audit JSON an export format.
 
 Stage 2 exposes `(*Store).PrepareCodexRecovery(ctx, sourcePath)` and a typed
 `CodexRecoveryError` with controlled refusal reasons. It uses the existing
@@ -206,12 +309,11 @@ surface refusal and stale-preview outcomes without regenerating consent.
 
 ## Implementation status
 
-The implementation is split into three dependent reviews: storage and
-effective accounting, bounded preparation and preview, and transactional
-application. The preview API is `PrepareCodexRecovery`; the apply API is
-`ApplyCodexRecovery`. Each later change is based on its predecessor so the
-writer is never reviewed without the effective accounting readers and
-evidence-bound preparation it depends on. The accepted resource limits and
+The storage and effective accounting, bounded preparation and preview, and
+transactional application stages have merged as PRs #207, #208, and #209.
+The preview API is `PrepareCodexRecovery`; the apply API is
+`ApplyCodexRecovery`. The bounded committed-history list/inspection API is the
+current follow-up and is not yet merged or released. The accepted resource limits and
 eligibility rules above are implemented as `CodexRecoveryMaxSnapshotBytes` (64 MiB),
 `CodexRecoveryMaxRecords` (100,000), `CodexRecoveryMaxChanges` (10,000), and
 `CodexRecoveryMaxPlanBytes` (16 MiB). No applicable preview is truncated; a
@@ -244,6 +346,11 @@ production database has this cause.
 | Fence parser work started before Apply | `TestImporterAppendRejectsStaleAllocationRevision` validates the source-revision check in the ordinary append transaction. |
 | Reverify the effective allocation through normal import | A/B/C Apply test imports the same full snapshot again, asserts no new event, and checks snapshot reuse is restored only after that import. |
 | Open a real historical database transition | Synthetic SQLite database generated by the public importer at the pre-#203 commit above; candidate preview/apply produced the accepted totals. |
+| Discover and inspect committed history without the provider source | `TestCodexRecoveryHistoryListsAndInspectsCommittedEvidence`; deletes the source before calls, validates opaque references, exact seven-category original/before/after/current vectors, no serialized private markers, no SQLite changes, and unchanged report JSON. |
+| Separate historical allocations from later current heads | `TestCodexRecoveryHistorySeparatesHistoricalAndCurrentAllocations` advances a synthetic later allocation head and confirms the earlier journal `After` remains historical while `CurrentEffective` changes. |
+| Bounded history pagination and token scoping | `TestCodexRecoveryHistoryPaginationIsBoundedAndScoped` covers multiple runs, append between pages, allocation pagination, stable reopen references, invalid/tampered/oversized and cross-store/query/run tokens. |
+| Large history and bounded response evidence | `TestCodexRecoveryHistoryBoundsLargeRunPages` traverses 121 synthetic committed rows in 50/50/21 pages. `TestCodexRecoveryHistoryDoesNotExposeOrLoadAuditJSON` exercises a 15 MiB private audit blob and checks the indexed allocation plan and row-order run scan. |
+| Incomplete committed journal is not silently truncated | `TestCodexRecoveryHistoryRefusesIncompleteAllocationEvidence` removes one synthetic insertion row after disabling its test-only immutability trigger and verifies inspection returns the fixed unavailable error. |
 | CLI compatibility | Standalone `komposyn-lg` test suite run against this candidate with an isolated temporary module replacement; no replacement directive is committed. |
 
 The CLI handoff requires the reviewed public APIs in a published core tag and
