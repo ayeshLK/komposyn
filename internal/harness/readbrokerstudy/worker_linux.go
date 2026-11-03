@@ -55,6 +55,7 @@ const (
 	backendHashLimit             = 512 << 20
 	backendProbeOutputLimit      = 64 << 10
 	maxWorkerSnapshotBytes       = 7 << 20
+	maxSCMRightsFDs              = 253
 )
 
 type BindMode string
@@ -1337,7 +1338,10 @@ func probeError(ok bool, message string) error {
 
 func receiveAndRead(control int) int {
 	packet := make([]byte, 64)
-	oob := make([]byte, unix.CmsgSpace(4*4))
+	// Linux limits one SCM_RIGHTS message to SCM_MAX_FD (253). Receive enough
+	// ancillary space to account for every descriptor so even an over-counted
+	// frame can be rejected after closing all descriptors the kernel installed.
+	oob := make([]byte, unix.CmsgSpace(maxSCMRightsFDs*4))
 	for {
 		if waitFD(context.Background(), control, unix.POLLIN) != nil {
 			return 72
@@ -1346,28 +1350,33 @@ func receiveAndRead(control int) int {
 		if err == unix.EINTR || err == unix.EAGAIN || err == unix.EWOULDBLOCK {
 			continue
 		}
-		if err != nil || n != 21 || oobn == 0 || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 || packet[0] != frameHandoff {
-			return sendRefusal(control)
-		}
-		files, parseErr := parseExactlyOneReceivedFD(oob[:oobn])
+		oobBytes := oob[:min(max(oobn, 0), len(oob))]
+		files, parseErr := parseExactlyOneReceivedFD(oobBytes)
 		if parseErr != nil {
 			return sendRefusal(control)
 		}
 		capability := files[0]
-		result := readTransferredFD(control, capability, packet[1:])
+		if n != 1+20 || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 || packet[0] != frameHandoff {
+			_ = unix.Close(capability)
+			return sendRefusal(control)
+		}
+		// A SOCK_SEQPACKET frame is exactly 21 bytes after validation. Slice the
+		// identity to the received length, not the reusable packet capacity.
+		result := readTransferredFD(control, capability, packet[1:n])
 		_ = unix.Close(capability)
 		return result
 	}
 }
 
 func parseExactlyOneReceivedFD(oob []byte) ([]int, error) {
-	messages, err := unix.ParseSocketControlMessage(oob)
-	if err != nil {
-		return nil, ErrProtocol
-	}
+	messages, parseErr := unix.ParseSocketControlMessage(oob)
 	var received []int
-	valid := len(messages) == 1
+	valid := parseErr == nil && len(messages) == 1
 	for i := range messages {
+		if messages[i].Header.Level != unix.SOL_SOCKET || messages[i].Header.Type != unix.SCM_RIGHTS {
+			valid = false
+			continue
+		}
 		fds, parseErr := unix.ParseUnixRights(&messages[i])
 		if parseErr != nil {
 			valid = false

@@ -20,8 +20,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -56,6 +58,12 @@ type fakeWorker struct {
 	ackReturnEntered chan struct{}
 	ackReturnRelease chan struct{}
 	ackReturnOnce    sync.Once
+	resultEntered    chan struct{}
+	resultRelease    chan struct{}
+	resultOnce       sync.Once
+	joinedEntered    chan struct{}
+	joinedRelease    chan struct{}
+	joinedOnce       sync.Once
 }
 
 func (w *fakeWorker) Ready(ctx context.Context) error {
@@ -153,6 +161,12 @@ func (w *fakeWorker) ReadResult(ctx context.Context) (WorkerResult, error) {
 	if err := ctx.Err(); err != nil {
 		return WorkerResult{}, err
 	}
+	if w.resultEntered != nil {
+		w.resultOnce.Do(func() { close(w.resultEntered) })
+	}
+	if w.resultRelease != nil {
+		<-w.resultRelease
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.resultErr != nil {
@@ -195,6 +209,12 @@ func (w *fakeWorker) Wait() error {
 }
 
 func (w *fakeWorker) Joined() bool {
+	if w.joinedEntered != nil {
+		w.joinedOnce.Do(func() { close(w.joinedEntered) })
+	}
+	if w.joinedRelease != nil {
+		<-w.joinedRelease
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.joined
@@ -423,6 +443,218 @@ func TestNonzeroWorkerExitIsReapedAndDoesNotMasqueradeAsPendingCleanup(t *testin
 	defer cancel()
 	if err := fixture.session.Close(ctx); err != nil {
 		t.Fatalf("close after confirmed process reaping: %v", err)
+	}
+}
+
+func TestCancellationBeforeHandoffIsCancelledWhenKilledWorkerWasJoined(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "cancel-before-release.fixture")
+	if err := os.WriteFile(target, []byte("synthetic cancellation fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.waitErr = errors.New("signal: killed")
+	followup := &fakeWorker{}
+	fixture.launcher.workers = []*fakeWorker{fixture.worker, followup}
+	fixture.session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		if checkpoint == CheckpointBeforeHandoff {
+			return context.Canceled
+		}
+		return nil
+	})
+	if err := fixture.authorizer.ApproveOnce("cancelled-killed-joined"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.session.Read(context.Background(), root, target, "cancelled-killed-joined")
+	if err != nil || result.Outcome != ReadCancelled || !strings.Contains(result.Detail, "no target-data descriptor was released") {
+		t.Fatalf("pre-release cancellation=(%q,%q,%v), want cancelled with no target capability release", result.Outcome, result.Detail, err)
+	}
+	if !fixture.worker.Joined() || fixture.worker.transferred || fixture.authorizer.ConsumptionCount("cancelled-killed-joined") != 1 || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatalf("joined=%t transferred=%t once=%d published=%d", fixture.worker.Joined(), fixture.worker.transferred, fixture.authorizer.ConsumptionCount("cancelled-killed-joined"), len(fixture.session.PublishedResults()))
+	}
+	if !strings.Contains(result.Detail, "exit error after the direct process was reaped") {
+		t.Fatalf("joined process exit diagnostic missing: %q", result.Detail)
+	}
+	fixture.session.SetCheckpointHook(nil)
+	if err := fixture.authorizer.ApproveOnce("read-after-confirmed-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	followupResult, err := fixture.session.Read(context.Background(), root, target, "read-after-confirmed-cancel")
+	if err != nil || followupResult.Outcome != ReadSucceeded || fixture.launcher.starts != 2 {
+		t.Fatalf("read after confirmed pre-release cleanup=(%q,%v), starts=%d", followupResult.Outcome, err, fixture.launcher.starts)
+	}
+}
+
+func TestCancellationBeforeHandoffRemainsUnknownWhenWorkerIsNotJoined(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "cancel-unjoined.fixture")
+	if err := os.WriteFile(target, []byte("synthetic cancellation fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.joinUnconfirmed = true
+	fixture.session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		if checkpoint == CheckpointBeforeHandoff {
+			return context.Canceled
+		}
+		return nil
+	})
+	if err := fixture.authorizer.ApproveOnce("cancelled-unjoined"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.session.Read(context.Background(), root, target, "cancelled-unjoined")
+	if err != nil || result.Outcome != ReadUnknown || !strings.Contains(result.Detail, "direct-process join is unconfirmed") {
+		t.Fatalf("pre-release cancellation with unjoined worker=(%q,%q,%v), want unknown cleanup", result.Outcome, result.Detail, err)
+	}
+	if fixture.worker.transferred || fixture.authorizer.ConsumptionCount("cancelled-unjoined") != 1 || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatal("unjoined pre-release cancellation transferred data, changed consumption, or published")
+	}
+	if err := fixture.authorizer.ApproveOnce("blocked-after-unjoined-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := fixture.session.Read(context.Background(), root, target, "blocked-after-unjoined-cancel")
+	if err != nil || blocked.Outcome != ReadNotExecuted || blocked.Detail != ErrCleanupPending.Error() || fixture.launcher.starts != 1 {
+		t.Fatalf("read after unjoined cancellation=(%q,%q,%v), starts=%d", blocked.Outcome, blocked.Detail, err, fixture.launcher.starts)
+	}
+	fixture.worker.mu.Lock()
+	fixture.worker.joinUnconfirmed = false
+	fixture.worker.joined = true
+	fixture.worker.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := fixture.session.Close(ctx); err != nil {
+		t.Fatalf("close after explicit join confirmation: %v", err)
+	}
+}
+
+func TestRevocationAfterReadStartRemainsUnknownWhenResultWasNotEstablished(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "revoked-after-read-start.fixture")
+	if err := os.WriteFile(target, []byte("synthetic post-release fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.waitErr = errors.New("signal: killed")
+	fixture.worker.ackReturnEntered = make(chan struct{})
+	fixture.worker.ackReturnRelease = make(chan struct{})
+	if err := fixture.authorizer.ApproveOnce("revoked-after-read-start"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), root, target, "revoked-after-read-start")
+		done <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-fixture.worker.ackReturnEntered:
+	case <-time.After(time.Second):
+		t.Fatal("read did not reach the controlled post-acknowledgement point")
+	}
+	if err := fixture.session.Revoke("revoked-after-read-start"); !errors.Is(err, ErrCleanupPending) {
+		t.Fatalf("revocation cleanup result=%v, want pending while worker has not joined", err)
+	}
+	close(fixture.worker.ackReturnRelease)
+	select {
+	case got := <-done:
+		if got.err != nil || got.result.Outcome != ReadUnknown {
+			t.Fatalf("read after release/revocation=(%q,%q,%v), want unknown", got.result.Outcome, got.result.Detail, got.err)
+		}
+		if !strings.Contains(got.result.Detail, "read result was not established") || !strings.Contains(got.result.Detail, "exit error after the direct process was reaped") {
+			t.Fatalf("post-release uncertainty diagnostics missing: %q", got.result.Detail)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("revoked read did not finish after the direct worker joined")
+	}
+	evidence := fixture.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != ReadUnknown || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].Published {
+		t.Fatalf("post-release revocation evidence=%+v, want unknown after transfer/start and before publication", evidence)
+	}
+	if fixture.authorizer.ConsumptionCount("revoked-after-read-start") != 1 || len(fixture.session.PublishedResults()) != 0 || !fixture.worker.Joined() {
+		t.Fatal("revoked post-release read replayed, published data, or failed to confirm direct-process join")
+	}
+}
+
+func TestConcurrentReadAndCloseSynchronizeJoinCompletion(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "overlapping-close.fixture")
+	if err := os.WriteFile(target, []byte("synthetic overlapping close fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.resultEntered = make(chan struct{})
+	fixture.worker.resultRelease = make(chan struct{})
+	fixture.worker.joinedEntered = make(chan struct{})
+	fixture.worker.joinedRelease = make(chan struct{})
+	if err := fixture.authorizer.ApproveOnce("overlapping-close"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), root, target, "overlapping-close")
+		readDone <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-fixture.worker.resultEntered:
+	case <-time.After(time.Second):
+		t.Fatal("read did not reach the controlled result boundary")
+	}
+
+	// Model a process whose direct-child reap becomes observable while Read is
+	// still consuming its protocol result. Close's independent join observation
+	// and Read's waiter snapshot then overlap on the operation's join state.
+	fixture.worker.mu.Lock()
+	fixture.worker.joined = true
+	fixture.worker.mu.Unlock()
+	closeDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		closeDone <- fixture.session.Close(ctx)
+	}()
+	select {
+	case <-fixture.worker.joinedEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not reach the independent join observation")
+	}
+
+	// Release both controlled edges together so the waiter completion and
+	// Close's positive join update contend in the same Read/Close window.
+	close(fixture.worker.resultRelease)
+	close(fixture.worker.joinedRelease)
+	select {
+	case got := <-readDone:
+		if got.err != nil || (got.result.Outcome != ReadCancelled && got.result.Outcome != ReadUnknown) {
+			t.Fatalf("overlapping read=(%q,%v), want suppressed cancellation/uncertain result", got.result.Outcome, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("overlapping read did not finish")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close during joined read: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after join confirmation")
+	}
+}
+
+func TestDirectoryCoverageIsSpecificPreAuthorizationRefusal(t *testing.T) {
+	result := refusalFor(fmt.Errorf("wrapped policy check: %w", ErrDirectoryCoverage))
+	if result.Outcome != ReadRefused || result.Detail != ErrDirectoryCoverage.Error() || len(result.Bytes) != 0 {
+		t.Fatalf("directory coverage mapping=%+v, want specific refused result", result)
+	}
+	unrelated := refusalFor(errors.New("unrelated preparation failure"))
+	if unrelated.Outcome != ReadNotExecuted || unrelated.Detail == ErrDirectoryCoverage.Error() {
+		t.Fatalf("unrelated error mapping=%+v, must remain distinct from coverage refusal", unrelated)
 	}
 }
 
@@ -765,8 +997,8 @@ func TestProviderPinCannotOverrideMovedChildOfProtectedSettingsDirectory(t *test
 		t.Fatal(err)
 	}
 	result, err := fixture.session.Read(context.Background(), root, moved, "provider-under-settings")
-	if err != nil || result.Outcome != ReadNotExecuted {
-		t.Fatalf("moved child read=(%q,%v), want not-executed refusal", result.Outcome, err)
+	if err != nil || result.Outcome != ReadRefused || result.Detail != ErrDirectoryCoverage.Error() {
+		t.Fatalf("moved child read=(%q,%q,%v), want directory-coverage refusal", result.Outcome, result.Detail, err)
 	}
 	if fixture.launcher.starts != 0 || fixture.authorizer.ConsumptionCount("provider-under-settings") != 0 || len(fixture.session.PublishedResults()) != 0 {
 		t.Fatal("provider invocation approval overrode protected-directory policy")

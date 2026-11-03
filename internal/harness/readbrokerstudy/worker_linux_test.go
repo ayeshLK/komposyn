@@ -19,6 +19,7 @@ package readbrokerstudy
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +52,238 @@ func TestBubblewrapCapabilitySelection(t *testing.T) {
 	if !errors.Is(err, ErrUnavailable) || incomplete.BindMode != "" {
 		t.Fatalf("read-only data snapshot without explicit permissions must be refused: mode=%q err=%v", incomplete.BindMode, err)
 	}
+}
+
+func TestReceiveAndReadUsesExactReceivedFrameAndReadOnlyDescriptor(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "handoff.fixture")
+	want := bytes.Repeat([]byte("bounded synthetic read\n"), MaxReadBytes/23+2)
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	identity, err := identityFromFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	frames, exitCode := exchangeWorkerFrame(t, identityFrame(frameHandoff, identity), []*os.File{file})
+	if exitCode != 0 || len(frames) < 3 || frames[0][0] != frameStarted || !sameIdentity(frames[0][1:], identity) {
+		t.Fatalf("worker startup/read frames=%q exit=%d, want read-start and bounded result", frameKinds(frames), exitCode)
+	}
+	var got []byte
+	var finish []byte
+	for _, frame := range frames[1:] {
+		switch frame[0] {
+		case frameData:
+			got = append(got, frame[1:]...)
+		case frameFinish:
+			finish = frame
+		default:
+			t.Fatalf("unexpected worker result frame kind %q", frame[0])
+		}
+	}
+	if len(finish) != 7 || finish[1] != 'S' || finish[2] != 1 || binary.BigEndian.Uint32(finish[3:7]) != MaxReadBytes {
+		t.Fatalf("finish frame=%v, want succeeded/truncated with %d bytes", finish, MaxReadBytes)
+	}
+	if len(got) != MaxReadBytes || !bytes.Equal(got, want[:MaxReadBytes]) {
+		t.Fatalf("read result bytes=%d match=%t, want first bounded %d bytes", len(got), bytes.Equal(got, want[:MaxReadBytes]), MaxReadBytes)
+	}
+	if gotFDs := countOpenIdentityFDs(t, identity); gotFDs != 1 {
+		t.Fatalf("open descriptors for target after worker return=%d, want only original descriptor", gotFDs)
+	}
+}
+
+func TestReceiveAndReadRefusesMalformedFramesAndClosesReceivedDescriptors(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		mutate   func([]byte) []byte
+		fdCopies int
+		wantCode int
+	}{
+		{name: "short handoff", mutate: func(frame []byte) []byte { return frame[:len(frame)-1] }, fdCopies: 1, wantCode: 73},
+		{name: "truncated handoff", mutate: func(frame []byte) []byte { return append(frame, bytes.Repeat([]byte{'x'}, 64)...) }, fdCopies: 1, wantCode: 73},
+		{name: "wrong frame kind", mutate: func(frame []byte) []byte { frame[0] = 'Z'; return frame }, fdCopies: 1, wantCode: 73},
+		{name: "mismatched identity", mutate: func(frame []byte) []byte { frame[1] ^= 1; return frame }, fdCopies: 1, wantCode: 74},
+		{name: "multiple descriptors", mutate: func(frame []byte) []byte { return frame }, fdCopies: 2, wantCode: 73},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file, identity := openSyntheticReadTarget(t)
+			defer file.Close()
+			frame := test.mutate(identityFrame(frameHandoff, identity))
+			descriptors := make([]*os.File, test.fdCopies)
+			for i := range descriptors {
+				descriptors[i] = file
+			}
+			frames, exitCode := exchangeWorkerFrame(t, frame, descriptors)
+			if exitCode != test.wantCode || len(frames) != 1 || len(frames[0]) != 1 || frames[0][0] != frameRefused {
+				t.Fatalf("refusal frames=%q exit=%d, want X/%d", frameKinds(frames), exitCode, test.wantCode)
+			}
+			if gotFDs := countOpenIdentityFDs(t, identity); gotFDs != 1 {
+				t.Fatalf("malformed-frame handling leaked target descriptors: open=%d", gotFDs)
+			}
+		})
+	}
+}
+
+func TestReceiveAndReadRefusesWritableAndNonRegularDescriptors(t *testing.T) {
+	t.Run("writable descriptor", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "writable.fixture")
+		if err := os.WriteFile(path, []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		identity, err := identityFromFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames, exitCode := exchangeWorkerFrame(t, identityFrame(frameHandoff, identity), []*os.File{file})
+		if exitCode != 74 || len(frames) != 1 || frames[0][0] != frameRefused {
+			t.Fatalf("writable descriptor response=%q exit=%d, want refusal/74", frameKinds(frames), exitCode)
+		}
+		if gotFDs := countOpenIdentityFDs(t, identity); gotFDs != 1 {
+			t.Fatalf("writable descriptor refusal leaked FD: open=%d", gotFDs)
+		}
+	})
+
+	t.Run("directory descriptor", func(t *testing.T) {
+		directory, err := os.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer directory.Close()
+		identity, err := identityFromFile(directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames, exitCode := exchangeWorkerFrame(t, identityFrame(frameHandoff, identity), []*os.File{directory})
+		if exitCode != 74 || len(frames) != 1 || frames[0][0] != frameRefused {
+			t.Fatalf("directory descriptor response=%q exit=%d, want refusal/74", frameKinds(frames), exitCode)
+		}
+		if gotFDs := countOpenIdentityFDs(t, identity); gotFDs != 1 {
+			t.Fatalf("directory descriptor refusal leaked FD: open=%d", gotFDs)
+		}
+	})
+}
+
+func openSyntheticReadTarget(t *testing.T) (*os.File, FileIdentity) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "target.fixture")
+	if err := os.WriteFile(path, []byte("synthetic SCM_RIGHTS fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := identityFromFile(file)
+	if err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	return file, identity
+}
+
+func exchangeWorkerFrame(t *testing.T, frame []byte, files []*os.File) ([][]byte, int) {
+	t.Helper()
+	sockets, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(sockets[0])
+	workerControl := os.NewFile(uintptr(sockets[1]), "worker-control")
+	defer workerControl.Close()
+	done := make(chan int, 1)
+	go func() { done <- receiveAndRead(int(workerControl.Fd())) }()
+	var rights []int
+	for _, file := range files {
+		rights = append(rights, int(file.Fd()))
+	}
+	var oob []byte
+	if len(rights) > 0 {
+		oob = unix.UnixRights(rights...)
+	}
+	n, err := unix.SendmsgN(sockets[0], frame, oob, nil, unix.MSG_NOSIGNAL)
+	if err != nil || n != len(frame) {
+		t.Fatalf("send handoff frame bytes=%d err=%v", n, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	frames := make([][]byte, 0, 4)
+	first, err := recvPacket(ctx, sockets[0], 64)
+	if err != nil {
+		t.Fatalf("receive worker response: %v", err)
+	}
+	frames = append(frames, first)
+	if len(first) == 0 || first[0] == frameRefused {
+		return frames, waitWorkerExitCode(t, done)
+	}
+	if first[0] != frameStarted {
+		t.Fatalf("first worker response=%q, want start/refusal", first)
+	}
+	for {
+		packet, recvErr := recvPacket(ctx, sockets[0], dataChunkBytes+16)
+		if recvErr != nil {
+			t.Fatalf("receive worker data frame: %v", recvErr)
+		}
+		frames = append(frames, packet)
+		if len(packet) > 0 && packet[0] == frameFinish {
+			break
+		}
+	}
+	return frames, waitWorkerExitCode(t, done)
+}
+
+func waitWorkerExitCode(t *testing.T, done <-chan int) int {
+	t.Helper()
+	select {
+	case code := <-done:
+		return code
+	case <-time.After(3 * time.Second):
+		t.Fatal("receiveAndRead did not return")
+		return -1
+	}
+}
+
+func frameKinds(frames [][]byte) string {
+	var kinds strings.Builder
+	for _, frame := range frames {
+		if len(frame) == 0 {
+			kinds.WriteByte('?')
+		} else {
+			kinds.WriteByte(frame[0])
+		}
+	}
+	return kinds.String()
+}
+
+func countOpenIdentityFDs(t *testing.T, identity FileIdentity) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		fd, parseErr := strconv.Atoi(entry.Name())
+		if parseErr != nil {
+			continue
+		}
+		var stat unix.Stat_t
+		if unix.Fstat(fd, &stat) == nil && identityFromStat(&stat) == identity {
+			count++
+		}
+	}
+	return count
 }
 
 func TestModernDescriptorModeRequiresResolvableSourceAndFallsBackToDataCopy(t *testing.T) {

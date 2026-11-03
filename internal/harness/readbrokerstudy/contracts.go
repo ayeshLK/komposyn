@@ -229,7 +229,11 @@ type SandboxWorker interface {
 	AwaitReadStarted(context.Context) error
 	ReadResult(context.Context) (WorkerResult, error)
 	Terminate() error
+	// Wait returns the direct process's exit status/error; an error alone does
+	// not indicate that it remains unjoined.
 	Wait() error
+	// Joined confirms that the direct process was waited/reaped. It does not
+	// claim that every namespace descendant has terminated.
 	Joined() bool
 }
 

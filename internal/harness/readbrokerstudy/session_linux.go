@@ -69,6 +69,46 @@ type readOperation struct {
 	evidence          ReadEvidence
 }
 
+// workerWaitResult keeps process exit status separate from join confirmation.
+// A killed process normally makes Wait return an exit error; Joined reports
+// whether the direct child was reaped. Neither field alone proves arbitrary
+// descendant cleanup.
+type workerWaitResult struct {
+	ExitErr error
+	Joined  bool
+}
+
+type workerTerminationResult struct {
+	TerminationErr error
+	Wait           workerWaitResult
+}
+
+func (r workerTerminationResult) cleanupConfirmed() bool { return r.Wait.Joined }
+
+func (r workerTerminationResult) diagnostic() string {
+	var details []string
+	if r.TerminationErr != nil {
+		details = append(details, "termination request returned an error")
+	}
+	if r.Wait.ExitErr != nil {
+		if r.Wait.Joined {
+			details = append(details, "worker Wait returned an exit error after the direct process was reaped")
+		} else {
+			details = append(details, "worker Wait returned an error and direct-process join is unconfirmed")
+		}
+	} else if !r.Wait.Joined {
+		details = append(details, "direct-process join is unconfirmed")
+	}
+	return strings.Join(details, "; ")
+}
+
+func withTerminationDiagnostic(detail string, result workerTerminationResult) string {
+	if diagnostic := result.diagnostic(); diagnostic != "" {
+		detail += "; " + diagnostic
+	}
+	return boundedText(detail, 768)
+}
+
 var _ FixtureSession = (*fixtureSession)(nil)
 
 func NewFixtureSession(registry PolicyRegistry, broker ReadBroker, launcher WorkerLauncher, authorizer FixtureAuthorizer) (FixtureSession, error) {
@@ -282,60 +322,65 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	invalid := !s.currentLocked(op) || op.revoked
 	s.mu.Unlock()
 	if invalid {
-		_ = worker.Terminate()
-		if waitErr := s.waitWorker(op, worker); waitErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "revoked worker cleanup could not be confirmed"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("revoked worker cleanup could not be confirmed", cleanup)}
 		}
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: "revoked before startup acknowledgement"}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("revoked before startup acknowledgement", cleanup)}
 	}
 	if err := worker.Ready(ctx); err != nil {
-		cleanupErr := s.terminateAndWait(op, worker)
+		cleanup := s.terminateAndWait(op, worker)
 		diagnostic := workerFailureDiagnostic(worker, err)
-		if cleanupErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "startup refused and worker cleanup is incomplete: " + diagnostic}
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("startup refused and worker cleanup is incomplete: "+diagnostic, cleanup)}
 		}
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: "sandbox worker did not acknowledge startup: " + diagnostic}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("sandbox worker did not acknowledge startup: "+diagnostic, cleanup)}
 	}
 	op.probe = worker.Probe()
 	op.evidence.Probe = op.probe
 	if !validWorkerProbe(op.probe) {
-		cleanupErr := s.terminateAndWait(op, worker)
-		if cleanupErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "sandbox probe failed and worker cleanup is incomplete"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("sandbox probe failed and worker cleanup is incomplete", cleanup)}
 		}
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: "required sandbox probes were not established"}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("required sandbox probes were not established", cleanup)}
 	}
 	s.mu.Lock()
 	if !s.currentLocked(op) || op.revoked {
 		s.mu.Unlock()
-		cleanupErr := s.terminateAndWait(op, worker)
-		if cleanupErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "revoked worker cleanup could not be confirmed"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("revoked worker cleanup could not be confirmed", cleanup)}
 		}
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: "revoked before read capability handoff"}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("revoked before read capability handoff", cleanup)}
 	}
 	op.state = StateReady
 	op.evidence.Outcome = ReadNotExecuted
 	s.mu.Unlock()
 
 	if err := runCheckpoint(s.checkpointHook(), CheckpointBeforeHandoff); err != nil {
-		cleanupErr := s.terminateAndWait(op, worker)
-		if cleanupErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "cancelled before handoff; worker cleanup is incomplete"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("cancelled before handoff; worker cleanup is incomplete", cleanup)}
 		}
-		return WorkerResult{Outcome: ReadCancelled, Detail: "cancelled before read capability handoff"}
+		return WorkerResult{Outcome: ReadCancelled, Detail: withTerminationDiagnostic("cancelled before read capability handoff; no target-data descriptor was released", cleanup)}
 	}
 	if err := s.broker.Revalidate(prepared); err != nil {
-		cleanupErr := s.terminateAndWait(op, worker)
-		if cleanupErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "protected-location refusal and worker cleanup is incomplete"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("protected-location refusal and worker cleanup is incomplete", cleanup)}
 		}
-		return refusalFor(err)
+		refusal := refusalFor(err)
+		refusal.Detail = withTerminationDiagnostic(refusal.Detail, cleanup)
+		return refusal
 	}
 	capability, err := prepared.DuplicateForWorker()
 	if err != nil {
-		_ = s.terminateAndWait(op, worker)
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: "read capability could not be duplicated"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("read capability could not be duplicated and worker cleanup is incomplete", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("read capability could not be duplicated", cleanup)}
 	}
 	defer capability.Close()
 
@@ -345,27 +390,27 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	s.mu.Lock()
 	if !s.currentLocked(op) || op.revoked {
 		s.mu.Unlock()
-		cleanupErr := s.terminateAndWait(op, worker)
-		if cleanupErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "revoked before handoff; worker cleanup is incomplete"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("revoked before handoff; worker cleanup is incomplete", cleanup)}
 		}
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: "revoked before read capability handoff"}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("revoked before read capability handoff", cleanup)}
 	}
 	if err := worker.TransferCapability(ctx, capability, prepared.Identity()); err != nil {
 		s.mu.Unlock()
-		cleanupErr := s.terminateAndWait(op, worker)
-		if cleanupErr != nil {
-			return WorkerResult{Outcome: ReadUnknown, Detail: "capability handoff failed and worker cleanup is incomplete"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("capability handoff failed and worker cleanup is incomplete", cleanup)}
 		}
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: "capability handoff was refused"}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("capability handoff was refused", cleanup)}
 	}
 	op.released = true
 	op.evidence.CapabilitySent = true
 	s.mu.Unlock()
 
 	if err := worker.AwaitReadStarted(ctx); err != nil {
-		_ = s.terminateAndWait(op, worker)
-		return WorkerResult{Outcome: ReadUnknown, Detail: "capability was released but read-start acknowledgement is missing"}
+		cleanup := s.terminateAndWait(op, worker)
+		return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("capability was released but read-start acknowledgement is missing", cleanup)}
 	}
 	s.mu.Lock()
 	op.state = StateRunning
@@ -373,13 +418,16 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	stale := !s.currentLocked(op) || op.revoked
 	s.mu.Unlock()
 	if stale {
-		_ = s.terminateAndWait(op, worker)
-		return WorkerResult{Outcome: ReadCancelled, Detail: "read started after its authorization generation became stale"}
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("read capability was released before its authorization generation became stale; read outcome and cleanup are unconfirmed", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("read capability and start acknowledgement were received before revocation; read result was not established and no data was published", cleanup)}
 	}
 
 	workerResult, readErr := worker.ReadResult(ctx)
-	waitErr := s.waitWorker(op, worker)
-	if readErr != nil || waitErr != nil {
+	wait := s.waitWorker(op, worker)
+	if readErr != nil || wait.ExitErr != nil || !wait.Joined {
 		return WorkerResult{Outcome: ReadUnknown, Detail: "worker result or cleanup could not be confirmed"}
 	}
 	if len(workerResult.Bytes) > MaxReadBytes {
@@ -448,6 +496,8 @@ func refusalFor(err error) WorkerResult {
 	switch {
 	case errors.Is(err, ErrProtected):
 		return WorkerResult{Outcome: ReadRefused, Detail: ErrProtected.Error()}
+	case errors.Is(err, ErrDirectoryCoverage):
+		return WorkerResult{Outcome: ReadRefused, Detail: ErrDirectoryCoverage.Error()}
 	case errors.Is(err, ErrPolicyChanged), errors.Is(err, ErrStaleReceipt):
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: "prepared read or policy changed before execution"}
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -521,24 +571,33 @@ func (s *fixtureSession) terminateAndCheck(workers []SandboxWorker) error {
 	return terminateErr
 }
 
-func (s *fixtureSession) waitWorker(op *readOperation, worker SandboxWorker) error {
+func (s *fixtureSession) waitWorker(op *readOperation, worker SandboxWorker) workerWaitResult {
 	if worker == nil {
-		return nil
+		return workerWaitResult{Joined: true}
 	}
 	<-s.startWorkerWait(op, worker)
-	return op.waitErr
+	return s.workerWaitSnapshot(op)
 }
 
-func (s *fixtureSession) waitWorkerContext(ctx context.Context, op *readOperation, worker SandboxWorker) error {
+func (s *fixtureSession) waitWorkerContext(ctx context.Context, op *readOperation, worker SandboxWorker) (workerWaitResult, error) {
 	if worker == nil {
-		return nil
+		return workerWaitResult{Joined: true}, nil
 	}
 	select {
 	case <-s.startWorkerWait(op, worker):
-		return op.waitErr
+		return s.workerWaitSnapshot(op), nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return workerWaitResult{}, ctx.Err()
 	}
+}
+
+// workerWaitSnapshot reads mutable join state under the same lock used by
+// Close. waitDone publishes the waiter goroutine's writes, but Close may
+// independently confirm a join after that channel has closed.
+func (s *fixtureSession) workerWaitSnapshot(op *readOperation) workerWaitResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return workerWaitResult{ExitErr: op.waitErr, Joined: op.workerJoined}
 }
 
 func (s *fixtureSession) startWorkerWait(op *readOperation, worker SandboxWorker) <-chan struct{} {
@@ -560,11 +619,11 @@ func (s *fixtureSession) startWorkerWait(op *readOperation, worker SandboxWorker
 	return op.waitDone
 }
 
-func (s *fixtureSession) terminateAndWait(op *readOperation, worker SandboxWorker) error {
+func (s *fixtureSession) terminateAndWait(op *readOperation, worker SandboxWorker) workerTerminationResult {
 	if worker == nil {
-		return nil
+		return workerTerminationResult{Wait: workerWaitResult{Joined: true}}
 	}
-	return errors.Join(worker.Terminate(), s.waitWorker(op, worker))
+	return workerTerminationResult{TerminationErr: worker.Terminate(), Wait: s.waitWorker(op, worker)}
 }
 
 func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
@@ -658,12 +717,17 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 			s.mu.Unlock()
 			continue
 		}
-		if err := s.waitWorkerContext(ctx, item.op, item.worker); err != nil {
+		waitResult, waitErr := s.waitWorkerContext(ctx, item.op, item.worker)
+		if waitErr != nil {
 			if !item.worker.Joined() {
 				terminateErr = errors.Join(terminateErr, ErrCleanupPending)
 			} else {
-				terminateErr = errors.Join(terminateErr, err)
+				terminateErr = errors.Join(terminateErr, waitErr)
 			}
+		} else if waitResult.ExitErr != nil {
+			// Wait errors after Join are process-exit diagnostics, not evidence
+			// that the direct child remains alive or unreaped.
+			terminateErr = errors.Join(terminateErr, waitResult.ExitErr)
 		}
 	}
 	s.mu.Lock()
