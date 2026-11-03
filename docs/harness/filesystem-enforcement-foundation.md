@@ -4,6 +4,11 @@ This document describes a host-side foundation for future reviewed filesystem
 operations. It does not register filesystem tools or make filesystem access
 available to a model. The executable remains text-only for filesystem access.
 
+The later [sandbox direction and implementation gates](sandbox-design-proposal.md)
+record the reviewed object-authority target and future write-includes-deletion
+policy. The operation and permission descriptions below describe this existing
+foundation; they are not an implementation of that later target.
+
 ## Ownership and API
 
 `internal/harness/filesystem` owns prepared targets and the native operation

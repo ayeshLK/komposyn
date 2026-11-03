@@ -404,8 +404,11 @@ guarantees, counterexamples, protected-path policy proposals, root-selection
 UX proposals, and requirements for any later tool enablement.
 The [Linux sandbox feasibility study](sandbox-feasibility-study.md) is
 disposable research infrastructure only; its native tests are separate from Go
-unit/race tests, and filesystem tools remain unavailable until the strict
-pathname-scope gate has native evidence and maintainer review.
+unit/race tests, and filesystem tools remain unavailable pending native evidence
+for each capability and maintainer review. The
+[sandbox direction and implementation gates](sandbox-design-proposal.md) record
+the later object-authority target and distinguish it from the historical strict
+pathname-containment gate in the earlier policy.
 
 The [brokered read feasibility harness](read-broker-feasibility.md) adds an
 experimental host-owned protected-object registry and a fixed Bubblewrap worker
