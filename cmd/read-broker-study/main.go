@@ -214,7 +214,7 @@ func unavailableCases(reason string) []caseResult {
 		{"cancel_before_release", "no read capability released after cancellation"},
 		{"revoke_after_capture_before_publish", "captured bytes suppressed after revocation"},
 		{"registered_directory_descendant_inside", "descendant denied while below pinned directory"},
-		{"registered_directory_descendant_moved_out", "unpinned same-device descendant refused"},
+		{"registered_directory_descendant_moved_out", "scope refused before authorization because protected-directory descendant identity coverage is incomplete"},
 	}
 	results := make([]caseResult, 0, len(planned))
 	for _, item := range planned {
@@ -409,7 +409,7 @@ func runFixtures(bwrap string) ([]caseResult, error) {
 	if err := os.Rename(descendant, movedDescendant); err != nil {
 		return nil, err
 	}
-	results = append(results, executeCase(session, authorizer, root, "registered_directory_descendant_moved_out", movedDescendant, "directory-child-moved-1", "unpinned same-device descendant is refused for incomplete identity coverage"))
+	results = append(results, executeCase(session, authorizer, root, "registered_directory_descendant_moved_out", movedDescendant, "directory-child-moved-1", "scope is refused before authorization because protected-directory descendant identity coverage is incomplete"))
 	return results, nil
 }
 
@@ -444,6 +444,8 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 		expectedOutcome = readbrokerstudy.ReadSucceeded
 	case "cancel_before_release", "revoke_after_capture_before_publish":
 		expectedOutcome = readbrokerstudy.ReadCancelled
+	case "registered_directory_descendant_moved_out":
+		expectedOutcome = readbrokerstudy.ReadRefused
 	}
 	bytesMatch := result.Outcome == readbrokerstudy.ReadSucceeded && bytes.Equal(result.Bytes, expectedBytes)
 	consumptionCount := auth.ConsumptionCount(invocationID)
@@ -453,6 +455,9 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 		stateMatches = stateMatches && bytesMatch && ev.WorkerStarted && ev.CapabilitySent && ev.ReadStarted && ev.Published && consumptionCount == 1
 	case readbrokerstudy.ReadRefused:
 		stateMatches = stateMatches && !ev.WorkerStarted && !ev.CapabilitySent && !ev.ReadStarted && !ev.Published && consumptionCount == 0 && len(result.Bytes) == 0
+		if name == "registered_directory_descendant_moved_out" {
+			stateMatches = stateMatches && result.Detail == readbrokerstudy.ErrDirectoryCoverage.Error()
+		}
 	case readbrokerstudy.ReadCancelled:
 		stateMatches = stateMatches && ev.WorkerStarted && !ev.Published && len(result.Bytes) == 0 && consumptionCount == 1
 		if name == "cancel_before_release" {

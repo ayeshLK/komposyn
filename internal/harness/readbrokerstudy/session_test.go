@@ -20,8 +20,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -426,6 +428,98 @@ func TestNonzeroWorkerExitIsReapedAndDoesNotMasqueradeAsPendingCleanup(t *testin
 	}
 }
 
+func TestCancellationBeforeHandoffIsCancelledWhenKilledWorkerWasJoined(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "cancel-before-release.fixture")
+	if err := os.WriteFile(target, []byte("synthetic cancellation fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.waitErr = errors.New("signal: killed")
+	followup := &fakeWorker{}
+	fixture.launcher.workers = []*fakeWorker{fixture.worker, followup}
+	fixture.session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		if checkpoint == CheckpointBeforeHandoff {
+			return context.Canceled
+		}
+		return nil
+	})
+	if err := fixture.authorizer.ApproveOnce("cancelled-killed-joined"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.session.Read(context.Background(), root, target, "cancelled-killed-joined")
+	if err != nil || result.Outcome != ReadCancelled || !strings.Contains(result.Detail, "no target-data descriptor was released") {
+		t.Fatalf("pre-release cancellation=(%q,%q,%v), want cancelled with no target capability release", result.Outcome, result.Detail, err)
+	}
+	if !fixture.worker.Joined() || fixture.worker.transferred || fixture.authorizer.ConsumptionCount("cancelled-killed-joined") != 1 || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatalf("joined=%t transferred=%t once=%d published=%d", fixture.worker.Joined(), fixture.worker.transferred, fixture.authorizer.ConsumptionCount("cancelled-killed-joined"), len(fixture.session.PublishedResults()))
+	}
+	if !strings.Contains(result.Detail, "exit error after the direct process was reaped") {
+		t.Fatalf("joined process exit diagnostic missing: %q", result.Detail)
+	}
+	fixture.session.SetCheckpointHook(nil)
+	if err := fixture.authorizer.ApproveOnce("read-after-confirmed-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	followupResult, err := fixture.session.Read(context.Background(), root, target, "read-after-confirmed-cancel")
+	if err != nil || followupResult.Outcome != ReadSucceeded || fixture.launcher.starts != 2 {
+		t.Fatalf("read after confirmed pre-release cleanup=(%q,%v), starts=%d", followupResult.Outcome, err, fixture.launcher.starts)
+	}
+}
+
+func TestCancellationBeforeHandoffRemainsUnknownWhenWorkerIsNotJoined(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "cancel-unjoined.fixture")
+	if err := os.WriteFile(target, []byte("synthetic cancellation fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.worker.joinUnconfirmed = true
+	fixture.session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		if checkpoint == CheckpointBeforeHandoff {
+			return context.Canceled
+		}
+		return nil
+	})
+	if err := fixture.authorizer.ApproveOnce("cancelled-unjoined"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.session.Read(context.Background(), root, target, "cancelled-unjoined")
+	if err != nil || result.Outcome != ReadUnknown || !strings.Contains(result.Detail, "direct-process join is unconfirmed") {
+		t.Fatalf("pre-release cancellation with unjoined worker=(%q,%q,%v), want unknown cleanup", result.Outcome, result.Detail, err)
+	}
+	if fixture.worker.transferred || fixture.authorizer.ConsumptionCount("cancelled-unjoined") != 1 || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatal("unjoined pre-release cancellation transferred data, changed consumption, or published")
+	}
+	if err := fixture.authorizer.ApproveOnce("blocked-after-unjoined-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := fixture.session.Read(context.Background(), root, target, "blocked-after-unjoined-cancel")
+	if err != nil || blocked.Outcome != ReadNotExecuted || blocked.Detail != ErrCleanupPending.Error() || fixture.launcher.starts != 1 {
+		t.Fatalf("read after unjoined cancellation=(%q,%q,%v), starts=%d", blocked.Outcome, blocked.Detail, err, fixture.launcher.starts)
+	}
+	fixture.worker.mu.Lock()
+	fixture.worker.joinUnconfirmed = false
+	fixture.worker.joined = true
+	fixture.worker.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := fixture.session.Close(ctx); err != nil {
+		t.Fatalf("close after explicit join confirmation: %v", err)
+	}
+}
+
+func TestDirectoryCoverageIsSpecificPreAuthorizationRefusal(t *testing.T) {
+	result := refusalFor(fmt.Errorf("wrapped policy check: %w", ErrDirectoryCoverage))
+	if result.Outcome != ReadRefused || result.Detail != ErrDirectoryCoverage.Error() || len(result.Bytes) != 0 {
+		t.Fatalf("directory coverage mapping=%+v, want specific refused result", result)
+	}
+	unrelated := refusalFor(errors.New("unrelated preparation failure"))
+	if unrelated.Outcome != ReadNotExecuted || unrelated.Detail == ErrDirectoryCoverage.Error() {
+		t.Fatalf("unrelated error mapping=%+v, must remain distinct from coverage refusal", unrelated)
+	}
+}
+
 func TestUnresolvedCleanupInvalidatesReadAlreadyWaitingForAuthorization(t *testing.T) {
 	root := t.TempDir()
 	targetA := filepath.Join(root, "read-a.fixture")
@@ -765,8 +859,8 @@ func TestProviderPinCannotOverrideMovedChildOfProtectedSettingsDirectory(t *test
 		t.Fatal(err)
 	}
 	result, err := fixture.session.Read(context.Background(), root, moved, "provider-under-settings")
-	if err != nil || result.Outcome != ReadNotExecuted {
-		t.Fatalf("moved child read=(%q,%v), want not-executed refusal", result.Outcome, err)
+	if err != nil || result.Outcome != ReadRefused || result.Detail != ErrDirectoryCoverage.Error() {
+		t.Fatalf("moved child read=(%q,%q,%v), want directory-coverage refusal", result.Outcome, result.Detail, err)
 	}
 	if fixture.launcher.starts != 0 || fixture.authorizer.ConsumptionCount("provider-under-settings") != 0 || len(fixture.session.PublishedResults()) != 0 {
 		t.Fatal("provider invocation approval overrode protected-directory policy")

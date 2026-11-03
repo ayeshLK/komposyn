@@ -136,6 +136,17 @@ Revocation reports `ErrCleanupPending` while an active operation has not joined;
 the operation reports `unknown` if it cannot confirm worker cleanup. A successful
 signal request alone is not treated as completed cleanup.
 
+For the Linux worker, `Joined()` means the direct Bubblewrap process was waited
+and its process state was collected. `Wait()` can still return an exit error
+after that join, such as when the direct process was intentionally killed before
+target-data release. A known cancellation before the read descriptor is
+released remains `cancelled` when the direct-process join is confirmed; the
+exit error remains a diagnostic. After target-data release, a missing
+acknowledgement or worker result/exit error remains `unknown` when the read
+outcome cannot be established. Direct-process join does not prove that every
+namespace descendant has terminated; descendant cleanup requires separate
+launcher guarantees and evidence.
+
 ## Protected registrations and directory limits
 
 Owner registrations pin identities for protected files and directories and
@@ -161,6 +172,13 @@ descendant identity coverage. The fixture here registers a directory explicitly
 and demonstrates both an in-tree descendant refusal and fail-closed refusal of
 an unpinned same-device descendant moved out. Neither result means a directory
 descriptor identifies every descendant.
+
+When a proposed scope overlaps a registered protected directory but the
+registry cannot prove complete descendant identity coverage, the broker returns
+`ErrDirectoryCoverage`. The coordinator reports this specific policy refusal
+as `refused` before authorization: it consumes no once grant, starts no worker,
+transfers no read descriptor, and publishes no data. Other preparation and
+generation errors retain their separate outcomes.
 
 | Registration owner | Required protected inputs | Generic read policy | Rotation rule |
 | --- | --- | --- | --- |
