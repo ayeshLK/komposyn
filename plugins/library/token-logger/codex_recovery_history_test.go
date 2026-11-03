@@ -17,6 +17,7 @@ package tokenlogger
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -190,7 +191,18 @@ func TestCodexRecoveryHistoryPaginationIsBoundedAndScoped(t *testing.T) {
 		ContinuationToken: firstInspection.NextToken}); !errors.Is(err, ErrInvalidCodexRecoveryHistoryQuery) {
 		t.Fatalf("cross-run continuation error = %v", err)
 	}
-	tampered := firstPage.NextToken[:len(firstPage.NextToken)-1] + "A"
+	sealed, err := base64.RawURLEncoding.DecodeString(firstPage.NextToken)
+	if err != nil {
+		t.Fatalf("decode continuation token for tampering: %v", err)
+	}
+	if len(sealed) == 0 {
+		t.Fatal("continuation token decoded to an empty payload")
+	}
+	sealed[len(sealed)-1] ^= 1 // Flip an authenticated byte while keeping valid base64url encoding.
+	tampered := base64.RawURLEncoding.EncodeToString(sealed)
+	if tampered == firstPage.NextToken {
+		t.Fatal("tampering did not change the continuation token")
+	}
 	if _, err := store.ListCodexRecoveries(CodexRecoveryHistoryQuery{PageSize: 1, ContinuationToken: tampered}); !errors.Is(err, ErrInvalidCodexRecoveryHistoryQuery) {
 		t.Fatalf("tampered continuation error = %v", err)
 	}
