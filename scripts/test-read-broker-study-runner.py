@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -92,6 +93,34 @@ class CaptureTests(unittest.TestCase):
             self.assertLess(elapsed, 7.0)
             with self.assertRaises(ProcessLookupError):
                 os.kill(child_pid, 0)
+
+    def test_termination_deadline_is_not_reset_after_escalation(self):
+        with tempfile.TemporaryDirectory(prefix="komposyn-bounded-cleanup-test-") as directory:
+            stdout = Path(directory) / "stdout"
+            stderr = Path(directory) / "stderr"
+            pid_file = Path(directory) / "pid"
+            code = "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(60)"
+            with mock.patch.object(capture, "TERMINATION_GRACE_SECONDS", 0.05), \
+                    mock.patch.object(capture, "OUTPUT_DRAIN_SECONDS", 0.1), \
+                    mock.patch.object(capture.os, "killpg", lambda *_args: None), \
+                    mock.patch.object(capture, "signal_children", lambda *_args: None):
+                started = time.monotonic()
+                result = capture.run_capture(
+                    [sys.executable, "-c", code, str(pid_file)], 0.05, 4096,
+                    stdout, stderr, directory,
+                )
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 1.0, result)
+            self.assertFalse(result["cleanup_complete"], result)
+            self.assertFalse(result["direct_child_reaped"], result)
+            self.assertTrue(result["output_drain_incomplete"], result)
+            child_pid = int(pid_file.read_text())
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            else:
+                os.waitpid(child_pid, 0)
 
 
 class ReportClassificationTests(unittest.TestCase):
@@ -208,6 +237,52 @@ class OutputReservationTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(checksum.returncode, 0, checksum.stderr)
+
+    def test_sighup_terminates_and_reaps_active_build_child(self):
+        with tempfile.TemporaryDirectory(prefix="komposyn-hup-test-") as directory:
+            root = Path(directory)
+            bindir = root / "bin"
+            bindir.mkdir()
+            pid_file = root / "build-child.pid"
+            fake_go = bindir / "go"
+            fake_go.write_text(
+                f"#!{sys.executable}\n"
+                "import os, signal, sys, time\n"
+                "if sys.argv[1] == 'version':\n"
+                "    print('go version go1.26.10 linux/amd64')\n"
+                "    raise SystemExit(0)\n"
+                f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "time.sleep(60)\n"
+            )
+            fake_go.chmod(0o755)
+            output = root / "hup-results"
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bindir}:{environment['PATH']}"
+            process = subprocess.Popen(
+                [str(RUNNER), "--output-dir", str(output)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+            )
+            deadline = time.monotonic() + 20
+            while not pid_file.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(pid_file.exists(), "fake build was not reached")
+            child_pid = int(pid_file.read_text())
+            process.send_signal(signal.SIGHUP)
+            stdout, stderr = process.communicate(timeout=12)
+            self.assertEqual(process.returncode, 129, (stdout, stderr))
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(manifest["interruption"]["signal"], "HUP")
+            self.assertEqual(manifest["build"]["status"], "interrupted")
+            capture_record = json.loads((output / "build.capture.json").read_text())
+            self.assertEqual(capture_record["interrupted_by_signal"], signal.SIGHUP)
+            self.assertTrue(capture_record["cleanup_complete"], capture_record)
+            self.assertTrue(capture_record["direct_child_reaped"], capture_record)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
 
 
 if __name__ == "__main__":

@@ -131,12 +131,15 @@ def run_capture(argv, timeout, limit, stdout_path, stderr_path, cwd):
     deadline = started + timeout
     terminate_at = None
     stop_draining_at = None
+    termination_started = False
+    termination_escalated = False
     interrupted_signal = None
 
     def begin_termination(reason, timed_out=False):
-        nonlocal terminate_at, stop_draining_at
-        if terminate_at is not None:
+        nonlocal terminate_at, stop_draining_at, termination_started
+        if termination_started:
             return
+        termination_started = True
         result["termination"] = reason
         result["timed_out"] = timed_out
         try:
@@ -154,6 +157,7 @@ def run_capture(argv, timeout, limit, stdout_path, stderr_path, cwd):
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGHUP, handle_signal)
 
     while True:
         now = time.monotonic()
@@ -171,13 +175,13 @@ def run_capture(argv, timeout, limit, stdout_path, stderr_path, cwd):
         if now >= deadline and terminate_at is None:
             begin_termination("deadline; sent SIGTERM then bounded SIGKILL", timed_out=True)
 
-        if terminate_at is not None and now >= terminate_at:
+        if termination_started and not termination_escalated and now >= terminate_at:
             try:
                 os.killpg(child.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             signal_children(direct_children(), signal.SIGKILL)
-            terminate_at = None
+            termination_escalated = True
 
         # Reap adopted children that have exited. Newly orphaned descendants
         # appear in the child list and are handled on the next loop iteration.
