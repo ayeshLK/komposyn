@@ -231,10 +231,13 @@ func TestVerifyDescriptorMountRejectsInvalidDescriptors(t *testing.T) {
 
 func TestWorkerSeccompProgramIncludesBootstrapAndProcessRestrictions(t *testing.T) {
 	denied := workerDeniedSyscalls()
-	for _, required := range []uint32{unix.SYS_OPENAT, unix.SYS_SOCKET, unix.SYS_CLONE, unix.SYS_CLONE3, unix.SYS_EXECVE} {
+	for _, required := range []uint32{unix.SYS_OPENAT, unix.SYS_SOCKET, unix.SYS_CLONE3, unix.SYS_EXECVE} {
 		if !slices.Contains(denied, required) {
 			t.Errorf("seccomp policy does not deny syscall %d", required)
 		}
+	}
+	if slices.Contains(denied, unix.SYS_CLONE) {
+		t.Fatal("clone must use the narrow thread-only argument policy, not an unconditional syscall denial")
 	}
 	if _, err := workerSeccompFilterBytes(); err != nil {
 		t.Fatalf("worker seccomp program could not be built: %v", err)

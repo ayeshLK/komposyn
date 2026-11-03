@@ -184,10 +184,19 @@ host command receives only that synthetic marker; Bubblewrap applies
 `--clearenv`. Standard input is `/dev/null`, stdout is discarded, and stderr
 is captured with a 4 KiB cap.
 
-The fixed worker profile is not an OS sandbox for arbitrary Go code. No shell,
-arbitrary executable, fork/memory/CPU exhaustion, or aggregate cgroup quota is
-tested or claimed. Worker result bytes are capped at 64 KiB, the per-worker
-deadline is five seconds, and captured stderr is capped at 4 KiB.
+The seccomp filter permits `clone` only when its flags exactly equal the Go
+runtime's shared-thread flags, with or without `CLONE_SETTLS`; it also requires
+the high 32 bits of the 64-bit flags argument to be zero. This matches the
+supported Go runtime's [`cloneFlags` and amd64 TLS setup](https://github.com/golang/go/blob/go1.26.10/src/runtime/os_linux.go).
+Process-like flag combinations are denied, and `clone3` remains denied. A subprocess test
+installs the exact filter, drives Go runtime GC and scheduler work that needs
+threads, then confirms process-like `clone` and `clone3` return `EPERM`. This
+behavioral test ran on Linux/amd64; the filter is cross-compiled for arm64 but
+has not been behaviorally exercised there. The fixed worker profile is not an
+OS sandbox for arbitrary Go code. No shell, arbitrary executable,
+fork/memory/CPU exhaustion, or aggregate cgroup quota is tested or claimed.
+Worker result bytes are capped at 64 KiB, the per-worker deadline is five
+seconds, and captured stderr is capped at 4 KiB.
 
 ## Running the study
 

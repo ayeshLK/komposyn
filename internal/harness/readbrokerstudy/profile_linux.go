@@ -139,6 +139,19 @@ func workerSeccompFilterBytes() ([]byte, error) {
 		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: arch, Jt: 1, Jf: 0},
 		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_KILL_PROCESS},
 		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+		// The fixed Go worker needs clone for runtime threads. Permit only the
+		// exact shared-thread flag sets used by the supported Go runtime; all
+		// process-like clone calls are refused. clone3 remains denied below.
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: unix.SYS_CLONE, Jt: 1, Jf: 0},
+		{Code: unix.BPF_JMP | unix.BPF_JA, K: 8},
+		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 20},
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: 0, Jt: 1, Jf: 0},
+		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: goRuntimeThreadCloneFlags, Jt: 2, Jf: 0},
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: goRuntimeThreadCloneFlags | unix.CLONE_SETTLS, Jt: 1, Jf: 0},
+		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
 	}
 	for _, number := range workerDeniedSyscalls() {
 		filters = append(filters,
@@ -171,7 +184,7 @@ func workerAuditArch(goArch string) (uint32, error) {
 
 func workerDeniedSyscalls() []uint32 {
 	denied := []uint32{
-		unix.SYS_CLONE, unix.SYS_CLONE3, unix.SYS_EXECVE,
+		unix.SYS_CLONE3, unix.SYS_EXECVE,
 		unix.SYS_OPENAT, unix.SYS_OPENAT2, unix.SYS_NEWFSTATAT,
 		unix.SYS_STATX, unix.SYS_READLINKAT, unix.SYS_GETDENTS64,
 		unix.SYS_FACCESSAT2,
@@ -191,3 +204,6 @@ func workerDeniedSyscalls() []uint32 {
 	}
 	return append(denied, workerArchDeniedSyscalls()...)
 }
+
+const goRuntimeThreadCloneFlags = unix.CLONE_VM | unix.CLONE_FS | unix.CLONE_FILES |
+	unix.CLONE_SIGHAND | unix.CLONE_SYSVSEM | unix.CLONE_THREAD
