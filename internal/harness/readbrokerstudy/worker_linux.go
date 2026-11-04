@@ -932,6 +932,12 @@ func (w *heldSandboxWorker) AwaitCapabilityHeld(ctx context.Context) error {
 	return nil
 }
 
+func (w *heldSandboxWorker) HeldCapabilityIdentity() (FileIdentity, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.expected, w.holdMode && w.held
+}
+
 func (w *heldSandboxWorker) ReleaseHeldRead(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1062,6 +1068,20 @@ func (w *sandboxWorker) Joined() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.joined
+}
+
+// ObserveHostProcesses is used by the independent research supervisor while
+// this worker is alive. It identifies Bubblewrap and its PID-namespace init
+// through host procfs without exposing procfs to the sandboxed worker.
+func (w *sandboxWorker) ObserveHostProcesses() (HostProcessIdentity, HostProcessIdentity, error) {
+	w.mu.Lock()
+	if w.cmd == nil || w.cmd.Process == nil {
+		w.mu.Unlock()
+		return HostProcessIdentity{}, HostProcessIdentity{}, errors.New("Bubblewrap process is unavailable")
+	}
+	pid := w.cmd.Process.Pid
+	w.mu.Unlock()
+	return observeBubblewrapProcesses(pid)
 }
 
 func identityFrame(kind byte, identity FileIdentity) []byte {

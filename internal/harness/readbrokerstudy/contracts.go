@@ -218,6 +218,7 @@ type FixtureSession interface {
 	PublishedResults() [][]byte
 	Evidence() []ReadEvidence
 	GenerationSnapshot() GenerationSet
+	ActiveOperationCount() int
 	Close(context.Context) error
 }
 
@@ -251,6 +252,27 @@ type SandboxWorker interface {
 	// Joined confirms that the direct process was waited/reaped. It does not
 	// claim that every namespace descendant has terminated.
 	Joined() bool
+}
+
+// HostProcessIdentity names one task-owned process by PID plus its kernel
+// start-time token. It is for the trusted study supervisor only; never pass it
+// into the sandbox worker or publish the raw PID in a shareable report.
+type HostProcessIdentity struct {
+	PID            int    `json:"pid"`
+	StartTimeTicks uint64 `json:"start_time_ticks"`
+}
+
+// HostProcessObserver is an optional research-only observation surface. The
+// implementation reads the host's procfs from the trusted coordinator and
+// must not add a procfs mount or authority to the worker.
+type HostProcessObserver interface {
+	ObserveHostProcesses() (bubblewrap HostProcessIdentity, namespaceInit HostProcessIdentity, err error)
+}
+
+// HeldCapabilityObserver exposes the identity already checked by the fixed
+// worker's CAPABILITY_HELD acknowledgement. It is research evidence only.
+type HeldCapabilityObserver interface {
+	HeldCapabilityIdentity() (FileIdentity, bool)
 }
 
 // HeldCapabilityWorker is implemented only by the fixed study worker when

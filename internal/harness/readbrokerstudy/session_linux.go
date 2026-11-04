@@ -824,3 +824,9 @@ func (s *fixtureSession) String() string {
 	defer s.mu.Unlock()
 	return fmt.Sprintf("readbroker fixture session: active=%d closed=%t", len(s.active), s.closed)
 }
+
+func (s *fixtureSession) ActiveOperationCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.active)
+}

@@ -37,6 +37,51 @@ type ownerLifecycleTestSession struct {
 	registerCalls int
 }
 
+type lifecycleGateTestWorker struct {
+	terminated int
+}
+
+func (*lifecycleGateTestWorker) Ready(context.Context) error { return nil }
+func (*lifecycleGateTestWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{}
+}
+func (*lifecycleGateTestWorker) TransferCapability(context.Context, *os.File, readbrokerstudy.FileIdentity) error {
+	return nil
+}
+func (*lifecycleGateTestWorker) AwaitReadStarted(context.Context) error { return nil }
+func (*lifecycleGateTestWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{}, nil
+}
+func (w *lifecycleGateTestWorker) Terminate() error {
+	w.terminated++
+	return nil
+}
+func (*lifecycleGateTestWorker) Wait() error  { return nil }
+func (*lifecycleGateTestWorker) Joined() bool { return true }
+
+func TestTerminationRequestGateDelaysOnlyRealTermination(t *testing.T) {
+	gate := newTerminationRequestGate()
+	worker := &lifecycleGateTestWorker{}
+	gate.attach(worker)
+	if err := gate.requestTermination(worker); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gate.requestedSignal():
+	default:
+		t.Fatal("termination request was not observable")
+	}
+	if worker.terminated != 0 {
+		t.Fatal("termination gate acted on the worker before release")
+	}
+	if err := gate.release(); err != nil {
+		t.Fatal(err)
+	}
+	if worker.terminated != 1 {
+		t.Fatalf("termination calls=%d, want one actual worker termination", worker.terminated)
+	}
+}
+
 func (s *ownerLifecycleTestSession) Read(context.Context, string, string, string) (readbrokerstudy.WorkerResult, error) {
 	return readbrokerstudy.WorkerResult{}, errors.New("unexpected read")
 }
@@ -59,6 +104,7 @@ func (*ownerLifecycleTestSession) Revoke(string) error                          
 func (*ownerLifecycleTestSession) SetCheckpointHook(readbrokerstudy.CheckpointHook) {}
 func (*ownerLifecycleTestSession) PublishedResults() [][]byte                       { return nil }
 func (*ownerLifecycleTestSession) Evidence() []readbrokerstudy.ReadEvidence         { return nil }
+func (*ownerLifecycleTestSession) ActiveOperationCount() int                        { return 0 }
 func (s *ownerLifecycleTestSession) GenerationSnapshot() readbrokerstudy.GenerationSet {
 	return readbrokerstudy.GenerationSet{Policy: s.policy}
 }
@@ -258,6 +304,7 @@ func (*directoryCoverageSequenceSession) Revoke(string) error                   
 func (*directoryCoverageSequenceSession) SetCheckpointHook(readbrokerstudy.CheckpointHook) {}
 func (*directoryCoverageSequenceSession) PublishedResults() [][]byte                       { return nil }
 func (*directoryCoverageSequenceSession) Evidence() []readbrokerstudy.ReadEvidence         { return nil }
+func (*directoryCoverageSequenceSession) ActiveOperationCount() int                        { return 0 }
 func (*directoryCoverageSequenceSession) GenerationSnapshot() readbrokerstudy.GenerationSet {
 	return readbrokerstudy.GenerationSet{}
 }
@@ -436,6 +483,8 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		"owner_rotation_retains_old_new_pins_and_publishes_registered_replacement",
 		"owner_rotation_old_alias_denied", "owner_rotation_renamed_old_identity_denied", "owner_rotation_new_alias_denied",
 		"owner_registration_failure_blocks_write", "owner_incomplete_cleanup_blocks_write",
+		"coordinator_death_with_held_capability", "shutdown_deadline_retains_cleanup_obligation",
+		"owner_incomplete_cleanup_blocks_write_native",
 		"provider_missing_explicit_once", "provider_only_ordinary_positive_control",
 		"provider_ordinary_receipt_rejected_for_alias", "provider_stale_policy_receipt_rejected",
 		"provider_stale_root_receipt_rejected", "provider_stale_grant_receipt_rejected",
@@ -451,7 +500,7 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 			t.Fatalf("duplicate unavailable case %q", result.Name)
 		}
 		seen[result.Name] = true
-		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.CapabilityHeld || result.CapabilityIdentity != nil || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition || result.AuthorizationAttempted || result.AuthorizationReceiptAccepted || result.OwnerLifecycle != nil {
+		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.CapabilityHeld || result.CapabilityIdentity != nil || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition || result.AuthorizationAttempted || result.AuthorizationReceiptAccepted || result.OwnerLifecycle != nil || result.Lifecycle != nil {
 			t.Fatalf("unavailable case claims activity: %+v", result)
 		}
 	}

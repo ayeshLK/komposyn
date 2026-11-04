@@ -205,6 +205,21 @@ func (r *Registry) View() PolicyView {
 	return view
 }
 
+// PinnedObjectCount is bounded fixture evidence for lifecycle tests. It exposes
+// no descriptors or authority and lets a timeout report whether registry-owned
+// pins remained retained until cleanup was confirmed.
+func (r *Registry) PinnedObjectCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, entry := range r.entries {
+		if entry.pin != nil {
+			count++
+		}
+	}
+	return count
+}
+
 // Classify applies both object-identity and registered-location rules. A
 // protected directory's pinned identity protects that directory object only;
 // it does not enumerate current/future descendants or retain child identities
