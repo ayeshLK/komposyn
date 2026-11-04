@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -524,6 +525,50 @@ func TestCancellationBeforeHandoffRemainsUnknownWhenWorkerIsNotJoined(t *testing
 	defer cancel()
 	if err := fixture.session.Close(ctx); err != nil {
 		t.Fatalf("close after explicit join confirmation: %v", err)
+	}
+}
+
+func TestFinalRevalidationCheckpointPrecedesProtectedAliasHandoff(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary-before-actor.fixture")
+	protectedAlias := filepath.Join(root, "registered-protected-alias.fixture")
+	if err := os.WriteFile(target, []byte("synthetic ordinary bytes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	if err := fixture.session.Register(OwnerRegistration{Owner: "race-protected-file", Class: ClassCredential, Path: protectedAlias}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.authorizer.ApproveOnce("final-scan-protected-alias"); err != nil {
+		t.Fatal(err)
+	}
+	var checkpoints []Checkpoint
+	fixture.session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		checkpoints = append(checkpoints, checkpoint)
+		if checkpoint == CheckpointAfterFinalRevalidation {
+			return os.Link(target, protectedAlias)
+		}
+		return nil
+	})
+	result, err := fixture.session.Read(context.Background(), root, target, "final-scan-protected-alias")
+	if err != nil || result.Outcome != ReadCancelled {
+		t.Fatalf("read=(%q,%v), want post-capture suppression after the injected protected alias", result.Outcome, err)
+	}
+	wantOrder := []Checkpoint{CheckpointBeforeOpen, CheckpointAfterOpen, CheckpointAfterClassify, CheckpointBeforeHandoff, CheckpointAfterFinalRevalidation, CheckpointAfterCapture}
+	if !reflect.DeepEqual(checkpoints, wantOrder) {
+		t.Fatalf("checkpoints=%v, want ordering %v", checkpoints, wantOrder)
+	}
+	evidence := fixture.session.Evidence()
+	if len(evidence) != 1 || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].WorkerJoined != true || evidence[0].Published {
+		t.Fatalf("protected-alias race evidence=%+v, want capability/read followed by publication suppression and confirmed join", evidence)
+	}
+	if fixture.authorizer.ConsumptionCount("final-scan-protected-alias") != 1 {
+		t.Fatal("once grant was not consumed exactly once before capability handoff")
+	}
+	ordinaryInfo, ordinaryErr := os.Stat(target)
+	aliasInfo, aliasErr := os.Stat(protectedAlias)
+	if ordinaryErr != nil || aliasErr != nil || !os.SameFile(ordinaryInfo, aliasInfo) {
+		t.Fatalf("actor alias fixture state ordinary=%v alias=%v err=(%v,%v)", ordinaryInfo, aliasInfo, ordinaryErr, aliasErr)
 	}
 }
 

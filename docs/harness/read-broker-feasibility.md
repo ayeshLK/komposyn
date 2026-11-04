@@ -283,6 +283,39 @@ as established behavior.
 Native run records, host-specific diagnostics, and detailed per-case fixture
 effects belong in the linked tracking issue rather than this repository.
 
+## Independent same-user actor scenarios
+
+The command includes a separate, same-user fixture process with a fixed
+rename/hard-link/replacement allowlist. It starts with an empty environment,
+waits for a bounded READY/RUN/DONE handshake, and never starts descendants. The
+actor is released only at the coordinator checkpoint after the last broker
+revalidation and before duplicating or transferring the read descriptor. That
+ordering tests a real check-to-handoff namespace transition; a unit-test hook
+with an injected worker is only coordinator regression coverage.
+
+Cases record worker startup/readiness and join, actor readiness/transition and
+direct-process join, descriptor transfer, read start, publication, once-grant
+consumption, coordinator generations, fixture effect, and an evidence
+classification. A protected alias introduced after the final scan is an
+observed violation if a capability is transferred or a read starts, even if a
+later policy scan suppresses publication. Root/parent relocation outside the
+selected pathname and target replacement test whether the descriptor continues
+to refer to the approved object under B; they do not establish A. An
+unregistered child moved out of a registered protected directory is expected to
+be refused before authorization and worker launch by the existing
+incomplete-coverage rule.
+
+The scenario/expectation matrix and exact pending cases are in
+[`read-broker-native-actor.md`](read-broker-native-actor.md). In particular, a
+protected-ancestor race remains pending: same-device ordinary candidates are
+refused before worker setup while a protected directory is registered. Do not
+weaken that policy to make the race executable. Live owner rotation,
+mount-boundary behavior, recursive-child relocation, parent-death handling,
+and incomplete-shutdown cleanup also remain separate evidence gaps. Native
+results are valid only for the exact selected commit and trusted backend
+recorded by the runner; the presence of these cases in the source is not native
+enforcement evidence.
+
 ## Authority conclusions
 
 The intended target is object authority (B), subject to independent protected

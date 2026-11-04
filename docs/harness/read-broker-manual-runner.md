@@ -9,6 +9,12 @@ that baseline. The runner extracts the selected commit with `git archive`, so
 local modifications and untracked files are excluded from the study source.
 The runner's own SHA-256 is recorded separately.
 
+To run the independent-actor cases, select a commit that contains the actor
+scenario implementation, such as the reviewed PR revision. The default #221
+baseline predates those cases and will not produce actor evidence. Pass the
+full commit ID with `--revision`; the source commit in the report and manifest
+then identifies exactly which scenarios were available.
+
 ## Prerequisites
 
 - Linux amd64 or arm64, a regular (non-root) user, Git, Bash, Python 3, GNU
@@ -94,12 +100,39 @@ copyable command from a normal host terminal if that is the only blocker. Do
 not bypass UID mapping or executable trust checks.
 
 An exit status of zero is not an enforcement pass. Use each case's status,
-worker startup, descriptor transfer, read, publication, and fixture effect.
-`unavailable`, `not_executed`, setup refusal, timeout, missing report, and
-malformed report are not passes. Even a successful baseline report does not
-cover the integrated independent-actor, protected-owner rotation,
-mount-boundary, parent-death, or cleanup scenarios listed as native gaps in the
-report. It does not establish shell safety, production readiness, or
+classification, worker startup, descriptor transfer, read, publication, and
+fixture effect. `unavailable`, `not_executed`, setup refusal, timeout, missing
+report, and malformed report are not passes. Newer actor reports also show
+actor startup/readiness, whether the intended transition completed, whether the
+direct actor process exited, and policy/root/grant generations before and
+after the scenario. Reports also show whether the worker reached readiness,
+whether the direct Bubblewrap child was reaped, and whether returned bytes
+match the approved object when that field is available. Older reports do not
+contain these fields; the summary shows them as unavailable rather than
+inferring success. If an older report records only `bytes_match_target`, that
+field is shown with its original meaning; the runner does not infer an
+approved-object match from it. A confirmed direct-child join does not establish
+that every process in the sandbox namespace was cleaned up.
+
+The generated summary counts and lists cases classified as `violation` or
+reported with status `observed_violation`, even if the study command exits
+zero. A zero count means only that the produced case rows contain no recorded
+violation; it does not convert unavailable, inconclusive, or omitted cases
+into passes. Actor evidence is valid only when the actor was ready and its
+transition completed at the documented synchronization point. Check the
+scenario matrix in
+[`read-broker-native-actor.md`](read-broker-native-actor.md) for the contract
+behind each result.
+
+The new actor cases are intended to exercise a late protected alias, selected
+root and parent relocation, target replacement after classification, and
+refusal for an unregistered child moved out of a protected directory. They use
+a separate same-user process and bounded handshakes; the study does not treat
+injected-worker tests as native evidence. Protected-owner rotation,
+mount-boundary behavior, protected-ancestor transitions that cannot pass the
+current directory-coverage gate, parent-death, and incomplete-shutdown cleanup
+remain distinct evidence gaps unless the selected report says otherwise.
+Typed-read results do not establish shell safety, production readiness, or
 acceptance of any filesystem tool.
 
 The runner finalizes the partial manifest, summary, checksums, and archive

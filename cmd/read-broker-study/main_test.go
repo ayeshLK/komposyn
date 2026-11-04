@@ -82,3 +82,36 @@ func TestWorkerPolicyReportsPathBackedAndSnapshotModesAccurately(t *testing.T) {
 		t.Fatalf("snapshot mode report is inaccurate: mount=%q verify=%q", legacyMount, legacyVerification)
 	}
 }
+
+func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testing.T) {
+	planned := []string{
+		"ordinary_positive", "protected_direct", "provider_source_explicit_once",
+		"protected_existing_hardlink", "protected_late_hardlink",
+		"protected_object_renamed_into_ordinary_tree", "protected_location_replaced_before_open",
+		"ordinary_object_moved_into_protected_location", "cancel_before_release",
+		"revoke_after_capture_before_publish", "registered_directory_descendant_inside",
+		"registered_directory_descendant_moved_out", "actor_protected_alias_scan_to_handoff",
+		"actor_selected_root_relocated_after_scan", "actor_parent_relocated_outside_root_after_scan",
+		"actor_target_replaced_after_classification", "actor_unregistered_protected_descendant_moved_out",
+		"actor_protected_ancestor_relocation",
+	}
+	cases := unavailableCases("trusted Bubblewrap unavailable")
+	if len(cases) != len(planned) {
+		t.Fatalf("unavailable cases=%d, want all %d planned scenarios", len(cases), len(planned))
+	}
+	seen := make(map[string]bool, len(cases))
+	for _, result := range cases {
+		if seen[result.Name] {
+			t.Fatalf("duplicate unavailable case %q", result.Name)
+		}
+		seen[result.Name] = true
+		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition {
+			t.Fatalf("unavailable case claims activity: %+v", result)
+		}
+	}
+	for _, name := range planned {
+		if !seen[name] {
+			t.Errorf("unavailable report omitted planned case %q", name)
+		}
+	}
+}

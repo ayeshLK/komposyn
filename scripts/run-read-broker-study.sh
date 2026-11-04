@@ -447,15 +447,44 @@ summary=$output_dir/summary.md
   printf -- '- Backend probe classification: `%s` (derived from trusted flag and backend error fields).\n' "$preflight_status"
   printf -- '- Overall: **native acceptance not established**. A clean process exit or a subset of passing fixture cases is not broad enforcement evidence.\n\n'
   if [[ -f $output_dir/study-report.json ]]; then
-    printf '## Cases\n\n| Case | Status | Worker | FD sent | Read | Published | Fixture outcome | Authority A | Authority B |\n|---|---|---:|---:|---:|---:|---|---|---|\n'
+    printf '## Cases\n\n| Case | Status | Classification | Actor started | Actor ready | Transition | Actor exited | Generations before → after | Worker started | Worker ready | Worker joined | FD sent | Read | Published | Bytes match approved object | Once grants | Fixture outcome | Authority A | Authority B |\n|---|---|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|\n'
     python3 - "$output_dir/study-report.json" <<'PY'
 import json,sys
-for c in json.load(open(sys.argv[1],encoding="utf-8")).get("cases",[]):
-    vals=[c.get("name",""),c.get("status",""),str(c.get("worker_started",False)).lower(),
-          str(c.get("capability_sent",False)).lower(),str(c.get("read_started",False)).lower(),
-          str(c.get("published",False)).lower(),c.get("fixture_effect",""),c.get("authority_a",""),c.get("authority_b","")]
-    vals=[str(v).replace("|","\\|").replace("\n"," ") for v in vals]
+def cell(value):
+    if value is None or value == "": return "—"
+    if isinstance(value,bool): value=str(value).lower()
+    if isinstance(value,(dict,list)): value=json.dumps(value,sort_keys=True,separators=(",",":"))
+    return str(value).replace("|","\\|").replace("\n"," ")
+def optional_bool(case,key):
+    value=case.get(key)
+    return "—" if value is None else str(bool(value)).lower()
+def approved_object_match(case):
+    value=case.get("bytes_match_approved_object")
+    if value is not None: return str(bool(value)).lower()
+    value=case.get("bytes_match_target")
+    return "—" if value is None else "legacy target="+str(bool(value)).lower()
+doc=json.load(open(sys.argv[1],encoding="utf-8"))
+cases=doc.get("cases",[])
+for c in cases:
+    before=c.get("generations_before")
+    after=c.get("generations_after")
+    generations=(f'{cell(before)} → {cell(after)}' if before is not None or after is not None else "—")
+    vals=[c.get("name",""),c.get("status",""),c.get("classification"),
+          optional_bool(c,"actor_started"),optional_bool(c,"actor_ready"),
+          optional_bool(c,"actor_transition_completed"),optional_bool(c,"actor_exit_confirmed"),generations,
+          optional_bool(c,"worker_started"),optional_bool(c,"worker_ready"),optional_bool(c,"worker_join_confirmed"),
+          optional_bool(c,"capability_sent"),optional_bool(c,"read_started"),optional_bool(c,"published"),
+          approved_object_match(c),c.get("once_grant_consumptions"),c.get("fixture_effect",""),
+          c.get("authority_a",""),c.get("authority_b",""),]
+    vals=[cell(v) for v in vals]
     print("| "+" | ".join(vals)+" |")
+violations=[c for c in cases if c.get("classification")=="violation" or c.get("status")=="observed_violation"]
+print(f'\nObserved protected-rule violations: **{len(violations)}**.')
+if violations:
+    for c in violations:
+        print("- `"+cell(c.get("name","unnamed"))+"` — "+cell(c.get("observed","outcome unavailable")))
+else:
+    print("No violation was recorded in the produced case rows. This does not imply a pass for unavailable, inconclusive, or omitted scenarios.")
 PY
     printf '\n## Remaining native gaps\n\n'
     python3 - "$output_dir/study-report.json" <<'PY'
@@ -465,7 +494,7 @@ PY
   else
     printf '## Evidence status\n\nNo valid study JSON report was produced. See the bounded logs and manifest for the distinct setup/build/run failure status.\n'
   fi
-  printf '\nThe existing study does not exercise the integrated independent-actor, protected-owner rotation, mount-boundary, parent-death, or cleanup scenarios. It makes no shell-safety or production-readiness claim.\n'
+  printf '\nReview actor readiness, completed transitions, and direct actor exit confirmation for each actor case. Missing fields in older reports are shown as unavailable; a missing transition is not a pass. Protected-owner rotation, mount-boundary, parent-death, and incomplete-shutdown cleanup remain separate evidence gaps. The study makes no shell-safety or production-readiness claim.\n'
 } >"$summary"
 
 (
