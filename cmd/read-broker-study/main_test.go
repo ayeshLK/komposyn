@@ -170,6 +170,7 @@ func TestWorkerPolicyReportsPathBackedAndSnapshotModesAccurately(t *testing.T) {
 
 func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *testing.T) {
 	generations := readbrokerstudy.GenerationSet{Root: 3, Policy: 5, Grant: 7}
+	capabilityIdentity := readbrokerstudy.FileIdentity{Device: 11, Inode: 13, Type: 15}
 	cases := []struct {
 		name        string
 		result      readbrokerstudy.WorkerResult
@@ -180,13 +181,13 @@ func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *t
 		{
 			name:      "successful read",
 			result:    readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: []byte("synthetic")},
-			evidence:  readbrokerstudy.ReadEvidence{Case: "positive-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, ReadStarted: true, Published: true, Effect: "read and published synthetic fixture", Limitation: "fixture only"},
+			evidence:  readbrokerstudy.ReadEvidence{Case: "positive-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, CapabilityIdentity: capabilityIdentity, ReadStarted: true, Published: true, Effect: "read and published synthetic fixture", Limitation: "fixture only"},
 			wantBytes: true, wantOutcome: readbrokerstudy.ReadSucceeded,
 		},
 		{
 			name:      "unexpected worker activity",
 			result:    readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrProtected.Error()},
-			evidence:  readbrokerstudy.ReadEvidence{Case: "unexpected-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, ReadStarted: true, Published: true, Effect: "unexpected read", Limitation: "policy mismatch"},
+			evidence:  readbrokerstudy.ReadEvidence{Case: "unexpected-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, CapabilityIdentity: capabilityIdentity, ReadStarted: true, Published: true, Effect: "unexpected read", Limitation: "policy mismatch"},
 			wantBytes: false, wantOutcome: readbrokerstudy.ReadSucceeded,
 		},
 	}
@@ -202,10 +203,10 @@ func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *t
 			if err := json.Unmarshal(encoded, &decoded); err != nil {
 				t.Fatal(err)
 			}
-			if row.ResultBytesReturned != test.wantBytes || !row.ReadEvidencePresent || row.ReadEvidenceCase != test.evidence.Case || row.WorkerOutcome != test.wantOutcome || row.WorkerGenerations == nil || *row.WorkerGenerations != generations || row.WorkerEffect != test.evidence.Effect || row.WorkerLimitation != test.evidence.Limitation {
+			if row.ResultBytesReturned != test.wantBytes || !row.ReadEvidencePresent || row.ReadEvidenceCase != test.evidence.Case || row.WorkerOutcome != test.wantOutcome || row.WorkerGenerations == nil || *row.WorkerGenerations != generations || row.WorkerEffect != test.evidence.Effect || row.WorkerLimitation != test.evidence.Limitation || row.CapabilityIdentity == nil || *row.CapabilityIdentity != capabilityIdentity {
 				t.Fatalf("row lost read evidence: %+v", row)
 			}
-			if decoded["read_evidence_present"] != true || decoded["read_evidence_case"] != test.evidence.Case || decoded["worker_outcome"] != string(test.wantOutcome) || decoded["worker_effect"] != test.evidence.Effect || decoded["worker_limitation"] != test.evidence.Limitation || decoded["worker_generations"] == nil {
+			if decoded["read_evidence_present"] != true || decoded["read_evidence_case"] != test.evidence.Case || decoded["worker_outcome"] != string(test.wantOutcome) || decoded["worker_effect"] != test.evidence.Effect || decoded["worker_limitation"] != test.evidence.Limitation || decoded["worker_generations"] == nil || decoded["capability_identity"] == nil {
 				t.Fatalf("serialized row lost evidence fields: %s", encoded)
 			}
 		})
@@ -224,6 +225,16 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		"actor_selected_root_relocated_after_scan", "actor_parent_relocated_outside_root_after_scan",
 		"actor_target_replaced_after_classification", "actor_unregistered_protected_descendant_moved_out",
 		"actor_protected_ancestor_relocation", "study_session_cleanup",
+		"owner_registration_before_release", "owner_registration_before_release_registered_identity_alias_denied",
+		"owner_registration_while_capability_held", "owner_registration_while_capability_held_registered_identity_alias_denied",
+		"owner_registration_after_capture_suppresses_stale_publication",
+		"owner_rotation_retains_old_new_pins_and_publishes_registered_replacement",
+		"owner_rotation_old_alias_denied", "owner_rotation_renamed_old_identity_denied", "owner_rotation_new_alias_denied",
+		"owner_registration_failure_blocks_write", "owner_incomplete_cleanup_blocks_write",
+		"provider_missing_explicit_once", "provider_only_ordinary_positive_control",
+		"provider_ordinary_receipt_rejected_for_alias", "provider_stale_policy_receipt_rejected",
+		"provider_stale_root_receipt_rejected", "provider_stale_grant_receipt_rejected",
+		"provider_explicit_once_success_and_replay",
 	}
 	cases := unavailableCases("trusted Bubblewrap unavailable")
 	if len(cases) != len(planned) {
@@ -235,7 +246,7 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 			t.Fatalf("duplicate unavailable case %q", result.Name)
 		}
 		seen[result.Name] = true
-		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition {
+		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.CapabilityHeld || result.CapabilityIdentity != nil || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition || result.AuthorizationAttempted || result.AuthorizationReceiptAccepted || result.OwnerLifecycle != nil {
 			t.Fatalf("unavailable case claims activity: %+v", result)
 		}
 	}

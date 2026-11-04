@@ -447,7 +447,7 @@ summary=$output_dir/summary.md
   printf -- '- Backend probe classification: `%s` (derived from trusted flag and backend error fields).\n' "$preflight_status"
   printf -- '- Overall: **native acceptance not established**. A clean process exit or a subset of passing fixture cases is not broad enforcement evidence.\n\n'
   if [[ -f $output_dir/study-report.json ]]; then
-    printf '## Cases\n\n| Case | Status | Classification | Actor started | Actor ready | Transition | Actor exited | Generations before → after | Worker started | Worker ready | Worker joined | FD sent | Read | Published | Bytes match approved object | Once grants | Fixture outcome | Authority A | Authority B |\n|---|---|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|\n'
+    printf '## Cases\n\n| Case | Status | Classification | Actor started | Actor ready | Transition | Actor exited | Generations before → after | Worker started | Worker ready | Worker joined | FD sent | FD held | Read | Published | Receipt accepted | Owner write authorized / started / completed | Bytes match approved object | Once grants | Fixture outcome | Authority A | Authority B |\n|---|---|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---|---|---|\n'
     python3 - "$output_dir/study-report.json" <<'PY'
 import json,sys
 def cell(value):
@@ -469,12 +469,17 @@ for c in cases:
     before=c.get("generations_before")
     after=c.get("generations_after")
     generations=(f'{cell(before)} → {cell(after)}' if before is not None or after is not None else "—")
+    owner=c.get("owner_lifecycle") or {}
+    owner_gate=" / ".join(str(bool(owner.get(key))).lower() for key in
+                           ("write_authorized","write_started","write_completed")) if owner else "—"
     vals=[c.get("name",""),c.get("status",""),c.get("classification"),
           optional_bool(c,"actor_started"),optional_bool(c,"actor_ready"),
           optional_bool(c,"actor_transition_completed"),optional_bool(c,"actor_exit_confirmed"),generations,
           optional_bool(c,"worker_started"),optional_bool(c,"worker_ready"),optional_bool(c,"worker_join_confirmed"),
-          optional_bool(c,"capability_sent"),optional_bool(c,"read_started"),optional_bool(c,"published"),
-          approved_object_match(c),c.get("once_grant_consumptions"),c.get("fixture_effect",""),
+          optional_bool(c,"capability_sent"),optional_bool(c,"capability_received_held"),
+          optional_bool(c,"read_started"),optional_bool(c,"published"),
+          optional_bool(c,"authorization_receipt_accepted"),owner_gate,approved_object_match(c),
+          c.get("once_grant_consumptions"),c.get("fixture_effect",""),
           c.get("authority_a",""),c.get("authority_b",""),]
     vals=[cell(v) for v in vals]
     print("| "+" | ".join(vals)+" |")
@@ -494,7 +499,7 @@ PY
   else
     printf '## Evidence status\n\nNo valid study JSON report was produced. See the bounded logs and manifest for the distinct setup/build/run failure status.\n'
   fi
-  printf '\nReview actor readiness, completed transitions, and direct actor exit confirmation for each actor case. Missing fields in older reports are shown as unavailable; a missing transition is not a pass. Protected-owner rotation, mount-boundary, parent-death, and incomplete-shutdown cleanup remain separate evidence gaps. The study makes no shell-safety or production-readiness claim.\n'
+  printf '\nReview actor readiness, completed transitions, direct actor exit confirmation, capability hold, authorization receipt, and owner write-gate evidence for each case. Missing fields in older reports are shown as unavailable; a missing transition is not a pass. Production-owner integration, mount-boundary, parent-death, and incomplete-shutdown cleanup remain separate evidence gaps. The study makes no shell-safety or production-readiness claim.\n'
 } >"$summary"
 
 (

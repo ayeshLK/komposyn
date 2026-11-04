@@ -425,7 +425,57 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	}
 	op.released = true
 	op.evidence.CapabilitySent = true
+	op.evidence.CapabilityIdentity = prepared.Identity()
 	s.mu.Unlock()
+	if heldWorker, ok := worker.(HeldCapabilityWorker); ok {
+		if err := heldWorker.AwaitCapabilityHeld(ctx); err != nil {
+			cleanup := s.terminateAndWait(op, worker)
+			if !cleanup.cleanupConfirmed() {
+				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("held-capability acknowledgement and cleanup are unconfirmed", cleanup)}
+			}
+			return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("worker did not confirm held capability", cleanup)}
+		}
+		s.mu.Lock()
+		op.evidence.CapabilityHeld = true
+		op.state = StateCapabilityHeld
+		invalid := !s.currentLocked(op) || op.revoked
+		s.mu.Unlock()
+		if invalid {
+			cleanup := s.terminateAndWait(op, worker)
+			if !cleanup.cleanupConfirmed() {
+				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("policy changed while worker held the capability; cleanup is unconfirmed", cleanup)}
+			}
+			return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("policy changed before held read release; no read started", cleanup)}
+		}
+		if err := runCheckpoint(s.checkpointHook(), CheckpointAfterCapabilityHeld); err != nil {
+			cleanup := s.terminateAndWait(op, worker)
+			if !cleanup.cleanupConfirmed() {
+				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("held read cancelled and cleanup is unconfirmed", cleanup)}
+			}
+			return WorkerResult{Outcome: ReadCancelled, Detail: withTerminationDiagnostic("held read cancelled before release; no read started", cleanup)}
+		}
+		// Serialize the final validity check and release packet against owner
+		// registration/revocation. If invalidation wins, the worker is killed
+		// while still at the hold gate. If release wins, invalidation must join
+		// the worker before any sensitive owner write.
+		s.mu.Lock()
+		invalid = !s.currentLocked(op) || op.revoked
+		if !invalid {
+			if err := heldWorker.ReleaseHeldRead(ctx); err != nil {
+				s.mu.Unlock()
+				cleanup := s.terminateAndWait(op, worker)
+				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("held read release outcome is unknown", cleanup)}
+			}
+		}
+		s.mu.Unlock()
+		if invalid {
+			cleanup := s.terminateAndWait(op, worker)
+			if !cleanup.cleanupConfirmed() {
+				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("invalidated held read cleanup is unconfirmed", cleanup)}
+			}
+			return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("policy changed before held read release; no read started", cleanup)}
+		}
+	}
 
 	if err := worker.AwaitReadStarted(ctx); err != nil {
 		cleanup := s.terminateAndWait(op, worker)

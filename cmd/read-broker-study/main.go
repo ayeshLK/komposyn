@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -81,6 +82,7 @@ type environment struct {
 type launchPolicy struct {
 	Backend               string                   `json:"backend"`
 	EffectiveArguments    []string                 `json:"effective_bubblewrap_arguments"`
+	OwnerHoldArguments    []string                 `json:"owner_hold_bubblewrap_arguments,omitempty"`
 	WorkerBindMode        readbrokerstudy.BindMode `json:"worker_bind_mode,omitempty"`
 	Namespaces            []string                 `json:"required_namespaces"`
 	Network               string                   `json:"network"`
@@ -98,40 +100,74 @@ type launchPolicy struct {
 }
 
 type caseResult struct {
-	Name                  string                         `json:"name"`
-	Status                string                         `json:"status"`
-	Classification        string                         `json:"classification"`
-	Expected              string                         `json:"expected"`
-	Observed              string                         `json:"observed"`
-	WorkerStarted         bool                           `json:"worker_started"`
-	WorkerReady           bool                           `json:"worker_ready"`
-	WorkerJoinConfirmed   bool                           `json:"worker_join_confirmed"`
-	CapabilitySent        bool                           `json:"capability_sent"`
-	ReadStarted           bool                           `json:"read_started"`
-	Published             bool                           `json:"published"`
-	ResultBytesReturned   bool                           `json:"result_bytes_returned"`
-	BytesMatchTarget      bool                           `json:"bytes_match_target"`
-	BytesMatchApproved    bool                           `json:"bytes_match_approved_object"`
-	ReadEvidencePresent   bool                           `json:"read_evidence_present"`
-	ReadEvidenceCase      string                         `json:"read_evidence_case,omitempty"`
-	WorkerOutcome         readbrokerstudy.ReadOutcome    `json:"worker_outcome,omitempty"`
-	WorkerGenerations     *readbrokerstudy.GenerationSet `json:"worker_generations,omitempty"`
-	WorkerEffect          string                         `json:"worker_effect,omitempty"`
-	WorkerLimitation      string                         `json:"worker_limitation,omitempty"`
-	OnceGrantConsumptions int                            `json:"once_grant_consumptions"`
-	ActorStarted          bool                           `json:"actor_started"`
-	ActorStartState       string                         `json:"actor_start_state,omitempty"`
-	ActorReady            bool                           `json:"actor_ready"`
-	ActorTransition       bool                           `json:"actor_transition_completed"`
-	ActorExitConfirmed    bool                           `json:"actor_exit_confirmed"`
-	ActorDetail           string                         `json:"actor_detail,omitempty"`
-	GenerationsBefore     *readbrokerstudy.GenerationSet `json:"generations_before,omitempty"`
-	GenerationsAfter      *readbrokerstudy.GenerationSet `json:"generations_after,omitempty"`
-	WorkerProbe           readbrokerstudy.WorkerProbe    `json:"worker_probe,omitempty"`
-	FixtureEffect         string                         `json:"fixture_effect"`
-	AuthorityA            string                         `json:"authority_a"`
-	AuthorityB            string                         `json:"authority_b"`
-	Detail                string                         `json:"detail,omitempty"`
+	Name                           string                         `json:"name"`
+	Status                         string                         `json:"status"`
+	Classification                 string                         `json:"classification"`
+	Expected                       string                         `json:"expected"`
+	Observed                       string                         `json:"observed"`
+	WorkerStarted                  bool                           `json:"worker_started"`
+	WorkerReady                    bool                           `json:"worker_ready"`
+	WorkerJoinConfirmed            bool                           `json:"worker_join_confirmed"`
+	CapabilitySent                 bool                           `json:"capability_sent"`
+	CapabilityHeld                 bool                           `json:"capability_received_held"`
+	ReadStarted                    bool                           `json:"read_started"`
+	Published                      bool                           `json:"published"`
+	ResultBytesReturned            bool                           `json:"result_bytes_returned"`
+	BytesMatchTarget               bool                           `json:"bytes_match_target"`
+	BytesMatchApproved             bool                           `json:"bytes_match_approved_object"`
+	ReadEvidencePresent            bool                           `json:"read_evidence_present"`
+	ReadEvidenceCase               string                         `json:"read_evidence_case,omitempty"`
+	WorkerOutcome                  readbrokerstudy.ReadOutcome    `json:"worker_outcome,omitempty"`
+	WorkerGenerations              *readbrokerstudy.GenerationSet `json:"worker_generations,omitempty"`
+	WorkerEffect                   string                         `json:"worker_effect,omitempty"`
+	WorkerLimitation               string                         `json:"worker_limitation,omitempty"`
+	OnceGrantConsumptions          int                            `json:"once_grant_consumptions"`
+	AuthorizationAttempted         bool                           `json:"authorization_attempted"`
+	AuthorizationReceiptAccepted   bool                           `json:"authorization_receipt_accepted"`
+	AuthorizationReceiptInvocation string                         `json:"authorization_receipt_invocation,omitempty"`
+	AuthorizationReceiptClass      readbrokerstudy.ResourceClass  `json:"authorization_receipt_class,omitempty"`
+	AuthorizationReceiptIdentity   *readbrokerstudy.FileIdentity  `json:"authorization_receipt_identity,omitempty"`
+	PreparedClass                  readbrokerstudy.ResourceClass  `json:"prepared_class,omitempty"`
+	PreparedIdentity               *readbrokerstudy.FileIdentity  `json:"prepared_identity,omitempty"`
+	CapabilityIdentity             *readbrokerstudy.FileIdentity  `json:"capability_identity,omitempty"`
+	ReplayOutcome                  readbrokerstudy.ReadOutcome    `json:"replay_outcome,omitempty"`
+	ReplayPrevented                bool                           `json:"replay_prevented"`
+	ReplayAdditionalWorkers        int                            `json:"replay_additional_workers"`
+	ActorStarted                   bool                           `json:"actor_started"`
+	ActorStartState                string                         `json:"actor_start_state,omitempty"`
+	ActorReady                     bool                           `json:"actor_ready"`
+	ActorTransition                bool                           `json:"actor_transition_completed"`
+	ActorExitConfirmed             bool                           `json:"actor_exit_confirmed"`
+	ActorDetail                    string                         `json:"actor_detail,omitempty"`
+	GenerationsBefore              *readbrokerstudy.GenerationSet `json:"generations_before,omitempty"`
+	GenerationsAfter               *readbrokerstudy.GenerationSet `json:"generations_after,omitempty"`
+	WorkerProbe                    readbrokerstudy.WorkerProbe    `json:"worker_probe,omitempty"`
+	OwnerLifecycle                 *ownerLifecycleEvidence        `json:"owner_lifecycle,omitempty"`
+	FixtureEffect                  string                         `json:"fixture_effect"`
+	AuthorityA                     string                         `json:"authority_a"`
+	AuthorityB                     string                         `json:"authority_b"`
+	Detail                         string                         `json:"detail,omitempty"`
+}
+
+type ownerLifecycleEvidence struct {
+	RegistrationAttempted     bool                          `json:"registration_attempted"`
+	InitialRegistrationResult string                        `json:"initial_registration_result"`
+	CleanupPending            bool                          `json:"cleanup_pending"`
+	WorkerJoinConfirmed       bool                          `json:"worker_join_confirmed"`
+	PolicyBefore              readbrokerstudy.GenerationSet `json:"policy_before"`
+	PolicyAfterRegistration   readbrokerstudy.GenerationSet `json:"policy_after_registration"`
+	WriteDescriptorIdentity   readbrokerstudy.FileIdentity  `json:"write_descriptor_identity"`
+	PinnedIdentity            readbrokerstudy.FileIdentity  `json:"pinned_identity"`
+	WriteDescriptorMatchesPin bool                          `json:"write_descriptor_matches_pin"`
+	WriteAuthorized           bool                          `json:"write_authorized"`
+	WriteStarted              bool                          `json:"write_started"`
+	WriteCompleted            bool                          `json:"write_completed"`
+	Published                 bool                          `json:"published"`
+	TemporaryRouteMatchesPin  bool                          `json:"temporary_route_matches_pin"`
+	EffectiveRouteReserved    bool                          `json:"effective_route_reserved"`
+	RetiredIdentityRetained   bool                          `json:"retired_identity_retained"`
+	Events                    []string                      `json:"events,omitempty"`
+	Detail                    string                        `json:"detail,omitempty"`
 }
 
 func main() {
@@ -177,6 +213,7 @@ func run() error {
 			WorkerMount:           workerMount,
 			WorkerSnapshot:        workerSnapshotPolicy(backend.BindMode),
 			EffectiveArguments:    effectiveBubblewrapArguments(backend.BindMode),
+			OwnerHoldArguments:    readbrokerstudy.EffectiveBubblewrapArgumentsWithCapabilityHold(backend.BindMode),
 			WorkerBindMode:        backend.BindMode,
 			RuntimeReadExceptions: []string{"none"},
 			Environment:           "host command environment contains only synthetic sentinel; Bubblewrap --clearenv; worker verifies sentinel absent and any PWD is /",
@@ -198,13 +235,13 @@ func run() error {
 			"Bubblewrap 0.9 file-snapshot mode requires host /proc/self/exe and sealed memfd support; it refuses the worker if the running image exceeds 7 MiB or snapshot/copy verification fails",
 			"the 0.9 staging verifier runs inside the copied worker, so its independent trust comes from the already-running parent image, sealed memfd bytes, and trusted Bubblewrap copy; the self-comparison is an integrity check, not its own trust anchor",
 			"the independent actor uses only disposable synthetic fixture paths and a fixed operation allowlist",
-			"the actor suite exercises exact-file protected aliases but does not establish live credential rotation or protected-directory descendant identity coverage",
+			"owner lifecycle rows exercise synthetic registration and rotation only; they do not wire real credentials, settings, Token Logger, or provider owners",
 			"a protected-directory ancestor race remains ineligible when the candidate shares its filesystem because incomplete descendant coverage refuses reads before worker setup",
 			"mount crossing, recursive-child relocation, parent-death and incomplete-shutdown cleanup have no integrated actor scenario",
 		},
 		NativeGaps: []string{
 			"ordinary late-alias behavior and fresh direct protected-route refusal are separate actor cases; neither implies continuous path containment",
-			"credential rotation with old and new protected identities/aliases in one live sandboxed session",
+			"production owner registration, credential rotation, and cleanup integration are not implemented",
 			"registered protected-ancestor relocation/replacement while a sandboxed read remains eligible; current same-device descendant coverage refuses before worker setup",
 			"mount-boundary behavior and recursive-child relocation",
 			"parent death and descendant termination evidence",
@@ -250,6 +287,24 @@ func unavailableCases(reason string) []caseResult {
 		{"actor_target_replaced_after_classification", "the approved opened object is read; the replacement at its former path is never read"},
 		{"actor_unregistered_protected_descendant_moved_out", "independent actor moves an unregistered child out and coverage refusal occurs before authorization or worker launch"},
 		{"actor_protected_ancestor_relocation", "pending: protected-directory coverage currently refuses eligible same-device targets before an actor race can be staged"},
+		{"owner_registration_before_release", "same prepared object is registered before descriptor handoff; no stale read is published and the owner writes only after direct-worker join and pin match"},
+		{"owner_registration_before_release_registered_identity_alias_denied", "fresh request through an alias of the registered object is refused"},
+		{"owner_registration_while_capability_held", "real worker holds the same read-only object capability before registration; owner waits for direct-worker join before writing"},
+		{"owner_registration_while_capability_held_registered_identity_alias_denied", "fresh request through an alias of the registered object is refused"},
+		{"owner_registration_after_capture_suppresses_stale_publication", "authoritative registration after real capture suppresses stale publication; owner writes only after join and pin match"},
+		{"owner_rotation_retains_old_new_pins_and_publishes_registered_replacement", "old and replacement objects remain pinned; replacement is written only after registration and published from the registered temporary object"},
+		{"owner_rotation_old_alias_denied", "old protected identity remains denied through a pre-existing alias"},
+		{"owner_rotation_renamed_old_identity_denied", "old protected identity remains denied after rename"},
+		{"owner_rotation_new_alias_denied", "new protected identity remains denied through an alias"},
+		{"owner_registration_failure_blocks_write", "failed owner registration leaves the synthetic sensitive write blocked"},
+		{"owner_incomplete_cleanup_blocks_write", "incomplete real-worker cleanup blocks sensitive writes; unsafe unjoined-worker condition is explicitly unavailable"},
+		{"provider_missing_explicit_once", "provider-only source refuses without explicit once approval before worker access"},
+		{"provider_only_ordinary_positive_control", "separate ordinary fixture remains readable under its own once authorization"},
+		{"provider_ordinary_receipt_rejected_for_alias", "ordinary identity/class/route receipt cannot authorize a registered provider alias"},
+		{"provider_stale_policy_receipt_rejected", "provider receipt is rejected after policy generation changes"},
+		{"provider_stale_root_receipt_rejected", "provider receipt is rejected after root generation changes"},
+		{"provider_stale_grant_receipt_rejected", "provider receipt is rejected after grant generation changes"},
+		{"provider_explicit_once_success_and_replay", "exact provider once approval reads once and replay dispatches no worker"},
 		{"study_session_cleanup", "bounded session close and confirmed join for every started worker"},
 	}
 	results := make([]caseResult, 0, len(planned))
@@ -578,7 +633,736 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		}
 	}
 	results = append(results, caseResult{Name: "actor_protected_ancestor_relocation", Status: "inconclusive", Classification: "inconclusive", Expected: "measure a protected-directory ancestor transition around an eligible worker read", Observed: "no eligible same-device ordinary target can pass the existing incomplete-descendant-coverage refusal", FixtureEffect: "no actor transition attempted", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "pending: a pinned protected directory on the candidate file's device makes generic regular-file reads ineligible before worker launch; do not weaken this gate to stage the race"})
+	ownerCases, err := runOwnerLifecycleCases(bwrap, worker, root)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, ownerCases...)
+	providerCases, err := runProviderApprovalCases(bwrap, worker, root)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, providerCases...)
 	return results, nil
+}
+
+func newStudySession(bwrap, workerPath, root string, hold bool) (*readbrokerstudy.Registry, *readbrokerstudy.OnceGrantFixture, readbrokerstudy.FixtureSession, error) {
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var launcher readbrokerstudy.WorkerLauncher
+	if hold {
+		launcher, err = readbrokerstudy.NewWorkerLauncherWithCapabilityHold(bwrap, workerPath)
+	} else {
+		launcher, err = readbrokerstudy.NewWorkerLauncher(bwrap, workerPath)
+	}
+	if err != nil {
+		_ = registry.Close()
+		return nil, nil, nil, err
+	}
+	authorizer := readbrokerstudy.NewOnceGrantFixture()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer)
+	if err != nil {
+		_ = launcher.Close()
+		_ = registry.Close()
+		return nil, nil, nil, err
+	}
+	if err := session.SelectRoot(root); err != nil {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = session.Close(closeCtx)
+		return nil, nil, nil, err
+	}
+	return registry, authorizer, session, nil
+}
+
+func closeStudySession(session readbrokerstudy.FixtureSession) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	return session.Close(ctx)
+}
+
+func evidenceFor(session readbrokerstudy.FixtureSession, invocationID string) (*readbrokerstudy.ReadEvidence, bool) {
+	for _, evidence := range session.Evidence() {
+		if evidence.Case == invocationID {
+			item := evidence
+			return &item, true
+		}
+	}
+	return nil, false
+}
+
+func runOwnerLifecycleCases(bwrap, workerPath, parent string) ([]caseResult, error) {
+	results := make([]caseResult, 0, 12)
+	for _, test := range []struct {
+		name       string
+		hold       bool
+		checkpoint readbrokerstudy.Checkpoint
+	}{
+		{name: "owner_registration_before_release", checkpoint: readbrokerstudy.CheckpointBeforeHandoff},
+		{name: "owner_registration_while_capability_held", hold: true, checkpoint: readbrokerstudy.CheckpointAfterCapabilityHeld},
+	} {
+		rows, err := runOwnerBarrierCase(bwrap, workerPath, parent, test.name, test.hold, test.checkpoint)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, rows...)
+	}
+	afterCapture, err := runOwnerAfterCaptureCase(bwrap, workerPath, parent)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, afterCapture)
+	rotationRows, err := runOwnerRotationCase(bwrap, workerPath, parent)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, rotationRows...)
+	results = append(results, runOwnerRegistrationFailureCase(bwrap, workerPath, parent))
+	results = append(results, caseResult{
+		Name: "owner_incomplete_cleanup_blocks_write", Status: "unavailable", Classification: "unavailable",
+		Expected:      "an unconfirmed real-worker join keeps the fixture owner write blocked and preserves cleanup ownership",
+		Observed:      "not induced: the bounded sandbox worker is directly killable; manufacturing a native unjoined child would require an unsafe or unreviewed failure mechanism",
+		FixtureEffect: "no synthetic sensitive bytes written; no incomplete-join native claim", AuthorityA: "no conclusion", AuthorityB: "no conclusion",
+		Detail: "injected cleanup-pending regressions remain unit evidence; native namespace-descendant cleanup remains unproven",
+	})
+	return results, nil
+}
+
+func runOwnerAfterCaptureCase(bwrap, workerPath, parent string) (caseResult, error) {
+	name := "owner_registration_after_capture_suppresses_stale_publication"
+	root := filepath.Join(parent, name)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		return caseResult{}, err
+	}
+	target := filepath.Join(root, "ordinary-to-sensitive.fixture")
+	if err := os.WriteFile(target, []byte("synthetic ordinary bytes captured before registration"), 0o600); err != nil {
+		return caseResult{}, err
+	}
+	writeFile, err := os.OpenFile(target, os.O_RDWR, 0)
+	if err != nil {
+		return caseResult{}, err
+	}
+	defer writeFile.Close()
+	registry, authorizer, session, err := newStudySession(bwrap, workerPath, root, false)
+	if err != nil {
+		return caseResult{}, err
+	}
+	defer closeStudySession(session)
+	invocationID := "owner-after-capture-read"
+	if err := authorizer.ApproveOnce(invocationID); err != nil {
+		return caseResult{}, err
+	}
+	owner := &fixtureOwnerWriter{
+		session: session, registry: registry, owner: "synthetic-credential-owner",
+		registrations: []readbrokerstudy.OwnerRegistration{{Owner: "synthetic-credential-owner", Class: readbrokerstudy.ClassCredential, Path: target}},
+		writeFile:     writeFile, contents: []byte("synthetic owner bytes after stale capture was suppressed"),
+	}
+	var beginErr error
+	var beginCalled bool
+	session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint == readbrokerstudy.CheckpointAfterCapture && !beginCalled {
+			beginCalled = true
+			beginErr = owner.Begin()
+		}
+		return nil
+	})
+	readDone := make(chan struct{})
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 15*time.Second)
+	result, readErr := session.Read(readCtx, root, target, invocationID)
+	cancelRead()
+	close(readDone)
+	session.SetCheckpointHook(nil)
+	workerEvidence, hasEvidence := evidenceFor(session, invocationID)
+	completionCtx, cancelCompletion := context.WithTimeout(context.Background(), 3*time.Second)
+	ownerEvidence := owner.Complete(completionCtx, readDone, workerEvidence, true)
+	cancelCompletion()
+	published := session.PublishedResults()
+	row := caseResult{
+		Name: name, Expected: "a real worker captures and joins; authoritative registration changes policy before publication; the stale result is suppressed and owner writes only after join and matching pin",
+		Observed: string(result.Outcome), OnceGrantConsumptions: authorizer.ConsumptionCount(invocationID),
+		GenerationsBefore: &ownerEvidence.PolicyBefore, GenerationsAfter: &ownerEvidence.PolicyAfterRegistration,
+		WorkerStarted:       workerEvidence != nil && workerEvidence.WorkerStarted,
+		WorkerReady:         workerEvidence != nil && workerEvidence.WorkerReady,
+		WorkerJoinConfirmed: workerEvidence != nil && workerEvidence.WorkerJoined,
+		CapabilitySent:      workerEvidence != nil && workerEvidence.CapabilitySent,
+		CapabilityHeld:      workerEvidence != nil && workerEvidence.CapabilityHeld,
+		ReadStarted:         workerEvidence != nil && workerEvidence.ReadStarted,
+		Published:           workerEvidence != nil && workerEvidence.Published,
+		WorkerProbe:         probeFor(workerEvidence), OwnerLifecycle: &ownerEvidence,
+		AuthorizationAttempted: true, AuthorizationReceiptAccepted: true,
+		PreparedClass: readbrokerstudy.ClassOrdinary,
+		AuthorityA:    "no conclusion", AuthorityB: "authoritative policy invalidation and stale-publication suppression only",
+		FixtureEffect: fmt.Sprintf("published result sink entries: %d", len(published)),
+	}
+	if workerEvidence != nil {
+		id := ownerEvidence.WriteDescriptorIdentity
+		row.PreparedIdentity = &id
+		applyReadEvidence(&row, result, *workerEvidence, true)
+	}
+	pass := readErr == nil && beginCalled && beginErr == nil && result.Outcome == readbrokerstudy.ReadCancelled && hasEvidence &&
+		workerEvidence.WorkerStarted && workerEvidence.WorkerReady && workerEvidence.WorkerJoined && workerEvidence.CapabilitySent &&
+		workerEvidence.ReadStarted && !workerEvidence.Published && authorizer.ConsumptionCount(invocationID) == 1 && len(published) == 0 &&
+		ownerEvidence.WriteAuthorized && ownerEvidence.WriteStarted && ownerEvidence.WriteCompleted && ownerEvidence.WorkerJoinConfirmed &&
+		ownerEvidence.WriteDescriptorMatchesPin && ownerEvidence.PolicyAfterRegistration.Policy > ownerEvidence.PolicyBefore.Policy
+	row.Status = "inconclusive"
+	row.Classification = "inconclusive"
+	row.Detail = "worker capture, owner registration, policy invalidation, join, suppressed sink, or pinned owner write evidence was incomplete"
+	if pass {
+		row.Status = "measured_pass"
+		row.Classification = "owner_lifecycle"
+		row.FixtureEffect = "worker read was captured but returned to no result sink after registration; owner wrote synthetic bytes only after the joined worker and matching pin were confirmed"
+	}
+	return row, nil
+}
+
+func runOwnerBarrierCase(bwrap, workerPath, parent, name string, hold bool, checkpoint readbrokerstudy.Checkpoint) ([]caseResult, error) {
+	root := filepath.Join(parent, name)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		return nil, err
+	}
+	target := filepath.Join(root, "ordinary-to-sensitive.fixture")
+	if err := os.WriteFile(target, []byte("synthetic ordinary contents before owner registration"), 0o600); err != nil {
+		return nil, err
+	}
+	writeFile, err := os.OpenFile(target, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer writeFile.Close()
+	registry, authorizer, session, err := newStudySession(bwrap, workerPath, root, hold)
+	if err != nil {
+		return nil, err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = closeStudySession(session)
+		}
+	}()
+	invocationID := name + "-read"
+	if err := authorizer.ApproveOnce(invocationID); err != nil {
+		return nil, err
+	}
+	owner := &fixtureOwnerWriter{
+		session: session, registry: registry, owner: "synthetic-credential-owner",
+		registrations: []readbrokerstudy.OwnerRegistration{{Owner: "synthetic-credential-owner", Class: readbrokerstudy.ClassCredential, Path: target}},
+		writeFile:     writeFile, contents: []byte("synthetic sensitive bytes written only after registration and worker join"),
+	}
+	readDone := make(chan struct{})
+	var beginCalled bool
+	var beginErr error
+	session.SetCheckpointHook(func(current readbrokerstudy.Checkpoint) error {
+		if current == checkpoint && !beginCalled {
+			beginCalled = true
+			beginErr = owner.Begin()
+		}
+		return nil
+	})
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 12*time.Second)
+	result, readErr := session.Read(readCtx, root, target, invocationID)
+	cancelRead()
+	close(readDone)
+	session.SetCheckpointHook(nil)
+	workerEvidence, hasEvidence := evidenceFor(session, invocationID)
+	completionCtx, cancelCompletion := context.WithTimeout(context.Background(), 3*time.Second)
+	ownerEvidence := owner.Complete(completionCtx, readDone, workerEvidence, true)
+	cancelCompletion()
+	expected := "register the exact prepared object before capability release; no FD handoff or read occurs; owner writes after the affected worker joins and the descriptor matches the pin"
+	if hold {
+		expected = "the real worker receives and holds the exact prepared object's read-only FD; registration terminates and joins that worker before the pinned owner write"
+	}
+	row := caseResult{
+		Name: name, Expected: expected,
+		Observed: string(result.Outcome), OnceGrantConsumptions: authorizer.ConsumptionCount(invocationID),
+		GenerationsBefore: &ownerEvidence.PolicyBefore, GenerationsAfter: &ownerEvidence.PolicyAfterRegistration,
+		WorkerStarted:       workerEvidence != nil && workerEvidence.WorkerStarted,
+		WorkerReady:         workerEvidence != nil && workerEvidence.WorkerReady,
+		WorkerJoinConfirmed: workerEvidence != nil && workerEvidence.WorkerJoined,
+		CapabilitySent:      workerEvidence != nil && workerEvidence.CapabilitySent,
+		CapabilityHeld:      workerEvidence != nil && workerEvidence.CapabilityHeld,
+		ReadStarted:         workerEvidence != nil && workerEvidence.ReadStarted,
+		Published:           workerEvidence != nil && workerEvidence.Published,
+		WorkerProbe:         probeFor(workerEvidence), OwnerLifecycle: &ownerEvidence,
+		AuthorizationAttempted: true, AuthorizationReceiptAccepted: true,
+		PreparedClass: readbrokerstudy.ClassOrdinary,
+		AuthorityA:    "no conclusion", AuthorityB: "registration invalidation and owner barrier only; no filesystem authority contract result",
+		FixtureEffect: "",
+	}
+	if workerEvidence != nil {
+		id := ownerEvidence.WriteDescriptorIdentity
+		row.PreparedIdentity = &id
+		applyReadEvidence(&row, result, *workerEvidence, true)
+	}
+	stateMatches := readErr == nil && beginCalled && errors.Is(beginErr, readbrokerstudy.ErrCleanupPending) && result.Outcome == readbrokerstudy.ReadNotExecuted && hasEvidence &&
+		workerEvidence.WorkerStarted && workerEvidence.WorkerReady && workerEvidence.WorkerJoined &&
+		workerEvidence.CapabilitySent == hold && workerEvidence.CapabilityHeld == hold && !workerEvidence.ReadStarted && !workerEvidence.Published &&
+		authorizer.ConsumptionCount(invocationID) == 1 && ownerEvidence.CleanupPending && ownerEvidence.WorkerJoinConfirmed &&
+		ownerEvidence.WriteAuthorized && ownerEvidence.WriteStarted && ownerEvidence.WriteCompleted && ownerEvidence.WriteDescriptorMatchesPin &&
+		ownerEvidence.PolicyAfterRegistration.Policy > ownerEvidence.PolicyBefore.Policy
+	if hold && workerEvidence != nil {
+		stateMatches = stateMatches && workerEvidence.CapabilityHeld && workerEvidence.CapabilitySent
+	}
+	row.Status = "inconclusive"
+	row.Classification = "inconclusive"
+	row.Detail = "required worker, registration, join, write identity, or no-publication observation was not established"
+	if stateMatches {
+		row.Status = "measured_pass"
+		row.Classification = "owner_lifecycle"
+		row.FixtureEffect = "same synthetic object was registered and pinned; the worker was joined before the owner wrote through the matching descriptor; stale read was not published"
+		row.Detail = "fixture owner observed cleanup pending and retried only after the session read returned with confirmed direct-worker join"
+	} else if readErr != nil {
+		row.Detail = "coordinator error prevented the owner lifecycle scenario from completing"
+	}
+	alias := target + ".registered-alias"
+	if err := os.Link(target, alias); err != nil {
+		return []caseResult{row}, nil
+	}
+	aliasRow := protectedIdentityCase(session, authorizer, root, name+"_registered_identity_alias_denied", alias, name+"-alias")
+	if closeErr := closeStudySession(session); closeErr != nil {
+		row.Status = "inconclusive"
+		row.Classification = "inconclusive"
+		row.Detail = "owner scenario completed but its session cleanup was not clean"
+	}
+	closed = true
+	return []caseResult{row, aliasRow}, nil
+}
+
+func probeFor(evidence *readbrokerstudy.ReadEvidence) readbrokerstudy.WorkerProbe {
+	if evidence == nil {
+		return readbrokerstudy.WorkerProbe{}
+	}
+	return evidence.Probe
+}
+
+func protectedIdentityCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID string) caseResult {
+	identity, idErr := identityAt(path)
+	if idErr != nil {
+		return caseResult{Name: name, Status: "fixture_error", Classification: "inconclusive", Expected: "registered sensitive identity alias refuses before worker access", Observed: "fixture identity unavailable", FixtureEffect: "none", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "synthetic alias identity could not be inspected"}
+	}
+	_ = auth.ApproveOnce(invocationID)
+	before := session.GenerationSnapshot()
+	result, readErr := session.Read(context.Background(), root, path, invocationID)
+	after := session.GenerationSnapshot()
+	consumed := auth.ConsumptionCount(invocationID)
+	row := caseResult{Name: name, Expected: "a fresh generic request through an alias of a registered sensitive identity refuses before once consumption and worker launch", Observed: string(result.Outcome), OnceGrantConsumptions: consumed, GenerationsBefore: &before, GenerationsAfter: &after, PreparedClass: readbrokerstudy.ClassCredential, PreparedIdentity: &identity, AuthorityA: "not applicable; protected request refused", AuthorityB: "registered sensitive identity remains denied through aliases", FixtureEffect: "no worker/data handoff or publication"}
+	if readErr == nil && result.Outcome == readbrokerstudy.ReadRefused && result.Detail == readbrokerstudy.ErrProtected.Error() && consumed == 0 {
+		row.Status = "measured_pass"
+		row.Classification = "protected_rule_enforced"
+	} else {
+		row.Status = "inconclusive"
+		row.Classification = "inconclusive"
+		row.Detail = "registered identity refusal or zero-grant/worker precondition was not established"
+	}
+	return row
+}
+
+func runOwnerRotationCase(bwrap, workerPath, parent string) ([]caseResult, error) {
+	root := filepath.Join(parent, "owner-rotation")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		return nil, err
+	}
+	oldPath := filepath.Join(root, "auth-effective.fixture")
+	oldArchive := filepath.Join(root, "auth-old-archive.fixture")
+	newTemp := filepath.Join(root, "auth-new-temporary.fixture")
+	newAlias := filepath.Join(root, "auth-new-alias.fixture")
+	oldAlias := filepath.Join(root, "auth-old-alias.fixture")
+	if err := os.WriteFile(oldPath, []byte("synthetic prior protected object"), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(newTemp, nil, 0o600); err != nil {
+		return nil, err
+	}
+	oldIdentity, err := identityAt(oldPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Link(oldPath, oldAlias); err != nil {
+		return nil, err
+	}
+	newFile, err := os.OpenFile(newTemp, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer newFile.Close()
+	registry, authorizer, session, err := newStudySession(bwrap, workerPath, root, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "rotation-owner", Class: readbrokerstudy.ClassCredential, Path: oldPath}); err != nil {
+		_ = closeStudySession(session)
+		return nil, err
+	}
+	owner := &fixtureOwnerWriter{
+		session: session, registry: registry, owner: "rotation-owner",
+		registrations: []readbrokerstudy.OwnerRegistration{
+			{Owner: "rotation-owner", Class: readbrokerstudy.ClassCredential, Path: newTemp},
+			{Owner: "rotation-owner", Class: readbrokerstudy.ClassCredential, Path: oldPath},
+		},
+		writeFile: newFile, contents: []byte("synthetic rotated sensitive bytes"),
+		archiveFrom: oldPath, archiveTo: oldArchive, publishFrom: newTemp, publishTo: oldPath,
+	}
+	beginErr := owner.Begin()
+	completionCtx, cancelCompletion := context.WithTimeout(context.Background(), 3*time.Second)
+	ownerEvidence := owner.Complete(completionCtx, nil, nil, false)
+	cancelCompletion()
+	newIdentity := ownerEvidence.PinnedIdentity
+	view := registry.View()
+	oldPin, newPin, tempRouteMatchesPin, effectiveRouteReserved := false, false, false, false
+	for _, entry := range view.Entries {
+		if entry.Owner != "rotation-owner" || entry.Class != readbrokerstudy.ClassCredential {
+			continue
+		}
+		oldPin = oldPin || entry.Identity == oldIdentity
+		newPin = newPin || entry.Identity == newIdentity
+		tempRouteMatchesPin = tempRouteMatchesPin || (entry.Path == newTemp && entry.Identity == newIdentity)
+		effectiveRouteReserved = effectiveRouteReserved || entry.Path == oldPath
+	}
+	newAtEffective, effectiveErr := identityAt(oldPath)
+	oldAtArchive, archiveErr := identityAt(oldArchive)
+	ownerEvidence.TemporaryRouteMatchesPin = tempRouteMatchesPin
+	ownerEvidence.EffectiveRouteReserved = effectiveRouteReserved
+	ownerEvidence.RetiredIdentityRetained = oldPin && archiveErr == nil && oldAtArchive == oldIdentity
+	rotationOK := beginErr == nil && ownerEvidence.WriteAuthorized && ownerEvidence.WriteCompleted && ownerEvidence.Published && ownerEvidence.WriteDescriptorMatchesPin &&
+		oldPin && newPin && tempRouteMatchesPin && effectiveRouteReserved && effectiveErr == nil && newAtEffective == newIdentity && ownerEvidence.RetiredIdentityRetained
+	row := caseResult{
+		Name:   "owner_rotation_retains_old_new_pins_and_publishes_registered_replacement",
+		Status: "inconclusive", Classification: "inconclusive",
+		Expected: "register/pin an empty temporary replacement and effective route before writing; publish only the same pinned object; retain old identity through alias and rename",
+		Observed: "fixture rotation completed", FixtureEffect: "synthetic owner rotation effect inspected", OnceGrantConsumptions: 0,
+		GenerationsBefore: &ownerEvidence.PolicyBefore, GenerationsAfter: &ownerEvidence.PolicyAfterRegistration,
+		PreparedClass: readbrokerstudy.ClassCredential, PreparedIdentity: &newIdentity, OwnerLifecycle: &ownerEvidence,
+		AuthorityA: "no conclusion", AuthorityB: "registered old/new identity lifecycle only",
+	}
+	if rotationOK {
+		row.Status = "measured_pass"
+		row.Classification = "owner_lifecycle"
+		row.FixtureEffect = "old identity remained pinned at its alias/archive; the new temporary path matched its pin, was written through the matching descriptor, and the same object was published at the reserved effective route"
+	} else {
+		row.Detail = "registration, identity, pin retention, write ordering, or publication preconditions were not established"
+	}
+	rows := []caseResult{row}
+	for _, item := range []struct{ name, path, id string }{
+		{name: "owner_rotation_old_alias_denied", path: oldAlias, id: "rotation-old-alias"},
+		{name: "owner_rotation_renamed_old_identity_denied", path: oldArchive, id: "rotation-old-renamed"},
+		{name: "owner_rotation_new_alias_denied", path: newAlias, id: "rotation-new-alias"},
+	} {
+		if item.name == "owner_rotation_new_alias_denied" {
+			if err := os.Link(oldPath, newAlias); err != nil {
+				rows = append(rows, caseResult{Name: item.name, Status: "unavailable", Classification: "unavailable", Expected: "new protected identity alias refuses", Observed: "synthetic hard-link fixture unavailable", FixtureEffect: "no alias created", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "fixture filesystem refused a hard link"})
+				continue
+			}
+		}
+		rows = append(rows, protectedIdentityCase(session, authorizer, root, item.name, item.path, item.id))
+	}
+	if closeErr := closeStudySession(session); closeErr != nil {
+		rows[0].Status = "inconclusive"
+		rows[0].Classification = "inconclusive"
+		rows[0].Detail = "rotation fixture succeeded but study session cleanup failed"
+	}
+	return rows, nil
+}
+
+func runOwnerRegistrationFailureCase(bwrap, workerPath, parent string) caseResult {
+	root := filepath.Join(parent, "owner-registration-failure")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		return caseResult{Name: "owner_registration_failure_blocks_write", Status: "fixture_error", Classification: "inconclusive", Detail: "synthetic failure fixture could not be created"}
+	}
+	target := filepath.Join(root, "empty.fixture")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		return caseResult{Name: "owner_registration_failure_blocks_write", Status: "fixture_error", Classification: "inconclusive", Detail: "synthetic write fixture could not be created"}
+	}
+	writeFile, err := os.OpenFile(target, os.O_RDWR, 0)
+	if err != nil {
+		return caseResult{Name: "owner_registration_failure_blocks_write", Status: "fixture_error", Classification: "inconclusive", Detail: "synthetic write descriptor could not be opened"}
+	}
+	defer writeFile.Close()
+	registry, _, session, err := newStudySession(bwrap, workerPath, root, false)
+	if err != nil {
+		return caseResult{Name: "owner_registration_failure_blocks_write", Status: "unavailable", Classification: "unavailable", Expected: "failed registration leaves owner write blocked", Observed: "study session could not be prepared", FixtureEffect: "empty file preserved", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "trusted worker session setup unavailable"}
+	}
+	owner := &fixtureOwnerWriter{session: session, registry: registry, owner: "failed-owner", registrations: []readbrokerstudy.OwnerRegistration{{Owner: "failed-owner", Class: readbrokerstudy.ClassCredential, Path: filepath.Join(root, "missing-parent", "credential.fixture")}}, writeFile: writeFile, contents: []byte("must never be written")}
+	registerErr := owner.Begin()
+	completion := owner.Complete(context.Background(), nil, nil, false)
+	stat, statErr := writeFile.Stat()
+	pass := registerErr != nil && !completion.WriteAuthorized && !completion.WriteStarted && !completion.WriteCompleted && statErr == nil && stat.Size() == 0
+	row := caseResult{Name: "owner_registration_failure_blocks_write", Expected: "failed owner registration preserves the empty object and never authorizes or starts the sensitive write", Observed: "registration failed and the owner writer remained blocked", FixtureEffect: "empty synthetic file preserved", AuthorityA: "no conclusion", AuthorityB: "owner failure gate only", OwnerLifecycle: &completion}
+	if pass {
+		row.Status = "measured_pass"
+		row.Classification = "owner_lifecycle"
+	} else {
+		row.Status = "unexpected"
+		row.Classification = "inconclusive"
+		row.Detail = "registration failure did not keep the synthetic write blocked"
+	}
+	if closeErr := closeStudySession(session); closeErr != nil {
+		row.Status = "inconclusive"
+		row.Classification = "inconclusive"
+		row.Detail = "registration failure was observed but session cleanup was not confirmed"
+	}
+	return row
+}
+
+type providerFixture struct {
+	root       string
+	provider   string
+	alias      string
+	ordinary   string
+	registry   *readbrokerstudy.Registry
+	authorizer *readbrokerstudy.OnceGrantFixture
+	mutating   *studyMutatingAuthorizer
+	session    readbrokerstudy.FixtureSession
+}
+
+type studyMutatingAuthorizer struct {
+	delegate *readbrokerstudy.OnceGrantFixture
+	attempts map[string]int
+	receipts map[string]readbrokerstudy.AuthorizationReceipt
+	returned map[string]readbrokerstudy.AuthorizationReceipt
+	reuse    map[string]string
+	mutate   map[string]func(*readbrokerstudy.AuthorizationReceipt)
+	after    map[string]func(readbrokerstudy.AuthorizationRequest)
+}
+
+func (a *studyMutatingAuthorizer) AuthorizeAndConsume(ctx context.Context, request readbrokerstudy.AuthorizationRequest) (readbrokerstudy.AuthorizationReceipt, error) {
+	a.attempts[request.InvocationID]++
+	receipt, err := a.delegate.AuthorizeAndConsume(ctx, request)
+	if err != nil {
+		return readbrokerstudy.AuthorizationReceipt{}, err
+	}
+	a.receipts[request.InvocationID] = receipt
+	if source := a.reuse[request.InvocationID]; source != "" {
+		if previous, ok := a.receipts[source]; ok {
+			receipt = previous
+		}
+	}
+	if mutate := a.mutate[request.InvocationID]; mutate != nil {
+		mutate(&receipt)
+	}
+	if after := a.after[request.InvocationID]; after != nil {
+		after(request)
+	}
+	a.returned[request.InvocationID] = receipt
+	return receipt, nil
+}
+
+func newProviderFixture(bwrap, workerPath, parent, name string) (*providerFixture, error) {
+	root := filepath.Join(parent, name)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		return nil, err
+	}
+	provider := filepath.Join(root, "registered-provider-source.fixture")
+	alias := filepath.Join(root, "provider-source-alias.fixture")
+	ordinary := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(provider, []byte("synthetic provider source bytes for authorization study\n"), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(ordinary, []byte("separate synthetic ordinary fixture\n"), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.Link(provider, alias); err != nil {
+		return nil, err
+	}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		return nil, err
+	}
+	if err := registry.Register(readbrokerstudy.OwnerRegistration{Owner: "provider-only-owner", Class: readbrokerstudy.ClassProvider, Path: provider}); err != nil {
+		_ = registry.Close()
+		return nil, err
+	}
+	launcher, err := readbrokerstudy.NewWorkerLauncher(bwrap, workerPath)
+	if err != nil {
+		_ = registry.Close()
+		return nil, err
+	}
+	authorizer := readbrokerstudy.NewOnceGrantFixture()
+	mutating := &studyMutatingAuthorizer{
+		delegate: authorizer,
+		attempts: make(map[string]int), receipts: make(map[string]readbrokerstudy.AuthorizationReceipt), returned: make(map[string]readbrokerstudy.AuthorizationReceipt),
+		reuse: make(map[string]string), mutate: make(map[string]func(*readbrokerstudy.AuthorizationReceipt)),
+		after: make(map[string]func(readbrokerstudy.AuthorizationRequest)),
+	}
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, mutating)
+	if err != nil {
+		_ = launcher.Close()
+		_ = registry.Close()
+		return nil, err
+	}
+	if err := session.SelectRoot(root); err != nil {
+		_ = closeStudySession(session)
+		return nil, err
+	}
+	return &providerFixture{root: root, provider: provider, alias: alias, ordinary: ordinary, registry: registry, authorizer: authorizer, mutating: mutating, session: session}, nil
+}
+
+func runProviderApprovalCases(bwrap, workerPath, parent string) ([]caseResult, error) {
+	rows := make([]caseResult, 0, 7)
+	missing, err := newProviderFixture(bwrap, workerPath, parent, "provider-missing-approval")
+	if err != nil {
+		return rows, err
+	}
+	rows = append(rows, runProviderReadCase(missing, "provider_missing_explicit_once", "provider-missing-once", missing.provider, false, "provider source refuses without explicit once approval before worker data access"))
+	if err := closeStudySession(missing.session); err != nil {
+		return rows, err
+	}
+
+	ordinaryReuse, err := newProviderFixture(bwrap, workerPath, parent, "provider-ordinary-receipt")
+	if err != nil {
+		return rows, err
+	}
+	ordinaryID := "provider-ordinary-source-receipt"
+	if err := ordinaryReuse.authorizer.ApproveOnce(ordinaryID); err != nil {
+		_ = closeStudySession(ordinaryReuse.session)
+		return rows, err
+	}
+	ordinaryRow := executeCase(ordinaryReuse.session, ordinaryReuse.authorizer, ordinaryReuse.root, "provider_only_ordinary_positive_control", ordinaryReuse.ordinary, ordinaryID, "ordinary fixture is separate from provider-only protected registration")
+	_, hasOrdinaryReceipt := ordinaryReuse.mutating.receipts[ordinaryID]
+	ordinaryRow.AuthorizationAttempted = ordinaryReuse.mutating.attempts[ordinaryID] == 1
+	ordinaryRow.AuthorizationReceiptAccepted = ordinaryRow.Status == "measured_pass"
+	ordinaryRow.PreparedClass = readbrokerstudy.ClassOrdinary
+	if id, idErr := identityAt(ordinaryReuse.ordinary); idErr == nil {
+		ordinaryRow.PreparedIdentity = &id
+	}
+	rows = append(rows, ordinaryRow)
+	providerReuseID := "provider-reuse-ordinary-receipt"
+	_ = ordinaryReuse.authorizer.ApproveOnce(providerReuseID)
+	if hasOrdinaryReceipt {
+		ordinaryReuse.mutating.reuse[providerReuseID] = ordinaryID
+	}
+	rows = append(rows, runProviderReadCase(ordinaryReuse, "provider_ordinary_receipt_rejected_for_alias", providerReuseID, ordinaryReuse.alias, true, "a once receipt minted for the ordinary fixture cannot authorize the registered provider identity through an alias"))
+	if err := closeStudySession(ordinaryReuse.session); err != nil {
+		return rows, err
+	}
+
+	for _, mutation := range []string{"policy", "root", "grant"} {
+		fixture, err := newProviderFixture(bwrap, workerPath, parent, "provider-stale-"+mutation)
+		if err != nil {
+			return rows, err
+		}
+		invocationID := "provider-stale-" + mutation
+		if err := fixture.authorizer.ApproveOnce(invocationID); err != nil {
+			_ = closeStudySession(fixture.session)
+			return rows, err
+		}
+		switch mutation {
+		case "policy":
+			reserved := filepath.Join(fixture.root, "registered-during-authorization.fixture")
+			if err := os.WriteFile(reserved, []byte("synthetic registration target"), 0o600); err != nil {
+				_ = closeStudySession(fixture.session)
+				return rows, err
+			}
+			fixture.mutating.after[invocationID] = func(readbrokerstudy.AuthorizationRequest) {
+				_ = fixture.session.Register(readbrokerstudy.OwnerRegistration{Owner: "policy-revision-fixture", Class: readbrokerstudy.ClassCredential, Path: reserved})
+			}
+		case "root":
+			otherRoot := filepath.Join(fixture.root, "other-selected-root")
+			if err := os.Mkdir(otherRoot, 0o700); err != nil {
+				_ = closeStudySession(fixture.session)
+				return rows, err
+			}
+			fixture.mutating.after[invocationID] = func(readbrokerstudy.AuthorizationRequest) {
+				_ = fixture.session.SelectRoot(otherRoot)
+				_ = fixture.session.SelectRoot(fixture.root)
+			}
+		case "grant":
+			fixture.mutating.after[invocationID] = func(request readbrokerstudy.AuthorizationRequest) {
+				_ = fixture.session.Revoke(request.InvocationID)
+			}
+		}
+		rows = append(rows, runProviderReadCase(fixture, "provider_stale_"+mutation+"_receipt_rejected", invocationID, fixture.provider, true, "a correctly minted provider receipt becomes stale before dispatch after an authoritative generation change"))
+		if err := closeStudySession(fixture.session); err != nil {
+			return rows, err
+		}
+	}
+
+	explicit, err := newProviderFixture(bwrap, workerPath, parent, "provider-explicit-once")
+	if err != nil {
+		return rows, err
+	}
+	rows = append(rows, runProviderReadCase(explicit, "provider_explicit_once_success_and_replay", "provider-explicit-once", explicit.provider, true, "only exact once approval bound to the provider route and object succeeds; invocation replay is refused"))
+	if err := closeStudySession(explicit.session); err != nil {
+		return rows, err
+	}
+	return rows, nil
+}
+
+func runProviderReadCase(fixture *providerFixture, name, invocationID, target string, approve bool, expected string) caseResult {
+	identity, identityErr := identityAt(target)
+	if identityErr != nil {
+		return caseResult{Name: name, Status: "fixture_error", Classification: "inconclusive", Expected: expected, Observed: "synthetic source identity unavailable", FixtureEffect: "none", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "provider fixture identity could not be inspected"}
+	}
+	if approve {
+		_ = fixture.authorizer.ApproveOnce(invocationID)
+	}
+	before := fixture.session.GenerationSnapshot()
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 15*time.Second)
+	result, readErr := fixture.session.Read(readCtx, fixture.root, target, invocationID)
+	cancelRead()
+	after := fixture.session.GenerationSnapshot()
+	workerEvidence, hasEvidence := evidenceFor(fixture.session, invocationID)
+	consumed := fixture.authorizer.ConsumptionCount(invocationID)
+	row := caseResult{
+		Name: name, Expected: expected, Observed: string(result.Outcome), OnceGrantConsumptions: consumed,
+		AuthorizationAttempted:       fixture.mutating.attempts[invocationID] == 1,
+		AuthorizationReceiptAccepted: false, PreparedClass: readbrokerstudy.ClassProvider, PreparedIdentity: &identity,
+		GenerationsBefore: &before, GenerationsAfter: &after, AuthorityA: "no conclusion", AuthorityB: "provider authorization correlation only",
+		FixtureEffect: "no provider path or source contents included in report",
+	}
+	if receipt, ok := fixture.mutating.returned[invocationID]; ok {
+		row.AuthorizationReceiptInvocation = receipt.InvocationID
+		row.AuthorizationReceiptClass = receipt.Class
+		identity := receipt.Identity
+		row.AuthorizationReceiptIdentity = &identity
+	}
+	if hasEvidence {
+		row.WorkerStarted = workerEvidence.WorkerStarted
+		row.WorkerReady = workerEvidence.WorkerReady
+		row.WorkerJoinConfirmed = workerEvidence.WorkerJoined
+		row.CapabilitySent = workerEvidence.CapabilitySent
+		row.CapabilityHeld = workerEvidence.CapabilityHeld
+		row.ReadStarted = workerEvidence.ReadStarted
+		row.Published = workerEvidence.Published
+		row.WorkerProbe = workerEvidence.Probe
+		applyReadEvidence(&row, result, *workerEvidence, true)
+	}
+	if fixture.mutating.attempts[invocationID] > 0 && result.Outcome == readbrokerstudy.ReadSucceeded {
+		row.AuthorizationReceiptAccepted = true
+	}
+	passed := false
+	if name == "provider_missing_explicit_once" {
+		passed = readErr == nil && result.Outcome == readbrokerstudy.ReadRefused && !row.AuthorizationReceiptAccepted && consumed == 0 && !row.WorkerStarted && !row.CapabilitySent && !row.ReadStarted && !row.Published
+	} else if name == "provider_explicit_once_success_and_replay" {
+		passed = readErr == nil && result.Outcome == readbrokerstudy.ReadSucceeded && row.AuthorizationReceiptAccepted && hasEvidence && workerEvidence.WorkerStarted && workerEvidence.WorkerReady && workerEvidence.WorkerJoined && workerEvidence.CapabilitySent && workerEvidence.ReadStarted && workerEvidence.Published && row.BytesMatchApproved && consumed == 1
+		if passed {
+			replayCtx, cancelReplay := context.WithTimeout(context.Background(), 15*time.Second)
+			replay, replayErr := fixture.session.Read(replayCtx, fixture.root, target, invocationID)
+			cancelReplay()
+			row.ReplayOutcome = replay.Outcome
+			row.ReplayPrevented = replayErr == nil && replay.Outcome == readbrokerstudy.ReadRefused && replay.Detail == readbrokerstudy.ErrInvocationID.Error()
+			row.ReplayAdditionalWorkers = 0
+			if !row.ReplayPrevented {
+				passed = false
+			}
+		}
+	} else {
+		passed = readErr == nil && result.Outcome == readbrokerstudy.ReadNotExecuted && !row.AuthorizationReceiptAccepted && !row.WorkerStarted && !row.CapabilitySent && !row.ReadStarted && !row.Published && consumed == 1
+	}
+	if passed {
+		row.Status = "measured_pass"
+		row.Classification = "coordinator_control"
+		if name == "provider_explicit_once_success_and_replay" {
+			row.Classification = "supports_b"
+			row.FixtureEffect = "real sandbox worker read and published the approved provider fixture once; replay started no second worker"
+		}
+		row.Detail = boundText(result.Detail, 512)
+	} else {
+		row.Status = "inconclusive"
+		row.Classification = "inconclusive"
+		row.Detail = "provider authorization, stale receipt, worker, or replay evidence differed from the expected outcome"
+	}
+	return row
 }
 
 func runDirectoryCoverageCases(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root string) ([]caseResult, error) {
@@ -715,7 +1499,7 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 	if detail == "" {
 		detail = "fixture result bytes and filesystem paths omitted"
 	}
-	row := caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
+	row := caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, CapabilityHeld: ev.CapabilityHeld, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
 	applyReadEvidence(&row, result, ev, ev.Case == invocationID)
 	return row
 }
@@ -763,7 +1547,7 @@ func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *re
 	base := caseResult{
 		Name: name, Expected: expected, Observed: string(result.Outcome),
 		WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady,
-		WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent,
+		WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, CapabilityHeld: ev.CapabilityHeld,
 		ReadStarted: ev.ReadStarted, Published: ev.Published,
 		BytesMatchTarget:      result.Outcome == readbrokerstudy.ReadSucceeded && bytes.Equal(result.Bytes, initialBytes),
 		BytesMatchApproved:    result.Outcome == readbrokerstudy.ReadSucceeded && bytes.Equal(result.Bytes, initialBytes),
@@ -834,11 +1618,208 @@ func applyReadEvidence(row *caseResult, result readbrokerstudy.WorkerResult, evi
 		return
 	}
 	row.ReadEvidenceCase = evidence.Case
+	if evidence.CapabilitySent {
+		identity := evidence.CapabilityIdentity
+		row.CapabilityIdentity = &identity
+	}
 	row.WorkerOutcome = evidence.Outcome
 	generations := evidence.Generations
 	row.WorkerGenerations = &generations
 	row.WorkerEffect = evidence.Effect
 	row.WorkerLimitation = evidence.Limitation
+}
+
+type fixtureOwnerWriter struct {
+	session       readbrokerstudy.FixtureSession
+	registry      *readbrokerstudy.Registry
+	owner         string
+	registrations []readbrokerstudy.OwnerRegistration
+	writeFile     *os.File
+	contents      []byte
+	publishFrom   string
+	publishTo     string
+	archiveFrom   string
+	archiveTo     string
+	evidence      ownerLifecycleEvidence
+	beginErr      error
+}
+
+func (o *fixtureOwnerWriter) Begin() error {
+	o.evidence.RegistrationAttempted = true
+	o.evidence.PolicyBefore = o.session.GenerationSnapshot()
+	if o.writeFile == nil {
+		o.beginErr = errors.New("fixture owner has no held write descriptor")
+		o.evidence.InitialRegistrationResult = "failed"
+		o.evidence.Detail = "fixture write descriptor unavailable"
+		return o.beginErr
+	}
+	identity, err := studyIdentity(o.writeFile)
+	if err != nil {
+		o.beginErr = err
+		o.evidence.InitialRegistrationResult = "failed"
+		o.evidence.Detail = "fixture write descriptor identity could not be measured"
+		return err
+	}
+	o.evidence.WriteDescriptorIdentity = identity
+	o.evidence.Events = append(o.evidence.Events, "owner_registration_started")
+	o.beginErr = o.session.RegisterRotation(o.owner, o.registrations)
+	o.evidence.PolicyAfterRegistration = o.session.GenerationSnapshot()
+	switch {
+	case o.beginErr == nil:
+		o.evidence.InitialRegistrationResult = "registered"
+		o.evidence.Events = append(o.evidence.Events, "registration_committed")
+	case errors.Is(o.beginErr, readbrokerstudy.ErrCleanupPending):
+		o.evidence.InitialRegistrationResult = "cleanup_pending"
+		o.evidence.CleanupPending = true
+		o.evidence.Events = append(o.evidence.Events, "registration_committed_cleanup_pending")
+	default:
+		o.evidence.InitialRegistrationResult = "failed"
+		o.evidence.Detail = "fixture registration failed"
+	}
+	return o.beginErr
+}
+
+func (o *fixtureOwnerWriter) Complete(ctx context.Context, readDone <-chan struct{}, readEvidence *readbrokerstudy.ReadEvidence, requireJoin bool) ownerLifecycleEvidence {
+	if o.beginErr != nil && !errors.Is(o.beginErr, readbrokerstudy.ErrCleanupPending) {
+		return o.evidence
+	}
+	if requireJoin && !o.evidence.CleanupPending {
+		if readDone == nil {
+			o.evidence.Detail = "required join confirmation has no read-completion signal"
+			return o.evidence
+		}
+		select {
+		case <-readDone:
+			o.evidence.Events = append(o.evidence.Events, "affected_read_returned")
+		case <-ctx.Done():
+			o.evidence.Detail = "affected read did not finish before the owner deadline"
+			return o.evidence
+		}
+		if readEvidence == nil || !readEvidence.WorkerStarted || !readEvidence.WorkerJoined {
+			o.evidence.Detail = "required direct worker join was not confirmed"
+			return o.evidence
+		}
+		o.evidence.WorkerJoinConfirmed = true
+		o.evidence.Events = append(o.evidence.Events, "direct_worker_join_confirmed")
+	}
+	if o.evidence.CleanupPending {
+		if readDone == nil {
+			o.evidence.Detail = "cleanup pending; no read-completion signal was supplied"
+			return o.evidence
+		}
+		select {
+		case <-readDone:
+			o.evidence.Events = append(o.evidence.Events, "affected_read_returned")
+		case <-ctx.Done():
+			o.evidence.Detail = "cleanup pending; affected read did not finish before the owner deadline"
+			return o.evidence
+		}
+		if readEvidence == nil || !readEvidence.WorkerStarted || !readEvidence.WorkerJoined {
+			o.evidence.Detail = "cleanup pending; direct worker join was not confirmed"
+			return o.evidence
+		}
+		o.evidence.WorkerJoinConfirmed = true
+		o.evidence.Events = append(o.evidence.Events, "direct_worker_join_confirmed")
+		retryErr := o.session.RegisterRotation(o.owner, o.registrations)
+		if retryErr != nil {
+			o.evidence.Detail = "idempotent registration retry after join failed"
+			return o.evidence
+		}
+		o.evidence.Events = append(o.evidence.Events, "registration_retry_confirmed")
+	} else if requireJoin {
+		o.evidence.Detail = "required active worker did not produce a cleanup-pending registration barrier"
+		return o.evidence
+	}
+
+	var pin readbrokerstudy.FileIdentity
+	writeIdentity := o.evidence.WriteDescriptorIdentity
+	for _, registration := range o.registrations {
+		matched := false
+		for _, entry := range o.registry.View().Entries {
+			if entry.Owner == registration.Owner && entry.Class == registration.Class && entry.Path == registration.Path {
+				if entry.Identity == writeIdentity {
+					pin = entry.Identity
+					matched = true
+					break
+				}
+			}
+		}
+		if registration.Path == o.registrations[0].Path && !matched {
+			o.evidence.Detail = "registered write target does not identify the owner's open descriptor"
+			return o.evidence
+		}
+	}
+	if pin == (readbrokerstudy.FileIdentity{}) || pin != writeIdentity {
+		o.evidence.Detail = "no retained protected pin matches the owner's write descriptor"
+		return o.evidence
+	}
+	o.evidence.PinnedIdentity = pin
+	o.evidence.WriteDescriptorMatchesPin = true
+	if requireJoin && !o.evidence.WorkerJoinConfirmed {
+		o.evidence.Detail = "owner refused the write because the affected worker was not confirmed joined"
+		return o.evidence
+	}
+	o.evidence.WriteAuthorized = true
+	o.evidence.Events = append(o.evidence.Events, "sensitive_write_authorized_after_pin_and_join")
+	o.evidence.WriteStarted = true
+	o.evidence.Events = append(o.evidence.Events, "sensitive_write_started")
+	n, err := o.writeFile.WriteAt(o.contents, 0)
+	if err == nil && n != len(o.contents) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = o.writeFile.Truncate(int64(len(o.contents)))
+	}
+	if err == nil {
+		err = o.writeFile.Sync()
+	}
+	if err != nil {
+		o.evidence.Detail = "synthetic sensitive write failed"
+		return o.evidence
+	}
+	o.evidence.WriteCompleted = true
+	o.evidence.Events = append(o.evidence.Events, "sensitive_write_completed")
+	if o.archiveFrom != "" || o.archiveTo != "" {
+		if o.archiveFrom == "" || o.archiveTo == "" || os.Rename(o.archiveFrom, o.archiveTo) != nil {
+			o.evidence.Detail = "old fixture object could not be moved to its archive route"
+			return o.evidence
+		}
+		o.evidence.Events = append(o.evidence.Events, "old_object_archived")
+	}
+	if o.publishFrom != "" || o.publishTo != "" {
+		if o.publishFrom == "" || o.publishTo == "" || os.Rename(o.publishFrom, o.publishTo) != nil {
+			o.evidence.Detail = "registered fixture replacement could not be published"
+			return o.evidence
+		}
+		publishedIdentity, statErr := identityAt(o.publishTo)
+		if statErr != nil || publishedIdentity != pin {
+			o.evidence.Detail = "published fixture object differs from the pinned write target"
+			return o.evidence
+		}
+		o.evidence.Published = true
+		o.evidence.Events = append(o.evidence.Events, "registered_replacement_published")
+	}
+	return o.evidence
+}
+
+func identityAt(path string) (readbrokerstudy.FileIdentity, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return readbrokerstudy.FileIdentity{}, err
+	}
+	defer file.Close()
+	return studyIdentity(file)
+}
+
+func studyIdentity(file *os.File) (readbrokerstudy.FileIdentity, error) {
+	if file == nil {
+		return readbrokerstudy.FileIdentity{}, errors.New("fixture descriptor is nil")
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
+		return readbrokerstudy.FileIdentity{}, err
+	}
+	return readbrokerstudy.FileIdentity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Type: uint32(stat.Mode & unix.S_IFMT)}, nil
 }
 
 func unavailableActorCase(name, expected, detail string) caseResult {
