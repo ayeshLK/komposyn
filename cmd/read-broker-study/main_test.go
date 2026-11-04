@@ -168,6 +168,50 @@ func TestWorkerPolicyReportsPathBackedAndSnapshotModesAccurately(t *testing.T) {
 	}
 }
 
+func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *testing.T) {
+	generations := readbrokerstudy.GenerationSet{Root: 3, Policy: 5, Grant: 7}
+	cases := []struct {
+		name        string
+		result      readbrokerstudy.WorkerResult
+		evidence    readbrokerstudy.ReadEvidence
+		wantBytes   bool
+		wantOutcome readbrokerstudy.ReadOutcome
+	}{
+		{
+			name:      "successful read",
+			result:    readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: []byte("synthetic")},
+			evidence:  readbrokerstudy.ReadEvidence{Case: "positive-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, ReadStarted: true, Published: true, Effect: "read and published synthetic fixture", Limitation: "fixture only"},
+			wantBytes: true, wantOutcome: readbrokerstudy.ReadSucceeded,
+		},
+		{
+			name:      "unexpected worker activity",
+			result:    readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrProtected.Error()},
+			evidence:  readbrokerstudy.ReadEvidence{Case: "unexpected-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, ReadStarted: true, Published: true, Effect: "unexpected read", Limitation: "policy mismatch"},
+			wantBytes: false, wantOutcome: readbrokerstudy.ReadSucceeded,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			row := caseResult{Name: test.name}
+			applyReadEvidence(&row, test.result, test.evidence, true)
+			encoded, err := json.Marshal(row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if row.ResultBytesReturned != test.wantBytes || !row.ReadEvidencePresent || row.ReadEvidenceCase != test.evidence.Case || row.WorkerOutcome != test.wantOutcome || row.WorkerGenerations == nil || *row.WorkerGenerations != generations || row.WorkerEffect != test.evidence.Effect || row.WorkerLimitation != test.evidence.Limitation {
+				t.Fatalf("row lost read evidence: %+v", row)
+			}
+			if decoded["read_evidence_present"] != true || decoded["read_evidence_case"] != test.evidence.Case || decoded["worker_outcome"] != string(test.wantOutcome) || decoded["worker_effect"] != test.evidence.Effect || decoded["worker_limitation"] != test.evidence.Limitation || decoded["worker_generations"] == nil {
+				t.Fatalf("serialized row lost evidence fields: %s", encoded)
+			}
+		})
+	}
+}
+
 func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testing.T) {
 	planned := []string{
 		"ordinary_positive", "protected_direct", "provider_source_explicit_once",
@@ -175,8 +219,8 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		"protected_object_renamed_into_ordinary_tree", "protected_location_replaced_before_open",
 		"ordinary_object_moved_into_protected_location", "cancel_before_release",
 		"revoke_after_capture_before_publish", "registered_directory_descendant_inside",
-		"registered_directory_descendant_moved_out", "actor_protected_alias_scan_to_handoff",
-		"actor_protected_alias_admission_refusal",
+		"registered_directory_descendant_moved_out", "actor_late_alias_existing_invocation",
+		"late_alias_protected_route_refusal",
 		"actor_selected_root_relocated_after_scan", "actor_parent_relocated_outside_root_after_scan",
 		"actor_target_replaced_after_classification", "actor_unregistered_protected_descendant_moved_out",
 		"actor_protected_ancestor_relocation", "study_session_cleanup",
@@ -210,50 +254,5 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 	}
 	if _, present := fields["generations_before"]; present {
 		t.Fatal("unavailable scenario serialized an unmeasured generation snapshot")
-	}
-}
-
-func TestAdmissionRefusalDoesNotRelabelHistoricalHandoffViolation(t *testing.T) {
-	cases := admissionUnavailableCases("admission policy deliberately refused the fixture scope")
-	for _, item := range cases {
-		if item.Name != "actor_protected_alias_scan_to_handoff" {
-			continue
-		}
-		if item.Status != "unavailable" || item.Classification != "unavailable" || item.ActorStartState != "not_attempted_admission_refusal" || !strings.Contains(item.Detail, "earlier native archive remains an observed violation") || item.CapabilitySent || item.ReadStarted || item.Published {
-			t.Fatalf("historical handoff row was conflated with the new admission refusal: %+v", item)
-		}
-		return
-	}
-	t.Fatal("admission-unavailable report omitted historical handoff scenario")
-}
-
-func TestProtectedAliasAdmissionReportPreservesRefusalAndUnexpectedWorkerActivity(t *testing.T) {
-	gen := readbrokerstudy.GenerationSet{Root: 1, Policy: 2, Grant: 3}
-	refusal := protectedAliasAdmissionResult(
-		"provider-alias", "ordinary read must be refused", "ordinary approval cannot authorize a provider-source read",
-		readbrokerstudy.ErrProviderLocationMutable.Error(),
-		true, true, true, true, true, false,
-		readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrProviderLocationMutable.Error()}, nil,
-		readbrokerstudy.ReadEvidence{}, false, 0, gen, gen,
-	)
-	if refusal.Status != "measured_pass" || refusal.Classification != "admission_refusal" || refusal.WorkerStarted || refusal.CapabilitySent || refusal.ReadStarted || refusal.Published || refusal.ResultBytesReturned || refusal.OnceGrantConsumptions != 0 || refusal.ReadEvidencePresent || refusal.WorkerGenerations != nil {
-		t.Fatalf("admission refusal report=%+v", refusal)
-	}
-
-	evidence := readbrokerstudy.ReadEvidence{
-		Case: "provider-alias", Outcome: readbrokerstudy.ReadSucceeded,
-		Generations: gen, Effect: "synthetic worker read completed", Limitation: "fixture only",
-		WorkerStarted: true, WorkerReady: true, WorkerJoined: true,
-		CapabilitySent: true, ReadStarted: true, Published: true, BytesMatchTarget: true,
-	}
-	violation := protectedAliasAdmissionResult(
-		"provider-alias", "ordinary read must be refused", "ordinary approval cannot authorize a provider-source read",
-		readbrokerstudy.ErrProviderLocationMutable.Error(),
-		true, true, true, true, true, false,
-		readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: []byte("synthetic fixture")}, nil,
-		evidence, true, 1, gen, gen,
-	)
-	if violation.Status != "observed_violation" || violation.Classification != "violation" || !violation.WorkerStarted || !violation.WorkerReady || !violation.WorkerJoinConfirmed || !violation.CapabilitySent || !violation.ReadStarted || !violation.Published || !violation.ResultBytesReturned || !violation.BytesMatchTarget || violation.OnceGrantConsumptions != 1 || !strings.Contains(violation.AuthorityB, "ordinary approval cannot authorize") || !violation.ReadEvidencePresent || violation.ReadEvidenceCase != "provider-alias" || violation.WorkerOutcome != readbrokerstudy.ReadSucceeded || violation.WorkerGenerations == nil || *violation.WorkerGenerations != gen || violation.WorkerEffect != "synthetic worker read completed" || violation.WorkerLimitation != "fixture only" {
-		t.Fatalf("unexpected worker activity was not preserved as a violation: %+v", violation)
 	}
 }

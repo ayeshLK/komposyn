@@ -62,12 +62,6 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 	if b == nil || b.registry == nil {
 		return nil, ErrUnavailable
 	}
-	if err := b.registry.ReadAdmission(""); err != nil {
-		if errors.Is(err, ErrProtectedLocationMutable) || errors.Is(err, ErrProviderLocationMutable) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("protected read admission could not be established: %w", err)
-	}
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !filepath.IsAbs(target) || filepath.Clean(target) != target || strings.ContainsRune(target, '\x00') {
 		return nil, errInvalidReadPath
 	}
@@ -78,6 +72,17 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 	view := b.registry.View()
 	if generation.Policy != view.Generation {
 		return nil, ErrPolicyChanged
+	}
+	// Check the requested pathname before opening it. Location policy must
+	// reject reserved protected leaves even when the entry is absent or the
+	// current replacement cannot be opened. Provider-source locations retain
+	// their separate explicit-approval path.
+	routeClass, routeProtected := b.registry.ClassifyRoute(target)
+	if latest := b.registry.View(); latest.Generation != view.Generation || latest.Generation != generation.Policy {
+		return nil, ErrPolicyChanged
+	}
+	if routeProtected && routeClass != ClassProvider {
+		return nil, ErrProtected
 	}
 	rootFD, err := openAbsolute(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
 	if err != nil {
@@ -140,25 +145,6 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 		_ = file.Close()
 		return nil, ErrDirectoryCoverage
 	}
-	registeredClass, registered, err := b.registry.InspectRegisteredLocations(id)
-	if err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("protected-location checkpoint failed closed: %w", err)
-	}
-	if registered && registeredClass != class {
-		_ = file.Close()
-		if registeredClass != ClassProvider {
-			return nil, ErrProtected
-		}
-		return nil, ErrPolicyChanged
-	}
-	if err := b.registry.ReadAdmission(class); err != nil {
-		_ = file.Close()
-		if errors.Is(err, ErrProtectedLocationMutable) || errors.Is(err, ErrProviderLocationMutable) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("protected read admission could not be established: %w", err)
-	}
 	parent := os.NewFile(uintptr(parentFD), "prepared-read-parent")
 	parentOwned = true
 	return &preparedRead{
@@ -175,12 +161,6 @@ func (b *broker) Revalidate(capability PreparedRead) error {
 	if !ok || prepared == nil {
 		return ErrStaleReceipt
 	}
-	if err := b.registry.ReadAdmission(prepared.class); err != nil {
-		if errors.Is(err, ErrProtectedLocationMutable) || errors.Is(err, ErrProviderLocationMutable) {
-			return err
-		}
-		return fmt.Errorf("protected read admission could not be revalidated: %w", err)
-	}
 	prepared.mu.Lock()
 	defer prepared.mu.Unlock()
 	if prepared.closed || prepared.file == nil || prepared.parent == nil {
@@ -190,33 +170,8 @@ func (b *broker) Revalidate(capability PreparedRead) error {
 	if view.Generation != prepared.generation.Policy {
 		return ErrPolicyChanged
 	}
-	ancestors, err := directoryAncestors(int(prepared.parent.Fd()))
-	if err != nil {
-		return fmt.Errorf("protected ancestor checkpoint failed closed: %w", err)
-	}
-	class, protected := b.registry.ClassifyWithAncestors(prepared.path, prepared.identity, ancestors)
-	if !protected {
-		class = ClassOrdinary
-	}
 	if b.registry.DirectoryCoverageIncomplete(prepared.identity) {
 		return ErrDirectoryCoverage
-	}
-	liveClass, liveProtected, err := b.registry.InspectRegisteredLocations(prepared.identity)
-	if err != nil {
-		return fmt.Errorf("protected-location checkpoint failed closed: %w", err)
-	}
-	if liveProtected {
-		class = stricterClass(class, liveClass)
-		protected = true
-	}
-	if current := b.registry.View(); current.Generation != view.Generation {
-		return ErrPolicyChanged
-	}
-	if protected && class != prepared.class {
-		if class != ClassProvider {
-			return ErrProtected
-		}
-		return ErrPolicyChanged
 	}
 	return nil
 }

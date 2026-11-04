@@ -299,7 +299,7 @@ func newSessionFixture(t *testing.T, root string) *sessionFixture {
 	authorizer := NewOnceGrantFixture()
 	worker := &fakeWorker{}
 	launcher := &fakeLauncher{worker: worker}
-	session, err := NewFixtureSession(registry, NewBroker(testAdmissionOverride{registry}), launcher, authorizer)
+	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
 	if err != nil {
 		_ = registry.Close()
 		t.Fatal(err)
@@ -360,7 +360,7 @@ func TestFixtureSessionRequiresExplicitOnceApprovalAndPublishesExactObject(t *te
 	}
 }
 
-func TestMutableProtectedLocationRefusesBeforeOnceConsumptionOrWorkerStart(t *testing.T) {
+func TestLateAliasDoesNotReclassifyExistingOrdinaryRouteButProtectedRouteRefuses(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "ordinary.fixture")
 	if err := os.WriteFile(target, []byte("synthetic ordinary bytes"), 0o600); err != nil {
@@ -401,19 +401,56 @@ func TestMutableProtectedLocationRefusesBeforeOnceConsumptionOrWorkerStart(t *te
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	result, err := session.Read(ctx, root, target, "mutable-location")
-	if err != nil || result.Outcome != ReadRefused || result.Detail != ErrProtectedLocationMutable.Error() {
-		t.Fatalf("read=(%q,%q,%v), want pre-admission refusal", result.Outcome, result.Detail, err)
+	if err != nil || result.Outcome != ReadSucceeded || string(result.Bytes) != "synthetic ordinary bytes" {
+		t.Fatalf("ordinary-route read=(%q,%q,%v), want approved read of captured object", result.Outcome, result.Bytes, err)
 	}
-	if authorizer.ConsumptionCount("mutable-location") != 0 || launcher.starts != 0 || worker.transferred || worker.readStarted || len(session.PublishedResults()) != 0 {
+	if authorizer.ConsumptionCount("mutable-location") != 1 || launcher.starts != 1 || !worker.transferred || !worker.readStarted || len(session.PublishedResults()) != 1 {
 		t.Fatalf("once=%d starts=%d transferred=%t read=%t published=%d", authorizer.ConsumptionCount("mutable-location"), launcher.starts, worker.transferred, worker.readStarted, len(session.PublishedResults()))
 	}
-	if evidence := session.Evidence(); len(evidence) != 0 {
-		t.Fatalf("preparation refusal created worker evidence: %+v", evidence)
+	if err := authorizer.ApproveOnce("direct-protected-route"); err != nil {
+		t.Fatal(err)
+	}
+	direct, err := session.Read(ctx, root, alias, "direct-protected-route")
+	if err != nil || direct.Outcome != ReadRefused || direct.Detail != ErrProtected.Error() {
+		t.Fatalf("direct protected-route read=(%q,%q,%v), want protected refusal", direct.Outcome, direct.Detail, err)
+	}
+	if authorizer.ConsumptionCount("direct-protected-route") != 0 || launcher.starts != 1 {
+		t.Fatalf("protected route consumed once=%d or launched worker=%d", authorizer.ConsumptionCount("direct-protected-route"), launcher.starts)
 	}
 	closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
 	defer closeCancel()
 	if err := session.Close(closeCtx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReservedProtectedRouteRefusesBeforeOpeningAbsentOrNonRegularTarget(t *testing.T) {
+	root := t.TempDir()
+	reserved := filepath.Join(root, "reserved-settings.fixture")
+	fixture := newSessionFixture(t, root)
+	if err := fixture.registry.Register(OwnerRegistration{Owner: "settings-fixture", Class: ClassSettings, Path: reserved}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fixture.authorizer.ApproveOnce("reserved-absent"); err != nil {
+		t.Fatal(err)
+	}
+	absent, err := fixture.session.Read(context.Background(), root, reserved, "reserved-absent")
+	if err != nil || absent.Outcome != ReadRefused || absent.Detail != ErrProtected.Error() {
+		t.Fatalf("absent reserved route result=(%q,%q,%v), want route-policy refusal", absent.Outcome, absent.Detail, err)
+	}
+	if err := os.Mkdir(reserved, 0o700); err != nil {
+		t.Fatalf("create non-regular replacement at reserved route: %v", err)
+	}
+	if err := fixture.authorizer.ApproveOnce("reserved-nonregular"); err != nil {
+		t.Fatal(err)
+	}
+	nonregular, err := fixture.session.Read(context.Background(), root, reserved, "reserved-nonregular")
+	if err != nil || nonregular.Outcome != ReadRefused || nonregular.Detail != ErrProtected.Error() {
+		t.Fatalf("non-regular reserved route result=(%q,%q,%v), want route-policy refusal", nonregular.Outcome, nonregular.Detail, err)
+	}
+	if fixture.launcher.starts != 0 || fixture.authorizer.ConsumptionCount("reserved-absent") != 0 || fixture.authorizer.ConsumptionCount("reserved-nonregular") != 0 || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatalf("protected route caused activity: worker starts=%d once counts=(%d,%d) published=%d", fixture.launcher.starts, fixture.authorizer.ConsumptionCount("reserved-absent"), fixture.authorizer.ConsumptionCount("reserved-nonregular"), len(fixture.session.PublishedResults()))
 	}
 }
 
@@ -608,16 +645,16 @@ func TestFinalRevalidationCheckpointPrecedesProtectedAliasHandoff(t *testing.T) 
 		return nil
 	})
 	result, err := fixture.session.Read(context.Background(), root, target, "final-scan-protected-alias")
-	if err != nil || result.Outcome != ReadCancelled {
-		t.Fatalf("read=(%q,%v), want post-capture suppression after the injected protected alias", result.Outcome, err)
+	if err != nil || result.Outcome != ReadSucceeded || string(result.Bytes) != "synthetic ordinary bytes\n" {
+		t.Fatalf("read=(%q,%q,%v), want captured ordinary object to publish despite alias-only change", result.Outcome, result.Bytes, err)
 	}
-	wantOrder := []Checkpoint{CheckpointBeforeOpen, CheckpointAfterOpen, CheckpointAfterClassify, CheckpointBeforeHandoff, CheckpointAfterFinalRevalidation, CheckpointAfterCapture}
+	wantOrder := []Checkpoint{CheckpointBeforeOpen, CheckpointAfterOpen, CheckpointAfterClassify, CheckpointBeforeHandoff, CheckpointAfterFinalRevalidation, CheckpointAfterCapture, CheckpointBeforePublish}
 	if !reflect.DeepEqual(checkpoints, wantOrder) {
 		t.Fatalf("checkpoints=%v, want ordering %v", checkpoints, wantOrder)
 	}
 	evidence := fixture.session.Evidence()
-	if len(evidence) != 1 || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].WorkerJoined != true || evidence[0].Published {
-		t.Fatalf("protected-alias race evidence=%+v, want capability/read followed by publication suppression and confirmed join", evidence)
+	if len(evidence) != 1 || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].WorkerJoined != true || !evidence[0].Published {
+		t.Fatalf("protected-alias race evidence=%+v, want capability/read/publication and confirmed join", evidence)
 	}
 	if fixture.authorizer.ConsumptionCount("final-scan-protected-alias") != 1 {
 		t.Fatal("once grant was not consumed exactly once before capability handoff")
@@ -777,7 +814,7 @@ func TestUnresolvedCleanupInvalidatesReadAlreadyWaitingForAuthorization(t *testi
 	blocked := &blockingFixtureAuthorizer{delegate: baseAuthorizer, blockID: "read-b", entered: make(chan struct{}), release: make(chan struct{})}
 	workerA := &fakeWorker{joinUnconfirmed: true}
 	launcher := &fakeLauncher{workers: []*fakeWorker{workerA, &fakeWorker{}}}
-	session, err := NewFixtureSession(registry, NewBroker(testAdmissionOverride{registry}), launcher, blocked)
+	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, blocked)
 	if err != nil {
 		_ = registry.Close()
 		t.Fatal(err)
@@ -851,6 +888,13 @@ func TestCloseDeadlineDoesNotBlockOnWorkerJoinOrReleaseResources(t *testing.T) {
 	fixture := newSessionFixture(t, root)
 	fixture.worker.waitEntered = make(chan struct{})
 	fixture.worker.waitRelease = make(chan struct{})
+	defer func() {
+		select {
+		case <-fixture.worker.waitRelease:
+		default:
+			close(fixture.worker.waitRelease)
+		}
+	}()
 	if err := fixture.authorizer.ApproveOnce("blocking-wait"); err != nil {
 		t.Fatal(err)
 	}
@@ -1134,7 +1178,7 @@ func TestFixtureSessionProviderSourceNeedsInvocationApproval(t *testing.T) {
 	}
 }
 
-func TestMutableProviderLocationBlocksOrdinaryReadButAllowsApprovedProviderRead(t *testing.T) {
+func TestMutableProviderExactRegistrationAllowsOrdinaryAndExplicitProviderReads(t *testing.T) {
 	root := t.TempDir()
 	ordinary := filepath.Join(root, "ordinary.fixture")
 	provider := filepath.Join(root, "provider-source.fixture")
@@ -1153,8 +1197,8 @@ func TestMutableProviderLocationBlocksOrdinaryReadButAllowsApprovedProviderRead(
 		t.Fatal(err)
 	}
 	authorizer := NewOnceGrantFixture()
-	worker := &fakeWorker{}
-	launcher := &fakeLauncher{worker: worker}
+	ordinaryWorker, providerWorker := &fakeWorker{}, &fakeWorker{}
+	launcher := &fakeLauncher{workers: []*fakeWorker{ordinaryWorker, providerWorker}}
 	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
 	if err != nil {
 		t.Fatal(err)
@@ -1174,10 +1218,10 @@ func TestMutableProviderLocationBlocksOrdinaryReadButAllowsApprovedProviderRead(
 	})
 	ordinaryResult, err := session.Read(context.Background(), root, ordinary, "ordinary-with-provider-location")
 	session.SetCheckpointHook(nil)
-	if err != nil || ordinaryResult.Outcome != ReadRefused || ordinaryResult.Detail != ErrProviderLocationMutable.Error() {
-		t.Fatalf("ordinary read=(%q,%q,%v), want mutable-provider admission refusal", ordinaryResult.Outcome, ordinaryResult.Detail, err)
+	if err != nil || ordinaryResult.Outcome != ReadSucceeded || string(ordinaryResult.Bytes) != "ordinary synthetic bytes" {
+		t.Fatalf("ordinary read=(%q,%q,%v), want read despite mutable exact provider registration", ordinaryResult.Outcome, ordinaryResult.Bytes, err)
 	}
-	if finalCheckpointReached || launcher.starts != 0 || authorizer.ConsumptionCount("ordinary-with-provider-location") != 0 {
+	if !finalCheckpointReached || launcher.starts != 1 || authorizer.ConsumptionCount("ordinary-with-provider-location") != 1 {
 		t.Fatalf("ordinary request reached final checkpoint=%t workers=%d once=%d", finalCheckpointReached, launcher.starts, authorizer.ConsumptionCount("ordinary-with-provider-location"))
 	}
 
@@ -1188,14 +1232,107 @@ func TestMutableProviderLocationBlocksOrdinaryReadButAllowsApprovedProviderRead(
 	if err != nil || providerResult.Outcome != ReadSucceeded || string(providerResult.Bytes) != "provider synthetic bytes" {
 		t.Fatalf("explicit provider read=(%q,%q,%v)", providerResult.Outcome, providerResult.Bytes, err)
 	}
-	if authorizer.ConsumptionCount("approved-provider-source") != 1 || launcher.starts != 1 {
-		t.Fatalf("provider once=%d worker starts=%d, want 1 each", authorizer.ConsumptionCount("approved-provider-source"), launcher.starts)
+	if authorizer.ConsumptionCount("approved-provider-source") != 1 || launcher.starts != 2 {
+		t.Fatalf("provider once=%d worker starts=%d, want one provider grant and second worker", authorizer.ConsumptionCount("approved-provider-source"), launcher.starts)
 	}
 	closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
 	defer closeCancel()
 	if err := session.Close(closeCtx); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestOwnerRotationWaitsForWorkerJoinBeforeWritingRegisteredObject(t *testing.T) {
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "auth-old.fixture")
+	newPath := filepath.Join(root, "auth-next.fixture")
+	ordinaryPath := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(oldPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ordinaryPath, []byte("ordinary fixture read"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	if err := fixture.session.Register(OwnerRegistration{Owner: "auth-owner", Class: ClassCredential, Path: oldPath}); err != nil {
+		t.Fatal(err)
+	}
+	newObject, err := os.OpenFile(newPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newObject.Close()
+	newIdentity, err := identityFromFile(newObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.worker.waitEntered = make(chan struct{})
+	fixture.worker.waitRelease = make(chan struct{})
+	if err := fixture.authorizer.ApproveOnce("read-during-owner-rotation"); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		result WorkerResult
+		err    error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		result, err := fixture.session.Read(context.Background(), root, ordinaryPath, "read-during-owner-rotation")
+		readDone <- readResult{result: result, err: err}
+	}()
+	select {
+	case <-fixture.worker.waitEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not reach the deterministic join barrier")
+	}
+
+	rotation := []OwnerRegistration{{Owner: "auth-owner", Class: ClassCredential, Path: newPath}}
+	if err := fixture.session.RegisterRotation("auth-owner", rotation); !errors.Is(err, ErrCleanupPending) {
+		t.Fatalf("rotation registration=%v, want cleanup pending while worker is unjoined", err)
+	}
+	if stat, err := newObject.Stat(); err != nil || stat.Size() != 0 {
+		t.Fatalf("owner wrote sensitive fixture bytes before worker join: size/error=%v/%v", stat, err)
+	}
+	view := fixture.registry.View()
+	oldPinned, newPinned := false, false
+	for _, entry := range view.Entries {
+		if entry.Owner == "auth-owner" && entry.Identity == newIdentity {
+			newPinned = true
+		}
+		if entry.Owner == "auth-owner" && entry.Path == oldPath && entry.Identity == identityAt(t, oldPath) {
+			oldPinned = true
+		}
+	}
+	if !oldPinned || !newPinned {
+		t.Fatalf("rotation must retain old pin and stage new pin before cleanup: old=%t new=%t entries=%+v", oldPinned, newPinned, view.Entries)
+	}
+
+	close(fixture.worker.waitRelease)
+	select {
+	case result := <-readDone:
+		if result.err != nil {
+			t.Fatalf("active read returned coordinator error: %v", result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("invalidated read did not finish after the worker joined")
+	}
+	if err := fixture.session.RegisterRotation("auth-owner", rotation); err != nil {
+		t.Fatalf("idempotent rotation retry after confirmed join: %v", err)
+	}
+	if _, err := newObject.WriteAt([]byte("synthetic-sensitive-fixture"), 0); err != nil {
+		t.Fatalf("write through the already-registered object after join: %v", err)
+	}
+	if got := identityAt(t, newPath); got != newIdentity {
+		t.Fatalf("registered pathname now identifies %v; expected pinned object %v", got, newIdentity)
+	}
+	alias := filepath.Join(root, "auth-next-alias.fixture")
+	if err := os.Link(newPath, alias); err != nil {
+		t.Fatal(err)
+	}
+	assertClassified(t, fixture.registry, alias, newIdentity, ClassCredential)
 }
 
 func TestFixtureSessionRefusesRegisteredCredentialWithoutWorker(t *testing.T) {
@@ -1623,24 +1760,24 @@ func TestIndependentActorHardlinkIntoProtectedLocationBeforeHandoffIsRefused(t *
 		return nil
 	})
 	result, err := fixture.session.Read(context.Background(), root, target, "call-alias-before-handoff")
-	if err != nil || result.Outcome != ReadRefused || result.Detail != ErrProtected.Error() {
-		t.Fatalf("before-handoff alias read=(%q,%q,%v), want protected refusal", result.Outcome, result.Detail, err)
+	if err != nil || result.Outcome != ReadSucceeded || !bytes.Equal(result.Bytes, want) {
+		t.Fatalf("before-handoff alias read=(%q,%q,%v), want approved ordinary-route read", result.Outcome, result.Bytes, err)
 	}
-	if result.Outcome == ReadSucceeded || len(result.Bytes) != 0 || len(fixture.session.PublishedResults()) != 0 {
-		t.Fatal("independent actor's protected alias was read or published")
+	if result.Outcome != ReadSucceeded || !bytes.Equal(result.Bytes, want) || len(fixture.session.PublishedResults()) != 1 {
+		t.Fatal("ordinary approved bytes were not published after alias-only route change")
 	}
 	fixture.worker.mu.Lock()
 	transferred, readStarted := fixture.worker.transferred, fixture.worker.readStarted
 	fixture.worker.mu.Unlock()
-	if transferred || readStarted {
-		t.Fatal("protected alias was discovered only after capability handoff")
+	if !transferred || !readStarted {
+		t.Fatal("alias-only change unexpectedly blocked the authorized object read")
 	}
 	if got, err := os.ReadFile(protectedAlias); err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("actor fixture alias state: bytes=%q err=%v", got, err)
 	}
 }
 
-func TestIndependentActorHardlinkIntoProtectedLocationAfterCaptureSuppressesBytes(t *testing.T) {
+func TestIndependentActorHardlinkIntoProtectedLocationAfterCaptureDoesNotSuppressBytes(t *testing.T) {
 	root := t.TempDir()
 	privateDir := filepath.Join(root, "private")
 	if err := os.Mkdir(privateDir, 0o700); err != nil {
@@ -1667,11 +1804,11 @@ func TestIndependentActorHardlinkIntoProtectedLocationAfterCaptureSuppressesByte
 		return nil
 	})
 	result, err := fixture.session.Read(context.Background(), root, target, "call-alias-after-capture")
-	if err != nil || result.Outcome != ReadCancelled {
-		t.Fatalf("after-capture alias read=(%q,%q,%v), want captured result suppressed as cancelled", result.Outcome, result.Detail, err)
+	if err != nil || result.Outcome != ReadSucceeded || !bytes.Equal(result.Bytes, want) {
+		t.Fatalf("after-capture alias read=(%q,%q,%v), want original captured result published", result.Outcome, result.Bytes, err)
 	}
-	if result.Outcome == ReadSucceeded || len(result.Bytes) != 0 || len(fixture.session.PublishedResults()) != 0 {
-		t.Fatal("captured bytes escaped after independent actor created a protected alias")
+	if result.Outcome != ReadSucceeded || !bytes.Equal(result.Bytes, want) || len(fixture.session.PublishedResults()) != 1 {
+		t.Fatal("captured bytes were not published after alias-only namespace change")
 	}
 	fixture.worker.mu.Lock()
 	transferred, readStarted, joined := fixture.worker.transferred, fixture.worker.readStarted, fixture.worker.joined

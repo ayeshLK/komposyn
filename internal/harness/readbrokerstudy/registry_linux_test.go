@@ -26,80 +26,85 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// testAdmissionOverride keeps existing broker/worker tests focused on their
-// specific protocol properties. Admission-policy tests use the real Registry
-// directly, and the native CLI never uses this test-only adapter.
-type testAdmissionOverride struct{ *Registry }
-
-func (testAdmissionOverride) ReadAdmission(ResourceClass) error { return nil }
-
-func TestReadAdmissionRefusesMutableProtectedLocationBeforePreparation(t *testing.T) {
+func TestExactFileRoutesAndPinnedIdentitiesUseCapturedClassification(t *testing.T) {
 	root := t.TempDir()
-	protected := filepath.Join(root, "credential.fixture")
+	ordinary := filepath.Join(root, "ordinary.fixture")
+	credential := filepath.Join(root, "credential.fixture")
+	reservedCredential := filepath.Join(root, "reserved-credential.fixture")
+	provider := filepath.Join(root, "provider.fixture")
+	for path, contents := range map[string]string{ordinary: "ordinary", credential: "synthetic credential", provider: "synthetic provider"} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	registry, err := NewRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer registry.Close()
-	if err := registry.Register(OwnerRegistration{Owner: "fixture", Class: ClassCredential, Path: protected}); err != nil {
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(OwnerRegistration{Owner: "auth-fixture", Class: ClassCredential, Path: credential}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProtectedLocationMutable) {
-		t.Fatalf("mutable protected-location admission=%v, want %v", err, ErrProtectedLocationMutable)
-	}
-	if err := registry.Register(OwnerRegistration{Owner: "provider", Class: ClassProvider, Path: filepath.Join(root, "source.fixture")}); err != nil {
+	if err := registry.Register(OwnerRegistration{Owner: "auth-reserved-fixture", Class: ClassCredential, Path: reservedCredential}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProtectedLocationMutable) {
-		t.Fatalf("provider registration weakened protected-location admission: %v", err)
+	if err := registry.Register(OwnerRegistration{Owner: "provider-fixture", Class: ClassProvider, Path: provider}); err != nil {
+		t.Fatal(err)
 	}
+
+	ordinaryID := identityAt(t, ordinary)
+	providerID := identityAt(t, provider)
+	assertClassified(t, registry, ordinary, ordinaryID, ClassOrdinary)
+	assertClassified(t, registry, credential, identityAt(t, credential), ClassCredential)
+	assertClassified(t, registry, provider, providerID, ClassProvider)
+
+	// The mutable parent directory does not globally disable exact-file reads.
+	// A late alias's protected pathname is protected for a fresh request through
+	// that pathname, while the original ordinary route retains its own class.
+	if err := os.Link(ordinary, reservedCredential); err != nil {
+		t.Fatal(err)
+	}
+	assertClassified(t, registry, ordinary, ordinaryID, ClassOrdinary)
+	assertClassified(t, registry, reservedCredential, ordinaryID, ClassCredential)
+
+	// A registered provider identity remains provider-class through aliases,
+	// so an ordinary-route receipt cannot silently authorize that object.
+	providerAlias := filepath.Join(root, "provider-alias.fixture")
+	if err := os.Link(provider, providerAlias); err != nil {
+		t.Fatal(err)
+	}
+	assertClassified(t, registry, providerAlias, providerID, ClassProvider)
 }
 
-func TestReadAdmissionAllowsRegistryWithoutGenericProtectedLocations(t *testing.T) {
+func TestClassifyRouteProtectsReservedAbsentAndDirectoryRoutes(t *testing.T) {
+	root := t.TempDir()
+	reserved := filepath.Join(root, "reserved-auth.fixture")
+	protectedDir := filepath.Join(root, "private")
 	registry, err := NewRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer registry.Close()
-	if err := registry.ReadAdmission(ClassOrdinary); err != nil {
-		t.Fatalf("empty policy admission=%v, want allowed", err)
-	}
-}
-
-func TestImmutableDirectoryAncestryUsesSameIdentityWriteAccess(t *testing.T) {
-	mutable := t.TempDir()
-	stable, err := immutableDirectoryAncestry(mutable)
-	if err != nil {
-		t.Fatalf("inspect temporary directory ancestry: %v", err)
-	}
-	if stable {
-		t.Fatal("user-owned temporary ancestry was classified immutable")
-	}
-
-	providerRegistry, err := NewRegistry()
-	if err != nil {
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(OwnerRegistration{Owner: "auth-fixture", Class: ClassCredential, Path: reserved}); err != nil {
 		t.Fatal(err)
 	}
-	defer providerRegistry.Close()
-	if err := providerRegistry.Register(OwnerRegistration{Owner: "provider-fixture", Class: ClassProvider, Path: filepath.Join(mutable, "source.fixture")}); err != nil {
+	if err := os.Mkdir(protectedDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := providerRegistry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProviderLocationMutable) {
-		t.Fatalf("ordinary read with mutable provider registration=%v, want %v", err, ErrProviderLocationMutable)
+	if err := registry.Register(OwnerRegistration{Owner: "settings-fixture", Class: ClassSettings, Path: protectedDir, Directory: true}); err != nil {
+		t.Fatal(err)
 	}
-	if err := providerRegistry.ReadAdmission(ClassProvider); err != nil {
-		t.Fatalf("correctly classified provider read should reach explicit once authorization: %v", err)
+	for path, want := range map[string]ResourceClass{
+		reserved: ClassCredential,
+		filepath.Join(protectedDir, "absent.fixture"): ClassSettings,
+	} {
+		class, protected := registry.ClassifyRoute(path)
+		if !protected || class != want {
+			t.Errorf("route classification for %q=(%q,%t), want (%q,true)", path, class, protected, want)
+		}
 	}
-
-	rootStable, rootErr := immutableDirectoryAncestry(string(filepath.Separator))
-	if rootErr != nil {
-		t.Fatalf("inspect root ancestry: %v", rootErr)
-	}
-	if os.Geteuid() == 0 && rootStable {
-		t.Fatal("root identity was classified as unable to mutate root")
-	}
-	if os.Geteuid() != 0 && noFilesystemCapabilities() == nil && !rootStable {
-		t.Fatal("unprivileged identity could not mutate root, but root ancestry was classified mutable")
+	if _, err := os.Lstat(reserved); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reserved fixture unexpectedly exists: %v", err)
 	}
 }
 
@@ -223,7 +228,7 @@ func TestRegistryDirectoryPinDoesNotImplyDescendantIdentityCoverage(t *testing.T
 	if err := os.WriteFile(replacementChild, []byte("replacement-child-synthetic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	broker := NewBroker(testAdmissionOverride{registry})
+	broker := NewBroker(registry)
 	prepared, err := broker.PrepareRead(root, replacementChild, GenerationSet{Root: 1, Policy: registry.View().Generation})
 	if !errors.Is(err, ErrProtected) {
 		if err == nil {
@@ -317,7 +322,7 @@ func TestRegistryDirectoryRuleCannotBeWeakenedByPinnedProviderChild(t *testing.T
 	if !registry.DirectoryCoverageIncomplete(childID) {
 		t.Fatal("weaker provider pin bypassed protected settings-directory coverage")
 	}
-	broker := NewBroker(testAdmissionOverride{registry})
+	broker := NewBroker(registry)
 	prepared, err := broker.PrepareRead(root, moved, GenerationSet{Root: 1, Policy: registry.View().Generation})
 	if err == nil {
 		_ = prepared.Close()
@@ -437,6 +442,12 @@ func identityAt(t *testing.T, path string) FileIdentity {
 func assertClassified(t *testing.T, registry PolicyRegistry, path string, identity FileIdentity, want ResourceClass) {
 	t.Helper()
 	class, protected := registry.Classify(path, identity)
+	if want == ClassOrdinary {
+		if protected || class != "" {
+			t.Fatalf("Classify(%q,%+v)=(%q,%t), want unregistered ordinary result", path, identity, class, protected)
+		}
+		return
+	}
 	if !protected || class != want {
 		t.Fatalf("Classify(%q,%+v)=(%q,%t), want protected class %q", path, identity, class, protected, want)
 	}

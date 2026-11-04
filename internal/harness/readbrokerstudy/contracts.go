@@ -30,19 +30,17 @@ const (
 )
 
 var (
-	ErrInvalidPath              = errors.New("read fixture path must be clean and absolute")
-	ErrOutOfScope               = errors.New("read fixture target is outside the selected root")
-	ErrProtected                = errors.New("registered protected resource is unavailable to generic reads")
-	ErrProtectedLocationMutable = errors.New("sandboxed reads are unavailable because a protected location is mutable or cannot be verified as immutable to the current user")
-	ErrProviderLocationMutable  = errors.New("ordinary reads are unavailable because a registered provider-source location is mutable or cannot be verified as immutable to the current user")
-	ErrDirectoryCoverage        = errors.New("read scope overlaps a registered protected directory with incomplete descendant identity coverage")
-	ErrPolicyChanged            = errors.New("protected policy changed during read preparation")
-	ErrStaleReceipt             = errors.New("authorization receipt does not match the prepared read")
-	ErrPinBudget                = errors.New("protected identity pin budget exhausted")
-	ErrUnavailable              = errors.New("sandboxed read worker is unavailable")
-	ErrCleanupPending           = errors.New("worker termination requested; cleanup is not yet confirmed")
-	ErrProtocol                 = errors.New("sandboxed read worker protocol is invalid")
-	ErrResultTooLarge           = errors.New("sandboxed read result exceeds its bound")
+	ErrInvalidPath       = errors.New("read fixture path must be clean and absolute")
+	ErrOutOfScope        = errors.New("read fixture target is outside the selected root")
+	ErrProtected         = errors.New("registered protected resource is unavailable to generic reads")
+	ErrDirectoryCoverage = errors.New("read scope overlaps a registered protected directory with incomplete descendant identity coverage")
+	ErrPolicyChanged     = errors.New("protected policy changed during read preparation")
+	ErrStaleReceipt      = errors.New("authorization receipt does not match the prepared read")
+	ErrPinBudget         = errors.New("protected identity pin budget exhausted")
+	ErrUnavailable       = errors.New("sandboxed read worker is unavailable")
+	ErrCleanupPending    = errors.New("worker termination requested; cleanup is not yet confirmed")
+	ErrProtocol          = errors.New("sandboxed read worker protocol is invalid")
+	ErrResultTooLarge    = errors.New("sandboxed read result exceeds its bound")
 )
 
 type ResourceClass string
@@ -87,11 +85,14 @@ type PolicyRegistry interface {
 	Register(OwnerRegistration) error
 	RegisterRotation(owner string, next []OwnerRegistration) error
 	View() PolicyView
+	// ClassifyRoute applies registered-location rules without opening or
+	// resolving the requested object. It lets reserved protected routes be
+	// refused even while their leaf is absent or replaced by an unreadable
+	// object. Identity-based policy is applied separately after open.
+	ClassifyRoute(path string) (ResourceClass, bool)
 	Classify(path string, identity FileIdentity) (ResourceClass, bool)
 	ClassifyWithAncestors(path string, identity FileIdentity, ancestors []FileIdentity) (ResourceClass, bool)
-	InspectRegisteredLocations(identity FileIdentity) (ResourceClass, bool, error)
 	DirectoryCoverageIncomplete(identity FileIdentity) bool
-	ReadAdmission(candidate ResourceClass) error
 	Close() error
 }
 

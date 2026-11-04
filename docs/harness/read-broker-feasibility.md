@@ -150,22 +150,24 @@ evidence.
 
 ## Protected registrations and directory limits
 
-Owner registrations pin identities for protected files and directories and
-retain retired pins until registry shutdown. Rotation stages and pins the next
-set before adding it; owners must register a protected temporary object before
-writing sensitive content there. Registration and pin/location budgets are
-bounded and fail closed. No machine-wide discovery or model-controlled
-registration occurs.
+The current experimental target follows the approved exact-file typed-read
+contract in [`read-broker-approved-typed-read.md`](read-broker-approved-typed-read.md)
+and the [issue #215 decision record](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377).
+Earlier admission-gate descriptions and run results below are historical where
+they conflict with that decision.
 
-A registered directory pins the directory object and its location rule. The
-broker checks descriptor ancestry and performs bounded current-tree scans; it
-does not thereby pin all existing or future descendants. An unregistered
-regular file sharing the protected directory's device is refused, which is
-conservative and may make broad same-filesystem read scopes unusable. Exact
-registered files remain protected through hard-link aliases and renames while
-their pins remain live. Directory moves/replacements, scan races, independent
-copies of sensitive bytes, and objects moved after the last scan remain limits
-that require separate policy/mechanism review.
+Trusted owners register protected exact-file locations and pin object
+identities; retired pins remain until registry shutdown. Registration and pin
+budgets are bounded and fail closed. No machine-wide discovery or
+model-controlled registration occurs.
+
+A registered directory pins that directory object, not every existing or
+future child. Preserve `DirectoryCoverageIncomplete` refusals whenever the
+broker cannot establish complete descendant coverage. A child moved out is
+not thereby protected by the directory pin. Exact registered files remain
+protected through hard-link aliases and renames while their pins remain live.
+Independent copies of sensitive bytes remain outside identity-based
+protection.
 
 The earlier Python issue probe registered/pinned its initial authentication
 file; it did not pin the directory. Its ancestor result demonstrated missing
@@ -174,22 +176,16 @@ and demonstrates both an in-tree descendant refusal and fail-closed refusal of
 an unpinned same-device descendant moved out. Neither result means a directory
 descriptor identifies every descendant.
 
-The broker also records whether each credential, settings and Token Logger
-database location sits beneath directories immutable to the registering
-process identity. If any such location is mutable or cannot be verified, all
-worker-read preparation is refused before once-grant consumption and
-capability release. This conservative rule makes reads unavailable when
-protected registrations live under typical user-owned home or temporary
-directories. It does not serialize privileged namespace changes, incomplete
-owner registration, or a new protected registration racing an already released
-operation; those remain explicit limits.
-
-For a mutable registered provider-source location, the broker also refuses
-ordinary-classified reads before once approval. This prevents an ordinary
-approval from crossing into provider-source authority through a late alias.
-A correctly classified provider-source read remains possible only with
-explicit per-invocation approval. A generic-protected registration still
-blocks all worker reads.
+The earlier conservative admission gate rejected all reads when a protected
+location had mutable or unverifiable ancestry, and rejected ordinary reads
+when a provider-source location had mutable ancestry. Those restrictions were
+specific to the earlier policy and must not be presented as the approved
+contract. Under the approved contract, a late alias of an already-approved
+ordinary object into a protected exact-file location alone does not reclassify
+that invocation. A fresh request through the protected route is denied;
+registered sensitive identities remain denied through aliases and renames.
+Provider-source reads remain explicitly approved per invocation and bound to
+route and identity.
 
 When a proposed scope overlaps a registered protected directory but the
 registry cannot prove complete descendant identity coverage, the broker returns
@@ -200,26 +196,29 @@ generation errors retain their separate outcomes.
 
 | Registration owner | Required protected inputs | Generic read policy | Rotation rule |
 | --- | --- | --- | --- |
-| Authentication owner | Credential/auth files and temporary replacement objects | Denied | Register and pin temp object before writing sensitive bytes; keep old pins until shutdown |
-| Settings owner | Application settings/state objects | Denied | Same register-before-sensitive-write ordering |
-| Token Logger owner | DB, WAL, SHM, backup objects and reserved locations | Denied | Register active/rotating paths and objects; preserve old pins |
-| Provider source owner | Provider-owned source objects/locations | Explicit once approval per invocation; no mutation capability here | Register replacement before it can become a source |
+| Authentication owner | Credential/auth files and temporary replacement objects | Denied | Register and pin temp object before writing sensitive bytes; wait for affected workers to terminate and join; keep old pins until shutdown |
+| Settings owner | Application settings/state objects | Denied | Same register-before-sensitive-write and join ordering |
+| Token Logger owner | DB, WAL, SHM, backup objects and reserved locations | Denied | Register active/rotating objects before sensitive writes; wait for affected workers and preserve old pins |
+| Provider source owner | Provider-owned source objects/locations | Explicit once approval per invocation; no mutation capability here | Register/pin replacement before it can be read as a source; invalidate affected work |
 
-No production owner is wired into this experiment. Owners must register all
-relevant paths and objects; missing registrations make the affected scope
-ineligible. Inode identity alone cannot detect an independent copy of protected
-bytes.
+No production owner is wired into this experiment. Participating owners must
+register relevant exact-file locations and objects; missing registrations
+make affected routes ineligible. A rotation creates and pins the replacement
+before sensitive content is written, publishes the policy revision, waits for
+affected workers to terminate and join, then writes through that same
+registered object. Cleanup pending blocks the write. Old pins remain through
+registry shutdown. Inode identity alone cannot detect an independent copy of
+protected bytes.
 
 The fixture lock order is coordinator/session mutex before registry mutex;
 registry staging opens and pins objects before taking its commit lock. There is
-no owner callback while either lock is held, and this prototype has no owner
-mutex integration. A production rotation protocol would need each owner to
-serialize its own write/rotation, register and pin the next object before
-sensitive bytes are written, atomically publish the registration revision,
-then retain prior pins until no authorized read can refer to them. It must not
-drop old policy entries before publishing the new revision. Location rules
-apply at path preparation/revalidation; inode rules apply to the pinned object.
-Neither makes an independent namespace transition atomic with a broker scan.
+no owner callback while either lock is held, and this prototype has no
+production owner mutex integration. Owners must serialize their own
+write/rotation and follow register/pin, policy publication, worker
+termination/join, then sensitive-write ordering. Do not drop old pins before
+registry shutdown. The policy binds the requested route at preparation and
+the opened object identity; it does not promise continuous checks of all
+object names or atomic ordering with an independent namespace writer.
 
 Credential/authentication material, settings, and registered Token Logger
 database files are denied to generic reads. Provider-source files are only
@@ -313,25 +312,28 @@ with an injected worker is only coordinator regression coverage.
 Cases record worker startup/readiness and join, actor readiness/transition and
 direct-process join, descriptor transfer, read start, publication, once-grant
 consumption, coordinator generations, fixture effect, and an evidence
-classification. A protected alias introduced after the final scan is an
-observed violation if a capability is transferred or a read starts, even if a
-later policy scan suppresses publication. Root/parent relocation outside the
-selected pathname and target replacement test whether the descriptor continues
-to refer to the approved object under B; they do not establish A. An
-unregistered child moved out of a registered protected directory is expected to
-be refused before authorization and worker launch by the existing
-incomplete-coverage rule.
+classification. Under the approved contract, an alias introduced at a
+protected exact-file location after an ordinary invocation was prepared does
+not, by itself, reclassify that invocation. The existing invocation may finish
+from its captured object; a fresh request through that protected route must be
+refused. A registered sensitive identity remains refused through aliases and
+renames. Root/parent relocation and target replacement test whether the
+descriptor continues to refer to the approved object under B; they do not
+establish A. An unregistered child moved out of a registered protected
+directory remains subject to `DirectoryCoverageIncomplete` refusal.
 
-The later admission-gate case performs an independent hard-link transition
-before the read request and verifies a specific pre-authorization refusal. The
-former scan-to-handoff case remains an observed violation in the supplied
-earlier native archive; the new refusal case does not re-run or erase it.
+The supplied older archive's scan-to-handoff event remains an observed
+violation under the historical policy. The approved decision changes the
+expected outcome only for the already-approved ordinary-object late-alias
+case; it does not rewrite that archive or turn a setup refusal into positive
+native evidence. Owner registration/rotation is a separate invalidation path:
+the owner must register and pin before sensitive writes, then wait for affected
+workers to terminate and join. Cleanup pending blocks the write.
 
 The scenario/expectation matrix and exact pending cases are in
-[`read-broker-native-actor.md`](read-broker-native-actor.md). In particular, a
-protected-ancestor race remains pending: same-device ordinary candidates are
-refused before worker setup while a protected directory is registered. Do not
-weaken that policy to make the race executable. Live owner rotation,
+[`read-broker-native-actor.md`](read-broker-native-actor.md). In particular,
+protected directory registrations are not descendant inventories, and
+`DirectoryCoverageIncomplete` remains in force. Live owner rotation,
 mount-boundary behavior, recursive-child relocation, parent-death handling,
 and incomplete-shutdown cleanup also remain separate evidence gaps. Native
 results are valid only for the exact selected commit and trusted backend

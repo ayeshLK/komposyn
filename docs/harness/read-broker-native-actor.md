@@ -1,60 +1,62 @@
 # Read-broker native independent-actor study
 
-This document defines the next native feasibility scenarios for the
-experimental broker-plus-Bubblewrap read study. It is a test plan, not a
-production authorization contract. The study remains disabled for
-model-facing filesystem and shell tools.
+This document describes native scenarios for the experimental
+broker-plus-Bubblewrap typed-read study. The current expected contract is
+[`read-broker-approved-typed-read.md`](read-broker-approved-typed-read.md),
+approved in the [issue #215 decision record](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377).
+The study does not enable production filesystem or shell tools.
 
 ## Scenario and expectation matrix
 
-| Scenario | Independent actor transition | Expected result | Contract/evidence |
+| Scenario | Independent actor transition | Expected result | Evidence meaning |
 |---|---|---|---|
-| Protected alias in the scan-to-handoff gap | Hard-link the prepared ordinary object at an already registered protected file location after the final broker scan and before FD transfer. | No capability should be released after the protected location changes. Any transfer/read is recorded as a protected-rule violation even if the later publication check suppresses bytes. | Mandatory protected-location rule; B does not override it. |
-| Protected alias before read admission | A separate same-user actor creates a hard link at a registered absent credential path before a read request. | The broker refuses before once-grant consumption, worker startup or descriptor transfer when protected-location ancestry is mutable. | Measures the conservative admission boundary only; it does not re-run or erase the scan-to-handoff violation. |
-| Selected root moved after final scan | Rename the selected root object outside its original pathname while the sandbox worker is ready. | Read/publish only the object opened before the rename. This is consistent with B; strict live-path A would fail. | B follows exposed object authority. |
-| Parent moved outside selected root | Rename the opened target's parent outside the selected root while the sandbox worker is ready. | Read/publish only the originally opened object. This is consistent with B; strict live-path A would fail. | B follows exposed object authority. |
-| Target replaced after classification | Move the opened ordinary object aside and put a different synthetic file at its old pathname after final scan. | Return bytes from the opened object, never the replacement. This is consistent with B. | Object identity and descriptor authority. |
-| Registered-directory descendant checks | First select the original fixture root, then register a synthetic protected directory. Read a child while inside, move it out, and read again. | The in-directory read must return the registered-protected-resource refusal; the moved-out read must return the incomplete-directory-coverage refusal. A scope mismatch cannot count as either protection result. | Mandatory protected descendant rule; conservative refusal is the existing policy. |
-| Registered protected ancestor relocation/replacement | Requires a prepared ordinary target that remains eligible while the protected ancestor location is replaced or moved across its ancestry. | Pending unless a fixture can satisfy the broker's directory-coverage gate without weakening it. A setup refusal is not race evidence. | Mandatory protected-location rule. |
-| Mount crossing / live owner rotation | Separate mount topology or coordinated owner rotation protocol. | Pending in this focused slice. | Not approximated by rename or same-process callbacks. |
-| Fixture session cleanup | Close the coordinator session under a fixed deadline after all cases. | Record whether every started direct worker child was joined; timeout/error is inconclusive. This does not establish namespace-wide descendant cleanup. | Bounded study-process lifecycle. |
+| Late alias of approved ordinary object | After final revalidation and before descriptor transfer, create a hard link to the opened ordinary object at a registered protected exact-file location. | The existing invocation may read and publish bytes from its already-open object, provided authorization/root/policy/lifecycle generations remain valid. | Consistent with approved object authority B. This does not establish strict live-path containment A. |
+| Fresh direct request through protected route | After a late alias, make a separate request through that registered protected route. | Refuse before once-grant consumption, worker start, or target descriptor handoff. | Checks requested-route protection independently from the existing invocation. |
+| Registered sensitive identity via alias or rename | Create an alias or rename a registered synthetic sensitive object, then request it by the new route. | Refuse before target descriptor handoff. | Registered-object identity remains protected across these names while the owner pin remains live. |
+| Selected root moved after final validation | Rename the selected root object while the worker is ready. | The read may return bytes from the object opened before the rename if generations remain valid. | Consistent with B; strict live-path containment A would fail. |
+| Parent moved outside selected root | Rename the opened target's parent while the worker is ready. | The read may return bytes from the originally opened object. | Consistent with B; does not establish A. |
+| Target replaced after classification | Move the opened ordinary object aside and place another synthetic file at the old route after final validation. | Return bytes only from the already-opened object. | Tests object binding, not route containment or content immutability. |
+| Directory descendant coverage | Register a synthetic protected directory; read an in-tree child, then move an unregistered descendant out and read it. | In-tree protected-route access refuses; moved-out read remains refused with `DirectoryCoverageIncomplete` when complete descendant coverage cannot be established. | A directory pin is not a descendant inventory. Do not weaken this refusal to create a positive case. |
+| Owner registration/rotation during active read | Register and pin a synthetic replacement while a controlled worker holds the current capability. | Affected work is invalidated; owner must wait for worker termination and join before writing sensitive bytes through the registered object. Cleanup pending blocks the write. | Tests the trusted-owner barrier, not protection from an independent actor. |
+| Fixture session cleanup | Close the coordinator session under a fixed deadline after all cases. | Record whether every started direct worker child joined; timeout/error is inconclusive. | Does not establish namespace-wide descendant cleanup. |
 
 ## Synchronization and evidence fields
 
 The actor is a separate same-user process with a fixed operation allowlist and
-a bounded `READY` / `RUN` / `DONE` protocol. Before `READY`, it opens and pins
-the private fixture-root directory but does not inspect or mutate the requested
-source/target entries. The coordinator invokes it at the explicit
-post-final-revalidation, pre-capability-transfer boundary. Thus the
-worker has completed readiness probes, while the actor transition is ordered
-after the last broker scan and before SCM_RIGHTS handoff. For the moved-child
-refusal case, the actor completes before the read attempt because the current
-policy intentionally refuses that object during preparation.
+a bounded READY/RUN/DONE handshake. Before READY, it opens and pins only the
+private synthetic fixture root; it does not inspect or mutate requested
+entries. The coordinator releases it at an explicit checkpoint. For a late
+alias case this checkpoint follows final authorization/generation
+revalidation and precedes target descriptor transfer. This tests an
+independent namespace transition, rather than a callback within broker code.
 
-The conservative gate refuses worker reads when a credential, settings or
-Token Logger database registration has a containing directory chain that is
-mutable or unverifiable for the current same-user actor. Under user-owned
-temporary fixture roots, this makes the former worker cases unavailable. The
-pre-admission actor case must be reported separately and cannot be interpreted
-as successful execution of the original scan-to-handoff race.
+The revised expected behavior differs from the historical policy: an alias
+created at a protected location does not retroactively change the class of an
+already prepared ordinary object. The existing invocation may finish from
+its captured object capability. A fresh request through the protected route
+must independently refuse. A late alias of an already registered sensitive
+object remains protected by its pinned identity. Authoritative registration,
+rotation, revocation, root or policy-generation changes still invalidate
+affected active operations.
 
-Ordinary-classified reads are also refused when a registered provider-source
-location is mutable or unverifiable. Correctly classified provider-source reads
-remain distinct and still require explicit once approval. This prevents an
-ordinary approval from being reused after a late transition into provider
-classification.
+For the owner-rotation scenario, a controlled worker must keep the read
+capability live until the coordinator confirms termination and join. The
+synthetic owner registers/pins the new empty file before sensitive fixture
+content is written, waits for the registration barrier, verifies that its
+writable descriptor names the registered object, and writes only after
+cleanup is complete. On cleanup pending, no sensitive content is written.
+This models the required owner protocol; it does not claim that a lock or
+registration prevents independent namespace actors.
 
-Each native case reports actor readiness, transition completion, direct actor
-exit confirmation, worker readiness/probe, descriptor release, read-start,
-publication, once-grant consumption, policy/root/grant generations before and
-after, fixture observations, outcome, and cleanup. A final
-`study_session_cleanup` row records the bounded session close and whether all
-started direct worker children were joined. A missing transition or
-worker/backend precondition is `unavailable` or `inconclusive`, never a pass.
-Observed protected-rule violations remain explicit in the JSON even when the
-study process exits normally.
+Each native case records actor readiness, transition completion and direct
+actor exit; worker readiness/probes; descriptor release; read start;
+publication; once-grant consumption; root/policy/grant generations; observed
+fixture state; outcome; and cleanup. Missing transitions or failed worker
+preconditions are unavailable/inconclusive, never passes. A process exit code
+alone does not establish the expected fixture effect.
 
-The study uses disposable synthetic paths only. It does not exercise real
-credentials, databases, provider transcripts, production dispatch, shell, or
-production tool registration. Native Bubblewrap evidence is reported only for
-the selected launch mechanism and exact source revision.
+The study uses disposable synthetic paths only. It does not inspect real
+credentials, databases, provider transcripts, or production data. It does not
+exercise production dispatch, shell, or production tool registration. Native
+evidence is scoped to the exact source revision, trusted backend and launch
+mode recorded for that run.
