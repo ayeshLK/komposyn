@@ -10,6 +10,17 @@ Its candidate tests were blocked by the surrounding command launcher in the
 recorded environment; they provide no bubblewrap enforcement result and do not
 change the authority gate described here.
 
+## Historical policy and later direction
+
+The pathname authority, deletion policy and root-selection proposals below
+record the #213 stage. The later
+[sandbox direction and implementation gates](sandbox-design-proposal.md)
+consolidate the reviewed object-authority (B) target, write including deletion
+once verified, and working-directory candidate selection without implicit
+permission. Those decisions supersede the corresponding proposals here as a
+future direction. The recorded counterexamples remain valid, and this update
+does not enable tools or change the filesystem foundation.
+
 ## Threat model
 
 The relevant adversary is an untrusted model invocation while another process
