@@ -176,6 +176,7 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		"ordinary_object_moved_into_protected_location", "cancel_before_release",
 		"revoke_after_capture_before_publish", "registered_directory_descendant_inside",
 		"registered_directory_descendant_moved_out", "actor_protected_alias_scan_to_handoff",
+		"actor_protected_alias_admission_refusal",
 		"actor_selected_root_relocated_after_scan", "actor_parent_relocated_outside_root_after_scan",
 		"actor_target_replaced_after_classification", "actor_unregistered_protected_descendant_moved_out",
 		"actor_protected_ancestor_relocation", "study_session_cleanup",
@@ -210,4 +211,18 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 	if _, present := fields["generations_before"]; present {
 		t.Fatal("unavailable scenario serialized an unmeasured generation snapshot")
 	}
+}
+
+func TestAdmissionRefusalDoesNotRelabelHistoricalHandoffViolation(t *testing.T) {
+	cases := admissionUnavailableCases("admission policy deliberately refused the fixture scope")
+	for _, item := range cases {
+		if item.Name != "actor_protected_alias_scan_to_handoff" {
+			continue
+		}
+		if item.Status != "unavailable" || item.Classification != "unavailable" || item.ActorStartState != "not_attempted_admission_refusal" || !strings.Contains(item.Detail, "earlier native archive remains an observed violation") || item.CapabilitySent || item.ReadStarted || item.Published {
+			t.Fatalf("historical handoff row was conflated with the new admission refusal: %+v", item)
+		}
+		return
+	}
+	t.Fatal("admission-unavailable report omitted historical handoff scenario")
 }

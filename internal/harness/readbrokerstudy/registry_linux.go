@@ -43,6 +43,7 @@ type registryEntry struct {
 	registration   OwnerRegistration
 	identity       FileIdentity
 	locationDevice uint64
+	locationStable bool
 	pin            *os.File
 }
 
@@ -210,6 +211,30 @@ func (r *Registry) View() PolicyView {
 		})
 	}
 	return view
+}
+
+// ReadAdmission refuses all worker reads while any generic-protected
+// registration has a namespace location the current same-user actor may
+// change. The check is recorded when the owner registers the location. A
+// positive result is limited to a path whose containing directories were
+// unmodifiable by this process identity; it is not a general filesystem
+// immutability or privileged-attacker guarantee.
+func (r *Registry) ReadAdmission() error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return errRegistryClosed
+	}
+	for _, entry := range r.entries {
+		if genericProtectedClass(entry.registration.Class) && !entry.locationStable {
+			return ErrProtectedLocationMutable
+		}
+	}
+	return nil
+}
+
+func genericProtectedClass(class ResourceClass) bool {
+	return class == ClassCredential || class == ClassSettings || class == ClassTokenDatabase
 }
 
 // Classify applies both object-identity and registered-location rules. A
@@ -527,6 +552,12 @@ func stageRegistration(reg OwnerRegistration) (registryEntry, error) {
 		return registryEntry{}, errInvalidRegistration
 	}
 	entry := registryEntry{registration: reg}
+	location := filepath.Dir(reg.Path)
+	if reg.Directory {
+		location = reg.Path
+	}
+	stable, stabilityErr := immutableDirectoryAncestry(location)
+	entry.locationStable = stabilityErr == nil && stable
 	fd, err := openAbsolute(reg.Path, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW)
 	if err != nil {
 		if !errors.Is(err, unix.ENOENT) {
@@ -560,6 +591,67 @@ func stageRegistration(reg OwnerRegistration) (registryEntry, error) {
 	}
 	entry.pin = os.NewFile(uintptr(fd), "protected-identity-pin")
 	return entry, nil
+}
+
+// immutableDirectoryAncestry checks every directory that can contain or
+// replace the registered location. It uses effective access checks (including
+// ACLs) and treats ownership by the current UID as mutable because that owner
+// can change the directory mode. Any unknown result fails closed.
+func immutableDirectoryAncestry(path string) (bool, error) {
+	fd, err := openAbsolute(path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
+	if err != nil {
+		return false, err
+	}
+	current := fd
+	defer func() { _ = unix.Close(current) }()
+	if err := noFilesystemCapabilities(); err != nil {
+		return false, err
+	}
+	for depth := 0; depth < 256; depth++ {
+		var stat unix.Stat_t
+		if err := unix.Fstat(current, &stat); err != nil {
+			return false, err
+		}
+		if stat.Uid == uint32(os.Geteuid()) {
+			return false, nil
+		}
+		if err := unix.Faccessat2(current, ".", unix.W_OK|unix.X_OK, unix.AT_EACCESS); err == nil {
+			return false, nil
+		} else if !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EROFS) {
+			return false, err
+		}
+		parent, err := unix.Openat(current, "..", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return false, err
+		}
+		var parentStat unix.Stat_t
+		if err := unix.Fstat(parent, &parentStat); err != nil {
+			_ = unix.Close(parent)
+			return false, err
+		}
+		if identityFromStat(&parentStat) == identityFromStat(&stat) {
+			_ = unix.Close(parent)
+			return true, nil
+		}
+		_ = unix.Close(current)
+		current = parent
+	}
+	return false, errors.New("protected location ancestry exceeded its bound")
+}
+
+func noFilesystemCapabilities() error {
+	var header unix.CapUserHeader
+	header.Version = unix.LINUX_CAPABILITY_VERSION_3
+	var capabilities [2]unix.CapUserData
+	if err := unix.Capget(&header, &capabilities[0]); err != nil {
+		return err
+	}
+	for _, capability := range capabilities {
+		if capability.Effective != 0 || capability.Permitted != 0 || capability.Inheritable != 0 {
+			return errors.New("process capabilities prevent same-user path immutability verification")
+		}
+	}
+	return nil
 }
 
 func validClass(class ResourceClass) bool {

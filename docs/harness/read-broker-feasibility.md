@@ -174,6 +174,16 @@ and demonstrates both an in-tree descendant refusal and fail-closed refusal of
 an unpinned same-device descendant moved out. Neither result means a directory
 descriptor identifies every descendant.
 
+The broker also records whether each credential, settings and Token Logger
+database location sits beneath directories immutable to the registering
+process identity. If any such location is mutable or cannot be verified, all
+worker-read preparation is refused before once-grant consumption and
+capability release. This conservative rule makes reads unavailable when
+protected registrations live under typical user-owned home or temporary
+directories. It does not serialize privileged namespace changes, incomplete
+owner registration, or a new protected registration racing an already released
+operation; those remain explicit limits.
+
 When a proposed scope overlaps a registered protected directory but the
 registry cannot prove complete descendant identity coverage, the broker returns
 `ErrDirectoryCoverage`. The coordinator reports this specific policy refusal
@@ -304,6 +314,11 @@ to refer to the approved object under B; they do not establish A. An
 unregistered child moved out of a registered protected directory is expected to
 be refused before authorization and worker launch by the existing
 incomplete-coverage rule.
+
+The later admission-gate case performs an independent hard-link transition
+before the read request and verifies a specific pre-authorization refusal. The
+former scan-to-handoff case remains an observed violation in the supplied
+earlier native archive; the new refusal case does not re-run or erase it.
 
 The scenario/expectation matrix and exact pending cases are in
 [`read-broker-native-actor.md`](read-broker-native-actor.md). In particular, a

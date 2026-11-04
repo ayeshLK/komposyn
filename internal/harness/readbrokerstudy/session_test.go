@@ -299,7 +299,7 @@ func newSessionFixture(t *testing.T, root string) *sessionFixture {
 	authorizer := NewOnceGrantFixture()
 	worker := &fakeWorker{}
 	launcher := &fakeLauncher{worker: worker}
-	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
+	session, err := NewFixtureSession(registry, NewBroker(testAdmissionOverride{registry}), launcher, authorizer)
 	if err != nil {
 		_ = registry.Close()
 		t.Fatal(err)
@@ -357,6 +357,63 @@ func TestFixtureSessionRequiresExplicitOnceApprovalAndPublishesExactObject(t *te
 	defer fixture.worker.mu.Unlock()
 	if !fixture.worker.started || !fixture.worker.transferred || !fixture.worker.readStarted || !fixture.worker.joined {
 		t.Fatalf("fake worker lifecycle flags: %+v", fixture.worker)
+	}
+}
+
+func TestMutableProtectedLocationRefusesBeforeOnceConsumptionOrWorkerStart(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(target, []byte("synthetic ordinary bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if err := registry.Register(OwnerRegistration{Owner: "credential-fixture", Class: ClassCredential, Path: filepath.Join(root, "reserved-auth.fixture")}); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "reserved-auth.fixture")
+	if _, err := os.Lstat(alias); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reserved alias existed before actor transition: %v", err)
+	}
+	actor := startNamespaceActor(t, root, "link", filepath.Base(target), filepath.Base(alias))
+	actor.Run(t)
+	ordinaryInfo, ordinaryErr := os.Stat(target)
+	aliasInfo, aliasErr := os.Stat(alias)
+	if ordinaryErr != nil || aliasErr != nil || !os.SameFile(ordinaryInfo, aliasInfo) {
+		t.Fatalf("independent actor alias effect ordinaryErr=%v aliasErr=%v same=%t", ordinaryErr, aliasErr, ordinaryErr == nil && aliasErr == nil && os.SameFile(ordinaryInfo, aliasInfo))
+	}
+	authorizer := NewOnceGrantFixture()
+	if err := authorizer.ApproveOnce("mutable-location"); err != nil {
+		t.Fatal(err)
+	}
+	worker := &fakeWorker{}
+	launcher := &fakeLauncher{worker: worker}
+	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SelectRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := session.Read(ctx, root, target, "mutable-location")
+	if err != nil || result.Outcome != ReadRefused || result.Detail != ErrProtectedLocationMutable.Error() {
+		t.Fatalf("read=(%q,%q,%v), want pre-admission refusal", result.Outcome, result.Detail, err)
+	}
+	if authorizer.ConsumptionCount("mutable-location") != 0 || launcher.starts != 0 || worker.transferred || worker.readStarted || len(session.PublishedResults()) != 0 {
+		t.Fatalf("once=%d starts=%d transferred=%t read=%t published=%d", authorizer.ConsumptionCount("mutable-location"), launcher.starts, worker.transferred, worker.readStarted, len(session.PublishedResults()))
+	}
+	if evidence := session.Evidence(); len(evidence) != 0 {
+		t.Fatalf("preparation refusal created worker evidence: %+v", evidence)
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer closeCancel()
+	if err := session.Close(closeCtx); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -720,7 +777,7 @@ func TestUnresolvedCleanupInvalidatesReadAlreadyWaitingForAuthorization(t *testi
 	blocked := &blockingFixtureAuthorizer{delegate: baseAuthorizer, blockID: "read-b", entered: make(chan struct{}), release: make(chan struct{})}
 	workerA := &fakeWorker{joinUnconfirmed: true}
 	launcher := &fakeLauncher{workers: []*fakeWorker{workerA, &fakeWorker{}}}
-	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, blocked)
+	session, err := NewFixtureSession(registry, NewBroker(testAdmissionOverride{registry}), launcher, blocked)
 	if err != nil {
 		_ = registry.Close()
 		t.Fatal(err)

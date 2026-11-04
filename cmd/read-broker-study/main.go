@@ -114,6 +114,7 @@ type caseResult struct {
 	BytesMatchApproved    bool                           `json:"bytes_match_approved_object"`
 	OnceGrantConsumptions int                            `json:"once_grant_consumptions"`
 	ActorStarted          bool                           `json:"actor_started"`
+	ActorStartState       string                         `json:"actor_start_state,omitempty"`
 	ActorReady            bool                           `json:"actor_ready"`
 	ActorTransition       bool                           `json:"actor_transition_completed"`
 	ActorExitConfirmed    bool                           `json:"actor_exit_confirmed"`
@@ -174,7 +175,7 @@ func run() error {
 			RuntimeReadExceptions: []string{"none"},
 			Environment:           "host command environment contains only synthetic sentinel; Bubblewrap --clearenv; worker verifies sentinel absent and any PWD is /",
 			InheritedDescriptors:  workerDescriptors(backend.BindMode),
-			CapabilityHandoff:     "one read-only regular-file FD by SCM_RIGHTS after readiness, authorization, and generation revalidation",
+			CapabilityHandoff:     "one read-only regular-file FD by SCM_RIGHTS only after protected-location admission, worker readiness, once authorization, and generation revalidation",
 			WorkerVerification:    workerVerification,
 			Seccomp:               "fixed worker sets no_new_privs and installs architecture-checked BPF with SECCOMP_FILTER_FLAG_TSYNC; pathname opens, socket creation, clone3, and process-like clone flags are denied; only the exact Go runtime thread clone flag sets are allowed; probes run before readiness",
 			ResourceLimits:        workerResourceLimits(backend.BindMode),
@@ -185,6 +186,7 @@ func run() error {
 			"aggregate cgroup quotas are deferred; exhaustion safety is not claimed",
 			"object identity cannot recognize independent copies of sensitive bytes",
 			"policy scans are bounded observations and do not serialize independent namespace writers",
+			"read admission now refuses mutable or unverifiable credential/settings/database location ancestry before grant consumption; this makes synthetic user-owned-root worker scenarios unavailable",
 			"a pinned directory does not pin every current or future descendant; unpinned same-device files are refused",
 			"the bootstrap uses --as-pid-1 so Bubblewrap's --sync-fd can pass verifier FD 6; worker seccomp allows only the Go runtime's exact shared-thread clone flag sets, denies clone3 and process-like clone, and needs native startup validation",
 			"Bubblewrap 0.9 file-snapshot mode requires host /proc/self/exe and sealed memfd support; it refuses the worker if the running image exceeds 7 MiB or snapshot/copy verification fails",
@@ -195,6 +197,7 @@ func run() error {
 			"mount crossing, recursive-child relocation, parent-death and incomplete-shutdown cleanup have no integrated actor scenario",
 		},
 		NativeGaps: []string{
+			"the former scan-to-handoff protected-alias race is no longer re-run because mutable protected-location ancestry is refused before preparation; a separate actor case measures only the earlier admission refusal",
 			"credential rotation with old and new protected identities/aliases in one live sandboxed session",
 			"registered protected-ancestor relocation/replacement while a sandboxed read remains eligible; current same-device descendant coverage refuses before worker setup",
 			"mount-boundary behavior and recursive-child relocation",
@@ -235,6 +238,7 @@ func unavailableCases(reason string) []caseResult {
 		{"registered_directory_descendant_inside", "descendant denied while below pinned directory"},
 		{"registered_directory_descendant_moved_out", "scope refused before authorization because protected-directory descendant identity coverage is incomplete"},
 		{"actor_protected_alias_scan_to_handoff", "no protected object capability is transferred after an independent actor introduces a protected alias"},
+		{"actor_protected_alias_admission_refusal", "an independent actor creates an alias before read admission, which refuses before approval consumption or worker capability release"},
 		{"actor_selected_root_relocated_after_scan", "the opened object remains readable after its selected root object moves outside the selected pathname under B"},
 		{"actor_parent_relocated_outside_root_after_scan", "the opened object remains readable after its parent moves outside the selected root under B"},
 		{"actor_target_replaced_after_classification", "the approved opened object is read; the replacement at its former path is never read"},
@@ -244,7 +248,11 @@ func unavailableCases(reason string) []caseResult {
 	}
 	results := make([]caseResult, 0, len(planned))
 	for _, item := range planned {
-		results = append(results, caseResult{Name: item.name, Status: "unavailable", Classification: "unavailable", Expected: item.expected, Observed: "candidate profile refused before fixture creation; no worker or actor scenario started", FixtureEffect: "none", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: reason})
+		result := caseResult{Name: item.name, Status: "unavailable", Classification: "unavailable", Expected: item.expected, Observed: "candidate profile refused before fixture creation; no worker or actor scenario started", FixtureEffect: "none", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: reason}
+		if strings.HasPrefix(item.name, "actor_") {
+			result.ActorStartState = "not_attempted_candidate_unavailable"
+		}
+		results = append(results, result)
 	}
 	return results
 }
@@ -352,6 +360,14 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	}
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-auth", Class: readbrokerstudy.ClassCredential, Path: protected}); err != nil {
 		return results, err
+	}
+	if admissionErr := registry.ReadAdmission(); admissionErr != nil {
+		results, err = runProtectedAliasAdmissionCase(session, authorizer, worker, root, ordinary)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, admissionUnavailableCases("not run: conservative admission refused the synthetic user-owned protected-location ancestry")...)
+		return results, nil
 	}
 
 	results = make([]caseResult, 0, 24)
@@ -563,6 +579,89 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	return results, nil
 }
 
+func runProtectedAliasAdmissionCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, executable, root, ordinary string) ([]caseResult, error) {
+	name := "actor_protected_alias_admission_refusal"
+	expected := "an independent actor creates a late protected hard-link alias before the read request; admission refuses before once consumption or worker handoff"
+	protectedAlias := filepath.Join(root, "reserved-alias.fixture")
+	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-late-alias", Class: readbrokerstudy.ClassCredential, Path: protectedAlias}); err != nil {
+		return nil, err
+	}
+	if err := session.SelectRoot(root); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	actor, err := readbrokerstudy.NewNativeActor(ctx, executable, root, readbrokerstudy.NativeActorHardlink, filepath.Base(ordinary), filepath.Base(protectedAlias))
+	if err != nil {
+		return []caseResult{unavailableActorCase(name, expected, "independent actor did not become ready: "+boundText(err.Error(), 256))}, nil
+	}
+	actorReady := actor.Ready()
+	transitionErr := actor.Run(ctx)
+	closeErr := actor.Close()
+	actorTransition := actor.TransitionCompleted()
+	actorJoined := actor.Joined()
+	ordinaryInfo, ordinaryErr := os.Stat(ordinary)
+	aliasInfo, aliasErr := os.Stat(protectedAlias)
+	fixtureAlias := ordinaryErr == nil && aliasErr == nil && os.SameFile(ordinaryInfo, aliasInfo)
+	if err := auth.ApproveOnce("protected-alias-admission-1"); err != nil {
+		return []caseResult{unavailableActorCase(name, expected, "fixture once approval could not be staged")}, nil
+	}
+	generationsBefore := session.GenerationSnapshot()
+	result, readErr := session.Read(ctx, root, ordinary, "protected-alias-admission-1")
+	generationsAfter := session.GenerationSnapshot()
+	workerStarted := false
+	for _, evidence := range session.Evidence() {
+		if evidence.Case == "protected-alias-admission-1" {
+			workerStarted = evidence.WorkerStarted
+		}
+	}
+	actorDetail := "actor reached READY, created the registered protected alias, and was reaped"
+	status, classification := "measured_pass", "admission_refusal"
+	detail := result.Detail
+	if transitionErr != nil || closeErr != nil || !actorReady || !actorTransition || !actorJoined || !fixtureAlias || readErr != nil || result.Outcome != readbrokerstudy.ReadRefused || result.Detail != readbrokerstudy.ErrProtectedLocationMutable.Error() || len(result.Bytes) != 0 || workerStarted || auth.ConsumptionCount("protected-alias-admission-1") != 0 || generationsBefore != generationsAfter {
+		status, classification = "inconclusive", "inconclusive"
+		actorDetail = "actor readiness, alias effect, direct-process exit, or refusal boundary was not fully confirmed"
+		detail = "required actor and pre-admission refusal invariants were not established"
+	}
+	item := caseResult{
+		Name: name, Status: status, Classification: classification, Expected: expected,
+		Observed: string(result.Outcome), WorkerStarted: workerStarted, WorkerReady: false,
+		WorkerJoinConfirmed: false, CapabilitySent: false, ReadStarted: false, Published: false,
+		OnceGrantConsumptions: auth.ConsumptionCount("protected-alias-admission-1"),
+		ActorStarted:          true, ActorReady: actorReady, ActorTransition: actorTransition,
+		ActorStartState:    "started",
+		ActorExitConfirmed: actorJoined, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter,
+		FixtureEffect: "actor created a hard link at a registered protected location before read admission; no worker capability or bytes were released",
+		ActorDetail:   actorDetail, AuthorityA: "no conclusion about strict live host-path containment",
+		AuthorityB: "no conclusion about worker object authority; the worker was not started",
+		Detail:     boundText(detail, 768),
+	}
+	if item.Detail == "" {
+		item.Detail = readbrokerstudy.ErrProtectedLocationMutable.Error()
+	}
+	return []caseResult{item}, nil
+}
+
+func admissionUnavailableCases(reason string) []caseResult {
+	cases := unavailableCases(reason)
+	filtered := make([]caseResult, 0, len(cases)-2)
+	for _, item := range cases {
+		if item.Name == "study_session_cleanup" || item.Name == "actor_protected_alias_admission_refusal" {
+			continue
+		}
+		item.Observed = "not executed because conservative protected-location admission refused before authorization and worker setup"
+		item.Detail = reason
+		if strings.HasPrefix(item.Name, "actor_") {
+			item.ActorStartState = "not_attempted_admission_refusal"
+		}
+		if item.Name == "actor_protected_alias_scan_to_handoff" {
+			item.Detail = "the scan-to-handoff race was not exercised in this run; the supplied earlier native archive remains an observed violation; the separate admission-refusal case ran instead"
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
 func runDirectoryCoverageCases(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root string) ([]caseResult, error) {
 	if err := session.SelectRoot(root); err != nil {
 		return nil, err
@@ -747,6 +846,7 @@ func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *re
 		BytesMatchApproved:    result.Outcome == readbrokerstudy.ReadSucceeded && bytes.Equal(result.Bytes, initialBytes),
 		OnceGrantConsumptions: auth.ConsumptionCount(invocationID),
 		ActorStarted:          actorStarted, ActorReady: actorReady,
+		ActorStartState: "started",
 		ActorTransition: actorTransition, ActorExitConfirmed: actorJoined,
 		GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter,
 		WorkerProbe: ev.Probe, FixtureEffect: "fixture transition or worker outcome was not established",
@@ -821,7 +921,7 @@ func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *re
 }
 
 func unavailableActorCase(name, expected, detail string) caseResult {
-	return caseResult{Name: name, Status: "unavailable", Classification: "unavailable", Expected: expected, Observed: "actor transition was not run", FixtureEffect: "none established", AuthorityA: "no conclusion", AuthorityB: "no conclusion", ActorDetail: detail, Detail: detail}
+	return caseResult{Name: name, Status: "unavailable", Classification: "unavailable", Expected: expected, Observed: "actor transition was not run", FixtureEffect: "none established", AuthorityA: "no conclusion", AuthorityB: "no conclusion", ActorStartState: "not_confirmed", ActorDetail: detail, Detail: detail}
 }
 
 func pathExists(path string) bool {

@@ -62,6 +62,12 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 	if b == nil || b.registry == nil {
 		return nil, ErrUnavailable
 	}
+	if err := b.registry.ReadAdmission(); err != nil {
+		if errors.Is(err, ErrProtectedLocationMutable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("protected read admission could not be established: %w", err)
+	}
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !filepath.IsAbs(target) || filepath.Clean(target) != target || strings.ContainsRune(target, '\x00') {
 		return nil, errInvalidReadPath
 	}
@@ -157,6 +163,12 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 func (b *broker) Revalidate(capability PreparedRead) error {
 	if b == nil || b.registry == nil {
 		return ErrUnavailable
+	}
+	if err := b.registry.ReadAdmission(); err != nil {
+		if errors.Is(err, ErrProtectedLocationMutable) {
+			return err
+		}
+		return fmt.Errorf("protected read admission could not be revalidated: %w", err)
 	}
 	prepared, ok := capability.(*preparedRead)
 	if !ok || prepared == nil {
