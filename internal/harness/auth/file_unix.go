@@ -48,7 +48,7 @@ func checkPrivateFile(_ string, info os.FileInfo) error {
 	return nil
 }
 func openPrivateFile(path string) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +98,10 @@ func lockPathContext(ctx context.Context, path string) (func(), error) {
 	}
 }
 func writeAtomic(path string, doc any) error {
+	return writeAtomicProtected(context.Background(), path, doc, nil)
+}
+
+func writeAtomicProtected(ctx context.Context, path string, doc any, beforeWrite func(context.Context, *os.File) error) error {
 	data, err := marshal(doc)
 	if err != nil {
 		return err
@@ -108,8 +112,29 @@ func writeAtomic(path string, doc any) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	info, statErr := f.Stat()
+	if statErr != nil {
+		_ = f.Close()
+		return statErr
+	}
+	defer func() {
+		if current, e := os.Lstat(tmp); e == nil && os.SameFile(info, current) {
+			_ = os.Remove(tmp)
+		}
+	}()
 	if err = f.Chmod(0o600); err == nil {
+		err = ctx.Err()
+	}
+	if err == nil && beforeWrite != nil {
+		err = beforeWrite(ctx, f)
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err == nil {
+		err = verifyTempIdentity(tmp, info)
+	}
+	if err == nil {
 		_, err = f.Write(data)
 	}
 	if err == nil {
@@ -122,6 +147,9 @@ func writeAtomic(path string, doc any) error {
 	if err != nil {
 		return err
 	}
+	if err = verifyTempIdentity(tmp, info); err != nil {
+		return err
+	}
 	if err = os.Rename(tmp, path); err != nil {
 		return err
 	}
@@ -131,4 +159,15 @@ func writeAtomic(path string, doc any) error {
 		_ = d.Close()
 	}
 	return err
+}
+
+func verifyTempIdentity(path string, expected os.FileInfo) error {
+	current, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, current) {
+		return errors.New("protected temporary file identity changed")
+	}
+	return nil
 }

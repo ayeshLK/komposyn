@@ -15,14 +15,23 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 )
+
+type settingsProtectionFunc func(context.Context, string, string, string, *os.File) error
+
+func (f settingsProtectionFunc) Protect(ctx context.Context, owner, class, route string, file *os.File) error {
+	return f(ctx, owner, class, route, file)
+}
 
 func TestDefaultsSaveAndPreservesOtherFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
@@ -46,6 +55,84 @@ func TestDefaultsSaveAndPreservesOtherFields(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"extension"`) || !strings.Contains(string(raw), `"theme": "dark"`) {
 		t.Fatalf("unrelated fields were lost: %s", raw)
+	}
+}
+
+func TestSaveContextRegistersEmptyOverrideBeforeWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "override.json")
+	calls := 0
+	store := Store{Path: path, Protection: settingsProtectionFunc(func(_ context.Context, owner, class, route string, file *os.File) error {
+		calls++
+		if owner != auth.SensitiveOwnerSettings || class != auth.SensitiveClassSettings || route != path || file == nil {
+			t.Fatalf("unexpected protection call: %q %q %q %v", owner, class, route, file)
+		}
+		info, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		if info.Size() != 0 {
+			t.Fatalf("settings bytes written before registration: size=%d", info.Size())
+		}
+		return nil
+	})}
+	if err := store.SaveContext(context.Background(), Settings{Plugin: DefaultUI}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("protection calls=%d", calls)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSaveContextRefusesWhenOwnerBarrierIsIncomplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	want := errors.New("cleanup pending")
+	store := Store{Path: path, Protection: settingsProtectionFunc(func(context.Context, string, string, string, *os.File) error { return want })}
+	if err := store.SaveContext(context.Background(), Settings{Plugin: DefaultUI}); !errors.Is(err, want) {
+		t.Fatalf("SaveContext error=%v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("settings appeared despite failed barrier: %v", err)
+	}
+}
+
+func TestSaveContextHonorsDeadlineWhileWaitingForStoreLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- auth.UpdateJSON(path, func(bool, map[string]json.RawMessage) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Store{Path: path}).SaveContext(ctx, Settings{Plugin: DefaultUI}) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("SaveContext error=%v, want deadline exceeded", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("SaveContext remained blocked after its deadline")
+	}
+	close(release)
+	released = true
+	if err := <-holderDone; err != nil {
+		t.Fatalf("lock holder UpdateJSON: %v", err)
 	}
 }
 

@@ -108,8 +108,9 @@ type OAuthTokens struct {
 }
 
 type Store struct {
-	Path      string
-	LookupEnv func(string) (string, bool)
+	Path       string
+	LookupEnv  func(string) (string, bool)
+	Protection SensitiveFileProtector
 }
 
 func DefaultPath() (string, error) {
@@ -133,6 +134,24 @@ func (s Store) path() (string, error) {
 		return "", e
 	}
 	return filepath.Abs(p)
+}
+
+// EffectivePath returns the absolute path selected by this store, including
+// an explicit override. It does not create or inspect the path.
+func (s Store) EffectivePath() (string, error) { return s.path() }
+
+// RegisterProtection registers the current auth route and, when present, its
+// opened regular-file identity with the host-owned protection lifecycle.
+func (s Store) RegisterProtection(ctx context.Context) error {
+	path, err := s.path()
+	if err != nil {
+		return err
+	}
+	return RegisterSensitiveJSONStore(ctx, s.Protection, SensitiveOwnerAuth, SensitiveClassAuth, path)
+}
+
+func (s Store) writeAtomic(ctx context.Context, path string, value any) error {
+	return atomicWrite(ctx, path, value, SensitiveOwnerAuth, SensitiveClassAuth, s.Protection)
 }
 
 func (s Store) ListMetadata() ([]Metadata, error) {
@@ -401,7 +420,7 @@ func (s Store) RefreshOAuthContext(ctx context.Context, id string, now func() ti
 				credential.ReconnectRequired = true
 				p.Auth.OAuth = &credential
 				doc.Credentials[i] = p
-				if err := writeAtomic(path, doc); err != nil {
+				if err := s.writeAtomic(context.WithoutCancel(ctx), path, doc); err != nil {
 					return Profile{}, errors.Join(ErrOAuthRefreshOutcomeUnknown, err)
 				}
 				return Profile{}, ErrOAuthRefreshOutcomeUnknown
@@ -421,7 +440,7 @@ func (s Store) RefreshOAuthContext(ctx context.Context, id string, now func() ti
 				if err := validateDocument(doc); err != nil {
 					return Profile{}, err
 				}
-				if err := writeAtomic(path, doc); err != nil {
+				if err := s.writeAtomic(context.WithoutCancel(ctx), path, doc); err != nil {
 					return Profile{}, err
 				}
 			}
@@ -446,7 +465,7 @@ func (s Store) RefreshOAuthContext(ctx context.Context, id string, now func() ti
 		if err := validateDocument(doc); err != nil {
 			return Profile{}, err
 		}
-		if err := writeAtomic(path, doc); err != nil {
+		if err := s.writeAtomic(context.WithoutCancel(ctx), path, doc); err != nil {
 			return Profile{}, err
 		}
 		return cloneProfile(p), nil
@@ -650,7 +669,7 @@ func (s Store) updateContext(ctx context.Context, change func(*document) error) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return writeAtomic(path, doc)
+	return s.writeAtomic(ctx, path, doc)
 }
 
 func readFile(path string) (*document, error) {
@@ -821,6 +840,13 @@ func WriteJSON(path string, value any) error {
 // UpdateJSON atomically performs a locked read/modify/write on a private JSON
 // object. It is used by small settings stores that preserve unknown fields.
 func UpdateJSON(path string, update func(bool, map[string]json.RawMessage) error) error {
+	return updateJSON(context.Background(), path, update, nil, "", "")
+}
+
+func updateJSON(ctx context.Context, path string, update func(bool, map[string]json.RawMessage) error, protector SensitiveFileProtector, owner, class string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
@@ -828,7 +854,7 @@ func UpdateJSON(path string, update func(bool, map[string]json.RawMessage) error
 	if err = ensurePrivateDir(filepath.Dir(abs)); err != nil {
 		return err
 	}
-	unlock, err := lockPath(abs)
+	unlock, err := lockPathContext(ctx, abs)
 	if err != nil {
 		return err
 	}
@@ -881,5 +907,5 @@ func UpdateJSON(path string, update func(bool, map[string]json.RawMessage) error
 	if err = update(exists, raw); err != nil {
 		return err
 	}
-	return writeAtomic(abs, raw)
+	return atomicWrite(ctx, abs, raw, owner, class, protector)
 }
