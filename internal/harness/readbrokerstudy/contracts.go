@@ -170,8 +170,13 @@ const (
 	CheckpointAfterOpen     Checkpoint = "after_open"
 	CheckpointAfterClassify Checkpoint = "after_classify"
 	CheckpointBeforeHandoff Checkpoint = "before_handoff"
-	CheckpointAfterCapture  Checkpoint = "after_capture_before_publish"
-	CheckpointBeforePublish Checkpoint = "before_publish"
+	// CheckpointAfterFinalRevalidation is the last deterministic fixture hook
+	// after the broker's final policy scan and before duplicating or releasing
+	// the read capability. Native actor scenarios use it to expose the
+	// check-to-handoff namespace window.
+	CheckpointAfterFinalRevalidation Checkpoint = "after_final_revalidation_before_handoff"
+	CheckpointAfterCapture           Checkpoint = "after_capture_before_publish"
+	CheckpointBeforePublish          Checkpoint = "before_publish"
 )
 
 type ReadEvidence struct {
@@ -180,6 +185,8 @@ type ReadEvidence struct {
 	Generations      GenerationSet `json:"generations"`
 	Probe            WorkerProbe   `json:"worker_probe,omitempty"`
 	WorkerStarted    bool          `json:"worker_started"`
+	WorkerReady      bool          `json:"worker_ready"`
+	WorkerJoined     bool          `json:"worker_join_confirmed"`
 	CapabilitySent   bool          `json:"capability_sent"`
 	ReadStarted      bool          `json:"read_started"`
 	Published        bool          `json:"published"`
@@ -202,6 +209,7 @@ type FixtureSession interface {
 	SetCheckpointHook(CheckpointHook)
 	PublishedResults() [][]byte
 	Evidence() []ReadEvidence
+	GenerationSnapshot() GenerationSet
 	Close(context.Context) error
 }
 

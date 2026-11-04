@@ -222,6 +222,17 @@ func (s *fixtureSession) Evidence() []ReadEvidence {
 	return results
 }
 
+// GenerationSnapshot is test-harness evidence only. It exposes no authority
+// and is used to record whether coordinator-owned revisions changed around a
+// disposable native scenario.
+func (s *fixtureSession) GenerationSnapshot() GenerationSet {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	generation := s.gen
+	generation.Policy = s.registry.View().Generation
+	return generation
+}
+
 func (s *fixtureSession) Read(ctx context.Context, root, target, invocationID string) (WorkerResult, error) {
 	if ctx == nil || invocationID == "" {
 		return WorkerResult{Outcome: ReadRefused, Detail: ErrInvocationID.Error()}, nil
@@ -355,6 +366,7 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("revoked before read capability handoff", cleanup)}
 	}
 	op.state = StateReady
+	op.evidence.WorkerReady = true
 	op.evidence.Outcome = ReadNotExecuted
 	s.mu.Unlock()
 
@@ -373,6 +385,13 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 		refusal := refusalFor(err)
 		refusal.Detail = withTerminationDiagnostic(refusal.Detail, cleanup)
 		return refusal
+	}
+	if err := runCheckpoint(s.checkpointHook(), CheckpointAfterFinalRevalidation); err != nil {
+		cleanup := s.terminateAndWait(op, worker)
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("post-validation fixture transition failed and worker cleanup is incomplete", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadCancelled, Detail: withTerminationDiagnostic("post-validation fixture transition failed before capability handoff", cleanup)}
 	}
 	capability, err := prepared.DuplicateForWorker()
 	if err != nil {
@@ -635,6 +654,7 @@ func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
 		op.state = StateTerminating
 		op.completed = false
 		op.evidence.Outcome = ReadUnknown
+		op.evidence.WorkerJoined = false
 		if !op.evidenceRecorded {
 			s.evidence = append(s.evidence, op.evidence)
 			op.evidenceRecorded = true
@@ -665,6 +685,7 @@ func (s *fixtureSession) completeJoinedLocked(op *readOperation, result WorkerRe
 	}
 	op.state = StateJoined
 	op.completed = true
+	op.evidence.WorkerJoined = op.workerJoined
 	if result.Outcome == "" {
 		result.Outcome = ReadUnknown
 	}

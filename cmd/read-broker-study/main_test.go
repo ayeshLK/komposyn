@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -25,6 +26,90 @@ import (
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 )
+
+type directoryCoverageSequenceSession struct {
+	selectedRoot       string
+	rootAtRegistration string
+	readRoots          []string
+	registrations      []readbrokerstudy.OwnerRegistration
+}
+
+func (s *directoryCoverageSequenceSession) SelectRoot(root string) error {
+	s.selectedRoot = root
+	return nil
+}
+
+func (s *directoryCoverageSequenceSession) Register(registration readbrokerstudy.OwnerRegistration) error {
+	s.rootAtRegistration = s.selectedRoot
+	s.registrations = append(s.registrations, registration)
+	return nil
+}
+
+func (*directoryCoverageSequenceSession) RegisterRotation(string, []readbrokerstudy.OwnerRegistration) error {
+	return nil
+}
+
+func (*directoryCoverageSequenceSession) Revoke(string) error                              { return nil }
+func (*directoryCoverageSequenceSession) SetCheckpointHook(readbrokerstudy.CheckpointHook) {}
+func (*directoryCoverageSequenceSession) PublishedResults() [][]byte                       { return nil }
+func (*directoryCoverageSequenceSession) Evidence() []readbrokerstudy.ReadEvidence         { return nil }
+func (*directoryCoverageSequenceSession) GenerationSnapshot() readbrokerstudy.GenerationSet {
+	return readbrokerstudy.GenerationSet{}
+}
+func (*directoryCoverageSequenceSession) Close(context.Context) error { return nil }
+
+func (s *directoryCoverageSequenceSession) Read(_ context.Context, root, target, _ string) (readbrokerstudy.WorkerResult, error) {
+	s.readRoots = append(s.readRoots, s.selectedRoot)
+	if root != s.selectedRoot {
+		return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrOutOfScope.Error()}, nil
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrOutOfScope.Error()}, nil
+	}
+	if relative == filepath.Join("registered-directory", "descendant.fixture") {
+		return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrProtected.Error()}, nil
+	}
+	if relative == "moved-directory-descendant.fixture" {
+		return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrDirectoryCoverage.Error()}, nil
+	}
+	return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadUnknown}, nil
+}
+
+func TestDirectoryCoverageCasesRestoreRootAndRequireProtectedRefusals(t *testing.T) {
+	root := t.TempDir()
+	session := &directoryCoverageSequenceSession{selectedRoot: filepath.Join(root, "previous-actor-root")}
+	authorizer := readbrokerstudy.NewOnceGrantFixture()
+	results, err := runDirectoryCoverageCases(session, authorizer, root)
+	if err != nil {
+		t.Fatalf("run directory coverage cases: %v", err)
+	}
+	if session.selectedRoot != root {
+		t.Fatalf("selected root=%q, want restored fixture root %q", session.selectedRoot, root)
+	}
+	if len(results) != 2 {
+		t.Fatalf("directory cases=%d, want two", len(results))
+	}
+	want := []struct {
+		name   string
+		detail string
+	}{
+		{name: "registered_directory_descendant_inside", detail: readbrokerstudy.ErrProtected.Error()},
+		{name: "registered_directory_descendant_moved_out", detail: readbrokerstudy.ErrDirectoryCoverage.Error()},
+	}
+	for i, expected := range want {
+		result := results[i]
+		if result.Name != expected.name || result.Status != "measured_pass" || result.Observed != string(readbrokerstudy.ReadRefused) || result.Detail != expected.detail {
+			t.Errorf("directory case %d=%+v, want protected refusal %q", i, result, expected.detail)
+		}
+	}
+	if len(session.registrations) != 1 || !session.registrations[0].Directory {
+		t.Fatalf("directory registrations=%+v, want one registered directory", session.registrations)
+	}
+	if session.rootAtRegistration != root || len(session.readRoots) != 2 || session.readRoots[0] != root || session.readRoots[1] != root {
+		t.Fatalf("directory sequence root=%q reads=%v, want root restored before registration and both reads", session.rootAtRegistration, session.readRoots)
+	}
+}
 
 func TestInspectEnvironmentDoesNotRunUntrustedBubblewrapCandidate(t *testing.T) {
 	base := t.TempDir()
@@ -80,5 +165,49 @@ func TestWorkerPolicyReportsPathBackedAndSnapshotModesAccurately(t *testing.T) {
 	if !strings.Contains(legacyMount, "--ro-bind-data") || !strings.Contains(legacyVerification, "sealed verifier") ||
 		!strings.Contains(legacySource, "sealed memfd") {
 		t.Fatalf("snapshot mode report is inaccurate: mount=%q verify=%q", legacyMount, legacyVerification)
+	}
+}
+
+func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testing.T) {
+	planned := []string{
+		"ordinary_positive", "protected_direct", "provider_source_explicit_once",
+		"protected_existing_hardlink", "protected_late_hardlink",
+		"protected_object_renamed_into_ordinary_tree", "protected_location_replaced_before_open",
+		"ordinary_object_moved_into_protected_location", "cancel_before_release",
+		"revoke_after_capture_before_publish", "registered_directory_descendant_inside",
+		"registered_directory_descendant_moved_out", "actor_protected_alias_scan_to_handoff",
+		"actor_selected_root_relocated_after_scan", "actor_parent_relocated_outside_root_after_scan",
+		"actor_target_replaced_after_classification", "actor_unregistered_protected_descendant_moved_out",
+		"actor_protected_ancestor_relocation", "study_session_cleanup",
+	}
+	cases := unavailableCases("trusted Bubblewrap unavailable")
+	if len(cases) != len(planned) {
+		t.Fatalf("unavailable cases=%d, want all %d planned scenarios", len(cases), len(planned))
+	}
+	seen := make(map[string]bool, len(cases))
+	for _, result := range cases {
+		if seen[result.Name] {
+			t.Fatalf("duplicate unavailable case %q", result.Name)
+		}
+		seen[result.Name] = true
+		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition {
+			t.Fatalf("unavailable case claims activity: %+v", result)
+		}
+	}
+	for _, name := range planned {
+		if !seen[name] {
+			t.Errorf("unavailable report omitted planned case %q", name)
+		}
+	}
+	encoded, err := json.Marshal(cases[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := fields["generations_before"]; present {
+		t.Fatal("unavailable scenario serialized an unmeasured generation snapshot")
 	}
 }

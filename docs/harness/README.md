@@ -413,7 +413,12 @@ pathname-containment gate in the earlier policy.
 The [brokered read feasibility harness](read-broker-feasibility.md) adds an
 experimental host-owned protected-object registry and a fixed Bubblewrap worker
 that receives one authorized read descriptor. It is not production dispatch;
-owner registration, sandbox execution and native actor-race evidence remain
-limited as described in the report, and no filesystem tool is enabled. To
-produce a bounded, checksummed evidence archive from a normal Linux host
-terminal, follow the [manual read-broker runner guide](read-broker-manual-runner.md).
+its bounded separate-process namespace actors cover selected-root and parent
+relocation, target replacement, a late protected alias, and a moved protected
+directory child. Those source scenarios do not count as native evidence until
+the selected revision runs with a trusted Bubblewrap backend. Protected-owner
+rotation, mount boundaries, a protected-ancestor race, descendant cleanup, and
+production integration remain limited or pending; no filesystem tool is
+enabled. See the [scenario matrix](read-broker-native-actor.md) and follow the
+[manual read-broker runner guide](read-broker-manual-runner.md) to produce a
+bounded, checksummed archive from a normal Linux host terminal.
