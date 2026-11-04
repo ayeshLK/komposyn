@@ -37,6 +37,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"golang.org/x/sys/unix"
@@ -154,45 +155,47 @@ type caseResult struct {
 }
 
 type abnormalLifecycleEvidence struct {
-	FaultInjection                             string `json:"fault_injection,omitempty"`
-	CoordinatorStarted                         bool   `json:"coordinator_started"`
-	CoordinatorTerminationRequested            bool   `json:"coordinator_termination_requested"`
-	CoordinatorExitObserved                    bool   `json:"coordinator_exit_observed"`
-	CoordinatorDirectWaitConfirmed             bool   `json:"coordinator_direct_wait_confirmed"`
-	CoordinatorDiagnosticPresent               bool   `json:"coordinator_diagnostic_present"`
-	WorkerReady                                bool   `json:"worker_ready"`
-	CapabilityHeldAcknowledged                 bool   `json:"capability_held_acknowledged"`
-	CapabilityIdentityMatchesTarget            bool   `json:"capability_identity_matches_target"`
-	BubblewrapPIDFDIdentityEstablished         bool   `json:"bubblewrap_pidfd_identity_established"`
-	NamespaceInitPIDFDIdentityEstablished      bool   `json:"namespace_init_pidfd_identity_established"`
-	NamespaceInitExitedBeforeSupervisorCleanup bool   `json:"namespace_init_exited_before_supervisor_cleanup"`
-	BubblewrapExitedBeforeSupervisorCleanup    bool   `json:"bubblewrap_exited_before_supervisor_cleanup"`
-	NamespaceInitExitedAfterSupervisorCleanup  bool   `json:"namespace_init_exited_after_supervisor_cleanup"`
-	BubblewrapExitedAfterSupervisorCleanup     bool   `json:"bubblewrap_exited_after_supervisor_cleanup"`
-	BubblewrapReapedBySupervisor               bool   `json:"bubblewrap_reaped_by_supervisor"`
-	SupervisorCleanupAttempted                 bool   `json:"supervisor_cleanup_attempted"`
-	SupervisorSentCleanupSignal                bool   `json:"supervisor_sent_cleanup_signal"`
-	PIDFDObservationError                      bool   `json:"pidfd_observation_error"`
-	WorkerAliveAtPendingBoundary               bool   `json:"worker_alive_at_pending_boundary"`
-	CleanupPendingObserved                     bool   `json:"cleanup_pending_observed"`
-	AdmissionAttempted                         bool   `json:"admission_attempted"`
-	AdmissionBlocked                           bool   `json:"admission_blocked"`
-	AdmissionOnceConsumptions                  int    `json:"admission_once_consumptions"`
-	OwnerWriteAttempted                        bool   `json:"owner_write_attempted"`
-	OwnerWriteAuthorized                       bool   `json:"owner_write_authorized"`
-	OwnerWriteStarted                          bool   `json:"owner_write_started"`
-	SensitiveBytesPresentBeforeJoin            bool   `json:"sensitive_bytes_present_before_join"`
-	RegistryPinsBefore                         int    `json:"registry_pins_before"`
-	RegistryPinsWhilePending                   int    `json:"registry_pins_while_pending"`
-	RegistryPinsAfterCleanup                   int    `json:"registry_pins_after_cleanup"`
-	CleanupRecordRetained                      bool   `json:"cleanup_record_retained"`
-	StalePublicationSuppressed                 bool   `json:"stale_publication_suppressed"`
-	DirectWorkerJoinConfirmed                  bool   `json:"direct_worker_join_confirmed"`
-	CleanupOwner                               string `json:"cleanup_owner"`
-	NamespaceDescendantEvidence                string `json:"namespace_descendant_evidence"`
-	FixtureRootRetained                        bool   `json:"fixture_root_retained"`
-	CleanupComplete                            bool   `json:"cleanup_complete"`
-	Detail                                     string `json:"detail,omitempty"`
+	FaultInjection                                string `json:"fault_injection,omitempty"`
+	CoordinatorStarted                            bool   `json:"coordinator_started"`
+	CoordinatorTerminationRequested               bool   `json:"coordinator_termination_requested"`
+	CoordinatorExitObserved                       bool   `json:"coordinator_exit_observed"`
+	CoordinatorDirectWaitConfirmed                bool   `json:"coordinator_direct_wait_confirmed"`
+	CoordinatorDiagnosticPresent                  bool   `json:"coordinator_diagnostic_present"`
+	BubblewrapLiveBeforeCoordinatorTermination    bool   `json:"bubblewrap_live_before_coordinator_termination"`
+	NamespaceInitLiveBeforeCoordinatorTermination bool   `json:"namespace_init_live_before_coordinator_termination"`
+	WorkerReady                                   bool   `json:"worker_ready"`
+	CapabilityHeldAcknowledged                    bool   `json:"capability_held_acknowledged"`
+	CapabilityIdentityMatchesTarget               bool   `json:"capability_identity_matches_target"`
+	BubblewrapPIDFDIdentityEstablished            bool   `json:"bubblewrap_pidfd_identity_established"`
+	NamespaceInitPIDFDIdentityEstablished         bool   `json:"namespace_init_pidfd_identity_established"`
+	NamespaceInitExitedBeforeSupervisorCleanup    bool   `json:"namespace_init_exited_before_supervisor_cleanup"`
+	BubblewrapExitedBeforeSupervisorCleanup       bool   `json:"bubblewrap_exited_before_supervisor_cleanup"`
+	NamespaceInitExitedAfterSupervisorCleanup     bool   `json:"namespace_init_exited_after_supervisor_cleanup"`
+	BubblewrapExitedAfterSupervisorCleanup        bool   `json:"bubblewrap_exited_after_supervisor_cleanup"`
+	BubblewrapReapedBySupervisor                  bool   `json:"bubblewrap_reaped_by_supervisor"`
+	SupervisorCleanupAttempted                    bool   `json:"supervisor_cleanup_attempted"`
+	SupervisorSentCleanupSignal                   bool   `json:"supervisor_sent_cleanup_signal"`
+	PIDFDObservationError                         bool   `json:"pidfd_observation_error"`
+	WorkerAliveAtPendingBoundary                  bool   `json:"worker_alive_at_pending_boundary"`
+	CleanupPendingObserved                        bool   `json:"cleanup_pending_observed"`
+	AdmissionAttempted                            bool   `json:"admission_attempted"`
+	AdmissionBlocked                              bool   `json:"admission_blocked"`
+	AdmissionOnceConsumptions                     int    `json:"admission_once_consumptions"`
+	OwnerWriteAttempted                           bool   `json:"owner_write_attempted"`
+	OwnerWriteAuthorized                          bool   `json:"owner_write_authorized"`
+	OwnerWriteStarted                             bool   `json:"owner_write_started"`
+	SensitiveBytesPresentBeforeJoin               bool   `json:"sensitive_bytes_present_before_join"`
+	RegistryPinsBefore                            int    `json:"registry_pins_before"`
+	RegistryPinsWhilePending                      int    `json:"registry_pins_while_pending"`
+	RegistryPinsAfterCleanup                      int    `json:"registry_pins_after_cleanup"`
+	CleanupRecordRetained                         bool   `json:"cleanup_record_retained"`
+	StalePublicationSuppressed                    bool   `json:"stale_publication_suppressed"`
+	DirectWorkerJoinConfirmed                     bool   `json:"direct_worker_join_confirmed"`
+	CleanupOwner                                  string `json:"cleanup_owner"`
+	NamespaceDescendantEvidence                   string `json:"namespace_descendant_evidence"`
+	FixtureRootRetained                           bool   `json:"fixture_root_retained"`
+	CleanupComplete                               bool   `json:"cleanup_complete"`
+	Detail                                        string `json:"detail,omitempty"`
 }
 
 type ownerLifecycleEvidence struct {
@@ -760,7 +763,15 @@ type observedWorkerLauncher struct {
 }
 
 func (l *observedWorkerLauncher) Start(ctx context.Context) (readbrokerstudy.SandboxWorker, error) {
-	worker, err := l.inner.Start(ctx)
+	launchContext := ctx
+	if l.gate != nil {
+		// In these research-only fault-injection cases, invalidation still
+		// cancels the operation, while child termination is routed through the
+		// gate. Capability-hold mode retains its separate fixed 60-second
+		// watchdog; normal workers keep their caller-cancelled context.
+		launchContext = context.WithoutCancel(ctx)
+	}
+	worker, err := l.inner.Start(launchContext)
 	if err != nil {
 		return nil, err
 	}
@@ -995,7 +1006,7 @@ func runLifecycleCoordinator(args []string) error {
 		}
 		return nil
 	})
-	readCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	readCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	_, readErr := session.Read(readCtx, *root, *target, invocation)
 	if readErr != nil {
@@ -1105,6 +1116,21 @@ func observePIDFDExit(fd int, timeout time.Duration) (bool, error) {
 	}
 }
 
+func pidfdIsAlive(fd int) (bool, error) {
+	exited, err := observePIDFDExit(fd, 0)
+	if err != nil {
+		return false, err
+	}
+	return !exited, nil
+}
+
+func heldWorkerProcessesLive(namespaceInitPIDFD, bubblewrapPIDFD int) (namespaceInitAlive, bubblewrapAlive bool, err error) {
+	var namespaceInitErr, bubblewrapErr error
+	namespaceInitAlive, namespaceInitErr = pidfdIsAlive(namespaceInitPIDFD)
+	bubblewrapAlive, bubblewrapErr = pidfdIsAlive(bubblewrapPIDFD)
+	return namespaceInitAlive, bubblewrapAlive, errors.Join(namespaceInitErr, bubblewrapErr)
+}
+
 func reapAdoptedChild(pid int, deadline time.Time) bool {
 	for time.Now().Before(deadline) {
 		var status unix.WaitStatus
@@ -1161,7 +1187,7 @@ func runCoordinatorDeathCase(bwrap, parent string) (row caseResult, retain bool,
 	if err != nil {
 		row.Status, row.Classification = "unavailable", "unavailable"
 		row.Observed = "coordinator death observer could not establish child reaping ownership"
-		evidence.Detail = "PR_SET_CHILD_SUBREAPER was unavailable"
+		evidence.Detail = err.Error()
 		return row, false, nil
 	}
 	defer func() {
@@ -1329,6 +1355,24 @@ func runCoordinatorDeathCase(bwrap, parent string) (row caseResult, retain bool,
 		evidence.Detail = "target identity or single once-consumption precondition failed"
 		return row, !waited, nil
 	}
+	initAlive, bwrapAlive, liveErr := heldWorkerProcessesLive(initPIDFD, bwrapPIDFD)
+	evidence.NamespaceInitLiveBeforeCoordinatorTermination = initAlive
+	evidence.BubblewrapLiveBeforeCoordinatorTermination = bwrapAlive
+	evidence.PIDFDObservationError = liveErr != nil
+	if liveErr != nil || !initAlive || !bwrapAlive {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "held acknowledgement arrived without both pidfd-observed processes live immediately before coordinator termination"
+		evidence.Detail = "stale or expired worker evidence was refused; coordinator-death behavior was not classified"
+		return row, !waited, nil
+	}
 	evidence.CoordinatorTerminationRequested = true
 	if err := cmd.Process.Kill(); err != nil {
 		evidence.CoordinatorTerminationRequested = false
@@ -1485,7 +1529,7 @@ func runShutdownDeadlineCase(bwrap, workerPath, parent string) (row caseResult) 
 		AuthorityA: "not applicable; process lifecycle only", AuthorityB: "object authority is not re-evaluated by this lifecycle experiment",
 		FixtureEffect: "synthetic target stays unchanged and the consumed invocation is not replayed",
 	}
-	evidence := &abnormalLifecycleEvidence{FaultInjection: "real termination request is held behind an explicit fixture release gate after Close requests termination", CleanupOwner: "fixture supervisor gate then fixture session; later Close retry",
+	evidence := &abnormalLifecycleEvidence{FaultInjection: "operation cancellation and explicit termination are both routed through the fixture gate; the held worker uses a fixed 60-second watchdog", CleanupOwner: "fixture supervisor gate then fixture session; later Close retry",
 		NamespaceDescendantEvidence: "pidfd observes Bubblewrap command and PID-namespace init only; not arbitrary descendants"}
 	row.Lifecycle = evidence
 	root := filepath.Join(parent, name)
@@ -1681,7 +1725,7 @@ func runOwnerCleanupPendingNativeCase(bwrap, workerPath, parent string) (row cas
 		AuthorityA: "not applicable; process lifecycle only", AuthorityB: "registered identity and owner barrier only",
 		FixtureEffect: "owner writes synthetic sensitive bytes only after join through the same registered object; stale worker output is not published",
 	}
-	evidence := &abnormalLifecycleEvidence{FaultInjection: "real termination request is held behind an explicit fixture release gate after registration requests termination", CleanupOwner: "owner fixture and study session; supervisor releases the real worker termination",
+	evidence := &abnormalLifecycleEvidence{FaultInjection: "operation cancellation and explicit termination are both routed through the fixture gate; the held worker uses a fixed 60-second watchdog", CleanupOwner: "owner fixture and study session; supervisor releases the real worker termination",
 		NamespaceDescendantEvidence: "pidfd observes Bubblewrap command and PID-namespace init only; not arbitrary descendants"}
 	row.Lifecycle = evidence
 	root := filepath.Join(parent, name)
@@ -1938,19 +1982,29 @@ func (b *boundedStudyOutput) hasOutput() bool {
 
 func enableChildSubreaper() (func(), error) {
 	runtime.LockOSThread()
-	previous, err := unix.PrctlRetInt(unix.PR_GET_CHILD_SUBREAPER, 0, 0, 0, 0)
+	previous, err := childSubreaperSetting()
 	if err != nil {
 		runtime.UnlockOSThread()
-		return nil, err
+		return nil, fmt.Errorf("PR_GET_CHILD_SUBREAPER failed: %w", err)
 	}
 	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
 		runtime.UnlockOSThread()
-		return nil, err
+		return nil, fmt.Errorf("PR_SET_CHILD_SUBREAPER failed: %w", err)
 	}
+	var restoreOnce sync.Once
 	return func() {
-		_ = unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, uintptr(previous), 0, 0, 0)
-		runtime.UnlockOSThread()
+		restoreOnce.Do(func() {
+			_ = unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, uintptr(previous), 0, 0, 0)
+			runtime.UnlockOSThread()
+		})
 	}, nil
+}
+
+func childSubreaperSetting() (int32, error) {
+	var enabled int32
+	err := unix.Prctl(unix.PR_GET_CHILD_SUBREAPER, uintptr(unsafe.Pointer(&enabled)), 0, 0, 0)
+	runtime.KeepAlive(&enabled)
+	return enabled, err
 }
 
 func evidenceFor(session readbrokerstudy.FixtureSession, invocationID string) (*readbrokerstudy.ReadEvidence, bool) {

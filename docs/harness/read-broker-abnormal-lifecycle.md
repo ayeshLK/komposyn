@@ -47,9 +47,9 @@ record; it does not replay a read or restore its consumed once approval.
 
 | Failure / checkpoint | Processes and capability | Cleanup owner and completion evidence | Acceptance interpretation |
 | --- | --- | --- | --- |
-| Coordinator is SIGKILLed while worker acknowledges the exact held target FD | Outer supervisor retains coordinator process handle and a pidfd for the host-visible Bubblewrap/worker process; worker has the only transferred target FD | Bubblewrap `--die-with-parent` behavior is observed by polling the pinned pidfd before any supervisor signal; then the supervisor reaps the task-owned adopted child | Backend-driven direct process exit is distinct from later supervisor cleanup. Does not prove arbitrary namespace descendants; the fixed seccomp profile denies process creation and permits Go threads. |
-| Coordinator shutdown deadline expires while a real worker holds the capability | Coordinator session still owns the operation record, registry pins, and launcher; worker remains at its read-release gate | A labeled fixture gate delays forwarding the real termination request. The supervisor observes the real worker alive with pidfd; it then releases the gate, sends the real kill, waits, and retries `Close` | Deterministic control-plane fault injection, not a natural kernel join failure. Pass requires retained ownership and blocked admission/publication until actual wait/reap confirmation. |
-| Owner rotation is requested while a real worker holds the capability | Same synthetic target object is held by worker and by fixture owner's write FD; registry commits the protected pin and policy revision | A labeled fixture gate delays forwarding the real termination request. Owner completion is attempted during the pending interval and must record no authorization, start, or bytes. After gate release, the real worker is killed and waited; retry verifies the write FD matches the retained pin | Pass only if no sensitive bytes are written before join and the retry writes through the exact registered object. Once consumption remains one; stale read publication remains suppressed. |
+| Coordinator is SIGKILLed while worker acknowledges the exact held target FD | Outer supervisor retains coordinator process handle and pidfds for both Bubblewrap and PID-namespace init; worker has the only transferred target FD | Immediately before killing the coordinator, the supervisor confirms both pidfds are still live. A fixed 60-second hold-mode watchdog and 45-second coordinator operation deadline leave a bounded observation window; after coordinator death, pidfds are observed before any supervisor cleanup | A stale held event or already-exited process is inconclusive and never a parent-death pass. Backend-driven direct process exit is distinct from later supervisor cleanup. Does not prove arbitrary namespace descendants. |
+| Coordinator shutdown deadline expires while a real worker holds the capability | Coordinator session still owns the operation record, registry pins, and launcher; worker remains at its read-release gate | The fixture wrapper routes both operation-context cancellation and explicit `Terminate` through a labeled gate. Its fixed worker watchdog is 60 seconds. The supervisor observes the real worker alive with pidfd; it then releases the gate, sends the real kill, waits, and retries `Close` | Deterministic control-plane fault injection, not a natural kernel join failure. The normal non-held worker remains caller-cancelled with the existing five-second watchdog. Pass requires retained ownership and blocked admission/publication until actual wait/reap confirmation. |
+| Owner rotation is requested while a real worker holds the capability | Same synthetic target object is held by worker and by fixture owner's write FD; registry commits the protected pin and policy revision | The fixture wrapper routes both operation-context cancellation and explicit `Terminate` through a labeled gate. Owner completion is attempted during the pending interval and must record no authorization, start, or bytes. After gate release, the real worker is killed and waited; retry verifies the write FD matches the retained pin | Pass only if no sensitive bytes are written before join and the retry writes through the exact registered object. Once consumption remains one; stale read publication remains suppressed. This is not a natural kernel wait failure. |
 | Setup/handshake fails or observer is interrupted | Only already-created task-owned handles/resources may remain | Every started child remains tracked; abort sends a bounded coordinator command where possible, then exact `Process`/pidfd cleanup is attempted and observed | Missing readiness or failed observer cleanup is unavailable/inconclusive evidence, never a pass. Retain the fixture root if a process may still use it. |
 
 ## Process observation and trust assumptions
@@ -62,10 +62,17 @@ pidfd observes one exact process across PID reuse; a PID lookup, a successful
 signal request, or `exec.Cmd.Wait` on the coordinator is not worker-exit
 evidence.
 
+`PR_GET_CHILD_SUBREAPER` writes its previous value through the pointer argument;
+the supervisor uses that form, distinguishes GET from SET failures, and restores
+the prior value on confirmed cleanup. A regression exercises GET, SET, and
+restore on the native Linux process.
+
 The outer process temporarily becomes a Linux child subreaper for the
 coordinator-death fixture, so an orphaned task-owned Bubblewrap child can be
 reaped by the surviving supervisor. It polls the worker pidfd and records its
-state before sending any cleanup signal. If `--die-with-parent` does not stop
+state immediately before coordinator termination and again before sending any
+cleanup signal. A missing/error/dead liveness precondition rejects the parent-
+death classification. If `--die-with-parent` does not stop
 the worker by the deadline, that observation is preserved as a backend cleanup
 failure; only then may the supervisor signal that exact pidfd and attempt to
 reap it. A fixture root is retained if cleanup cannot be confirmed.
@@ -105,9 +112,11 @@ database, or user data is involved. No process/resource exhaustion is attempted.
 - **Inconclusive:** the experiment started but failed to establish a required
   identity, event, effect, or cleanup fact.
 - **Fault-injection evidence:** the experiment deliberately delays a control
-  action while a real Bubblewrap worker holds the real synthetic FD. It tests
-  retained obligations and barriers; it does not establish a natural process
-  hang or kernel cleanup failure.
+  action while a real Bubblewrap worker holds the real synthetic FD. In the
+  shutdown and owner cases, it routes operation cancellation as well as the
+  explicit termination call through the gate and uses a bounded 60-second
+  worker watchdog. It tests retained obligations and barriers; it does not
+  establish a natural process hang or kernel cleanup failure.
 
 Direct child reaping, namespace cleanup, descriptor closure, owner write
 eligibility, and stale-result suppression remain separate reported facts.

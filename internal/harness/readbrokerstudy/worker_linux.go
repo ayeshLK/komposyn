@@ -764,7 +764,11 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		return nil, fmt.Errorf("%w: worker verification snapshot could not be reopened", ErrUnavailable)
 	}
 	defer verificationFile.Close()
-	workerCtx, cancel := context.WithTimeout(ctx, time.Duration(workerDeadline))
+	watchdog := time.Duration(workerDeadline)
+	if l.holdBeforeRead {
+		watchdog = time.Duration(capabilityHoldWorkerDeadline)
+	}
+	workerCtx, cancel := context.WithTimeout(ctx, watchdog)
 	args := effectiveBubblewrapArguments(l.capability.BindMode, l.holdBeforeRead)
 	if args == nil {
 		cancel()

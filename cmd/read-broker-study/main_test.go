@@ -22,12 +22,15 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
+	"golang.org/x/sys/unix"
 )
 
 type ownerLifecycleTestSession struct {
@@ -79,6 +82,201 @@ func TestTerminationRequestGateDelaysOnlyRealTermination(t *testing.T) {
 	}
 	if worker.terminated != 1 {
 		t.Fatalf("termination calls=%d, want one actual worker termination", worker.terminated)
+	}
+}
+
+func TestChildSubreaperGetterSetterAndRestore(t *testing.T) {
+	before, err := childSubreaperSetting()
+	if err != nil {
+		t.Fatalf("read prior child-subreaper setting: %v", err)
+	}
+	restore, err := enableChildSubreaper()
+	if err != nil {
+		t.Fatalf("enable child subreaper: %v", err)
+	}
+	t.Cleanup(restore)
+	during, err := childSubreaperSetting()
+	if err != nil {
+		t.Fatalf("read enabled child-subreaper setting: %v", err)
+	}
+	if during != 1 {
+		t.Fatalf("child-subreaper setting while enabled=%d, want 1", during)
+	}
+	restore()
+	after, err := childSubreaperSetting()
+	if err != nil {
+		t.Fatalf("read restored child-subreaper setting: %v", err)
+	}
+	if after != before {
+		t.Fatalf("restored child-subreaper setting=%d, prior value was %d", after, before)
+	}
+}
+
+func TestLifecycleGateMediatesContextBoundChildCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	launcher := &observedWorkerLauncher{inner: contextBoundTestLauncher{}, gate: newTerminationRequestGate()}
+	worker, err := launcher.Start(ctx)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	observed := worker.(*observedSandboxWorker)
+	processWorker := observed.SandboxWorker.(*contextBoundTestWorker)
+	pidfd, err := unix.PidfdOpen(processWorker.cmd.Process.Pid, 0)
+	if err != nil {
+		cancel()
+		_ = launcher.gate.release()
+		_ = processWorker.Wait()
+		t.Skipf("pidfd unavailable for context-bound child: %v", err)
+	}
+	defer unix.Close(pidfd)
+	t.Cleanup(func() {
+		cancel()
+		_ = launcher.gate.release()
+		_ = processWorker.Wait()
+	})
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	alive, err := pidfdIsAlive(pidfd)
+	if err != nil {
+		t.Fatalf("observe context-bound child after cancellation: %v", err)
+	}
+	if !alive {
+		t.Fatal("operation context cancellation bypassed the fixture termination gate")
+	}
+	if err := observed.Terminate(); err != nil {
+		t.Fatalf("request gated termination: %v", err)
+	}
+	select {
+	case <-launcher.gate.requestedSignal():
+	default:
+		t.Fatal("cancellation-triggered termination request was not recorded")
+	}
+	alive, err = pidfdIsAlive(pidfd)
+	if err != nil {
+		t.Fatalf("observe context-bound child before gate release: %v", err)
+	}
+	if !alive {
+		t.Fatal("child exited before the gate was released")
+	}
+	if err := launcher.gate.release(); err != nil {
+		t.Fatalf("release real child termination: %v", err)
+	}
+	joined := make(chan struct{})
+	go func() {
+		_ = processWorker.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(2 * time.Second):
+		t.Fatal("context-bound child did not exit after the gate released termination")
+	}
+	if !processWorker.Joined() {
+		t.Fatal("direct child was not waited after termination")
+	}
+	alive, err = pidfdIsAlive(pidfd)
+	if err != nil || alive {
+		t.Fatalf("child remains alive after gated termination: alive=%t err=%v", alive, err)
+	}
+}
+
+func TestLifecycleGateChildHelper(t *testing.T) {
+	if os.Getenv("KOMPOSYN_LIFECYCLE_GATE_CHILD") != "1" {
+		return
+	}
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+type contextBoundTestLauncher struct{}
+
+func (contextBoundTestLauncher) Close() error { return nil }
+
+func (contextBoundTestLauncher) Start(ctx context.Context) (readbrokerstudy.SandboxWorker, error) {
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLifecycleGateChildHelper$")
+	cmd.Env = append(os.Environ(), "KOMPOSYN_LIFECYCLE_GATE_CHILD=1")
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &contextBoundTestWorker{cmd: cmd}, nil
+}
+
+type contextBoundTestWorker struct {
+	cmd      *exec.Cmd
+	waitOnce sync.Once
+	mu       sync.Mutex
+	waitErr  error
+	joined   bool
+}
+
+func (*contextBoundTestWorker) Ready(context.Context) error { return nil }
+func (*contextBoundTestWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{}
+}
+func (*contextBoundTestWorker) TransferCapability(context.Context, *os.File, readbrokerstudy.FileIdentity) error {
+	return nil
+}
+func (*contextBoundTestWorker) AwaitReadStarted(context.Context) error { return nil }
+func (*contextBoundTestWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{}, nil
+}
+func (w *contextBoundTestWorker) Terminate() error {
+	err := w.cmd.Process.Kill()
+	if errors.Is(err, os.ErrProcessDone) {
+		return nil
+	}
+	return err
+}
+func (w *contextBoundTestWorker) Wait() error {
+	w.waitOnce.Do(func() {
+		err := w.cmd.Wait()
+		w.mu.Lock()
+		w.waitErr = err
+		w.joined = true
+		w.mu.Unlock()
+	})
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.waitErr
+}
+func (w *contextBoundTestWorker) Joined() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.joined
+}
+
+func TestCoordinatorDeathRejectsStaleHeldProcessObservation(t *testing.T) {
+	selfPIDFD, err := unix.PidfdOpen(os.Getpid(), 0)
+	if err != nil {
+		t.Skipf("pidfd unavailable: %v", err)
+	}
+	defer unix.Close(selfPIDFD)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLifecycleGateChildHelper$")
+	cmd.Env = append(os.Environ(), "KOMPOSYN_LIFECYCLE_GATE_CHILD=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadPIDFD, err := unix.PidfdOpen(cmd.Process.Pid, 0)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Skipf("pidfd for fixture subprocess unavailable: %v", err)
+	}
+	defer unix.Close(deadPIDFD)
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("fixture subprocess unexpectedly exited without a kill")
+	}
+	initAlive, workerAlive, err := heldWorkerProcessesLive(selfPIDFD, deadPIDFD)
+	if err != nil {
+		t.Fatalf("check held-event process liveness: %v", err)
+	}
+	if !initAlive || workerAlive {
+		t.Fatalf("stale held event liveness=(init %t, worker %t), want (true, false)", initAlive, workerAlive)
 	}
 }
 
