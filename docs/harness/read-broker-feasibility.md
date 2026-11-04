@@ -328,17 +328,25 @@ expected outcome only for the already-approved ordinary-object late-alias
 case; it does not rewrite that archive or turn a setup refusal into positive
 native evidence. Owner registration/rotation is a separate invalidation path:
 the owner must register and pin before sensitive writes, then wait for affected
-workers to terminate and join. Cleanup pending blocks the write.
+workers to terminate and join. Cleanup pending blocks the write. The
+research-only owner lifecycle scenarios now include registration before FD
+release, registration while the real worker holds the same FD, registration
+after capture before publication, synthetic old/new object rotation, and
+provider-only authorization controls. Their expectations and limits are
+specified in [`read-broker-owner-lifecycle.md`](read-broker-owner-lifecycle.md);
+source presence is not native evidence until the runner executes them.
 
 The scenario/expectation matrix and exact pending cases are in
 [`read-broker-native-actor.md`](read-broker-native-actor.md). In particular,
 protected directory registrations are not descendant inventories, and
-`DirectoryCoverageIncomplete` remains in force. Live owner rotation,
+`DirectoryCoverageIncomplete` remains in force. Production-owner integration,
 mount-boundary behavior, recursive-child relocation, parent-death handling,
 and incomplete-shutdown cleanup also remain separate evidence gaps. Native
 results are valid only for the exact selected commit and trusted backend
 recorded by the runner; the presence of these cases in the source is not native
-enforcement evidence.
+enforcement evidence. Incomplete direct-child cleanup is explicitly unavailable
+unless a safe real failure can be induced; direct-child join does not prove
+namespace-wide descendant cleanup or parent-death behavior.
 
 ## Authority conclusions
 

@@ -203,7 +203,7 @@ func exchangeWorkerFrame(t *testing.T, frame []byte, files []*os.File) ([][]byte
 	workerControl := os.NewFile(uintptr(sockets[1]), "worker-control")
 	defer workerControl.Close()
 	done := make(chan int, 1)
-	go func() { done <- receiveAndRead(int(workerControl.Fd())) }()
+	go func() { done <- receiveAndRead(int(workerControl.Fd()), false) }()
 	var rights []int
 	for _, file := range files {
 		rights = append(rights, int(file.Fd()))
@@ -241,6 +241,60 @@ func exchangeWorkerFrame(t *testing.T, frame []byte, files []*os.File) ([][]byte
 		}
 	}
 	return frames, waitWorkerExitCode(t, done)
+}
+
+func TestHeldCapabilityProtocolDoesNotReadBeforeRelease(t *testing.T) {
+	file, identity := openSyntheticReadTarget(t)
+	defer file.Close()
+	sockets, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(sockets[0])
+	defer unix.Close(sockets[1])
+	workerFD, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", file.Fd()), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(workerFD)
+	done := make(chan int, 1)
+	go func() {
+		done <- readTransferredFD(sockets[1], workerFD, identityFrame(frameHandoff, identity)[1:], true)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	held, err := recvPacket(ctx, sockets[0], 64)
+	if err != nil || len(held) != 21 || held[0] != frameCapabilityHeld || !sameIdentity(held[1:], identity) {
+		t.Fatalf("held acknowledgement=%x err=%v", held, err)
+	}
+	var poll []unix.PollFd = []unix.PollFd{{Fd: int32(sockets[0]), Events: unix.POLLIN}}
+	if ready, err := unix.Poll(poll, 0); err != nil || ready != 0 {
+		t.Fatalf("worker produced read data before release: ready=%d revents=%#x err=%v", ready, poll[0].Revents, err)
+	}
+	if err := sendPacket(sockets[0], identityFrame(frameReleaseRead, identity)); err != nil {
+		t.Fatal(err)
+	}
+	started, err := recvPacket(ctx, sockets[0], 64)
+	if err != nil || len(started) != 21 || started[0] != frameStarted || !sameIdentity(started[1:], identity) {
+		t.Fatalf("read-started acknowledgement=%x err=%v", started, err)
+	}
+	data, err := recvPacket(ctx, sockets[0], dataChunkBytes+16)
+	if err != nil || len(data) < 2 || data[0] != frameData {
+		t.Fatalf("read data frame=%x err=%v", data, err)
+	}
+	finish, err := recvPacket(ctx, sockets[0], 64)
+	if err != nil || len(finish) != 7 || finish[0] != frameFinish || finish[1] != encodeOutcome(ReadSucceeded) {
+		t.Fatalf("read finish frame=%x err=%v", finish, err)
+	}
+	select {
+	case exit := <-done:
+		if exit != 0 {
+			t.Fatalf("held worker exit=%d, want 0", exit)
+		}
+	case <-ctx.Done():
+		t.Fatal("held worker did not exit after bounded release")
+	}
 }
 
 func waitWorkerExitCode(t *testing.T, done <-chan int) int {
@@ -392,6 +446,28 @@ func TestBubblewrapArgumentsSelectModernMountAndSeparateVerifierFD(t *testing.T)
 	}
 }
 
+func TestCapabilityHoldBootstrapArgumentIsOptIn(t *testing.T) {
+	normal := strings.Join(effectiveBubblewrapArguments(BindModeDescriptor, false), " ")
+	held := strings.Join(effectiveBubblewrapArguments(BindModeDescriptor, true), " ")
+	if strings.Contains(normal, workerHoldBootstrapArg) {
+		t.Fatalf("normal worker unexpectedly enables hold mode: %s", normal)
+	}
+	if !strings.HasSuffix(held, workerHoldBootstrapArg) {
+		t.Fatalf("held worker lacks the exact fixed bootstrap option: %s", held)
+	}
+}
+
+func TestCapabilityHoldInterfaceIsOptIn(t *testing.T) {
+	ordinary := any(&sandboxWorker{})
+	if _, ok := ordinary.(HeldCapabilityWorker); ok {
+		t.Fatal("ordinary worker unexpectedly exposes the owner-lifecycle hold protocol")
+	}
+	held := any(&heldSandboxWorker{sandboxWorker: &sandboxWorker{holdMode: true}})
+	if _, ok := held.(HeldCapabilityWorker); !ok {
+		t.Fatal("explicit held worker does not expose its fixed hold protocol")
+	}
+}
+
 func TestModernBindConsumptionLeavesIndependentVerifierDescriptor(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "worker")
@@ -506,7 +582,7 @@ func TestSealedSnapshotSurvivesSourcePathAndAncestorReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifierFD := int(verifier.Fd())
-	if err := verifySnapshotExecutable(verifierFD, workerPath); err != nil {
+	if err := verifySnapshotExecutable(verifier, workerPath); err != nil {
 		t.Fatalf("copied private worker did not match sealed source: %v", err)
 	}
 	if _, err := unix.FcntlInt(uintptr(verifierFD), unix.F_GETFD, 0); err == nil {
@@ -597,7 +673,7 @@ func TestSealedSnapshotDescriptorsHaveIndependentOffsetsAndMismatchCloses(t *tes
 		t.Fatal(err)
 	}
 	verifierFD := int(verifier.Fd())
-	if err := verifySnapshotExecutable(verifierFD, privateWorker); !errors.Is(err, ErrStaleReceipt) {
+	if err := verifySnapshotExecutable(verifier, privateWorker); !errors.Is(err, ErrStaleReceipt) {
 		t.Fatalf("integrity mismatch was accepted: %v", err)
 	}
 	if _, err := unix.FcntlInt(uintptr(verifierFD), unix.F_GETFD, 0); err == nil {

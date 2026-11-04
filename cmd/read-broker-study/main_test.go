@@ -19,13 +19,218 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 )
+
+type ownerLifecycleTestSession struct {
+	registry      *readbrokerstudy.Registry
+	policy        uint64
+	firstRegister error
+	registerCalls int
+}
+
+func (s *ownerLifecycleTestSession) Read(context.Context, string, string, string) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{}, errors.New("unexpected read")
+}
+func (s *ownerLifecycleTestSession) Register(registration readbrokerstudy.OwnerRegistration) error {
+	return s.RegisterRotation(registration.Owner, []readbrokerstudy.OwnerRegistration{registration})
+}
+func (s *ownerLifecycleTestSession) RegisterRotation(owner string, registrations []readbrokerstudy.OwnerRegistration) error {
+	s.registerCalls++
+	if err := s.registry.RegisterRotation(owner, registrations); err != nil {
+		return err
+	}
+	s.policy = s.registry.View().Generation
+	if s.registerCalls == 1 {
+		return s.firstRegister
+	}
+	return nil
+}
+func (*ownerLifecycleTestSession) SelectRoot(string) error                          { return nil }
+func (*ownerLifecycleTestSession) Revoke(string) error                              { return nil }
+func (*ownerLifecycleTestSession) SetCheckpointHook(readbrokerstudy.CheckpointHook) {}
+func (*ownerLifecycleTestSession) PublishedResults() [][]byte                       { return nil }
+func (*ownerLifecycleTestSession) Evidence() []readbrokerstudy.ReadEvidence         { return nil }
+func (s *ownerLifecycleTestSession) GenerationSnapshot() readbrokerstudy.GenerationSet {
+	return readbrokerstudy.GenerationSet{Policy: s.policy}
+}
+func (*ownerLifecycleTestSession) Close(context.Context) error { return nil }
+
+func TestFixtureOwnerWriterAllowsConfirmedJoinForBothRegistrationResults(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		firstResult error
+		wantCalls   int
+	}{
+		{name: "already joined registration", firstResult: nil, wantCalls: 1},
+		{name: "cleanup pending then joined", firstResult: readbrokerstudy.ErrCleanupPending, wantCalls: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "owner-target.fixture")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writeFile, err := os.OpenFile(path, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writeFile.Close()
+			registry, err := readbrokerstudy.NewRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer registry.Close()
+			session := &ownerLifecycleTestSession{registry: registry, policy: registry.View().Generation, firstRegister: test.firstResult}
+			owner := &fixtureOwnerWriter{
+				session: session, registry: registry, owner: "test-owner",
+				registrations: []readbrokerstudy.OwnerRegistration{{Owner: "test-owner", Class: readbrokerstudy.ClassCredential, Path: path}},
+				writeFile:     writeFile, contents: []byte("synthetic protected write"),
+			}
+			beginErr := owner.Begin()
+			if !errors.Is(beginErr, test.firstResult) {
+				if beginErr != nil || test.firstResult != nil {
+					t.Fatalf("Begin error=%v, want %v", beginErr, test.firstResult)
+				}
+			}
+			readDone := make(chan struct{})
+			close(readDone)
+			readEvidence := &readbrokerstudy.ReadEvidence{WorkerStarted: true, WorkerJoined: true}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			evidence := owner.Complete(ctx, readDone, readEvidence, true)
+			actual, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !evidence.WorkerJoinConfirmed || !evidence.WriteAuthorized || !evidence.WriteStarted || !evidence.WriteCompleted || !evidence.WriteDescriptorMatchesPin {
+				t.Fatalf("confirmed join did not authorize the pinned write: %+v", evidence)
+			}
+			if string(actual) != string(owner.contents) || session.registerCalls != test.wantCalls {
+				t.Fatalf("write=%q, registrations=%d; want %q and %d", actual, session.registerCalls, owner.contents, test.wantCalls)
+			}
+		})
+	}
+}
+
+type injectedProviderLauncher struct {
+	worker *injectedProviderWorker
+	starts int
+}
+
+func (l *injectedProviderLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
+	l.starts++
+	return l.worker, nil
+}
+func (*injectedProviderLauncher) Close() error { return nil }
+
+type injectedProviderWorker struct {
+	result   []byte
+	override bool
+	started  bool
+	joined   bool
+}
+
+func (*injectedProviderWorker) Ready(context.Context) error { return nil }
+func (*injectedProviderWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{
+		NoNewPrivs: true, SeccompMode: 2, SocketCreationDenied: true, PathOpenDenied: true,
+		ReadCapabilityInitiallyAbsent: true, OnlyProtocolDescriptor: true, EnvironmentCleared: true,
+	}
+}
+func (w *injectedProviderWorker) TransferCapability(_ context.Context, file *os.File, _ readbrokerstudy.FileIdentity) error {
+	content, err := io.ReadAll(file)
+	if err == nil && !w.override {
+		w.result = content
+	}
+	return err
+}
+func (w *injectedProviderWorker) AwaitReadStarted(context.Context) error {
+	w.started = true
+	return nil
+}
+func (w *injectedProviderWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: append([]byte(nil), w.result...)}, nil
+}
+func (w *injectedProviderWorker) Terminate() error { w.joined = true; return nil }
+func (w *injectedProviderWorker) Wait() error      { w.joined = true; return nil }
+func (w *injectedProviderWorker) Joined() bool     { return w.joined }
+
+func newInjectedProviderFixture(t *testing.T, workerBytes []byte) (*providerFixture, *injectedProviderLauncher) {
+	t.Helper()
+	root := t.TempDir()
+	provider := filepath.Join(root, "provider.fixture")
+	alias := filepath.Join(root, "provider-alias.fixture")
+	ordinary := filepath.Join(root, "ordinary.fixture")
+	providerContents := []byte("fixture provider contents expected by the test\n")
+	if err := os.WriteFile(provider, providerContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ordinary, []byte("ordinary control fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(provider, alias); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(readbrokerstudy.OwnerRegistration{Owner: "test-provider", Class: readbrokerstudy.ClassProvider, Path: provider}); err != nil {
+		t.Fatal(err)
+	}
+	authorizer := readbrokerstudy.NewOnceGrantFixture()
+	mutating := &studyMutatingAuthorizer{
+		delegate: authorizer, attempts: make(map[string]int), receipts: make(map[string]readbrokerstudy.AuthorizationReceipt),
+		returned: make(map[string]readbrokerstudy.AuthorizationReceipt), reuse: make(map[string]string),
+		mutate: make(map[string]func(*readbrokerstudy.AuthorizationReceipt)), after: make(map[string]func(readbrokerstudy.AuthorizationRequest)),
+	}
+	launcher := &injectedProviderLauncher{worker: &injectedProviderWorker{result: append([]byte(nil), workerBytes...), override: workerBytes != nil}}
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, mutating)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SelectRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeStudySession(session) })
+	return &providerFixture{root: root, provider: provider, providerContents: providerContents, alias: alias, ordinary: ordinary, registry: registry, authorizer: authorizer, mutating: mutating, session: session}, launcher
+}
+
+func TestProviderAuthorizationControlsUseActualFixtureBytes(t *testing.T) {
+	t.Run("ordinary positive control", func(t *testing.T) {
+		fixture, _ := newInjectedProviderFixture(t, nil)
+		row := executeCase(fixture.session, fixture.authorizer, fixture.root, "provider_only_ordinary_positive_control", fixture.ordinary, "ordinary-positive-control", "ordinary provider control fixture reads under its own once authorization")
+		row.AuthorizationReceiptAccepted = row.Status == "measured_pass"
+		if row.Status != "measured_pass" || !row.BytesMatchApproved || !row.AuthorizationReceiptAccepted || row.OnceGrantConsumptions != 1 {
+			t.Fatalf("ordinary positive control did not pass: %+v", row)
+		}
+	})
+
+	t.Run("provider bytes match and replay is refused", func(t *testing.T) {
+		fixture, launcher := newInjectedProviderFixture(t, []byte("fixture provider contents expected by the test\n"))
+		row := runProviderReadCase(fixture, "provider_explicit_once_success_and_replay", "provider-once", fixture.provider, true, "provider result matches its captured fixture")
+		if row.Status != "measured_pass" || !row.BytesMatchApproved || !row.ReplayPrevented || row.ReplayAdditionalWorkers != 0 || launcher.starts != 1 {
+			t.Fatalf("correct provider content did not reach successful replay verification: row=%+v worker_starts=%d", row, launcher.starts)
+		}
+	})
+
+	t.Run("wrong provider bytes fail content correlation", func(t *testing.T) {
+		fixture, launcher := newInjectedProviderFixture(t, []byte("wrong synthetic bytes\n"))
+		row := runProviderReadCase(fixture, "provider_explicit_once_success_and_replay", "provider-wrong", fixture.provider, true, "provider result must match its captured fixture")
+		if row.Status == "measured_pass" || row.BytesMatchApproved || row.ReplayPrevented || row.ReplayOutcome != "" || launcher.starts != 1 {
+			t.Fatalf("incorrect provider content was accepted or replayed: row=%+v worker_starts=%d", row, launcher.starts)
+		}
+	})
+}
 
 type directoryCoverageSequenceSession struct {
 	selectedRoot       string
@@ -170,6 +375,7 @@ func TestWorkerPolicyReportsPathBackedAndSnapshotModesAccurately(t *testing.T) {
 
 func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *testing.T) {
 	generations := readbrokerstudy.GenerationSet{Root: 3, Policy: 5, Grant: 7}
+	capabilityIdentity := readbrokerstudy.FileIdentity{Device: 11, Inode: 13, Type: 15}
 	cases := []struct {
 		name        string
 		result      readbrokerstudy.WorkerResult
@@ -180,13 +386,13 @@ func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *t
 		{
 			name:      "successful read",
 			result:    readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: []byte("synthetic")},
-			evidence:  readbrokerstudy.ReadEvidence{Case: "positive-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, ReadStarted: true, Published: true, Effect: "read and published synthetic fixture", Limitation: "fixture only"},
+			evidence:  readbrokerstudy.ReadEvidence{Case: "positive-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, CapabilityIdentity: capabilityIdentity, ReadStarted: true, Published: true, Effect: "read and published synthetic fixture", Limitation: "fixture only"},
 			wantBytes: true, wantOutcome: readbrokerstudy.ReadSucceeded,
 		},
 		{
 			name:      "unexpected worker activity",
 			result:    readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrProtected.Error()},
-			evidence:  readbrokerstudy.ReadEvidence{Case: "unexpected-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, ReadStarted: true, Published: true, Effect: "unexpected read", Limitation: "policy mismatch"},
+			evidence:  readbrokerstudy.ReadEvidence{Case: "unexpected-1", Outcome: readbrokerstudy.ReadSucceeded, Generations: generations, WorkerStarted: true, WorkerReady: true, WorkerJoined: true, CapabilitySent: true, CapabilityIdentity: capabilityIdentity, ReadStarted: true, Published: true, Effect: "unexpected read", Limitation: "policy mismatch"},
 			wantBytes: false, wantOutcome: readbrokerstudy.ReadSucceeded,
 		},
 	}
@@ -202,10 +408,10 @@ func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *t
 			if err := json.Unmarshal(encoded, &decoded); err != nil {
 				t.Fatal(err)
 			}
-			if row.ResultBytesReturned != test.wantBytes || !row.ReadEvidencePresent || row.ReadEvidenceCase != test.evidence.Case || row.WorkerOutcome != test.wantOutcome || row.WorkerGenerations == nil || *row.WorkerGenerations != generations || row.WorkerEffect != test.evidence.Effect || row.WorkerLimitation != test.evidence.Limitation {
+			if row.ResultBytesReturned != test.wantBytes || !row.ReadEvidencePresent || row.ReadEvidenceCase != test.evidence.Case || row.WorkerOutcome != test.wantOutcome || row.WorkerGenerations == nil || *row.WorkerGenerations != generations || row.WorkerEffect != test.evidence.Effect || row.WorkerLimitation != test.evidence.Limitation || row.CapabilityIdentity == nil || *row.CapabilityIdentity != capabilityIdentity {
 				t.Fatalf("row lost read evidence: %+v", row)
 			}
-			if decoded["read_evidence_present"] != true || decoded["read_evidence_case"] != test.evidence.Case || decoded["worker_outcome"] != string(test.wantOutcome) || decoded["worker_effect"] != test.evidence.Effect || decoded["worker_limitation"] != test.evidence.Limitation || decoded["worker_generations"] == nil {
+			if decoded["read_evidence_present"] != true || decoded["read_evidence_case"] != test.evidence.Case || decoded["worker_outcome"] != string(test.wantOutcome) || decoded["worker_effect"] != test.evidence.Effect || decoded["worker_limitation"] != test.evidence.Limitation || decoded["worker_generations"] == nil || decoded["capability_identity"] == nil {
 				t.Fatalf("serialized row lost evidence fields: %s", encoded)
 			}
 		})
@@ -224,6 +430,16 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		"actor_selected_root_relocated_after_scan", "actor_parent_relocated_outside_root_after_scan",
 		"actor_target_replaced_after_classification", "actor_unregistered_protected_descendant_moved_out",
 		"actor_protected_ancestor_relocation", "study_session_cleanup",
+		"owner_registration_before_release", "owner_registration_before_release_registered_identity_alias_denied",
+		"owner_registration_while_capability_held", "owner_registration_while_capability_held_registered_identity_alias_denied",
+		"owner_registration_after_capture_suppresses_stale_publication",
+		"owner_rotation_retains_old_new_pins_and_publishes_registered_replacement",
+		"owner_rotation_old_alias_denied", "owner_rotation_renamed_old_identity_denied", "owner_rotation_new_alias_denied",
+		"owner_registration_failure_blocks_write", "owner_incomplete_cleanup_blocks_write",
+		"provider_missing_explicit_once", "provider_only_ordinary_positive_control",
+		"provider_ordinary_receipt_rejected_for_alias", "provider_stale_policy_receipt_rejected",
+		"provider_stale_root_receipt_rejected", "provider_stale_grant_receipt_rejected",
+		"provider_explicit_once_success_and_replay",
 	}
 	cases := unavailableCases("trusted Bubblewrap unavailable")
 	if len(cases) != len(planned) {
@@ -235,7 +451,7 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 			t.Fatalf("duplicate unavailable case %q", result.Name)
 		}
 		seen[result.Name] = true
-		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition {
+		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.CapabilityHeld || result.CapabilityIdentity != nil || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition || result.AuthorizationAttempted || result.AuthorizationReceiptAccepted || result.OwnerLifecycle != nil {
 			t.Fatalf("unavailable case claims activity: %+v", result)
 		}
 	}

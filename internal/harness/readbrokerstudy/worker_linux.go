@@ -48,7 +48,10 @@ const (
 	frameRefused            byte = 'X'
 	frameData               byte = 'D'
 	frameFinish             byte = 'F'
+	frameCapabilityHeld     byte = 'C'
+	frameReleaseRead        byte = 'L'
 	workerBootstrapMode          = "--readbrokerstudy-bootstrap"
+	workerHoldBootstrapArg       = "--hold-capability-before-read"
 	workerStderrLimit            = 4 << 10
 	workerWaitDelay              = 500 * time.Millisecond
 	backendProbeTimeout          = 2 * time.Second
@@ -203,6 +206,16 @@ func bubblewrapCapabilities(versionOutput, help string) (string, BubblewrapCapab
 // EffectiveBubblewrapArguments returns the exact reviewed launch argument
 // sequence for the selected descriptor mount compatibility path.
 func EffectiveBubblewrapArguments(mode BindMode) []string {
+	return effectiveBubblewrapArguments(mode, false)
+}
+
+// EffectiveBubblewrapArgumentsWithCapabilityHold reports the fixed research
+// launch arguments used only by owner-lifecycle scenarios.
+func EffectiveBubblewrapArgumentsWithCapabilityHold(mode BindMode) []string {
+	return effectiveBubblewrapArguments(mode, true)
+}
+
+func effectiveBubblewrapArguments(mode BindMode, holdCapability bool) []string {
 	args := []string{
 		"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		"--hostname", "komposyn-readbroker", "--unshare-net", "--as-pid-1", "--disable-userns", "--cap-drop", "ALL", "--clearenv",
@@ -216,9 +229,13 @@ func EffectiveBubblewrapArguments(mode BindMode) []string {
 	default:
 		return nil
 	}
-	return append(args, "--sync-fd", "6", "--chdir", "/", "--", "/worker", workerBootstrapMode,
+	args = append(args, "--sync-fd", "6", "--chdir", "/", "--", "/worker", workerBootstrapMode,
 		"--control-fd", fmt.Sprint(controlFD), "--worker-mode", workerVerificationMode(mode),
 		"--worker-fd", fmt.Sprint(workerVerificationFD), "--seccomp-fd", fmt.Sprint(seccompInputFD))
+	if holdCapability {
+		args = append(args, workerHoldBootstrapArg)
+	}
+	return args
 }
 
 func workerVerificationMode(mode BindMode) string {
@@ -296,11 +313,12 @@ func validVersion(value string) bool {
 }
 
 type workerLauncher struct {
-	bwrapPath  string
-	capability BubblewrapCapabilities
-	workerFile *os.File
-	closeOnce  sync.Once
-	closeErr   error
+	bwrapPath      string
+	capability     BubblewrapCapabilities
+	workerFile     *os.File
+	holdBeforeRead bool
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 // NewWorkerLauncher constructs the only launch path in this feasibility
@@ -310,6 +328,17 @@ type workerLauncher struct {
 // snapshot and descriptor-fed file construction. No user-controlled pathname
 // is passed as an executable source.
 func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
+	return newWorkerLauncher(bwrapPath, workerPath, false)
+}
+
+// NewWorkerLauncherWithCapabilityHold enables the fixed bounded hold used by
+// owner-lifecycle scenarios. The worker validates and holds one read-only
+// descriptor until the coordinator explicitly releases the read or kills it.
+func NewWorkerLauncherWithCapabilityHold(bwrapPath, workerPath string) (WorkerLauncher, error) {
+	return newWorkerLauncher(bwrapPath, workerPath, true)
+}
+
+func newWorkerLauncher(bwrapPath, workerPath string, holdBeforeRead bool) (WorkerLauncher, error) {
 	if err := validateTrustedExecutable(bwrapPath, true); err != nil {
 		return nil, fmt.Errorf("%w: trusted Bubblewrap validation failed", ErrUnavailable)
 	}
@@ -346,7 +375,7 @@ func NewWorkerLauncher(bwrapPath, workerPath string) (WorkerLauncher, error) {
 		}
 		workerFile = snapshot
 	}
-	return &workerLauncher{bwrapPath: bwrapPath, capability: capability, workerFile: workerFile}, nil
+	return &workerLauncher{bwrapPath: bwrapPath, capability: capability, workerFile: workerFile, holdBeforeRead: holdBeforeRead}, nil
 }
 
 // openCurrentExecutable binds the worker source to the already-running study
@@ -635,6 +664,9 @@ type sandboxWorker struct {
 	ready    bool
 	sent     bool
 	started  bool
+	holdMode bool
+	held     bool
+	released bool
 	finished bool
 	expected FileIdentity
 	probe    WorkerProbe
@@ -733,7 +765,7 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	}
 	defer verificationFile.Close()
 	workerCtx, cancel := context.WithTimeout(ctx, time.Duration(workerDeadline))
-	args := EffectiveBubblewrapArguments(l.capability.BindMode)
+	args := effectiveBubblewrapArguments(l.capability.BindMode, l.holdBeforeRead)
 	if args == nil {
 		cancel()
 		_ = parentSocket.Close()
@@ -756,7 +788,11 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		return nil, fmt.Errorf("%w: Bubblewrap process could not start: %s", ErrUnavailable, boundedText(message, 512))
 	}
 	_ = childSocket.Close()
-	return &sandboxWorker{cmd: cmd, control: parentSocket, ctx: workerCtx, cancel: cancel, stderr: stderr}, nil
+	worker := &sandboxWorker{cmd: cmd, control: parentSocket, ctx: workerCtx, cancel: cancel, stderr: stderr, holdMode: l.holdBeforeRead}
+	if l.holdBeforeRead {
+		return &heldSandboxWorker{sandboxWorker: worker}, nil
+	}
+	return worker, nil
 }
 
 func (w *sandboxWorker) Ready(ctx context.Context) error {
@@ -870,9 +906,51 @@ func (w *sandboxWorker) TransferCapability(ctx context.Context, file *os.File, e
 	return nil
 }
 
+// heldSandboxWorker exposes the optional hold protocol only for launchers
+// explicitly configured for the owner-lifecycle experiment. Ordinary workers
+// therefore retain the established SandboxWorker contract.
+type heldSandboxWorker struct{ *sandboxWorker }
+
+func (w *heldSandboxWorker) AwaitCapabilityHeld(ctx context.Context) error {
+	w.mu.Lock()
+	if !w.holdMode || !w.sent || w.held || w.started || w.finished {
+		w.mu.Unlock()
+		return ErrProtocol
+	}
+	expected := w.expected
+	w.mu.Unlock()
+	packet, err := recvPacket(ctx, int(w.control.Fd()), 64)
+	if err != nil {
+		return fmt.Errorf("%w: held-capability acknowledgement unavailable", ErrUnavailable)
+	}
+	if len(packet) != 1+20 || packet[0] != frameCapabilityHeld || !sameIdentity(packet[1:], expected) {
+		return ErrStaleReceipt
+	}
+	w.mu.Lock()
+	w.held = true
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *heldSandboxWorker) ReleaseHeldRead(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.holdMode || !w.held || w.released || w.finished || ctx == nil {
+		return ErrProtocol
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := sendPacket(int(w.control.Fd()), identityFrame(frameReleaseRead, w.expected)); err != nil {
+		return err
+	}
+	w.released = true
+	return nil
+}
+
 func (w *sandboxWorker) AwaitReadStarted(ctx context.Context) error {
 	w.mu.Lock()
-	if !w.sent || w.started || w.finished {
+	if !w.sent || w.started || w.finished || (w.holdMode && (!w.held || !w.released)) {
 		w.mu.Unlock()
 		return ErrProtocol
 	}
@@ -1063,17 +1141,25 @@ func sendPacket(fd int, packet []byte) error {
 // worker reports readiness. The sole protocol descriptor is fd 4; an approved
 // read-only file descriptor arrives later via SCM_RIGHTS.
 func WorkerMain() int {
-	if len(os.Args) != 10 || os.Args[1] != workerBootstrapMode || os.Args[2] != "--control-fd" || os.Args[3] != "4" ||
+	holdCapability := false
+	validArgs := len(os.Args) == 10 || (len(os.Args) == 11 && os.Args[10] == workerHoldBootstrapArg)
+	if !validArgs || os.Args[1] != workerBootstrapMode || os.Args[2] != "--control-fd" || os.Args[3] != "4" ||
 		os.Args[4] != "--worker-mode" || os.Args[6] != "--worker-fd" || os.Args[7] != "6" ||
 		os.Args[8] != "--seccomp-fd" || os.Args[9] != "3" {
 		return 70
 	}
+	holdCapability = len(os.Args) == 11
 	var verifyErr error
 	switch os.Args[5] {
 	case "descriptor":
 		verifyErr = verifyDescriptorMounts([]DescriptorMount{{FD: workerVerificationFD, Destination: "/worker"}})
 	case "snapshot":
-		verifyErr = verifySnapshotExecutable(workerVerificationFD, "/worker")
+		verifier := os.NewFile(workerVerificationFD, "readbroker-worker-snapshot-verifier")
+		if verifier == nil {
+			_ = unix.Close(workerVerificationFD)
+			return 70
+		}
+		verifyErr = verifySnapshotExecutable(verifier, "/worker")
 	default:
 		return 70
 	}
@@ -1083,7 +1169,7 @@ func WorkerMain() int {
 	if err := installWorkerSeccomp(seccompInputFD); err != nil {
 		return 70
 	}
-	return workerMainFD(controlFD)
+	return workerMainFD(controlFD, holdCapability)
 }
 
 const workerMountFD = 5
@@ -1094,19 +1180,26 @@ type DescriptorMount struct {
 	Destination string
 }
 
-// verifySnapshotExecutable checks that Bubblewrap's private-root file contains
-// the exact bytes from the sealed host snapshot. The trust anchor is the
-// already-running parent image plus the sealed descriptor and trusted
-// Bubblewrap file-copy operation, not this post-exec comparison by itself.
-func verifySnapshotExecutable(fd int, destination string) (result error) {
-	if fd <= 2 || destination == "" || destination[0] != '/' {
+// verifySnapshotExecutable consumes verifier and checks that Bubblewrap's
+// private-root file contains the exact bytes from the sealed host snapshot.
+// Taking the *os.File makes the ownership transfer explicit so a finalizer
+// cannot later close a descriptor number already closed and reused by raw
+// unix.Close. The trust anchor is the already-running parent image plus the
+// sealed descriptor and trusted Bubblewrap file-copy operation, not this
+// post-exec comparison by itself.
+func verifySnapshotExecutable(verifier *os.File, destination string) (result error) {
+	if verifier == nil {
 		return ErrProtocol
 	}
 	defer func() {
-		if err := unix.Close(fd); err != nil && result == nil {
+		if err := verifier.Close(); err != nil && result == nil {
 			result = err
 		}
 	}()
+	fd := int(verifier.Fd())
+	if fd <= 2 || destination == "" || destination[0] != '/' {
+		return ErrProtocol
+	}
 	var source unix.Stat_t
 	if err := unix.Fstat(fd, &source); err != nil || source.Mode&unix.S_IFMT != unix.S_IFREG ||
 		source.Size <= 0 || source.Size > maxWorkerSnapshotBytes {
@@ -1261,7 +1354,7 @@ func installWorkerSeccomp(fd int) error {
 	return nil
 }
 
-func workerMainFD(fd int) int {
+func workerMainFD(fd int, holdCapability bool) int {
 	probe := collectWorkerProbe(fd)
 	encoded, err := json.Marshal(probe)
 	if err != nil || sendPacket(fd, append([]byte{frameReady}, encoded...)) != nil {
@@ -1272,7 +1365,7 @@ func workerMainFD(fd int) int {
 		!probe.EnvironmentCleared {
 		return 71
 	}
-	return receiveAndRead(fd)
+	return receiveAndRead(fd, holdCapability)
 }
 
 func collectWorkerProbe(control int) WorkerProbe {
@@ -1336,7 +1429,7 @@ func probeError(ok bool, message string) error {
 	return errors.New(message)
 }
 
-func receiveAndRead(control int) int {
+func receiveAndRead(control int, holdCapability bool) int {
 	packet := make([]byte, 64)
 	// Linux limits one SCM_RIGHTS message to SCM_MAX_FD (253). Receive enough
 	// ancillary space to account for every descriptor so even an over-counted
@@ -1362,7 +1455,7 @@ func receiveAndRead(control int) int {
 		}
 		// A SOCK_SEQPACKET frame is exactly 21 bytes after validation. Slice the
 		// identity to the received length, not the reusable packet capacity.
-		result := readTransferredFD(control, capability, packet[1:n])
+		result := readTransferredFD(control, capability, packet[1:n], holdCapability)
 		_ = unix.Close(capability)
 		return result
 	}
@@ -1398,7 +1491,7 @@ func sendRefusal(control int) int {
 	return 73
 }
 
-func readTransferredFD(control, fd int, expected []byte) int {
+func readTransferredFD(control, fd int, expected []byte, holdCapability bool) int {
 	unix.CloseOnExec(fd)
 	var stat unix.Stat_t
 	flags, flagErr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
@@ -1407,7 +1500,17 @@ func readTransferredFD(control, fd int, expected []byte) int {
 		_ = sendPacket(control, []byte{frameRefused})
 		return 74
 	}
-	if err := sendPacket(control, identityFrame(frameStarted, identityFromStat(&stat))); err != nil {
+	identity := identityFromStat(&stat)
+	if holdCapability {
+		if err := sendPacket(control, identityFrame(frameCapabilityHeld, identity)); err != nil {
+			return 75
+		}
+		packet, err := recvPacket(context.Background(), control, 64)
+		if err != nil || len(packet) != 1+20 || packet[0] != frameReleaseRead || !sameIdentity(packet[1:], identity) {
+			return sendRefusal(control)
+		}
+	}
+	if err := sendPacket(control, identityFrame(frameStarted, identity)); err != nil {
 		return 75
 	}
 	result := preadBounded(fd, stat.Size)

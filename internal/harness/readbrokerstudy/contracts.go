@@ -159,21 +159,23 @@ const (
 type OperationState string
 
 const (
-	StatePrepared    OperationState = "prepared"
-	StateLaunching   OperationState = "launching"
-	StateReady       OperationState = "ready"
-	StateRunning     OperationState = "running"
-	StateTerminating OperationState = "terminating"
-	StateJoined      OperationState = "joined"
+	StatePrepared       OperationState = "prepared"
+	StateLaunching      OperationState = "launching"
+	StateReady          OperationState = "ready"
+	StateCapabilityHeld OperationState = "capability_held"
+	StateRunning        OperationState = "running"
+	StateTerminating    OperationState = "terminating"
+	StateJoined         OperationState = "joined"
 )
 
 type Checkpoint string
 
 const (
-	CheckpointBeforeOpen    Checkpoint = "before_open"
-	CheckpointAfterOpen     Checkpoint = "after_open"
-	CheckpointAfterClassify Checkpoint = "after_classify"
-	CheckpointBeforeHandoff Checkpoint = "before_handoff"
+	CheckpointBeforeOpen          Checkpoint = "before_open"
+	CheckpointAfterOpen           Checkpoint = "after_open"
+	CheckpointAfterClassify       Checkpoint = "after_classify"
+	CheckpointBeforeHandoff       Checkpoint = "before_handoff"
+	CheckpointAfterCapabilityHeld Checkpoint = "after_capability_held_before_read_release"
 	// CheckpointAfterFinalRevalidation is the last deterministic fixture hook
 	// after the broker's final policy scan and before duplicating or releasing
 	// the read capability. Native actor scenarios use it to expose the
@@ -184,19 +186,21 @@ const (
 )
 
 type ReadEvidence struct {
-	Case             string        `json:"case"`
-	Outcome          ReadOutcome   `json:"outcome"`
-	Generations      GenerationSet `json:"generations"`
-	Probe            WorkerProbe   `json:"worker_probe,omitempty"`
-	WorkerStarted    bool          `json:"worker_started"`
-	WorkerReady      bool          `json:"worker_ready"`
-	WorkerJoined     bool          `json:"worker_join_confirmed"`
-	CapabilitySent   bool          `json:"capability_sent"`
-	ReadStarted      bool          `json:"read_started"`
-	Published        bool          `json:"published"`
-	BytesMatchTarget bool          `json:"bytes_match_target"`
-	Effect           string        `json:"fixture_effect"`
-	Limitation       string        `json:"limitation,omitempty"`
+	Case               string        `json:"case"`
+	Outcome            ReadOutcome   `json:"outcome"`
+	Generations        GenerationSet `json:"generations"`
+	Probe              WorkerProbe   `json:"worker_probe,omitempty"`
+	WorkerStarted      bool          `json:"worker_started"`
+	WorkerReady        bool          `json:"worker_ready"`
+	WorkerJoined       bool          `json:"worker_join_confirmed"`
+	CapabilitySent     bool          `json:"capability_sent"`
+	CapabilityHeld     bool          `json:"capability_received_held"`
+	CapabilityIdentity FileIdentity  `json:"capability_identity,omitempty"`
+	ReadStarted        bool          `json:"read_started"`
+	Published          bool          `json:"published"`
+	BytesMatchTarget   bool          `json:"bytes_match_target"`
+	Effect             string        `json:"fixture_effect"`
+	Limitation         string        `json:"limitation,omitempty"`
 }
 
 type CheckpointHook func(Checkpoint) error
@@ -247,6 +251,15 @@ type SandboxWorker interface {
 	// Joined confirms that the direct process was waited/reaped. It does not
 	// claim that every namespace descendant has terminated.
 	Joined() bool
+}
+
+// HeldCapabilityWorker is implemented only by the fixed study worker when
+// launched in its bounded owner-lifecycle mode. It acknowledges receipt and
+// identity validation of the read-only FD, then waits until ReleaseHeldRead or
+// worker termination. It is not an arbitrary worker control API.
+type HeldCapabilityWorker interface {
+	AwaitCapabilityHeld(context.Context) error
+	ReleaseHeldRead(context.Context) error
 }
 
 type WorkerLauncher interface {
