@@ -1,8 +1,11 @@
 # Experimental brokered read feasibility harness
 
 This package and command are isolated research infrastructure. They are not
-used by production dispatch, register no filesystem tools, and have no provider,
-credential-store, UI, or persistent-state integration.
+used by production dispatch and register no filesystem tools. A narrowly
+injected owner hook now exercises the actual harness auth and settings stores
+against the study registry in disposable tests; the shipped chat does not wire
+that hook to a sandbox session. Provider-source and Token Logger owner
+inventories remain absent. See [protected owner integration](read-broker-owner-integration.md).
 
 ## Ownership and protocol
 
@@ -201,12 +204,14 @@ generation errors retain their separate outcomes.
 | Token Logger owner | DB, WAL, SHM, backup objects and reserved locations | Denied | Register active/rotating objects before sensitive writes; wait for affected workers and preserve old pins |
 | Provider source owner | Provider-owned source objects/locations | Explicit once approval per invocation; no mutation capability here | Register/pin replacement before it can be read as a source; invalidate affected work |
 
-No production owner is wired into this experiment. Participating owners must
-register relevant exact-file locations and objects; missing registrations
-make affected routes ineligible. A rotation creates and pins the replacement
-before sensitive content is written, publishes the policy revision, waits for
-affected workers to terminate and join, then writes through that same
-registered object. Cleanup pending blocks the write. Old pins remain through
+The study has a narrow host adapter for the real harness auth and settings
+stores, exercised with synthetic files. It registers their effective route
+and replacement object before the stores write bytes, and refuses writes when
+the session reports cleanup pending. This adapter is not installed in
+`cmd/harness`; production dispatch still has no filesystem tools or sandbox
+service. Token Logger and provider-source owners remain unwired. Participating
+owners must register relevant exact-file locations and objects; missing
+registrations make affected routes ineligible. Old pins remain through
 registry shutdown. Inode identity alone cannot detect an independent copy of
 protected bytes.
 
@@ -223,8 +228,11 @@ object names or atomic ordering with an independent namespace writer.
 Credential/authentication material, settings, and registered Token Logger
 database files are denied to generic reads. Provider-source files are only
 eligible for explicit invocation approval and are never mutable through this
-harness. These registrations are synthetic fixtures here; production owners
-are not wired into this package.
+harness. Native sandbox scenarios use synthetic owner registrations. Separate
+owner integration tests use synthetic auth/settings files with the real store
+save paths and in-memory registry adapter; that adapter is not installed in
+the shipped chat. Token Logger and provider-source owner registrations remain
+unavailable here.
 
 ## Effective worker profile
 

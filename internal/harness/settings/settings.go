@@ -17,6 +17,7 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +32,10 @@ const DefaultUI = "tview"
 type Settings struct {
 	Plugin string `json:"plugin"`
 }
-type Store struct{ Path string }
+type Store struct {
+	Path       string
+	Protection auth.SensitiveFileProtector
+}
 
 func DefaultPath() (string, error) {
 	authPath, err := auth.DefaultPath()
@@ -49,6 +53,20 @@ func (s Store) path() (string, error) {
 		return "", e
 	}
 	return filepath.Abs(p)
+}
+
+// EffectivePath returns the absolute path selected by this store, including
+// an explicit override. It does not create or inspect the path.
+func (s Store) EffectivePath() (string, error) { return s.path() }
+
+// RegisterProtection registers the effective settings route and current
+// object, if present, with the host-owned protection lifecycle.
+func (s Store) RegisterProtection(ctx context.Context) error {
+	path, err := s.path()
+	if err != nil {
+		return err
+	}
+	return auth.RegisterSensitiveJSONStore(ctx, s.Protection, auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, path)
 }
 
 func (s Store) Load() (Settings, error) {
@@ -103,6 +121,12 @@ func parse(obj map[string]json.RawMessage) (Settings, error) {
 }
 
 func (s Store) Save(value Settings) error {
+	return s.SaveContext(context.Background(), value)
+}
+
+// SaveContext performs the settings replacement with owner protection before
+// sensitive bytes are written to the newly created object.
+func (s Store) SaveContext(ctx context.Context, value Settings) error {
 	if value.Plugin == "" {
 		return errors.New("UI plugin ID is required")
 	}
@@ -113,7 +137,7 @@ func (s Store) Save(value Settings) error {
 	if err != nil {
 		return err
 	}
-	return auth.UpdateJSON(path, func(exists bool, obj map[string]json.RawMessage) error {
+	return auth.UpdateJSONProtected(ctx, path, func(exists bool, obj map[string]json.RawMessage) error {
 		if exists {
 			if _, err := parse(obj); err != nil {
 				return err
@@ -141,5 +165,5 @@ func (s Store) Save(value Settings) error {
 		raw, _ := json.Marshal(ui)
 		obj["ui"] = raw
 		return nil
-	})
+	}, s.Protection, auth.SensitiveOwnerSettings, auth.SensitiveClassSettings)
 }
