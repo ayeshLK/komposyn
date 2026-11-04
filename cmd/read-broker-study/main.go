@@ -99,32 +99,32 @@ type launchPolicy struct {
 }
 
 type caseResult struct {
-	Name                  string                        `json:"name"`
-	Status                string                        `json:"status"`
-	Classification        string                        `json:"classification"`
-	Expected              string                        `json:"expected"`
-	Observed              string                        `json:"observed"`
-	WorkerStarted         bool                          `json:"worker_started"`
-	WorkerReady           bool                          `json:"worker_ready"`
-	WorkerJoinConfirmed   bool                          `json:"worker_join_confirmed"`
-	CapabilitySent        bool                          `json:"capability_sent"`
-	ReadStarted           bool                          `json:"read_started"`
-	Published             bool                          `json:"published"`
-	BytesMatchTarget      bool                          `json:"bytes_match_target"`
-	BytesMatchApproved    bool                          `json:"bytes_match_approved_object"`
-	OnceGrantConsumptions int                           `json:"once_grant_consumptions"`
-	ActorStarted          bool                          `json:"actor_started"`
-	ActorReady            bool                          `json:"actor_ready"`
-	ActorTransition       bool                          `json:"actor_transition_completed"`
-	ActorExitConfirmed    bool                          `json:"actor_exit_confirmed"`
-	ActorDetail           string                        `json:"actor_detail,omitempty"`
-	GenerationsBefore     readbrokerstudy.GenerationSet `json:"generations_before"`
-	GenerationsAfter      readbrokerstudy.GenerationSet `json:"generations_after"`
-	WorkerProbe           readbrokerstudy.WorkerProbe   `json:"worker_probe,omitempty"`
-	FixtureEffect         string                        `json:"fixture_effect"`
-	AuthorityA            string                        `json:"authority_a"`
-	AuthorityB            string                        `json:"authority_b"`
-	Detail                string                        `json:"detail,omitempty"`
+	Name                  string                         `json:"name"`
+	Status                string                         `json:"status"`
+	Classification        string                         `json:"classification"`
+	Expected              string                         `json:"expected"`
+	Observed              string                         `json:"observed"`
+	WorkerStarted         bool                           `json:"worker_started"`
+	WorkerReady           bool                           `json:"worker_ready"`
+	WorkerJoinConfirmed   bool                           `json:"worker_join_confirmed"`
+	CapabilitySent        bool                           `json:"capability_sent"`
+	ReadStarted           bool                           `json:"read_started"`
+	Published             bool                           `json:"published"`
+	BytesMatchTarget      bool                           `json:"bytes_match_target"`
+	BytesMatchApproved    bool                           `json:"bytes_match_approved_object"`
+	OnceGrantConsumptions int                            `json:"once_grant_consumptions"`
+	ActorStarted          bool                           `json:"actor_started"`
+	ActorReady            bool                           `json:"actor_ready"`
+	ActorTransition       bool                           `json:"actor_transition_completed"`
+	ActorExitConfirmed    bool                           `json:"actor_exit_confirmed"`
+	ActorDetail           string                         `json:"actor_detail,omitempty"`
+	GenerationsBefore     *readbrokerstudy.GenerationSet `json:"generations_before,omitempty"`
+	GenerationsAfter      *readbrokerstudy.GenerationSet `json:"generations_after,omitempty"`
+	WorkerProbe           readbrokerstudy.WorkerProbe    `json:"worker_probe,omitempty"`
+	FixtureEffect         string                         `json:"fixture_effect"`
+	AuthorityA            string                         `json:"authority_a"`
+	AuthorityB            string                         `json:"authority_b"`
+	Detail                string                         `json:"detail,omitempty"`
 }
 
 func main() {
@@ -648,7 +648,7 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 	if detail == "" {
 		detail = "fixture result bytes and filesystem paths omitted"
 	}
-	return caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: generationsBefore, GenerationsAfter: generationsAfter, WorkerProbe: ev.Probe, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
+	return caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
 }
 
 func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, executable, fixtureRoot, selectedRoot, target, name, invocationID, expected string, action readbrokerstudy.NativeActorAction, actorSource, actorTarget, expectedClassification string, verifyFixture func() bool, effect string) caseResult {
@@ -701,7 +701,7 @@ func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *re
 		OnceGrantConsumptions: auth.ConsumptionCount(invocationID),
 		ActorStarted:          actorStarted, ActorReady: actorReady,
 		ActorTransition: actorTransition, ActorExitConfirmed: actorJoined,
-		GenerationsBefore: generationsBefore, GenerationsAfter: generationsAfter,
+		GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter,
 		WorkerProbe: ev.Probe, FixtureEffect: "fixture transition or worker outcome was not established",
 		AuthorityA: "no conclusion", AuthorityB: "no conclusion",
 	}
