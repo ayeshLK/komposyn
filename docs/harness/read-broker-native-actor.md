@@ -10,6 +10,7 @@ model-facing filesystem and shell tools.
 | Scenario | Independent actor transition | Expected result | Contract/evidence |
 |---|---|---|---|
 | Protected alias in the scan-to-handoff gap | Hard-link the prepared ordinary object at an already registered protected file location after the final broker scan and before FD transfer. | No capability should be released after the protected location changes. Any transfer/read is recorded as a protected-rule violation even if the later publication check suppresses bytes. | Mandatory protected-location rule; B does not override it. |
+| Protected alias before read admission | A separate same-user actor creates a hard link at a registered absent credential path before a read request. | The broker refuses before once-grant consumption, worker startup or descriptor transfer when protected-location ancestry is mutable. | Measures the conservative admission boundary only; it does not re-run or erase the scan-to-handoff violation. |
 | Selected root moved after final scan | Rename the selected root object outside its original pathname while the sandbox worker is ready. | Read/publish only the object opened before the rename. This is consistent with B; strict live-path A would fail. | B follows exposed object authority. |
 | Parent moved outside selected root | Rename the opened target's parent outside the selected root while the sandbox worker is ready. | Read/publish only the originally opened object. This is consistent with B; strict live-path A would fail. | B follows exposed object authority. |
 | Target replaced after classification | Move the opened ordinary object aside and put a different synthetic file at its old pathname after final scan. | Return bytes from the opened object, never the replacement. This is consistent with B. | Object identity and descriptor authority. |
@@ -29,6 +30,19 @@ worker has completed readiness probes, while the actor transition is ordered
 after the last broker scan and before SCM_RIGHTS handoff. For the moved-child
 refusal case, the actor completes before the read attempt because the current
 policy intentionally refuses that object during preparation.
+
+The conservative gate refuses worker reads when a credential, settings or
+Token Logger database registration has a containing directory chain that is
+mutable or unverifiable for the current same-user actor. Under user-owned
+temporary fixture roots, this makes the former worker cases unavailable. The
+pre-admission actor case must be reported separately and cannot be interpreted
+as successful execution of the original scan-to-handoff race.
+
+Ordinary-classified reads are also refused when a registered provider-source
+location is mutable or unverifiable. Correctly classified provider-source reads
+remain distinct and still require explicit once approval. This prevents an
+ordinary approval from being reused after a late transition into provider
+classification.
 
 Each native case reports actor readiness, transition completion, direct actor
 exit confirmation, worker readiness/probe, descriptor release, read-start,

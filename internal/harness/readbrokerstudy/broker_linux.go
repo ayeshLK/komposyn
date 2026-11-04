@@ -62,6 +62,12 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 	if b == nil || b.registry == nil {
 		return nil, ErrUnavailable
 	}
+	if err := b.registry.ReadAdmission(""); err != nil {
+		if errors.Is(err, ErrProtectedLocationMutable) || errors.Is(err, ErrProviderLocationMutable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("protected read admission could not be established: %w", err)
+	}
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !filepath.IsAbs(target) || filepath.Clean(target) != target || strings.ContainsRune(target, '\x00') {
 		return nil, errInvalidReadPath
 	}
@@ -146,6 +152,13 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 		}
 		return nil, ErrPolicyChanged
 	}
+	if err := b.registry.ReadAdmission(class); err != nil {
+		_ = file.Close()
+		if errors.Is(err, ErrProtectedLocationMutable) || errors.Is(err, ErrProviderLocationMutable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("protected read admission could not be established: %w", err)
+	}
 	parent := os.NewFile(uintptr(parentFD), "prepared-read-parent")
 	parentOwned = true
 	return &preparedRead{
@@ -161,6 +174,12 @@ func (b *broker) Revalidate(capability PreparedRead) error {
 	prepared, ok := capability.(*preparedRead)
 	if !ok || prepared == nil {
 		return ErrStaleReceipt
+	}
+	if err := b.registry.ReadAdmission(prepared.class); err != nil {
+		if errors.Is(err, ErrProtectedLocationMutable) || errors.Is(err, ErrProviderLocationMutable) {
+			return err
+		}
+		return fmt.Errorf("protected read admission could not be revalidated: %w", err)
 	}
 	prepared.mu.Lock()
 	defer prepared.mu.Unlock()

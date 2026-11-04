@@ -26,6 +26,83 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// testAdmissionOverride keeps existing broker/worker tests focused on their
+// specific protocol properties. Admission-policy tests use the real Registry
+// directly, and the native CLI never uses this test-only adapter.
+type testAdmissionOverride struct{ *Registry }
+
+func (testAdmissionOverride) ReadAdmission(ResourceClass) error { return nil }
+
+func TestReadAdmissionRefusesMutableProtectedLocationBeforePreparation(t *testing.T) {
+	root := t.TempDir()
+	protected := filepath.Join(root, "credential.fixture")
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if err := registry.Register(OwnerRegistration{Owner: "fixture", Class: ClassCredential, Path: protected}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProtectedLocationMutable) {
+		t.Fatalf("mutable protected-location admission=%v, want %v", err, ErrProtectedLocationMutable)
+	}
+	if err := registry.Register(OwnerRegistration{Owner: "provider", Class: ClassProvider, Path: filepath.Join(root, "source.fixture")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProtectedLocationMutable) {
+		t.Fatalf("provider registration weakened protected-location admission: %v", err)
+	}
+}
+
+func TestReadAdmissionAllowsRegistryWithoutGenericProtectedLocations(t *testing.T) {
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if err := registry.ReadAdmission(ClassOrdinary); err != nil {
+		t.Fatalf("empty policy admission=%v, want allowed", err)
+	}
+}
+
+func TestImmutableDirectoryAncestryUsesSameIdentityWriteAccess(t *testing.T) {
+	mutable := t.TempDir()
+	stable, err := immutableDirectoryAncestry(mutable)
+	if err != nil {
+		t.Fatalf("inspect temporary directory ancestry: %v", err)
+	}
+	if stable {
+		t.Fatal("user-owned temporary ancestry was classified immutable")
+	}
+
+	providerRegistry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer providerRegistry.Close()
+	if err := providerRegistry.Register(OwnerRegistration{Owner: "provider-fixture", Class: ClassProvider, Path: filepath.Join(mutable, "source.fixture")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := providerRegistry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProviderLocationMutable) {
+		t.Fatalf("ordinary read with mutable provider registration=%v, want %v", err, ErrProviderLocationMutable)
+	}
+	if err := providerRegistry.ReadAdmission(ClassProvider); err != nil {
+		t.Fatalf("correctly classified provider read should reach explicit once authorization: %v", err)
+	}
+
+	rootStable, rootErr := immutableDirectoryAncestry(string(filepath.Separator))
+	if rootErr != nil {
+		t.Fatalf("inspect root ancestry: %v", rootErr)
+	}
+	if os.Geteuid() == 0 && rootStable {
+		t.Fatal("root identity was classified as unable to mutate root")
+	}
+	if os.Geteuid() != 0 && noFilesystemCapabilities() == nil && !rootStable {
+		t.Fatal("unprivileged identity could not mutate root, but root ancestry was classified mutable")
+	}
+}
+
 func TestRegistryProtectsRegisteredIdentityAndLocation(t *testing.T) {
 	root := t.TempDir()
 	protectedDir := filepath.Join(root, "private")
@@ -146,7 +223,7 @@ func TestRegistryDirectoryPinDoesNotImplyDescendantIdentityCoverage(t *testing.T
 	if err := os.WriteFile(replacementChild, []byte("replacement-child-synthetic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	broker := NewBroker(registry)
+	broker := NewBroker(testAdmissionOverride{registry})
 	prepared, err := broker.PrepareRead(root, replacementChild, GenerationSet{Root: 1, Policy: registry.View().Generation})
 	if !errors.Is(err, ErrProtected) {
 		if err == nil {
@@ -240,7 +317,7 @@ func TestRegistryDirectoryRuleCannotBeWeakenedByPinnedProviderChild(t *testing.T
 	if !registry.DirectoryCoverageIncomplete(childID) {
 		t.Fatal("weaker provider pin bypassed protected settings-directory coverage")
 	}
-	broker := NewBroker(registry)
+	broker := NewBroker(testAdmissionOverride{registry})
 	prepared, err := broker.PrepareRead(root, moved, GenerationSet{Root: 1, Policy: registry.View().Generation})
 	if err == nil {
 		_ = prepared.Close()
