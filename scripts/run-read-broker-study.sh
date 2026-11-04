@@ -502,6 +502,21 @@ if violations:
         print("- `"+cell(c.get("name","unnamed"))+"` — "+cell(c.get("observed","outcome unavailable")))
 else:
     print("No violation was recorded in the produced case rows. This does not imply a pass for unavailable, inconclusive, or omitted scenarios.")
+print('\n## Real auth/settings store cases\n')
+print('| Case | Store | Operation | Override | Startup registered | Mutation result | Empty at registration | Held descriptor matches temp | Termination requested | Direct worker joined | Write blocked before join | Write after join | Published object matches temp | Retired pin retained | Alias denied | Once consumptions | Stale publication suppressed |')
+print('|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|')
+for c in cases:
+    e=c.get('real_store')
+    if not e: continue
+    print('| '+' | '.join(cell(v) for v in (
+        c.get('name'), e.get('store_type'), e.get('operation'), e.get('effective_override'),
+        e.get('startup_registration_completed'), e.get('store_mutation_result'),
+        e.get('replacement_empty_at_registration'), e.get('capability_identity_matches_temp'),
+        e.get('termination_requested'), e.get('worker_join_confirmed'),
+        e.get('store_write_not_started_before_join'), e.get('store_write_started_after_join'),
+        e.get('published_object_matches_registered_temp'), e.get('retired_pin_retained'),
+        e.get('alias_denied'), e.get('once_grant_consumptions'),
+        e.get('stale_publication_suppressed'))) + ' |')
 PY
     printf '\n## Remaining native gaps\n\n'
     python3 - "$output_dir/study-report.json" <<'PY'
@@ -511,7 +526,7 @@ PY
   else
     printf '## Evidence status\n\nNo valid study JSON report was produced. See the bounded logs and manifest for the distinct setup/build/run failure status.\n'
   fi
-  printf '\nReview actor readiness, completed transitions, direct actor exit confirmation, capability hold, authorization receipt, owner write-gate evidence, and abnormal-lifecycle observations for each case. Missing fields in older reports are shown as unavailable; a missing transition is not a pass. Production-owner integration, mount-boundary behavior, recursive-child relocation, arbitrary namespace-descendant cleanup, and natural worker hangs remain separate evidence gaps. The study makes no shell-safety or production-readiness claim.\n'
+  printf '\nReview actor readiness, completed transitions, direct actor exit confirmation, capability hold, authorization receipt, owner write-gate evidence, and abnormal-lifecycle observations for each case. Missing fields in older reports are shown as unavailable; a missing transition is not a pass. Token Logger/provider-source owner integration, mount-boundary behavior, recursive-child relocation, arbitrary namespace-descendant cleanup, and natural worker hangs remain separate evidence gaps. The study makes no shell-safety or production-readiness claim.\n'
 } >"$summary"
 
 (

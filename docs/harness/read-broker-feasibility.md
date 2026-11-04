@@ -7,6 +7,12 @@ against the study registry in disposable tests; the shipped chat does not wire
 that hook to a sandbox session. Provider-source and Token Logger owner
 inventories remain absent. See [protected owner integration](read-broker-owner-integration.md).
 
+The follow-up native acceptance scenarios for actual auth/settings store calls
+through the live Bubblewrap worker are defined in
+[real-store native acceptance](read-broker-real-store-native-acceptance.md).
+Their results are not inferred from the older synthetic `fixtureOwnerWriter`
+cases or the injected-session store tests.
+
 ## Ownership and protocol
 
 ```text
@@ -228,11 +234,12 @@ object names or atomic ordering with an independent namespace writer.
 Credential/authentication material, settings, and registered Token Logger
 database files are denied to generic reads. Provider-source files are only
 eligible for explicit invocation approval and are never mutable through this
-harness. Native sandbox scenarios use synthetic owner registrations. Separate
-owner integration tests use synthetic auth/settings files with the real store
-save paths and in-memory registry adapter; that adapter is not installed in
-the shipped chat. Token Logger and provider-source owner registrations remain
-unavailable here.
+harness. Native sandbox scenarios use synthetic owner registrations. Owner integration tests use synthetic auth/settings files with the real store
+save paths and in-memory registry adapter. The focused native acceptance cases
+exercise those stores through the live study session and Bubblewrap worker; the
+adapter is still not installed in the shipped chat. Token Logger and
+provider-source owner registrations remain unavailable here. See the
+[real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 
 ## Effective worker profile
 
@@ -347,9 +354,11 @@ source presence is not native evidence until the runner executes them.
 The scenario/expectation matrix and exact pending cases are in
 [`read-broker-native-actor.md`](read-broker-native-actor.md). In particular,
 protected directory registrations are not descendant inventories, and
-`DirectoryCoverageIncomplete` remains in force. Production-owner integration,
-mount-boundary behavior, and recursive-child relocation remain separate
-evidence gaps. The bounded abnormal-lifecycle fixtures are described in
+`DirectoryCoverageIncomplete` remains in force. Token Logger and
+provider-source owner integration, mount-boundary behavior, and
+recursive-child relocation remain separate evidence gaps. The actual harness
+auth/settings store cases have their own evidence fields and are summarized by
+the manual runner; their implementation remains research-only. The bounded abnormal-lifecycle fixtures are described in
 [`read-broker-abnormal-lifecycle.md`](read-broker-abnormal-lifecycle.md): they
 observe the exact Bubblewrap process and fixed PID-namespace init, and use
 explicit termination-request gates for shutdown and owner barriers. Native

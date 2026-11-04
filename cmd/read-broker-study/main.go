@@ -147,11 +147,43 @@ type caseResult struct {
 	GenerationsAfter               *readbrokerstudy.GenerationSet `json:"generations_after,omitempty"`
 	WorkerProbe                    readbrokerstudy.WorkerProbe    `json:"worker_probe,omitempty"`
 	OwnerLifecycle                 *ownerLifecycleEvidence        `json:"owner_lifecycle,omitempty"`
+	RealStore                      *realStoreEvidence             `json:"real_store,omitempty"`
 	Lifecycle                      *abnormalLifecycleEvidence     `json:"abnormal_lifecycle,omitempty"`
 	FixtureEffect                  string                         `json:"fixture_effect"`
 	AuthorityA                     string                         `json:"authority_a"`
 	AuthorityB                     string                         `json:"authority_b"`
 	Detail                         string                         `json:"detail,omitempty"`
+}
+
+// realStoreEvidence is sanitized evidence for actual owner store operations.
+type realStoreEvidence struct {
+	StoreType                        string                        `json:"store_type"`
+	Operation                        string                        `json:"operation"`
+	EffectiveOverride                bool                          `json:"effective_override"`
+	StartupRegistrationAttempted     bool                          `json:"startup_registration_attempted"`
+	StartupRegistrationCompleted     bool                          `json:"startup_registration_completed"`
+	StoreMutationAttempted           bool                          `json:"store_mutation_attempted"`
+	StoreMutationResult              string                        `json:"store_mutation_result,omitempty"`
+	ReplacementIdentity              *readbrokerstudy.FileIdentity `json:"replacement_identity,omitempty"`
+	ReplacementEmptyAtRegistration   bool                          `json:"replacement_empty_at_registration"`
+	CapabilityIdentityMatchesTemp    bool                          `json:"capability_identity_matches_temp"`
+	WorkerCapabilityHeld             bool                          `json:"worker_capability_held"`
+	TerminationRequested             bool                          `json:"termination_requested"`
+	WorkerJoinConfirmed              bool                          `json:"worker_join_confirmed"`
+	StoreWriteNotStartedBeforeJoin   bool                          `json:"store_write_not_started_before_join"`
+	StoreWriteStartedAfterJoin       bool                          `json:"store_write_started_after_join"`
+	PublishedObjectMatchesRegistered bool                          `json:"published_object_matches_registered_temp"`
+	EffectiveRouteReserved           bool                          `json:"effective_route_reserved"`
+	RetiredPinRetained               bool                          `json:"retired_pin_retained"`
+	AliasDenied                      bool                          `json:"alias_denied"`
+	RenamedRetiredObjectDenied       bool                          `json:"renamed_retired_object_denied"`
+	UnrelatedOrdinaryReadSucceeded   bool                          `json:"unrelated_ordinary_read_succeeded"`
+	PolicyBefore                     readbrokerstudy.GenerationSet `json:"policy_before"`
+	PolicyAfter                      readbrokerstudy.GenerationSet `json:"policy_after"`
+	OnceGrantConsumptions            int                           `json:"once_grant_consumptions"`
+	RetryUsedNewReplacementIdentity  bool                          `json:"retry_used_new_replacement_identity"`
+	StalePublicationSuppressed       bool                          `json:"stale_publication_suppressed"`
+	SensitiveContentPresentInReport  bool                          `json:"sensitive_content_present_in_report"`
 }
 
 type abnormalLifecycleEvidence struct {
@@ -187,6 +219,7 @@ type abnormalLifecycleEvidence struct {
 	OwnerWriteAuthorized                          bool   `json:"owner_write_authorized"`
 	OwnerWriteStarted                             bool   `json:"owner_write_started"`
 	SensitiveBytesPresentBeforeJoin               bool   `json:"sensitive_bytes_present_before_join"`
+	FixtureContentUnchangedBeforeJoin             bool   `json:"fixture_content_unchanged_before_join"`
 	RegistryPinsBefore                            int    `json:"registry_pins_before"`
 	RegistryPinsWhilePending                      int    `json:"registry_pins_while_pending"`
 	RegistryPinsAfterCleanup                      int    `json:"registry_pins_after_cleanup"`
@@ -363,6 +396,26 @@ func unavailableCases(reason string) []caseResult {
 		{"coordinator_death_with_held_capability", "independent supervisor observes coordinator death and whether the real worker capability disappears before supervisor cleanup"},
 		{"shutdown_deadline_retains_cleanup_obligation", "a real held worker remains alive across a bounded shutdown deadline; resources and admission remain blocked until confirmed cleanup"},
 		{"owner_incomplete_cleanup_blocks_write_native", "a real held worker keeps owner registration pending; no sensitive write occurs until the real worker is killed and directly reaped"},
+		{"real_auth_startup_registration_and_successive_rotations", "actual auth store registers its route and replacement objects before writing; successive published identities and retired aliases remain protected"},
+		{"real_auth_retired_alias_denied", "actual auth store retired object alias remains protected"},
+		{"real_auth_renamed_retired_object_denied", "actual auth store renamed retired identity remains protected"},
+		{"real_auth_intermediate_alias_denied", "actual auth store intermediate replacement alias remains protected"},
+		{"real_auth_current_route_denied", "actual auth store current effective route is denied to generic reads"},
+		{"real_auth_current_alias_denied", "actual auth store current replacement alias remains protected"},
+		{"real_auth_unrelated_ordinary_read_control", "unrelated ordinary fixture remains readable beside actual auth store owner registration"},
+		{"real_auth_held_worker_cleanup_pending_blocks_write_then_retry", "actual auth store returns cleanup pending without writing while a real worker holds its empty replacement; after confirmed join, a fresh store retry registers and writes a new replacement"},
+		{"real_auth_injected_registration_failure_preserves_destination", "deterministic injected owner-registration failure preserves the actual auth store destination"},
+		{"real_auth_failure_retry_after_registration", "a new actual auth store operation registers and publishes a new protected object after refusal"},
+		{"real_settings_startup_absent_route_then_first_save", "actual settings store registers its absent effective route before first save and protects the published object"},
+		{"real_settings_startup_existing_route_and_rotations", "actual settings store registers an existing object and successive replacement identities before writing"},
+		{"real_settings_retired_alias_denied", "actual settings store retired object alias remains protected"},
+		{"real_settings_intermediate_alias_denied", "actual settings store intermediate rotated object alias remains protected"},
+		{"real_settings_current_alias_denied", "actual settings store current object alias remains protected"},
+		{"real_settings_effective_route_denied", "actual settings store effective route is denied to generic reads"},
+		{"real_settings_ordinary_read_control", "unrelated ordinary fixture remains readable beside actual settings store owner registration"},
+		{"real_settings_cleanup_pending_refuses_then_retries", "actual settings store returns cleanup pending without writing while a real worker holds its empty replacement; after confirmed join, a fresh store retry registers and writes a new replacement"},
+		{"real_auth_publication_invalidation_after_capture", "actual auth store registration after capture changes policy and suppresses stale worker publication"},
+		{"real_settings_publication_invalidation_after_capture", "actual settings store registration after capture changes policy and suppresses stale worker publication"},
 		{"provider_missing_explicit_once", "provider-only source refuses without explicit once approval before worker access"},
 		{"provider_only_ordinary_positive_control", "separate ordinary fixture remains readable under its own once authorization"},
 		{"provider_ordinary_receipt_rejected_for_alias", "ordinary identity/class/route receipt cannot authorize a registered provider alias"},
@@ -708,6 +761,21 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		return results, err
 	}
 	results = append(results, ownerCases...)
+	authStoreCases, err := runAuthRealStoreNativeCases(bwrap, worker, root)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, authStoreCases...)
+	settingsStoreCases, err := runSettingsRealStoreNativeCases(bwrap, worker, root)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, settingsStoreCases...)
+	publicationCases, err := runRealStorePublicationInvalidationCases(bwrap, worker, root)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, publicationCases...)
 	providerCases, err := runProviderApprovalCases(bwrap, worker, root)
 	if err != nil {
 		return results, err
@@ -1774,8 +1842,9 @@ func runShutdownDeadlineCase(bwrap, workerPath, parent string) (row caseResult) 
 	evidence.AdmissionOnceConsumptions = authorizer.ConsumptionCount(newInvocation)
 	evidence.StalePublicationSuppressed = len(session.PublishedResults()) == 0
 	contents, contentErr := os.ReadFile(target)
-	evidence.SensitiveBytesPresentBeforeJoin = contentErr == nil && string(contents) == string(original)
-	if !evidence.CleanupPendingObserved || !evidence.CleanupRecordRetained || evidence.RegistryPinsWhilePending != evidence.RegistryPinsBefore || !evidence.WorkerAliveAtPendingBoundary || !evidence.AdmissionBlocked || !evidence.StalePublicationSuppressed || !evidence.SensitiveBytesPresentBeforeJoin {
+	evidence.FixtureContentUnchangedBeforeJoin = contentErr == nil && string(contents) == string(original)
+	evidence.SensitiveBytesPresentBeforeJoin = evidence.FixtureContentUnchangedBeforeJoin
+	if !evidence.CleanupPendingObserved || !evidence.CleanupRecordRetained || evidence.RegistryPinsWhilePending != evidence.RegistryPinsBefore || !evidence.WorkerAliveAtPendingBoundary || !evidence.AdmissionBlocked || !evidence.StalePublicationSuppressed || !evidence.FixtureContentUnchangedBeforeJoin {
 		row.Status, row.Classification = "inconclusive", "inconclusive"
 		row.Observed = "shutdown deadline did not establish the complete retained-resource and blocked-admission state"
 		evidence.Detail = "pending boundary evidence was incomplete"
@@ -1969,9 +2038,10 @@ func runOwnerCleanupPendingNativeCase(bwrap, workerPath, parent string) (row cas
 	evidence.OwnerWriteAttempted = pendingOwner.WriteAttempted
 	evidence.OwnerWriteAuthorized = pendingOwner.WriteAuthorized
 	evidence.OwnerWriteStarted = pendingOwner.WriteStarted
-	evidence.SensitiveBytesPresentBeforeJoin = beforeWriteErr == nil && afterPendingErr == nil && string(beforeWrite) == string(original) && string(afterPending) == string(original)
+	evidence.FixtureContentUnchangedBeforeJoin = beforeWriteErr == nil && afterPendingErr == nil && string(beforeWrite) == string(original) && string(afterPending) == string(original)
+	evidence.SensitiveBytesPresentBeforeJoin = evidence.FixtureContentUnchangedBeforeJoin
 	evidence.StalePublicationSuppressed = len(session.PublishedResults()) == 0
-	if !evidence.CleanupPendingObserved || !evidence.WorkerAliveAtPendingBoundary || !evidence.CleanupRecordRetained || evidence.RegistryPinsWhilePending == 0 || !evidence.AdmissionBlocked || !evidence.OwnerWriteAttempted || evidence.OwnerWriteAuthorized || evidence.OwnerWriteStarted || !evidence.SensitiveBytesPresentBeforeJoin || !evidence.StalePublicationSuppressed {
+	if !evidence.CleanupPendingObserved || !evidence.WorkerAliveAtPendingBoundary || !evidence.CleanupRecordRetained || evidence.RegistryPinsWhilePending == 0 || !evidence.AdmissionBlocked || !evidence.OwnerWriteAttempted || evidence.OwnerWriteAuthorized || evidence.OwnerWriteStarted || !evidence.FixtureContentUnchangedBeforeJoin || !evidence.StalePublicationSuppressed {
 		row.Status, row.Classification = "inconclusive", "inconclusive"
 		row.Observed = "real-worker cleanup pending did not preserve every owner/admission barrier"
 		evidence.Detail = "pending cleanup state or blocked write evidence was incomplete"
@@ -2245,6 +2315,7 @@ func runOwnerAfterCaptureCase(bwrap, workerPath, parent string) (caseResult, err
 		row.Status = "measured_pass"
 		row.Classification = "owner_lifecycle"
 		row.FixtureEffect = "worker read was captured but returned to no result sink after registration; owner wrote synthetic bytes only after the joined worker and matching pin were confirmed"
+		row.Detail = ""
 	}
 	return row, nil
 }

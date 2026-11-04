@@ -124,16 +124,18 @@ scenario matrix in
 [`read-broker-native-actor.md`](read-broker-native-actor.md) for the contract
 behind each result.
 
-The new actor cases are intended to exercise a late protected alias, selected
-root and parent relocation, target replacement after classification, and
-refusal for an unregistered child moved out of a protected directory. They use
-a separate same-user process and bounded handshakes; the study does not treat
-injected-worker tests as native evidence. Protected-owner rotation,
+The actor cases exercise a late protected alias, selected root and parent
+relocation, target replacement after classification, and refusal for an
+unregistered child moved out of a protected directory. They use a separate
+same-user process and bounded handshakes; the study does not treat injected
+worker tests as native evidence. The report also includes actual harness auth
+and settings store calls through the live study session and Bubblewrap worker;
+these cases are distinct from the older synthetic `fixtureOwnerWriter` rows
+and injected-session store tests. Token Logger/provider-source owner coverage,
 mount-boundary behavior, protected-ancestor transitions that cannot pass the
 current directory-coverage gate, arbitrary namespace-descendant cleanup, and
-natural worker hangs remain distinct evidence gaps unless the selected report
-says otherwise. Coordinator-death and injected shutdown/owner cleanup cases
-are reported separately in the selected report.
+natural worker hangs remain separate evidence gaps. Coordinator-death and
+injected shutdown/owner cleanup cases are reported separately.
 Typed-read results do not establish shell safety, production readiness, or
 acceptance of any filesystem tool.
 

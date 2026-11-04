@@ -46,7 +46,8 @@ do not accept credential values. Startup creates no chat database.
 The auth and settings stores expose an optional host-owned protection hook for
 the experimental read-broker study. The shipped chat does not configure a
 sandbox service or filesystem tools; see the
-[protected owner integration boundary](read-broker-owner-integration.md).
+[protected owner integration boundary](read-broker-owner-integration.md) and
+the [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 
 ## Local configuration
 

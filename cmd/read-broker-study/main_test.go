@@ -960,6 +960,16 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		"owner_registration_failure_blocks_write", "owner_incomplete_cleanup_blocks_write",
 		"coordinator_death_with_held_capability", "shutdown_deadline_retains_cleanup_obligation",
 		"owner_incomplete_cleanup_blocks_write_native",
+		"real_auth_startup_registration_and_successive_rotations", "real_auth_retired_alias_denied",
+		"real_auth_renamed_retired_object_denied", "real_auth_intermediate_alias_denied",
+		"real_auth_current_route_denied", "real_auth_current_alias_denied",
+		"real_auth_unrelated_ordinary_read_control", "real_auth_held_worker_cleanup_pending_blocks_write_then_retry",
+		"real_auth_injected_registration_failure_preserves_destination", "real_auth_failure_retry_after_registration",
+		"real_settings_startup_absent_route_then_first_save", "real_settings_startup_existing_route_and_rotations",
+		"real_settings_retired_alias_denied", "real_settings_intermediate_alias_denied",
+		"real_settings_current_alias_denied", "real_settings_effective_route_denied",
+		"real_settings_ordinary_read_control", "real_settings_cleanup_pending_refuses_then_retries",
+		"real_auth_publication_invalidation_after_capture", "real_settings_publication_invalidation_after_capture",
 		"provider_missing_explicit_once", "provider_only_ordinary_positive_control",
 		"provider_ordinary_receipt_rejected_for_alias", "provider_stale_policy_receipt_rejected",
 		"provider_stale_root_receipt_rejected", "provider_stale_grant_receipt_rejected",
@@ -975,7 +985,7 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 			t.Fatalf("duplicate unavailable case %q", result.Name)
 		}
 		seen[result.Name] = true
-		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.CapabilityHeld || result.CapabilityIdentity != nil || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition || result.AuthorizationAttempted || result.AuthorizationReceiptAccepted || result.OwnerLifecycle != nil || result.Lifecycle != nil {
+		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.CapabilityHeld || result.CapabilityIdentity != nil || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition || result.AuthorizationAttempted || result.AuthorizationReceiptAccepted || result.OwnerLifecycle != nil || result.RealStore != nil || result.Lifecycle != nil {
 			t.Fatalf("unavailable case claims activity: %+v", result)
 		}
 	}
@@ -994,5 +1004,55 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 	}
 	if _, present := fields["generations_before"]; present {
 		t.Fatal("unavailable scenario serialized an unmeasured generation snapshot")
+	}
+}
+
+func TestRealStoreReportEvidenceIsExplicitAndSanitized(t *testing.T) {
+	identity := readbrokerstudy.FileIdentity{Device: 1, Inode: 2, Type: 3}
+	row := caseResult{
+		Name: "real_auth_cleanup_pending_refuses_then_retries",
+		RealStore: &realStoreEvidence{
+			StoreType: "auth.Store", Operation: "AddAPIKey", EffectiveOverride: true,
+			ReplacementIdentity: &identity, ReplacementEmptyAtRegistration: true,
+			StoreWriteNotStartedBeforeJoin: true, SensitiveContentPresentInReport: false,
+		},
+	}
+	encoded, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var evidence map[string]json.RawMessage
+	if err := json.Unmarshal(fields["real_store"], &evidence); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"store_type", "operation", "effective_override", "replacement_empty_at_registration", "store_write_not_started_before_join", "sensitive_content_present_in_report"} {
+		if _, ok := evidence[key]; !ok {
+			t.Errorf("real-store report omitted %q: %s", key, encoded)
+		}
+	}
+	if strings.Contains(string(encoded), "synthetic-secret") || strings.Contains(string(encoded), "auth.json") || strings.Contains(string(encoded), "settings.json") {
+		t.Fatalf("report contains a sensitive value or host path: %s", encoded)
+	}
+}
+
+func TestFixtureContentBeforeJoinFieldClarifiesLegacyMeaning(t *testing.T) {
+	evidence := abnormalLifecycleEvidence{
+		SensitiveBytesPresentBeforeJoin:   true,
+		FixtureContentUnchangedBeforeJoin: true,
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if string(fields["sensitive_bytes_present_before_join"]) != "true" || string(fields["fixture_content_unchanged_before_join"]) != "true" {
+		t.Fatalf("legacy/new pending-state evidence fields not preserved: %s", encoded)
 	}
 }
