@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -278,6 +279,282 @@ func TestCoordinatorDeathRejectsStaleHeldProcessObservation(t *testing.T) {
 	if !initAlive || workerAlive {
 		t.Fatalf("stale held event liveness=(init %t, worker %t), want (true, false)", initAlive, workerAlive)
 	}
+}
+
+func TestCoordinatorCheckpointHookFollowsFixtureCheckpointOrder(t *testing.T) {
+	// This is an in-process fixture. Its process identities and probe are
+	// injected values, so it tests callback/protocol ordering, not Bubblewrap
+	// enforcement or native sandbox evidence.
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	contents := []byte("synthetic coordinator checkpoint bytes\n")
+	if err := os.WriteFile(target, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := identityAt(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	authorizer := readbrokerstudy.NewOnceGrantFixture()
+	const invocation = "checkpoint-test-once"
+	if err := authorizer.ApproveOnce(invocation); err != nil {
+		t.Fatal(err)
+	}
+	native := &checkpointTestLauncher{worker: &checkpointTestWorker{}}
+	observed := &observedWorkerLauncher{inner: native}
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), observed, authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeStudySession(session) })
+	if err := session.SelectRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor := os.NewFile(uintptr(pair[0]), "checkpoint-test-supervisor")
+	coordinator := os.NewFile(uintptr(pair[1]), "checkpoint-test-coordinator")
+	if supervisor == nil || coordinator == nil {
+		_ = unix.Close(pair[0])
+		_ = unix.Close(pair[1])
+		t.Fatal("could not wrap checkpoint-test sockets")
+	}
+	defer supervisor.Close()
+	defer coordinator.Close()
+	hook := coordinatorCheckpointHook(observed, coordinator, identity, func() int {
+		return authorizer.ConsumptionCount(invocation)
+	})
+	var checkpointMu sync.Mutex
+	var checkpoints []readbrokerstudy.Checkpoint
+	session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		checkpointMu.Lock()
+		checkpoints = append(checkpoints, checkpoint)
+		checkpointMu.Unlock()
+		if checkpoint == readbrokerstudy.CheckpointBeforeOpen || checkpoint == readbrokerstudy.CheckpointAfterOpen || checkpoint == readbrokerstudy.CheckpointAfterClassify {
+			if native.starts != 0 || observed.latest() != nil {
+				return errors.New("worker started before pre-worker checkpoint completed")
+			}
+		}
+		return hook(checkpoint)
+	})
+	type readDone struct {
+		result readbrokerstudy.WorkerResult
+		err    error
+	}
+	done := make(chan readDone, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		result, readErr := session.Read(ctx, root, target, invocation)
+		done <- readDone{result: result, err: readErr}
+	}()
+	ready, err := readLifecycleHandshake(int(supervisor.Fd()), time.Second)
+	if err != nil {
+		t.Fatalf("read actual coordinator ready handshake: %v", err)
+	}
+	if ready.Phase != "ready" || ready.TargetIdentity != identity || ready.Probe.SeccompMode != 2 || ready.Bubblewrap.PID != 101 || ready.NamespaceInit.PID != 102 {
+		t.Fatalf("unexpected injected ready handshake: %+v", ready)
+	}
+	if err := writeLifecycleCommand(int(supervisor.Fd()), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	held, err := readLifecycleHandshake(int(supervisor.Fd()), time.Second)
+	if err != nil {
+		t.Fatalf("read actual coordinator held handshake: %v", err)
+	}
+	if held.Phase != "held" || held.TargetIdentity != identity || held.CapabilityIdentity != identity || held.OnceConsumptions != 1 {
+		t.Fatalf("unexpected injected held handshake: %+v", held)
+	}
+	if err := writeLifecycleCommand(int(supervisor.Fd()), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case completed := <-done:
+		if completed.err != nil || completed.result.Outcome != readbrokerstudy.ReadSucceeded || string(completed.result.Bytes) != string(contents) {
+			t.Fatalf("fixture read result=%+v err=%v", completed.result, completed.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("fixture did not complete after both coordinator checkpoints")
+	}
+	want := []readbrokerstudy.Checkpoint{
+		readbrokerstudy.CheckpointBeforeOpen, readbrokerstudy.CheckpointAfterOpen,
+		readbrokerstudy.CheckpointAfterClassify, readbrokerstudy.CheckpointBeforeHandoff,
+		readbrokerstudy.CheckpointAfterFinalRevalidation, readbrokerstudy.CheckpointAfterCapabilityHeld,
+		readbrokerstudy.CheckpointAfterCapture, readbrokerstudy.CheckpointBeforePublish,
+	}
+	checkpointMu.Lock()
+	got := append([]readbrokerstudy.Checkpoint(nil), checkpoints...)
+	checkpointMu.Unlock()
+	if len(got) != len(want) {
+		t.Fatalf("checkpoint sequence=%v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("checkpoint sequence=%v, want %v", got, want)
+		}
+	}
+	if native.starts != 1 {
+		t.Fatalf("fixture worker starts=%d, want exactly one after pre-worker checkpoints", native.starts)
+	}
+}
+
+func TestCoordinatorCheckpointHookRequiresWorkerOnlyAtObservationPoints(t *testing.T) {
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := os.NewFile(uintptr(pair[0]), "missing-worker-control")
+	peer := os.NewFile(uintptr(pair[1]), "missing-worker-peer")
+	if control == nil || peer == nil {
+		_ = unix.Close(pair[0])
+		_ = unix.Close(pair[1])
+		t.Fatal("could not wrap missing-worker sockets")
+	}
+	defer control.Close()
+	defer peer.Close()
+	hook := coordinatorCheckpointHook(&observedWorkerLauncher{}, control, readbrokerstudy.FileIdentity{}, nil)
+	for _, checkpoint := range []readbrokerstudy.Checkpoint{
+		readbrokerstudy.CheckpointBeforeOpen,
+		readbrokerstudy.CheckpointAfterOpen,
+		readbrokerstudy.CheckpointAfterClassify,
+		readbrokerstudy.CheckpointAfterFinalRevalidation,
+	} {
+		if err := hook(checkpoint); err != nil {
+			t.Fatalf("non-observation checkpoint %q failed without a worker: %v", checkpoint, err)
+		}
+	}
+	for _, checkpoint := range []readbrokerstudy.Checkpoint{
+		readbrokerstudy.CheckpointBeforeHandoff,
+		readbrokerstudy.CheckpointAfterCapabilityHeld,
+	} {
+		if err := hook(checkpoint); err == nil {
+			t.Fatalf("worker observation checkpoint %q succeeded without a worker", checkpoint)
+		}
+	}
+	if _, err := readLifecycleHandshake(int(peer.Fd()), 25*time.Millisecond); err == nil {
+		t.Fatal("missing-worker failure unexpectedly emitted a readiness/held handshake")
+	}
+}
+
+func TestCoordinatorOutcomeDiagnosticsAreBoundedAndSanitized(t *testing.T) {
+	valid := coordinatorOutcomeHandshake(readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadCancelled}, readbrokerstudy.ReadEvidence{})
+	if valid.Phase != "outcome" || valid.Stage != "before_worker_start" || valid.Outcome != readbrokerstudy.ReadCancelled {
+		t.Fatalf("early cancellation handshake=%+v", valid)
+	}
+	recorded := &abnormalLifecycleEvidence{}
+	if got := recordCoordinatorOutcome(recorded, valid); got != "phase=before_worker_start outcome=cancelled" {
+		t.Fatalf("sanitized outcome=%q", got)
+	}
+	if recorded.CoordinatorOutcomePhase != valid.Stage || recorded.CoordinatorReadOutcome != string(valid.Outcome) {
+		t.Fatalf("machine-readable coordinator outcome was not recorded: %+v", recorded)
+	}
+	for _, invalid := range []lifecycleHandshake{
+		{Phase: "outcome", Stage: "/private/path", Outcome: readbrokerstudy.ReadCancelled},
+		{Phase: "outcome", Stage: "worker_startup", Outcome: "private diagnostic"},
+	} {
+		got := recordCoordinatorOutcome(recorded, invalid)
+		if strings.Contains(got, "/private/path") || strings.Contains(got, "private diagnostic") {
+			t.Fatalf("unsafe coordinator detail escaped validation: %q", got)
+		}
+		if !strings.Contains(got, "invalid bounded outcome") {
+			t.Fatalf("invalid coordinator detail was not replaced: %q", got)
+		}
+	}
+}
+
+type checkpointTestLauncher struct {
+	worker *checkpointTestWorker
+	starts int
+}
+
+func (l *checkpointTestLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
+	l.starts++
+	return l.worker, nil
+}
+func (*checkpointTestLauncher) Close() error { return nil }
+
+type checkpointTestWorker struct {
+	mu       sync.Mutex
+	file     *os.File
+	identity readbrokerstudy.FileIdentity
+	contents []byte
+	joined   bool
+}
+
+func (*checkpointTestWorker) Ready(context.Context) error { return nil }
+func (*checkpointTestWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{NoNewPrivs: true, SeccompMode: 2, SocketCreationDenied: true, PathOpenDenied: true, ReadCapabilityInitiallyAbsent: true, OnlyProtocolDescriptor: true, EnvironmentCleared: true}
+}
+func (w *checkpointTestWorker) TransferCapability(_ context.Context, file *os.File, identity readbrokerstudy.FileIdentity) error {
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		_ = file.Close()
+		return errors.New("fixture file identity is unavailable")
+	}
+	w.identity = readbrokerstudy.FileIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Type: uint32(stat.Mode) & uint32(unix.S_IFMT)}
+	if w.identity != identity {
+		_ = file.Close()
+		return readbrokerstudy.ErrStaleReceipt
+	}
+	w.mu.Lock()
+	w.file = file
+	w.mu.Unlock()
+	return nil
+}
+func (*checkpointTestWorker) AwaitReadStarted(context.Context) error { return nil }
+func (w *checkpointTestWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: append([]byte(nil), w.contents...)}, nil
+}
+func (w *checkpointTestWorker) Terminate() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.joined = true
+	if w.file != nil {
+		_ = w.file.Close()
+		w.file = nil
+	}
+	return nil
+}
+func (w *checkpointTestWorker) Wait() error { return w.Terminate() }
+func (w *checkpointTestWorker) Joined() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.joined
+}
+func (*checkpointTestWorker) ObserveHostProcesses() (readbrokerstudy.HostProcessIdentity, readbrokerstudy.HostProcessIdentity, error) {
+	return readbrokerstudy.HostProcessIdentity{PID: 101, StartTimeTicks: 1}, readbrokerstudy.HostProcessIdentity{PID: 102, StartTimeTicks: 2}, nil
+}
+func (w *checkpointTestWorker) HeldCapabilityIdentity() (readbrokerstudy.FileIdentity, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.identity, w.identity.Inode != 0
+}
+func (*checkpointTestWorker) AwaitCapabilityHeld(context.Context) error { return nil }
+func (w *checkpointTestWorker) ReleaseHeldRead(context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return readbrokerstudy.ErrProtocol
+	}
+	data, err := io.ReadAll(w.file)
+	_ = w.file.Close()
+	w.file = nil
+	w.contents = data
+	return err
 }
 
 func (s *ownerLifecycleTestSession) Read(context.Context, string, string, string) (readbrokerstudy.WorkerResult, error) {

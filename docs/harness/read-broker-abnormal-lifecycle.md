@@ -121,3 +121,26 @@ database, or user data is involved. No process/resource exhaustion is attempted.
 Direct child reaping, namespace cleanup, descriptor closure, owner write
 eligibility, and stale-result suppression remain separate reported facts.
 Filesystem and shell tools remain unavailable.
+
+## Coordinator checkpoint ordering and setup diagnostics
+
+The session invokes its first checkpoints before it prepares the target or
+starts a worker (`before_open`, `after_open`, and `after_classify`). The
+coordinator callback treats these and other unrelated checkpoints as no-ops.
+It requires the observed worker only at `before_handoff`, where it sends the
+ready/probe/process-identity message, and at
+`after_capability_held_before_read_release`, where it sends the held-FD
+identity and once-consumption count. Missing observations at either point fail
+closed. A deterministic in-process fixture drives the real callback through
+the session's checkpoint sequence and checks both handshake messages; its
+injected worker identities and probe are unit evidence only, not native
+Bubblewrap evidence.
+
+If the coordinator's read returns a non-success outcome without a Go error, it
+sends a bounded `outcome` control message containing only a fixed phase label
+and typed read outcome. This prevents a refusal, cancellation, or early
+not-executed result from appearing as a silent successful coordinator exit.
+The supervisor records those validated fields in its sanitized detail and
+classifies the experiment as unavailable because readiness or held-capability
+preconditions were not established. Arbitrary result detail, paths, contents,
+commands, and stderr are not copied into the report.
