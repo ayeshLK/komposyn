@@ -1105,14 +1105,15 @@ func runOwnerRegistrationFailureCase(bwrap, workerPath, parent string) caseResul
 }
 
 type providerFixture struct {
-	root       string
-	provider   string
-	alias      string
-	ordinary   string
-	registry   *readbrokerstudy.Registry
-	authorizer *readbrokerstudy.OnceGrantFixture
-	mutating   *studyMutatingAuthorizer
-	session    readbrokerstudy.FixtureSession
+	root             string
+	provider         string
+	providerContents []byte
+	alias            string
+	ordinary         string
+	registry         *readbrokerstudy.Registry
+	authorizer       *readbrokerstudy.OnceGrantFixture
+	mutating         *studyMutatingAuthorizer
+	session          readbrokerstudy.FixtureSession
 }
 
 type studyMutatingAuthorizer struct {
@@ -1155,7 +1156,8 @@ func newProviderFixture(bwrap, workerPath, parent, name string) (*providerFixtur
 	provider := filepath.Join(root, "registered-provider-source.fixture")
 	alias := filepath.Join(root, "provider-source-alias.fixture")
 	ordinary := filepath.Join(root, "ordinary.fixture")
-	if err := os.WriteFile(provider, []byte("synthetic provider source bytes for authorization study\n"), 0o600); err != nil {
+	providerContents := []byte("synthetic provider source bytes for authorization study\n")
+	if err := os.WriteFile(provider, providerContents, 0o600); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(ordinary, []byte("separate synthetic ordinary fixture\n"), 0o600); err != nil {
@@ -1194,7 +1196,7 @@ func newProviderFixture(bwrap, workerPath, parent, name string) (*providerFixtur
 		_ = closeStudySession(session)
 		return nil, err
 	}
-	return &providerFixture{root: root, provider: provider, alias: alias, ordinary: ordinary, registry: registry, authorizer: authorizer, mutating: mutating, session: session}, nil
+	return &providerFixture{root: root, provider: provider, providerContents: append([]byte(nil), providerContents...), alias: alias, ordinary: ordinary, registry: registry, authorizer: authorizer, mutating: mutating, session: session}, nil
 }
 
 func runProviderApprovalCases(bwrap, workerPath, parent string) ([]caseResult, error) {
@@ -1303,10 +1305,12 @@ func runProviderReadCase(fixture *providerFixture, name, invocationID, target st
 	after := fixture.session.GenerationSnapshot()
 	workerEvidence, hasEvidence := evidenceFor(fixture.session, invocationID)
 	consumed := fixture.authorizer.ConsumptionCount(invocationID)
+	bytesMatch := result.Outcome == readbrokerstudy.ReadSucceeded && bytes.Equal(result.Bytes, fixture.providerContents)
 	row := caseResult{
 		Name: name, Expected: expected, Observed: string(result.Outcome), OnceGrantConsumptions: consumed,
 		AuthorizationAttempted:       fixture.mutating.attempts[invocationID] == 1,
 		AuthorizationReceiptAccepted: false, PreparedClass: readbrokerstudy.ClassProvider, PreparedIdentity: &identity,
+		BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch,
 		GenerationsBefore: &before, GenerationsAfter: &after, AuthorityA: "no conclusion", AuthorityB: "provider authorization correlation only",
 		FixtureEffect: "no provider path or source contents included in report",
 	}
@@ -1418,7 +1422,7 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 	}
 	expectedOutcome := readbrokerstudy.ReadRefused
 	switch name {
-	case "ordinary_positive", "provider_source_explicit_once", "actor_late_alias_existing_invocation":
+	case "ordinary_positive", "provider_source_explicit_once", "provider_only_ordinary_positive_control", "actor_late_alias_existing_invocation":
 		expectedOutcome = readbrokerstudy.ReadSucceeded
 	case "cancel_before_release", "revoke_after_capture_before_publish":
 		expectedOutcome = readbrokerstudy.ReadCancelled
@@ -1726,7 +1730,7 @@ func (o *fixtureOwnerWriter) Complete(ctx context.Context, readDone <-chan struc
 			return o.evidence
 		}
 		o.evidence.Events = append(o.evidence.Events, "registration_retry_confirmed")
-	} else if requireJoin {
+	} else if requireJoin && !o.evidence.WorkerJoinConfirmed {
 		o.evidence.Detail = "required active worker did not produce a cleanup-pending registration barrier"
 		return o.evidence
 	}
