@@ -226,6 +226,21 @@ func (r *Registry) Classify(path string, identity FileIdentity) (ResourceClass, 
 	return r.ClassifyWithAncestors(path, identity, ancestors)
 }
 
+// ClassifyRoute applies only registered pathname rules. It deliberately does
+// not inspect the filesystem, so a reserved protected location remains
+// protected while absent or occupied by a non-regular/unreadable entry.
+func (r *Registry) ClassifyRoute(path string) (ResourceClass, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var matched ResourceClass
+	for _, entry := range r.entries {
+		if pathWithin(entry.registration.Path, path, entry.registration.Directory) {
+			matched = stricterClass(matched, entry.registration.Class)
+		}
+	}
+	return matched, matched != ""
+}
+
 // ClassifyWithAncestors also matches a target beneath a pinned protected
 // directory object, including when that directory object has moved. The
 // ancestry sample identifies only directories still on the target's parent

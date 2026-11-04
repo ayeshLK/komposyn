@@ -76,6 +76,38 @@ func TestExactFileRoutesAndPinnedIdentitiesUseCapturedClassification(t *testing.
 	assertClassified(t, registry, providerAlias, providerID, ClassProvider)
 }
 
+func TestClassifyRouteProtectsReservedAbsentAndDirectoryRoutes(t *testing.T) {
+	root := t.TempDir()
+	reserved := filepath.Join(root, "reserved-auth.fixture")
+	protectedDir := filepath.Join(root, "private")
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(OwnerRegistration{Owner: "auth-fixture", Class: ClassCredential, Path: reserved}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(protectedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(OwnerRegistration{Owner: "settings-fixture", Class: ClassSettings, Path: protectedDir, Directory: true}); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]ResourceClass{
+		reserved: ClassCredential,
+		filepath.Join(protectedDir, "absent.fixture"): ClassSettings,
+	} {
+		class, protected := registry.ClassifyRoute(path)
+		if !protected || class != want {
+			t.Errorf("route classification for %q=(%q,%t), want (%q,true)", path, class, protected, want)
+		}
+	}
+	if _, err := os.Lstat(reserved); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reserved fixture unexpectedly exists: %v", err)
+	}
+}
+
 func TestRegistryProtectsRegisteredIdentityAndLocation(t *testing.T) {
 	root := t.TempDir()
 	protectedDir := filepath.Join(root, "private")

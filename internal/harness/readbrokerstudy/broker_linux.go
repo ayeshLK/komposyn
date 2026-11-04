@@ -73,6 +73,17 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 	if generation.Policy != view.Generation {
 		return nil, ErrPolicyChanged
 	}
+	// Check the requested pathname before opening it. Location policy must
+	// reject reserved protected leaves even when the entry is absent or the
+	// current replacement cannot be opened. Provider-source locations retain
+	// their separate explicit-approval path.
+	routeClass, routeProtected := b.registry.ClassifyRoute(target)
+	if latest := b.registry.View(); latest.Generation != view.Generation || latest.Generation != generation.Policy {
+		return nil, ErrPolicyChanged
+	}
+	if routeProtected && routeClass != ClassProvider {
+		return nil, ErrProtected
+	}
 	rootFD, err := openAbsolute(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
 	if err != nil {
 		return nil, mapPrepareError(err)

@@ -715,7 +715,9 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 	if detail == "" {
 		detail = "fixture result bytes and filesystem paths omitted"
 	}
-	return caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
+	row := caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
+	applyReadEvidence(&row, result, ev, ev.Case == invocationID)
+	return row
 }
 
 func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, executable, fixtureRoot, selectedRoot, target, name, invocationID, expected string, action readbrokerstudy.NativeActorAction, actorSource, actorTarget, expectedClassification string, verifyFixture func() bool, effect string) caseResult {
@@ -773,6 +775,7 @@ func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *re
 		WorkerProbe: ev.Probe, FixtureEffect: "fixture transition or worker outcome was not established",
 		AuthorityA: "no conclusion", AuthorityB: "no conclusion",
 	}
+	applyReadEvidence(&base, result, ev, ev.Case == invocationID)
 	if readErr != nil {
 		base.Status = "inconclusive"
 		base.Classification = "inconclusive"
@@ -819,6 +822,23 @@ func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *re
 	base.Classification = "inconclusive"
 	base.Detail = "actor completed but worker outcome, approved-object bytes, grant use, generation, or cleanup differed from the expected B observation"
 	return base
+}
+
+func applyReadEvidence(row *caseResult, result readbrokerstudy.WorkerResult, evidence readbrokerstudy.ReadEvidence, present bool) {
+	if row == nil {
+		return
+	}
+	row.ResultBytesReturned = result.Outcome == readbrokerstudy.ReadSucceeded
+	row.ReadEvidencePresent = present
+	if !present {
+		return
+	}
+	row.ReadEvidenceCase = evidence.Case
+	row.WorkerOutcome = evidence.Outcome
+	generations := evidence.Generations
+	row.WorkerGenerations = &generations
+	row.WorkerEffect = evidence.Effect
+	row.WorkerLimitation = evidence.Limitation
 }
 
 func unavailableActorCase(name, expected, detail string) caseResult {

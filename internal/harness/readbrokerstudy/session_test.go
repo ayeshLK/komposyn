@@ -424,6 +424,36 @@ func TestLateAliasDoesNotReclassifyExistingOrdinaryRouteButProtectedRouteRefuses
 	}
 }
 
+func TestReservedProtectedRouteRefusesBeforeOpeningAbsentOrNonRegularTarget(t *testing.T) {
+	root := t.TempDir()
+	reserved := filepath.Join(root, "reserved-settings.fixture")
+	fixture := newSessionFixture(t, root)
+	if err := fixture.registry.Register(OwnerRegistration{Owner: "settings-fixture", Class: ClassSettings, Path: reserved}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fixture.authorizer.ApproveOnce("reserved-absent"); err != nil {
+		t.Fatal(err)
+	}
+	absent, err := fixture.session.Read(context.Background(), root, reserved, "reserved-absent")
+	if err != nil || absent.Outcome != ReadRefused || absent.Detail != ErrProtected.Error() {
+		t.Fatalf("absent reserved route result=(%q,%q,%v), want route-policy refusal", absent.Outcome, absent.Detail, err)
+	}
+	if err := os.Mkdir(reserved, 0o700); err != nil {
+		t.Fatalf("create non-regular replacement at reserved route: %v", err)
+	}
+	if err := fixture.authorizer.ApproveOnce("reserved-nonregular"); err != nil {
+		t.Fatal(err)
+	}
+	nonregular, err := fixture.session.Read(context.Background(), root, reserved, "reserved-nonregular")
+	if err != nil || nonregular.Outcome != ReadRefused || nonregular.Detail != ErrProtected.Error() {
+		t.Fatalf("non-regular reserved route result=(%q,%q,%v), want route-policy refusal", nonregular.Outcome, nonregular.Detail, err)
+	}
+	if fixture.launcher.starts != 0 || fixture.authorizer.ConsumptionCount("reserved-absent") != 0 || fixture.authorizer.ConsumptionCount("reserved-nonregular") != 0 || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatalf("protected route caused activity: worker starts=%d once counts=(%d,%d) published=%d", fixture.launcher.starts, fixture.authorizer.ConsumptionCount("reserved-absent"), fixture.authorizer.ConsumptionCount("reserved-nonregular"), len(fixture.session.PublishedResults()))
+	}
+}
+
 func TestUnconfirmedWorkerJoinBlocksFurtherReadsAndResourceRelease(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "cleanup.fixture")

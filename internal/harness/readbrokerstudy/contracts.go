@@ -85,6 +85,11 @@ type PolicyRegistry interface {
 	Register(OwnerRegistration) error
 	RegisterRotation(owner string, next []OwnerRegistration) error
 	View() PolicyView
+	// ClassifyRoute applies registered-location rules without opening or
+	// resolving the requested object. It lets reserved protected routes be
+	// refused even while their leaf is absent or replaced by an unreadable
+	// object. Identity-based policy is applied separately after open.
+	ClassifyRoute(path string) (ResourceClass, bool)
 	Classify(path string, identity FileIdentity) (ResourceClass, bool)
 	ClassifyWithAncestors(path string, identity FileIdentity, ancestors []FileIdentity) (ResourceClass, bool)
 	DirectoryCoverageIncomplete(identity FileIdentity) bool
