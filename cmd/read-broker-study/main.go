@@ -161,6 +161,8 @@ type abnormalLifecycleEvidence struct {
 	CoordinatorExitObserved                       bool   `json:"coordinator_exit_observed"`
 	CoordinatorDirectWaitConfirmed                bool   `json:"coordinator_direct_wait_confirmed"`
 	CoordinatorDiagnosticPresent                  bool   `json:"coordinator_diagnostic_present"`
+	CoordinatorOutcomePhase                       string `json:"coordinator_outcome_phase,omitempty"`
+	CoordinatorReadOutcome                        string `json:"coordinator_read_outcome,omitempty"`
 	BubblewrapLiveBeforeCoordinatorTermination    bool   `json:"bubblewrap_live_before_coordinator_termination"`
 	NamespaceInitLiveBeforeCoordinatorTermination bool   `json:"namespace_init_live_before_coordinator_termination"`
 	WorkerReady                                   bool   `json:"worker_ready"`
@@ -912,6 +914,8 @@ const lifecycleObservationDeadline = 3 * time.Second
 
 type lifecycleHandshake struct {
 	Phase              string                              `json:"phase"`
+	Stage              string                              `json:"stage,omitempty"`
+	Outcome            readbrokerstudy.ReadOutcome         `json:"outcome,omitempty"`
 	Bubblewrap         readbrokerstudy.HostProcessIdentity `json:"bubblewrap"`
 	NamespaceInit      readbrokerstudy.HostProcessIdentity `json:"namespace_init"`
 	Probe              readbrokerstudy.WorkerProbe         `json:"probe"`
@@ -976,13 +980,47 @@ func runLifecycleCoordinator(args []string) error {
 	if err := authorizer.ApproveOnce(invocation); err != nil {
 		return err
 	}
-	session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
-		worker := observed.latest()
-		if worker == nil {
-			return errors.New("native worker observation is unavailable")
+	checkpointHook := coordinatorCheckpointHook(observed, control, targetIdentity, func() int {
+		return authorizer.ConsumptionCount(invocation)
+	})
+	session.SetCheckpointHook(checkpointHook)
+	readCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	result, readErr := session.Read(readCtx, *root, *target, invocation)
+	if readErr != nil {
+		return errors.New("coordinator fixture read failed")
+	}
+	if result.Outcome != readbrokerstudy.ReadSucceeded {
+		evidence := readbrokerstudy.ReadEvidence{}
+		for _, candidate := range session.Evidence() {
+			if candidate.Case == invocation {
+				evidence = candidate
+				break
+			}
 		}
+		diagnostic := coordinatorOutcomeHandshake(result, evidence)
+		if err := sendLifecycleHandshake(control, diagnostic); err != nil {
+			return errors.New("coordinator fixture outcome could not be reported")
+		}
+		return nil
+	}
+	closeOnReturn = false
+	return closeStudySession(session)
+}
+
+// coordinatorCheckpointHook is the production checkpoint callback used by the
+// coordinator-death fixture. Checkpoints before worker startup are intentional
+// no-ops; worker observations are required only where the protocol consumes
+// them. This keeps the supervisor handshake coupled to the actual session
+// checkpoint ordering without granting the worker any additional authority.
+func coordinatorCheckpointHook(observed *observedWorkerLauncher, control *os.File, targetIdentity readbrokerstudy.FileIdentity, onceConsumptions func() int) readbrokerstudy.CheckpointHook {
+	return func(checkpoint readbrokerstudy.Checkpoint) error {
 		switch checkpoint {
 		case readbrokerstudy.CheckpointBeforeHandoff:
+			worker := observed.latest()
+			if worker == nil {
+				return errors.New("native worker observation is unavailable before handoff")
+			}
 			bubblewrap, namespaceInit, observeErr := worker.ObserveHostProcesses()
 			if observeErr != nil {
 				return observeErr
@@ -995,25 +1033,81 @@ func runLifecycleCoordinator(args []string) error {
 				return context.Canceled
 			}
 		case readbrokerstudy.CheckpointAfterCapabilityHeld:
+			worker := observed.latest()
+			if worker == nil {
+				return errors.New("native worker observation is unavailable after capability hold")
+			}
 			capability, held := worker.HeldCapabilityIdentity()
 			if !held {
 				return readbrokerstudy.ErrProtocol
 			}
-			if err := sendLifecycleHandshake(control, lifecycleHandshake{Phase: "held", Probe: worker.Probe(), TargetIdentity: targetIdentity, CapabilityIdentity: capability, OnceConsumptions: authorizer.ConsumptionCount(invocation)}); err != nil {
+			consumptions := 0
+			if onceConsumptions != nil {
+				consumptions = onceConsumptions()
+			}
+			if err := sendLifecycleHandshake(control, lifecycleHandshake{Phase: "held", Probe: worker.Probe(), TargetIdentity: targetIdentity, CapabilityIdentity: capability, OnceConsumptions: consumptions}); err != nil {
 				return err
 			}
 			_, _ = readLifecycleCommand(control) // The supervisor kills only this coordinator after the held event.
 		}
 		return nil
-	})
-	readCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	_, readErr := session.Read(readCtx, *root, *target, invocation)
-	if readErr != nil {
-		return errors.New("coordinator fixture read failed")
 	}
-	closeOnReturn = false
-	return closeStudySession(session)
+}
+
+func coordinatorOutcomeStage(evidence readbrokerstudy.ReadEvidence) string {
+	switch {
+	case !evidence.WorkerStarted:
+		return "before_worker_start"
+	case !evidence.WorkerReady:
+		return "worker_startup"
+	case !evidence.CapabilitySent:
+		return "before_capability_handoff"
+	case !evidence.CapabilityHeld:
+		return "capability_hold"
+	case !evidence.ReadStarted:
+		return "before_read_start"
+	case !evidence.Published:
+		return "before_result_publication"
+	default:
+		return "completed"
+	}
+}
+
+func coordinatorOutcomeHandshake(result readbrokerstudy.WorkerResult, evidence readbrokerstudy.ReadEvidence) lifecycleHandshake {
+	outcome := result.Outcome
+	if outcome == "" {
+		outcome = readbrokerstudy.ReadUnknown
+	}
+	return lifecycleHandshake{Phase: "outcome", Stage: coordinatorOutcomeStage(evidence), Outcome: outcome}
+}
+
+func recordCoordinatorOutcome(evidence *abnormalLifecycleEvidence, message lifecycleHandshake) string {
+	detail := sanitizedCoordinatorOutcome(message)
+	if evidence == nil || strings.HasPrefix(detail, "coordinator reported an invalid") {
+		return detail
+	}
+	evidence.CoordinatorOutcomePhase = message.Stage
+	evidence.CoordinatorReadOutcome = string(message.Outcome)
+	return detail
+}
+
+func sanitizedCoordinatorOutcome(message lifecycleHandshake) string {
+	validStage := map[string]bool{
+		"before_worker_start": true, "worker_startup": true,
+		"before_capability_handoff": true, "capability_hold": true,
+		"before_read_start": true, "before_result_publication": true,
+		"completed": true,
+	}
+	validOutcome := map[readbrokerstudy.ReadOutcome]bool{
+		readbrokerstudy.ReadNotExecuted: true, readbrokerstudy.ReadSucceeded: true,
+		readbrokerstudy.ReadRefused: true, readbrokerstudy.ReadFailed: true,
+		readbrokerstudy.ReadPartial: true, readbrokerstudy.ReadUnknown: true,
+		readbrokerstudy.ReadCancelled: true,
+	}
+	if !validStage[message.Stage] || !validOutcome[message.Outcome] {
+		return "coordinator reported an invalid bounded outcome record"
+	}
+	return "phase=" + message.Stage + " outcome=" + string(message.Outcome)
 }
 
 func sendLifecycleHandshake(control *os.File, message lifecycleHandshake) error {
@@ -1248,10 +1342,13 @@ func runCoordinatorDeathCase(bwrap, parent string) (row caseResult, retain bool,
 		}
 		row.Status, row.Classification = "unavailable", "unavailable"
 		row.Observed = "candidate worker did not reach the externally observed ready checkpoint"
-		if err != nil {
+		if err == nil && ready.Phase == "outcome" {
+			evidence.Detail = recordCoordinatorOutcome(evidence, ready)
+			row.Detail = evidence.Detail
+			row.Observed = "coordinator reported a bounded fixture outcome before worker readiness"
+		} else if err != nil {
 			evidence.Detail = "worker readiness handshake unavailable; no coordinator-death claim was measured"
-		}
-		if childErr != nil && waited {
+		} else if childErr != nil && waited {
 			evidence.Detail = "coordinator cleaned up after readiness refusal; no worker capability was released"
 		}
 		if !waited {
@@ -1333,9 +1430,20 @@ func runCoordinatorDeathCase(bwrap, parent string) (row caseResult, retain bool,
 			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
 		}
 		evidence.CoordinatorDirectWaitConfirmed = waited
-		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Status, row.Classification = "unavailable", "unavailable"
 		row.Observed = "worker did not confirm holding the approved target capability"
-		evidence.Detail = "capability-held acknowledgement unavailable"
+		if err == nil && held.Phase == "outcome" {
+			row.Observed = "coordinator reported a bounded fixture outcome before capability-held acknowledgement"
+			evidence.Detail = recordCoordinatorOutcome(evidence, held)
+			row.Detail = evidence.Detail
+		} else {
+			evidence.Detail = "capability-held acknowledgement unavailable"
+		}
+		if !waited {
+			row.Status, row.Classification = "inconclusive", "inconclusive"
+			evidence.Detail = "coordinator and worker cleanup could not be confirmed; fixture root was retained"
+			row.Detail = evidence.Detail
+		}
 		return row, !waited, nil
 	}
 	evidence.CapabilityHeldAcknowledged = true
