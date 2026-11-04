@@ -447,7 +447,7 @@ summary=$output_dir/summary.md
   printf -- '- Backend probe classification: `%s` (derived from trusted flag and backend error fields).\n' "$preflight_status"
   printf -- '- Overall: **native acceptance not established**. A clean process exit or a subset of passing fixture cases is not broad enforcement evidence.\n\n'
   if [[ -f $output_dir/study-report.json ]]; then
-    printf '## Cases\n\n| Case | Status | Classification | Actor started | Actor ready | Transition | Actor exited | Generations before → after | Worker started | Worker ready | Worker joined | FD sent | FD held | Read | Published | Receipt accepted | Owner write authorized / started / completed | Abnormal owner write: attempted / authorized / started | Abnormal lifecycle: coordinator / diagnostic / init live before / Bubblewrap live before / init exit before / after / Bubblewrap exit before / after / cleanup attempted / signal sent / join / pidfd error / pending / admission blocked | Bytes match approved object | Once grants | Fixture outcome | Authority A | Authority B |\n|---|---|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|---|---|\n'
+    printf '## Cases\n\n| Case | Status | Classification | Actor started | Actor ready | Transition | Actor exited | Generations before → after | Worker started | Worker ready | Worker joined | FD sent | FD held | Read | Published | Receipt accepted | Owner write authorized / started / completed | Abnormal owner write: attempted / authorized / started | Abnormal lifecycle: coordinator / diagnostic / init live before / Bubblewrap live before / init exit before / after / Bubblewrap exit before / after / cleanup attempted / signal sent / join / pidfd error / pending / admission blocked / outcome phase / read outcome | Bytes match approved object | Once grants | Fixture outcome | Authority A | Authority B |\n|---|---|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|---|---|\n'
     python3 - "$output_dir/study-report.json" <<'PY'
 import json,sys
 def cell(value):
@@ -475,14 +475,15 @@ for c in cases:
     life=c.get("abnormal_lifecycle") or {}
     abnormal_owner=" / ".join(str(bool(life.get(key))).lower() for key in
                                ("owner_write_attempted","owner_write_authorized","owner_write_started")) if life else "—"
-    lifecycle=(" / ".join(str(bool(life.get(key))).lower() for key in
+    lifecycle_values=[str(bool(life.get(key))).lower() for key in
                           ("coordinator_exit_observed","coordinator_diagnostic_present",
                            "namespace_init_live_before_coordinator_termination","bubblewrap_live_before_coordinator_termination",
                            "namespace_init_exited_before_supervisor_cleanup","namespace_init_exited_after_supervisor_cleanup","bubblewrap_exited_before_supervisor_cleanup",
                            "bubblewrap_exited_after_supervisor_cleanup","supervisor_cleanup_attempted",
                            "supervisor_sent_cleanup_signal","direct_worker_join_confirmed",
-                           "pidfd_observation_error","cleanup_pending_observed","admission_blocked"))
-               if life else "—")
+                           "pidfd_observation_error","cleanup_pending_observed","admission_blocked")]
+    lifecycle_values.extend((cell(life.get("coordinator_outcome_phase")),cell(life.get("coordinator_read_outcome"))))
+    lifecycle=" / ".join(lifecycle_values) if life else "—"
     vals=[c.get("name",""),c.get("status",""),c.get("classification"),
           optional_bool(c,"actor_started"),optional_bool(c,"actor_ready"),
           optional_bool(c,"actor_transition_completed"),optional_bool(c,"actor_exit_confirmed"),generations,
