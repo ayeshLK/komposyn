@@ -240,6 +240,7 @@ func unavailableCases(reason string) []caseResult {
 		{"actor_target_replaced_after_classification", "the approved opened object is read; the replacement at its former path is never read"},
 		{"actor_unregistered_protected_descendant_moved_out", "independent actor moves an unregistered child out and coverage refusal occurs before authorization or worker launch"},
 		{"actor_protected_ancestor_relocation", "pending: protected-directory coverage currently refuses eligible same-device targets before an actor race can be staged"},
+		{"study_session_cleanup", "bounded session close and confirmed join for every started worker"},
 	}
 	results := make([]caseResult, 0, len(planned))
 	for _, item := range planned {
@@ -276,64 +277,93 @@ func validateStatic(path string) error {
 	return nil
 }
 
-func runFixtures(bwrap string) ([]caseResult, error) {
+func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	worker, err := os.Executable()
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 	launcher, err := readbrokerstudy.NewWorkerLauncher(bwrap, worker)
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 	base, err := os.MkdirTemp("", "komposyn-readbroker-fixture-")
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 	defer os.RemoveAll(base)
 	root := filepath.Join(base, "root")
 	if err := os.Mkdir(root, 0o700); err != nil {
-		return nil, err
+		return results, err
 	}
 	protectedDir := filepath.Join(root, "protected")
 	if err := os.Mkdir(protectedDir, 0o700); err != nil {
-		return nil, err
+		return results, err
 	}
 	protected := filepath.Join(protectedDir, "credential.fixture")
 	ordinary := filepath.Join(root, "ordinary.fixture")
 	if err := os.WriteFile(ordinary, []byte("fixture-only-ordinary-content\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.WriteFile(protected, []byte("fixture-only-protected-content\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	registry, err := readbrokerstudy.NewRegistry()
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
 	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer)
 	if err != nil {
 		_ = registry.Close()
-		return nil, err
+		return results, err
 	}
-	defer session.Close(context.Background())
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+		closeErr := session.Close(closeCtx)
+		cancel()
+		allWorkersJoined := true
+		for _, item := range session.Evidence() {
+			if item.WorkerStarted && !item.WorkerJoined {
+				allWorkersJoined = false
+				break
+			}
+		}
+		cleanup := caseResult{
+			Name: "study_session_cleanup", Expected: "session shutdown is bounded and every started worker is joined",
+			WorkerJoinConfirmed: allWorkersJoined,
+			AuthorityA:          "no conclusion", AuthorityB: "no conclusion",
+		}
+		if closeErr == nil && allWorkersJoined {
+			cleanup.Status = "measured_pass"
+			cleanup.Classification = "coordinator_control"
+			cleanup.Observed = "session closed within the cleanup deadline"
+			cleanup.FixtureEffect = "every started direct worker child was joined"
+		} else {
+			cleanup.Status = "inconclusive"
+			cleanup.Classification = "inconclusive"
+			cleanup.Observed = "session cleanup did not establish complete direct-worker joins"
+			cleanup.FixtureEffect = "cleanup completion is unknown or incomplete"
+			cleanup.Detail = "session close returned an error or a started worker lacks confirmed join evidence"
+		}
+		results = append(results, cleanup)
+	}()
 	if err := session.SelectRoot(root); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-auth", Class: readbrokerstudy.ClassCredential, Path: protected}); err != nil {
-		return nil, err
+		return results, err
 	}
 
-	results := make([]caseResult, 0, 23)
+	results = make([]caseResult, 0, 24)
 	results = append(results, executeCase(session, authorizer, root, "ordinary_positive", ordinary, "ordinary-1", "explicit once approval reads the opened fixture object"))
 	results = append(results, executeCase(session, authorizer, root, "protected_direct", protected, "credential-1", "credential object is refused before worker capability handoff"))
 
 	providerSource := filepath.Join(root, "provider-source.fixture")
 	if err := os.WriteFile(providerSource, []byte("synthetic provider source\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-provider", Class: readbrokerstudy.ClassProvider, Path: providerSource}); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeCase(session, authorizer, root, "provider_source_explicit_once", providerSource, "provider-source-1", "registered provider source requires explicit once approval"))
 
@@ -354,47 +384,47 @@ func runFixtures(bwrap string) ([]caseResult, error) {
 	moveSource := filepath.Join(root, "protected", "move-me.fixture")
 	moveTarget := filepath.Join(root, "renamed-protected.fixture")
 	if err := os.WriteFile(moveSource, []byte("synthetic protected object\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-move", Class: readbrokerstudy.ClassCredential, Path: moveSource}); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.Rename(moveSource, moveTarget); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeCase(session, authorizer, root, "protected_object_renamed_into_ordinary_tree", moveTarget, "credential-renamed-1", "pinned protected object remains denied after rename"))
 
 	replacement := filepath.Join(root, "protected", "replace-me.fixture")
 	if err := os.WriteFile(replacement, []byte("synthetic protected original\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-replace", Class: readbrokerstudy.ClassCredential, Path: replacement}); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.Remove(replacement); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.WriteFile(replacement, []byte("synthetic replacement\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeCase(session, authorizer, root, "protected_location_replaced_before_open", replacement, "credential-replacement-1", "registered protected location remains denied after replacement"))
 
 	reserved := filepath.Join(root, "protected", "reserved.fixture")
 	ordinaryToProtected := filepath.Join(root, "ordinary-to-protected.fixture")
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-reservation", Class: readbrokerstudy.ClassCredential, Path: reserved}); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.WriteFile(ordinaryToProtected, []byte("synthetic moved object\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.Rename(ordinaryToProtected, reserved); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeCase(session, authorizer, root, "ordinary_object_moved_into_protected_location", reserved, "moved-into-protected-1", "reserved protected location denies an object moved into it"))
 
 	cancelPath := filepath.Join(root, "cancel-before-release.fixture")
 	if err := os.WriteFile(cancelPath, []byte("synthetic cancel fixture\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeCaseWithHook(session, authorizer, root, "cancel_before_release", cancelPath, "cancel-before-release-1", "worker may start, but no read capability is released", func(checkpoint readbrokerstudy.Checkpoint) error {
 		if checkpoint == readbrokerstudy.CheckpointBeforeHandoff {
@@ -405,7 +435,7 @@ func runFixtures(bwrap string) ([]caseResult, error) {
 
 	revokePath := filepath.Join(root, "revoke-after-capture.fixture")
 	if err := os.WriteFile(revokePath, []byte("synthetic captured fixture\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	revokeID := "revoke-after-capture-1"
 	results = append(results, executeCaseWithHook(session, authorizer, root, "revoke_after_capture_before_publish", revokePath, revokeID, "captured bytes are not published after grant generation changes", func(checkpoint readbrokerstudy.Checkpoint) error {
@@ -419,13 +449,13 @@ func runFixtures(bwrap string) ([]caseResult, error) {
 	rootTarget := filepath.Join(rootScope, "ordinary.fixture")
 	rootMoved := filepath.Join(root, "actor-root-relocated")
 	if err := os.Mkdir(rootScope, 0o700); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.WriteFile(rootTarget, []byte("approved object in selected root\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.SelectRoot(rootScope); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeNativeActorRaceCase(session, authorizer, worker, root, rootScope, rootTarget, "actor_selected_root_relocated_after_scan", "actor-root-relocate-1", "the selected root object is renamed outside its selected pathname after final revalidation; only the opened object may be read", readbrokerstudy.NativeActorRename, "actor-root-scope", "actor-root-relocated", "supports_b", func() bool {
 		return !pathExists(rootScope) && pathExists(filepath.Join(rootMoved, "ordinary.fixture"))
@@ -436,13 +466,13 @@ func runFixtures(bwrap string) ([]caseResult, error) {
 	parentTarget := filepath.Join(parentDir, "ordinary.fixture")
 	parentMoved := filepath.Join(root, "actor-parent-relocated")
 	if err := os.MkdirAll(parentDir, 0o700); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.WriteFile(parentTarget, []byte("approved object in selected parent\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.SelectRoot(parentScope); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeNativeActorRaceCase(session, authorizer, worker, root, parentScope, parentTarget, "actor_parent_relocated_outside_root_after_scan", "actor-parent-relocate-1", "the opened parent moves outside the selected root after final revalidation; only the opened object may be read", readbrokerstudy.NativeActorRename, "actor-parent-scope/nested", "actor-parent-relocated", "supports_b", func() bool {
 		return !pathExists(parentDir) && pathExists(filepath.Join(parentMoved, "ordinary.fixture"))
@@ -452,13 +482,13 @@ func runFixtures(bwrap string) ([]caseResult, error) {
 	targetPath := filepath.Join(targetScope, "replace.fixture")
 	targetArchive := filepath.Join(targetScope, "approved-open-object.fixture")
 	if err := os.Mkdir(targetScope, 0o700); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.WriteFile(targetPath, []byte("original approved object bytes\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.SelectRoot(targetScope); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeNativeActorRaceCase(session, authorizer, worker, root, targetScope, targetPath, "actor_target_replaced_after_classification", "actor-target-replace-1", "the target pathname is replaced after final revalidation; the approved open object, not the substitute, is read", readbrokerstudy.NativeActorReplace, "actor-target-scope/replace.fixture", "actor-target-scope/approved-open-object.fixture", "supports_b", func() bool {
 		got, err := os.ReadFile(targetPath)
@@ -469,16 +499,16 @@ func runFixtures(bwrap string) ([]caseResult, error) {
 	aliasTarget := filepath.Join(aliasScope, "ordinary.fixture")
 	protectedAlias := filepath.Join(root, "actor-protected-alias.fixture")
 	if err := os.Mkdir(aliasScope, 0o700); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := os.WriteFile(aliasTarget, []byte("ordinary object later aliased into protected location\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-race-protected-alias", Class: readbrokerstudy.ClassCredential, Path: protectedAlias}); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.SelectRoot(aliasScope); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeNativeActorRaceCase(session, authorizer, worker, root, aliasScope, aliasTarget, "actor_protected_alias_scan_to_handoff", "actor-protected-alias-1", "a registered protected file location receives a hard link to the prepared ordinary object after final revalidation; no worker read may occur", readbrokerstudy.NativeActorHardlink, "actor-alias-scope/ordinary.fixture", "actor-protected-alias.fixture", "violation", func() bool {
 		ordinaryInfo, ordinaryErr := os.Stat(aliasTarget)
@@ -491,25 +521,25 @@ func runFixtures(bwrap string) ([]caseResult, error) {
 	// lifetime, including unrelated synthetic fixture files.
 	protectedDir = filepath.Join(root, "registered-directory")
 	if err := os.Mkdir(protectedDir, 0o700); err != nil {
-		return nil, err
+		return results, err
 	}
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-directory", Class: readbrokerstudy.ClassSettings, Path: protectedDir, Directory: true}); err != nil {
-		return nil, err
+		return results, err
 	}
 	descendant := filepath.Join(protectedDir, "descendant.fixture")
 	if err := os.WriteFile(descendant, []byte("synthetic directory descendant\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeCase(session, authorizer, root, "registered_directory_descendant_inside", descendant, "directory-child-1", "descendant is refused while located beneath registered directory"))
 	movedDescendant := filepath.Join(root, "moved-directory-descendant.fixture")
 	if err := os.Rename(descendant, movedDescendant); err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, executeCase(session, authorizer, root, "registered_directory_descendant_moved_out", movedDescendant, "directory-child-moved-1", "scope is refused before authorization because protected-directory descendant identity coverage is incomplete"))
 	actorDescendant := filepath.Join(protectedDir, "actor-descendant.fixture")
 	actorMovedDescendant := filepath.Join(root, "actor-moved-directory-descendant.fixture")
 	if err := os.WriteFile(actorDescendant, []byte("synthetic actor-moved protected directory child\n"), 0o600); err != nil {
-		return nil, err
+		return results, err
 	}
 	actorContext, actorCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	actor, actorErr := readbrokerstudy.NewNativeActor(actorContext, worker, root, readbrokerstudy.NativeActorRename, "registered-directory/actor-descendant.fixture", "actor-moved-directory-descendant.fixture")
@@ -587,7 +617,7 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 		stateMatches = stateMatches && bytesMatch && ev.WorkerStarted && ev.WorkerReady && ev.WorkerJoined && ev.CapabilitySent && ev.ReadStarted && ev.Published && consumptionCount == 1
 	case readbrokerstudy.ReadRefused:
 		stateMatches = stateMatches && !ev.WorkerStarted && !ev.CapabilitySent && !ev.ReadStarted && !ev.Published && consumptionCount == 0 && len(result.Bytes) == 0
-		if name == "registered_directory_descendant_moved_out" {
+		if name == "registered_directory_descendant_moved_out" || name == "actor_unregistered_protected_descendant_moved_out" {
 			stateMatches = stateMatches && result.Detail == readbrokerstudy.ErrDirectoryCoverage.Error()
 		}
 	case readbrokerstudy.ReadCancelled:

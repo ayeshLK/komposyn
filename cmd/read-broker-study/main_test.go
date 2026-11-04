@@ -93,7 +93,7 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		"registered_directory_descendant_moved_out", "actor_protected_alias_scan_to_handoff",
 		"actor_selected_root_relocated_after_scan", "actor_parent_relocated_outside_root_after_scan",
 		"actor_target_replaced_after_classification", "actor_unregistered_protected_descendant_moved_out",
-		"actor_protected_ancestor_relocation",
+		"actor_protected_ancestor_relocation", "study_session_cleanup",
 	}
 	cases := unavailableCases("trusted Bubblewrap unavailable")
 	if len(cases) != len(planned) {
@@ -113,5 +113,16 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		if !seen[name] {
 			t.Errorf("unavailable report omitted planned case %q", name)
 		}
+	}
+	encoded, err := json.Marshal(cases[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := fields["generations_before"]; present {
+		t.Fatal("unavailable scenario serialized an unmeasured generation snapshot")
 	}
 }
