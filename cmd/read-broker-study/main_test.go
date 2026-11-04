@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -25,6 +26,90 @@ import (
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 )
+
+type directoryCoverageSequenceSession struct {
+	selectedRoot       string
+	rootAtRegistration string
+	readRoots          []string
+	registrations      []readbrokerstudy.OwnerRegistration
+}
+
+func (s *directoryCoverageSequenceSession) SelectRoot(root string) error {
+	s.selectedRoot = root
+	return nil
+}
+
+func (s *directoryCoverageSequenceSession) Register(registration readbrokerstudy.OwnerRegistration) error {
+	s.rootAtRegistration = s.selectedRoot
+	s.registrations = append(s.registrations, registration)
+	return nil
+}
+
+func (*directoryCoverageSequenceSession) RegisterRotation(string, []readbrokerstudy.OwnerRegistration) error {
+	return nil
+}
+
+func (*directoryCoverageSequenceSession) Revoke(string) error                              { return nil }
+func (*directoryCoverageSequenceSession) SetCheckpointHook(readbrokerstudy.CheckpointHook) {}
+func (*directoryCoverageSequenceSession) PublishedResults() [][]byte                       { return nil }
+func (*directoryCoverageSequenceSession) Evidence() []readbrokerstudy.ReadEvidence         { return nil }
+func (*directoryCoverageSequenceSession) GenerationSnapshot() readbrokerstudy.GenerationSet {
+	return readbrokerstudy.GenerationSet{}
+}
+func (*directoryCoverageSequenceSession) Close(context.Context) error { return nil }
+
+func (s *directoryCoverageSequenceSession) Read(_ context.Context, root, target, _ string) (readbrokerstudy.WorkerResult, error) {
+	s.readRoots = append(s.readRoots, s.selectedRoot)
+	if root != s.selectedRoot {
+		return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrOutOfScope.Error()}, nil
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrOutOfScope.Error()}, nil
+	}
+	if relative == filepath.Join("registered-directory", "descendant.fixture") {
+		return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrProtected.Error()}, nil
+	}
+	if relative == "moved-directory-descendant.fixture" {
+		return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrDirectoryCoverage.Error()}, nil
+	}
+	return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadUnknown}, nil
+}
+
+func TestDirectoryCoverageCasesRestoreRootAndRequireProtectedRefusals(t *testing.T) {
+	root := t.TempDir()
+	session := &directoryCoverageSequenceSession{selectedRoot: filepath.Join(root, "previous-actor-root")}
+	authorizer := readbrokerstudy.NewOnceGrantFixture()
+	results, err := runDirectoryCoverageCases(session, authorizer, root)
+	if err != nil {
+		t.Fatalf("run directory coverage cases: %v", err)
+	}
+	if session.selectedRoot != root {
+		t.Fatalf("selected root=%q, want restored fixture root %q", session.selectedRoot, root)
+	}
+	if len(results) != 2 {
+		t.Fatalf("directory cases=%d, want two", len(results))
+	}
+	want := []struct {
+		name   string
+		detail string
+	}{
+		{name: "registered_directory_descendant_inside", detail: readbrokerstudy.ErrProtected.Error()},
+		{name: "registered_directory_descendant_moved_out", detail: readbrokerstudy.ErrDirectoryCoverage.Error()},
+	}
+	for i, expected := range want {
+		result := results[i]
+		if result.Name != expected.name || result.Status != "measured_pass" || result.Observed != string(readbrokerstudy.ReadRefused) || result.Detail != expected.detail {
+			t.Errorf("directory case %d=%+v, want protected refusal %q", i, result, expected.detail)
+		}
+	}
+	if len(session.registrations) != 1 || !session.registrations[0].Directory {
+		t.Fatalf("directory registrations=%+v, want one registered directory", session.registrations)
+	}
+	if session.rootAtRegistration != root || len(session.readRoots) != 2 || session.readRoots[0] != root || session.readRoots[1] != root {
+		t.Fatalf("directory sequence root=%q reads=%v, want root restored before registration and both reads", session.rootAtRegistration, session.readRoots)
+	}
+}
 
 func TestInspectEnvironmentDoesNotRunUntrustedBubblewrapCandidate(t *testing.T) {
 	base := t.TempDir()

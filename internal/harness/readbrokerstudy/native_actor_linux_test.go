@@ -81,7 +81,7 @@ func startTestNativeActor(t *testing.T, root string, action NativeActorAction, s
 	return actor
 }
 
-func TestNativeActorUsesReadyRunDoneAndConfirmsExit(t *testing.T) {
+func TestNativeActorConsumesDoneAfterWaitAndConfirmsExit(t *testing.T) {
 	root := privateNativeActorTestRoot(t)
 	source := filepath.Join(root, "approved", "original.fixture")
 	target := filepath.Join(root, "outside", "original.fixture")
@@ -96,6 +96,11 @@ func TestNativeActorUsesReadyRunDoneAndConfirmsExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	actor := startTestNativeActor(t, root, NativeActorRename, "approved/original.fixture", "outside/original.fixture")
+	// Force Wait to finish before Run consumes DONE. This catches ownership
+	// bugs where Cmd.Wait closes a StdoutPipe containing unread protocol data.
+	actor.mu.Lock()
+	actor.doneReadGate = actor.done
+	actor.mu.Unlock()
 	if !actor.Ready() || actor.TransitionCompleted() || actor.Joined() {
 		t.Fatalf("initial actor state ready=%t changed=%t joined=%t", actor.Ready(), actor.TransitionCompleted(), actor.Joined())
 	}

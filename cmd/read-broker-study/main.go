@@ -518,26 +518,16 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 
 	// Directory registration intentionally comes last: unpinned regular files
 	// sharing that filesystem are fail-closed for the rest of the registry's
-	// lifetime, including unrelated synthetic fixture files.
+	// lifetime, including unrelated synthetic fixture files. The helper also
+	// restores the selected root after the preceding actor cases.
+	directoryCases, err := runDirectoryCoverageCases(session, authorizer, root)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, directoryCases...)
 	protectedDir = filepath.Join(root, "registered-directory")
-	if err := os.Mkdir(protectedDir, 0o700); err != nil {
-		return results, err
-	}
-	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-directory", Class: readbrokerstudy.ClassSettings, Path: protectedDir, Directory: true}); err != nil {
-		return results, err
-	}
-	descendant := filepath.Join(protectedDir, "descendant.fixture")
-	if err := os.WriteFile(descendant, []byte("synthetic directory descendant\n"), 0o600); err != nil {
-		return results, err
-	}
-	results = append(results, executeCase(session, authorizer, root, "registered_directory_descendant_inside", descendant, "directory-child-1", "descendant is refused while located beneath registered directory"))
-	movedDescendant := filepath.Join(root, "moved-directory-descendant.fixture")
-	if err := os.Rename(descendant, movedDescendant); err != nil {
-		return results, err
-	}
-	results = append(results, executeCase(session, authorizer, root, "registered_directory_descendant_moved_out", movedDescendant, "directory-child-moved-1", "scope is refused before authorization because protected-directory descendant identity coverage is incomplete"))
-	actorDescendant := filepath.Join(protectedDir, "actor-descendant.fixture")
 	actorMovedDescendant := filepath.Join(root, "actor-moved-directory-descendant.fixture")
+	actorDescendant := filepath.Join(protectedDir, "actor-descendant.fixture")
 	if err := os.WriteFile(actorDescendant, []byte("synthetic actor-moved protected directory child\n"), 0o600); err != nil {
 		return results, err
 	}
@@ -571,6 +561,30 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	}
 	results = append(results, caseResult{Name: "actor_protected_ancestor_relocation", Status: "inconclusive", Classification: "inconclusive", Expected: "measure a protected-directory ancestor transition around an eligible worker read", Observed: "no eligible same-device ordinary target can pass the existing incomplete-descendant-coverage refusal", FixtureEffect: "no actor transition attempted", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "pending: a pinned protected directory on the candidate file's device makes generic regular-file reads ineligible before worker launch; do not weaken this gate to stage the race"})
 	return results, nil
+}
+
+func runDirectoryCoverageCases(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root string) ([]caseResult, error) {
+	if err := session.SelectRoot(root); err != nil {
+		return nil, err
+	}
+	protectedDir := filepath.Join(root, "registered-directory")
+	if err := os.Mkdir(protectedDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-directory", Class: readbrokerstudy.ClassSettings, Path: protectedDir, Directory: true}); err != nil {
+		return nil, err
+	}
+	descendant := filepath.Join(protectedDir, "descendant.fixture")
+	if err := os.WriteFile(descendant, []byte("synthetic directory descendant\n"), 0o600); err != nil {
+		return nil, err
+	}
+	inside := executeCase(session, auth, root, "registered_directory_descendant_inside", descendant, "directory-child-1", "descendant is refused as a registered protected resource")
+	movedDescendant := filepath.Join(root, "moved-directory-descendant.fixture")
+	if err := os.Rename(descendant, movedDescendant); err != nil {
+		return nil, err
+	}
+	moved := executeCase(session, auth, root, "registered_directory_descendant_moved_out", movedDescendant, "directory-child-moved-1", "scope is refused because protected-directory descendant identity coverage is incomplete")
+	return []caseResult{inside, moved}, nil
 }
 
 func executeCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string) caseResult {
@@ -617,7 +631,10 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 		stateMatches = stateMatches && bytesMatch && ev.WorkerStarted && ev.WorkerReady && ev.WorkerJoined && ev.CapabilitySent && ev.ReadStarted && ev.Published && consumptionCount == 1
 	case readbrokerstudy.ReadRefused:
 		stateMatches = stateMatches && !ev.WorkerStarted && !ev.CapabilitySent && !ev.ReadStarted && !ev.Published && consumptionCount == 0 && len(result.Bytes) == 0
-		if name == "registered_directory_descendant_moved_out" || name == "actor_unregistered_protected_descendant_moved_out" {
+		switch name {
+		case "registered_directory_descendant_inside":
+			stateMatches = stateMatches && result.Detail == readbrokerstudy.ErrProtected.Error()
+		case "registered_directory_descendant_moved_out", "actor_unregistered_protected_descendant_moved_out":
 			stateMatches = stateMatches && result.Detail == readbrokerstudy.ErrDirectoryCoverage.Error()
 		}
 	case readbrokerstudy.ReadCancelled:

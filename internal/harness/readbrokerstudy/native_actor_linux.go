@@ -61,18 +61,20 @@ const (
 // message. It has no shell, provider credentials, open worker capability, or
 // arbitrary command support.
 type NativeActor struct {
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	done    chan struct{}
-	cancel  context.CancelFunc
-	waitErr error
-	run     bool
-	closed  bool
-	ready   bool
-	changed bool
-	joined  bool
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	stdout       *bufio.Reader
+	stdoutPipe   *os.File
+	done         chan struct{}
+	doneReadGate <-chan struct{}
+	cancel       context.CancelFunc
+	waitErr      error
+	run          bool
+	closed       bool
+	ready        bool
+	changed      bool
+	joined       bool
 }
 
 // NewNativeActor starts the study executable in its fixed actor mode and
@@ -127,21 +129,27 @@ func startNativeActor(ctx context.Context, executable string, args, environment 
 		cancel()
 		return nil, errors.New("native fixture actor input pipe is unavailable")
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdoutPipe, stdoutChild, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		cancel()
 		return nil, errors.New("native fixture actor output pipe is unavailable")
 	}
+	// Use an explicitly owned pipe rather than StdoutPipe: Cmd.Wait closes a
+	// StdoutPipe, which can discard the final DONE token if the child exits
+	// before the protocol reader consumes it.
+	cmd.Stdout = stdoutChild
 	// Actor diagnostics are deliberately discarded. Fixture paths and host
 	// errors are not copied into the machine-readable study report.
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
+		_ = stdoutPipe.Close()
+		_ = stdoutChild.Close()
 		cancel()
 		return nil, errors.New("native fixture actor process did not start")
 	}
-	actor := &NativeActor{cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, nativeActorMaxLine), done: make(chan struct{}), cancel: cancel}
+	actor := &NativeActor{cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdoutPipe, nativeActorMaxLine), stdoutPipe: stdoutPipe, done: make(chan struct{}), cancel: cancel}
 	go func() {
 		waitErr := cmd.Wait()
 		actor.mu.Lock()
@@ -150,6 +158,11 @@ func startNativeActor(ctx context.Context, executable string, args, environment 
 		actor.mu.Unlock()
 		close(actor.done)
 	}()
+	if err := stdoutChild.Close(); err != nil {
+		_ = actor.Close()
+		_ = stdoutChild.Close()
+		return nil, errors.New("native fixture actor output pipe setup failed")
+	}
 	if err := actor.readToken(ctx, nativeActorReady); err != nil {
 		_ = actor.Close()
 		return nil, err
@@ -204,6 +217,22 @@ func (a *NativeActor) Run(ctx context.Context) error {
 	if _, err := io.WriteString(stdin, nativeActorRun); err != nil {
 		_ = a.Close()
 		return ErrNativeActorProtocol
+	}
+	a.mu.Lock()
+	doneReadGate := a.doneReadGate
+	a.mu.Unlock()
+	if doneReadGate != nil {
+		timer := time.NewTimer(nativeActorMaxWait)
+		defer timer.Stop()
+		select {
+		case <-doneReadGate:
+		case <-ctx.Done():
+			_ = a.Close()
+			return ErrNativeActorProtocol
+		case <-timer.C:
+			_ = a.Close()
+			return ErrNativeActorProtocol
+		}
 	}
 	if err := a.readToken(ctx, nativeActorDone); err != nil {
 		_ = a.Close()
@@ -302,6 +331,7 @@ func (a *NativeActor) Close() error {
 	cmd := a.cmd
 	done := a.done
 	cancel := a.cancel
+	stdoutPipe := a.stdoutPipe
 	a.mu.Unlock()
 	if stdin != nil {
 		_ = stdin.Close()
@@ -315,6 +345,9 @@ func (a *NativeActor) Close() error {
 		default:
 			_ = cmd.Process.Kill()
 		}
+	}
+	if stdoutPipe != nil {
+		_ = stdoutPipe.Close()
 	}
 	timer := time.NewTimer(nativeActorMaxWait)
 	defer timer.Stop()
