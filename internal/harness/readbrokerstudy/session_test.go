@@ -1134,6 +1134,70 @@ func TestFixtureSessionProviderSourceNeedsInvocationApproval(t *testing.T) {
 	}
 }
 
+func TestMutableProviderLocationBlocksOrdinaryReadButAllowsApprovedProviderRead(t *testing.T) {
+	root := t.TempDir()
+	ordinary := filepath.Join(root, "ordinary.fixture")
+	provider := filepath.Join(root, "provider-source.fixture")
+	if err := os.WriteFile(ordinary, []byte("ordinary synthetic bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provider, []byte("provider synthetic bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if err := registry.Register(OwnerRegistration{Owner: "provider-fixture", Class: ClassProvider, Path: provider}); err != nil {
+		t.Fatal(err)
+	}
+	authorizer := NewOnceGrantFixture()
+	worker := &fakeWorker{}
+	launcher := &fakeLauncher{worker: worker}
+	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SelectRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorizer.ApproveOnce("ordinary-with-provider-location"); err != nil {
+		t.Fatal(err)
+	}
+	finalCheckpointReached := false
+	session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		if checkpoint == CheckpointAfterFinalRevalidation {
+			finalCheckpointReached = true
+		}
+		return nil
+	})
+	ordinaryResult, err := session.Read(context.Background(), root, ordinary, "ordinary-with-provider-location")
+	session.SetCheckpointHook(nil)
+	if err != nil || ordinaryResult.Outcome != ReadRefused || ordinaryResult.Detail != ErrProviderLocationMutable.Error() {
+		t.Fatalf("ordinary read=(%q,%q,%v), want mutable-provider admission refusal", ordinaryResult.Outcome, ordinaryResult.Detail, err)
+	}
+	if finalCheckpointReached || launcher.starts != 0 || authorizer.ConsumptionCount("ordinary-with-provider-location") != 0 {
+		t.Fatalf("ordinary request reached final checkpoint=%t workers=%d once=%d", finalCheckpointReached, launcher.starts, authorizer.ConsumptionCount("ordinary-with-provider-location"))
+	}
+
+	if err := authorizer.ApproveOnce("approved-provider-source"); err != nil {
+		t.Fatal(err)
+	}
+	providerResult, err := session.Read(context.Background(), root, provider, "approved-provider-source")
+	if err != nil || providerResult.Outcome != ReadSucceeded || string(providerResult.Bytes) != "provider synthetic bytes" {
+		t.Fatalf("explicit provider read=(%q,%q,%v)", providerResult.Outcome, providerResult.Bytes, err)
+	}
+	if authorizer.ConsumptionCount("approved-provider-source") != 1 || launcher.starts != 1 {
+		t.Fatalf("provider once=%d worker starts=%d, want 1 each", authorizer.ConsumptionCount("approved-provider-source"), launcher.starts)
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer closeCancel()
+	if err := session.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFixtureSessionRefusesRegisteredCredentialWithoutWorker(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "credential.fixture")

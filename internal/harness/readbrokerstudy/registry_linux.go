@@ -219,15 +219,28 @@ func (r *Registry) View() PolicyView {
 // positive result is limited to a path whose containing directories were
 // unmodifiable by this process identity; it is not a general filesystem
 // immutability or privileged-attacker guarantee.
-func (r *Registry) ReadAdmission() error {
+// ReadAdmission applies class-specific location constraints. An empty
+// candidate checks only generic-protected registrations, allowing the broker
+// to refuse before opening a requested object. Once classification is known,
+// an ordinary candidate is also refused if a mutable provider location could
+// make it provider-class between classification and worker handoff. A
+// correctly classified provider read remains possible and still requires the
+// coordinator's explicit once authorization.
+func (r *Registry) ReadAdmission(candidate ResourceClass) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.closed {
 		return errRegistryClosed
 	}
 	for _, entry := range r.entries {
-		if genericProtectedClass(entry.registration.Class) && !entry.locationStable {
+		if entry.locationStable {
+			continue
+		}
+		if genericProtectedClass(entry.registration.Class) {
 			return ErrProtectedLocationMutable
+		}
+		if candidate == ClassOrdinary && entry.registration.Class == ClassProvider {
+			return ErrProviderLocationMutable
 		}
 	}
 	return nil

@@ -184,6 +184,13 @@ directories. It does not serialize privileged namespace changes, incomplete
 owner registration, or a new protected registration racing an already released
 operation; those remain explicit limits.
 
+For a mutable registered provider-source location, the broker also refuses
+ordinary-classified reads before once approval. This prevents an ordinary
+approval from crossing into provider-source authority through a late alias.
+A correctly classified provider-source read remains possible only with
+explicit per-invocation approval. A generic-protected registration still
+blocks all worker reads.
+
 When a proposed scope overlaps a registered protected directory but the
 registry cannot prove complete descendant identity coverage, the broker returns
 `ErrDirectoryCoverage`. The coordinator reports this specific policy refusal

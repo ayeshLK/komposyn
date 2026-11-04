@@ -34,6 +34,7 @@ var (
 	ErrOutOfScope               = errors.New("read fixture target is outside the selected root")
 	ErrProtected                = errors.New("registered protected resource is unavailable to generic reads")
 	ErrProtectedLocationMutable = errors.New("sandboxed reads are unavailable because a protected location is mutable or cannot be verified as immutable to the current user")
+	ErrProviderLocationMutable  = errors.New("ordinary reads are unavailable because a registered provider-source location is mutable or cannot be verified as immutable to the current user")
 	ErrDirectoryCoverage        = errors.New("read scope overlaps a registered protected directory with incomplete descendant identity coverage")
 	ErrPolicyChanged            = errors.New("protected policy changed during read preparation")
 	ErrStaleReceipt             = errors.New("authorization receipt does not match the prepared read")
@@ -90,7 +91,7 @@ type PolicyRegistry interface {
 	ClassifyWithAncestors(path string, identity FileIdentity, ancestors []FileIdentity) (ResourceClass, bool)
 	InspectRegisteredLocations(identity FileIdentity) (ResourceClass, bool, error)
 	DirectoryCoverageIncomplete(identity FileIdentity) bool
-	ReadAdmission() error
+	ReadAdmission(candidate ResourceClass) error
 	Close() error
 }
 

@@ -38,6 +38,12 @@ temporary fixture roots, this makes the former worker cases unavailable. The
 pre-admission actor case must be reported separately and cannot be interpreted
 as successful execution of the original scan-to-handoff race.
 
+Ordinary-classified reads are also refused when a registered provider-source
+location is mutable or unverifiable. Correctly classified provider-source reads
+remain distinct and still require explicit once approval. This prevents an
+ordinary approval from being reused after a late transition into provider
+classification.
+
 Each native case reports actor readiness, transition completion, direct actor
 exit confirmation, worker readiness/probe, descriptor release, read-start,
 publication, once-grant consumption, policy/root/grant generations before and

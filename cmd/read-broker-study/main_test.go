@@ -226,3 +226,34 @@ func TestAdmissionRefusalDoesNotRelabelHistoricalHandoffViolation(t *testing.T) 
 	}
 	t.Fatal("admission-unavailable report omitted historical handoff scenario")
 }
+
+func TestProtectedAliasAdmissionReportPreservesRefusalAndUnexpectedWorkerActivity(t *testing.T) {
+	gen := readbrokerstudy.GenerationSet{Root: 1, Policy: 2, Grant: 3}
+	refusal := protectedAliasAdmissionResult(
+		"provider-alias", "ordinary read must be refused", "ordinary approval cannot authorize a provider-source read",
+		readbrokerstudy.ErrProviderLocationMutable.Error(),
+		true, true, true, true, true, false,
+		readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadRefused, Detail: readbrokerstudy.ErrProviderLocationMutable.Error()}, nil,
+		readbrokerstudy.ReadEvidence{}, false, 0, gen, gen,
+	)
+	if refusal.Status != "measured_pass" || refusal.Classification != "admission_refusal" || refusal.WorkerStarted || refusal.CapabilitySent || refusal.ReadStarted || refusal.Published || refusal.ResultBytesReturned || refusal.OnceGrantConsumptions != 0 || refusal.ReadEvidencePresent || refusal.WorkerGenerations != nil {
+		t.Fatalf("admission refusal report=%+v", refusal)
+	}
+
+	evidence := readbrokerstudy.ReadEvidence{
+		Case: "provider-alias", Outcome: readbrokerstudy.ReadSucceeded,
+		Generations: gen, Effect: "synthetic worker read completed", Limitation: "fixture only",
+		WorkerStarted: true, WorkerReady: true, WorkerJoined: true,
+		CapabilitySent: true, ReadStarted: true, Published: true, BytesMatchTarget: true,
+	}
+	violation := protectedAliasAdmissionResult(
+		"provider-alias", "ordinary read must be refused", "ordinary approval cannot authorize a provider-source read",
+		readbrokerstudy.ErrProviderLocationMutable.Error(),
+		true, true, true, true, true, false,
+		readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: []byte("synthetic fixture")}, nil,
+		evidence, true, 1, gen, gen,
+	)
+	if violation.Status != "observed_violation" || violation.Classification != "violation" || !violation.WorkerStarted || !violation.WorkerReady || !violation.WorkerJoinConfirmed || !violation.CapabilitySent || !violation.ReadStarted || !violation.Published || !violation.ResultBytesReturned || !violation.BytesMatchTarget || violation.OnceGrantConsumptions != 1 || !strings.Contains(violation.AuthorityB, "ordinary approval cannot authorize") || !violation.ReadEvidencePresent || violation.ReadEvidenceCase != "provider-alias" || violation.WorkerOutcome != readbrokerstudy.ReadSucceeded || violation.WorkerGenerations == nil || *violation.WorkerGenerations != gen || violation.WorkerEffect != "synthetic worker read completed" || violation.WorkerLimitation != "fixture only" {
+		t.Fatalf("unexpected worker activity was not preserved as a violation: %+v", violation)
+	}
+}

@@ -110,8 +110,15 @@ type caseResult struct {
 	CapabilitySent        bool                           `json:"capability_sent"`
 	ReadStarted           bool                           `json:"read_started"`
 	Published             bool                           `json:"published"`
+	ResultBytesReturned   bool                           `json:"result_bytes_returned"`
 	BytesMatchTarget      bool                           `json:"bytes_match_target"`
 	BytesMatchApproved    bool                           `json:"bytes_match_approved_object"`
+	ReadEvidencePresent   bool                           `json:"read_evidence_present"`
+	ReadEvidenceCase      string                         `json:"read_evidence_case,omitempty"`
+	WorkerOutcome         readbrokerstudy.ReadOutcome    `json:"worker_outcome,omitempty"`
+	WorkerGenerations     *readbrokerstudy.GenerationSet `json:"worker_generations,omitempty"`
+	WorkerEffect          string                         `json:"worker_effect,omitempty"`
+	WorkerLimitation      string                         `json:"worker_limitation,omitempty"`
 	OnceGrantConsumptions int                            `json:"once_grant_consumptions"`
 	ActorStarted          bool                           `json:"actor_started"`
 	ActorStartState       string                         `json:"actor_start_state,omitempty"`
@@ -186,7 +193,7 @@ func run() error {
 			"aggregate cgroup quotas are deferred; exhaustion safety is not claimed",
 			"object identity cannot recognize independent copies of sensitive bytes",
 			"policy scans are bounded observations and do not serialize independent namespace writers",
-			"read admission now refuses mutable or unverifiable credential/settings/database location ancestry before grant consumption; this makes synthetic user-owned-root worker scenarios unavailable",
+			"read admission refuses mutable credential/settings/database locations and ordinary reads exposed to mutable provider locations before once-grant consumption; this makes synthetic user-owned-root worker scenarios unavailable",
 			"a pinned directory does not pin every current or future descendant; unpinned same-device files are refused",
 			"the bootstrap uses --as-pid-1 so Bubblewrap's --sync-fd can pass verifier FD 6; worker seccomp allows only the Go runtime's exact shared-thread clone flag sets, denies clone3 and process-like clone, and needs native startup validation",
 			"Bubblewrap 0.9 file-snapshot mode requires host /proc/self/exe and sealed memfd support; it refuses the worker if the running image exceeds 7 MiB or snapshot/copy verification fails",
@@ -361,7 +368,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-auth", Class: readbrokerstudy.ClassCredential, Path: protected}); err != nil {
 		return results, err
 	}
-	if admissionErr := registry.ReadAdmission(); admissionErr != nil {
+	if admissionErr := registry.ReadAdmission(readbrokerstudy.ClassOrdinary); admissionErr != nil {
 		results, err = runProtectedAliasAdmissionCase(session, authorizer, worker, root, ordinary)
 		if err != nil {
 			return results, err
@@ -609,37 +616,90 @@ func runProtectedAliasAdmissionCase(session readbrokerstudy.FixtureSession, auth
 	generationsBefore := session.GenerationSnapshot()
 	result, readErr := session.Read(ctx, root, ordinary, "protected-alias-admission-1")
 	generationsAfter := session.GenerationSnapshot()
-	workerStarted := false
+	var readEvidence readbrokerstudy.ReadEvidence
+	evidenceFound := false
 	for _, evidence := range session.Evidence() {
 		if evidence.Case == "protected-alias-admission-1" {
-			workerStarted = evidence.WorkerStarted
+			readEvidence = evidence
+			evidenceFound = true
 		}
 	}
-	actorDetail := "actor reached READY, created the registered protected alias, and was reaped"
-	status, classification := "measured_pass", "admission_refusal"
+	return []caseResult{protectedAliasAdmissionResult(
+		name, expected, "registered credential locations must remain unavailable to generic reads",
+		readbrokerstudy.ErrProtectedLocationMutable.Error(),
+		true, actorReady, actorTransition, actorJoined, fixtureAlias,
+		transitionErr != nil || closeErr != nil, result, readErr, readEvidence, evidenceFound,
+		auth.ConsumptionCount("protected-alias-admission-1"), generationsBefore, generationsAfter,
+	)}, nil
+}
+
+func protectedAliasAdmissionResult(name, expected, protectedRule, admissionDetail string, actorStarted, actorReady, actorTransition, actorExited, fixtureAlias, actorLifecycleError bool, result readbrokerstudy.WorkerResult, readErr error, evidence readbrokerstudy.ReadEvidence, evidenceFound bool, onceConsumptions int, generationsBefore, generationsAfter readbrokerstudy.GenerationSet) caseResult {
+	activity := evidence.CapabilitySent || evidence.ReadStarted || evidence.Published || len(result.Bytes) > 0
+	actorConfirmed := actorStarted && actorReady && actorTransition && actorExited && fixtureAlias && !actorLifecycleError
+	status, classification := "inconclusive", "inconclusive"
+	if actorConfirmed && activity {
+		status, classification = "observed_violation", "violation"
+	} else if actorConfirmed && readErr == nil && result.Outcome == readbrokerstudy.ReadRefused && result.Detail == admissionDetail && !evidence.WorkerStarted && !activity && onceConsumptions == 0 && len(result.Bytes) == 0 && generationsBefore == generationsAfter {
+		status, classification = "measured_pass", "admission_refusal"
+	} else if !actorStarted || !actorReady {
+		status, classification = "unavailable", "unavailable"
+	}
+	observed := string(result.Outcome)
+	if readErr != nil {
+		observed = "coordinator_error"
+	}
+	actorDetail := "actor transition and direct-process exit were not fully confirmed"
+	if actorConfirmed {
+		actorDetail = "actor reached READY, completed the alias transition, and was reaped"
+	}
+	effect := fmt.Sprintf("actor_alias=%t; worker_started=%t; worker_ready=%t; worker_joined=%t; capability_sent=%t; read_started=%t; result_bytes_returned=%t; published=%t", fixtureAlias, evidence.WorkerStarted, evidence.WorkerReady, evidence.WorkerJoined, evidence.CapabilitySent, evidence.ReadStarted, len(result.Bytes) > 0, evidence.Published)
+	authorityB := "no conclusion about worker object authority"
 	detail := result.Detail
-	if transitionErr != nil || closeErr != nil || !actorReady || !actorTransition || !actorJoined || !fixtureAlias || readErr != nil || result.Outcome != readbrokerstudy.ReadRefused || result.Detail != readbrokerstudy.ErrProtectedLocationMutable.Error() || len(result.Bytes) != 0 || workerStarted || auth.ConsumptionCount("protected-alias-admission-1") != 0 || generationsBefore != generationsAfter {
-		status, classification = "inconclusive", "inconclusive"
-		actorDetail = "actor readiness, alias effect, direct-process exit, or refusal boundary was not fully confirmed"
+	if readErr != nil {
+		detail = "coordinator error suppressed; observed worker evidence retained"
+	}
+	if status == "observed_violation" {
+		authorityB = "violation of mandatory registered-location policy: " + protectedRule
+		detail = "actor alias was confirmed and worker capability/read/publication activity was observed; path and content omitted"
+	} else if status == "measured_pass" {
+		detail = admissionDetail
+	}
+	if detail == "" {
 		detail = "required actor and pre-admission refusal invariants were not established"
 	}
-	item := caseResult{
-		Name: name, Status: status, Classification: classification, Expected: expected,
-		Observed: string(result.Outcome), WorkerStarted: workerStarted, WorkerReady: false,
-		WorkerJoinConfirmed: false, CapabilitySent: false, ReadStarted: false, Published: false,
-		OnceGrantConsumptions: auth.ConsumptionCount("protected-alias-admission-1"),
-		ActorStarted:          true, ActorReady: actorReady, ActorTransition: actorTransition,
-		ActorStartState:    "started",
-		ActorExitConfirmed: actorJoined, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter,
-		FixtureEffect: "actor created a hard link at a registered protected location before read admission; no worker capability or bytes were released",
-		ActorDetail:   actorDetail, AuthorityA: "no conclusion about strict live host-path containment",
-		AuthorityB: "no conclusion about worker object authority; the worker was not started",
-		Detail:     boundText(detail, 768),
+	if !evidenceFound {
+		evidence = readbrokerstudy.ReadEvidence{}
 	}
-	if item.Detail == "" {
-		item.Detail = readbrokerstudy.ErrProtectedLocationMutable.Error()
+	var workerGenerations *readbrokerstudy.GenerationSet
+	if evidenceFound {
+		generations := evidence.Generations
+		workerGenerations = &generations
 	}
-	return []caseResult{item}, nil
+	return caseResult{
+		Name: name, Status: status, Classification: classification, Expected: expected, Observed: observed,
+		WorkerStarted: evidence.WorkerStarted, WorkerReady: evidence.WorkerReady,
+		WorkerJoinConfirmed: evidence.WorkerJoined, CapabilitySent: evidence.CapabilitySent,
+		ReadStarted: evidence.ReadStarted, Published: evidence.Published,
+		ResultBytesReturned: len(result.Bytes) > 0,
+		BytesMatchTarget:    evidence.BytesMatchTarget, BytesMatchApproved: evidence.BytesMatchTarget,
+		ReadEvidencePresent: evidenceFound, ReadEvidenceCase: evidence.Case,
+		WorkerOutcome: evidence.Outcome, WorkerGenerations: workerGenerations,
+		WorkerEffect: evidence.Effect, WorkerLimitation: evidence.Limitation,
+		OnceGrantConsumptions: onceConsumptions, ActorStarted: actorStarted,
+		ActorStartState: actorStartState(actorStarted), ActorReady: actorReady, ActorTransition: actorTransition,
+		ActorExitConfirmed: actorExited, ActorDetail: actorDetail,
+		GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter,
+		WorkerProbe: evidence.Probe, FixtureEffect: effect,
+		AuthorityA: "no conclusion about strict live host-path containment", AuthorityB: authorityB,
+		Detail: boundText(detail, 768),
+	}
+}
+
+func actorStartState(started bool) string {
+	if started {
+		return "started"
+	}
+	return "not_confirmed"
 }
 
 func admissionUnavailableCases(reason string) []caseResult {

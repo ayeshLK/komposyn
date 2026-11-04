@@ -31,7 +31,7 @@ import (
 // directly, and the native CLI never uses this test-only adapter.
 type testAdmissionOverride struct{ *Registry }
 
-func (testAdmissionOverride) ReadAdmission() error { return nil }
+func (testAdmissionOverride) ReadAdmission(ResourceClass) error { return nil }
 
 func TestReadAdmissionRefusesMutableProtectedLocationBeforePreparation(t *testing.T) {
 	root := t.TempDir()
@@ -44,13 +44,13 @@ func TestReadAdmissionRefusesMutableProtectedLocationBeforePreparation(t *testin
 	if err := registry.Register(OwnerRegistration{Owner: "fixture", Class: ClassCredential, Path: protected}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.ReadAdmission(); !errors.Is(err, ErrProtectedLocationMutable) {
+	if err := registry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProtectedLocationMutable) {
 		t.Fatalf("mutable protected-location admission=%v, want %v", err, ErrProtectedLocationMutable)
 	}
 	if err := registry.Register(OwnerRegistration{Owner: "provider", Class: ClassProvider, Path: filepath.Join(root, "source.fixture")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.ReadAdmission(); !errors.Is(err, ErrProtectedLocationMutable) {
+	if err := registry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProtectedLocationMutable) {
 		t.Fatalf("provider registration weakened protected-location admission: %v", err)
 	}
 }
@@ -61,7 +61,7 @@ func TestReadAdmissionAllowsRegistryWithoutGenericProtectedLocations(t *testing.
 		t.Fatal(err)
 	}
 	defer registry.Close()
-	if err := registry.ReadAdmission(); err != nil {
+	if err := registry.ReadAdmission(ClassOrdinary); err != nil {
 		t.Fatalf("empty policy admission=%v, want allowed", err)
 	}
 }
@@ -84,8 +84,11 @@ func TestImmutableDirectoryAncestryUsesSameIdentityWriteAccess(t *testing.T) {
 	if err := providerRegistry.Register(OwnerRegistration{Owner: "provider-fixture", Class: ClassProvider, Path: filepath.Join(mutable, "source.fixture")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := providerRegistry.ReadAdmission(); err != nil {
-		t.Fatalf("provider-only registration should preserve explicit once-read path: %v", err)
+	if err := providerRegistry.ReadAdmission(ClassOrdinary); !errors.Is(err, ErrProviderLocationMutable) {
+		t.Fatalf("ordinary read with mutable provider registration=%v, want %v", err, ErrProviderLocationMutable)
+	}
+	if err := providerRegistry.ReadAdmission(ClassProvider); err != nil {
+		t.Fatalf("correctly classified provider read should reach explicit once authorization: %v", err)
 	}
 
 	rootStable, rootErr := immutableDirectoryAncestry(string(filepath.Separator))

@@ -519,6 +519,8 @@ func refusalFor(err error) WorkerResult {
 		return WorkerResult{Outcome: ReadRefused, Detail: ErrDirectoryCoverage.Error()}
 	case errors.Is(err, ErrProtectedLocationMutable):
 		return WorkerResult{Outcome: ReadRefused, Detail: ErrProtectedLocationMutable.Error()}
+	case errors.Is(err, ErrProviderLocationMutable):
+		return WorkerResult{Outcome: ReadRefused, Detail: ErrProviderLocationMutable.Error()}
 	case errors.Is(err, ErrPolicyChanged), errors.Is(err, ErrStaleReceipt):
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: "prepared read or policy changed before execution"}
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):

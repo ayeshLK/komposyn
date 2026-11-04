@@ -29,16 +29,21 @@ generation check therefore cannot make the handoff safe.
 ## Admission mechanism
 
 For credential, settings and Token Logger database registrations, the broker
-now refuses *all* worker-read preparation if it cannot establish that every
+refuses *all* worker-read preparation if it cannot establish that every
 directory capable of containing or replacing the registered location is
-immutable to the current process identity. Registration checks the containing
-directory chain using descriptor-relative, no-symlink traversal, effective
-write-and-search permission checks (including ACLs), ownership, and Linux
-effective, permitted and inheritable capability sets. Unknown checks fail
-closed. A directory registration includes the registered directory itself
-because it can contain new aliases.
-For an exact-file registration, the containing directory is the final
-location boundary.
+immutable to the current process identity. For provider-source registrations,
+the broker refuses ordinary-classified reads when the registered location is
+mutable, because an ordinary approval must not become a provider-source read
+after revalidation. A correctly classified provider-source read remains
+available only through the existing explicit once-approval path.
+
+Registration checks the containing directory chain using descriptor-relative,
+no-symlink traversal, effective write-and-search permission checks (including
+ACLs), ownership, and Linux effective, permitted and inheritable capability
+sets. Unknown checks fail closed. A directory registration includes the
+registered directory itself because it can contain new aliases. For an
+exact-file registration, the containing directory is the final location
+boundary.
 
 This is an admission restriction, not a namespace lock. Its same-user claim is
 limited to an actor with the same unprivileged effective identity and
@@ -51,12 +56,14 @@ not cover a privileged actor, independent copies of sensitive bytes, incomplete
 owner inventory, or a future registration racing with an already released
 capability. Live owner rotation remains a separate unsupported experiment.
 
-The gate runs during preparation, before once-grant consumption, worker launch
-or descriptor duplication, and is checked again during broker revalidation.
-It leaves explicit provider-source reads alone because those already require
-per-invocation approval; a generic protected registration still blocks the
-entire worker-read admission path. The harness does not hold a global namespace
-lock or claim that the check secures arbitrary mutable protected paths.
+The generic-protected gate runs before opening the target. The provider-source
+gate runs after target classification but before returning a prepared read,
+once-grant consumption, worker launch or descriptor duplication. Both are
+checked again during broker revalidation. Correctly classified provider reads
+are not blocked by their own mutable location; those reads still require
+per-invocation approval. A mutable generic-protected registration blocks the
+entire worker-read path. The harness does not hold a global namespace lock or
+claim that the check secures arbitrary mutable protected paths.
 
 ## Compatibility and evidence
 
@@ -70,11 +77,11 @@ for the previous scan-to-handoff race. The earlier native violation remains
 historical evidence and must not be relabeled as fixed by post-read suppression.
 
 The gate also means provider-source reads are unavailable in a fixture registry
-that contains a mutable generic-protected location. Typical user-owned home
-configuration trees fail admission, so this policy is expected to disable
-generic reads in common installations. No positive native case is claimed for
-the new policy unless an eligible, same-user-immutable protected hierarchy is
-actually exercised.
+that contains a mutable generic-protected location, and ordinary reads are
+unavailable when a mutable provider-source location is registered. Typical
+user-owned home configuration and source trees therefore lose generic-read
+availability. No positive native case is claimed for the new policy unless an
+eligible, same-user-immutable protected hierarchy is actually exercised.
 
 Pending evidence remains: sealed-copy native validation, protected ancestor
 replacement, mount boundaries, live owner rotation, recursive-child movement,
