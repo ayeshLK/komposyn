@@ -99,6 +99,22 @@ func TestProtectedStoreDoesNotRemoveSubstitutedTemporaryPath(t *testing.T) {
 	}
 }
 
+func TestRegisterSensitiveJSONStoreRejectsCanceledContextBeforeSetup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	path := filepath.Join(t.TempDir(), "nested", "auth.json")
+	protector := protectionFunc(func(context.Context, string, string, string, *os.File) error {
+		t.Fatal("canceled registration invoked protector")
+		return nil
+	})
+	if err := RegisterSensitiveJSONStore(ctx, protector, SensitiveOwnerAuth, SensitiveClassAuth, path); !errors.Is(err, context.Canceled) {
+		t.Fatalf("registration error=%v, want canceled", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Fatalf("canceled registration created store directory: %v", err)
+	}
+}
+
 func contains(value, fragment string) bool {
 	for i := 0; i+len(fragment) <= len(value); i++ {
 		if value[i:i+len(fragment)] == fragment {

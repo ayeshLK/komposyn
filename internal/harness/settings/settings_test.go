@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 )
@@ -94,6 +95,44 @@ func TestSaveContextRefusesWhenOwnerBarrierIsIncomplete(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("settings appeared despite failed barrier: %v", err)
+	}
+}
+
+func TestSaveContextHonorsDeadlineWhileWaitingForStoreLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- auth.UpdateJSON(path, func(bool, map[string]json.RawMessage) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Store{Path: path}).SaveContext(ctx, Settings{Plugin: DefaultUI}) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("SaveContext error=%v, want deadline exceeded", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("SaveContext remained blocked after its deadline")
+	}
+	close(release)
+	released = true
+	if err := <-holderDone; err != nil {
+		t.Fatalf("lock holder UpdateJSON: %v", err)
 	}
 }
 

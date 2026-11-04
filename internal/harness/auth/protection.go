@@ -45,6 +45,9 @@ func RegisterSensitiveJSONStore(ctx context.Context, protector SensitiveFileProt
 	if protector == nil {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err

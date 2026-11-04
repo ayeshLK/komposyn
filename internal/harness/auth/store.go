@@ -844,6 +844,9 @@ func UpdateJSON(path string, update func(bool, map[string]json.RawMessage) error
 }
 
 func updateJSON(ctx context.Context, path string, update func(bool, map[string]json.RawMessage) error, protector SensitiveFileProtector, owner, class string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
@@ -851,7 +854,7 @@ func updateJSON(ctx context.Context, path string, update func(bool, map[string]j
 	if err = ensurePrivateDir(filepath.Dir(abs)); err != nil {
 		return err
 	}
-	unlock, err := lockPath(abs)
+	unlock, err := lockPathContext(ctx, abs)
 	if err != nil {
 		return err
 	}
