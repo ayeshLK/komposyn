@@ -34,8 +34,12 @@ const (
 	controlFD      = 4
 	seccompInputFD = 3
 	workerDeadline = 5_000_000_000
-	maxPacketBytes = MaxReadBytes + 128
-	dataChunkBytes = 16 << 10
+	// Capability-hold mode is used only by bounded lifecycle fixtures. Its
+	// longer fixed watchdog prevents the five-second worker deadline from
+	// expiring during a 12s/8s readiness-and-held observation window.
+	capabilityHoldWorkerDeadline = 60_000_000_000
+	maxPacketBytes               = MaxReadBytes + 128
+	dataChunkBytes               = 16 << 10
 )
 
 func validateTrustedExecutable(path string, requireRoot bool) error {

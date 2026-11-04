@@ -30,10 +30,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"golang.org/x/sys/unix"
@@ -143,10 +147,55 @@ type caseResult struct {
 	GenerationsAfter               *readbrokerstudy.GenerationSet `json:"generations_after,omitempty"`
 	WorkerProbe                    readbrokerstudy.WorkerProbe    `json:"worker_probe,omitempty"`
 	OwnerLifecycle                 *ownerLifecycleEvidence        `json:"owner_lifecycle,omitempty"`
+	Lifecycle                      *abnormalLifecycleEvidence     `json:"abnormal_lifecycle,omitempty"`
 	FixtureEffect                  string                         `json:"fixture_effect"`
 	AuthorityA                     string                         `json:"authority_a"`
 	AuthorityB                     string                         `json:"authority_b"`
 	Detail                         string                         `json:"detail,omitempty"`
+}
+
+type abnormalLifecycleEvidence struct {
+	FaultInjection                                string `json:"fault_injection,omitempty"`
+	CoordinatorStarted                            bool   `json:"coordinator_started"`
+	CoordinatorTerminationRequested               bool   `json:"coordinator_termination_requested"`
+	CoordinatorExitObserved                       bool   `json:"coordinator_exit_observed"`
+	CoordinatorDirectWaitConfirmed                bool   `json:"coordinator_direct_wait_confirmed"`
+	CoordinatorDiagnosticPresent                  bool   `json:"coordinator_diagnostic_present"`
+	BubblewrapLiveBeforeCoordinatorTermination    bool   `json:"bubblewrap_live_before_coordinator_termination"`
+	NamespaceInitLiveBeforeCoordinatorTermination bool   `json:"namespace_init_live_before_coordinator_termination"`
+	WorkerReady                                   bool   `json:"worker_ready"`
+	CapabilityHeldAcknowledged                    bool   `json:"capability_held_acknowledged"`
+	CapabilityIdentityMatchesTarget               bool   `json:"capability_identity_matches_target"`
+	BubblewrapPIDFDIdentityEstablished            bool   `json:"bubblewrap_pidfd_identity_established"`
+	NamespaceInitPIDFDIdentityEstablished         bool   `json:"namespace_init_pidfd_identity_established"`
+	NamespaceInitExitedBeforeSupervisorCleanup    bool   `json:"namespace_init_exited_before_supervisor_cleanup"`
+	BubblewrapExitedBeforeSupervisorCleanup       bool   `json:"bubblewrap_exited_before_supervisor_cleanup"`
+	NamespaceInitExitedAfterSupervisorCleanup     bool   `json:"namespace_init_exited_after_supervisor_cleanup"`
+	BubblewrapExitedAfterSupervisorCleanup        bool   `json:"bubblewrap_exited_after_supervisor_cleanup"`
+	BubblewrapReapedBySupervisor                  bool   `json:"bubblewrap_reaped_by_supervisor"`
+	SupervisorCleanupAttempted                    bool   `json:"supervisor_cleanup_attempted"`
+	SupervisorSentCleanupSignal                   bool   `json:"supervisor_sent_cleanup_signal"`
+	PIDFDObservationError                         bool   `json:"pidfd_observation_error"`
+	WorkerAliveAtPendingBoundary                  bool   `json:"worker_alive_at_pending_boundary"`
+	CleanupPendingObserved                        bool   `json:"cleanup_pending_observed"`
+	AdmissionAttempted                            bool   `json:"admission_attempted"`
+	AdmissionBlocked                              bool   `json:"admission_blocked"`
+	AdmissionOnceConsumptions                     int    `json:"admission_once_consumptions"`
+	OwnerWriteAttempted                           bool   `json:"owner_write_attempted"`
+	OwnerWriteAuthorized                          bool   `json:"owner_write_authorized"`
+	OwnerWriteStarted                             bool   `json:"owner_write_started"`
+	SensitiveBytesPresentBeforeJoin               bool   `json:"sensitive_bytes_present_before_join"`
+	RegistryPinsBefore                            int    `json:"registry_pins_before"`
+	RegistryPinsWhilePending                      int    `json:"registry_pins_while_pending"`
+	RegistryPinsAfterCleanup                      int    `json:"registry_pins_after_cleanup"`
+	CleanupRecordRetained                         bool   `json:"cleanup_record_retained"`
+	StalePublicationSuppressed                    bool   `json:"stale_publication_suppressed"`
+	DirectWorkerJoinConfirmed                     bool   `json:"direct_worker_join_confirmed"`
+	CleanupOwner                                  string `json:"cleanup_owner"`
+	NamespaceDescendantEvidence                   string `json:"namespace_descendant_evidence"`
+	FixtureRootRetained                           bool   `json:"fixture_root_retained"`
+	CleanupComplete                               bool   `json:"cleanup_complete"`
+	Detail                                        string `json:"detail,omitempty"`
 }
 
 type ownerLifecycleEvidence struct {
@@ -154,6 +203,7 @@ type ownerLifecycleEvidence struct {
 	InitialRegistrationResult string                        `json:"initial_registration_result"`
 	CleanupPending            bool                          `json:"cleanup_pending"`
 	WorkerJoinConfirmed       bool                          `json:"worker_join_confirmed"`
+	WriteAttempted            bool                          `json:"write_attempted"`
 	PolicyBefore              readbrokerstudy.GenerationSet `json:"policy_before"`
 	PolicyAfterRegistration   readbrokerstudy.GenerationSet `json:"policy_after_registration"`
 	WriteDescriptorIdentity   readbrokerstudy.FileIdentity  `json:"write_descriptor_identity"`
@@ -171,6 +221,13 @@ type ownerLifecycleEvidence struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--readbrokerstudy-lifecycle-coordinator" {
+		if err := runLifecycleCoordinator(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "read-broker-study lifecycle coordinator:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if handled, err := readbrokerstudy.RunNativeActorMode(os.Args[1:]); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "read-broker-study actor:", err)
@@ -237,15 +294,18 @@ func run() error {
 			"the independent actor uses only disposable synthetic fixture paths and a fixed operation allowlist",
 			"owner lifecycle rows exercise synthetic registration and rotation only; they do not wire real credentials, settings, Token Logger, or provider owners",
 			"a protected-directory ancestor race remains ineligible when the candidate shares its filesystem because incomplete descendant coverage refuses reads before worker setup",
-			"mount crossing, recursive-child relocation, parent-death and incomplete-shutdown cleanup have no integrated actor scenario",
+			"mount crossing and recursive-child relocation have no integrated actor scenario",
+			"abnormal-lifecycle fixtures observe the fixed Bubblewrap command and PID-namespace init only; they do not claim cleanup of arbitrary descendants",
+			"shutdown and owner cleanup-pending intervals use a deterministic gate that delays forwarding the real termination request; no natural kernel wait failure or worker hang is induced",
 		},
 		NativeGaps: []string{
 			"ordinary late-alias behavior and fresh direct protected-route refusal are separate actor cases; neither implies continuous path containment",
 			"production owner registration, credential rotation, and cleanup integration are not implemented",
 			"registered protected-ancestor relocation/replacement while a sandboxed read remains eligible; current same-device descendant coverage refuses before worker setup",
 			"mount-boundary behavior and recursive-child relocation",
-			"parent death and descendant termination evidence",
-			"worker descriptor cleanup after incomplete coordinator shutdown",
+			"native abnormal-lifecycle rows require a trusted backend plus pidfd and child-subreaper support; unavailable rows are not passes",
+			"arbitrary namespace-descendant cleanup beyond the fixed thread-only worker topology",
+			"natural worker hang or kernel cleanup failure; the shutdown and owner pending interval is deterministic termination-request fault injection",
 		},
 	}
 
@@ -298,6 +358,9 @@ func unavailableCases(reason string) []caseResult {
 		{"owner_rotation_new_alias_denied", "new protected identity remains denied through an alias"},
 		{"owner_registration_failure_blocks_write", "failed owner registration leaves the synthetic sensitive write blocked"},
 		{"owner_incomplete_cleanup_blocks_write", "incomplete real-worker cleanup blocks sensitive writes; unsafe unjoined-worker condition is explicitly unavailable"},
+		{"coordinator_death_with_held_capability", "independent supervisor observes coordinator death and whether the real worker capability disappears before supervisor cleanup"},
+		{"shutdown_deadline_retains_cleanup_obligation", "a real held worker remains alive across a bounded shutdown deadline; resources and admission remain blocked until confirmed cleanup"},
+		{"owner_incomplete_cleanup_blocks_write_native", "a real held worker keeps owner registration pending; no sensitive write occurs until the real worker is killed and directly reaped"},
 		{"provider_missing_explicit_once", "provider-only source refuses without explicit once approval before worker access"},
 		{"provider_only_ordinary_positive_control", "separate ordinary fixture remains readable under its own once authorization"},
 		{"provider_ordinary_receipt_rejected_for_alias", "ordinary identity/class/route receipt cannot authorize a registered provider alias"},
@@ -359,7 +422,12 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	if err != nil {
 		return results, err
 	}
-	defer os.RemoveAll(base)
+	retainFixtureRoot := false
+	defer func() {
+		if !retainFixtureRoot {
+			_ = os.RemoveAll(base)
+		}
+	}()
 	root := filepath.Join(base, "root")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		return results, err
@@ -643,6 +711,12 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		return results, err
 	}
 	results = append(results, providerCases...)
+	lifecycleCases, retain, err := runAbnormalLifecycleCases(bwrap, worker, base)
+	if err != nil {
+		return results, err
+	}
+	results = append(results, lifecycleCases...)
+	retainFixtureRoot = retain
 	return results, nil
 }
 
@@ -677,10 +751,1260 @@ func newStudySession(bwrap, workerPath, root string, hold bool) (*readbrokerstud
 	return registry, authorizer, session, nil
 }
 
+// observedWorkerLauncher adds no authority to the child. It retains a test-only
+// handle so the trusted coordinator can report the actual Bubblewrap and PID
+// namespace init identities at a deterministic checkpoint.
+type observedWorkerLauncher struct {
+	inner  readbrokerstudy.WorkerLauncher
+	gate   *terminationRequestGate
+	mu     sync.Mutex
+	last   *observedSandboxWorker
+	starts int
+}
+
+func (l *observedWorkerLauncher) Start(ctx context.Context) (readbrokerstudy.SandboxWorker, error) {
+	launchContext := ctx
+	if l.gate != nil {
+		// In these research-only fault-injection cases, invalidation still
+		// cancels the operation, while child termination is routed through the
+		// gate. Capability-hold mode retains its separate fixed 60-second
+		// watchdog; normal workers keep their caller-cancelled context.
+		launchContext = context.WithoutCancel(ctx)
+	}
+	worker, err := l.inner.Start(launchContext)
+	if err != nil {
+		return nil, err
+	}
+	observed := &observedSandboxWorker{SandboxWorker: worker, gate: l.gate}
+	if l.gate != nil {
+		l.gate.attach(worker)
+	}
+	l.mu.Lock()
+	l.last = observed
+	l.starts++
+	l.mu.Unlock()
+	return observed, nil
+}
+
+func (l *observedWorkerLauncher) Close() error { return l.inner.Close() }
+
+func (l *observedWorkerLauncher) latest() *observedSandboxWorker {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.last
+}
+
+func (l *observedWorkerLauncher) startCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.starts
+}
+
+type observedSandboxWorker struct {
+	readbrokerstudy.SandboxWorker
+	gate *terminationRequestGate
+}
+
+func (w *observedSandboxWorker) Terminate() error {
+	if w.gate != nil {
+		return w.gate.requestTermination(w.SandboxWorker)
+	}
+	return w.SandboxWorker.Terminate()
+}
+
+func (w *observedSandboxWorker) AwaitCapabilityHeld(ctx context.Context) error {
+	held, ok := w.SandboxWorker.(readbrokerstudy.HeldCapabilityWorker)
+	if !ok {
+		return readbrokerstudy.ErrProtocol
+	}
+	return held.AwaitCapabilityHeld(ctx)
+}
+
+func (w *observedSandboxWorker) ReleaseHeldRead(ctx context.Context) error {
+	held, ok := w.SandboxWorker.(readbrokerstudy.HeldCapabilityWorker)
+	if !ok {
+		return readbrokerstudy.ErrProtocol
+	}
+	return held.ReleaseHeldRead(ctx)
+}
+
+func (w *observedSandboxWorker) ObserveHostProcesses() (readbrokerstudy.HostProcessIdentity, readbrokerstudy.HostProcessIdentity, error) {
+	observer, ok := w.SandboxWorker.(readbrokerstudy.HostProcessObserver)
+	if !ok {
+		return readbrokerstudy.HostProcessIdentity{}, readbrokerstudy.HostProcessIdentity{}, errors.New("worker has no host process observer")
+	}
+	return observer.ObserveHostProcesses()
+}
+
+func (w *observedSandboxWorker) HeldCapabilityIdentity() (readbrokerstudy.FileIdentity, bool) {
+	observer, ok := w.SandboxWorker.(readbrokerstudy.HeldCapabilityObserver)
+	if !ok {
+		return readbrokerstudy.FileIdentity{}, false
+	}
+	return observer.HeldCapabilityIdentity()
+}
+
+type terminationRequestGate struct {
+	mu          sync.Mutex
+	worker      readbrokerstudy.SandboxWorker
+	requested   bool
+	released    bool
+	requestedCh chan struct{}
+}
+
+func newTerminationRequestGate() *terminationRequestGate {
+	return &terminationRequestGate{requestedCh: make(chan struct{})}
+}
+
+func (g *terminationRequestGate) attach(worker readbrokerstudy.SandboxWorker) {
+	g.mu.Lock()
+	g.worker = worker
+	g.mu.Unlock()
+}
+
+func (g *terminationRequestGate) requestTermination(worker readbrokerstudy.SandboxWorker) error {
+	g.mu.Lock()
+	if g.released {
+		g.mu.Unlock()
+		return worker.Terminate()
+	}
+	if !g.requested {
+		g.requested = true
+		close(g.requestedCh)
+	}
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *terminationRequestGate) requestedSignal() <-chan struct{} { return g.requestedCh }
+
+func (g *terminationRequestGate) release() error {
+	g.mu.Lock()
+	if g.released {
+		worker := g.worker
+		g.mu.Unlock()
+		if worker == nil {
+			return readbrokerstudy.ErrUnavailable
+		}
+		return worker.Terminate()
+	}
+	worker := g.worker
+	if worker == nil {
+		g.mu.Unlock()
+		return errors.New("termination gate has no native worker")
+	}
+	g.released = true
+	g.mu.Unlock()
+	return worker.Terminate()
+}
+
 func closeStudySession(session readbrokerstudy.FixtureSession) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	return session.Close(ctx)
+}
+
+func activeOperationCount(session readbrokerstudy.FixtureSession) int {
+	return session.ActiveOperationCount()
+}
+
+const lifecycleObservationDeadline = 3 * time.Second
+
+type lifecycleHandshake struct {
+	Phase              string                              `json:"phase"`
+	Bubblewrap         readbrokerstudy.HostProcessIdentity `json:"bubblewrap"`
+	NamespaceInit      readbrokerstudy.HostProcessIdentity `json:"namespace_init"`
+	Probe              readbrokerstudy.WorkerProbe         `json:"probe"`
+	TargetIdentity     readbrokerstudy.FileIdentity        `json:"target_identity"`
+	CapabilityIdentity readbrokerstudy.FileIdentity        `json:"capability_identity"`
+	OnceConsumptions   int                                 `json:"once_consumptions"`
+}
+
+func runLifecycleCoordinator(args []string) error {
+	flags := flag.NewFlagSet("read-broker-study-lifecycle-coordinator", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	bwrap := flags.String("bwrap", "/usr/bin/bwrap", "trusted Bubblewrap path")
+	root := flags.String("root", "", "synthetic fixture root")
+	target := flags.String("target", "", "synthetic fixture target")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *root == "" || *target == "" {
+		return errors.New("coordinator fixture requires a synthetic root and target")
+	}
+	control := os.NewFile(3, "readbroker-lifecycle-supervisor")
+	if control == nil {
+		return errors.New("lifecycle supervisor channel is unavailable")
+	}
+	defer control.Close()
+	targetIdentity, err := identityAt(*target)
+	if err != nil {
+		return errors.New("synthetic target identity could not be inspected")
+	}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		return err
+	}
+	workerPath, err := os.Executable()
+	if err != nil {
+		_ = registry.Close()
+		return errors.New("study executable path is unavailable")
+	}
+	launcher, err := readbrokerstudy.NewWorkerLauncherWithCapabilityHold(*bwrap, workerPath)
+	if err != nil {
+		_ = registry.Close()
+		return err
+	}
+	observed := &observedWorkerLauncher{inner: launcher}
+	authorizer := readbrokerstudy.NewOnceGrantFixture()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), observed, authorizer)
+	if err != nil {
+		_ = observed.Close()
+		_ = registry.Close()
+		return err
+	}
+	closeOnReturn := true
+	defer func() {
+		if closeOnReturn {
+			_ = closeStudySession(session)
+		}
+	}()
+	if err := session.SelectRoot(*root); err != nil {
+		return err
+	}
+	const invocation = "coordinator-death-once-read"
+	if err := authorizer.ApproveOnce(invocation); err != nil {
+		return err
+	}
+	session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		worker := observed.latest()
+		if worker == nil {
+			return errors.New("native worker observation is unavailable")
+		}
+		switch checkpoint {
+		case readbrokerstudy.CheckpointBeforeHandoff:
+			bubblewrap, namespaceInit, observeErr := worker.ObserveHostProcesses()
+			if observeErr != nil {
+				return observeErr
+			}
+			if err := sendLifecycleHandshake(control, lifecycleHandshake{Phase: "ready", Bubblewrap: bubblewrap, NamespaceInit: namespaceInit, Probe: worker.Probe(), TargetIdentity: targetIdentity}); err != nil {
+				return err
+			}
+			command, err := readLifecycleCommand(control)
+			if err != nil || command != "continue" {
+				return context.Canceled
+			}
+		case readbrokerstudy.CheckpointAfterCapabilityHeld:
+			capability, held := worker.HeldCapabilityIdentity()
+			if !held {
+				return readbrokerstudy.ErrProtocol
+			}
+			if err := sendLifecycleHandshake(control, lifecycleHandshake{Phase: "held", Probe: worker.Probe(), TargetIdentity: targetIdentity, CapabilityIdentity: capability, OnceConsumptions: authorizer.ConsumptionCount(invocation)}); err != nil {
+				return err
+			}
+			_, _ = readLifecycleCommand(control) // The supervisor kills only this coordinator after the held event.
+		}
+		return nil
+	})
+	readCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	_, readErr := session.Read(readCtx, *root, *target, invocation)
+	if readErr != nil {
+		return errors.New("coordinator fixture read failed")
+	}
+	closeOnReturn = false
+	return closeStudySession(session)
+}
+
+func sendLifecycleHandshake(control *os.File, message lifecycleHandshake) error {
+	encoded, err := json.Marshal(message)
+	if err != nil || len(encoded) > 2048 {
+		return errors.New("lifecycle observation exceeded its protocol bound")
+	}
+	n, err := unix.SendmsgN(int(control.Fd()), encoded, nil, nil, unix.MSG_NOSIGNAL)
+	if err != nil || n != len(encoded) {
+		return errors.New("lifecycle observation could not be sent")
+	}
+	return nil
+}
+
+func readLifecycleCommand(control *os.File) (string, error) {
+	packet := make([]byte, 32)
+	n, _, flags, _, err := unix.Recvmsg(int(control.Fd()), packet, nil, 0)
+	if err != nil || n == 0 || flags&unix.MSG_TRUNC != 0 {
+		return "", errors.New("lifecycle supervisor command was unavailable")
+	}
+	command := string(packet[:n])
+	if command != "continue" && command != "abort" {
+		return "", errors.New("lifecycle supervisor command was invalid")
+	}
+	return command, nil
+}
+
+func readLifecycleHandshake(fd int, timeout time.Duration) (lifecycleHandshake, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return lifecycleHandshake{}, context.DeadlineExceeded
+		}
+		millis := int((remaining + time.Millisecond - 1) / time.Millisecond)
+		if millis > 250 {
+			millis = 250
+		}
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		n, err := unix.Poll(poll, millis)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return lifecycleHandshake{}, err
+		}
+		if n == 0 {
+			continue
+		}
+		if poll[0].Revents&(unix.POLLHUP|unix.POLLERR) != 0 && poll[0].Revents&unix.POLLIN == 0 {
+			return lifecycleHandshake{}, io.EOF
+		}
+		packet := make([]byte, 2048)
+		count, _, flags, _, recvErr := unix.Recvmsg(fd, packet, nil, unix.MSG_DONTWAIT)
+		if recvErr == unix.EINTR || recvErr == unix.EAGAIN || recvErr == unix.EWOULDBLOCK {
+			continue
+		}
+		if recvErr != nil {
+			return lifecycleHandshake{}, recvErr
+		}
+		if flags&unix.MSG_TRUNC != 0 || count == 0 {
+			return lifecycleHandshake{}, errors.New("lifecycle handshake was empty or truncated")
+		}
+		var message lifecycleHandshake
+		if err := json.Unmarshal(packet[:count], &message); err != nil {
+			return lifecycleHandshake{}, errors.New("lifecycle handshake was malformed")
+		}
+		return message, nil
+	}
+}
+
+func observePIDFDExit(fd int, timeout time.Duration) (bool, error) {
+	if fd < 0 {
+		return false, errors.New("pidfd is unavailable")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining < 0 {
+			remaining = 0
+		}
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		millis := int((remaining + time.Millisecond - 1) / time.Millisecond)
+		if millis > 250 {
+			millis = 250
+		}
+		n, err := unix.Poll(poll, millis)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if n > 0 && poll[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
+			return true, nil
+		}
+		if time.Now().After(deadline) {
+			return false, nil
+		}
+	}
+}
+
+func pidfdIsAlive(fd int) (bool, error) {
+	exited, err := observePIDFDExit(fd, 0)
+	if err != nil {
+		return false, err
+	}
+	return !exited, nil
+}
+
+func heldWorkerProcessesLive(namespaceInitPIDFD, bubblewrapPIDFD int) (namespaceInitAlive, bubblewrapAlive bool, err error) {
+	var namespaceInitErr, bubblewrapErr error
+	namespaceInitAlive, namespaceInitErr = pidfdIsAlive(namespaceInitPIDFD)
+	bubblewrapAlive, bubblewrapErr = pidfdIsAlive(bubblewrapPIDFD)
+	return namespaceInitAlive, bubblewrapAlive, errors.Join(namespaceInitErr, bubblewrapErr)
+}
+
+func reapAdoptedChild(pid int, deadline time.Time) bool {
+	for time.Now().Before(deadline) {
+		var status unix.WaitStatus
+		waited, err := unix.Wait4(pid, &status, unix.WNOHANG, nil)
+		if waited == pid {
+			return true
+		}
+		if err != nil && err != unix.EINTR {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func runAbnormalLifecycleCases(bwrap, workerPath, parent string) ([]caseResult, bool, error) {
+	death, retain, err := runCoordinatorDeathCase(bwrap, parent)
+	if err != nil {
+		return nil, retain, err
+	}
+	results := []caseResult{death}
+	shutdown := runShutdownDeadlineCase(bwrap, workerPath, parent)
+	results = append(results, shutdown)
+	retain = retain || (shutdown.Lifecycle != nil && shutdown.Lifecycle.FixtureRootRetained)
+	owner := runOwnerCleanupPendingNativeCase(bwrap, workerPath, parent)
+	results = append(results, owner)
+	retain = retain || (owner.Lifecycle != nil && owner.Lifecycle.FixtureRootRetained)
+	return results, retain, nil
+}
+
+func runCoordinatorDeathCase(bwrap, parent string) (row caseResult, retain bool, runErr error) {
+	row = caseResult{
+		Name:       "coordinator_death_with_held_capability",
+		Expected:   "an independent supervisor confirms coordinator death and observes the real PID-namespace worker and its held capability disappear before any supervisor cleanup",
+		AuthorityA: "not applicable; process lifecycle only", AuthorityB: "object authority is not re-evaluated by this lifecycle experiment",
+		FixtureEffect: "synthetic target remains unchanged; no read release or publication occurs",
+	}
+	evidence := &abnormalLifecycleEvidence{CleanupOwner: "outer study supervisor after coordinator death", NamespaceDescendantEvidence: "pidfd for the fixed command/PID-namespace init; worker seccomp permits Go threads only and denies process-like clone/clone3; no arbitrary descendant claim"}
+	row.Lifecycle = evidence
+	workerPath := filepath.Join(parent, "coordinator-death-root")
+	if err := os.Mkdir(workerPath, 0o700); err != nil {
+		return row, false, err
+	}
+	target := filepath.Join(workerPath, "held.fixture")
+	fixture := []byte("synthetic held capability bytes\n")
+	if err := os.WriteFile(target, fixture, 0o600); err != nil {
+		return row, false, err
+	}
+	targetIdentity, err := identityAt(target)
+	if err != nil {
+		return row, false, err
+	}
+	restoreSubreaper, err := enableChildSubreaper()
+	if err != nil {
+		row.Status, row.Classification = "unavailable", "unavailable"
+		row.Observed = "coordinator death observer could not establish child reaping ownership"
+		evidence.Detail = err.Error()
+		return row, false, nil
+	}
+	defer func() {
+		if !retain {
+			restoreSubreaper()
+		}
+	}()
+	executable, err := os.Executable()
+	if err != nil {
+		return row, false, err
+	}
+	cmd := exec.Command(executable, "--readbrokerstudy-lifecycle-coordinator", "--bwrap", bwrap, "--root", workerPath, "--target", target)
+	cmd.Dir = "/"
+	cmd.Env = []string{}
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "independent coordinator control pipe could not be established"
+		evidence.Detail = "private sequenced control socket setup failed"
+		return row, false, nil
+	}
+	supervisorControl := os.NewFile(uintptr(pair[0]), "readbroker-lifecycle-supervisor")
+	coordinatorControl := os.NewFile(uintptr(pair[1]), "readbroker-lifecycle-coordinator")
+	if supervisorControl == nil || coordinatorControl == nil {
+		_ = unix.Close(pair[0])
+		_ = unix.Close(pair[1])
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "private coordinator control socket could not be wrapped"
+		return row, false, nil
+	}
+	defer supervisorControl.Close()
+	cmd.ExtraFiles = []*os.File{coordinatorControl}
+	stderr := &boundedStudyOutput{limit: 4096}
+	cmd.Stderr = stderr
+	defer func() { evidence.CoordinatorDiagnosticPresent = stderr.hasOutput() }()
+	if err := cmd.Start(); err != nil {
+		_ = coordinatorControl.Close()
+		row.Status, row.Classification = "unavailable", "unavailable"
+		row.Observed = "independent coordinator subprocess could not start"
+		evidence.Detail = "coordinator process start failed"
+		return row, false, nil
+	}
+	_ = coordinatorControl.Close()
+	evidence.CoordinatorStarted = true
+	coordinatorDone := startCoordinatorWait(cmd)
+	ready, err := readLifecycleHandshake(int(supervisorControl.Fd()), 12*time.Second)
+	if err != nil || ready.Phase != "ready" {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		childErr, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			childErr, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		if waited {
+			evidence.CoordinatorExitObserved = true
+		}
+		row.Status, row.Classification = "unavailable", "unavailable"
+		row.Observed = "candidate worker did not reach the externally observed ready checkpoint"
+		if err != nil {
+			evidence.Detail = "worker readiness handshake unavailable; no coordinator-death claim was measured"
+		}
+		if childErr != nil && waited {
+			evidence.Detail = "coordinator cleaned up after readiness refusal; no worker capability was released"
+		}
+		if !waited {
+			row.Status, row.Classification = "inconclusive", "inconclusive"
+			evidence.Detail = "coordinator and worker cleanup could not be confirmed; fixture root was retained"
+		}
+		return row, !waited, nil
+	}
+	evidence.WorkerReady = true
+	bwrapPIDFD, bwrapFDerr := readbrokerstudy.OpenVerifiedPIDFD(ready.Bubblewrap)
+	if bwrapFDerr != nil {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "unavailable", "unavailable"
+		row.Observed = "pidfd identity for Bubblewrap could not be established"
+		evidence.Detail = "the coordinator received abort before target descriptor handoff"
+		return row, !waited, nil
+	}
+	defer unix.Close(bwrapPIDFD)
+	initPIDFD, initFDerr := readbrokerstudy.OpenVerifiedPIDFD(ready.NamespaceInit)
+	if initFDerr != nil {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "unavailable", "unavailable"
+		row.Observed = "pidfd identity for the PID-namespace init could not be established"
+		evidence.Detail = "the coordinator received abort before target descriptor handoff"
+		return row, !waited, nil
+	}
+	defer unix.Close(initPIDFD)
+	evidence.BubblewrapPIDFDIdentityEstablished = true
+	evidence.NamespaceInitPIDFDIdentityEstablished = true
+	if ready.Probe.SeccompMode != 2 || !ready.Probe.NoNewPrivs || !ready.Probe.OnlyProtocolDescriptor || !ready.Probe.EnvironmentCleared {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "worker readiness did not include all required isolation probes"
+		evidence.Detail = "readiness event lacked the reviewed worker probe set"
+		return row, !waited, nil
+	}
+	if err := writeLifecycleCommand(int(supervisorControl.Fd()), "continue"); err != nil {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "coordinator could not be released from the pre-handoff observation gate"
+		evidence.Detail = "bounded lifecycle command write failed"
+		return row, !waited, nil
+	}
+	held, err := readLifecycleHandshake(int(supervisorControl.Fd()), 8*time.Second)
+	if err != nil || held.Phase != "held" {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "worker did not confirm holding the approved target capability"
+		evidence.Detail = "capability-held acknowledgement unavailable"
+		return row, !waited, nil
+	}
+	evidence.CapabilityHeldAcknowledged = true
+	evidence.CapabilityIdentityMatchesTarget = held.CapabilityIdentity == targetIdentity && held.TargetIdentity == targetIdentity
+	row.OnceGrantConsumptions = held.OnceConsumptions
+	if !evidence.CapabilityIdentityMatchesTarget || held.OnceConsumptions != 1 || held.Probe.SeccompMode != 2 {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "held capability did not match the once-authorized synthetic object"
+		evidence.Detail = "target identity or single once-consumption precondition failed"
+		return row, !waited, nil
+	}
+	initAlive, bwrapAlive, liveErr := heldWorkerProcessesLive(initPIDFD, bwrapPIDFD)
+	evidence.NamespaceInitLiveBeforeCoordinatorTermination = initAlive
+	evidence.BubblewrapLiveBeforeCoordinatorTermination = bwrapAlive
+	evidence.PIDFDObservationError = liveErr != nil
+	if liveErr != nil || !initAlive || !bwrapAlive {
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "held acknowledgement arrived without both pidfd-observed processes live immediately before coordinator termination"
+		evidence.Detail = "stale or expired worker evidence was refused; coordinator-death behavior was not classified"
+		return row, !waited, nil
+	}
+	evidence.CoordinatorTerminationRequested = true
+	if err := cmd.Process.Kill(); err != nil {
+		evidence.CoordinatorTerminationRequested = false
+		_ = writeLifecycleCommand(int(supervisorControl.Fd()), "abort")
+		_, waited := awaitCoordinator(coordinatorDone, 10*time.Second)
+		if !waited {
+			evidence.CoordinatorTerminationRequested = true
+			_ = cmd.Process.Kill()
+			_, waited = awaitCoordinator(coordinatorDone, 5*time.Second)
+		}
+		evidence.CoordinatorDirectWaitConfirmed = waited
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "coordinator termination request failed"
+		evidence.Detail = "only the task-owned coordinator process handle was targeted"
+		return row, !waited, nil
+	}
+	coordinatorErr, coordinatorWaited := awaitCoordinator(coordinatorDone, 5*time.Second)
+	if !coordinatorWaited {
+		// SIGKILL was already sent to the exact task-owned coordinator. Continue
+		// observing its exit before releasing the temporary subreaper role.
+		coordinatorErr, coordinatorWaited = awaitCoordinator(coordinatorDone, 5*time.Second)
+	}
+	evidence.CoordinatorDirectWaitConfirmed = coordinatorWaited
+	evidence.CoordinatorExitObserved = false
+	if coordinatorErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(coordinatorErr, &exitErr) {
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+				evidence.CoordinatorExitObserved = coordinatorWaited && status.Signaled() && status.Signal() == syscall.SIGKILL
+			}
+		}
+	}
+	initExited, initPollErr := observePIDFDExit(initPIDFD, lifecycleObservationDeadline)
+	bwrapExited, bwrapPollErr := observePIDFDExit(bwrapPIDFD, 0)
+	if !bwrapExited && initExited {
+		bwrapExited, bwrapPollErr = observePIDFDExit(bwrapPIDFD, 500*time.Millisecond)
+	}
+	evidence.NamespaceInitExitedBeforeSupervisorCleanup = initExited && initPollErr == nil
+	evidence.BubblewrapExitedBeforeSupervisorCleanup = bwrapExited && bwrapPollErr == nil
+	if !bwrapExited {
+		// Give the kernel's child-exit notification a bounded opportunity to
+		// reparent the tracked Bubblewrap child to this subreaper.
+		bwrapExited = observePIDFDWithRetry(bwrapPIDFD, 500*time.Millisecond)
+	}
+	bwrapReaped := false
+	if bwrapExited {
+		bwrapReaped = reapAdoptedChild(ready.Bubblewrap.PID, time.Now().Add(time.Second))
+	}
+	if !initExited || !bwrapExited || !bwrapReaped {
+		evidence.SupervisorCleanupAttempted = true
+		if !initExited {
+			if unix.PidfdSendSignal(initPIDFD, unix.SIGKILL, nil, 0) == nil {
+				evidence.SupervisorSentCleanupSignal = true
+			}
+		}
+		if !bwrapExited {
+			if unix.PidfdSendSignal(bwrapPIDFD, unix.SIGKILL, nil, 0) == nil {
+				evidence.SupervisorSentCleanupSignal = true
+			}
+		}
+		var cleanupInitErr, cleanupBwrapErr error
+		initExited, cleanupInitErr = observePIDFDExit(initPIDFD, lifecycleObservationDeadline)
+		bwrapExited, cleanupBwrapErr = observePIDFDExit(bwrapPIDFD, lifecycleObservationDeadline)
+		evidence.PIDFDObservationError = evidence.PIDFDObservationError || cleanupInitErr != nil || cleanupBwrapErr != nil
+		if bwrapExited && !bwrapReaped {
+			bwrapReaped = reapAdoptedChild(ready.Bubblewrap.PID, time.Now().Add(lifecycleObservationDeadline))
+		}
+	}
+	evidence.NamespaceInitExitedAfterSupervisorCleanup = initExited
+	evidence.BubblewrapExitedAfterSupervisorCleanup = bwrapExited
+	evidence.BubblewrapReapedBySupervisor = bwrapReaped
+	evidence.DirectWorkerJoinConfirmed = initExited && bwrapExited && bwrapReaped
+	evidence.CleanupComplete = coordinatorWaited && evidence.DirectWorkerJoinConfirmed
+	evidence.FixtureRootRetained = !evidence.CleanupComplete
+	row.WorkerReady = true
+	row.WorkerStarted = true
+	row.WorkerJoinConfirmed = evidence.DirectWorkerJoinConfirmed
+	row.CapabilityHeld = true
+	row.CapabilitySent = true
+	row.CapabilityIdentity = &targetIdentity
+	row.ReadStarted = false
+	row.Published = false
+	row.AuthorizationAttempted = true
+	row.AuthorizationReceiptAccepted = true
+	row.OnceGrantConsumptions = held.OnceConsumptions
+	row.ReadEvidencePresent = true
+	row.ReadEvidenceCase = "coordinator-death-once-read"
+	row.WorkerOutcome = readbrokerstudy.ReadNotExecuted
+	row.WorkerEffect = "worker held the read-only synthetic FD; coordinator died before the read-release gate"
+	row.FixtureEffect = "synthetic target unchanged; no read started or result was published"
+	row.Observed = "coordinator exit and pidfd observations recorded before external cleanup"
+	evidence.PIDFDObservationError = evidence.PIDFDObservationError || initPollErr != nil || bwrapPollErr != nil
+	if evidence.PIDFDObservationError {
+		evidence.Detail = "pidfd observation failed; supervisor cleanup was attempted after preserving the pre-cleanup state"
+	}
+	if !coordinatorWaited || !evidence.CoordinatorExitObserved {
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Detail = "coordinator exit/reap confirmation did not complete"
+	} else if evidence.NamespaceInitExitedBeforeSupervisorCleanup && evidence.BubblewrapExitedBeforeSupervisorCleanup && bwrapReaped {
+		row.Status, row.Classification = "measured_pass", "backend_parent_death_cleanup"
+		row.Detail = "Bubblewrap and namespace-init pidfds became readable before the supervisor sent any cleanup signal; Bubblewrap was then reaped by the subreaper"
+	} else if evidence.SupervisorCleanupAttempted && !evidence.SupervisorSentCleanupSignal && evidence.NamespaceInitExitedBeforeSupervisorCleanup && evidence.BubblewrapExitedBeforeSupervisorCleanup {
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Detail = "both observed processes exited before cleanup, but the supervisor could not confirm direct-child reap"
+	} else if evidence.PIDFDObservationError {
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Detail = "pidfd observation failed; cleanup attempts do not establish backend-driven exit"
+	} else {
+		row.Status, row.Classification = "observed_violation", "backend_parent_death_cleanup"
+		row.Detail = "at least one candidate process remained observable until the supervisor sent an exact pidfd cleanup signal; that cleanup did not count as backend-driven cleanup"
+	}
+	contents, readErr := os.ReadFile(target)
+	if readErr != nil || string(contents) != string(fixture) {
+		row.Status, row.Classification = "observed_violation", "backend_parent_death_cleanup"
+		row.Detail = "synthetic fixture changed unexpectedly during coordinator death"
+	}
+	return row, evidence.FixtureRootRetained, nil
+}
+
+func newObservedSession(bwrap, workerPath, root string, hold bool, gate *terminationRequestGate) (*readbrokerstudy.Registry, *readbrokerstudy.OnceGrantFixture, readbrokerstudy.FixtureSession, *observedWorkerLauncher, error) {
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	var native readbrokerstudy.WorkerLauncher
+	if hold {
+		native, err = readbrokerstudy.NewWorkerLauncherWithCapabilityHold(bwrap, workerPath)
+	} else {
+		native, err = readbrokerstudy.NewWorkerLauncher(bwrap, workerPath)
+	}
+	if err != nil {
+		_ = registry.Close()
+		return nil, nil, nil, nil, err
+	}
+	launcher := &observedWorkerLauncher{inner: native, gate: gate}
+	authorizer := readbrokerstudy.NewOnceGrantFixture()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer)
+	if err != nil {
+		_ = launcher.Close()
+		_ = registry.Close()
+		return nil, nil, nil, nil, err
+	}
+	if err := session.SelectRoot(root); err != nil {
+		_ = closeStudySession(session)
+		return nil, nil, nil, nil, err
+	}
+	return registry, authorizer, session, launcher, nil
+}
+
+func runShutdownDeadlineCase(bwrap, workerPath, parent string) (row caseResult) {
+	const name = "shutdown_deadline_retains_cleanup_obligation"
+	row = caseResult{Name: name,
+		Expected:   "Close times out while a real worker holds the target FD; admission, publication, registry pins, launcher and operation remain retained until a later confirmed direct-worker wait",
+		AuthorityA: "not applicable; process lifecycle only", AuthorityB: "object authority is not re-evaluated by this lifecycle experiment",
+		FixtureEffect: "synthetic target stays unchanged and the consumed invocation is not replayed",
+	}
+	evidence := &abnormalLifecycleEvidence{FaultInjection: "operation cancellation and explicit termination are both routed through the fixture gate; the held worker uses a fixed 60-second watchdog", CleanupOwner: "fixture supervisor gate then fixture session; later Close retry",
+		NamespaceDescendantEvidence: "pidfd observes Bubblewrap command and PID-namespace init only; not arbitrary descendants"}
+	row.Lifecycle = evidence
+	root := filepath.Join(parent, name)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		row.Status, row.Classification, row.Detail = "fixture_error", "inconclusive", "temporary fixture root could not be created"
+		return row
+	}
+	target := filepath.Join(root, "ordinary.fixture")
+	protected := filepath.Join(root, "registered.fixture")
+	original := []byte("synthetic ordinary content held by worker\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		row.Status, row.Classification, row.Detail = "fixture_error", "inconclusive", "synthetic target could not be created"
+		return row
+	}
+	if err := os.WriteFile(protected, []byte("synthetic protected pin\n"), 0o600); err != nil {
+		row.Status, row.Classification, row.Detail = "fixture_error", "inconclusive", "synthetic protected pin could not be created"
+		return row
+	}
+	gate := newTerminationRequestGate()
+	registry, authorizer, session, launcher, err := newObservedSession(bwrap, workerPath, root, true, gate)
+	if err != nil {
+		row.Status, row.Classification, row.Observed, row.Detail = "unavailable", "unavailable", "held native worker setup refused", "trusted backend or fixture session could not start"
+		return row
+	}
+	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "shutdown-pin-owner", Class: readbrokerstudy.ClassCredential, Path: protected}); err != nil {
+		_ = closeStudySession(session)
+		row.Status, row.Classification, row.Observed, row.Detail = "inconclusive", "inconclusive", "synthetic policy pin could not be registered", "registry setup failed"
+		return row
+	}
+	evidence.RegistryPinsBefore = registry.PinnedObjectCount()
+	const invocation = "shutdown-held-read-once"
+	if err := authorizer.ApproveOnce(invocation); err != nil {
+		_ = closeStudySession(session)
+		row.Status, row.Classification, row.Detail = "inconclusive", "inconclusive", "once fixture approval could not be created"
+		return row
+	}
+	held := make(chan struct{})
+	allowCheckpoint := make(chan struct{})
+	var heldOnce sync.Once
+	session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint == readbrokerstudy.CheckpointAfterCapabilityHeld {
+			heldOnce.Do(func() { close(held) })
+			<-allowCheckpoint
+		}
+		return nil
+	})
+	type readCompletion struct {
+		result readbrokerstudy.WorkerResult
+		err    error
+	}
+	completed := make(chan readCompletion, 1)
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 18*time.Second)
+	defer cancelRead()
+	go func() {
+		result, readErr := session.Read(readCtx, root, target, invocation)
+		completed <- readCompletion{result: result, err: readErr}
+	}()
+	cleanupGate := func() {
+		select {
+		case <-allowCheckpoint:
+		default:
+			close(allowCheckpoint)
+		}
+		_ = gate.release()
+		closeErr := closeStudySession(session)
+		workerEvidence, found := evidenceFor(session, invocation)
+		workerStarted := found && workerEvidence.WorkerStarted
+		evidence.DirectWorkerJoinConfirmed = workerStarted && workerEvidence.WorkerJoined
+		evidence.RegistryPinsAfterCleanup = registry.PinnedObjectCount()
+		evidence.CleanupComplete = closeErr == nil && (!workerStarted || evidence.DirectWorkerJoinConfirmed) && evidence.RegistryPinsAfterCleanup == 0 && activeOperationCount(session) == 0
+		evidence.FixtureRootRetained = !evidence.CleanupComplete
+		if evidence.FixtureRootRetained {
+			row.Status, row.Classification = "inconclusive", "inconclusive"
+			row.Observed = "cleanup remained unconfirmed after the fixture released termination"
+			row.Detail = "fixture root retained because worker join or resource release was not confirmed"
+		}
+	}
+	defer cleanupGate()
+	select {
+	case <-held:
+	case <-time.After(12 * time.Second):
+		row.Status, row.Classification, row.Observed, row.Detail = "unavailable", "unavailable", "worker did not acknowledge holding the target capability", "real worker precondition unavailable"
+		return row
+	}
+	worker := launcher.latest()
+	if worker == nil {
+		row.Status, row.Classification, row.Detail = "inconclusive", "inconclusive", "native worker observation handle was missing"
+		return row
+	}
+	bwrapIdentity, initIdentity, observeErr := worker.ObserveHostProcesses()
+	if observeErr != nil {
+		row.Status, row.Classification, row.Observed, row.Detail = "unavailable", "unavailable", "trusted coordinator could not identify the native worker processes", "host process observation failed"
+		return row
+	}
+	bwrapPIDFD, err := readbrokerstudy.OpenVerifiedPIDFD(bwrapIdentity)
+	if err != nil {
+		row.Status, row.Classification, row.Observed, row.Detail = "unavailable", "unavailable", "Bubblewrap pidfd observation unavailable", "no PID-based fallback was used"
+		return row
+	}
+	defer unix.Close(bwrapPIDFD)
+	initPIDFD, err := readbrokerstudy.OpenVerifiedPIDFD(initIdentity)
+	if err != nil {
+		row.Status, row.Classification, row.Observed, row.Detail = "unavailable", "unavailable", "namespace-init pidfd observation unavailable", "no PID-based fallback was used"
+		return row
+	}
+	defer unix.Close(initPIDFD)
+	capability, heldCapability := worker.HeldCapabilityIdentity()
+	targetIdentity, _ := identityAt(target)
+	if !heldCapability || capability != targetIdentity {
+		row.Status, row.Classification, row.Observed, row.Detail = "inconclusive", "inconclusive", "worker-held identity did not match the synthetic target", "held capability identity precondition failed"
+		return row
+	}
+	evidence.WorkerReady = true
+	evidence.CapabilityHeldAcknowledged = true
+	evidence.CapabilityIdentityMatchesTarget = true
+	evidence.BubblewrapPIDFDIdentityEstablished = true
+	evidence.NamespaceInitPIDFDIdentityEstablished = true
+	row.WorkerStarted, row.WorkerReady, row.CapabilitySent, row.CapabilityHeld = true, true, true, true
+	row.CapabilityIdentity = &capability
+	row.OnceGrantConsumptions = authorizer.ConsumptionCount(invocation)
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	closeErr := session.Close(closeCtx)
+	cancelClose()
+	evidence.CleanupPendingObserved = errors.Is(closeErr, context.DeadlineExceeded) || errors.Is(closeErr, readbrokerstudy.ErrCleanupPending)
+	evidence.CleanupRecordRetained = activeOperationCount(session) == 1
+	evidence.RegistryPinsWhilePending = registry.PinnedObjectCount()
+	initExited, _ := observePIDFDExit(initPIDFD, 0)
+	bwrapExited, _ := observePIDFDExit(bwrapPIDFD, 0)
+	evidence.WorkerAliveAtPendingBoundary = !initExited && !bwrapExited
+	evidence.AdmissionAttempted = true
+	newInvocation := "shutdown-new-read-must-not-start"
+	admission, admissionErr := session.Read(context.Background(), root, target, newInvocation)
+	evidence.AdmissionBlocked = admissionErr == nil && admission.Outcome == readbrokerstudy.ReadRefused && authorizer.ConsumptionCount(newInvocation) == 0
+	evidence.AdmissionOnceConsumptions = authorizer.ConsumptionCount(newInvocation)
+	evidence.StalePublicationSuppressed = len(session.PublishedResults()) == 0
+	contents, contentErr := os.ReadFile(target)
+	evidence.SensitiveBytesPresentBeforeJoin = contentErr == nil && string(contents) == string(original)
+	if !evidence.CleanupPendingObserved || !evidence.CleanupRecordRetained || evidence.RegistryPinsWhilePending != evidence.RegistryPinsBefore || !evidence.WorkerAliveAtPendingBoundary || !evidence.AdmissionBlocked || !evidence.StalePublicationSuppressed || !evidence.SensitiveBytesPresentBeforeJoin {
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "shutdown deadline did not establish the complete retained-resource and blocked-admission state"
+		evidence.Detail = "pending boundary evidence was incomplete"
+		return row
+	}
+	close(allowCheckpoint)
+	if err := gate.release(); err != nil {
+		row.Status, row.Classification, row.Observed, row.Detail = "inconclusive", "inconclusive", "real worker termination could not be released", "fixture termination request failed"
+		return row
+	}
+	var completion readCompletion
+	select {
+	case completion = <-completed:
+	case <-time.After(8 * time.Second):
+		row.Status, row.Classification, row.Observed, row.Detail = "inconclusive", "inconclusive", "read operation did not finish after the real worker was terminated", "cleanup retry was not established"
+		return row
+	}
+	workerEvidence, hasEvidence := evidenceFor(session, invocation)
+	secondClose := closeStudySession(session)
+	evidence.DirectWorkerJoinConfirmed = hasEvidence && workerEvidence.WorkerStarted && workerEvidence.WorkerJoined
+	evidence.RegistryPinsAfterCleanup = registry.PinnedObjectCount()
+	evidence.CleanupComplete = secondClose == nil && evidence.DirectWorkerJoinConfirmed && activeOperationCount(session) == 0
+	evidence.FixtureRootRetained = !evidence.CleanupComplete
+	row.WorkerJoinConfirmed = evidence.DirectWorkerJoinConfirmed
+	row.ReadEvidencePresent = hasEvidence
+	row.ReadEvidenceCase = invocation
+	row.WorkerOutcome = completion.result.Outcome
+	row.ReadStarted = workerEvidence != nil && workerEvidence.ReadStarted
+	row.Published = workerEvidence != nil && workerEvidence.Published
+	row.OnceGrantConsumptions = authorizer.ConsumptionCount(invocation)
+	startsBeforeReplay := launcher.startCount()
+	replayResult, replayErr := session.Read(context.Background(), root, target, invocation)
+	row.ReplayOutcome = replayResult.Outcome
+	row.ReplayPrevented = replayErr == nil && replayResult.Outcome == readbrokerstudy.ReadRefused && authorizer.ConsumptionCount(invocation) == 1
+	row.ReplayAdditionalWorkers = launcher.startCount() - startsBeforeReplay
+	if readErrNil := completion.err == nil; !readErrNil {
+		row.Detail = "active read returned an error after cleanup release"
+	}
+	pass := completion.err == nil && completion.result.Outcome == readbrokerstudy.ReadNotExecuted && !row.ReadStarted && !row.Published && evidence.DirectWorkerJoinConfirmed && evidence.RegistryPinsAfterCleanup == 0 && evidence.CleanupComplete && row.ReplayPrevented && row.ReplayAdditionalWorkers == 0 && authorizer.ConsumptionCount(invocation) == 1
+	if pass {
+		row.Status, row.Classification = "measured_pass", "shutdown_cleanup_barrier"
+		row.Observed = "Close returned cleanup-pending at deadline with the worker alive and resources retained; after the actual termination gate was released, the direct child was waited and a later Close released registry pins"
+		row.Detail = "fault injection delayed the termination request; it did not simulate or claim a kernel wait failure"
+	} else if row.Status == "" {
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "shutdown cleanup, no-replay, or resource-release evidence was incomplete"
+	}
+	return row
+}
+
+func runOwnerCleanupPendingNativeCase(bwrap, workerPath, parent string) (row caseResult) {
+	const name = "owner_incomplete_cleanup_blocks_write_native"
+	row = caseResult{Name: name,
+		Expected:   "owner registration is pending while a real worker holds the target FD; owner completion writes no bytes until the real worker is terminated and directly reaped",
+		AuthorityA: "not applicable; process lifecycle only", AuthorityB: "registered identity and owner barrier only",
+		FixtureEffect: "owner writes synthetic sensitive bytes only after join through the same registered object; stale worker output is not published",
+	}
+	evidence := &abnormalLifecycleEvidence{FaultInjection: "operation cancellation and explicit termination are both routed through the fixture gate; the held worker uses a fixed 60-second watchdog", CleanupOwner: "owner fixture and study session; supervisor releases the real worker termination",
+		NamespaceDescendantEvidence: "pidfd observes Bubblewrap command and PID-namespace init only; not arbitrary descendants"}
+	row.Lifecycle = evidence
+	root := filepath.Join(parent, name)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		row.Status, row.Classification, row.Detail = "fixture_error", "inconclusive", "temporary owner fixture root could not be created"
+		return row
+	}
+	target := filepath.Join(root, "sensitive-replacement.fixture")
+	original := []byte("ordinary pre-registration fixture bytes\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		row.Status, row.Classification, row.Detail = "fixture_error", "inconclusive", "synthetic owner target could not be created"
+		return row
+	}
+	writeFile, err := os.OpenFile(target, os.O_RDWR, 0)
+	if err != nil {
+		row.Status, row.Classification, row.Detail = "fixture_error", "inconclusive", "synthetic owner write descriptor could not be opened"
+		return row
+	}
+	defer writeFile.Close()
+	gate := newTerminationRequestGate()
+	registry, authorizer, session, launcher, err := newObservedSession(bwrap, workerPath, root, true, gate)
+	if err != nil {
+		row.Status, row.Classification, row.Observed, row.Detail = "unavailable", "unavailable", "held native worker setup refused", "trusted backend or fixture session could not start"
+		return row
+	}
+	const invocation = "owner-incomplete-native-once"
+	if err := authorizer.ApproveOnce(invocation); err != nil {
+		_ = closeStudySession(session)
+		row.Status, row.Classification, row.Detail = "inconclusive", "inconclusive", "once fixture approval could not be created"
+		return row
+	}
+	owner := &fixtureOwnerWriter{session: session, registry: registry, owner: "synthetic-sensitive-owner",
+		registrations: []readbrokerstudy.OwnerRegistration{{Owner: "synthetic-sensitive-owner", Class: readbrokerstudy.ClassCredential, Path: target}},
+		writeFile:     writeFile, contents: []byte("synthetic sensitive bytes after confirmed join\n")}
+	held := make(chan struct{})
+	beginDone := make(chan error, 1)
+	pinsBeforeRegistration := registry.PinnedObjectCount()
+	var began sync.Once
+	session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint == readbrokerstudy.CheckpointAfterCapabilityHeld {
+			began.Do(func() {
+				pinsBeforeRegistration = registry.PinnedObjectCount()
+				beginDone <- owner.Begin()
+				close(held)
+			})
+		}
+		return nil
+	})
+	type readCompletion struct {
+		result readbrokerstudy.WorkerResult
+		err    error
+	}
+	readDone := make(chan struct{})
+	completion := make(chan readCompletion, 1)
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 18*time.Second)
+	defer cancelRead()
+	go func() {
+		result, readErr := session.Read(readCtx, root, target, invocation)
+		completion <- readCompletion{result: result, err: readErr}
+		close(readDone)
+	}()
+	cleanup := func() {
+		_ = gate.release()
+		closeErr := closeStudySession(session)
+		workerEvidence, found := evidenceFor(session, invocation)
+		workerStarted := found && workerEvidence.WorkerStarted
+		evidence.DirectWorkerJoinConfirmed = evidence.DirectWorkerJoinConfirmed || (workerStarted && workerEvidence.WorkerJoined)
+		evidence.RegistryPinsAfterCleanup = registry.PinnedObjectCount()
+		evidence.CleanupComplete = closeErr == nil && (!workerStarted || workerEvidence.WorkerJoined) && evidence.RegistryPinsAfterCleanup == 0 && activeOperationCount(session) == 0
+		if !evidence.CleanupComplete {
+			evidence.FixtureRootRetained = true
+			row.Status, row.Classification = "inconclusive", "inconclusive"
+			row.Observed = "cleanup remained unconfirmed after the fixture released termination"
+			row.Detail = "fixture root retained because worker join or resource release was not confirmed"
+		}
+	}
+	defer cleanup()
+	select {
+	case <-held:
+	case <-time.After(12 * time.Second):
+		row.Status, row.Classification, row.Observed, row.Detail = "unavailable", "unavailable", "worker did not acknowledge the held capability", "real worker precondition unavailable"
+		return row
+	}
+	beginErr := <-beginDone
+	<-gate.requestedSignal()
+	evidence.CleanupPendingObserved = errors.Is(beginErr, readbrokerstudy.ErrCleanupPending)
+	evidence.RegistryPinsBefore = pinsBeforeRegistration
+	evidence.RegistryPinsWhilePending = registry.PinnedObjectCount()
+	worker := launcher.latest()
+	if worker == nil {
+		row.Status, row.Classification, row.Detail = "inconclusive", "inconclusive", "active native worker observer was missing"
+		return row
+	}
+	bwrapIdentity, initIdentity, observeErr := worker.ObserveHostProcesses()
+	if observeErr != nil {
+		row.Status, row.Classification, row.Detail = "unavailable", "unavailable", "host process identity observation failed"
+		return row
+	}
+	bwrapPIDFD, err := readbrokerstudy.OpenVerifiedPIDFD(bwrapIdentity)
+	if err != nil {
+		row.Status, row.Classification, row.Detail = "unavailable", "unavailable", "Bubblewrap pidfd was unavailable"
+		return row
+	}
+	defer unix.Close(bwrapPIDFD)
+	initPIDFD, err := readbrokerstudy.OpenVerifiedPIDFD(initIdentity)
+	if err != nil {
+		row.Status, row.Classification, row.Detail = "unavailable", "unavailable", "namespace-init pidfd was unavailable"
+		return row
+	}
+	defer unix.Close(initPIDFD)
+	capability, capHeld := worker.HeldCapabilityIdentity()
+	targetIdentity, _ := studyIdentity(writeFile)
+	evidence.CapabilityHeldAcknowledged = capHeld
+	evidence.CapabilityIdentityMatchesTarget = capHeld && capability == targetIdentity
+	evidence.WorkerReady, evidence.BubblewrapPIDFDIdentityEstablished, evidence.NamespaceInitPIDFDIdentityEstablished = true, true, true
+	row.WorkerStarted, row.WorkerReady, row.CapabilitySent, row.CapabilityHeld = true, true, true, true
+	row.CapabilityIdentity = &capability
+	row.OnceGrantConsumptions = authorizer.ConsumptionCount(invocation)
+	initExited, _ := observePIDFDExit(initPIDFD, 0)
+	bwrapExited, _ := observePIDFDExit(bwrapPIDFD, 0)
+	evidence.WorkerAliveAtPendingBoundary = !initExited && !bwrapExited
+	evidence.CleanupRecordRetained = activeOperationCount(session) == 1
+	evidence.AdmissionAttempted = true
+	newInvocation := "owner-pending-no-admission"
+	admission, admissionErr := session.Read(context.Background(), root, target, newInvocation)
+	evidence.AdmissionBlocked = admissionErr == nil && admission.Outcome == readbrokerstudy.ReadNotExecuted && authorizer.ConsumptionCount(newInvocation) == 0
+	evidence.AdmissionOnceConsumptions = authorizer.ConsumptionCount(newInvocation)
+	beforeWrite, beforeWriteErr := os.ReadFile(target)
+	ownerDeadline, cancelOwner := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	pendingOwner := owner.Complete(ownerDeadline, readDone, nil, true)
+	cancelOwner()
+	afterPending, afterPendingErr := os.ReadFile(target)
+	evidence.OwnerWriteAttempted = pendingOwner.WriteAttempted
+	evidence.OwnerWriteAuthorized = pendingOwner.WriteAuthorized
+	evidence.OwnerWriteStarted = pendingOwner.WriteStarted
+	evidence.SensitiveBytesPresentBeforeJoin = beforeWriteErr == nil && afterPendingErr == nil && string(beforeWrite) == string(original) && string(afterPending) == string(original)
+	evidence.StalePublicationSuppressed = len(session.PublishedResults()) == 0
+	if !evidence.CleanupPendingObserved || !evidence.WorkerAliveAtPendingBoundary || !evidence.CleanupRecordRetained || evidence.RegistryPinsWhilePending == 0 || !evidence.AdmissionBlocked || !evidence.OwnerWriteAttempted || evidence.OwnerWriteAuthorized || evidence.OwnerWriteStarted || !evidence.SensitiveBytesPresentBeforeJoin || !evidence.StalePublicationSuppressed {
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "real-worker cleanup pending did not preserve every owner/admission barrier"
+		evidence.Detail = "pending cleanup state or blocked write evidence was incomplete"
+		return row
+	}
+	if err := gate.release(); err != nil {
+		row.Status, row.Classification, row.Observed, row.Detail = "inconclusive", "inconclusive", "real worker termination request could not be released", "fixture termination gate failed"
+		return row
+	}
+	var done readCompletion
+	select {
+	case done = <-completion:
+	case <-time.After(8 * time.Second):
+		row.Status, row.Classification, row.Observed, row.Detail = "inconclusive", "inconclusive", "worker did not complete after actual termination", "no direct join or owner retry evidence"
+		return row
+	}
+	workerEvidence, hasEvidence := evidenceFor(session, invocation)
+	startsBeforeReplay := launcher.startCount()
+	replayResult, replayErr := session.Read(context.Background(), root, target, invocation)
+	row.ReplayOutcome = replayResult.Outcome
+	row.ReplayPrevented = replayErr == nil && replayResult.Outcome == readbrokerstudy.ReadRefused && authorizer.ConsumptionCount(invocation) == 1
+	row.ReplayAdditionalWorkers = launcher.startCount() - startsBeforeReplay
+	ownerDoneCtx, cancelOwnerDone := context.WithTimeout(context.Background(), 3*time.Second)
+	completedOwner := owner.Complete(ownerDoneCtx, readDone, workerEvidence, true)
+	cancelOwnerDone()
+	evidence.DirectWorkerJoinConfirmed = workerEvidence != nil && workerEvidence.WorkerJoined
+	evidence.RegistryPinsAfterCleanup = registry.PinnedObjectCount()
+	evidence.CleanupComplete = evidence.DirectWorkerJoinConfirmed && completedOwner.WriteAuthorized && completedOwner.WriteStarted && completedOwner.WriteCompleted
+	evidence.FixtureRootRetained = !evidence.CleanupComplete
+	row.WorkerJoinConfirmed = evidence.DirectWorkerJoinConfirmed
+	row.WorkerOutcome = done.result.Outcome
+	row.ReadEvidencePresent = hasEvidence
+	row.ReadEvidenceCase = invocation
+	row.ReadStarted = workerEvidence != nil && workerEvidence.ReadStarted
+	row.Published = workerEvidence != nil && workerEvidence.Published
+	row.OnceGrantConsumptions = authorizer.ConsumptionCount(invocation)
+	row.OwnerLifecycle = &completedOwner
+	postWrite, postWriteErr := os.ReadFile(target)
+	pass := done.err == nil && done.result.Outcome == readbrokerstudy.ReadNotExecuted && evidence.CapabilityIdentityMatchesTarget && evidence.DirectWorkerJoinConfirmed && completedOwner.WorkerJoinConfirmed && completedOwner.WriteDescriptorMatchesPin && completedOwner.WriteAuthorized && completedOwner.WriteStarted && completedOwner.WriteCompleted && postWriteErr == nil && string(postWrite) == string(owner.contents) && !row.ReadStarted && !row.Published && row.OnceGrantConsumptions == 1 && row.ReplayPrevented && row.ReplayAdditionalWorkers == 0 && len(session.PublishedResults()) == 0
+	if pass {
+		row.Status, row.Classification = "measured_pass", "owner_cleanup_barrier"
+		row.Observed = "owner write attempt remained unauthorized with no bytes while the real worker was alive; after actual termination and direct wait, retry wrote through the matching pinned descriptor"
+		row.Detail = "the pending interval was created by an explicit termination-request gate; it is not evidence of a naturally hung worker"
+	} else {
+		row.Status, row.Classification = "inconclusive", "inconclusive"
+		row.Observed = "owner write/join/publication evidence did not match the expected order"
+	}
+	_ = closeStudySession(session)
+	evidence.RegistryPinsAfterCleanup = registry.PinnedObjectCount()
+	return row
+}
+
+func observePIDFDWithRetry(fd int, timeout time.Duration) bool {
+	exited, err := observePIDFDExit(fd, timeout)
+	return err == nil && exited
+}
+
+func writeLifecycleCommand(fd int, command string) error {
+	if command != "continue" && command != "abort" {
+		return errors.New("invalid lifecycle command")
+	}
+	n, err := unix.SendmsgN(fd, []byte(command), nil, nil, unix.MSG_NOSIGNAL|unix.MSG_DONTWAIT)
+	if err != nil || n != len(command) {
+		return errors.New("lifecycle command could not be sent")
+	}
+	return nil
+}
+
+type coordinatorWait struct {
+	done chan struct{}
+	err  error
+}
+
+func startCoordinatorWait(cmd *exec.Cmd) *coordinatorWait {
+	wait := &coordinatorWait{done: make(chan struct{})}
+	go func() {
+		wait.err = cmd.Wait()
+		close(wait.done)
+	}()
+	return wait
+}
+
+func awaitCoordinator(wait *coordinatorWait, timeout time.Duration) (error, bool) {
+	select {
+	case <-wait.done:
+		return wait.err, true
+	case <-time.After(timeout):
+		return context.DeadlineExceeded, false
+	}
+}
+
+type boundedStudyOutput struct {
+	mu    sync.Mutex
+	limit int
+	data  []byte
+}
+
+func (b *boundedStudyOutput) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	original := len(data)
+	if remaining := b.limit - len(b.data); remaining > 0 {
+		if len(data) > remaining {
+			data = data[:remaining]
+		}
+		b.data = append(b.data, data...)
+	}
+	return original, nil
+}
+
+func (b *boundedStudyOutput) hasOutput() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.data) > 0
+}
+
+func enableChildSubreaper() (func(), error) {
+	runtime.LockOSThread()
+	previous, err := childSubreaperSetting()
+	if err != nil {
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf("PR_GET_CHILD_SUBREAPER failed: %w", err)
+	}
+	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf("PR_SET_CHILD_SUBREAPER failed: %w", err)
+	}
+	var restoreOnce sync.Once
+	return func() {
+		restoreOnce.Do(func() {
+			_ = unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, uintptr(previous), 0, 0, 0)
+			runtime.UnlockOSThread()
+		})
+	}, nil
+}
+
+func childSubreaperSetting() (int32, error) {
+	var enabled int32
+	err := unix.Prctl(unix.PR_GET_CHILD_SUBREAPER, uintptr(unsafe.Pointer(&enabled)), 0, 0, 0)
+	runtime.KeepAlive(&enabled)
+	return enabled, err
 }
 
 func evidenceFor(session readbrokerstudy.FixtureSession, invocationID string) (*readbrokerstudy.ReadEvidence, bool) {
@@ -1684,6 +3008,8 @@ func (o *fixtureOwnerWriter) Begin() error {
 }
 
 func (o *fixtureOwnerWriter) Complete(ctx context.Context, readDone <-chan struct{}, readEvidence *readbrokerstudy.ReadEvidence, requireJoin bool) ownerLifecycleEvidence {
+	o.evidence.WriteAttempted = true
+	o.evidence.Events = append(o.evidence.Events, "owner_completion_attempted")
 	if o.beginErr != nil && !errors.Is(o.beginErr, readbrokerstudy.ErrCleanupPending) {
 		return o.evidence
 	}

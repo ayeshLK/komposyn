@@ -340,13 +340,15 @@ The scenario/expectation matrix and exact pending cases are in
 [`read-broker-native-actor.md`](read-broker-native-actor.md). In particular,
 protected directory registrations are not descendant inventories, and
 `DirectoryCoverageIncomplete` remains in force. Production-owner integration,
-mount-boundary behavior, recursive-child relocation, parent-death handling,
-and incomplete-shutdown cleanup also remain separate evidence gaps. Native
+mount-boundary behavior, and recursive-child relocation remain separate
+evidence gaps. The bounded abnormal-lifecycle fixtures are described in
+[`read-broker-abnormal-lifecycle.md`](read-broker-abnormal-lifecycle.md): they
+observe the exact Bubblewrap process and fixed PID-namespace init, and use
+explicit termination-request gates for shutdown and owner barriers. Native
 results are valid only for the exact selected commit and trusted backend
-recorded by the runner; the presence of these cases in the source is not native
-enforcement evidence. Incomplete direct-child cleanup is explicitly unavailable
-unless a safe real failure can be induced; direct-child join does not prove
-namespace-wide descendant cleanup or parent-death behavior.
+recorded by the runner; source presence is not native enforcement evidence.
+These observations do not establish arbitrary namespace-descendant cleanup or
+a naturally hung worker.
 
 ## Authority conclusions
 

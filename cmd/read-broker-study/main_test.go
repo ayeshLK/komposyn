@@ -22,12 +22,15 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
+	"golang.org/x/sys/unix"
 )
 
 type ownerLifecycleTestSession struct {
@@ -35,6 +38,246 @@ type ownerLifecycleTestSession struct {
 	policy        uint64
 	firstRegister error
 	registerCalls int
+}
+
+type lifecycleGateTestWorker struct {
+	terminated int
+}
+
+func (*lifecycleGateTestWorker) Ready(context.Context) error { return nil }
+func (*lifecycleGateTestWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{}
+}
+func (*lifecycleGateTestWorker) TransferCapability(context.Context, *os.File, readbrokerstudy.FileIdentity) error {
+	return nil
+}
+func (*lifecycleGateTestWorker) AwaitReadStarted(context.Context) error { return nil }
+func (*lifecycleGateTestWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{}, nil
+}
+func (w *lifecycleGateTestWorker) Terminate() error {
+	w.terminated++
+	return nil
+}
+func (*lifecycleGateTestWorker) Wait() error  { return nil }
+func (*lifecycleGateTestWorker) Joined() bool { return true }
+
+func TestTerminationRequestGateDelaysOnlyRealTermination(t *testing.T) {
+	gate := newTerminationRequestGate()
+	worker := &lifecycleGateTestWorker{}
+	gate.attach(worker)
+	if err := gate.requestTermination(worker); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gate.requestedSignal():
+	default:
+		t.Fatal("termination request was not observable")
+	}
+	if worker.terminated != 0 {
+		t.Fatal("termination gate acted on the worker before release")
+	}
+	if err := gate.release(); err != nil {
+		t.Fatal(err)
+	}
+	if worker.terminated != 1 {
+		t.Fatalf("termination calls=%d, want one actual worker termination", worker.terminated)
+	}
+}
+
+func TestChildSubreaperGetterSetterAndRestore(t *testing.T) {
+	before, err := childSubreaperSetting()
+	if err != nil {
+		t.Fatalf("read prior child-subreaper setting: %v", err)
+	}
+	restore, err := enableChildSubreaper()
+	if err != nil {
+		t.Fatalf("enable child subreaper: %v", err)
+	}
+	t.Cleanup(restore)
+	during, err := childSubreaperSetting()
+	if err != nil {
+		t.Fatalf("read enabled child-subreaper setting: %v", err)
+	}
+	if during != 1 {
+		t.Fatalf("child-subreaper setting while enabled=%d, want 1", during)
+	}
+	restore()
+	after, err := childSubreaperSetting()
+	if err != nil {
+		t.Fatalf("read restored child-subreaper setting: %v", err)
+	}
+	if after != before {
+		t.Fatalf("restored child-subreaper setting=%d, prior value was %d", after, before)
+	}
+}
+
+func TestLifecycleGateMediatesContextBoundChildCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	launcher := &observedWorkerLauncher{inner: contextBoundTestLauncher{}, gate: newTerminationRequestGate()}
+	worker, err := launcher.Start(ctx)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	observed := worker.(*observedSandboxWorker)
+	processWorker := observed.SandboxWorker.(*contextBoundTestWorker)
+	pidfd, err := unix.PidfdOpen(processWorker.cmd.Process.Pid, 0)
+	if err != nil {
+		cancel()
+		_ = launcher.gate.release()
+		_ = processWorker.Wait()
+		t.Skipf("pidfd unavailable for context-bound child: %v", err)
+	}
+	defer unix.Close(pidfd)
+	t.Cleanup(func() {
+		cancel()
+		_ = launcher.gate.release()
+		_ = processWorker.Wait()
+	})
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	alive, err := pidfdIsAlive(pidfd)
+	if err != nil {
+		t.Fatalf("observe context-bound child after cancellation: %v", err)
+	}
+	if !alive {
+		t.Fatal("operation context cancellation bypassed the fixture termination gate")
+	}
+	if err := observed.Terminate(); err != nil {
+		t.Fatalf("request gated termination: %v", err)
+	}
+	select {
+	case <-launcher.gate.requestedSignal():
+	default:
+		t.Fatal("cancellation-triggered termination request was not recorded")
+	}
+	alive, err = pidfdIsAlive(pidfd)
+	if err != nil {
+		t.Fatalf("observe context-bound child before gate release: %v", err)
+	}
+	if !alive {
+		t.Fatal("child exited before the gate was released")
+	}
+	if err := launcher.gate.release(); err != nil {
+		t.Fatalf("release real child termination: %v", err)
+	}
+	joined := make(chan struct{})
+	go func() {
+		_ = processWorker.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(2 * time.Second):
+		t.Fatal("context-bound child did not exit after the gate released termination")
+	}
+	if !processWorker.Joined() {
+		t.Fatal("direct child was not waited after termination")
+	}
+	alive, err = pidfdIsAlive(pidfd)
+	if err != nil || alive {
+		t.Fatalf("child remains alive after gated termination: alive=%t err=%v", alive, err)
+	}
+}
+
+func TestLifecycleGateChildHelper(t *testing.T) {
+	if os.Getenv("KOMPOSYN_LIFECYCLE_GATE_CHILD") != "1" {
+		return
+	}
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+type contextBoundTestLauncher struct{}
+
+func (contextBoundTestLauncher) Close() error { return nil }
+
+func (contextBoundTestLauncher) Start(ctx context.Context) (readbrokerstudy.SandboxWorker, error) {
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLifecycleGateChildHelper$")
+	cmd.Env = append(os.Environ(), "KOMPOSYN_LIFECYCLE_GATE_CHILD=1")
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &contextBoundTestWorker{cmd: cmd}, nil
+}
+
+type contextBoundTestWorker struct {
+	cmd      *exec.Cmd
+	waitOnce sync.Once
+	mu       sync.Mutex
+	waitErr  error
+	joined   bool
+}
+
+func (*contextBoundTestWorker) Ready(context.Context) error { return nil }
+func (*contextBoundTestWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{}
+}
+func (*contextBoundTestWorker) TransferCapability(context.Context, *os.File, readbrokerstudy.FileIdentity) error {
+	return nil
+}
+func (*contextBoundTestWorker) AwaitReadStarted(context.Context) error { return nil }
+func (*contextBoundTestWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{}, nil
+}
+func (w *contextBoundTestWorker) Terminate() error {
+	err := w.cmd.Process.Kill()
+	if errors.Is(err, os.ErrProcessDone) {
+		return nil
+	}
+	return err
+}
+func (w *contextBoundTestWorker) Wait() error {
+	w.waitOnce.Do(func() {
+		err := w.cmd.Wait()
+		w.mu.Lock()
+		w.waitErr = err
+		w.joined = true
+		w.mu.Unlock()
+	})
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.waitErr
+}
+func (w *contextBoundTestWorker) Joined() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.joined
+}
+
+func TestCoordinatorDeathRejectsStaleHeldProcessObservation(t *testing.T) {
+	selfPIDFD, err := unix.PidfdOpen(os.Getpid(), 0)
+	if err != nil {
+		t.Skipf("pidfd unavailable: %v", err)
+	}
+	defer unix.Close(selfPIDFD)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLifecycleGateChildHelper$")
+	cmd.Env = append(os.Environ(), "KOMPOSYN_LIFECYCLE_GATE_CHILD=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadPIDFD, err := unix.PidfdOpen(cmd.Process.Pid, 0)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Skipf("pidfd for fixture subprocess unavailable: %v", err)
+	}
+	defer unix.Close(deadPIDFD)
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("fixture subprocess unexpectedly exited without a kill")
+	}
+	initAlive, workerAlive, err := heldWorkerProcessesLive(selfPIDFD, deadPIDFD)
+	if err != nil {
+		t.Fatalf("check held-event process liveness: %v", err)
+	}
+	if !initAlive || workerAlive {
+		t.Fatalf("stale held event liveness=(init %t, worker %t), want (true, false)", initAlive, workerAlive)
+	}
 }
 
 func (s *ownerLifecycleTestSession) Read(context.Context, string, string, string) (readbrokerstudy.WorkerResult, error) {
@@ -59,6 +302,7 @@ func (*ownerLifecycleTestSession) Revoke(string) error                          
 func (*ownerLifecycleTestSession) SetCheckpointHook(readbrokerstudy.CheckpointHook) {}
 func (*ownerLifecycleTestSession) PublishedResults() [][]byte                       { return nil }
 func (*ownerLifecycleTestSession) Evidence() []readbrokerstudy.ReadEvidence         { return nil }
+func (*ownerLifecycleTestSession) ActiveOperationCount() int                        { return 0 }
 func (s *ownerLifecycleTestSession) GenerationSnapshot() readbrokerstudy.GenerationSet {
 	return readbrokerstudy.GenerationSet{Policy: s.policy}
 }
@@ -258,6 +502,7 @@ func (*directoryCoverageSequenceSession) Revoke(string) error                   
 func (*directoryCoverageSequenceSession) SetCheckpointHook(readbrokerstudy.CheckpointHook) {}
 func (*directoryCoverageSequenceSession) PublishedResults() [][]byte                       { return nil }
 func (*directoryCoverageSequenceSession) Evidence() []readbrokerstudy.ReadEvidence         { return nil }
+func (*directoryCoverageSequenceSession) ActiveOperationCount() int                        { return 0 }
 func (*directoryCoverageSequenceSession) GenerationSnapshot() readbrokerstudy.GenerationSet {
 	return readbrokerstudy.GenerationSet{}
 }
@@ -436,6 +681,8 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 		"owner_rotation_retains_old_new_pins_and_publishes_registered_replacement",
 		"owner_rotation_old_alias_denied", "owner_rotation_renamed_old_identity_denied", "owner_rotation_new_alias_denied",
 		"owner_registration_failure_blocks_write", "owner_incomplete_cleanup_blocks_write",
+		"coordinator_death_with_held_capability", "shutdown_deadline_retains_cleanup_obligation",
+		"owner_incomplete_cleanup_blocks_write_native",
 		"provider_missing_explicit_once", "provider_only_ordinary_positive_control",
 		"provider_ordinary_receipt_rejected_for_alias", "provider_stale_policy_receipt_rejected",
 		"provider_stale_root_receipt_rejected", "provider_stale_grant_receipt_rejected",
@@ -451,7 +698,7 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 			t.Fatalf("duplicate unavailable case %q", result.Name)
 		}
 		seen[result.Name] = true
-		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.CapabilityHeld || result.CapabilityIdentity != nil || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition || result.AuthorizationAttempted || result.AuthorizationReceiptAccepted || result.OwnerLifecycle != nil {
+		if result.Status != "unavailable" || result.Classification != "unavailable" || result.WorkerStarted || result.CapabilitySent || result.CapabilityHeld || result.CapabilityIdentity != nil || result.ReadStarted || result.Published || result.ActorStarted || result.ActorTransition || result.AuthorizationAttempted || result.AuthorizationReceiptAccepted || result.OwnerLifecycle != nil || result.Lifecycle != nil {
 			t.Fatalf("unavailable case claims activity: %+v", result)
 		}
 	}

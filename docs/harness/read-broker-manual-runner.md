@@ -130,8 +130,10 @@ refusal for an unregistered child moved out of a protected directory. They use
 a separate same-user process and bounded handshakes; the study does not treat
 injected-worker tests as native evidence. Protected-owner rotation,
 mount-boundary behavior, protected-ancestor transitions that cannot pass the
-current directory-coverage gate, parent-death, and incomplete-shutdown cleanup
-remain distinct evidence gaps unless the selected report says otherwise.
+current directory-coverage gate, arbitrary namespace-descendant cleanup, and
+natural worker hangs remain distinct evidence gaps unless the selected report
+says otherwise. Coordinator-death and injected shutdown/owner cleanup cases
+are reported separately in the selected report.
 Typed-read results do not establish shell safety, production readiness, or
 acceptance of any filesystem tool.
 
