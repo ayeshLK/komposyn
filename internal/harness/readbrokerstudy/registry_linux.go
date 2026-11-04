@@ -19,7 +19,6 @@ package readbrokerstudy
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,25 +30,18 @@ import (
 var (
 	errInvalidRegistration = errors.New("protected resource registration is invalid")
 	errRegistryClosed      = errors.New("protected resource registry is closed")
-	errPolicyScanLimit     = errors.New("protected directory scan exceeded its entry bound")
-)
-
-const (
-	maxProtectedDirectoryDepth   = 64
-	maxProtectedDirectoryEntries = 4096
 )
 
 type registryEntry struct {
 	registration   OwnerRegistration
 	identity       FileIdentity
 	locationDevice uint64
-	locationStable bool
 	pin            *os.File
 }
 
-// Registry retains pinned objects for the registry lifetime. Location rules
-// are lexical, component-aware policy rules; they do not freeze a host
-// namespace against a concurrent independent writer.
+// Registry retains pinned protected objects for the registry lifetime.
+// Exact path rules apply when a request is prepared; they are not rescanned
+// to reclassify an already prepared ordinary object after an external alias.
 type Registry struct {
 	mu         sync.RWMutex
 	entries    []registryEntry
@@ -213,43 +205,6 @@ func (r *Registry) View() PolicyView {
 	return view
 }
 
-// ReadAdmission refuses all worker reads while any generic-protected
-// registration has a namespace location the current same-user actor may
-// change. The check is recorded when the owner registers the location. A
-// positive result is limited to a path whose containing directories were
-// unmodifiable by this process identity; it is not a general filesystem
-// immutability or privileged-attacker guarantee.
-// ReadAdmission applies class-specific location constraints. An empty
-// candidate checks only generic-protected registrations, allowing the broker
-// to refuse before opening a requested object. Once classification is known,
-// an ordinary candidate is also refused if a mutable provider location could
-// make it provider-class between classification and worker handoff. A
-// correctly classified provider read remains possible and still requires the
-// coordinator's explicit once authorization.
-func (r *Registry) ReadAdmission(candidate ResourceClass) error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.closed {
-		return errRegistryClosed
-	}
-	for _, entry := range r.entries {
-		if entry.locationStable {
-			continue
-		}
-		if genericProtectedClass(entry.registration.Class) {
-			return ErrProtectedLocationMutable
-		}
-		if candidate == ClassOrdinary && entry.registration.Class == ClassProvider {
-			return ErrProviderLocationMutable
-		}
-	}
-	return nil
-}
-
-func genericProtectedClass(class ResourceClass) bool {
-	return class == ClassCredential || class == ClassSettings || class == ClassTokenDatabase
-}
-
 // Classify applies both object-identity and registered-location rules. A
 // protected directory's pinned identity protects that directory object only;
 // it does not enumerate current/future descendants or retain child identities
@@ -296,73 +251,6 @@ func (r *Registry) ClassifyWithAncestors(path string, identity FileIdentity, anc
 		}
 	}
 	return matched, matched != ""
-}
-
-// InspectRegisteredLocations performs a bounded checkpoint scan of exact
-// registered file names and registered directories. It can discover that a
-// prepared object has since been moved/aliased into a protected location. The
-// scan is not atomic with an independent namespace writer; callers must treat
-// it only as a refusal checkpoint, never as proof against a later transition.
-func (r *Registry) InspectRegisteredLocations(candidate FileIdentity) (ResourceClass, bool, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.closed {
-		return "", false, errRegistryClosed
-	}
-	var matched ResourceClass
-	remaining := maxProtectedDirectoryEntries
-	for _, entry := range r.entries {
-		if !entry.registration.Directory {
-			fd, err := openAbsolute(entry.registration.Path, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW)
-			if errors.Is(err, unix.ENOENT) {
-				continue
-			}
-			if err != nil {
-				return "", false, fmt.Errorf("inspect protected location %s: %w", describeLocation(entry.registration), err)
-			}
-			var stat unix.Stat_t
-			statErr := unix.Fstat(fd, &stat)
-			_ = unix.Close(fd)
-			if statErr != nil {
-				return "", false, statErr
-			}
-			if identityFromStat(&stat) == candidate {
-				matched = stricterClass(matched, entry.registration.Class)
-			}
-			continue
-		}
-
-		// Scan both the pinned directory object and whatever currently occupies
-		// its registered location. A directory identity is not a descendant
-		// inventory; the bounded walk is only a snapshot at this checkpoint.
-		if entry.pin != nil {
-			found, consumed, err := scanDirectoryForIdentity(int(entry.pin.Fd()), candidate, remaining)
-			remaining -= consumed
-			if err != nil {
-				return "", false, fmt.Errorf("scan pinned protected directory %s: %w", describeLocation(entry.registration), err)
-			}
-			if found {
-				matched = stricterClass(matched, entry.registration.Class)
-			}
-		}
-		locationFD, err := openAbsolute(entry.registration.Path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
-		if errors.Is(err, unix.ENOENT) {
-			continue
-		}
-		if err != nil {
-			return "", false, fmt.Errorf("open protected directory location %s: %w", describeLocation(entry.registration), err)
-		}
-		found, consumed, scanErr := scanDirectoryForIdentity(locationFD, candidate, remaining)
-		_ = unix.Close(locationFD)
-		remaining -= consumed
-		if scanErr != nil {
-			return "", false, fmt.Errorf("scan protected directory location %s: %w", describeLocation(entry.registration), scanErr)
-		}
-		if found {
-			matched = stricterClass(matched, entry.registration.Class)
-		}
-	}
-	return matched, matched != "", nil
 }
 
 // DirectoryCoverageIncomplete conservatively refuses unpinned file objects
@@ -446,83 +334,6 @@ func classPriority(class ResourceClass) int {
 	}
 }
 
-func scanDirectoryForIdentity(rootFD int, candidate FileIdentity, remaining int) (bool, int, error) {
-	if remaining <= 0 {
-		return false, 0, errPolicyScanLimit
-	}
-	return scanDirectoryNode(rootFD, candidate, remaining, 0)
-}
-
-func scanDirectoryNode(directoryFD int, candidate FileIdentity, remaining, depth int) (bool, int, error) {
-	if depth > maxProtectedDirectoryDepth {
-		return false, 0, errors.New("protected directory scan exceeded its depth bound")
-	}
-	readFD, err := unix.Openat2(directoryFD, ".", &unix.OpenHow{
-		Flags:   unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC,
-		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV,
-	})
-	if err != nil {
-		return false, 0, fmt.Errorf("open directory for enumeration: %w", err)
-	}
-	directory := os.NewFile(uintptr(readFD), "protected-directory-scan")
-	defer directory.Close()
-	consumed := 0
-	for {
-		batch, readErr := directory.ReadDir(128)
-		for _, child := range batch {
-			consumed++
-			if consumed > remaining {
-				return false, consumed, errPolicyScanLimit
-			}
-			if child.Type()&os.ModeSymlink != 0 {
-				return false, consumed, errors.New("symlink in protected directory makes the bounded scan ambiguous")
-			}
-			childFD, openErr := unix.Openat2(directoryFD, child.Name(), &unix.OpenHow{
-				Flags:   unix.O_PATH | unix.O_CLOEXEC | unix.O_NOFOLLOW,
-				Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV,
-			})
-			if openErr != nil {
-				return false, consumed, fmt.Errorf("open child %q: %w", child.Name(), openErr)
-			}
-			var stat unix.Stat_t
-			statErr := unix.Fstat(childFD, &stat)
-			childID := identityFromStat(&stat)
-			if statErr != nil {
-				_ = unix.Close(childFD)
-				return false, consumed, statErr
-			}
-			if childID == candidate {
-				_ = unix.Close(childFD)
-				return true, consumed, nil
-			}
-			if stat.Mode&unix.S_IFMT == unix.S_IFLNK {
-				_ = unix.Close(childFD)
-				return false, consumed, errors.New("symlink in protected directory makes the bounded scan ambiguous")
-			}
-			if stat.Mode&unix.S_IFMT == unix.S_IFDIR {
-				found, nestedConsumed, nestedErr := scanDirectoryNode(childFD, candidate, remaining-consumed, depth+1)
-				_ = unix.Close(childFD)
-				consumed += nestedConsumed
-				if nestedErr != nil {
-					return false, consumed, fmt.Errorf("inspect child directory %q: %w", child.Name(), nestedErr)
-				}
-				if found {
-					return true, consumed, nil
-				}
-				continue
-			}
-			_ = unix.Close(childFD)
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil {
-			return false, consumed, fmt.Errorf("read directory entries: %w", readErr)
-		}
-	}
-	return false, consumed, nil
-}
-
 func stricterClass(a, b ResourceClass) ResourceClass {
 	if classPriority(b) > classPriority(a) {
 		return b
@@ -565,12 +376,6 @@ func stageRegistration(reg OwnerRegistration) (registryEntry, error) {
 		return registryEntry{}, errInvalidRegistration
 	}
 	entry := registryEntry{registration: reg}
-	location := filepath.Dir(reg.Path)
-	if reg.Directory {
-		location = reg.Path
-	}
-	stable, stabilityErr := immutableDirectoryAncestry(location)
-	entry.locationStable = stabilityErr == nil && stable
 	fd, err := openAbsolute(reg.Path, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW)
 	if err != nil {
 		if !errors.Is(err, unix.ENOENT) {
@@ -604,67 +409,6 @@ func stageRegistration(reg OwnerRegistration) (registryEntry, error) {
 	}
 	entry.pin = os.NewFile(uintptr(fd), "protected-identity-pin")
 	return entry, nil
-}
-
-// immutableDirectoryAncestry checks every directory that can contain or
-// replace the registered location. It uses effective access checks (including
-// ACLs) and treats ownership by the current UID as mutable because that owner
-// can change the directory mode. Any unknown result fails closed.
-func immutableDirectoryAncestry(path string) (bool, error) {
-	fd, err := openAbsolute(path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
-	if err != nil {
-		return false, err
-	}
-	current := fd
-	defer func() { _ = unix.Close(current) }()
-	if err := noFilesystemCapabilities(); err != nil {
-		return false, err
-	}
-	for depth := 0; depth < 256; depth++ {
-		var stat unix.Stat_t
-		if err := unix.Fstat(current, &stat); err != nil {
-			return false, err
-		}
-		if stat.Uid == uint32(os.Geteuid()) {
-			return false, nil
-		}
-		if err := unix.Faccessat2(current, ".", unix.W_OK|unix.X_OK, unix.AT_EACCESS); err == nil {
-			return false, nil
-		} else if !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EROFS) {
-			return false, err
-		}
-		parent, err := unix.Openat(current, "..", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-		if err != nil {
-			return false, err
-		}
-		var parentStat unix.Stat_t
-		if err := unix.Fstat(parent, &parentStat); err != nil {
-			_ = unix.Close(parent)
-			return false, err
-		}
-		if identityFromStat(&parentStat) == identityFromStat(&stat) {
-			_ = unix.Close(parent)
-			return true, nil
-		}
-		_ = unix.Close(current)
-		current = parent
-	}
-	return false, errors.New("protected location ancestry exceeded its bound")
-}
-
-func noFilesystemCapabilities() error {
-	var header unix.CapUserHeader
-	header.Version = unix.LINUX_CAPABILITY_VERSION_3
-	var capabilities [2]unix.CapUserData
-	if err := unix.Capget(&header, &capabilities[0]); err != nil {
-		return err
-	}
-	for _, capability := range capabilities {
-		if capability.Effective != 0 || capability.Permitted != 0 || capability.Inheritable != 0 {
-			return errors.New("process capabilities prevent same-user path immutability verification")
-		}
-	}
-	return nil
 }
 
 func validClass(class ResourceClass) bool {

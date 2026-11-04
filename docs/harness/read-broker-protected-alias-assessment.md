@@ -1,89 +1,90 @@
 # Protected-alias admission assessment
 
-This note documents the conservative read-admission gate added to the
-experimental broker study. It does not enable a production filesystem tool.
+This note records historical evidence and the current approved contract for
+the experimental broker study. The current contract is defined in
+[`read-broker-approved-typed-read.md`](read-broker-approved-typed-read.md) and
+the [issue #215 decision record](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377).
+It does not enable production filesystem or shell tools.
 
-## Invariant and observed gap
+## Historical evidence
 
-Pinned identity and protected-location rules cover different facts. A retained
-descriptor identifies the registered object across rename or hard-link aliases.
-A registered pathname protects an object that appears at that location,
-including an ordinary object newly linked there. The native
-`actor_protected_alias_scan_to_handoff` run demonstrated the second case: an
-independent same-user process created a hard link after the final broker scan;
-the worker received the descriptor and began reading; only a later scan
-suppressed publication. That remains an observed protected-rule violation.
-
-The supplied sanitized archive (`f81ca0ad384c171e77ee30bfb1db544cb3bbc0c2ba18dc6c19073ea5ceb5affc`)
+The archive at
+`f81ca0ad384c171e77ee30bfb1db544cb3bbc0c2ba18dc6c19073ea5ceb5affc`
 reports source commit `181d6a7656cdb730424cffa3e780c5598e8c0205`, 17 measured
-passes, one observed violation and one inconclusive case. Its violating row
-confirms actor readiness/transition/exit, worker readiness/join, one grant
-consumption, descriptor transfer and read start, followed by suppressed
-publication. This is synthetic fixture evidence, not a real credential
-disclosure.
+passes, one observed violation, and one inconclusive case. In the violating
+scan-to-handoff case, an independent same-user process created a hard link to
+an ordinary prepared object at a registered protected file location after the
+last broker scan. The worker received the descriptor and began reading; the
+later publication check suppressed the bytes. Under the policy then in force,
+this was correctly reported as a protected-location violation. It was
+synthetic fixture evidence, not a real credential disclosure.
 
-The coordinator mutex orders grant, root and policy generations. It does not
-order a same-user namespace writer. A later scan, link count, path comparison or
-generation check therefore cannot make the handoff safe.
+PR #226 at `d2686a80d406c42fbb1e6e7a4d10e05e2c4005e1` later conservatively
+refused before once-grant consumption or worker start. That report is also
+historical; it did not measure a successful read and is not rewritten as one.
 
-## Admission mechanism
+## Current approved contract
 
-For credential, settings and Token Logger database registrations, the broker
-refuses *all* worker-read preparation if it cannot establish that every
-directory capable of containing or replacing the registered location is
-immutable to the current process identity. For provider-source registrations,
-the broker refuses ordinary-classified reads when the registered location is
-mutable, because an ordinary approval must not become a provider-source read
-after revalidation. A correctly classified provider-source read remains
-available only through the existing explicit once-approval path.
+The approved policy distinguishes a request's captured route from the identity
+of the opened object:
 
-Registration checks the containing directory chain using descriptor-relative,
-no-symlink traversal, effective write-and-search permission checks (including
-ACLs), ownership, and Linux effective, permitted and inheritable capability
-sets. Unknown checks fail closed. A directory registration includes the
-registered directory itself because it can contain new aliases. For an
-exact-file registration, the containing directory is the final location
-boundary.
+- A **new request** directly through a registered credential/auth, settings,
+  or Token Logger protected file location is denied, including a reserved
+  absent exact-file location that is later replaced.
+- A registered sensitive **object identity** remains denied through hard-link
+  aliases and after rename while its owner pin remains live.
+- A late alias of an already-approved **ordinary** object into a protected
+  location does not, by itself, reclassify or cancel that existing invocation.
+  Its result remains bound to its previously opened object and captured route.
+  A separate fresh request through the protected route is denied.
+- Provider-source reads remain a separate class and require explicit
+  per-invocation approval bound to the requested route and actual object. An
+  ordinary approval cannot authorize a provider-source object.
+- Authoritative owner registration, rotation, revocation, root changes, or
+  policy/grant generation changes invalidate affected active work. This is
+  distinct from an independent late alias and must still suppress stale
+  publication.
 
-This is an admission restriction, not a namespace lock. Its same-user claim is
-limited to an actor with the same unprivileged effective identity and
-credential set; setuid/capability elevation is outside the demonstrated
-experiment. It is sound only for the stated actor and registered locations
-whose checked ancestry cannot be changed by that actor. It assumes the trusted
-owner registered the correct locations and that the kernel and permission
-checks are sound. It does
-not cover a privileged actor, independent copies of sensitive bytes, incomplete
-owner inventory, or a future registration racing with an already released
-capability. Live owner rotation remains a separate unsupported experiment.
+This is the approved object-authority profile (B), not strict live host-path
+containment (A). The policy does not claim continuous pathname containment,
+immutable contents, or detection of independent copies of sensitive bytes.
 
-The generic-protected gate runs before opening the target. The provider-source
-gate runs after target classification but before returning a prepared read,
-once-grant consumption, worker launch or descriptor duplication. Both are
-checked again during broker revalidation. Correctly classified provider reads
-are not blocked by their own mutable location; those reads still require
-per-invocation approval. A mutable generic-protected registration blocks the
-entire worker-read path. The harness does not hold a global namespace lock or
-claim that the check secures arbitrary mutable protected paths.
+## Owner registration and rotation
 
-## Compatibility and evidence
+The initial profile accepts trusted-owner exact-file registrations. For a
+credential or other sensitive file, an owner must:
 
-The synthetic native fixtures are created under user-mutable temporary
-directories. With the new gate, those worker-read scenarios are deliberately
-unavailable. The added independent-actor case creates the late hard-link alias
-before calling the broker; the broker must refuse with the specific admission
-reason, consume no once grant, start no worker, transfer no descriptor, read no
-bytes and publish nothing. This demonstrates the refusal boundary, not a pass
-for the previous scan-to-handoff race. The earlier native violation remains
-historical evidence and must not be relabeled as fixed by post-read suppression.
+1. Create and pin the replacement object before putting sensitive bytes in it.
+2. Publish the registration/policy generation through the coordinator.
+3. Wait until affected workers have terminated and joined.
+4. Write sensitive bytes through the same object identity that was registered.
+5. Retain old pins through registry shutdown.
 
-The gate also means provider-source reads are unavailable in a fixture registry
-that contains a mutable generic-protected location, and ordinary reads are
-unavailable when a mutable provider-source location is registered. Typical
-user-owned home configuration and source trees therefore lose generic-read
-availability. No positive native case is claimed for the new policy unless an
-eligible, same-user-immutable protected hierarchy is actually exercised.
+If registration reports cleanup pending, the owner must not write sensitive
+bytes or expose the replacement. It may retry after cleanup is confirmed.
+Policy changes invalidate affected work; no consumed once grant is restored or
+replayed. Owner rotation is a serialized protocol, not an application lock that
+constrains an independent namespace actor.
 
-Pending evidence remains: sealed-copy native validation, protected ancestor
-replacement, mount boundaries, live owner rotation, recursive-child movement,
-parent death, descendant termination, and incomplete-shutdown cleanup. This
-research change does not establish production readiness or shell safety.
+Registered directories are **not** descendant inventories. Pinning a
+directory does not pin or classify every existing or future child, nor does it
+protect an object moved out. Preserve `DirectoryCoverageIncomplete` refusals;
+do not treat directory registration as equivalent to complete exact-file
+registration.
+
+## Evidence still required
+
+The historical alias violation remains useful regression evidence for the
+old policy and race ordering. New tests should separately establish the
+approved semantics: ordinary read + late alias may finish from the opened
+object; a fresh direct protected-route request refuses before grant
+consumption/handoff; a registered sensitive identity refuses through aliases
+and rename; and an authoritative registration/rotation invalidates active
+work and blocks sensitive writes until worker join. Directory coverage must
+continue to fail closed where incomplete.
+
+Native runs must report the exact source commit and Bubblewrap bind mode.
+Descriptor-bound and sealed-snapshot runs are distinct evidence. A Go test,
+cross-build, setup refusal, or historical report does not establish native
+positive-read acceptance for the revised profile. The study remains
+experimental, typed-read-only, and separate from production tool registration.
