@@ -506,7 +506,7 @@ func TestSealedSnapshotSurvivesSourcePathAndAncestorReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifierFD := int(verifier.Fd())
-	if err := verifySnapshotExecutable(verifierFD, workerPath); err != nil {
+	if err := verifySnapshotExecutable(verifier, workerPath); err != nil {
 		t.Fatalf("copied private worker did not match sealed source: %v", err)
 	}
 	if _, err := unix.FcntlInt(uintptr(verifierFD), unix.F_GETFD, 0); err == nil {
@@ -597,7 +597,7 @@ func TestSealedSnapshotDescriptorsHaveIndependentOffsetsAndMismatchCloses(t *tes
 		t.Fatal(err)
 	}
 	verifierFD := int(verifier.Fd())
-	if err := verifySnapshotExecutable(verifierFD, privateWorker); !errors.Is(err, ErrStaleReceipt) {
+	if err := verifySnapshotExecutable(verifier, privateWorker); !errors.Is(err, ErrStaleReceipt) {
 		t.Fatalf("integrity mismatch was accepted: %v", err)
 	}
 	if _, err := unix.FcntlInt(uintptr(verifierFD), unix.F_GETFD, 0); err == nil {

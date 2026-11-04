@@ -1073,7 +1073,12 @@ func WorkerMain() int {
 	case "descriptor":
 		verifyErr = verifyDescriptorMounts([]DescriptorMount{{FD: workerVerificationFD, Destination: "/worker"}})
 	case "snapshot":
-		verifyErr = verifySnapshotExecutable(workerVerificationFD, "/worker")
+		verifier := os.NewFile(workerVerificationFD, "readbroker-worker-snapshot-verifier")
+		if verifier == nil {
+			_ = unix.Close(workerVerificationFD)
+			return 70
+		}
+		verifyErr = verifySnapshotExecutable(verifier, "/worker")
 	default:
 		return 70
 	}
@@ -1094,19 +1099,26 @@ type DescriptorMount struct {
 	Destination string
 }
 
-// verifySnapshotExecutable checks that Bubblewrap's private-root file contains
-// the exact bytes from the sealed host snapshot. The trust anchor is the
-// already-running parent image plus the sealed descriptor and trusted
-// Bubblewrap file-copy operation, not this post-exec comparison by itself.
-func verifySnapshotExecutable(fd int, destination string) (result error) {
-	if fd <= 2 || destination == "" || destination[0] != '/' {
+// verifySnapshotExecutable consumes verifier and checks that Bubblewrap's
+// private-root file contains the exact bytes from the sealed host snapshot.
+// Taking the *os.File makes the ownership transfer explicit so a finalizer
+// cannot later close a descriptor number already closed and reused by raw
+// unix.Close. The trust anchor is the already-running parent image plus the
+// sealed descriptor and trusted Bubblewrap file-copy operation, not this
+// post-exec comparison by itself.
+func verifySnapshotExecutable(verifier *os.File, destination string) (result error) {
+	if verifier == nil {
 		return ErrProtocol
 	}
 	defer func() {
-		if err := unix.Close(fd); err != nil && result == nil {
+		if err := verifier.Close(); err != nil && result == nil {
 			result = err
 		}
 	}()
+	fd := int(verifier.Fd())
+	if fd <= 2 || destination == "" || destination[0] != '/' {
+		return ErrProtocol
+	}
 	var source unix.Stat_t
 	if err := unix.Fstat(fd, &source); err != nil || source.Mode&unix.S_IFMT != unix.S_IFREG ||
 		source.Size <= 0 || source.Size > maxWorkerSnapshotBytes {
