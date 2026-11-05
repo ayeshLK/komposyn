@@ -338,10 +338,16 @@ func runRealAuthWorkerBarrierCase(bwrap, workerPath, parent string) (row caseRes
 	}
 	cleanup := func() {
 		cleanupOnce.Do(func() {
+			var gateReleaseErr error
 			if launcher.latest() != nil {
-				_ = releaseGate()
+				gateReleaseErr = releaseGate()
 			}
-			if err := closeStudySessionVerified(registry, session); err != nil {
+			closeErr := closeStudySessionVerified(registry, session)
+			if gateReleaseErr != nil && row.Status == "measured_pass" {
+				row.Status, row.Classification = "inconclusive", "inconclusive"
+				row.Detail = "termination gate release returned an error; the measured barrier outcome was downgraded"
+			}
+			if closeErr != nil {
 				row = markCleanupUnconfirmed(row, "auth cleanup-pending case could not confirm worker join, active-operation cleanup, and pin release; fixture retained")
 			}
 			allStartedWorkersJoined := true
