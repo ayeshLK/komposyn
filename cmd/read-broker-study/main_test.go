@@ -646,22 +646,30 @@ func TestFixtureOwnerWriterAllowsConfirmedJoinForBothRegistrationResults(t *test
 type injectedProviderLauncher struct {
 	worker *injectedProviderWorker
 	starts int
+	err    error
 }
 
 func (l *injectedProviderLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
 	l.starts++
+	if l.err != nil {
+		return nil, l.err
+	}
 	return l.worker, nil
 }
 func (*injectedProviderLauncher) Close() error { return nil }
 
 type injectedProviderWorker struct {
-	result   []byte
-	override bool
-	started  bool
-	joined   bool
+	result      []byte
+	override    bool
+	started     bool
+	joined      bool
+	readyErr    error
+	transferErr error
+	startErr    error
+	waitErr     error
 }
 
-func (*injectedProviderWorker) Ready(context.Context) error { return nil }
+func (w *injectedProviderWorker) Ready(context.Context) error { return w.readyErr }
 func (*injectedProviderWorker) Probe() readbrokerstudy.WorkerProbe {
 	return readbrokerstudy.WorkerProbe{
 		NoNewPrivs: true, SeccompMode: 2, SocketCreationDenied: true, PathOpenDenied: true,
@@ -669,6 +677,10 @@ func (*injectedProviderWorker) Probe() readbrokerstudy.WorkerProbe {
 	}
 }
 func (w *injectedProviderWorker) TransferCapability(_ context.Context, file *os.File, _ readbrokerstudy.FileIdentity) error {
+	if w.transferErr != nil {
+		_ = file.Close()
+		return w.transferErr
+	}
 	content, err := io.ReadAll(file)
 	if err == nil && !w.override {
 		w.result = content
@@ -676,6 +688,9 @@ func (w *injectedProviderWorker) TransferCapability(_ context.Context, file *os.
 	return err
 }
 func (w *injectedProviderWorker) AwaitReadStarted(context.Context) error {
+	if w.startErr != nil {
+		return w.startErr
+	}
 	w.started = true
 	return nil
 }
@@ -683,7 +698,7 @@ func (w *injectedProviderWorker) ReadResult(context.Context) (readbrokerstudy.Wo
 	return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: append([]byte(nil), w.result...)}, nil
 }
 func (w *injectedProviderWorker) Terminate() error { w.joined = true; return nil }
-func (w *injectedProviderWorker) Wait() error      { w.joined = true; return nil }
+func (w *injectedProviderWorker) Wait() error      { w.joined = w.waitErr == nil; return w.waitErr }
 func (w *injectedProviderWorker) Joined() bool     { return w.joined }
 
 func newInjectedProviderFixture(t *testing.T, workerBytes []byte) (*providerFixture, *injectedProviderLauncher) {
@@ -731,7 +746,7 @@ func newInjectedProviderFixture(t *testing.T, workerBytes []byte) (*providerFixt
 func TestProviderAuthorizationControlsUseActualFixtureBytes(t *testing.T) {
 	t.Run("ordinary positive control", func(t *testing.T) {
 		fixture, _ := newInjectedProviderFixture(t, nil)
-		row := executeCase(fixture.session, fixture.authorizer, fixture.root, "provider_only_ordinary_positive_control", fixture.ordinary, "ordinary-positive-control", "ordinary provider control fixture reads under its own once authorization")
+		row := executeCase(fixture.session, fixture.authorizer, fixture.root, "provider_only_ordinary_positive_control", fixture.ordinary, "ordinary-positive-control", "ordinary provider control fixture reads under its own once authorization", readbrokerstudy.ReadSucceeded)
 		row.AuthorizationReceiptAccepted = row.Status == "measured_pass"
 		if row.Status != "measured_pass" || !row.BytesMatchApproved || !row.AuthorizationReceiptAccepted || row.OnceGrantConsumptions != 1 {
 			t.Fatalf("ordinary positive control did not pass: %+v", row)
@@ -751,6 +766,88 @@ func TestProviderAuthorizationControlsUseActualFixtureBytes(t *testing.T) {
 		row := runProviderReadCase(fixture, "provider_explicit_once_success_and_replay", "provider-wrong", fixture.provider, true, "provider result must match its captured fixture")
 		if row.Status == "measured_pass" || row.BytesMatchApproved || row.ReplayPrevented || row.ReplayOutcome != "" || launcher.starts != 1 {
 			t.Fatalf("incorrect provider content was accepted or replayed: row=%+v worker_starts=%d", row, launcher.starts)
+		}
+	})
+}
+
+func TestRealStoreOrdinaryReadControlsUsePositiveExpectation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		invocation  string
+		description string
+	}{
+		{name: "real_auth_unrelated_ordinary_read_control", invocation: "auth-control", description: "unrelated ordinary object remains readable with explicit once approval"},
+		{name: "real_settings_ordinary_read_control", invocation: "settings-control", description: "an explicit once approval permits an unrelated ordinary fixture read"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, _ := newInjectedProviderFixture(t, nil)
+			row := executeCase(fixture.session, fixture.authorizer, fixture.root, test.name, fixture.ordinary, test.invocation, test.description, readbrokerstudy.ReadSucceeded)
+			if row.Status != "measured_pass" || row.Classification != "supports_b" || row.WorkerOutcome != readbrokerstudy.ReadSucceeded ||
+				!row.WorkerStarted || !row.WorkerReady || !row.WorkerJoinConfirmed || !row.CapabilitySent || !row.ReadStarted ||
+				!row.Published || !row.BytesMatchApproved || row.OnceGrantConsumptions != 1 {
+				t.Fatalf("ordinary positive control did not satisfy the successful-read contract: %+v", row)
+			}
+		})
+	}
+}
+
+func TestPositiveReadExpectationRequiresCompleteEvidence(t *testing.T) {
+	t.Run("wrong bytes", func(t *testing.T) {
+		fixture, _ := newInjectedProviderFixture(t, []byte("wrong synthetic bytes\n"))
+		row := executeCase(fixture.session, fixture.authorizer, fixture.root, "real_auth_unrelated_ordinary_read_control", fixture.ordinary, "wrong-bytes", "ordinary read must match approved fixture bytes", readbrokerstudy.ReadSucceeded)
+		if row.Status == "measured_pass" || row.BytesMatchApproved {
+			t.Fatalf("wrong bytes satisfied a positive-read expectation: %+v", row)
+		}
+	})
+
+	for _, test := range []struct {
+		name  string
+		setup func(*injectedProviderWorker, *injectedProviderLauncher)
+	}{
+		{name: "worker startup missing", setup: func(_ *injectedProviderWorker, launcher *injectedProviderLauncher) {
+			launcher.err = errors.New("injected launch refusal")
+		}},
+		{name: "startup acknowledgement missing", setup: func(worker *injectedProviderWorker, _ *injectedProviderLauncher) {
+			worker.readyErr = errors.New("injected startup refusal")
+		}},
+		{name: "capability handoff missing", setup: func(worker *injectedProviderWorker, _ *injectedProviderLauncher) {
+			worker.transferErr = errors.New("injected handoff refusal")
+		}},
+		{name: "read start missing", setup: func(worker *injectedProviderWorker, _ *injectedProviderLauncher) {
+			worker.startErr = errors.New("injected start refusal")
+		}},
+		{name: "worker join missing", setup: func(worker *injectedProviderWorker, _ *injectedProviderLauncher) {
+			worker.waitErr = errors.New("injected wait failure")
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, launcher := newInjectedProviderFixture(t, nil)
+			test.setup(launcher.worker, launcher)
+			row := executeCase(fixture.session, fixture.authorizer, fixture.root, "real_settings_ordinary_read_control", fixture.ordinary, "missing-evidence", "ordinary read requires complete worker evidence", readbrokerstudy.ReadSucceeded)
+			if row.Status == "measured_pass" {
+				t.Fatalf("incomplete positive evidence satisfied expectation: %+v", row)
+			}
+		})
+	}
+
+	t.Run("publication suppressed", func(t *testing.T) {
+		fixture, _ := newInjectedProviderFixture(t, nil)
+		row := executeCaseWithHook(fixture.session, fixture.authorizer, fixture.root, "real_auth_unrelated_ordinary_read_control", fixture.ordinary, "publication-suppressed", "ordinary read requires publication", readbrokerstudy.ReadSucceeded, func(checkpoint readbrokerstudy.Checkpoint) error {
+			if checkpoint == readbrokerstudy.CheckpointAfterCapture {
+				return errors.New("injected publication suppression")
+			}
+			return nil
+		})
+		if row.Status == "measured_pass" || row.Published || fixture.authorizer.ConsumptionCount("publication-suppressed") != 1 {
+			t.Fatalf("suppressed publication satisfied positive expectation: row=%+v once=%d", row, fixture.authorizer.ConsumptionCount("publication-suppressed"))
+		}
+	})
+
+	t.Run("unexpected success under denial expectation", func(t *testing.T) {
+		fixture, _ := newInjectedProviderFixture(t, nil)
+		row := executeCase(fixture.session, fixture.authorizer, fixture.root, "unexpected-positive-as-denial", fixture.ordinary, "unexpected-positive", "this fixture is deliberately expected to refuse", readbrokerstudy.ReadRefused)
+		if row.Status == "measured_pass" || row.Observed != string(readbrokerstudy.ReadSucceeded) {
+			t.Fatalf("successful access was not reported as unexpected under denial expectation: %+v", row)
 		}
 	})
 }

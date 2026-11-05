@@ -70,9 +70,13 @@ class CaptureTests(unittest.TestCase):
                 "open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(60)"
             )
             parent_code = (
-                "import subprocess,sys; "
+                "import os,subprocess,sys,time\n"
                 "subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]],"
-                "start_new_session=True); print('parent finished')"
+                "start_new_session=True)\n"
+                "deadline=time.monotonic()+2\n"
+                "while not os.path.exists(sys.argv[1]) and time.monotonic()<deadline:\n"
+                "    time.sleep(0.01)\n"
+                "print('parent finished')\n"
             )
             started = time.monotonic()
             result = capture.run_capture(

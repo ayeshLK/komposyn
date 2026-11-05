@@ -299,7 +299,7 @@ func runRealAuthRotationCase(bwrap, workerPath, parent string) (rows []caseResul
 	if err := os.WriteFile(ordinary, []byte("synthetic unrelated ordinary bytes\n"), 0o600); err != nil {
 		return rows, err
 	}
-	ordinaryRow := executeCase(session, authorizer, root, "real_auth_unrelated_ordinary_read_control", ordinary, "real-auth-ordinary-control", "unrelated ordinary object remains readable with explicit once approval")
+	ordinaryRow := executeCase(session, authorizer, root, "real_auth_unrelated_ordinary_read_control", ordinary, "real-auth-ordinary-control", "unrelated ordinary object remains readable with explicit once approval", readbrokerstudy.ReadSucceeded)
 	ordinaryRow.RealStore = &realStoreEvidence{StoreType: "auth", Operation: "unrelated ordinary read positive control", EffectiveOverride: true, UnrelatedOrdinaryReadSucceeded: ordinaryRow.Status == "measured_pass", SensitiveContentPresentInReport: false}
 	rows = append(rows, ordinaryRow)
 	rows[0].RealStore.AliasDenied = retiredAliasRow.Status == "measured_pass" && intermediateAliasRow.Status == "measured_pass" && currentAliasRow.Status == "measured_pass"
