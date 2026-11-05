@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
@@ -103,6 +104,36 @@ func TestFailedSessionCloseWithUnjoinedWorkerRetainsFixture(t *testing.T) {
 				t.Fatal("outer fixture retention ignored an unjoined worker row")
 			}
 		})
+	}
+}
+
+func TestCleanupFailurePreservesObservedViolation(t *testing.T) {
+	row := caseResult{
+		Status: "observed_violation", Classification: "owner_write_before_join",
+		Detail: "destination appeared before worker join",
+	}
+	got := markCleanupUnconfirmed(row, "session close was not confirmed")
+	if got.Status != "observed_violation" || got.Classification != "owner_write_before_join" {
+		t.Fatalf("cleanup failure erased the observed violation: %+v", got)
+	}
+	if !got.CleanupPending || !strings.Contains(got.Detail, "destination appeared before worker join") || !strings.Contains(got.Detail, "session close was not confirmed") {
+		t.Fatalf("row did not retain both violation and cleanup evidence: %+v", got)
+	}
+}
+
+func TestPartialCleanupRowsSurviveLaterGroupError(t *testing.T) {
+	prior := caseResult{Name: "earlier-barrier", CleanupPending: true, WorkerStarted: true}
+	setupErr := errors.New("later disposable fixture setup failed")
+	results, err := appendGroupResults(nil, []caseResult{prior}, nil)
+	if err != nil {
+		t.Fatalf("append prior result returned error: %v", err)
+	}
+	results, err = appendGroupResults(results, nil, setupErr)
+	if !errors.Is(err, setupErr) {
+		t.Fatalf("appendGroupResults() error=%v, want %v", err, setupErr)
+	}
+	if len(results) != 1 || results[0].Name != prior.Name || !caseRowsRequireFixtureRetention(results) {
+		t.Fatalf("partial cleanup obligation was lost before fixture retention: %+v", results)
 	}
 }
 

@@ -35,16 +35,16 @@ import (
 func runAuthRealStoreNativeCases(bwrap, workerPath, parent string) ([]caseResult, error) {
 	rows, err := runRealAuthRotationCase(bwrap, workerPath, parent)
 	if err != nil {
-		return nil, err
+		return rows, err
 	}
 	barrier, err := runRealAuthWorkerBarrierCase(bwrap, workerPath, parent)
 	if err != nil {
-		return nil, err
+		return rows, err
 	}
 	rows = append(rows, barrier)
 	failure, err := runRealAuthRegistrationFailureCase(bwrap, workerPath, parent)
 	if err != nil {
-		return nil, err
+		return rows, err
 	}
 	rows = append(rows, failure...)
 	return rows, nil

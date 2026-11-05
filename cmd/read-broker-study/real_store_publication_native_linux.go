@@ -33,7 +33,7 @@ func runRealStorePublicationInvalidationCases(bwrap, workerPath, parent string) 
 	for _, storeType := range []string{"auth", "settings"} {
 		row, err := runRealStorePublicationInvalidationCase(bwrap, workerPath, parent, storeType)
 		if err != nil {
-			return nil, err
+			return rows, err
 		}
 		rows = append(rows, row)
 	}

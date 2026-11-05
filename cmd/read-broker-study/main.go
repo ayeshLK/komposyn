@@ -761,35 +761,35 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	}
 	results = append(results, caseResult{Name: "actor_protected_ancestor_relocation", Status: "inconclusive", Classification: "inconclusive", Expected: "measure a protected-directory ancestor transition around an eligible worker read", Observed: "no eligible same-device ordinary target can pass the existing incomplete-descendant-coverage refusal", FixtureEffect: "no actor transition attempted", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "pending: a pinned protected directory on the candidate file's device makes generic regular-file reads ineligible before worker launch; do not weaken this gate to stage the race"})
 	ownerCases, err := runOwnerLifecycleCases(bwrap, worker, root)
+	results, err = appendGroupResults(results, ownerCases, err)
 	if err != nil {
 		return results, err
 	}
-	results = append(results, ownerCases...)
 	authStoreCases, err := runAuthRealStoreNativeCases(bwrap, worker, root)
+	results, err = appendGroupResults(results, authStoreCases, err)
 	if err != nil {
 		return results, err
 	}
-	results = append(results, authStoreCases...)
 	settingsStoreCases, err := runSettingsRealStoreNativeCases(bwrap, worker, root)
+	results, err = appendGroupResults(results, settingsStoreCases, err)
 	if err != nil {
 		return results, err
 	}
-	results = append(results, settingsStoreCases...)
 	publicationCases, err := runRealStorePublicationInvalidationCases(bwrap, worker, root)
+	results, err = appendGroupResults(results, publicationCases, err)
 	if err != nil {
 		return results, err
 	}
-	results = append(results, publicationCases...)
 	providerCases, err := runProviderApprovalCases(bwrap, worker, root)
+	results, err = appendGroupResults(results, providerCases, err)
 	if err != nil {
 		return results, err
 	}
-	results = append(results, providerCases...)
 	lifecycleCases, retain, err := runAbnormalLifecycleCases(bwrap, worker, base)
+	results, err = appendGroupResults(results, lifecycleCases, err)
 	if err != nil {
 		return results, err
 	}
-	results = append(results, lifecycleCases...)
 	retainFixtureRoot = retainFixtureRoot || retain
 	return results, nil
 }
@@ -997,11 +997,21 @@ func closeStudySessionVerified(registry *readbrokerstudy.Registry, session readb
 }
 
 func markCleanupUnconfirmed(row caseResult, reason string) caseResult {
-	row.Status = "inconclusive"
-	row.Classification = "inconclusive"
+	if row.Status != "observed_violation" && row.Classification != "observed_violation" {
+		row.Status = "inconclusive"
+		row.Classification = "inconclusive"
+	}
 	row.CleanupPending = true
-	row.Detail = reason
+	if row.Detail == "" {
+		row.Detail = reason
+	} else if !strings.Contains(row.Detail, reason) {
+		row.Detail += "; " + reason
+	}
 	return row
+}
+
+func appendGroupResults(results, groupRows []caseResult, groupErr error) ([]caseResult, error) {
+	return append(results, groupRows...), groupErr
 }
 
 func markCaseRowsCleanupUnconfirmed(rows []caseResult, reason string) []caseResult {
