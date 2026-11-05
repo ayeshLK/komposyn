@@ -79,7 +79,8 @@ func runSettingsAbsentRouteNativeCase(bwrap, workerPath, parent string) ([]caseR
 	pinned := replacement.registered && replacement.identity == identity
 	policy := session.GenerationSnapshot()
 	pass := pathErr == nil && effective == path && registerErr == nil && routeProtected && routeClass == readbrokerstudy.ClassSettings &&
-		!beforeExists && saveErr == nil && identityErr == nil && protected && class == readbrokerstudy.ClassSettings && pinned && policy.Policy > policyBefore.Policy
+		!beforeExists && saveErr == nil && identityErr == nil && protected && class == readbrokerstudy.ClassSettings &&
+		storeReplacementAccepted(replacement.empty, replacement.identity, identity) && pinned && ownerPolicyAdvanced(policyBefore, policy)
 	row := caseResult{
 		Name: name, Status: "inconclusive", Classification: "inconclusive",
 		Expected: "register the absent effective override route before the actual settings store creates an empty temp object; register that object before the real JSON write and publish the same pinned identity",
@@ -102,13 +103,12 @@ func runSettingsAbsentRouteNativeCase(bwrap, workerPath, parent string) ([]caseR
 		row.Detail = "route reservation, real store save, published identity, or registry pin correlation was not established"
 	}
 	if err := closeSettingsSession(registry, session); err != nil {
-		row.Status, row.Classification = "inconclusive", "inconclusive"
-		row.Detail = "store setup completed but session, pin, or worker cleanup was not confirmed"
+		row = markCleanupUnconfirmed(row, "store setup completed but session, pin, or worker cleanup was not confirmed; fixture retained")
 	}
 	return []caseResult{row}, nil
 }
 
-func runSettingsRotationNativeCase(bwrap, workerPath, parent string) ([]caseResult, error) {
+func runSettingsRotationNativeCase(bwrap, workerPath, parent string) (rows []caseResult, runErr error) {
 	const name = "real_settings_startup_existing_route_and_rotations"
 	root := filepath.Join(parent, name)
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -126,7 +126,9 @@ func runSettingsRotationNativeCase(bwrap, workerPath, parent string) ([]caseResu
 	sessionClosed := false
 	defer func() {
 		if !sessionClosed {
-			_ = closeStudySession(session)
+			if err := closeSettingsSession(registry, session); err != nil {
+				rows = markCaseRowsCleanupUnconfirmed(rows, "settings rotation case returned without confirmed session, worker, operation, and pin cleanup; fixture retained")
+			}
 		}
 	}()
 	protector := &observedSettingsProtector{delegate: studyOwnerProtection{session: session, registry: registry}}
@@ -168,7 +170,9 @@ func runSettingsRotationNativeCase(bwrap, workerPath, parent string) ([]caseResu
 	pins := hasSettingsPin(view, first) && hasSettingsPin(view, second) && hasSettingsPin(view, third)
 	idsDistinct := firstErr == nil && secondErr == nil && thirdErr == nil && first != second && second != third && first != third
 	writeOK := pathErr == nil && effective == path && registerErr == nil && registeredFirst && firstSaveErr == nil && secondSaveErr == nil && pins && idsDistinct && renameErr == nil && newAliasErr == nil &&
-		firstReplacement.empty && secondReplacement.empty && firstReplacement.registered && secondReplacement.registered && firstReplacement.identity == second && secondReplacement.identity == third && policyAfter.Policy > policyBefore.Policy
+		firstReplacement.empty && secondReplacement.empty && firstReplacement.registered && secondReplacement.registered &&
+		storeReplacementAccepted(firstReplacement.empty, firstReplacement.identity, second) &&
+		storeReplacementAccepted(secondReplacement.empty, secondReplacement.identity, third) && ownerPolicyAdvanced(policyBefore, policyAfter)
 
 	row := caseResult{
 		Name: name, Status: "inconclusive", Classification: "inconclusive",
@@ -195,7 +199,7 @@ func runSettingsRotationNativeCase(bwrap, workerPath, parent string) ([]caseResu
 	} else {
 		row.Detail = "startup pin, distinct successive replacement identity, or publication-to-pin correlation was not established"
 	}
-	rows := []caseResult{row}
+	rows = []caseResult{row}
 	for _, item := range []struct {
 		caseName string
 		path     string
@@ -220,16 +224,13 @@ func runSettingsRotationNativeCase(bwrap, workerPath, parent string) ([]caseResu
 	}
 	rows[0] = row
 	if err := closeSettingsSession(registry, session); err != nil {
-		for i := range rows {
-			rows[i].Status, rows[i].Classification = "inconclusive", "inconclusive"
-			rows[i].Detail = "store cases ran but direct worker join, session close, or pin cleanup was not confirmed"
-		}
+		rows = markCaseRowsCleanupUnconfirmed(rows, "store cases ran but direct worker join, session close, or pin cleanup was not confirmed; fixture retained")
 	}
 	sessionClosed = true
 	return rows, nil
 }
 
-func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResult, error) {
+func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) (rows []caseResult, runErr error) {
 	const name = "real_settings_cleanup_pending_refuses_then_retries"
 	root := filepath.Join(parent, name)
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -257,13 +258,16 @@ func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResul
 	gateReleased := false
 	cleanupDone := false
 	readConsumed := false
+	cleanupWaitIncomplete := false
 	defer func() {
 		releaseHeldRead()
 		if cancelRead != nil {
 			cancelRead()
 		}
 		if !gateReleased && launcher.latest() != nil {
-			_ = gate.release()
+			if err := gate.release(); err != nil {
+				cleanupWaitIncomplete = true
+			}
 			gateReleased = true
 		}
 		if readDone != nil && !readConsumed {
@@ -271,10 +275,18 @@ func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResul
 			case <-readDone:
 				readConsumed = true
 			case <-time.After(10 * time.Second):
+				cleanupWaitIncomplete = true
 			}
 		}
 		if !cleanupDone {
-			_ = closeStudySession(session)
+			if err := closeSettingsSession(registry, session); err != nil {
+				rows = markCaseRowsCleanupUnconfirmed(rows, "settings cleanup-pending case could not confirm worker join, active-operation, and pin cleanup; fixture retained")
+			} else {
+				cleanupDone = true
+			}
+		}
+		if cleanupWaitIncomplete {
+			rows = markCaseRowsCleanupUnconfirmed(rows, "settings cleanup-pending case did not confirm bounded goroutine or gate completion; fixture retained")
 		}
 	}()
 	held := make(chan struct{})
@@ -382,7 +394,9 @@ func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResul
 		cancelRead()
 	}
 	if launcher.latest() != nil {
-		_ = gate.release()
+		if err := gate.release(); err != nil {
+			cleanupWaitIncomplete = true
+		}
 		gateReleased = true
 	}
 	var readCompletion settingsReadCompletion
@@ -397,6 +411,7 @@ func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResul
 				}
 			}
 		case <-time.After(15 * time.Second):
+			cleanupWaitIncomplete = true
 		}
 	}
 	var retryErr error
@@ -411,6 +426,7 @@ func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResul
 	finalPins := hasSettingsPin(registry.View(), third)
 	newTemp := protect.retryTempIdentity
 	retryTempPinned := newTemp != (readbrokerstudy.FileIdentity{}) && hasSettingsPin(registry.View(), newTemp)
+	retryPublicationAccepted := retryIdentityErr == nil && settingsRetryPublicationAccepted(retryTempPinned, protect.tempIdentity, newTemp, third)
 	workerEvidence, workerEvidencePresent := evidenceFor(session, protect.invocation)
 	capabilityMatches := workerEvidencePresent && workerEvidence.CapabilityIdentity == protect.tempIdentity
 	workerHeld := workerEvidencePresent && workerEvidence.CapabilityHeld
@@ -418,7 +434,7 @@ func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResul
 	pass := protect.tempSeen && protect.tempEmptyBefore && contentEmptyAfterRegistration && gatePending && requestObserved && workerAlive && pendingPins > 0 &&
 		destinationPreserved && noPublicationBeforeJoin && consumedOnce && readDone != nil && readCompletion.err == nil &&
 		readCompletion.result.Outcome == readbrokerstudy.ReadNotExecuted && joined && capabilityMatches && workerHeld &&
-		retryErr == nil && retryIdentityErr == nil && finalPins && retryTempPinned && newTemp != protect.tempIdentity
+		retryErr == nil && retryIdentityErr == nil && finalPins && retryPublicationAccepted
 
 	evidence := &ownerLifecycleEvidence{
 		RegistrationAttempted: true, InitialRegistrationResult: "cleanup_pending", CleanupPending: gatePending,
@@ -452,7 +468,7 @@ func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResul
 			WorkerCapabilityHeld:           workerHeld, TerminationRequested: requestObserved, WorkerJoinConfirmed: joined,
 			StoreWriteNotStartedBeforeJoin:   destinationPreserved && protect.tempEmptyAfter,
 			StoreWriteStartedAfterJoin:       joined && retryErr == nil && retryIdentityErr == nil,
-			PublishedObjectMatchesRegistered: retryTempPinned && third == newTemp,
+			PublishedObjectMatchesRegistered: retryPublicationAccepted,
 			EffectiveRouteReserved:           hasSettingsRoute(registry.View(), path),
 			RetiredPinRetained:               hasSettingsPin(registry.View(), protect.tempIdentity),
 			PolicyBefore:                     policyBefore, PolicyAfter: policyAfter, OnceGrantConsumptions: readCount,
@@ -472,12 +488,12 @@ func runSettingsBarrierNativeCase(bwrap, workerPath, parent string) ([]caseResul
 		}
 	}
 	if closeErr := closeSettingsSession(registry, session); closeErr != nil {
-		row.Status, row.Classification = "inconclusive", "inconclusive"
-		row.Detail = "store lifecycle observations completed but session close did not confirm cleanup"
+		row = markCleanupUnconfirmed(row, "store lifecycle observations completed but session close did not confirm cleanup; fixture retained")
 	} else {
 		cleanupDone = true
 	}
-	return []caseResult{row}, nil
+	rows = []caseResult{row}
+	return rows, nil
 }
 
 type settingsReadCompletion struct {

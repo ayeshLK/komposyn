@@ -58,9 +58,8 @@ func runRealStorePublicationInvalidationCase(bwrap, workerPath, parent, storeTyp
 	sessionClosed := false
 	defer func() {
 		if !sessionClosed {
-			if closeErr := closeStudySession(session); closeErr != nil && row.Status == "measured_pass" {
-				row.Status, row.Classification = "inconclusive", "inconclusive"
-				row.Detail = "owner publication case ran but worker join or study-session cleanup was not confirmed"
+			if closeErr := closeStudySessionVerified(registry, session); closeErr != nil {
+				row = markCleanupUnconfirmed(row, "owner publication case ran but worker join or study-session cleanup was not confirmed; fixture retained")
 			}
 		}
 	}()
@@ -161,9 +160,8 @@ func runRealStorePublicationInvalidationCase(bwrap, workerPath, parent, storeTyp
 	} else {
 		row.Detail = "actual store operation, post-capture generation change, worker join, registered object identity, once consumption, or stale-publication suppression was not established"
 	}
-	if closeErr := closeStudySession(session); closeErr != nil {
-		row.Status, row.Classification = "inconclusive", "inconclusive"
-		row.Detail = "owner publication case ran but worker join or study-session cleanup was not confirmed"
+	if closeErr := closeStudySessionVerified(registry, session); closeErr != nil {
+		row = markCleanupUnconfirmed(row, "owner publication case ran but worker join or study-session cleanup was not confirmed; fixture retained")
 	}
 	sessionClosed = true
 	return row, nil

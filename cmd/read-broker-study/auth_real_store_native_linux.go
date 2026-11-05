@@ -54,7 +54,7 @@ func runAuthRealStoreNativeCases(bwrap, workerPath, parent string) ([]caseResult
 // not a native sandbox claim. The injected owner failure must preserve the
 // prior object and content, after which a fresh study-protected store attempt
 // can register and publish a new object.
-func runRealAuthRegistrationFailureCase(bwrap, workerPath, parent string) ([]caseResult, error) {
+func runRealAuthRegistrationFailureCase(bwrap, workerPath, parent string) (rows []caseResult, runErr error) {
 	const name = "real_auth_injected_registration_failure_preserves_destination"
 	root := filepath.Join(parent, name)
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -88,7 +88,9 @@ func runRealAuthRegistrationFailureCase(bwrap, workerPath, parent string) ([]cas
 	sessionClosed := false
 	defer func() {
 		if !sessionClosed {
-			_ = closeStudySession(session)
+			if err := closeStudySessionVerified(registry, session); err != nil {
+				rows = markCaseRowsCleanupUnconfirmed(rows, "auth retry case returned without confirmed session, worker, operation, and pin cleanup")
+			}
 		}
 	}()
 	protectedStore := auth.Store{Path: path, Protection: studyOwnerProtection{session: session, registry: registry}}
@@ -105,7 +107,7 @@ func runRealAuthRegistrationFailureCase(bwrap, workerPath, parent string) ([]cas
 	if _, value, err := protectedStore.Resolve("synthetic-retry"); err != nil || value != "synthetic-retry-value" {
 		return []caseResult{failureRow, inconclusiveRealAuthCase("real_auth_failure_retry_after_registration", "actual auth store retry owner readback failed")}, nil
 	}
-	if err := closeStudySession(session); err != nil {
+	if err := closeStudySessionVerified(registry, session); err != nil {
 		return []caseResult{failureRow, inconclusiveRealAuthCase("real_auth_failure_retry_after_registration", "study session cleanup was not confirmed after retry")}, nil
 	}
 	sessionClosed = true
@@ -121,7 +123,7 @@ func (p authInjectedFailureProtector) Protect(context.Context, string, string, s
 	return p.err
 }
 
-func runRealAuthRotationCase(bwrap, workerPath, parent string) ([]caseResult, error) {
+func runRealAuthRotationCase(bwrap, workerPath, parent string) (rows []caseResult, runErr error) {
 	const name = "real_auth_startup_registration_and_successive_rotations"
 	root := filepath.Join(parent, name)
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -135,7 +137,9 @@ func runRealAuthRotationCase(bwrap, workerPath, parent string) ([]caseResult, er
 	sessionClosed := false
 	defer func() {
 		if !sessionClosed {
-			_ = closeStudySession(session)
+			if err := closeStudySessionVerified(registry, session); err != nil {
+				rows = markCaseRowsCleanupUnconfirmed(rows, "auth rotation case returned without confirmed session, worker, operation, and pin cleanup")
+			}
 		}
 	}()
 	var registeredTemps []readbrokerstudy.FileIdentity
@@ -246,7 +250,16 @@ func runRealAuthRotationCase(bwrap, workerPath, parent string) ([]caseResult, er
 	evidence.RetiredIdentityRetained = true
 	evidence.Events = append(evidence.Events, "three_auth_store_writes_registered_before_content", "successive_replacements_published_matching_registered_objects", "retired_auth_identities_retained_after_alias_and_rename")
 	realEvidence.ReplacementIdentity = &thirdID
-	realEvidence.PublishedObjectMatchesRegistered = realEvidence.PublishedObjectMatchesRegistered && len(registeredTemps) >= 3 && registeredTemps[2] == thirdID
+	allReplacementsEmpty, allReplacementPublicationsMatch := len(registeredTemps) >= 3 && len(registeredEmpty) >= 3, len(registeredTemps) >= 3 && len(registeredEmpty) >= 3
+	for i := 0; i < 3 && i < len(registeredTemps) && i < len(registeredEmpty); i++ {
+		allReplacementsEmpty = allReplacementsEmpty && registeredEmpty[i]
+	}
+	allReplacementPublicationsMatch = allReplacementPublicationsMatch &&
+		storeReplacementAccepted(registeredEmpty[0], registeredTemps[0], firstID) &&
+		storeReplacementAccepted(registeredEmpty[1], registeredTemps[1], secondID) &&
+		storeReplacementAccepted(registeredEmpty[2], registeredTemps[2], thirdID)
+	realEvidence.ReplacementEmptyAtRegistration = allReplacementsEmpty
+	realEvidence.PublishedObjectMatchesRegistered = allReplacementPublicationsMatch
 	routeClass, routeReserved := registry.ClassifyRoute(path)
 	realEvidence.EffectiveRouteReserved = routeReserved && routeClass == readbrokerstudy.ClassCredential
 	realEvidence.RetiredPinRetained = true
@@ -261,11 +274,11 @@ func runRealAuthRotationCase(bwrap, workerPath, parent string) ([]caseResult, er
 	policyAfter := session.GenerationSnapshot()
 	realEvidence.PolicyBefore = policyBefore
 	realEvidence.PolicyAfter = policyAfter
-	if policyAfter.Policy <= policyBefore.Policy {
+	if !realEvidence.ReplacementEmptyAtRegistration || !realEvidence.PublishedObjectMatchesRegistered || !ownerPolicyAdvanced(policyBefore, policyAfter) {
 		row.Status, row.Classification = "inconclusive", "inconclusive"
-		row.Detail = "auth registration and rotation did not advance the owner policy generation"
+		row.Detail = "auth replacement was not empty at registration, published identity did not match the registered object, or policy generation did not advance"
 	}
-	rows := []caseResult{row}
+	rows = []caseResult{row}
 	retiredAliasRow.RealStore = &realStoreEvidence{StoreType: "auth", Operation: "generic read through retired hard-link alias", EffectiveOverride: true, RetiredPinRetained: true, AliasDenied: retiredAliasRow.Status == "measured_pass", SensitiveContentPresentInReport: false}
 	rows = append(rows, retiredAliasRow)
 	renamedRetired := protectedIdentityCase(session, authorizer, root, "real_auth_renamed_retired_object_denied", oldRenamed, "real-auth-renamed-retired")
@@ -290,11 +303,12 @@ func runRealAuthRotationCase(bwrap, workerPath, parent string) ([]caseResult, er
 	rows[0].RealStore.AliasDenied = retiredAliasRow.Status == "measured_pass" && intermediateAliasRow.Status == "measured_pass" && currentAliasRow.Status == "measured_pass"
 	rows[0].RealStore.RenamedRetiredObjectDenied = renamedRetired.Status == "measured_pass"
 	rows[0].RealStore.UnrelatedOrdinaryReadSucceeded = ordinaryRow.Status == "measured_pass"
-	if err := closeStudySession(session); err != nil {
-		for i := range rows {
-			rows[i].Status, rows[i].Classification = "inconclusive", "inconclusive"
-			rows[i].Detail = "auth owner cases ran but worker join or study-session cleanup was not confirmed"
-		}
+	if !rows[0].RealStore.AliasDenied || !rows[0].RealStore.RenamedRetiredObjectDenied || currentRoute.Status != "measured_pass" || !rows[0].RealStore.UnrelatedOrdinaryReadSucceeded {
+		rows[0].Status, rows[0].Classification = "inconclusive", "inconclusive"
+		rows[0].Detail = "route, alias, renamed-retired-object, or unrelated-read control did not meet its expected result"
+	}
+	if err := closeStudySessionVerified(registry, session); err != nil {
+		rows = markCaseRowsCleanupUnconfirmed(rows, "auth owner cases ran but worker join, active-operation, or pin cleanup was not confirmed")
 	}
 	sessionClosed = true
 	return rows, nil
@@ -324,8 +338,23 @@ func runRealAuthWorkerBarrierCase(bwrap, workerPath, parent string) (row caseRes
 	}
 	cleanup := func() {
 		cleanupOnce.Do(func() {
-			_ = releaseGate()
-			_ = closeStudySession(session)
+			if launcher.latest() != nil {
+				_ = releaseGate()
+			}
+			if err := closeStudySessionVerified(registry, session); err != nil {
+				row = markCleanupUnconfirmed(row, "auth cleanup-pending case could not confirm worker join, active-operation cleanup, and pin release; fixture retained")
+			}
+			allStartedWorkersJoined := true
+			for _, item := range session.Evidence() {
+				row.WorkerStarted = row.WorkerStarted || item.WorkerStarted
+				if item.WorkerStarted && !item.WorkerJoined {
+					allStartedWorkersJoined = false
+					row = markCleanupUnconfirmed(row, "auth worker remains unjoined after bounded cleanup; fixture retained")
+				}
+			}
+			if row.WorkerStarted && allStartedWorkersJoined {
+				row.WorkerJoinConfirmed = true
+			}
 		})
 	}
 	defer cleanup()

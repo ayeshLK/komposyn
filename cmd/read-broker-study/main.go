@@ -149,6 +149,7 @@ type caseResult struct {
 	OwnerLifecycle                 *ownerLifecycleEvidence        `json:"owner_lifecycle,omitempty"`
 	RealStore                      *realStoreEvidence             `json:"real_store,omitempty"`
 	Lifecycle                      *abnormalLifecycleEvidence     `json:"abnormal_lifecycle,omitempty"`
+	CleanupPending                 bool                           `json:"cleanup_pending,omitempty"`
 	FixtureEffect                  string                         `json:"fixture_effect"`
 	AuthorityA                     string                         `json:"authority_a"`
 	AuthorityB                     string                         `json:"authority_b"`
@@ -538,6 +539,9 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 			cleanup.Detail = "session close returned an error or a started worker lacks confirmed join evidence"
 		}
 		results = append(results, cleanup)
+		if caseRowsRequireFixtureRetention(results) {
+			retainFixtureRoot = true
+		}
 	}()
 	if err := session.SelectRoot(root); err != nil {
 		return results, err
@@ -786,7 +790,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		return results, err
 	}
 	results = append(results, lifecycleCases...)
-	retainFixtureRoot = retain
+	retainFixtureRoot = retainFixtureRoot || retain
 	return results, nil
 }
 
@@ -972,6 +976,66 @@ func closeStudySession(session readbrokerstudy.FixtureSession) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	return session.Close(ctx)
+}
+
+func closeStudySessionVerified(registry *readbrokerstudy.Registry, session readbrokerstudy.FixtureSession) error {
+	if err := closeStudySession(session); err != nil {
+		return err
+	}
+	if activeOperationCount(session) != 0 {
+		return errors.New("study session retained active operations after close")
+	}
+	if registry != nil && registry.PinnedObjectCount() != 0 {
+		return errors.New("study session retained pinned objects after close")
+	}
+	for _, item := range session.Evidence() {
+		if item.WorkerStarted && !item.WorkerJoined {
+			return errors.New("study session has an unjoined worker after close")
+		}
+	}
+	return nil
+}
+
+func markCleanupUnconfirmed(row caseResult, reason string) caseResult {
+	row.Status = "inconclusive"
+	row.Classification = "inconclusive"
+	row.CleanupPending = true
+	row.Detail = reason
+	return row
+}
+
+func markCaseRowsCleanupUnconfirmed(rows []caseResult, reason string) []caseResult {
+	if len(rows) == 0 {
+		rows = append(rows, caseResult{
+			Status: "inconclusive", Classification: "inconclusive",
+			AuthorityA: "no conclusion", AuthorityB: "no conclusion",
+		})
+	}
+	for i := range rows {
+		rows[i] = markCleanupUnconfirmed(rows[i], reason)
+	}
+	return rows
+}
+
+func caseRowsRequireFixtureRetention(rows []caseResult) bool {
+	for _, row := range rows {
+		if row.CleanupPending || (row.WorkerStarted && !row.WorkerJoinConfirmed) {
+			return true
+		}
+	}
+	return false
+}
+
+func storeReplacementAccepted(emptyAtRegistration bool, registered, published readbrokerstudy.FileIdentity) bool {
+	return emptyAtRegistration && registered != (readbrokerstudy.FileIdentity{}) && registered == published
+}
+
+func ownerPolicyAdvanced(before, after readbrokerstudy.GenerationSet) bool {
+	return after.Policy > before.Policy
+}
+
+func settingsRetryPublicationAccepted(pinned bool, original, registered, published readbrokerstudy.FileIdentity) bool {
+	return pinned && registered != (readbrokerstudy.FileIdentity{}) && registered != original && published == registered
 }
 
 func activeOperationCount(session readbrokerstudy.FixtureSession) int {

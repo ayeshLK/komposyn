@@ -447,7 +447,7 @@ summary=$output_dir/summary.md
   printf -- '- Backend probe classification: `%s` (derived from trusted flag and backend error fields).\n' "$preflight_status"
   printf -- '- Overall: **native acceptance not established**. A clean process exit or a subset of passing fixture cases is not broad enforcement evidence.\n\n'
   if [[ -f $output_dir/study-report.json ]]; then
-    printf '## Cases\n\n| Case | Status | Classification | Actor started | Actor ready | Transition | Actor exited | Generations before → after | Worker started | Worker ready | Worker joined | FD sent | FD held | Read | Published | Receipt accepted | Owner write authorized / started / completed | Abnormal owner write: attempted / authorized / started | Abnormal lifecycle: coordinator / diagnostic / init live before / Bubblewrap live before / init exit before / after / Bubblewrap exit before / after / cleanup attempted / signal sent / join / pidfd error / pending / admission blocked / outcome phase / read outcome | Bytes match approved object | Once grants | Fixture outcome | Authority A | Authority B |\n|---|---|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|---|---|\n'
+    printf '## Cases\n\n| Case | Status | Classification | Actor started | Actor ready | Transition | Actor exited | Generations before → after | Worker started | Worker ready | Worker joined | FD sent | FD held | Read | Published | Receipt accepted | Owner write authorized / started / completed | Abnormal owner write: attempted / authorized / started | Abnormal lifecycle: coordinator / diagnostic / init live before / Bubblewrap live before / init exit before / after / Bubblewrap exit before / after / cleanup attempted / signal sent / join / pidfd error / pending / admission blocked / outcome phase / read outcome | Bytes match approved object | Once grants | Fixture outcome | Authority A | Authority B | Cleanup pending / fixture retained |\n|---|---|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|---|---|---|\n'
     python3 - "$output_dir/study-report.json" <<'PY'
 import json,sys
 def cell(value):
@@ -492,7 +492,7 @@ for c in cases:
           optional_bool(c,"read_started"),optional_bool(c,"published"),
           optional_bool(c,"authorization_receipt_accepted"),owner_gate,abnormal_owner,lifecycle,approved_object_match(c),
           c.get("once_grant_consumptions"),c.get("fixture_effect",""),
-          c.get("authority_a",""),c.get("authority_b",""),]
+          c.get("authority_a",""),c.get("authority_b",""),optional_bool(c,"cleanup_pending")]
     vals=[cell(v) for v in vals]
     print("| "+" | ".join(vals)+" |")
 violations=[c for c in cases if c.get("classification")=="violation" or c.get("status")=="observed_violation"]

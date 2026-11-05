@@ -38,6 +38,12 @@ contains no paths, serialized JSON, credentials, or worker result bytes. Normal
 environment preflight still applies: an unavailable trusted Bubblewrap backend
 makes native rows unavailable, not passed.
 
+When a case cannot confirm direct worker join, active-operation completion,
+and pin release, it is downgraded to `inconclusive` with
+`cleanup_pending: true`. The enclosing fixture runner retains its disposable
+root for those rows instead of deleting data that a surviving worker may still
+reference. The manual summary prints this retention state.
+
 ## Implemented cases
 
 | Scenario | Cases and evidence |

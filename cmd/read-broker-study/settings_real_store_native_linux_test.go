@@ -26,6 +26,86 @@ import (
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
 )
 
+func TestRealStoreReplacementAcceptanceRejectsNonemptyOrMismatchedObject(t *testing.T) {
+	registered := readbrokerstudy.FileIdentity{Device: 1, Inode: 2, Type: 1}
+	other := readbrokerstudy.FileIdentity{Device: 1, Inode: 3, Type: 1}
+	for _, test := range []struct {
+		name      string
+		empty     bool
+		reg       readbrokerstudy.FileIdentity
+		published readbrokerstudy.FileIdentity
+		want      bool
+	}{
+		{name: "empty same object", empty: true, reg: registered, published: registered, want: true},
+		{name: "nonempty at registration", empty: false, reg: registered, published: registered},
+		{name: "published different object", empty: true, reg: registered, published: other},
+		{name: "missing registered identity", empty: true, published: registered},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := storeReplacementAccepted(test.empty, test.reg, test.published); got != test.want {
+				t.Fatalf("storeReplacementAccepted()=%t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSettingsRetryPublicationRequiresFreshPinnedPublishedIdentity(t *testing.T) {
+	original := readbrokerstudy.FileIdentity{Device: 1, Inode: 2, Type: 1}
+	registered := readbrokerstudy.FileIdentity{Device: 1, Inode: 3, Type: 1}
+	other := readbrokerstudy.FileIdentity{Device: 1, Inode: 4, Type: 1}
+	for _, test := range []struct {
+		name       string
+		pinned     bool
+		registered readbrokerstudy.FileIdentity
+		published  readbrokerstudy.FileIdentity
+		want       bool
+	}{
+		{name: "fresh pinned object published", pinned: true, registered: registered, published: registered, want: true},
+		{name: "publication differs from registered temp", pinned: true, registered: registered, published: other},
+		{name: "retry reused old identity", pinned: true, registered: original, published: original},
+		{name: "new temp not pinned", pinned: false, registered: registered, published: registered},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := settingsRetryPublicationAccepted(test.pinned, original, test.registered, test.published); got != test.want {
+				t.Fatalf("settingsRetryPublicationAccepted()=%t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestFailedSessionCloseWithUnjoinedWorkerRetainsFixture(t *testing.T) {
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	for _, test := range []struct {
+		name     string
+		closeErr error
+	}{
+		{name: "close returns cleanup pending", closeErr: readbrokerstudy.ErrCleanupPending},
+		{name: "close returns without joining worker"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session := &ownerLifecycleTestSession{
+				registry: registry, closeErr: test.closeErr,
+				evidence: []readbrokerstudy.ReadEvidence{{WorkerStarted: true, WorkerJoined: false}},
+			}
+			err := closeStudySessionVerified(registry, session)
+			if err == nil {
+				t.Fatal("closeStudySessionVerified() unexpectedly confirmed cleanup")
+			}
+			row := markCleanupUnconfirmed(caseResult{Status: "measured_pass", WorkerStarted: true}, "injected unjoined-worker cleanup refusal")
+			if row.Status == "measured_pass" || !row.CleanupPending || !caseRowsRequireFixtureRetention([]caseResult{row}) {
+				t.Fatalf("failed close did not downgrade and retain fixture: %+v", row)
+			}
+			if !caseRowsRequireFixtureRetention([]caseResult{{WorkerStarted: true, WorkerJoinConfirmed: false}}) {
+				t.Fatal("outer fixture retention ignored an unjoined worker row")
+			}
+		})
+	}
+}
+
 func TestObservedSettingsProtectorTracksEmptyRegisteredReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	registry, err := readbrokerstudy.NewRegistry()

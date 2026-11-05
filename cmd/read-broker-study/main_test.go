@@ -39,6 +39,8 @@ type ownerLifecycleTestSession struct {
 	policy        uint64
 	firstRegister error
 	registerCalls int
+	closeErr      error
+	evidence      []readbrokerstudy.ReadEvidence
 }
 
 type lifecycleGateTestWorker struct {
@@ -578,12 +580,12 @@ func (*ownerLifecycleTestSession) SelectRoot(string) error                      
 func (*ownerLifecycleTestSession) Revoke(string) error                              { return nil }
 func (*ownerLifecycleTestSession) SetCheckpointHook(readbrokerstudy.CheckpointHook) {}
 func (*ownerLifecycleTestSession) PublishedResults() [][]byte                       { return nil }
-func (*ownerLifecycleTestSession) Evidence() []readbrokerstudy.ReadEvidence         { return nil }
+func (s *ownerLifecycleTestSession) Evidence() []readbrokerstudy.ReadEvidence       { return s.evidence }
 func (*ownerLifecycleTestSession) ActiveOperationCount() int                        { return 0 }
 func (s *ownerLifecycleTestSession) GenerationSnapshot() readbrokerstudy.GenerationSet {
 	return readbrokerstudy.GenerationSet{Policy: s.policy}
 }
-func (*ownerLifecycleTestSession) Close(context.Context) error { return nil }
+func (s *ownerLifecycleTestSession) Close(context.Context) error { return s.closeErr }
 
 func TestFixtureOwnerWriterAllowsConfirmedJoinForBothRegistrationResults(t *testing.T) {
 	for _, test := range []struct {
