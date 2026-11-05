@@ -216,7 +216,7 @@ func runSettingsRotationNativeCase(bwrap, workerPath, parent string) (rows []cas
 	if err := os.WriteFile(ordinary, []byte("disposable ordinary read control\n"), 0o600); err != nil {
 		return nil, err
 	}
-	rows = append(rows, executeCase(session, authorizer, root, "real_settings_ordinary_read_control", ordinary, "real-settings-ordinary-read", "an explicit once approval permits an unrelated ordinary fixture read"))
+	rows = append(rows, executeCase(session, authorizer, root, "real_settings_ordinary_read_control", ordinary, "real-settings-ordinary-read", "an explicit once approval permits an unrelated ordinary fixture read", readbrokerstudy.ReadSucceeded))
 	if row.RealStore != nil {
 		row.RealStore.AliasDenied = rows[1].Status == "measured_pass" && rows[2].Status == "measured_pass" && rows[3].Status == "measured_pass"
 		row.RealStore.RenamedRetiredObjectDenied = rows[1].Status == "measured_pass"

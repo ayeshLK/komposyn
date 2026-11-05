@@ -551,8 +551,8 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	}
 
 	results = make([]caseResult, 0, 24)
-	results = append(results, executeCase(session, authorizer, root, "ordinary_positive", ordinary, "ordinary-1", "explicit once approval reads the opened fixture object"))
-	results = append(results, executeCase(session, authorizer, root, "protected_direct", protected, "credential-1", "credential object is refused before worker capability handoff"))
+	results = append(results, executeCase(session, authorizer, root, "ordinary_positive", ordinary, "ordinary-1", "explicit once approval reads the opened fixture object", readbrokerstudy.ReadSucceeded))
+	results = append(results, executeCase(session, authorizer, root, "protected_direct", protected, "credential-1", "credential object is refused before worker capability handoff", readbrokerstudy.ReadRefused))
 
 	providerSource := filepath.Join(root, "provider-source.fixture")
 	if err := os.WriteFile(providerSource, []byte("synthetic provider source\n"), 0o600); err != nil {
@@ -561,20 +561,20 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-provider", Class: readbrokerstudy.ClassProvider, Path: providerSource}); err != nil {
 		return results, err
 	}
-	results = append(results, executeCase(session, authorizer, root, "provider_source_explicit_once", providerSource, "provider-source-1", "registered provider source requires explicit once approval"))
+	results = append(results, executeCase(session, authorizer, root, "provider_source_explicit_once", providerSource, "provider-source-1", "registered provider source requires explicit once approval", readbrokerstudy.ReadSucceeded))
 
 	alias := filepath.Join(root, "protected-alias.fixture")
 	if err := os.Link(protected, alias); err != nil {
 		results = append(results, caseResult{Name: "protected_existing_hardlink", Status: "unavailable", Expected: "protected identity refused", Observed: "fixture hard-link creation unavailable", FixtureEffect: "no alias created", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "host filesystem refused hard-link fixture"})
 	} else {
-		results = append(results, executeCase(session, authorizer, root, "protected_existing_hardlink", alias, "credential-alias-1", "registered object remains protected through an existing hard-link alias"))
+		results = append(results, executeCase(session, authorizer, root, "protected_existing_hardlink", alias, "credential-alias-1", "registered object remains protected through an existing hard-link alias", readbrokerstudy.ReadRefused))
 	}
 
 	late := filepath.Join(root, "late-alias.fixture")
 	if err := os.Link(protected, late); err != nil {
 		results = append(results, caseResult{Name: "protected_late_hardlink", Status: "unavailable", Expected: "protected identity refused", Observed: "fixture hard-link creation unavailable", FixtureEffect: "no alias created", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "host filesystem refused late hard-link fixture"})
 	} else {
-		results = append(results, executeCase(session, authorizer, root, "protected_late_hardlink", late, "credential-late-alias-1", "late alias to a pinned protected object is refused"))
+		results = append(results, executeCase(session, authorizer, root, "protected_late_hardlink", late, "credential-late-alias-1", "late alias to a pinned protected object is refused", readbrokerstudy.ReadRefused))
 	}
 
 	moveSource := filepath.Join(root, "protected", "move-me.fixture")
@@ -588,7 +588,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	if err := os.Rename(moveSource, moveTarget); err != nil {
 		return results, err
 	}
-	results = append(results, executeCase(session, authorizer, root, "protected_object_renamed_into_ordinary_tree", moveTarget, "credential-renamed-1", "pinned protected object remains denied after rename"))
+	results = append(results, executeCase(session, authorizer, root, "protected_object_renamed_into_ordinary_tree", moveTarget, "credential-renamed-1", "pinned protected object remains denied after rename", readbrokerstudy.ReadRefused))
 
 	replacement := filepath.Join(root, "protected", "replace-me.fixture")
 	if err := os.WriteFile(replacement, []byte("synthetic protected original\n"), 0o600); err != nil {
@@ -603,7 +603,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	if err := os.WriteFile(replacement, []byte("synthetic replacement\n"), 0o600); err != nil {
 		return results, err
 	}
-	results = append(results, executeCase(session, authorizer, root, "protected_location_replaced_before_open", replacement, "credential-replacement-1", "registered protected location remains denied after replacement"))
+	results = append(results, executeCase(session, authorizer, root, "protected_location_replaced_before_open", replacement, "credential-replacement-1", "registered protected location remains denied after replacement", readbrokerstudy.ReadRefused))
 
 	reserved := filepath.Join(root, "protected", "reserved.fixture")
 	ordinaryToProtected := filepath.Join(root, "ordinary-to-protected.fixture")
@@ -616,13 +616,13 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	if err := os.Rename(ordinaryToProtected, reserved); err != nil {
 		return results, err
 	}
-	results = append(results, executeCase(session, authorizer, root, "ordinary_object_moved_into_protected_location", reserved, "moved-into-protected-1", "reserved protected location denies an object moved into it"))
+	results = append(results, executeCase(session, authorizer, root, "ordinary_object_moved_into_protected_location", reserved, "moved-into-protected-1", "reserved protected location denies an object moved into it", readbrokerstudy.ReadRefused))
 
 	cancelPath := filepath.Join(root, "cancel-before-release.fixture")
 	if err := os.WriteFile(cancelPath, []byte("synthetic cancel fixture\n"), 0o600); err != nil {
 		return results, err
 	}
-	results = append(results, executeCaseWithHook(session, authorizer, root, "cancel_before_release", cancelPath, "cancel-before-release-1", "worker may start, but no read capability is released", func(checkpoint readbrokerstudy.Checkpoint) error {
+	results = append(results, executeCaseWithHook(session, authorizer, root, "cancel_before_release", cancelPath, "cancel-before-release-1", "worker may start, but no read capability is released", readbrokerstudy.ReadCancelled, func(checkpoint readbrokerstudy.Checkpoint) error {
 		if checkpoint == readbrokerstudy.CheckpointBeforeHandoff {
 			return context.Canceled
 		}
@@ -634,7 +634,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		return results, err
 	}
 	revokeID := "revoke-after-capture-1"
-	results = append(results, executeCaseWithHook(session, authorizer, root, "revoke_after_capture_before_publish", revokePath, revokeID, "captured bytes are not published after grant generation changes", func(checkpoint readbrokerstudy.Checkpoint) error {
+	results = append(results, executeCaseWithHook(session, authorizer, root, "revoke_after_capture_before_publish", revokePath, revokeID, "captured bytes are not published after grant generation changes", readbrokerstudy.ReadCancelled, func(checkpoint readbrokerstudy.Checkpoint) error {
 		if checkpoint == readbrokerstudy.CheckpointAfterCapture {
 			return session.Revoke(revokeID)
 		}
@@ -714,7 +714,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	if err := session.SelectRoot(root); err != nil {
 		return results, err
 	}
-	results = append(results, executeCase(session, authorizer, root, "late_alias_protected_route_refusal", protectedAlias, "late-alias-protected-route-1", "a fresh request through the registered protected route is refused without consuming approval"))
+	results = append(results, executeCase(session, authorizer, root, "late_alias_protected_route_refusal", protectedAlias, "late-alias-protected-route-1", "a fresh request through the registered protected route is refused without consuming approval", readbrokerstudy.ReadRefused))
 
 	// Directory registration intentionally comes last: unpinned regular files
 	// sharing that filesystem are fail-closed for the rest of the registry's
@@ -743,7 +743,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		if actorErr != nil || actorCloseErr != nil || !actor.TransitionCompleted() || !actor.Joined() || !pathExists(actorMovedDescendant) {
 			results = append(results, unavailableActorCase("actor_unregistered_protected_descendant_moved_out", "independent actor moves an unregistered child out of a registered protected directory before preparation; coverage refusal must precede authorization and worker launch", "actor fixture transition or process cleanup was not confirmed"))
 		} else {
-			refused := executeCase(session, authorizer, root, "actor_unregistered_protected_descendant_moved_out", actorMovedDescendant, "actor-directory-child-moved-1", "independent actor moved an unregistered child; incomplete directory coverage must refuse before once-grant consumption or worker launch")
+			refused := executeCase(session, authorizer, root, "actor_unregistered_protected_descendant_moved_out", actorMovedDescendant, "actor-directory-child-moved-1", "independent actor moved an unregistered child; incomplete directory coverage must refuse before once-grant consumption or worker launch", readbrokerstudy.ReadRefused)
 			refused.ActorStarted = true
 			refused.ActorReady = true
 			refused.ActorTransition = actor.TransitionCompleted()
@@ -2796,7 +2796,7 @@ func runProviderApprovalCases(bwrap, workerPath, parent string) ([]caseResult, e
 		_ = closeStudySession(ordinaryReuse.session)
 		return rows, err
 	}
-	ordinaryRow := executeCase(ordinaryReuse.session, ordinaryReuse.authorizer, ordinaryReuse.root, "provider_only_ordinary_positive_control", ordinaryReuse.ordinary, ordinaryID, "ordinary fixture is separate from provider-only protected registration")
+	ordinaryRow := executeCase(ordinaryReuse.session, ordinaryReuse.authorizer, ordinaryReuse.root, "provider_only_ordinary_positive_control", ordinaryReuse.ordinary, ordinaryID, "ordinary fixture is separate from provider-only protected registration", readbrokerstudy.ReadSucceeded)
 	_, hasOrdinaryReceipt := ordinaryReuse.mutating.receipts[ordinaryID]
 	ordinaryRow.AuthorizationAttempted = ordinaryReuse.mutating.attempts[ordinaryID] == 1
 	ordinaryRow.AuthorizationReceiptAccepted = ordinaryRow.Status == "measured_pass"
@@ -2961,20 +2961,20 @@ func runDirectoryCoverageCases(session readbrokerstudy.FixtureSession, auth *rea
 	if err := os.WriteFile(descendant, []byte("synthetic directory descendant\n"), 0o600); err != nil {
 		return nil, err
 	}
-	inside := executeCase(session, auth, root, "registered_directory_descendant_inside", descendant, "directory-child-1", "descendant is refused as a registered protected resource")
+	inside := executeCase(session, auth, root, "registered_directory_descendant_inside", descendant, "directory-child-1", "descendant is refused as a registered protected resource", readbrokerstudy.ReadRefused)
 	movedDescendant := filepath.Join(root, "moved-directory-descendant.fixture")
 	if err := os.Rename(descendant, movedDescendant); err != nil {
 		return nil, err
 	}
-	moved := executeCase(session, auth, root, "registered_directory_descendant_moved_out", movedDescendant, "directory-child-moved-1", "scope is refused because protected-directory descendant identity coverage is incomplete")
+	moved := executeCase(session, auth, root, "registered_directory_descendant_moved_out", movedDescendant, "directory-child-moved-1", "scope is refused because protected-directory descendant identity coverage is incomplete", readbrokerstudy.ReadRefused)
 	return []caseResult{inside, moved}, nil
 }
 
-func executeCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string) caseResult {
-	return executeCaseWithHook(session, auth, root, name, path, invocationID, expected, nil)
+func executeCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string, expectedOutcome readbrokerstudy.ReadOutcome) caseResult {
+	return executeCaseWithHook(session, auth, root, name, path, invocationID, expected, expectedOutcome, nil)
 }
 
-func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string, hook readbrokerstudy.CheckpointHook) caseResult {
+func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string, expectedOutcome readbrokerstudy.ReadOutcome, hook readbrokerstudy.CheckpointHook) caseResult {
 	_ = auth.ApproveOnce(invocationID)
 	expectedBytes, snapshotErr := os.ReadFile(path)
 	if snapshotErr != nil {
@@ -2996,15 +2996,6 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 		if item.Case == invocationID {
 			ev = item
 		}
-	}
-	expectedOutcome := readbrokerstudy.ReadRefused
-	switch name {
-	case "ordinary_positive", "provider_source_explicit_once", "provider_only_ordinary_positive_control", "actor_late_alias_existing_invocation":
-		expectedOutcome = readbrokerstudy.ReadSucceeded
-	case "cancel_before_release", "revoke_after_capture_before_publish":
-		expectedOutcome = readbrokerstudy.ReadCancelled
-	case "registered_directory_descendant_moved_out":
-		expectedOutcome = readbrokerstudy.ReadRefused
 	}
 	bytesMatch := result.Outcome == readbrokerstudy.ReadSucceeded && bytes.Equal(result.Bytes, expectedBytes)
 	consumptionCount := auth.ConsumptionCount(invocationID)
