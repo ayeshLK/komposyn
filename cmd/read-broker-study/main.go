@@ -44,18 +44,28 @@ import (
 )
 
 type report struct {
-	Schema       string       `json:"schema"`
-	StartedUTC   string       `json:"started_utc"`
-	Commit       string       `json:"commit"`
-	Source       string       `json:"source"`
-	Environment  environment  `json:"environment"`
-	LaunchPolicy launchPolicy `json:"launch_policy"`
-	Availability string       `json:"availability"`
-	Unavailable  string       `json:"unavailable_reason,omitempty"`
-	Cases        []caseResult `json:"cases"`
-	NativeGaps   []string     `json:"native_evidence_gaps"`
-	Limitations  []string     `json:"limitations"`
+	Schema                  string                    `json:"schema"`
+	StartedUTC              string                    `json:"started_utc"`
+	Commit                  string                    `json:"commit"`
+	Source                  string                    `json:"source"`
+	Environment             environment               `json:"environment"`
+	LaunchPolicy            launchPolicy              `json:"launch_policy"`
+	Availability            string                    `json:"availability"`
+	Unavailable             string                    `json:"unavailable_reason,omitempty"`
+	InventoryProfile        string                    `json:"inventory_profile"`
+	ProductionOwnerCoverage []productionOwnerCoverage `json:"production_owner_coverage"`
+	Cases                   []caseResult              `json:"cases"`
+	NativeGaps              []string                  `json:"native_evidence_gaps"`
+	Limitations             []string                  `json:"limitations"`
 }
+
+type productionOwnerCoverage struct {
+	Class  string `json:"class"`
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
+type coverageSnapshot = readbrokerstudy.CoverageSnapshot
 
 type environment struct {
 	OS                     string                   `json:"os"`
@@ -123,6 +133,7 @@ type caseResult struct {
 	ReadEvidenceCase               string                         `json:"read_evidence_case,omitempty"`
 	WorkerOutcome                  readbrokerstudy.ReadOutcome    `json:"worker_outcome,omitempty"`
 	WorkerGenerations              *readbrokerstudy.GenerationSet `json:"worker_generations,omitempty"`
+	OwnerCoverage                  *coverageSnapshot              `json:"owner_coverage,omitempty"`
 	WorkerEffect                   string                         `json:"worker_effect,omitempty"`
 	WorkerLimitation               string                         `json:"worker_limitation,omitempty"`
 	OnceGrantConsumptions          int                            `json:"once_grant_consumptions"`
@@ -297,6 +308,13 @@ func run() error {
 	report := report{
 		Schema: "komposyn.read-broker-study.v1", StartedUTC: started.Format(time.RFC3339),
 		Commit: *commit, Source: "cmd/read-broker-study; internal/harness/readbrokerstudy",
+		InventoryProfile: "bounded_synthetic_fixture_universe; synthetic routes admit fixture reads only and are not a production inventory",
+		ProductionOwnerCoverage: []productionOwnerCoverage{
+			{Class: string(readbrokerstudy.ClassCredential), Status: "partial_study_hook_only", Reason: "auth store exposes optional effective-path and pre-write exact-object hooks; shipped sandbox composition does not install them"},
+			{Class: string(readbrokerstudy.ClassSettings), Status: "partial_study_hook_only", Reason: "settings store exposes optional effective-path and pre-write exact-object hooks; shipped sandbox composition does not install them"},
+			{Class: string(readbrokerstudy.ClassTokenDatabase), Status: "unsupported", Reason: "caller-selected SQLite DB, internally created WAL/SHM, migration backups and lifecycle have no protected-owner registration barrier"},
+			{Class: string(readbrokerstudy.ClassProvider), Status: "unsupported", Reason: "collector roots are not an exhaustive identity inventory; discovered/opened source identities and external producer changes have no broker registration lifecycle"},
+		},
 		Environment: inspectEnvironmentWithBackend(*bwrap, backend),
 		LaunchPolicy: launchPolicy{
 			Backend:               "system Bubblewrap; fixed static Go worker; Linux only",
@@ -505,7 +523,8 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		return results, err
 	}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer)
+	coverage := newSyntheticStudyInventory()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
 	if err != nil {
 		_ = registry.Close()
 		return results, err
@@ -544,6 +563,9 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		}
 	}()
 	if err := session.SelectRoot(root); err != nil {
+		return results, err
+	}
+	if err := installSyntheticStudyInventory(session, root); err != nil {
 		return results, err
 	}
 	if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: "fixture-auth", Class: readbrokerstudy.ClassCredential, Path: protected}); err != nil {
@@ -810,7 +832,8 @@ func newStudySession(bwrap, workerPath, root string, hold bool) (*readbrokerstud
 		return nil, nil, nil, err
 	}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer)
+	coverage := newSyntheticStudyInventory()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
 	if err != nil {
 		_ = launcher.Close()
 		_ = registry.Close()
@@ -822,7 +845,38 @@ func newStudySession(bwrap, workerPath, root string, hold bool) (*readbrokerstud
 		_ = session.Close(closeCtx)
 		return nil, nil, nil, err
 	}
+	if err := installSyntheticStudyInventory(session, root); err != nil {
+		_ = closeStudySession(session)
+		return nil, nil, nil, err
+	}
 	return registry, authorizer, session, nil
+}
+
+// newSyntheticStudyInventory defines only the research fixture universe. Its
+// completeness must never be presented as real Token Logger or provider-owner
+// integration.
+func newSyntheticStudyInventory() *readbrokerstudy.CoverageInventory {
+	return readbrokerstudy.NewSyntheticStudyInventory()
+}
+
+func installSyntheticStudyInventory(session readbrokerstudy.FixtureSession, root string) error {
+	coverage := session.CoverageSnapshot()
+	if coverage.Complete {
+		return nil
+	}
+	for _, owner := range readbrokerstudy.SyntheticStudyRequirements() {
+		if err := session.DeclareCoverageOwner(owner); err != nil {
+			return err
+		}
+		reserved := filepath.Join(root, ".study-inventory-"+owner.Owner)
+		if err := session.Register(readbrokerstudy.OwnerRegistration{Owner: owner.Owner, Class: owner.Class, Path: reserved}); err != nil {
+			return err
+		}
+	}
+	if err := session.CoverageSnapshot().AdmissionError(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // observedWorkerLauncher adds no authority to the child. It retains a test-only
@@ -1103,7 +1157,8 @@ func runLifecycleCoordinator(args []string) error {
 	}
 	observed := &observedWorkerLauncher{inner: launcher}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), observed, authorizer)
+	coverage := newSyntheticStudyInventory()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), observed, authorizer, coverage)
 	if err != nil {
 		_ = observed.Close()
 		_ = registry.Close()
@@ -1116,6 +1171,9 @@ func runLifecycleCoordinator(args []string) error {
 		}
 	}()
 	if err := session.SelectRoot(*root); err != nil {
+		return err
+	}
+	if err := installSyntheticStudyInventory(session, *root); err != nil {
 		return err
 	}
 	const invocation = "coordinator-death-once-read"
@@ -1759,13 +1817,18 @@ func newObservedSession(bwrap, workerPath, root string, hold bool, gate *termina
 	}
 	launcher := &observedWorkerLauncher{inner: native, gate: gate}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer)
+	coverage := newSyntheticStudyInventory()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
 	if err != nil {
 		_ = launcher.Close()
 		_ = registry.Close()
 		return nil, nil, nil, nil, err
 	}
 	if err := session.SelectRoot(root); err != nil {
+		_ = closeStudySession(session)
+		return nil, nil, nil, nil, err
+	}
+	if err := installSyntheticStudyInventory(session, root); err != nil {
 		_ = closeStudySession(session)
 		return nil, nil, nil, nil, err
 	}
@@ -2763,13 +2826,18 @@ func newProviderFixture(bwrap, workerPath, parent, name string) (*providerFixtur
 		reuse: make(map[string]string), mutate: make(map[string]func(*readbrokerstudy.AuthorizationReceipt)),
 		after: make(map[string]func(readbrokerstudy.AuthorizationRequest)),
 	}
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, mutating)
+	coverage := newSyntheticStudyInventory()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, mutating, coverage)
 	if err != nil {
 		_ = launcher.Close()
 		_ = registry.Close()
 		return nil, err
 	}
 	if err := session.SelectRoot(root); err != nil {
+		_ = closeStudySession(session)
+		return nil, err
+	}
+	if err := installSyntheticStudyInventory(session, root); err != nil {
 		_ = closeStudySession(session)
 		return nil, err
 	}
@@ -2985,6 +3053,7 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 	generationsBefore := session.GenerationSnapshot()
+	coverageSnapshot := session.CoverageSnapshot()
 	result, err := session.Read(ctx, root, path, invocationID)
 	if err != nil {
 		return caseResult{Name: name, Status: "failed", Expected: expected, Observed: "fixture coordinator returned an error", FixtureEffect: "unknown", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "coordinator error suppressed"}
@@ -3071,7 +3140,7 @@ func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbroke
 	if detail == "" {
 		detail = "fixture result bytes and filesystem paths omitted"
 	}
-	row := caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, CapabilityHeld: ev.CapabilityHeld, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
+	row := caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, CapabilityHeld: ev.CapabilityHeld, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, OwnerCoverage: &coverageSnapshot, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
 	applyReadEvidence(&row, result, ev, ev.Case == invocationID)
 	return row
 }

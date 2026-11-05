@@ -6,6 +6,9 @@ injected owner hook now exercises the actual harness auth and settings stores
 against the study registry in disposable tests; the shipped chat does not wire
 that hook to a sandbox session. Provider-source and Token Logger owner
 inventories remain absent. See [protected owner integration](read-broker-owner-integration.md).
+The [owner inventory and admission contract](read-broker-owner-inventory.md)
+audits the store/discovery lifecycles and describes the fail-closed synthetic
+profile; complete fixture coverage is not production owner coverage.
 
 The follow-up native acceptance scenarios for actual auth/settings store calls
 through the live Bubblewrap worker are defined in
