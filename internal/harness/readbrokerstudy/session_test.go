@@ -50,6 +50,9 @@ type fakeWorker struct {
 	resultErr        error
 	resultOverride   *WorkerResult
 	terminateErr     error
+	terminateEntered chan struct{}
+	terminateRelease chan struct{}
+	terminateOnce    sync.Once
 	waitErr          error
 	joinUnconfirmed  bool
 	waitEntered      chan struct{}
@@ -181,9 +184,16 @@ func (w *fakeWorker) ReadResult(ctx context.Context) (WorkerResult, error) {
 
 func (w *fakeWorker) Terminate() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.terminated = true
-	return w.terminateErr
+	entered, release, err := w.terminateEntered, w.terminateRelease, w.terminateErr
+	w.mu.Unlock()
+	if entered != nil {
+		w.terminateOnce.Do(func() { close(entered) })
+	}
+	if release != nil {
+		<-release
+	}
+	return err
 }
 
 func (w *fakeWorker) Wait() error {
@@ -482,6 +492,146 @@ func TestCompleteBoundedSyntheticInventoryAdmitsAndPartialRegistrationRecovers(t
 	if launcher.starts != 1 || authorizer.ConsumptionCount("coverage-read") != 1 {
 		t.Fatalf("recovered read starts=%d once=%d, want one of each", launcher.starts, authorizer.ConsumptionCount("coverage-read"))
 	}
+}
+
+func TestInventoryChangeAfterClassificationDoesNotConsumeOnceGrant(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(target, []byte("inventory change fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	if err := fixture.authorizer.ApproveOnce("inventory-stale-after-classify"); err != nil {
+		t.Fatal(err)
+	}
+	fixture.session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		if checkpoint == CheckpointAfterClassify {
+			return fixture.session.Register(OwnerRegistration{
+				Owner: "fixture-auth-inventory", Class: ClassCredential,
+				Path: filepath.Join(root, ".auth-after-classify"),
+			})
+		}
+		return nil
+	})
+	result, err := fixture.session.Read(context.Background(), root, target, "inventory-stale-after-classify")
+	if err != nil || result.Outcome != ReadNotExecuted {
+		t.Fatalf("read after inventory revision changed=(%q,%v), want not executed", result.Outcome, err)
+	}
+	if got := fixture.authorizer.ConsumptionCount("inventory-stale-after-classify"); got != 0 {
+		t.Fatalf("stale prepared inventory consumed once grant %d times, want zero", got)
+	}
+	if fixture.launcher.starts != 0 || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatalf("stale inventory crossed authorization gate: workers=%d published=%d", fixture.launcher.starts, len(fixture.session.PublishedResults()))
+	}
+}
+
+func TestOverlappingOwnerUpdatesCannotClearNewerFailedUpdate(t *testing.T) {
+	for _, firstKind := range []string{"register", "rotation"} {
+		for _, secondKind := range []string{"register", "rotation"} {
+			t.Run(firstKind+"_then_"+secondKind, func(t *testing.T) {
+				root := t.TempDir()
+				target := filepath.Join(root, "ordinary.fixture")
+				if err := os.WriteFile(target, []byte("overlapping owner update"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				fixture := newSessionFixture(t, root)
+				fixture.worker.resultEntered = make(chan struct{})
+				fixture.worker.resultRelease = make(chan struct{})
+				fixture.worker.terminateEntered = make(chan struct{})
+				fixture.worker.terminateRelease = make(chan struct{})
+				var releaseResultOnce, releaseTerminateOnce sync.Once
+				releaseResult := func() { releaseResultOnce.Do(func() { close(fixture.worker.resultRelease) }) }
+				releaseTerminate := func() { releaseTerminateOnce.Do(func() { close(fixture.worker.terminateRelease) }) }
+				defer releaseResult()
+				defer releaseTerminate()
+
+				const invocationID = "overlapping-owner-update"
+				if err := fixture.authorizer.ApproveOnce(invocationID); err != nil {
+					t.Fatal(err)
+				}
+				type readResult struct {
+					result WorkerResult
+					err    error
+				}
+				readDone := make(chan readResult, 1)
+				go func() {
+					result, err := fixture.session.Read(context.Background(), root, target, invocationID)
+					readDone <- readResult{result: result, err: err}
+				}()
+				select {
+				case <-fixture.worker.resultEntered:
+				case <-time.After(2 * time.Second):
+					t.Fatal("read did not reach the held-result checkpoint")
+				}
+
+				firstDone := make(chan error, 1)
+				go func() { firstDone <- runInventoryUpdate(t, fixture.session, root, firstKind, ".first-update") }()
+				select {
+				case <-fixture.worker.terminateEntered:
+				case <-time.After(2 * time.Second):
+					t.Fatal("first update did not reach the controlled termination checkpoint")
+				}
+
+				// Let the revoked read finish while the first update remains paused
+				// after its registry mutation. The second update then fails before
+				// the first update attempts to clear inventory pending state.
+				releaseResult()
+				select {
+				case <-readDone:
+				case <-time.After(2 * time.Second):
+					t.Fatal("revoked read did not finish while update cleanup was held")
+				}
+
+				secondErr := runInvalidInventoryUpdate(fixture.session, secondKind)
+				if secondErr == nil {
+					t.Fatal("invalid overlapping owner update unexpectedly succeeded")
+				}
+				releaseTerminate()
+				select {
+				case firstErr := <-firstDone:
+					if !errors.Is(firstErr, ErrInventoryIncomplete) {
+						t.Fatalf("older update result=%v, want stale completion refusal", firstErr)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("first owner update did not finish after termination release")
+				}
+
+				coverage := fixture.session.CoverageSnapshot()
+				if coverage.Complete || !coverage.Requirements[0].PendingUpdate {
+					t.Fatalf("older successful update cleared newer failed update: %+v", coverage)
+				}
+				const retryID = "read-after-overlapping-owner-failure"
+				if err := fixture.authorizer.ApproveOnce(retryID); err != nil {
+					t.Fatal(err)
+				}
+				blocked, err := fixture.session.Read(context.Background(), root, target, retryID)
+				if err != nil || blocked.Outcome != ReadNotExecuted || fixture.authorizer.ConsumptionCount(retryID) != 0 || fixture.launcher.starts != 1 {
+					t.Fatalf("read after overlapping failed update=(%q,%v) once=%d workers=%d", blocked.Outcome, err, fixture.authorizer.ConsumptionCount(retryID), fixture.launcher.starts)
+				}
+			})
+		}
+	}
+}
+
+func runInventoryUpdate(t *testing.T, session FixtureSession, root, kind, name string) error {
+	t.Helper()
+	registration := OwnerRegistration{
+		Owner: "fixture-auth-inventory", Class: ClassCredential, Path: filepath.Join(root, name),
+	}
+	if kind == "rotation" {
+		return session.RegisterRotation(registration.Owner, []OwnerRegistration{registration})
+	}
+	return session.Register(registration)
+}
+
+func runInvalidInventoryUpdate(session FixtureSession, kind string) error {
+	registration := OwnerRegistration{
+		Owner: "fixture-auth-inventory", Class: ClassCredential, Path: "relative-invalid-owner-path",
+	}
+	if kind == "rotation" {
+		return session.RegisterRotation(registration.Owner, []OwnerRegistration{registration})
+	}
+	return session.Register(registration)
 }
 
 func TestInventoryRevisionChangeSuppressesCapturedReadAndInvalidatesGeneration(t *testing.T) {

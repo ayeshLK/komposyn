@@ -33,7 +33,7 @@ type CoverageInventory struct {
 	mu            sync.RWMutex
 	requirements  []OwnerRequirement
 	declarations  map[string]OwnerRequirement
-	pending       map[string]bool
+	pending       map[string]uint64
 	retired       map[string]bool
 	registrations map[string]map[OwnerRegistration]map[FileIdentity]struct{}
 	revision      uint64
@@ -46,7 +46,7 @@ type CoverageInventory struct {
 // integrated.
 func NewSyntheticStudyInventory() *CoverageInventory {
 	copyOf := SyntheticStudyRequirements()
-	return &CoverageInventory{requirements: copyOf, declarations: make(map[string]OwnerRequirement), pending: make(map[string]bool), retired: make(map[string]bool), registrations: make(map[string]map[OwnerRegistration]map[FileIdentity]struct{})}
+	return &CoverageInventory{requirements: copyOf, declarations: make(map[string]OwnerRequirement), pending: make(map[string]uint64), retired: make(map[string]bool), registrations: make(map[string]map[OwnerRegistration]map[FileIdentity]struct{})}
 }
 
 // SyntheticStudyRequirements returns a detached copy of the only owner
@@ -111,30 +111,31 @@ func (i *CoverageInventory) retireOwner(owner string) error {
 	return nil
 }
 
-func (i *CoverageInventory) beginOwnerUpdate(owner string) bool {
+func (i *CoverageInventory) beginOwnerUpdate(owner string) (uint64, bool) {
 	if i == nil {
-		return false
+		return 0, false
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.closed {
-		return false
+		return 0, false
 	}
-	if _, required := i.declarations[owner]; !required || i.retired[owner] || i.pending[owner] {
-		return required && i.pending[owner]
+	if _, required := i.declarations[owner]; !required || i.retired[owner] {
+		return 0, false
 	}
-	i.pending[owner] = true
 	i.revision++
-	return true
+	token := i.revision
+	i.pending[owner] = token
+	return token, true
 }
 
-func (i *CoverageInventory) completeOwnerUpdate(owner string) bool {
+func (i *CoverageInventory) completeOwnerUpdate(owner string, token uint64) bool {
 	if i == nil {
 		return false
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.closed || !i.pending[owner] || i.retired[owner] {
+	if i.closed || token == 0 || i.pending[owner] != token || i.retired[owner] {
 		return false
 	}
 	if len(i.registrations[owner]) == 0 {
@@ -192,7 +193,7 @@ func (i *CoverageInventory) Snapshot() CoverageSnapshot {
 		coverage := OwnerCoverage{Owner: requirement.Owner, Class: requirement.Class, Evidence: requirement.Evidence, Lifecycle: requirement.Lifecycle}
 		declaration, declared := i.declarations[requirement.Owner]
 		coverage.Declared = declared && declaration == requirement
-		coverage.PendingUpdate = i.pending[requirement.Owner]
+		_, coverage.PendingUpdate = i.pending[requirement.Owner]
 		coverage.Retired = i.retired[requirement.Owner]
 		for registration, identities := range i.registrations[requirement.Owner] {
 			if registration.Owner != requirement.Owner || registration.Class != requirement.Class {

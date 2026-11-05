@@ -219,7 +219,7 @@ func (s *fixtureSession) Register(registration OwnerRegistration) error {
 		s.mu.Unlock()
 		return ErrSessionClosed
 	}
-	tracked := s.inventory.beginOwnerUpdate(registration.Owner)
+	updateToken, tracked := s.inventory.beginOwnerUpdate(registration.Owner)
 	if tracked {
 		s.gen.Inventory = s.inventory.Snapshot().Revision
 	}
@@ -240,7 +240,7 @@ func (s *fixtureSession) Register(registration OwnerRegistration) error {
 	}
 	if tracked {
 		s.mu.Lock()
-		completed := s.inventory.completeOwnerUpdate(registration.Owner)
+		completed := s.inventory.completeOwnerUpdate(registration.Owner, updateToken)
 		if completed {
 			s.gen.Inventory = s.inventory.Snapshot().Revision
 		}
@@ -258,7 +258,7 @@ func (s *fixtureSession) RegisterRotation(owner string, next []OwnerRegistration
 		s.mu.Unlock()
 		return ErrSessionClosed
 	}
-	tracked := s.inventory.beginOwnerUpdate(owner)
+	updateToken, tracked := s.inventory.beginOwnerUpdate(owner)
 	if tracked {
 		s.gen.Inventory = s.inventory.Snapshot().Revision
 	}
@@ -279,7 +279,7 @@ func (s *fixtureSession) RegisterRotation(owner string, next []OwnerRegistration
 	}
 	if tracked {
 		s.mu.Lock()
-		completed := s.inventory.completeOwnerUpdate(owner)
+		completed := s.inventory.completeOwnerUpdate(owner, updateToken)
 		if completed {
 			s.gen.Inventory = s.inventory.Snapshot().Revision
 		}
@@ -428,7 +428,7 @@ func (s *fixtureSession) Read(ctx context.Context, root, target, invocationID st
 	s.mu.Lock()
 	coverage = s.inventory.Snapshot()
 	coverageErr := coverage.AdmissionError()
-	if coverageErr == nil && s.gen.Inventory != coverage.Revision {
+	if coverageErr == nil && (s.gen.Inventory != coverage.Revision || operationGen.Inventory != coverage.Revision || prepared.Generations().Inventory != coverage.Revision) {
 		s.gen.Inventory = coverage.Revision
 		coverageErr = ErrPolicyChanged
 	}
