@@ -38,15 +38,17 @@ func runAuthRealStoreNativeCases(bwrap, workerPath, parent string) ([]caseResult
 		return rows, err
 	}
 	barrier, err := runRealAuthWorkerBarrierCase(bwrap, workerPath, parent)
+	if barrier.Name != "" {
+		rows = append(rows, barrier)
+	}
 	if err != nil {
 		return rows, err
 	}
-	rows = append(rows, barrier)
 	failure, err := runRealAuthRegistrationFailureCase(bwrap, workerPath, parent)
+	rows, err = appendGroupResults(rows, failure, err)
 	if err != nil {
 		return rows, err
 	}
-	rows = append(rows, failure...)
 	return rows, nil
 }
 

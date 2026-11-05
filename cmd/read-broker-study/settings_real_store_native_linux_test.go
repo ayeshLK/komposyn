@@ -123,16 +123,17 @@ func TestCleanupFailurePreservesObservedViolation(t *testing.T) {
 
 func TestPartialCleanupRowsSurviveLaterGroupError(t *testing.T) {
 	prior := caseResult{Name: "earlier-barrier", CleanupPending: true, WorkerStarted: true}
+	partial := caseResult{Name: "failing-rotation", CleanupPending: true, WorkerStarted: true}
 	setupErr := errors.New("later disposable fixture setup failed")
 	results, err := appendGroupResults(nil, []caseResult{prior}, nil)
 	if err != nil {
 		t.Fatalf("append prior result returned error: %v", err)
 	}
-	results, err = appendGroupResults(results, nil, setupErr)
+	results, err = appendGroupResults(results, []caseResult{partial}, setupErr)
 	if !errors.Is(err, setupErr) {
 		t.Fatalf("appendGroupResults() error=%v, want %v", err, setupErr)
 	}
-	if len(results) != 1 || results[0].Name != prior.Name || !caseRowsRequireFixtureRetention(results) {
+	if len(results) != 2 || results[0].Name != prior.Name || results[1].Name != partial.Name || !caseRowsRequireFixtureRetention(results) {
 		t.Fatalf("partial cleanup obligation was lost before fixture retention: %+v", results)
 	}
 }

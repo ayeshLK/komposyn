@@ -32,10 +32,12 @@ func runRealStorePublicationInvalidationCases(bwrap, workerPath, parent string) 
 	rows := make([]caseResult, 0, 2)
 	for _, storeType := range []string{"auth", "settings"} {
 		row, err := runRealStorePublicationInvalidationCase(bwrap, workerPath, parent, storeType)
+		if row.Name != "" {
+			rows = append(rows, row)
+		}
 		if err != nil {
 			return rows, err
 		}
-		rows = append(rows, row)
 	}
 	return rows, nil
 }

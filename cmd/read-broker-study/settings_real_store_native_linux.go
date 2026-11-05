@@ -35,20 +35,20 @@ import (
 func runSettingsRealStoreNativeCases(bwrap, workerPath, parent string) ([]caseResult, error) {
 	rows := make([]caseResult, 0, 8)
 	absentRows, err := runSettingsAbsentRouteNativeCase(bwrap, workerPath, parent)
+	rows, err = appendGroupResults(rows, absentRows, err)
 	if err != nil {
 		return rows, err
 	}
-	rows = append(rows, absentRows...)
 	rotationRows, err := runSettingsRotationNativeCase(bwrap, workerPath, parent)
+	rows, err = appendGroupResults(rows, rotationRows, err)
 	if err != nil {
 		return rows, err
 	}
-	rows = append(rows, rotationRows...)
 	barrierRows, err := runSettingsBarrierNativeCase(bwrap, workerPath, parent)
+	rows, err = appendGroupResults(rows, barrierRows, err)
 	if err != nil {
 		return rows, err
 	}
-	rows = append(rows, barrierRows...)
 	return rows, nil
 }
 
