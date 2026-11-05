@@ -309,12 +309,16 @@ func TestCoordinatorCheckpointHookFollowsFixtureCheckpointOrder(t *testing.T) {
 	}
 	native := &checkpointTestLauncher{worker: &checkpointTestWorker{}}
 	observed := &observedWorkerLauncher{inner: native}
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), observed, authorizer)
+	coverage := readbrokerstudy.NewSyntheticStudyInventory()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), observed, authorizer, coverage)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = closeStudySession(session) })
 	if err := session.SelectRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := installSyntheticStudyInventory(session, root); err != nil {
 		t.Fatal(err)
 	}
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
@@ -565,6 +569,13 @@ func (s *ownerLifecycleTestSession) Read(context.Context, string, string, string
 func (s *ownerLifecycleTestSession) Register(registration readbrokerstudy.OwnerRegistration) error {
 	return s.RegisterRotation(registration.Owner, []readbrokerstudy.OwnerRegistration{registration})
 }
+func (*ownerLifecycleTestSession) DeclareCoverageOwner(readbrokerstudy.OwnerRequirement) error {
+	return nil
+}
+func (*ownerLifecycleTestSession) RetireCoverageOwner(string) error { return nil }
+func (*ownerLifecycleTestSession) CoverageSnapshot() readbrokerstudy.CoverageSnapshot {
+	return readbrokerstudy.CoverageSnapshot{Complete: true}
+}
 func (s *ownerLifecycleTestSession) RegisterRotation(owner string, registrations []readbrokerstudy.OwnerRegistration) error {
 	s.registerCalls++
 	if err := s.registry.RegisterRotation(owner, registrations); err != nil {
@@ -732,11 +743,15 @@ func newInjectedProviderFixture(t *testing.T, workerBytes []byte) (*providerFixt
 		mutate: make(map[string]func(*readbrokerstudy.AuthorizationReceipt)), after: make(map[string]func(readbrokerstudy.AuthorizationRequest)),
 	}
 	launcher := &injectedProviderLauncher{worker: &injectedProviderWorker{result: append([]byte(nil), workerBytes...), override: workerBytes != nil}}
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, mutating)
+	coverage := readbrokerstudy.NewSyntheticStudyInventory()
+	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, mutating, coverage)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := session.SelectRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := installSyntheticStudyInventory(session, root); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = closeStudySession(session) })
@@ -868,6 +883,13 @@ func (s *directoryCoverageSequenceSession) Register(registration readbrokerstudy
 	s.rootAtRegistration = s.selectedRoot
 	s.registrations = append(s.registrations, registration)
 	return nil
+}
+func (*directoryCoverageSequenceSession) DeclareCoverageOwner(readbrokerstudy.OwnerRequirement) error {
+	return nil
+}
+func (*directoryCoverageSequenceSession) RetireCoverageOwner(string) error { return nil }
+func (*directoryCoverageSequenceSession) CoverageSnapshot() readbrokerstudy.CoverageSnapshot {
+	return readbrokerstudy.CoverageSnapshot{Complete: true}
 }
 
 func (*directoryCoverageSequenceSession) RegisterRotation(string, []readbrokerstudy.OwnerRegistration) error {

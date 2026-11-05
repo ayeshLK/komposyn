@@ -115,9 +115,10 @@ type ReadBroker interface {
 }
 
 type GenerationSet struct {
-	Root   uint64 `json:"root_generation"`
-	Policy uint64 `json:"policy_generation"`
-	Grant  uint64 `json:"grant_generation"`
+	Root      uint64 `json:"root_generation"`
+	Policy    uint64 `json:"policy_generation"`
+	Grant     uint64 `json:"grant_generation"`
+	Inventory uint64 `json:"inventory_revision"`
 }
 
 type AuthorizationReceipt struct {
@@ -210,6 +211,8 @@ type CheckpointHook func(Checkpoint) error
 // and publication. Production runtime code does not use this type.
 type FixtureSession interface {
 	Read(context.Context, string, string, string) (WorkerResult, error)
+	DeclareCoverageOwner(OwnerRequirement) error
+	RetireCoverageOwner(string) error
 	Register(OwnerRegistration) error
 	RegisterRotation(owner string, next []OwnerRegistration) error
 	SelectRoot(root string) error
@@ -218,6 +221,7 @@ type FixtureSession interface {
 	PublishedResults() [][]byte
 	Evidence() []ReadEvidence
 	GenerationSnapshot() GenerationSet
+	CoverageSnapshot() CoverageSnapshot
 	ActiveOperationCount() int
 	Close(context.Context) error
 }

@@ -428,3 +428,6 @@ production integration remain limited or pending; no filesystem tool is
 enabled. See the [scenario matrix](read-broker-native-actor.md) and follow the
 [manual read-broker runner guide](read-broker-manual-runner.md) to produce a
 bounded, checksummed archive from a normal Linux host terminal.
+The [owner inventory and admission note](read-broker-owner-inventory.md)
+records the Token Logger/provider lifecycle gaps and explains why a complete
+synthetic fixture profile does not establish production coverage.

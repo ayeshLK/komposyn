@@ -299,15 +299,7 @@ func newSessionFixture(t *testing.T, root string) *sessionFixture {
 	authorizer := NewOnceGrantFixture()
 	worker := &fakeWorker{}
 	launcher := &fakeLauncher{worker: worker}
-	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
-	if err != nil {
-		_ = registry.Close()
-		t.Fatal(err)
-	}
-	if err := session.SelectRoot(root); err != nil {
-		_ = registry.Close()
-		t.Fatal(err)
-	}
+	session := newCoveredSession(t, registry, root, launcher, authorizer)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -315,6 +307,287 @@ func newSessionFixture(t *testing.T, root string) *sessionFixture {
 		_ = registry.Close()
 	})
 	return &sessionFixture{session: session, registry: registry, authorizer: authorizer, worker: worker, launcher: launcher, root: root}
+}
+
+func newCoveredSession(t *testing.T, registry *Registry, root string, launcher WorkerLauncher, authorizer FixtureAuthorizer) FixtureSession {
+	t.Helper()
+	coverage := NewSyntheticStudyInventory()
+	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer, coverage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SelectRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := installTestOwnerCoverage(session, root); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func testOwnerRequirements() []OwnerRequirement {
+	return SyntheticStudyRequirements()
+}
+
+func installTestOwnerCoverage(session FixtureSession, root string) error {
+	for _, requirement := range testOwnerRequirements() {
+		if err := session.DeclareCoverageOwner(requirement); err != nil {
+			return err
+		}
+		path := filepath.Join(root, ".coverage-"+requirement.Owner)
+		if err := session.Register(OwnerRegistration{Owner: requirement.Owner, Class: requirement.Class, Path: path}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestUnknownAndPartialOwnerInventoryRefuseBeforeAuthorizationAndWorker(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(target, []byte("bounded inventory fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name       string
+		partial    bool
+		wantReason string
+	}{
+		{name: "unknown inventory", wantReason: ErrInventoryIncomplete.Error()},
+		{name: "auth and settings are not the whole profile", partial: true, wantReason: "fixture-token-db-inventory"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			registry, err := NewRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = registry.Close() })
+			authorizer := NewOnceGrantFixture()
+			if err := authorizer.ApproveOnce("coverage-read"); err != nil {
+				t.Fatal(err)
+			}
+			launcher := &fakeLauncher{worker: &fakeWorker{}}
+			var session FixtureSession
+			if test.partial {
+				inventory := NewSyntheticStudyInventory()
+				session, err = NewFixtureSession(registry, NewBroker(registry), launcher, authorizer, inventory)
+			} else {
+				session, err = NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				_ = session.Close(ctx)
+			})
+			if err := session.SelectRoot(root); err != nil {
+				t.Fatal(err)
+			}
+			if test.partial {
+				unsupported := testOwnerRequirements()[0]
+				unsupported.Lifecycle = LifecycleReadOnlySnapshot
+				if err := session.DeclareCoverageOwner(unsupported); err == nil {
+					t.Fatal("unsupported lifecycle declaration was accepted")
+				}
+				for _, requirement := range testOwnerRequirements()[:2] {
+					if err := session.DeclareCoverageOwner(requirement); err != nil {
+						t.Fatal(err)
+					}
+					reserved := filepath.Join(root, ".absent-"+requirement.Owner)
+					if err := session.Register(OwnerRegistration{Owner: requirement.Owner, Class: requirement.Class, Path: reserved}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := session.Register(OwnerRegistration{Owner: "uncovered-provider-source", Class: ClassProvider, Path: target}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := session.Read(context.Background(), root, target, "coverage-read")
+			if err != nil || result.Outcome != ReadNotExecuted || !strings.Contains(result.Detail, test.wantReason) {
+				t.Fatalf("incomplete inventory read=(%q,%q,%v), want fail-closed reason %q", result.Outcome, result.Detail, err, test.wantReason)
+			}
+			if launcher.starts != 0 || authorizer.ConsumptionCount("coverage-read") != 0 || len(session.PublishedResults()) != 0 {
+				t.Fatalf("incomplete inventory crossed admission: starts=%d once=%d published=%d", launcher.starts, authorizer.ConsumptionCount("coverage-read"), len(session.PublishedResults()))
+			}
+		})
+	}
+}
+
+func TestCompleteBoundedSyntheticInventoryAdmitsAndPartialRegistrationRecovers(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	want := []byte("bounded inventory fixture")
+	if err := os.WriteFile(target, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	authorizer := NewOnceGrantFixture()
+	if err := authorizer.ApproveOnce("coverage-read"); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &fakeLauncher{worker: &fakeWorker{}}
+	inventory := NewSyntheticStudyInventory()
+	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = session.Close(ctx)
+	}()
+	if err := session.SelectRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, requirement := range testOwnerRequirements()[:2] {
+		if err := session.DeclareCoverageOwner(requirement); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.Register(OwnerRegistration{Owner: requirement.Owner, Class: requirement.Class, Path: filepath.Join(root, ".absent-"+requirement.Owner)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	partial := session.CoverageSnapshot()
+	if partial.Complete || partial.AdmissionError() == nil {
+		t.Fatalf("auth/settings-only inventory was incorrectly complete: %+v", partial)
+	}
+	if partial.Requirements[0].RegisteredRoutes != 1 || partial.Requirements[0].PinnedIdentities != 0 {
+		t.Fatalf("absent reserved route was not represented distinctly: %+v", partial.Requirements[0])
+	}
+	if result, err := session.Read(context.Background(), root, target, "coverage-read"); err != nil || result.Outcome != ReadNotExecuted {
+		t.Fatalf("partial read=(%q,%v), must refuse before consuming its approval", result.Outcome, err)
+	}
+	for _, requirement := range testOwnerRequirements()[2:] {
+		if err := session.DeclareCoverageOwner(requirement); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.Register(OwnerRegistration{Owner: requirement.Owner, Class: requirement.Class, Path: filepath.Join(root, ".absent-"+requirement.Owner)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete := session.CoverageSnapshot()
+	if err := complete.AdmissionError(); err != nil {
+		t.Fatalf("completed bounded fixture inventory refused: %v (%+v)", err, complete)
+	}
+	result, err := session.Read(context.Background(), root, target, "coverage-read")
+	if err != nil || result.Outcome != ReadSucceeded || !bytes.Equal(result.Bytes, want) {
+		t.Fatalf("read after coverage recovery=(%q,%q,%v)", result.Outcome, result.Bytes, err)
+	}
+	if launcher.starts != 1 || authorizer.ConsumptionCount("coverage-read") != 1 {
+		t.Fatalf("recovered read starts=%d once=%d, want one of each", launcher.starts, authorizer.ConsumptionCount("coverage-read"))
+	}
+}
+
+func TestInventoryRevisionChangeSuppressesCapturedReadAndInvalidatesGeneration(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(target, []byte("inventory revision fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	if err := fixture.authorizer.ApproveOnce("inventory-change"); err != nil {
+		t.Fatal(err)
+	}
+	before := fixture.session.GenerationSnapshot()
+	fixture.session.SetCheckpointHook(func(checkpoint Checkpoint) error {
+		if checkpoint == CheckpointAfterCapture {
+			return fixture.session.Register(OwnerRegistration{Owner: "fixture-auth-inventory", Class: ClassCredential, Path: filepath.Join(root, ".auth-second-route")})
+		}
+		return nil
+	})
+	result, err := fixture.session.Read(context.Background(), root, target, "inventory-change")
+	fixture.session.SetCheckpointHook(nil)
+	after := fixture.session.GenerationSnapshot()
+	if err != nil || result.Outcome == ReadSucceeded || len(fixture.session.PublishedResults()) != 0 {
+		t.Fatalf("stale captured result escaped after owner inventory changed: result=%+v err=%v published=%d", result, err, len(fixture.session.PublishedResults()))
+	}
+	if after.Inventory <= before.Inventory || after.Policy <= before.Policy || fixture.authorizer.ConsumptionCount("inventory-change") != 1 {
+		t.Fatalf("inventory mutation revisions before=%+v after=%+v once=%d", before, after, fixture.authorizer.ConsumptionCount("inventory-change"))
+	}
+}
+
+func TestRetiredRequiredOwnerInvalidatesCoverageWithoutDroppingPins(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(target, []byte("retired owner fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	if err := fixture.authorizer.ApproveOnce("retired-owner-read"); err != nil {
+		t.Fatal(err)
+	}
+	ownerPath := filepath.Join(root, ".coverage-fixture-token-db-inventory")
+	if err := os.WriteFile(ownerPath, []byte("synthetic protected owner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.session.Register(OwnerRegistration{Owner: "fixture-token-db-inventory", Class: ClassTokenDatabase, Path: ownerPath}); err != nil {
+		t.Fatal(err)
+	}
+	beforePins := fixture.registry.PinnedObjectCount()
+	if err := fixture.session.RetireCoverageOwner("fixture-token-db-inventory"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := fixture.session.CoverageSnapshot()
+	if snapshot.Complete || snapshot.AdmissionError() == nil {
+		t.Fatalf("retired required owner kept coverage complete: %+v", snapshot)
+	}
+	var retired OwnerCoverage
+	for _, owner := range snapshot.Requirements {
+		if owner.Owner == "fixture-token-db-inventory" {
+			retired = owner
+		}
+	}
+	if !retired.Retired || retired.Complete || retired.PinnedIdentities != 1 {
+		t.Fatalf("retired coverage/pin state=%+v", retired)
+	}
+	result, err := fixture.session.Read(context.Background(), root, target, "retired-owner-read")
+	if err != nil || result.Outcome != ReadNotExecuted || fixture.launcher.starts != 0 || fixture.authorizer.ConsumptionCount("retired-owner-read") != 0 {
+		t.Fatalf("read after owner retirement=(%q,%v) starts=%d once=%d", result.Outcome, err, fixture.launcher.starts, fixture.authorizer.ConsumptionCount("retired-owner-read"))
+	}
+	if fixture.registry.PinnedObjectCount() < beforePins {
+		t.Fatalf("owner retirement released registry pins early: before=%d after=%d", beforePins, fixture.registry.PinnedObjectCount())
+	}
+}
+
+func TestFailedOwnerRegistrationLeavesCoveragePendingUntilRetry(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(target, []byte("owner retry fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	if err := fixture.authorizer.ApproveOnce("owner-retry-read"); err != nil {
+		t.Fatal(err)
+	}
+	failed := fixture.session.Register(OwnerRegistration{Owner: "fixture-auth-inventory", Class: ClassCredential, Path: "relative-owner-path"})
+	if failed == nil {
+		t.Fatal("invalid owner route registration unexpectedly succeeded")
+	}
+	coverage := fixture.session.CoverageSnapshot()
+	if coverage.Complete || !coverage.Requirements[0].PendingUpdate {
+		t.Fatalf("failed update left stale complete coverage: %+v", coverage)
+	}
+	blocked, err := fixture.session.Read(context.Background(), root, target, "owner-retry-read")
+	if err != nil || blocked.Outcome != ReadNotExecuted || fixture.authorizer.ConsumptionCount("owner-retry-read") != 0 || fixture.launcher.starts != 0 {
+		t.Fatalf("read during failed owner update=(%q,%v) once=%d starts=%d", blocked.Outcome, err, fixture.authorizer.ConsumptionCount("owner-retry-read"), fixture.launcher.starts)
+	}
+	if err := fixture.session.Register(OwnerRegistration{Owner: "fixture-auth-inventory", Class: ClassCredential, Path: filepath.Join(root, ".auth-owner-retry")}); err != nil {
+		t.Fatalf("owner registration retry: %v", err)
+	}
+	coverage = fixture.session.CoverageSnapshot()
+	if err := coverage.AdmissionError(); err != nil {
+		t.Fatalf("successful retry did not restore bounded fixture admission: %v (%+v)", err, coverage)
+	}
+	result, err := fixture.session.Read(context.Background(), root, target, "owner-retry-read")
+	if err != nil || result.Outcome != ReadSucceeded || fixture.authorizer.ConsumptionCount("owner-retry-read") != 1 || fixture.launcher.starts != 1 {
+		t.Fatalf("read after owner retry=(%q,%v) once=%d starts=%d", result.Outcome, err, fixture.authorizer.ConsumptionCount("owner-retry-read"), fixture.launcher.starts)
+	}
 }
 
 func TestFixtureSessionRequiresExplicitOnceApprovalAndPublishesExactObject(t *testing.T) {
@@ -391,13 +664,7 @@ func TestLateAliasDoesNotReclassifyExistingOrdinaryRouteButProtectedRouteRefuses
 	}
 	worker := &fakeWorker{}
 	launcher := &fakeLauncher{worker: worker}
-	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.SelectRoot(root); err != nil {
-		t.Fatal(err)
-	}
+	session := newCoveredSession(t, registry, root, launcher, authorizer)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	result, err := session.Read(ctx, root, target, "mutable-location")
@@ -814,15 +1081,7 @@ func TestUnresolvedCleanupInvalidatesReadAlreadyWaitingForAuthorization(t *testi
 	blocked := &blockingFixtureAuthorizer{delegate: baseAuthorizer, blockID: "read-b", entered: make(chan struct{}), release: make(chan struct{})}
 	workerA := &fakeWorker{joinUnconfirmed: true}
 	launcher := &fakeLauncher{workers: []*fakeWorker{workerA, &fakeWorker{}}}
-	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, blocked)
-	if err != nil {
-		_ = registry.Close()
-		t.Fatal(err)
-	}
-	if err := session.SelectRoot(root); err != nil {
-		_ = registry.Close()
-		t.Fatal(err)
-	}
+	session := newCoveredSession(t, registry, root, launcher, blocked)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -1199,13 +1458,7 @@ func TestMutableProviderExactRegistrationAllowsOrdinaryAndExplicitProviderReads(
 	authorizer := NewOnceGrantFixture()
 	ordinaryWorker, providerWorker := &fakeWorker{}, &fakeWorker{}
 	launcher := &fakeLauncher{workers: []*fakeWorker{ordinaryWorker, providerWorker}}
-	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.SelectRoot(root); err != nil {
-		t.Fatal(err)
-	}
+	session := newCoveredSession(t, registry, root, launcher, authorizer)
 	if err := authorizer.ApproveOnce("ordinary-with-provider-location"); err != nil {
 		t.Fatal(err)
 	}
@@ -1257,6 +1510,7 @@ func TestOwnerRotationWaitsForWorkerJoinBeforeWritingRegisteredObject(t *testing
 		t.Fatal(err)
 	}
 	fixture := newSessionFixture(t, root)
+	coverageBefore := fixture.session.GenerationSnapshot()
 	if err := fixture.session.Register(OwnerRegistration{Owner: "auth-owner", Class: ClassCredential, Path: oldPath}); err != nil {
 		t.Fatal(err)
 	}
@@ -1287,6 +1541,13 @@ func TestOwnerRotationWaitsForWorkerJoinBeforeWritingRegisteredObject(t *testing
 	case <-fixture.worker.waitEntered:
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker did not reach the deterministic join barrier")
+	}
+	coverageRegistration := OwnerRegistration{Owner: "fixture-auth-inventory", Class: ClassCredential, Path: filepath.Join(root, ".auth-coverage-while-held")}
+	if err := fixture.session.Register(coverageRegistration); !errors.Is(err, ErrCleanupPending) {
+		t.Fatalf("inventory registration=%v, want cleanup pending while capability worker is held", err)
+	}
+	if generation := fixture.session.GenerationSnapshot(); generation.Inventory <= coverageBefore.Inventory {
+		t.Fatalf("owner coverage registration did not advance inventory revision: before=%+v after=%+v", coverageBefore, generation)
 	}
 
 	rotation := []OwnerRegistration{{Owner: "auth-owner", Class: ClassCredential, Path: newPath}}
