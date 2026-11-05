@@ -25,49 +25,6 @@ import (
 
 var ErrInventoryIncomplete = errors.New("protected owner inventory is incomplete")
 
-type OwnerEvidence string
-
-const (
-	OwnerEvidenceFixture OwnerEvidence = "synthetic_fixture"
-)
-
-type OwnerLifecycle string
-
-const (
-	LifecyclePinnedReplacement OwnerLifecycle = "pinned_before_sensitive_write_and_rotation"
-	LifecycleReadOnlySnapshot  OwnerLifecycle = "read_only_open_identity_registration"
-)
-
-// OwnerRequirement is supplied by trusted study composition. It describes a
-// bounded universe; it does not imply machine-wide discovery or production
-// owner integration.
-type OwnerRequirement struct {
-	Owner     string         `json:"owner"`
-	Class     ResourceClass  `json:"class"`
-	Evidence  OwnerEvidence  `json:"evidence"`
-	Lifecycle OwnerLifecycle `json:"lifecycle"`
-}
-
-type OwnerCoverage struct {
-	Owner             string         `json:"owner"`
-	Class             ResourceClass  `json:"class"`
-	Evidence          OwnerEvidence  `json:"evidence"`
-	Lifecycle         OwnerLifecycle `json:"lifecycle"`
-	Declared          bool           `json:"declared"`
-	PendingUpdate     bool           `json:"pending_update"`
-	Retired           bool           `json:"retired"`
-	RegisteredRoutes  int            `json:"registered_routes"`
-	PinnedIdentities  int            `json:"pinned_identities"`
-	Complete          bool           `json:"complete"`
-	UnavailableReason string         `json:"unavailable_reason,omitempty"`
-}
-
-type CoverageSnapshot struct {
-	Revision     uint64          `json:"revision"`
-	Complete     bool            `json:"complete"`
-	Requirements []OwnerCoverage `json:"requirements"`
-}
-
 // CoverageInventory records declared owners separately from their actual
 // route/object registrations. An empty inventory is never complete. The
 // caller that constructs requirements is trusted composition code, not a
