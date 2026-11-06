@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "source_commit": "f592c9c627dea3518482265242ccdd3f4db05ab6",
+  "driver": "modernc.org/sqlite v1.61.0",
+  "driver_source_commit": "4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738",
+  "sqlite_version": "3.54.1",
+  "go_version": "go1.26.10",
+  "kernel": "7.0.0-42-generic",
+  "run_time_utc": "2026-11-06T10:36:41Z",
+  "os": "linux",
+  "architecture": "amd64",
+  "cases": [
+    {
+      "name": "wal_write_readback_and_checkpoint",
+      "classification": "measured_pass",
+      "observed": "A synthetic WAL transaction committed two rows; a second SQLite connection read them; TRUNCATE checkpoint completed without a busy writer."
+    },
+    {
+      "name": "actual_wal_and_shm_open_pinned_before_native_use",
+      "classification": "measured_pass",
+      "observed": "The open hook pinned WAL wal_object_1 at 0 bytes and SHM shm_object_2 at 0 bytes before returning each actual descriptor; WAL contained 8272 bytes before checkpoint; the matching MAP_SHARED call used the pinned SHM object, which grew to 32768 bytes. The WAL pin remained stat-able at 0 bytes after SQLite close."
+    },
+    {
+      "name": "second_connection_shared_node",
+      "classification": "measured_pass",
+      "observed": "A second simultaneous connection completed a WAL read/write while the process observed only one physical SHM open; this is consistent with the pinned generated-code shared-node reuse path, not evidence of a per-connection owner callback."
+    },
+    {
+      "name": "denial_cancellation_and_fresh_retry",
+      "classification": "not_run",
+      "observed": "Not exercised: this probe only demonstrates ordering with an allow decision; the global raw syscall hook is not a trusted authorization integration."
+    }
+  ],
+  "limitations": [
+    "This standalone process installs raw generated xSetSystemCall callbacks; they mutate a package-global table and are not a supported per-VFS authorization API.",
+    "Only one synthetic database is used. Denial, cancellation, fresh retry and multiple-connection owner coverage are not exercised by this positive ordering probe.",
+    "The probe uses private generated ABI layouts and callbacks; it is not production integration or a supported driver contract.",
+    "It does not establish protected-owner inventory, revocation, worker lifecycle, external-writer coordination, other architectures or strict path containment."
+  ]
+}
