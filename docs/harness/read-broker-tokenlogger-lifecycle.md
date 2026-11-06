@@ -92,16 +92,16 @@ blocking each artifact's first write.
 
 ### Lifecycle matrix
 
-| Artifact / route | Owner and creation/open timing | First possible content or metadata write | Replacement, reopen, close and cleanup | Exact-object pre-write interception today |
-|---|---|---|---|---|
-| Main database | Caller supplies path to `Open`/`OpenWithOptions`; schema preflight reads/copies it before lazy `sql.Open`; SQLite may create/open it on first `Exec` in `configure` | Schema migration, catalog sync, or later Store operation; SQLite itself may initialize database metadata | Caller may replace/reopen path; one connection per Store; Store close can checkpoint; other Store/process handles are not coordinated | No. Connection hook is after `newConn` opened SQLite objects |
-| WAL (`-wal`) | SQLite chooses/opens it when WAL mode and writes require it | `PRAGMA journal_mode=WAL`, migration or first write; SQLite manages bytes | Checkpoint, reopen, truncation and last connection close can change/remove it; another Store/process can keep it live | No. Same missing writable VFS boundary |
-| Shared memory (`-shm`) | SQLite creates/opens as needed for WAL coordination | SQLite's shared-memory methods initialize/update it; mode depends on parent directory/umask and runtime | May be removed/recreated as connections close/reopen; must not release a pin before SQLite has closed and completed cleanup | No. Not even included in schema preflight snapshot |
-| Rollback/other journals | SQLite chooses based on journal mode and operation (including recovery/locking behavior) | Journal records precede database mutation | Recovery and close can remove/change journal; code currently sets WAL but preflight observes `-journal`, and other modes/configurations remain possible | No. Must classify VFS file role and fail closed if unsupported |
-| Schema-inspection snapshot | Core creates a private `os.MkdirTemp` directory, copies main/WAL/journal, then opens the copied DB | Snapshot bytes are written by `copyRegularFile` before SQLite opens its copy | Temporary directory is removed after inspection; error paths also clean it; DB content exists there transiently | No owner hook. Host must include this temporary copy in lifecycle protection or change design before claiming complete coverage |
-| Migration backup main | Core chooses same-directory generated `.komposyn-pre-migration-*.sqlite` or caller `BackupPath`; exclusive create, mode 0600 attempt, then online backup opens destination through driver | Online backup page writes; metadata table is written afterward; backup is integrity/schema verified before migration continues | Main backup is preserved after successful verified backup even if later migration fails; backup open/metadata/verify connections close independently | No. Destination is reopened by SQLite pathname; no descriptor-based VFS hook |
-| Backup WAL/SHM/journal | SQLite creates as required when destination and metadata connections open | Online backup and metadata SQL may initialize or write sidecars | Sidecars can remain after subsequent migration failure; probe observed backup `-shm` and zero-length `-wal`; cleanup currently removes only the backup main path on incomplete backup construction | No. Must cover sidecars and cleanup as part of backup lifecycle |
-| Backup verification/source connections | `runOnlineBackup`, `writeBackupMetadata`, and `verifyMigrationBackup` each create independent `database/sql` handles/driver connections | Source read; backup destination/metadata writes; verification read | Deferred close occurs on function return; errors can leave sidecars; any failed backup construction removes only owned main pathname | No. Path-based driver opens and close effects are not coordinated with a broker |
+| Artifact / route | Owner and creation/open timing | First possible content or metadata write | Replacement, reopen, close and cleanup | Protected identity lifetime | Exact-object pre-write interception today |
+|---|---|---|---|---|---|
+| Main database | Caller supplies path to `Open`/`OpenWithOptions`; schema preflight reads/copies it before lazy `sql.Open`; SQLite may create/open it on first `Exec` in `configure` | Schema migration, catalog sync, or later Store operation; SQLite itself may initialize database metadata | Caller may replace/reopen path; one connection per Store; Store close can checkpoint; other Store/process handles are not coordinated | Protect exact identities until policy-registry shutdown, including after Store close and rename/rotation | No. Connection hook is after `newConn` opened SQLite objects |
+| WAL (`-wal`) | SQLite chooses/opens it when WAL mode and writes require it | `PRAGMA journal_mode=WAL`, migration or first write; SQLite manages bytes | Checkpoint, reopen, truncation and last connection close can change/remove it; another Store/process can keep it live | Protect each identity until policy-registry shutdown; close/removal does not retire an alias of that object | No. Same missing writable VFS boundary |
+| Shared memory (`-shm`) | SQLite creates/opens as needed for WAL coordination | SQLite's shared-memory methods initialize/update it; mode depends on parent directory/umask and runtime | May be removed/recreated as connections close/reopen; must not release a pin before SQLite has closed and completed cleanup | Protect each identity until policy-registry shutdown, even after unlink/rotation | No. Not even included in schema preflight snapshot |
+| Rollback/other journals | SQLite chooses based on journal mode and operation (including recovery/locking behavior) | Journal records precede database mutation | Recovery and close can remove/change journal; code currently sets WAL but preflight observes `-journal`, and other modes/configurations remain possible | Protect each registered identity until policy-registry shutdown; close/delete is not identity retirement | No. Must classify VFS file role and fail closed if unsupported |
+| Schema-inspection snapshot | Core creates a private `os.MkdirTemp` directory, copies main/WAL/journal, then opens the copied DB | Snapshot bytes are written by `copyRegularFile` before SQLite opens its copy | Temporary directory is removed after inspection; error paths also clean it; DB content exists there transiently | If included as protected, pin identity until policy-registry shutdown after unlink; otherwise this route must be proven inaccessible and excluded by reviewed policy | No owner hook. Host must include this temporary copy in lifecycle protection or change design before claiming complete coverage |
+| Migration backup main | Core chooses same-directory generated `.komposyn-pre-migration-*.sqlite` or caller `BackupPath`; exclusive create, mode 0600 attempt, then online backup opens destination through driver | Online backup page writes; metadata table is written afterward; backup is integrity/schema verified before migration continues | Main backup is preserved after successful verified backup even if later migration fails; backup open/metadata/verify connections close independently | Protect the backup identity through registry shutdown, including retained or renamed backup objects | No. Destination is reopened by SQLite pathname; no descriptor-based VFS hook |
+| Backup WAL/SHM/journal | SQLite creates as required when destination and metadata connections open | Online backup and metadata SQL may initialize or write sidecars | Sidecars can remain after subsequent migration failure; probe observed backup `-shm` and zero-length `-wal`; cleanup currently removes only the backup main path on incomplete backup construction | Protect each identity through registry shutdown; cleanup of the pathname does not establish identity retirement | No. Must cover sidecars and cleanup as part of backup lifecycle |
+| Backup verification/source connections | `runOnlineBackup`, `writeBackupMetadata`, and `verifyMigrationBackup` each create independent `database/sql` handles/driver connections | Source read; backup destination/metadata writes; verification read | Deferred close occurs on function return; errors can leave sidecars; any failed backup construction removes only owned main pathname | Any protected object opened here remains protected until registry shutdown, regardless of connection close | No. Path-based driver opens and close effects are not coordinated with a broker |
 
 Modes in the probe are reported only as observations under that fixture's
 directory permissions and umask. They are not a policy guarantee. SQLite
@@ -141,7 +141,8 @@ host owners register protected routes and existing exact objects
   -> owner rotation/close blocks new admissions and cancels affected workers
   -> owner waits for confirmed worker join and publication suppression
   -> SQLite checkpoint/close/delete completes under VFS lifecycle control
-  -> pins retire only after SQLite no longer holds or can recreate objects
+  -> SQLite handle/route lease ends; protected object pins remain retired-but-protected
+  -> pins are released only when the owning policy registry shuts down
 ```
 
 The future lock order must be explicit and one-way, for example owner lifecycle
@@ -152,6 +153,12 @@ then allow SQLite operations that can write or delete sidecars; if join or
 cleanup is unconfirmed, initialization/mutation remains blocked and the result
 is reported incomplete/unknown. The once grant remains consumed by the runtime
 exactly once; lifecycle registration must neither consume nor restore it.
+SQLite close completes the Store's write/sidecar lifecycle, but does **not**
+make a retired database, WAL, SHM, journal or backup identity ordinary: a hard
+link or renamed object may still expose the same bytes. Keep retired exact
+object pins protected until registry/conversation shutdown. Any earlier pin
+release or reclassification requires a separately reviewed and proven safe
+retirement rule.
 
 Per-Store `SetMaxOpenConns(1)` is not cross-Store/process serialization. A
 supported integration must either coordinate every permitted writer through
@@ -187,7 +194,9 @@ cannot recognize independent copies of sensitive bytes.
 3. **Core-owned lifecycle contract:** add a compatible opt-in core constructor
    only after the prototype establishes call ordering. Specify registration,
    cancellation/join, close/rotation, cleanup-pending, generations and error
-   classification. Test multiple Stores and refuse uncoordinated writers.
+   classification. Retain retired exact-object pins through registry shutdown;
+   SQLite close is not pin retirement. Test multiple Stores and refuse
+   uncoordinated writers.
 4. **Owner composition:** integrate each standalone host composition explicitly;
    register selected DB/backup routes and all current/replacement objects before
    sensitive writes. Keep provider-source integration separate. Missing owner
@@ -221,19 +230,65 @@ reproducible prototype/decision report; do not silently fork generated code or
 add a callback before sql.Open and call it enforcement. Report exact driver and
 SQLite revisions, platform evidence, descriptor/object ordering, cleanup,
 limitations and required maintainer decisions. Add only focused tests needed
-to prove the prototype. Keep Token Logger broker coverage marked unsupported.
+to prove the prototype. SQLite close must not release or reclassify retired
+protected object identities; retain their pins until policy-registry shutdown
+unless a separately reviewed safe retirement rule is demonstrated. Keep Token
+Logger broker coverage marked unsupported.
 ```
 
 ## Reproduction and source references
 
-The disposable lifecycle probe described above used the repository's pinned
-driver and `go run` against synthetic temporary databases. It did not use the
-broker worker and does not establish an enforcement barrier. Repository commit
-for this audit: `c82305ce99d6c3aea8d6cc44c10161a505e79ff6`; Go `go1.26.10`,
-Linux amd64. Relevant local symbols are `openWithOptionsAndObserver`,
-`Store.configure`, `Store.Close`, `Store.migrate`, `inspectSchemaSnapshot`,
-`copyRegularFile`, `createMigrationBackup`, `runOnlineBackup`,
-`writeBackupMetadata`, and `verifyMigrationBackup`.
+Run the committed, synthetic-only lifecycle probe from the repository root:
+
+```sh
+go test -run '^TestReadBrokerLifecycleProbe$' -count=1 -v ./plugins/library/token-logger
+```
+
+`TestReadBrokerLifecycleProbe` creates all DBs under `t.TempDir`, prints each
+checkpoint's explicit temporary directory and sorted file names/modes/sizes,
+and removes the entire fixture root via Go test cleanup. It creates a fresh
+Store, writes one synthetic diagnostic, observes close/reopen, and separately
+runs online backup, metadata, and verification as named checkpoints. A second
+fixture has only a version-1 `schema_migrations` table plus a pre-existing
+`diagnostics` table; this makes migration 2 fail deterministically after
+`OpenWithOptions` has created and verified the explicit online backup. No real
+database or contents are read. The test does not use the broker worker and does
+not establish a pre-write enforcement barrier.
+
+Observed in this Linux amd64 run (Go `go1.26.10`, modernc driver `v1.61.0`,
+SQLite `3.54.1`): the fresh Store had main/WAL/SHM while open; `Close` left only
+the main database; reopen recreated a zero-length WAL and SHM, then close
+removed them. The staged successful backup had only its main file after online
+copy, metadata, and verification checkpoints. The full Store path then failed
+as expected at migration 2 and left the explicit backup main plus `-shm` and
+zero-length `-wal` at the final checkpoint. This output reproduces the final
+states. It does **not** isolate which internal call in the integrated failing
+Store path first created those backup sidecars; neither file appearance after
+return nor syscall tracing alone proves a pre-write hook. Treat that exact
+sidecar creation point as unresolved pending a VFS-level trace/prototype.
+
+Checkpoint values from the run (fixture names shortened; sizes are bytes):
+
+| Checkpoint | Observed fixture entries |
+|---|---|
+| `fresh.open` | `fresh.sqlite` 4096; `fresh.sqlite-shm` 32768; `fresh.sqlite-wal` 370832 |
+| `fresh.written` | main 4096; SHM 32768; WAL 383192 |
+| `fresh.closed` | main 352256 only |
+| `fresh.reopened` | main 352256; SHM 32768; WAL 0 |
+| `fresh.reopened_closed` | main 352256 only |
+| `backup.online_complete` | backup main 8192; source main 8192 |
+| `backup.metadata_complete` / `backup.verification_complete` | backup main 12288; source main 8192; no sidecars visible at either checkpoint |
+| `migration.failed_after_verified_backup` | error `apply migration 2: ... table diagnostics already exists`; explicit backup main 16384, SHM 32768, WAL 0; source main 12288 |
+
+The test emits the modes too: fresh files were `0644`; explicit backup and
+sidecars were `0600`. These are fixture observations under the test process's
+umask and directory modes, not a cross-platform permissions claim.
+
+Repository commit for this audit: `c82305ce99d6c3aea8d6cc44c10161a505e79ff6`.
+Relevant local symbols are `openWithOptionsAndObserver`, `Store.configure`,
+`Store.Close`, `Store.migrate`, `inspectSchemaSnapshot`, `copyRegularFile`,
+`createMigrationBackup`, `runOnlineBackup`, `writeBackupMetadata`, and
+`verifyMigrationBackup`.
 
 Primary SQLite references: [VFS interface](https://www.sqlite.org/c3ref/vfs.html),
 [I/O methods](https://www.sqlite.org/c3ref/io_methods.html),
