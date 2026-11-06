@@ -82,6 +82,8 @@ type study struct {
 	mu                sync.Mutex
 	origOpen          uintptr
 	origMmap          uintptr
+	callbackOpenFn    func(*libc.TLS, uintptr, int32, uint32) int32
+	callbackMmapFn    func(*libc.TLS, uintptr, uint64, int32, int32, int32, int64) uintptr
 	opened            chan openRecord
 	mapped            chan mapRecord
 	release           chan struct{}
@@ -151,6 +153,10 @@ func gitOutput(ctx context.Context, args ...string) (string, error) {
 }
 
 func run(sourceCommit string) (report, error) {
+	return runWithCallbackStress(sourceCommit, false)
+}
+
+func runWithCallbackStress(sourceCommit string, stressCallbacks bool) (report, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	result := report{
@@ -229,17 +235,31 @@ func run(sourceCommit string) (report, error) {
 	if s.origOpen == 0 || s.origMmap == 0 {
 		return result, errors.New("Unix VFS does not expose the required open/mmap hooks")
 	}
-	if rc := set(tls, custom, nameOpen, ifaceData(any(s.callbackOpen))); rc != lib.SQLITE_OK {
+	// Keep the bound method values in typed fields for the complete period in
+	// which SQLite can call their generated-ABI addresses. ifaceData exposes
+	// only an uintptr to SQLite, which is not itself a Go GC root.
+	s.callbackOpenFn = s.callbackOpen
+	s.callbackMmapFn = s.callbackMmap
+	if rc := set(tls, custom, nameOpen, ifaceData(any(s.callbackOpenFn))); rc != lib.SQLITE_OK {
 		return result, fmt.Errorf("install open hook: SQLite result %d", rc)
 	}
-	if rc := set(tls, custom, nameMmap, ifaceData(any(s.callbackMmap))); rc != lib.SQLITE_OK {
+	if rc := set(tls, custom, nameMmap, ifaceData(any(s.callbackMmapFn))); rc != lib.SQLITE_OK {
 		_ = set(tls, custom, nameOpen, s.origOpen)
+		runtime.KeepAlive(s.callbackOpenFn)
+		runtime.KeepAlive(s.callbackMmapFn)
 		return result, fmt.Errorf("install mmap hook: SQLite result %d", rc)
 	}
 	defer func() {
 		_ = set(tls, custom, nameMmap, s.origMmap)
 		_ = set(tls, custom, nameOpen, s.origOpen)
+		// The worker-exit defer below runs first. Keep callback closures alive
+		// through hook restoration on both successful and error returns.
+		runtime.KeepAlive(s.callbackOpenFn)
+		runtime.KeepAlive(s.callbackMmapFn)
 	}()
+	if stressCallbacks {
+		stressCallbackLifetime()
+	}
 
 	workerDone := make(chan workerResult, 1)
 	workerExited := make(chan struct{})
@@ -251,10 +271,10 @@ func run(sourceCommit string) (report, error) {
 		s.closeRelease()
 		s.releaseCheckpoint()
 		cancel()
-		select {
-		case <-workerExited:
-		case <-time.After(2 * time.Second):
-		}
+		// Hooks and their backing VFS must not be retired while a callback can
+		// still be executing. The workload is bounded by ctx and bounded hook
+		// waits; join it before the earlier hook-restoration defer runs.
+		<-workerExited
 	}()
 
 	var shm, wal openRecord
@@ -378,6 +398,35 @@ func run(sourceCommit string) (report, error) {
 		caseResult{Name: "denial_cancellation_and_fresh_retry", Classification: "not_run", Observed: "Not exercised: this probe only demonstrates ordering with an allow decision; the global raw syscall hook is not a trusted authorization integration."},
 	)
 	return result, nil
+}
+
+func stressCallbackLifetime() {
+	// Force the calling goroutine's stack to grow, then trigger stack movement
+	// pressure elsewhere while SQLite callbacks are installed but idle.
+	_ = callbackStressStack(32)
+	runtime.GC()
+
+	var workers sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			_ = callbackStressStack(24)
+			runtime.GC()
+		}()
+	}
+	workers.Wait()
+	runtime.GC()
+	runtime.Gosched()
+}
+
+func callbackStressStack(depth int) byte {
+	var stack [2048]byte
+	stack[0] = byte(depth)
+	if depth == 0 {
+		return stack[0]
+	}
+	return stack[0] + callbackStressStack(depth-1)
 }
 
 func prepareFixture(ctx context.Context, path string, version *string) error {

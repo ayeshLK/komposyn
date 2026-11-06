@@ -241,16 +241,22 @@ SHM, so an owner protocol cannot equate “connection opened” with “SHM open
 callback occurred.” It must register the owning store/policy before the first
 connection can initialize the node and account for every connection that
 reuses it. A pinned object must outlive SQLite's optional unlink and last-close
-cleanup; retirement must wait until no active operation or stale publication
-can use the identity. Pin exhaustion must fail closed.
+cleanup. The production owner contract must retain retired sensitive-object
+pins until policy-registry shutdown, even after SQLite connections and readers
+quiesce; those facts do not prove that a hard link, rename, or other alias is
+unreachable by a future generic operation. Earlier retirement requires a
+separately reviewed rule with authoritative proof that every alias is no
+longer reachable. Pin exhaustion must fail closed.
 
 The experiment does not determine safe lock ordering between Token Logger
 owner locks, SQLite's Unix mutex, and a future policy registry. Owner rotation
-would need to register/pin the new object before sensitive content is written,
-keep the old object protected while any alias/connection remains reachable,
-and retire pins only after SQLite and readers quiesce. The current callback
-cannot safely perform that protocol: it has no owner identity and may run
-under the native VFS mutex.
+would need to register/pin the new object before sensitive content is written
+and retain every prior sensitive-object pin through policy-registry shutdown.
+SQLite close, reader quiescence, unlink, and rename do not retire those pins.
+Any earlier-retirement rule requires separate review and proof that every
+alias is unreachable. The future hook and retirement API must preserve this
+registry-shutdown boundary. The current callback cannot safely perform that
+protocol: it has no owner identity and may run under the native VFS mutex.
 
 Identity pinning also cannot detect independent copies of sensitive bytes.
 Protected-resource rules still need explicit owner registrations and a policy
@@ -269,7 +275,11 @@ Request maintainer review of this narrow next step:
    or `shm`); actual opened fd plus device/inode and create/read-only flags;
    an allow/error result before fd handoff; a per-connection attach/reuse
    notification before first use of an existing shared node; and explicit
-   close/unmap/retirement events? Registration must happen before fchown,
+   close/unmap/retirement events? Retired sensitive-object pins must remain
+   until policy-registry shutdown; SQLite close or quiescence alone cannot
+   authorize earlier release. Any earlier-retirement rule needs separate
+   review and authoritative proof that aliases are unreachable. Registration
+   must happen before fchown,
    DMS truncation, extension, map or write. It must define fd ownership,
    cleanup after refusal/partial initialization, callback lifetime, and a
    no-reentry/nonblocking lock contract. If policy needs to wait for an
