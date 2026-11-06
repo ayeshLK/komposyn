@@ -34,9 +34,10 @@ and native acceptance exist.
 | Term | Meaning |
 | --- | --- |
 | **Owner** | A trusted host component, such as one Token Logger Store lifecycle. It is not inferred from a path, DSN, model argument, or VFS name. |
-| **Owner binding** | An opaque, host-minted capability attached out-of-band to a driver connection/connector. The driver carries it to every file and SHM callback. |
+| **Owner binding** | A durable opaque, host-minted capability attached out-of-band to a driver connection/connector. It identifies the owner and route for that connection's whole lifetime; it is not permission to perform an operation. |
 | **Route** | A named purpose within an owner: live database, backup source, backup destination, metadata, verification, or schema snapshot. Each route has its own connection/open path. |
-| **Route reservation** | A single-use, generation-bound permit acquired before entering SQLite or direct file I/O. It names the route and allowed roles, reserves pin capacity, and establishes reader quiescence. |
+| **Operation group** | One atomic, generation-bound reservation acquired before entering SQLite or direct file I/O. It declares every route and role needed by one logical operation, reserves their pin capacity together, and establishes reader quiescence once. |
+| **Route lease** | A group-owned, single-use sublease for one declared route and driver call/connection. It is installed on the live connection only for that operation and is removed when the complete operation scope ends. It cannot reserve routes or advance generations by itself. |
 | **Object admission** | The driver's synchronous pre-use callback with the actual open handle and role. It pins/registers that exact object or refuses before content use. |
 | **Pin** | A retained host-owned handle and stable native identity record. It prevents identity reuse while retained; it does not freeze bytes or enforce pathname containment. |
 | **Owner generation** | Revision of one owner's route/connection inventory. Rotation, route replacement, and shutdown invalidate older reservations. |
@@ -49,9 +50,10 @@ Keep three layers separate:
    explicit capabilities. It does not depend on KompoSyn permissions, UI,
    provider, runtime, or token-grant types.
 2. **Core-owned neutral lifecycle.** If later accepted, Token Logger can
-   accept a neutral reservation/lifecycle interface around each route and
-   connection. The core describes the operation and calls begin/finish; it
-   does not make policy decisions or import harness packages. No public API
+   accept a neutral operation-group/lifecycle interface around each logical
+   operation and its routes. The core describes the operation and calls
+   begin/finish; it does not make policy decisions or import harness
+   packages. No public API
    signature is selected by this design.
 3. **Host policy and sandbox composition.** The host mints owner bindings,
    checks inventory and authorization, closes broker admission, cancels and
@@ -66,55 +68,139 @@ or a proposed source-compatible implementation:
 
 ```go
 type RoutePlan struct {
+    Route RouteKind
+    Roles []FileRole // closed allowlist; unknown roles are refused
+}
+
+type OperationPlan struct {
     Owner   OwnerBinding // opaque; minted by trusted host composition
-    Route   RouteKind
-    Roles   []FileRole   // closed allowlist; unknown roles are refused
-    Replace bool         // explicit owner transition, never inferred
+    Routes  []RoutePlan  // complete set; all reserved atomically
+    Purpose OperationKind
 }
 
 type OwnerLifecycle interface {
-    Reserve(ctx context.Context, plan RoutePlan) (RouteReservation, error)
+    ReserveGroup(ctx context.Context, plan OperationPlan) (OperationGroup, error)
 }
 
-type RouteReservation interface {
-    // Supplied out-of-band to one driver connector / route, never in a DSN.
-    DriverBinding() DriverBinding
+type OperationGroup interface {
+    // Subleases only declared routes; it cannot nest or widen the group.
+    Lease(route RouteKind, connection ConnectionID, call CallKind) (RouteLease, error)
     Complete(EffectOutcome) error
     Abort(EffectOutcome) error
 }
 
+type RouteLease interface {
+    // Installed out-of-band on a connection for one complete call scope.
+    CallToken() CallToken
+    Generation() Generation
+    End(EffectOutcome) error
+}
+
 type DriverHooks interface {
-    BeforeFileUse(binding DriverBinding, connection ConnectionID,
+    BeforeFileUse(binding DurableOwnerBinding, call CallToken,
+        connection ConnectionID,
         role FileRole, opened BorrowedFile, disposition OpenDisposition) (ObjectPermit, error)
-    BeforeShmAttach(binding DriverBinding, connection ConnectionID,
+    BeforeShmAttach(binding DurableOwnerBinding, call CallToken,
+        connection ConnectionID,
         shm SharedMemoryObject, region RegionRequest) (ObjectPermit, error)
 }
 ```
 
 The production-quality form must be per connector/VFS instance and
 connection-bound, strongly rooted by the driver, and capability-reporting.
+The lifecycle adapter installs only the opaque `CallToken` in driver-owned
+connection state before entering SQLite; the VFS callback cannot reach back
+into the lifecycle coordinator to acquire a lease or wait for a group.
 `BorrowedFile` must expose a narrow identity query and a safe duplicate/pin
 operation; the native connection retains ownership of its live handle. The
 host receives the pin, not a general filesystem handle. `ObjectPermit` is an
-opaque driver token bound to the exact identity and reservation. It is not a
+opaque driver token bound to the exact identity, durable binding, call token,
+and generation. It is not a
 grant and cannot be fabricated by a path or model result.
 
 `OpenDisposition` must report whether the actual handle was created or
 reused, based on the native open operation rather than a later path check.
-The callback receives role, route binding, connection identity, native file
-identity, read/write/create flags, and reservation generation. A display path
+The callback receives role, durable route binding, connection identity,
+native file identity, read/write/create flags, and the active group/lease
+generation. A display path
 may be diagnostic metadata but never authorizes access. Capability queries
 must say which roles and SHM callbacks are implemented on the selected
 OS/architecture. Missing callbacks mean unavailable, not fallback.
 
 The neutral core boundary should ultimately let a trusted host wrap each
-separate SQLite or Go-file route with `Reserve → operation → Complete/Abort`.
+logical SQLite or Go-file operation with `ReserveGroup → route subleases →
+Complete/Abort`.
 The driver binding is supplied through a connector/configuration object, never
 through `?vfs=` or caller-controlled URI fields. A future API should be
 additive (for example, a new lifecycle-aware constructor); do not add a field
 to the existing public `OpenOptions` without a separate compatibility review.
 The exact Go surface remains a maintainer decision after upstream feasibility
 is known.
+
+### Durable connection binding and operation leases
+
+The owner binding and operation authority have different lifetimes. A
+connection receives one immutable durable owner/route binding at creation;
+that binding remains until the native connection is fully closed. It carries
+identity only. It cannot authorize file callbacks by itself. Every operation
+on a retained `sql.Conn` or native connection must enter under a fresh route
+lease from an active operation group. Before calling into SQLite, the
+lifecycle adapter serializes access to that connection, installs the lease in
+connection-owned driver state, and captures its owner and policy generations.
+Native file and SHM callbacks read that active lease and refuse if it is
+missing, ended, stale, for another route, or lacks the role. The adapter
+removes the lease only after the full call scope has ended; it never reuses a
+completed lease for a later call. Connection serialization prevents two
+goroutines from replacing the active lease while SQLite is using it.
+
+The group scope follows the complete logical `database/sql` operation, not
+just a single native callback. Within it, every driver call gets a fresh
+route lease:
+
+- A non-transactional Exec owns a group through return. A Query owns one
+  through `Rows.Close` or EOF, with new route leases for Query, each `Next`,
+  and Close.
+- A transaction owns a group from before Begin through Commit/Rollback; every
+  statement and each Begin/Commit/Rollback call use fresh subleases from that
+  group. Keeping the group open is
+  intentionally conservative and keeps broker admission closed for that
+  transaction.
+- An online backup owns one group across source and destination connection
+  creation, all `Backup.Step` calls, `Finish`, and both connection closes.
+- Driver reconnect/reopen and connection close are lifecycle operations too.
+  A lifecycle-aware connector/connection wrapper must acquire a group before
+  any such SQLite call and pass a declared route sublease. The `database/sql`
+  pool may not perform an unobserved native open or close outside this gate.
+
+The lifecycle integration therefore cannot expose a raw `*sql.DB` or
+`driver.Conn` path that bypasses operation entry. It must own pool operations,
+including idle/expired connection retirement and error-driven discard. If a
+pool path cannot be intercepted before SQLite is entered, that pool behavior
+is unsupported and the owner route remains unavailable; a stale last lease
+is never a fallback. Calls that return live rows or a transaction retain the
+group until their terminal close/commit/rollback. Cancellation, row close,
+failed begin, failed reconnect, and failed close all end/abort the lease and
+group with an explicit outcome. Incomplete close retains the callback root
+and pins as `CleanupIncomplete`.
+
+No generation-changing transition may begin while a group is active. An
+object discovered by a callback may consume only a role and pin slot declared
+in that group. It advances the group's acknowledged generation; the group
+records that expected transition while global admissions are already closed.
+Any unrelated policy/owner revision makes the group stale and causes
+immediate refusal. The durable binding survives group completion, but the
+next operation must install a fresh group lease before any SQLite call.
+
+Nested Store helpers never call `ReserveGroup` while a group is active. They
+borrow its route subleases. The outermost lifecycle entry declares a
+conservative superset of routes/roles needed by its possible branch (for
+example, Store initialization plus migration backup, metadata, and
+verification). If that set cannot be known or bounded up front, split the
+work into sequential groups: finish and close all connections/resources in
+the first group, then reserve the next group based on its result. No nested
+SQLite call may implicitly reopen broker admission or change generations.
+Unexpected dynamic routes refuse and make the operation partial/unknown as
+appropriate; the helper cannot widen the active group.
 
 ## Source-pinned integration points
 
@@ -183,9 +269,9 @@ There are two distinct required events:
    account for all participating connections or mapping uses.
 
 The attach callback may verify a prior object permit and add the connection
-association; it must not wait. If no registered pin, current reservation, or
-valid owner binding exists, the pointer is not returned and the route remains
-unavailable. `TunixShmNode.FhShm`, references, and regions are defined in
+association; it must not wait. If no registered pin, current operation-group
+lease, or valid owner binding exists, the pointer is not returned and the
+route remains unavailable. `TunixShmNode.FhShm`, references, and regions are defined in
 [`sqlite_g_000000000001ffff.go:312`](https://gitlab.com/cznic/sqlite/-/blob/4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738/lib/sqlite_g_000000000001ffff.go#L312).
 `_unixShmUnmap` can unlink, unmap and close the native fd on final cleanup in
 [`sqlite_g_000000000001feab.go:22448`](https://gitlab.com/cznic/sqlite/-/blob/4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738/lib/sqlite_g_000000000001feab.go#L22448).
@@ -221,35 +307,36 @@ join must happen before entering SQLite.
 
 ```text
 Stable(owner generation O, policy generation P)
-  -> Reserve
+  -> ReserveGroup(operation G; all routes/roles/pin slots declared together)
        close broker read/dispatch admission for affected coverage
        invalidate prepared-but-not-dispatched reader leases
-       reserve one owner transition and capacity for declared file roles
+       reserve one owner transition and capacity for every declared route
        publish route-deny while identities are not yet known
   -> Drain [outside every Store, coordinator, registry, and SQLite lock]
        cancel affected broker workers
        join them and suppress their stale output
        if deadline expires: do not enter SQLite; keep route unavailable
-  -> Reserved(O, P, reservation R, roles, pin slots)
+  -> GroupReserved(O, P, G, route bindings, pin slots)
+  -> Install a fresh route lease for each entered driver call
+       durable connection binding supplies identity; lease supplies current authority
   -> Enter SQLite/direct-file operation [no coordination lock held]
-       driver uses opaque owner/route binding, not URI-derived ownership
   -> Object admission callback [may run under SQLite's Unix mutex]
-       verify R/O/P/role and available pre-reserved capacity
+       verify G/O/P/route/role and available pre-reserved capacity
        duplicate + identify the actual handle; register/pin it quickly
-       advance policy revision and R's acknowledged revision
+       advance policy revision and G's acknowledged revision
        return object permit, or refuse immediately
   -> Effects only after object permit (open/create metadata may precede it)
-  -> Finish route and all in-flight callbacks
-       commit new generation; reopen admission with current policy snapshot
+  -> End each call lease; finish all routes in G as one unit
+       commit new generation; reopen admission only after group completion
   -> Stable(O', P')
 ```
 
 **Lock rules:**
 
 - A per-owner transition slot (or the initial conservative global transition
-  slot) serializes reservations. Acquire/update it briefly, then drop it
+  slot) serializes operation groups. Acquire/update it briefly, then drop it
   before cancellation, joins, SQL, file I/O, or waiting. Same-owner concurrent
-  preparation gets busy/stale and cannot enter SQLite. Distinct owners may
+  group preparation gets busy/stale and cannot enter SQLite. Distinct owners may
   proceed concurrently only after disjointness and global-generation behavior
   are proven; the first prototype should serialize identity-changing
   transitions.
@@ -267,13 +354,16 @@ Stable(owner generation O, policy generation P)
   composition. A DSN path, `?vfs=` name, or exported string owner identifier
   alone is not an owner capability.
 
-The route plan must reserve expected roles and pin capacity before SQLite
-entry. Registration of a discovered object bumps policy generation while
-admission remains closed. The active reservation records each expected
-revision change it causes; an unrelated generation change makes the
-reservation stale. The reservation commits only if owner generation, role
-coverage, callbacks, and final registry generation still match. Readers are
-re-enabled at the committed generation. The once-grant remains consumed by
+The operation plan must reserve every expected route, role, and pin capacity
+before SQLite entry. There is one global admission close/drain and one group
+generation for the complete logical operation; routes are not acquired by
+nested `Reserve` calls. Registering a discovered object bumps policy
+generation while admission remains closed. The active group records each
+expected revision change it causes; an unrelated generation change makes the
+group stale. The group commits only if all route bindings, owner generation,
+role coverage, callbacks, and final registry generation still match. Readers
+are re-enabled only after every route and connection in the group has
+finished. The once-grant remains consumed by
 the runtime at its existing dispatch boundary; the VFS hook never consumes,
 creates, or widens grants.
 
@@ -289,21 +379,21 @@ write. External processes that do not participate remain outside coverage.
 ### Stale state, newly discovered roles, and refusal
 
 - A new/replacement object is admitted only if the owner prepared that role
-  and a bounded pin slot in the reservation. A fresh main DB target may be
-  precreated and pinned by its owner, but the callback must still compare the
-  exact SQLite-opened handle with that pin; precreating a sidecar or predicting
+  and a bounded pin slot declared in the active group. A fresh main DB target
+  may be precreated and pinned by its owner, but the callback must still
+  compare the exact SQLite-opened handle with that pin; precreating a sidecar or predicting
   a path alone is not the contract.
 - An unexpected temp, super-journal, subjournal, unknown role, stale owner/policy
-  generation, canceled reservation, path/route mismatch, pin-budget
+  generation, canceled group/lease, path/route mismatch, pin-budget
   exhaustion, or callback-registration failure returns a SQLite error before
   content use. An open/create or permission metadata effect may already have
   happened. Do not remove by pathname or call this unchanged; keep the owner
   route unavailable, retain any acquired pins, mark coverage incomplete, and
   report partial/unknown effects.
-- If the discovered object would require a new worker join, the reservation
+- If the discovered object would require a new worker join, the group
   was insufficient. The callback cannot perform that join. It refuses and
   leaves the route unavailable until an outside-SQLite transition safely
-  retries with a fresh reservation. There is no automatic replay.
+  retries under a newly acquired group. There is no automatic replay.
 - Cancel/deadline before SQLite entry returns not-executed, after the drain
   is safely unwound. Cancellation after entry requests operation/connection
   termination through supported driver mechanisms, then awaits bounded
@@ -317,8 +407,8 @@ write. External processes that do not participate remain outside coverage.
 
 | Outcome | Meaning |
 | --- | --- |
-| `NotExecuted` | Reservation failed/canceled before SQLite or direct file I/O began. No file effect was attempted. |
-| `Unavailable` | Required role hook, platform capability, owner registration, reservation slot, or complete participation is absent. No weaker path is used. |
+| `NotExecuted` | Group reservation failed/canceled before SQLite or direct file I/O began. No file effect was attempted. |
+| `Unavailable` | Required role hook, platform capability, owner registration, group route/role slot, or complete participation is absent. No weaker path is used. |
 | `RefusedBeforeUse` | Native open may have created an empty entry or changed metadata, but the callback denied content initialization/use. Report the metadata possibility separately. |
 | `Partial` | A known subset of SQLite or snapshot effects occurred before failure/cancellation. Preserve observed effects and pins. |
 | `Unknown` | Possible effects cannot be attributed or cleanup/termination is unconfirmed. Do not claim rollback or unchanged state. |
@@ -329,8 +419,8 @@ These can be carried as an operation outcome plus an independent cleanup
 status. SQL transaction failure does not substitute for lifecycle evidence.
 Possible open/create metadata is not the same as sensitive page/WAL/SHM byte
 effects; the report must distinguish them. Never automatically replay a
-mutation with partial or unknown outcome. Any retry uses a new reservation
-and new owner/runtime decision.
+mutation with partial or unknown outcome. Any retry uses a newly acquired
+operation group and a new owner/runtime decision.
 
 Descriptor and memory ownership:
 
@@ -343,8 +433,9 @@ Descriptor and memory ownership:
    callback has drained. Failed partial installation unwinds in reverse order
    only after proving no native callback can still run. Do not free a Go
    callback target merely because `Close` was requested.
-3. Bound owner route entries, reservation tokens, object pins, callback
-   events, and native resources. Reserve capacity before entering SQLite.
+3. Bound owner route entries, operation groups, route leases, object pins,
+   callback events, and native resources. Reserve capacity before entering
+   SQLite.
    Never evict old pins to admit new ones. Any budget exhaustion refuses and
    leaves coverage unavailable.
 4. Store every protected object pin until **policy-registry/conversation
@@ -353,7 +444,7 @@ Descriptor and memory ownership:
    not pin-retirement permissions. No early-retirement optimization is
    proposed.
 5. Shutdown closes broker and owner-operation admission, advances generations,
-   cancels/joins workers, drains route reservations, closes SQLite connections
+   cancels/joins workers, drains operation groups, closes SQLite connections
    and mappings while callbacks remain rooted, unregisters the VFS, confirms
    callback quiescence, then releases callback roots and finally closes all
    policy pins. On timeout, report `CleanupIncomplete`; retain live state and
@@ -367,22 +458,22 @@ participating owners; otherwise the affected route stays unavailable.
 ## Token Logger routes and compatibility
 
 The SQLite hook is one layer, not complete Store coverage. Current source
-paths require separate reservations and route-specific connection bindings:
+paths require operation groups and route-specific durable connection bindings:
 
 | Route | Current behavior | Hook/lifecycle requirement |
 | --- | --- | --- |
-| Store open/configuration/migration | `storage.go` resolves the caller path, runs schema preflight before `sql.Open`, sets one connection per Store, changes journal mode to WAL, migrates, and syncs pricing. | Reserve before every first connection/open and initialization operation. Bind owner before `newConn`; register main DB and each journal/WAL/SHM actual object before content use. Same Store close does not retire pins. |
-| Schema inspection | `schema.go` opens/hashes the source main/WAL/journal with Go file I/O, copies them into `MkdirTemp`, then opens the copy through SQLite; it intentionally does not copy SHM. | A SQLite VFS cannot protect the Go opens/copies. A separate exact-handle host boundary must pin source handles and register/pin the temporary destination before copying bytes; the copy's SQLite open uses its own route. Retain pins through registry shutdown even after `RemoveAll`. |
-| Migration backup creation | `backup.go` precreates a same-directory or explicit destination via Go (`CreateTemp` or `O_EXCL`), then `NewBackup` opens SQLite destination. | Register/pin the exact Go-created destination; driver callback must verify the SQLite-opened destination is the same object, not just the same path. Distinct source/destination reservations and pins are required. |
-| Online backup source and destination | `NewBackup(dstUri)` constructs an independent destination `newConn(dstUri)`; source binding does not automatically propagate. | The driver API must accept an explicit destination owner binding/connector. Missing destination identity or unsupported roles refuse before backup page writes. Preserve online backup's consistent copy semantics. |
-| Backup metadata | `writeBackupMetadata` separately opens the backup path and writes SQL. | New route reservation/connector, verify the exact existing backup identity and cover any WAL/SHM/journal sidecars. |
-| Backup verification | `verifyMigrationBackup` independently reopens the backup read-only. | Explicit read route binding and registration; read-only open may still touch WAL SHM state. |
-| Backup error cleanup | Incomplete backup cleanup currently removes the main path; sidecars may remain. | Cleanup must use an exact owned identity where possible; pathname removal is not a safe delete primitive. Preserve verified pre-migration backups and never delete a substituted or existing destination. Classify leftover sidecars/cleanup uncertainty. |
+| Store open/configuration/migration | `storage.go` resolves the caller path, runs schema preflight before `sql.Open`, sets one connection per Store, changes journal mode to WAL, migrates, and syncs pricing. | Each outer lifecycle operation reserves one group for all known routes/roles before its first connection/open. Bind the durable owner before `newConn`; register main DB and each journal/WAL/SHM actual object before content use. A retained Store connection gets a fresh operation lease for later calls. Same Store close does not retire pins. |
+| Schema inspection | `schema.go` opens/hashes the source main/WAL/journal with Go file I/O, copies them into `MkdirTemp`, then opens the copy through SQLite; it intentionally does not copy SHM. | A SQLite VFS cannot protect the Go opens/copies. The enclosing group declares source handles, private output, and the snapshot SQLite route. An exact-handle host boundary pins/registers source and destination before copied bytes; SQLite opens only the registered snapshot. Retain pins through registry shutdown even after `RemoveAll`. |
+| Migration backup creation | `backup.go` precreates a same-directory or explicit destination via Go (`CreateTemp` or `O_EXCL`), then `NewBackup` opens SQLite destination. | Register/pin the exact Go-created destination; driver callback must verify the SQLite-opened destination is the same object, not just the same path. Source and destination are declared together in one group, with distinct route subleases and pin slots. |
+| Online backup source and destination | `NewBackup(dstUri)` constructs an independent destination `newConn(dstUri)`; source binding does not automatically propagate. | The driver API must accept explicit source and destination owner bindings/connectors. One group is reserved before either connection opens and remains active through backup stepping, Finish, and both closes. Missing destination identity or unsupported roles refuse before backup page writes. Preserve online backup's consistent copy semantics. |
+| Backup metadata | `writeBackupMetadata` separately opens the backup path and writes SQL. | A separate operation group/route binding verifies the exact existing backup identity and covers any WAL/SHM/journal sidecars. |
+| Backup verification | `verifyMigrationBackup` independently reopens the backup read-only. | A separate read operation group/route binding registers the reopened identity; read-only open may still touch WAL SHM state. |
+| Backup error cleanup | Incomplete backup cleanup currently removes the main path; sidecars may remain. | Cleanup is a declared sub-operation in the active group or a new cleanup group after the failed group has settled. It must use an exact owned identity where possible; pathname removal is not a safe delete primitive. Preserve verified pre-migration backups and never delete a substituted or existing destination. Classify leftover sidecars/cleanup uncertainty. |
 | Later reopen/checkpoint/recovery | SQLite can checkpoint, remove, recreate, or reopen WAL/SHM; different Store instances/processes may share the DB. | Each permitted connection binds an owner; reuse and reopened identities are admitted. Retain all earlier identities. Unknown external Store/process writer participation keeps coverage unavailable. |
 
 Core should continue owning Token Logger schema and backup invariants. It must
 not import harness permission/runtime/sandbox packages. A future neutral
-optional lifecycle may wrap these route transitions; the host supplies
+optional lifecycle may wrap these operation groups; the host supplies
 policy/registry callbacks. Existing `Open`, `OpenWithOptions`, migrations,
 online backup behavior, schema version, and one-way dependency direction
 remain unchanged in this design. New public constructor/connector signatures
@@ -436,15 +527,17 @@ and validates actual fixture bytes/sidecars rather than process exit alone.
 | SHM create | Hold the actual-open callback before it returns; assert identity pin precedes fchown/DMS truncate, extension, and `MAP_SHARED`; correlate map fd and shared mapping with that pin. |
 | SHM reuse | Two connections, repeated region mapping, existing shared node and already-mapped region; each connection attaches to the registered owner/object without requiring a second physical open. Stale/missing attachment refuses before returning a pointer. |
 | Owner binding | DSN path/VFS name cannot impersonate another owner; source, destination, metadata, verification, and snapshot connections each require the correct opaque binding. Unknown owner/role refuses. |
-| Worker coordination | Hold a broker read worker; reservation closes admissions, invalidates prepared work, cancels and joins it before the SQLite callback's `entered` barrier. A prepared-but-not-dispatched stale lease cannot start after the generation change. |
-| Concurrent reservations | Same-owner concurrent preparation is serialized or refused before SQLite entry; stale generation cannot reuse a reservation. Distinct-owner concurrency is tested only if disjoint route guarantees are defined. |
-| Cancellation/refusal | Cancellation during drain prevents entering SQLite (`NotExecuted`). Callback refusal after open reports possible empty entry/metadata as partial; no page effect is claimed without fixture inspection. Fresh attempt requires a new reservation and new decision; no automatic replay. |
+| Worker coordination | Hold a broker read worker; group reservation closes admissions, invalidates prepared work, cancels and joins it before the SQLite callback's `entered` barrier. A prepared-but-not-dispatched stale lease cannot start after the generation change. |
+| Retained connection lifetime | Open a connection under a group and complete it while retaining the connection. A later operation must acquire a new group and install a new lease on that same connection; the old lease and missing-lease callbacks refuse. Close the retained connection under a separately acquired close group. Cover Exec, Rows.Next/Close, Tx Commit/Rollback, reconnect, pool discard and shutdown. |
+| Nested lifecycle helpers | Run initialization with schema inspection, snapshot creation, migration, backup, metadata, and verification helpers. Each helper borrows declared subleases from the outer group; there is no nested `ReserveGroup`. If a route was not declared, the helper refuses before entering that route. Verify sequential groups only begin after all connections from the previous group are closed and its admission transition completed. |
+| Concurrent groups | Same-owner concurrent group preparation is serialized or refused before SQLite entry; stale generations cannot reuse old leases. Distinct-owner concurrency is tested only if disjoint route guarantees are defined. |
+| Cancellation/refusal | Cancellation during group drain prevents entering SQLite (`NotExecuted`). Callback refusal after open reports possible empty entry/metadata as partial; no page effect is claimed without fixture inspection. Fresh attempt requires a new group and new decision; no automatic replay. |
 | Rotation/aliases | Register/pin replacement before writing sensitive bytes; old pin remains until registry shutdown after path rename/unlink; aliases of old object remain protected. Registration failure keeps route unavailable. |
 | Error cleanup | Partial VFS install, failed callback, SQL error, cancellation, backup failure, `xClose`, checkpoint, and shutdown. Exact observed bytes and sidecars classified; backup sentinel remains intact on refusal. |
 | Callback/GC lifetime | Force GC during opens and calls; retained callback target does not crash. Shutdown while a callback is held returns bounded incomplete cleanup without unregistering/freeing live callback or pins; release then allows successful teardown. |
 | Pin budget/inventory | Reserve enough slots before SQLite entry; budget exhaustion refuses early. Unexpected extra role after open yields partial/unknown and coverage remains unavailable; old pins are never evicted. Missing external-owner participation refuses. |
-| Backup success control | Use distinct source content and destination sentinel; success requires registered destination callback, actual content replacement, metadata, and verification. Earlier source failure/no-op destination cannot count as a destination pass. |
-| Snapshot Go I/O | Verify source handles and private temporary output are registered before copied bytes; SQLite opens only the registered snapshot; unlink does not retire its pin before registry shutdown. |
+| Backup group success control | Atomically reserve source and destination routes and capacities before opening either connection. Under conservative global-drain mode, perform a real online backup with both route subleases from that one group, step to completion, finish and close both connections before reopening broker admission. No nested `ReserveGroup`, stale source lease, or premature admission reopen is allowed. Use distinct source bytes and a destination sentinel; verify actual replacement and metadata. |
+| Snapshot group | Atomically declare source handles, private temporary output, and the snapshot SQLite route before copying. Use subleases from that group; no nested reservation or copy before source/output admission. SQLite opens only the registered snapshot; unlink does not retire its pin before registry shutdown. |
 | Sandbox separation | Later native worker acceptance independently demonstrates descriptor delivery, revocation/join, stale-output suppression, and exact output publication. No SQLite callback or unit test substitutes for OS sandbox evidence. |
 
 ## Decisions and staged next slice
@@ -456,12 +549,13 @@ reopened here.
 | Maintainer decision | Recommendation | Tradeoff |
 | --- | --- | --- |
 | Upstream API or fork | First request design/review of a supported modernc API; if unavailable, keep fail-closed until a separate explicit fork decision. | Upstream route minimizes KompoSyn security/platform maintenance; a fork offers control but makes KompoSyn responsible for rebases, generated builds, CVEs, and releases. |
-| Reservation breadth | Start with one serialized owner transition and global broker-worker quiescence while an owner introduces/reopens identities. Narrow only with measured alias/worker coverage. | Conservative pauses can reduce read availability during Store initialization, backups, snapshots, or rotation; narrower coordination is more complex and needs evidence. |
+| Operation-group breadth | Start with one serialized owner transition and global broker-worker quiescence. Atomically reserve all routes/roles for a logical operation (including source+destination backup routes); keep one group active through the operation's full lifetime. Narrow only with measured alias/worker coverage. | Conservative pauses can span a transaction, open rows, backup, snapshot, reconnect, or close. This can reduce read availability, but avoids nested reservation and stale-connection gaps. |
 | Hook capability baseline | Linux/amd64 is the first prototype target only. Each other OS/architecture must report unavailable until its handle identity, SHM mapping/locking and cleanup behavior are implemented and natively exercised. | No compatibility claim from compilation alone. |
 | Core neutral lifecycle | Review an additive, host-implemented lifecycle around every distinct file route after driver binding is concrete. Do not add it in this design PR. | Premature core API risks codifying a hook that cannot cover `NewBackup` or Go-created snapshots. |
 
 1. **Contract review:** approve/revise the roles, two admission callbacks,
-   reservation semantics, no-wait callback rules, errors, and pin lifetime.
+   durable binding versus operation lease, atomic multi-route groups,
+   no-wait callback rules, errors, and pin lifetime.
 2. **Mechanism decision:** confirm the upstream-supportable modernc hook is
    feasible to propose, or explicitly choose continued refusal/fork
    evaluation. No upstream outreach is authorized yet.
