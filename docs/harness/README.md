@@ -57,6 +57,11 @@ It is an isolated synthetic study and does not enable writes in KompoSyn stores.
 The follow-up study of modernc SQLite's WAL shared-memory open, pin and mapping
 order—and why its raw syscall hook is not a production authorization API—is in
 the [WAL/SHM feasibility report](sqlite-wal-shm-feasibility.md).
+The proposed owner-aware exact-object callback contract, coordination order,
+Token Logger route coverage, and future acceptance matrix are in the
+[SQLite owner-aware hook design](sqlite-owner-aware-hook-contract.md). This is
+design-only; production SQLite owner integration and filesystem tools remain
+unavailable.
 
 ## Local configuration
 
