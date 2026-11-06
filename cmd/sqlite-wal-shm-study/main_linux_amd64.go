@@ -70,7 +70,6 @@ type openRecord struct {
 	object   string
 	dev, ino uint64
 	size     int64
-	fileName string
 }
 
 type mapRecord struct {
@@ -507,13 +506,13 @@ func (s *study) callbackOpen(tls *libc.TLS, path uintptr, flags int32, mode uint
 	}
 	object := fmt.Sprintf("%s_object_%d", role, s.nextObject)
 	s.pins = append(s.pins, dup)
-	rec := openRecord{pin: dup, role: role, object: object, dev: uint64(st.Dev), ino: st.Ino, size: st.Size, fileName: "fixture.db-" + role}
+	rec := openRecord{pin: dup, role: role, object: object, dev: uint64(st.Dev), ino: st.Ino, size: st.Size}
 	s.objects = append(s.objects, rec)
 	s.mu.Unlock()
 	select {
 	case s.opened <- rec:
 	case <-time.After(2 * time.Second):
-		_ = unix.Close(dup)
+		// The deferred owner cleanup closes the retained duplicate exactly once.
 		_ = unix.Close(int(fd))
 		return -1
 	}
