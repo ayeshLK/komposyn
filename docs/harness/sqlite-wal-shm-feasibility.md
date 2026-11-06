@@ -32,7 +32,7 @@ or an explicitly maintained driver fork. Until that exists, fail closed.
 ## Provenance and reproduction
 
 The probe source is commit
-[`f592c9c627dea3518482265242ccdd3f4db05ab6`](https://github.com/ayeshLK/komposyn/tree/f592c9c627dea3518482265242ccdd3f4db05ab6)
+[`cfee34b674388d49d2a7c60adb00805a9b815f2c`](https://github.com/ayeshLK/komposyn/tree/cfee34b674388d49d2a7c60adb00805a9b815f2c)
 in this repository. It used `modernc.org/sqlite v1.61.0`, generated source
 commit
 [`4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738`](https://gitlab.com/cznic/sqlite/-/tree/4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738),
@@ -44,9 +44,9 @@ It contains no host paths, fixture contents, credentials, or database data.
 From a clean checkout of the exact probe commit:
 
 ```sh
-git checkout --detach f592c9c627dea3518482265242ccdd3f4db05ab6
+git checkout --detach cfee34b674388d49d2a7c60adb00805a9b815f2c
 GOCACHE=/tmp/komposyn-go-cache go run ./cmd/sqlite-wal-shm-study \
-  --commit f592c9c627dea3518482265242ccdd3f4db05ab6
+  --commit cfee34b674388d49d2a7c60adb00805a9b815f2c
 ```
 
 The command verifies that `HEAD` is the supplied full commit and the checkout
@@ -56,7 +56,7 @@ then removes the fixture. It has no parameters for caller paths or SQL. It
 does not access the repository's stores. The hook is installed only in this
 standalone process and restored before exit.
 
-The recorded run completed on 2026-11-06 at 10:36 UTC. The command runs as a
+The recorded run completed on 2026-11-06 at 10:44 UTC. The command runs as a
 disposable standalone process (for example through `go run`); the raw
 package-global hook is never installed in the application or test runner
 process. It recorded both actual WAL and SHM descriptors before those open
@@ -195,6 +195,19 @@ The upstream snapshots above were inspected during this task; they are
 research observations, not guarantees about later releases. No dependency or
 production code was changed.
 
+### Effect on Token Logger integration
+
+This finding addresses only physical WAL and SHM object admission. A future
+driver hook would also need to preserve PR #239's existing main-file and
+rollback-journal barriers. `NewBackup(dstUri)` creates a distinct destination
+connection/VFS route, so the source and destination need independent owner and
+object checks. Migration backup/verification, reopen/metadata operations, and
+Go-created schema snapshots remain separate I/O paths described in the
+[Token Logger lifecycle audit](read-broker-tokenlogger-lifecycle.md). The
+WAL/SHM result closes none of those obligations and establishes no standalone
+CLI compatibility. Keep all stores and backup operations fail-closed if any
+required owner registration or object route is missing.
+
 ## Evidence matrix
 
 | Question/scenario | Classification | Result and boundary |
@@ -252,10 +265,16 @@ Request maintainer review of this narrow next step:
 
 1. Should KompoSyn pursue a supported upstream modernc API, or explicitly own
    a maintained fork if upstream does not provide the needed hook?
-2. Is the proposed API shape acceptable: owner/role-aware callback for the
-   actual opened fd before fchown, DMS truncate, extension, or map; shared-node
-   reuse notification; close/retirement semantics; and a documented
-   nonblocking/no-reentry callback contract?
+2. Is this API shape acceptable: an owner token and file role (`main`, `wal`,
+   or `shm`); actual opened fd plus device/inode and create/read-only flags;
+   an allow/error result before fd handoff; a per-connection attach/reuse
+   notification before first use of an existing shared node; and explicit
+   close/unmap/retirement events? Registration must happen before fchown,
+   DMS truncation, extension, map or write. It must define fd ownership,
+   cleanup after refusal/partial initialization, callback lifetime, and a
+   no-reentry/nonblocking lock contract. If policy needs to wait for an
+   external approval, that wait must occur before entering SQLite, never from
+   this native callback.
 3. What update/compatibility burden is acceptable for such a fork, including
    architecture-specific generated implementations?
 
