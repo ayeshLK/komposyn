@@ -63,6 +63,11 @@ Token Logger route coverage, and future acceptance matrix are in the
 design-only; production SQLite owner integration and filesystem tools remain
 unavailable.
 
+The proposed first sandbox composition, trusted owner coverage states,
+unknown-data refusal boundary and staged typed-read path are described in the
+[initial sandbox composition design](initial-sandbox-composition.md). This is
+design only; production composition and filesystem tools remain unavailable.
+
 ## Local configuration
 
 The default paths are `~/.komposyn/auth.json` and
