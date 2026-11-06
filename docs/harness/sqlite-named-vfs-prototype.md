@@ -97,12 +97,15 @@ go run ./cmd/sqlite-vfs-study --commit "$(git rev-parse HEAD)" \
 ```
 
 The command requires Linux and Go 1.26.10 or newer. It uses synthetic,
-temporary database files, has a 30-second context for database operations,
-and emits sanitized JSON to stdout. Context-aware SQLite queries are bounded
-by 30 seconds. SQLite's online-backup call is synchronous and has no context
-parameter; the probe limits it to a one-page synthetic fixture. It is not an
-exhaustion or concurrency stress test. The report
-contains no host fixture path or SQL payload.
+temporary database files and emits sanitized JSON to stdout. Context-aware
+SQLite queries are bounded by a 30-second context. SQLite's online-backup call
+is synchronous and has no context parameter; the probe limits it to a one-page
+synthetic fixture. It is not an exhaustion or concurrency stress test. The
+report contains no host fixture path or SQL payload.
+
+The captured Linux/amd64 run is [recorded as sanitized JSON](sqlite-named-vfs-prototype-report.json).
+Its `source_commit` is the exact clean source revision that the CLI verified
+before running.
 
 Classification meanings:
 

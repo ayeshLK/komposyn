@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "source_commit": "9a4a614159a3e4706abecfa0bbe6d8cf723300ef",
+  "run_at_utc": "2026-11-06T05:32:20Z",
+  "os": "linux",
+  "architecture": "amd64",
+  "go_version": "go1.26.10",
+  "driver_version": "v1.61.0",
+  "driver_source_commit": "4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738",
+  "sqlite_version": "3.54.1",
+  "named_vfs": "vfs1",
+  "default_vfs_unchanged": "preserved by non-default registration (source-inspected)",
+  "cases": [
+    {
+      "name": "named_vfs_read_control",
+      "classification": "measured_pass",
+      "observed": "SQLite opened the synthetic source through the non-default named VFS and returned the fixture marker.",
+      "exact_object_identity": "Not captured by the supported adapter; no inode/descriptor registration is claimed.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal"
+      ],
+      "fixture_effects": [
+        "source fixture unchanged"
+      ]
+    },
+    {
+      "name": "named_vfs_write_refusal",
+      "classification": "measured_refusal",
+      "observed": "An UPDATE through the supported named VFS failed because its xOpen refuses the main-journal role (SQLite reports SQLITE_NOMEM); the marker remained unchanged.",
+      "exact_object_identity": "Not captured; refusal is an adapter capability limit, not an identity-bound authorization decision.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal"
+      ],
+      "fixture_effects": [
+        "synthetic marker unchanged"
+      ]
+    },
+    {
+      "name": "wal_shm_stop_condition",
+      "classification": "measured_refusal",
+      "observed": "The named read-only VFS reported journal mode delete for a WAL request; the requested WAL mode was not selected. Neither WAL nor SHM fixture appeared in this read-only attempt; this does not prove an xShmMap interception.",
+      "exact_object_identity": "SHM identity was not exposed before SQLite's native SHM path; no xShmMap protection is claimed.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal"
+      ],
+      "fixture_effects": [
+        "WAL and SHM fixture paths absent after attempt"
+      ]
+    },
+    {
+      "name": "backup_plain_destination_control",
+      "classification": "measured_unprotected_control",
+      "observed": "NewBackup's plain destination succeeded via SQLite's independently selected default VFS; source named-VFS selection did not protect it.",
+      "exact_object_identity": "Destination object was not opened through the named adapter; identity was not registered.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal"
+      ],
+      "fixture_effects": [
+        "plain-control.db created in disposable fixture"
+      ]
+    },
+    {
+      "name": "backup_named_destination_refusal_and_fresh_retry",
+      "classification": "measured_refusal",
+      "observed": "Explicit named-VFS backup destinations failed on the first attempt and a separate fresh retry; no protected backup bytes were written.",
+      "exact_object_identity": "No destination identity was captured; the adapter rejected its create/open path before a destination file appeared.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "explicit-refused.db",
+        "retry-refused.db"
+      ],
+      "fixture_effects": [
+        "first destination created=false then removed if present",
+        "fresh retry destination created=false",
+        "the plain default-VFS control backup remains fixture-only and outside the named adapter boundary"
+      ]
+    }
+  ],
+  "conclusion": "The pinned driver supports non-default read-only VFS selection and SQLite demonstrates independent backup destination routing. A no-fork writable exact-object pre-write adapter and pre-native SHM protection were not demonstrated; writable Token Logger coverage remains unsupported.",
+  "limitations": [
+    "The supported modernc.org/sqlite/vfs adapter is read-only; no writable callback adapter was implemented.",
+    "No exact native descriptor was registered before SQLite writes; the experiment cannot establish a write barrier.",
+    "WAL/SHM acceptance is unavailable. A named read-only VFS refusal is not proof of a pre-native xShmMap interception.",
+    "The plain backup destination is an intentionally unprotected control and is confined to this disposable fixture.",
+    "This prototype does not cover Token Logger, concurrent external actors, rotation, production integration, or non-Linux behavior."
+  ]
+}
