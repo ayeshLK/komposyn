@@ -32,7 +32,7 @@ or an explicitly maintained driver fork. Until that exists, fail closed.
 ## Provenance and reproduction
 
 The probe source is commit
-[`cfee34b674388d49d2a7c60adb00805a9b815f2c`](https://github.com/ayeshLK/komposyn/tree/cfee34b674388d49d2a7c60adb00805a9b815f2c)
+[`ecc20a5b0d02fee104eba2f0565ed4a4488e9bdc`](https://github.com/ayeshLK/komposyn/tree/ecc20a5b0d02fee104eba2f0565ed4a4488e9bdc)
 in this repository. It used `modernc.org/sqlite v1.61.0`, generated source
 commit
 [`4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738`](https://gitlab.com/cznic/sqlite/-/tree/4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738),
@@ -44,9 +44,9 @@ It contains no host paths, fixture contents, credentials, or database data.
 From a clean checkout of the exact probe commit:
 
 ```sh
-git checkout --detach cfee34b674388d49d2a7c60adb00805a9b815f2c
+git checkout --detach ecc20a5b0d02fee104eba2f0565ed4a4488e9bdc
 GOCACHE=/tmp/komposyn-go-cache go run ./cmd/sqlite-wal-shm-study \
-  --commit cfee34b674388d49d2a7c60adb00805a9b815f2c
+  --commit ecc20a5b0d02fee104eba2f0565ed4a4488e9bdc
 ```
 
 The command verifies that `HEAD` is the supplied full commit and the checkout
@@ -56,7 +56,7 @@ then removes the fixture. It has no parameters for caller paths or SQL. It
 does not access the repository's stores. The hook is installed only in this
 standalone process and restored before exit.
 
-The recorded run completed on 2026-11-06 at 10:44 UTC. The command runs as a
+The recorded run completed on 2026-11-06 at 10:47 UTC. The command runs as a
 disposable standalone process (for example through `go run`); the raw
 package-global hook is never installed in the application or test runner
 process. It recorded both actual WAL and SHM descriptors before those open

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "source_commit": "cfee34b674388d49d2a7c60adb00805a9b815f2c",
+  "source_commit": "ecc20a5b0d02fee104eba2f0565ed4a4488e9bdc",
   "driver": "modernc.org/sqlite v1.61.0",
   "driver_source_commit": "4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738",
   "sqlite_version": "3.54.1",
   "go_version": "go1.26.10",
   "kernel": "7.0.0-42-generic",
-  "run_time_utc": "2026-11-06T10:44:27Z",
+  "run_time_utc": "2026-11-06T10:47:11Z",
   "os": "linux",
   "architecture": "amd64",
   "cases": [
