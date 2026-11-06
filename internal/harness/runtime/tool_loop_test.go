@@ -110,7 +110,7 @@ func (p closeTrackingPreparation) Execute(context.Context) (tools.Result, error)
 	return tools.Result{}, errors.New("prepared operation should not execute")
 }
 
-func (p closeTrackingPreparation) Close() error {
+func (p closeTrackingPreparation) Close(context.Context) error {
 	*p.closed = true
 	return nil
 }
@@ -127,11 +127,53 @@ func (p *retryClosePreparation) Execute(context.Context) (tools.Result, error) {
 	return p.result, nil
 }
 
-func (p *retryClosePreparation) Close() error {
+func (p *retryClosePreparation) Close(context.Context) error {
 	index := p.closeCalls
 	p.closeCalls++
 	if index < len(p.closeErrors) {
 		return p.closeErrors[index]
+	}
+	return nil
+}
+
+type activeClosePreparation struct {
+	entered    chan struct{}
+	closeCalls int
+}
+
+func (p *activeClosePreparation) Execute(ctx context.Context) (tools.Result, error) {
+	close(p.entered)
+	<-ctx.Done()
+	return tools.Result{ProviderCallID: "call-shutdown-race", Outcome: tools.OutcomeCancelled}, ctx.Err()
+}
+
+func (p *activeClosePreparation) Close(context.Context) error {
+	p.closeCalls++
+	if p.closeCalls == 1 {
+		return errors.New("worker cleanup pending")
+	}
+	return nil
+}
+
+type gatedShutdownPreparation struct {
+	entered    chan struct{}
+	release    chan struct{}
+	closeCalls int
+}
+
+func (p *gatedShutdownPreparation) Execute(context.Context) (tools.Result, error) {
+	close(p.entered)
+	<-p.release
+	return tools.Result{ProviderCallID: "call-shutdown-timeout", Outcome: tools.OutcomeSucceeded}, nil
+}
+
+func (p *gatedShutdownPreparation) Close(ctx context.Context) error {
+	p.closeCalls++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.closeCalls == 1 {
+		return errors.New("worker cleanup pending")
 	}
 	return nil
 }
@@ -497,6 +539,179 @@ func TestUnconfirmedPreparationCleanupWithholdsResultsAndBlocksProvider(t *testi
 				t.Fatalf("confirmed cleanup did not release admission: requests=%d close_calls=%d retained=%d", len(got), preparation.closeCalls, chat.toolRuntime.pendingPreparationCleanupCount())
 			}
 		})
+	}
+}
+
+func TestChatCloseContextDrainsRetainedPreparationCleanup(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		closeErrors []error
+		wantErr     bool
+		wantCalls   int
+	}{
+		{name: "retry succeeds", closeErrors: []error{errors.New("cleanup pending")}, wantCalls: 2},
+		{name: "cleanup remains unconfirmed", closeErrors: []error{errors.New("cleanup pending"), errors.New("cleanup still pending")}, wantErr: true, wantCalls: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tool := &fixtureTool{content: "fallback must not run"}
+			config := newToolConfig(tool, ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+				return permissions.ApprovalOnce, "", nil
+			}))
+			preparation := &retryClosePreparation{
+				result:      tools.Result{ProviderCallID: "call-close-context", Outcome: tools.OutcomeSucceeded, Content: []tools.Content{{Kind: tools.ContentText, Text: "must not publish"}}},
+				closeErrors: test.closeErrors,
+			}
+			preparer := preparationTestEnforcer{
+				prepare: func(context.Context, tools.Tool, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error) {
+					return preparation, nil
+				},
+				execute: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+					t.Fatal("generic enforcer must not execute a prepared tool")
+					return tools.Result{}, nil
+				}),
+			}
+			config.Enforcer = preparer
+			config.Preparer = preparer
+			fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
+				if index == 0 {
+					return callResult(t, "call-close-context", "/safe/a"), nil
+				}
+				return finalResult("unexpected provider request"), nil
+			}}
+			chat, _ := makeToolLoopChat(t, fp, config)
+			turn, err := chat.Send(context.Background(), "prepare cleanup", nil)
+			if err != nil || turn.Outcome != p.OutcomeInterrupted {
+				t.Fatalf("turn=%+v err=%v", turn, err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			closeErr := chat.CloseContext(ctx)
+			if (closeErr != nil) != test.wantErr {
+				t.Fatalf("CloseContext error=%v, wantErr=%t", closeErr, test.wantErr)
+			}
+			if preparation.closeCalls != test.wantCalls {
+				t.Fatalf("cleanup close calls=%d want=%d", preparation.closeCalls, test.wantCalls)
+			}
+			wantPending := 0
+			if test.wantErr {
+				wantPending = 1
+			}
+			if got := chat.toolRuntime.pendingPreparationCleanupCount(); got != wantPending {
+				t.Fatalf("retained cleanup count=%d want=%d", got, wantPending)
+			}
+			if got := fp.captured(); len(got) != 1 {
+				t.Fatalf("shutdown issued another provider request: %d", len(got))
+			}
+		})
+	}
+}
+
+func TestChatCloseContextDrainsPreparationCreatedByActiveTurn(t *testing.T) {
+	tool := &fixtureTool{content: "fallback must not run"}
+	config := newToolConfig(tool, ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}))
+	preparation := &activeClosePreparation{entered: make(chan struct{})}
+	preparer := preparationTestEnforcer{
+		prepare: func(context.Context, tools.Tool, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error) {
+			return preparation, nil
+		},
+		execute: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+			t.Fatal("generic enforcer must not execute a prepared tool")
+			return tools.Result{}, nil
+		}),
+	}
+	config.Enforcer = preparer
+	config.Preparer = preparer
+	fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
+		if index == 0 {
+			return callResult(t, "call-shutdown-race", "/safe/a"), nil
+		}
+		return finalResult("unexpected provider request"), nil
+	}}
+	chat, _ := makeToolLoopChat(t, fp, config)
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		_, _ = chat.Send(context.Background(), "shutdown during execution", nil)
+	}()
+	select {
+	case <-preparation.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("prepared operation did not start")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := chat.CloseContext(ctx); err != nil {
+		t.Fatalf("CloseContext did not drain cleanup created during cancellation: %v", err)
+	}
+	select {
+	case <-sendDone:
+	case <-time.After(time.Second):
+		t.Fatal("active Send did not stop before shutdown completed")
+	}
+	if preparation.closeCalls != 2 || chat.toolRuntime.pendingPreparationCleanupCount() != 0 {
+		t.Fatalf("active cleanup lifecycle close_calls=%d retained=%d", preparation.closeCalls, chat.toolRuntime.pendingPreparationCleanupCount())
+	}
+	if got := fp.captured(); len(got) != 1 {
+		t.Fatalf("provider continued after shutdown began: requests=%d", len(got))
+	}
+}
+
+func TestChatCloseContextRetainsPreparationCreatedAfterBoundedWaitExpires(t *testing.T) {
+	tool := &fixtureTool{content: "fallback must not run"}
+	config := newToolConfig(tool, ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}))
+	preparation := &gatedShutdownPreparation{entered: make(chan struct{}), release: make(chan struct{})}
+	preparer := preparationTestEnforcer{
+		prepare: func(context.Context, tools.Tool, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error) {
+			return preparation, nil
+		},
+		execute: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+			t.Fatal("generic enforcer must not execute a prepared tool")
+			return tools.Result{}, nil
+		}),
+	}
+	config.Enforcer = preparer
+	config.Preparer = preparer
+	fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
+		if index == 0 {
+			return callResult(t, "call-shutdown-timeout", "/safe/a"), nil
+		}
+		return finalResult("unexpected provider request"), nil
+	}}
+	chat, _ := makeToolLoopChat(t, fp, config)
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		_, _ = chat.Send(context.Background(), "bounded shutdown fixture", nil)
+	}()
+	select {
+	case <-preparation.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("prepared operation did not start")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := chat.CloseContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("bounded CloseContext error=%v, want cancellation", err)
+	}
+	close(preparation.release)
+	select {
+	case <-sendDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("active turn did not finish after its fixture gate released")
+	}
+	if preparation.closeCalls != 1 || chat.toolRuntime.pendingPreparationCleanupCount() != 1 {
+		t.Fatalf("late cleanup obligation was lost: close_calls=%d retained=%d", preparation.closeCalls, chat.toolRuntime.pendingPreparationCleanupCount())
+	}
+	if err := chat.CloseContext(context.Background()); err != nil {
+		t.Fatalf("retrying bounded shutdown did not drain retained cleanup: %v", err)
+	}
+	if preparation.closeCalls != 2 || chat.toolRuntime.pendingPreparationCleanupCount() != 0 {
+		t.Fatalf("shutdown retry close_calls=%d retained=%d", preparation.closeCalls, chat.toolRuntime.pendingPreparationCleanupCount())
 	}
 }
 

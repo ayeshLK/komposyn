@@ -72,13 +72,19 @@ without requiring filesystem coverage or a Linux backend.
 If preparation cleanup fails, runtime retains the capability, returns an
 unknown result without its content, stops the current turn before another
 provider request, and retries cleanup before a later turn can make a provider
-request. Preparation handles must make `Close` safe to retry. The Linux service
-also latches an owner as pending before route/replacement registration; a
-registration error, post-registration cancellation, or opened-object identity
-mismatch keeps that owner pending in the detached coverage snapshot until a
-fresh registration and identity check both succeed. This overlay is required
-because the coordinator may complete its staged inventory update before the
-service's final descriptor check.
+request. `Chat.CloseContext` also waits for the active turn within the caller's
+deadline and drains retained preparations before the host closes the sandbox
+service. Timeout or persistent cleanup failure is returned to the caller while
+the runtime keeps the remaining handles for a later shutdown retry. The legacy
+`Chat.Close` wrapper is bounded; callers that need to observe incomplete
+cleanup use `CloseContext`. Preparation `Close` methods must honor their
+context and be safe to retry. The Linux service also latches an owner as pending
+before route/replacement registration; a registration error,
+post-registration cancellation, or opened-object identity mismatch keeps that
+owner pending in the detached coverage snapshot until a fresh registration and
+identity check both succeed. This overlay is required because the coordinator
+may complete its staged inventory update before the service's final descriptor
+check.
 
 The future prepared capability must bind the invocation, validated arguments,
 exact route/opened identity/classification, root/composition/coverage/policy

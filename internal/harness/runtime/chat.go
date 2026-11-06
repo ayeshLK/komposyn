@@ -87,6 +87,7 @@ type Chat struct {
 	credentialBusy        bool
 	credentialBusyProfile string
 	cancel                context.CancelFunc
+	activeDone            chan struct{}
 	generation            uint64
 	sequence              atomic.Uint64
 	loginMu               sync.Mutex
@@ -144,34 +145,61 @@ func NewChatWithToolRuntime(providers *model.Registry, profiles auth.Store, regi
 	return chat
 }
 
-// Close cancels active work and clears the current conversation's grants and
-// pending approvals. It does not claim to roll back a running side effect.
+// Close cancels active work and performs a bounded cleanup drain. Call
+// CloseContext when the caller needs to observe an incomplete shutdown.
 func (c *Chat) Close() {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = c.CloseContext(ctx)
+}
+
+// CloseContext cancels an active turn, waits for it to finish within ctx, and
+// retries retained prepared-capability cleanup before returning. A timeout or
+// cleanup error leaves runtime-owned obligations reachable so the caller can
+// retry CloseContext; it does not claim to roll back a running side effect.
+func (c *Chat) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		return context.Canceled
 	}
-	c.closed = true
+	c.mu.Lock()
+	firstClose := !c.closed
+	if firstClose {
+		c.closed = true
+		c.history = nil
+		c.toolCallIDs = nil
+	}
 	cancel := c.cancel
-	conversationID := c.conversationID
-	c.history = nil
-	c.toolCallIDs = nil
+	activeDone := c.activeDone
+	conversationID, runtime := c.conversationID, c.toolRuntime
 	c.mu.Unlock()
+	if runtime != nil {
+		runtime.beginShutdown()
+	}
 	if cancel != nil {
 		cancel()
 	}
-	if c.toolRuntime != nil && conversationID != "" {
-		c.toolRuntime.grants.Clear(conversationID)
-		c.toolRuntime.plans.Close(conversationID)
-		c.toolRuntime.coordinator.CancelConversation(conversationID)
-		if invalidator, ok := c.toolRuntime.approval.(ToolApprovalInvalidator); ok {
+	if firstClose && runtime != nil && conversationID != "" {
+		runtime.grants.Clear(conversationID)
+		runtime.plans.Close(conversationID)
+		runtime.coordinator.CancelConversation(conversationID)
+		if invalidator, ok := runtime.approval.(ToolApprovalInvalidator); ok {
 			invalidator.InvalidateConversation(conversationID)
 		}
-		if invalidator, ok := c.toolRuntime.clarification.(ToolClarificationInvalidator); ok {
+		if invalidator, ok := runtime.clarification.(ToolClarificationInvalidator); ok {
 			invalidator.InvalidateConversation(conversationID)
 		}
 	}
+	if activeDone != nil {
+		select {
+		case <-activeDone:
+		case <-ctx.Done():
+			return fmt.Errorf("active chat turn did not stop before shutdown: %w", ctx.Err())
+		}
+	}
+	if runtime != nil {
+		return runtime.shutdownAndDrain(ctx)
+	}
+	return nil
 }
 
 // ToolGrants returns detached, in-memory grants for the current conversation.
@@ -657,6 +685,8 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	generation := c.sequence.Add(1)
 	c.generation = generation
 	c.active = true
+	activeDone := make(chan struct{})
+	c.activeDone = activeDone
 	c.activeToolActivities = nil
 	c.activeProfile = selection.ProfileID
 	c.cancel = cancel
@@ -672,7 +702,11 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 			c.active = false
 			c.activeProfile = ""
 			c.cancel = nil
+			if c.activeDone == activeDone {
+				c.activeDone = nil
+			}
 		}
+		close(activeDone)
 		c.mu.Unlock()
 	}()
 
@@ -793,7 +827,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.generation != generation {
+	if c.generation != generation || c.closed {
 		return turn, errors.New("stale provider result discarded")
 	}
 	c.active = false

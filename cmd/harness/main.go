@@ -143,10 +143,10 @@ func newCommand() *cobra.Command {
 			toolRuntime.Preparer = hostSandbox
 			chat := runtime.NewChatWithToolRuntime(registry, profileStore, authRegistry, toolRuntime)
 			runErr = frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore, Version: cliVersion, Approval: approvalBridge, Clarification: clarificationBridge})
-			chat.Close()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			return errors.Join(runErr, oauthManager.Close(shutdownCtx), closeSandbox(shutdownCtx))
+			chatCloseErr := chat.CloseContext(shutdownCtx)
+			return errors.Join(runErr, chatCloseErr, oauthManager.Close(shutdownCtx), closeSandbox(shutdownCtx))
 		},
 	}
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
