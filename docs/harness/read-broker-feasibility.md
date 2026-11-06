@@ -1,11 +1,13 @@
 # Experimental brokered read feasibility harness
 
-This package and command are isolated research infrastructure. They are not
-used by production dispatch and register no filesystem tools. A narrowly
-injected owner hook now exercises the actual harness auth and settings stores
-against the study registry in disposable tests; the shipped chat does not wire
-that hook to a sandbox session. Provider-source and Token Logger owner
-inventories remain absent. See [protected owner integration](read-broker-owner-integration.md).
+The `cmd/read-broker-study` command remains isolated research infrastructure
+and registers no filesystem tools. Its fixed Linux broker, worker and
+coordinator are now composed by the experimental chat's host service for
+auth/settings lifecycle protection and fail-closed capability admission. The
+chat never releases a target descriptor: generic reads remain blocked by the
+unknown-root-data gate. Provider-source and Token Logger owner inventories
+remain absent. See [composition admission and sandbox service](composition-admission-sandbox-service.md)
+and [protected owner integration](read-broker-owner-integration.md).
 The [owner inventory and admission contract](read-broker-owner-inventory.md)
 audits the store/discovery lifecycles and describes the fail-closed synthetic
 profile; complete fixture coverage is not production owner coverage.
@@ -14,7 +16,7 @@ details why the current SQLite driver cannot yet provide the exact-object
 pre-write barrier needed for a real Token Logger owner registration.
 
 The follow-up native acceptance scenarios for actual auth/settings store calls
-through the live Bubblewrap worker are defined in
+through the study's live Bubblewrap worker are defined in
 [real-store native acceptance](read-broker-real-store-native-acceptance.md).
 Their results are not inferred from the older synthetic `fixtureOwnerWriter`
 cases or the injected-session store tests.

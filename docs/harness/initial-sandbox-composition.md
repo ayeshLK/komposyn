@@ -5,6 +5,12 @@ This document does not wire a sandbox into `cmd/harness`, enable filesystem
 tools, or establish production owner coverage. It is based on source at
 `990732888c33c7f6980427e934da6cc1adb6db0e` (merged PR #241).
 
+The subsequent implementation of the auth/settings composition, runtime
+pre-consumption seam and non-exposing Linux service is documented in
+[composition admission and sandbox service](composition-admission-sandbox-service.md).
+This proposal remains the source for the reviewed unknown-data refusal
+boundary; implementation has not enabled generic reads.
+
 ## Recommendation
 
 Advance the Linux sandbox composition around the existing fixed, exact-file
@@ -53,15 +59,16 @@ user-selected root.
 | Other credentials, databases and user files | No KompoSyn owner knows all files or external writers in an arbitrary root. Independent applications can create, copy, rename or link data. | The approved policy requires protected objects/locations to remain denied; object identity cannot identify independent copies of sensitive bytes. No scan, extension/content guessing, or inferred home/root inventory is allowed. | No authoritative inventory or independent-writer barrier exists. | This is the unresolved boundary. Under a strict reading of the current protection contract, generic reads from an arbitrary root cannot yet be admitted as “known safe.” |
 | Worker process environment, descriptors and host resources | Current chat has no sandbox child. OAuth browser launch is a separate host auth operation. The study worker profile clears environment and passes a small protocol descriptor set; it does not establish shipped composition behavior. | The worker receives only protocol descriptors and the single approved read capability after trusted startup and checks. No home, credentials, provider sockets/client, broad directory handle or arbitrary inherited descriptor. | Worker/profile behavior is research-only; integration and composition-specific native acceptance are absent. | Sandbox/profile unavailable means refusal, never unrestricted execution. |
 
-Auth/settings path details are implemented independently in
+Auth/settings path details are implemented in
 `internal/harness/auth/store.go` and `internal/harness/settings/settings.go`:
-each store exposes `EffectivePath()` and each has its own default path
-resolution. `cmd/harness` constructs them from separate flags. A future
-composition must call both effective-path APIs and must not derive the
-settings route from the effective auth override. Protection hooks are in
-`internal/harness/auth/protection.go` and the settings store, with platform
-file helpers alongside them. Composition and tool registration are in
-`cmd/harness/main.go`. Provider-source lifecycle is audited in
+each store exposes `EffectivePath()` and resolves its own default. `cmd/harness`
+constructs them from separate flags and registers each store's own effective
+path before loading/listing state. An auth-only override does not relocate the
+settings route. Protection hooks are in `internal/harness/auth/protection.go`
+and the settings store, with platform file helpers alongside them. The
+current runtime and service wiring is documented in
+[`composition-admission-sandbox-service.md`](composition-admission-sandbox-service.md).
+Provider-source lifecycle is audited in
 [`read-broker-owner-inventory.md`](read-broker-owner-inventory.md). SQLite
 lifecycle findings remain in
 [`read-broker-tokenlogger-lifecycle.md`](read-broker-tokenlogger-lifecycle.md)

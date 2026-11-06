@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package readbrokerstudy contains a disposable feasibility harness for
-// brokered, sandboxed typed reads. It is not used by production dispatch and
-// does not register filesystem tools.
+// Package readbrokerstudy contains the fixed Linux broker/worker and its
+// lifecycle coordinator, plus disposable feasibility fixtures. The experimental
+// chat may compose the coordinator behind a fail-closed host service; this
+// package does not register model-facing filesystem tools.
 package readbrokerstudy
 
 import (
@@ -206,10 +207,10 @@ type ReadEvidence struct {
 
 type CheckpointHook func(Checkpoint) error
 
-// FixtureSession is coordinator-only test composition. It couples one-time
-// authorization consumption, worker launch/release, generation invalidation,
-// and publication. Production runtime code does not use this type.
-type FixtureSession interface {
+// HostCoordinator couples one-time authorization, worker launch/release,
+// generation invalidation, and publication. The caller supplies the trusted
+// authorizer and coverage profile; tool/model inputs cannot construct either.
+type HostCoordinator interface {
 	Read(context.Context, string, string, string) (WorkerResult, error)
 	DeclareCoverageOwner(OwnerRequirement) error
 	RetireCoverageOwner(string) error
@@ -224,6 +225,12 @@ type FixtureSession interface {
 	CoverageSnapshot() CoverageSnapshot
 	ActiveOperationCount() int
 	Close(context.Context) error
+}
+
+// FixtureSession is retained for the disposable study command and its
+// evidence-oriented test hooks.
+type FixtureSession interface {
+	HostCoordinator
 }
 
 type WorkerResult struct {

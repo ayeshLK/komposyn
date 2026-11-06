@@ -61,6 +61,24 @@ type ToolEnforcer interface {
 	Execute(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error)
 }
 
+// ToolPreparation is a host-owned capability retained between admission and
+// dispatch. Runtime closes it on every path. Implementations should bind it to
+// the invocation and authorization context and revalidate their own revisions
+// before releasing any effect-capable capability.
+type ToolPreparation interface {
+	Execute(context.Context) (tools.Result, error)
+	Close() error
+}
+
+// ToolPreparer is an optional, trusted pre-consumption admission boundary.
+// Runtime calls it after authorization is current and before consuming once
+// grants. Preparation failure therefore cannot consume approval or start the
+// enforcer. The returned capability is never passed to a tool implementation.
+type ToolPreparer interface {
+	Prepares(tools.ID) bool
+	PrepareTool(context.Context, tools.Tool, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error)
+}
+
 type ToolEnforcerFunc func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error)
 
 func (f ToolEnforcerFunc) Execute(ctx context.Context, tool tools.Tool, invocation tools.Invocation, request permissions.Request) (tools.Result, error) {
@@ -87,6 +105,7 @@ type ToolRuntimeConfig struct {
 	Registry      *tools.Registry
 	Authorizer    ToolAuthorizer
 	Enforcer      ToolEnforcer
+	Preparer      ToolPreparer
 	Approval      ToolApprovalInteraction
 	Clarification ToolClarificationInteraction
 	Grants        *permissions.MemoryStore
@@ -98,6 +117,7 @@ type toolRuntime struct {
 	registry      *tools.Registry
 	authorizer    ToolAuthorizer
 	enforcer      ToolEnforcer
+	preparer      ToolPreparer
 	approval      ToolApprovalInteraction
 	clarification ToolClarificationInteraction
 	grants        *permissions.MemoryStore
@@ -190,7 +210,7 @@ func newToolRuntime(config ToolRuntimeConfig) *toolRuntime {
 	}
 	evaluator := permissions.Evaluator{Rules: config.Rules, Grants: config.Grants}
 	return &toolRuntime{
-		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer,
+		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer,
 		approval: config.Approval, clarification: config.Clarification, grants: config.Grants, plans: config.Plans, evaluator: evaluator,
 		coordinator: permissions.NewCoordinator(evaluator, config.Grants),
 	}
@@ -737,18 +757,71 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
+	preparedCleanupFailed := func(message string, cancelTurn bool) (provider.ToolResult, ToolActivity, string, bool) {
+		activity.Outcome = tools.OutcomeUnknown
+		activity.Message = message
+		update("finished")
+		return fixedToolResult(call.CallID, tools.OutcomeUnknown, message, maxBytes), activity, "", cancelTurn
+	}
+	var preparation ToolPreparation
+	if r.preparer != nil && r.preparer.Prepares(call.ToolID) {
+		preparation, err = r.preparer.PrepareTool(ctx, tool, cloneInvocation(invocation), prepared, freshDecision.Revision)
+		if err != nil || preparation == nil {
+			var closeErr error
+			if preparation != nil {
+				closeErr = preparation.Close()
+			}
+			if closeErr != nil {
+				return preparedCleanupFailed("prepared capability cleanup could not be confirmed", false)
+			}
+			return notExecuted("tool preparation or coverage admission is unavailable")
+		}
+	}
+	closePreparation := func() error {
+		if preparation == nil {
+			return nil
+		}
+		owned := preparation
+		preparation = nil
+		return owned.Close()
+	}
+	defer func() { _ = closePreparation() }()
+	if !current() || ctx.Err() != nil {
+		if closeErr := closePreparation(); closeErr != nil {
+			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after cancellation", true)
+		}
+		activity.Outcome = tools.OutcomeNotExecuted
+		activity.Message = "turn cancelled before execution"
+		update("finished")
+		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
+	}
 	if err := r.grants.ConsumeOnceMatchingAtRevision(prepared, freshDecision.Revision); err != nil {
+		if closeErr := closePreparation(); closeErr != nil {
+			return preparedCleanupFailed("once permission changed and prepared capability cleanup could not be confirmed", false)
+		}
 		return notExecuted("once permission could not be consumed")
 	}
 	update("authorized")
 	if !current() || ctx.Err() != nil {
+		if closeErr := closePreparation(); closeErr != nil {
+			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after authorization", true)
+		}
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
 		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
 	update("running")
-	result, executionErr := r.enforcer.Execute(ctx, tool, cloneInvocation(invocation), prepared)
+	var result tools.Result
+	var executionErr error
+	if preparation != nil {
+		result, executionErr = preparation.Execute(ctx)
+		if closeErr := closePreparation(); closeErr != nil {
+			executionErr = errors.Join(executionErr, closeErr)
+		}
+	} else {
+		result, executionErr = r.enforcer.Execute(ctx, tool, cloneInvocation(invocation), prepared)
+	}
 	outcome := validateResultOutcome(result)
 	if executionErr != nil {
 		outcome = tools.OutcomeUnknown

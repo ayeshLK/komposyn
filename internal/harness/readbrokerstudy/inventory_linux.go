@@ -46,7 +46,29 @@ type CoverageInventory struct {
 // integrated.
 func NewSyntheticStudyInventory() *CoverageInventory {
 	copyOf := SyntheticStudyRequirements()
-	return &CoverageInventory{requirements: copyOf, declarations: make(map[string]OwnerRequirement), pending: make(map[string]uint64), retired: make(map[string]bool), registrations: make(map[string]map[OwnerRegistration]map[FileIdentity]struct{})}
+	return newCoverageInventory(copyOf)
+}
+
+// NewChatCompositionInventory is the fixed owner profile for the current
+// trusted memory-chat composition. It requires only the auth and settings
+// stores that cmd/harness actually owns. It does not attest that arbitrary
+// databases, credentials, or provider sources are absent from a selected
+// root; the host sandbox service keeps that separate gate closed.
+func NewChatCompositionInventory() *CoverageInventory {
+	return newCoverageInventory(ChatCompositionRequirements())
+}
+
+// ChatCompositionRequirements returns the fixed current-chat owner set. It is
+// trusted host wiring, not a caller-selected applicability list.
+func ChatCompositionRequirements() []OwnerRequirement {
+	return []OwnerRequirement{
+		{Owner: "komposyn-auth-store", Class: ClassCredential, Evidence: OwnerEvidenceComposition, Lifecycle: LifecyclePinnedReplacement},
+		{Owner: "komposyn-settings-store", Class: ClassSettings, Evidence: OwnerEvidenceComposition, Lifecycle: LifecyclePinnedReplacement},
+	}
+}
+
+func newCoverageInventory(requirements []OwnerRequirement) *CoverageInventory {
+	return &CoverageInventory{requirements: append([]OwnerRequirement(nil), requirements...), declarations: make(map[string]OwnerRequirement), pending: make(map[string]uint64), retired: make(map[string]bool), registrations: make(map[string]map[OwnerRegistration]map[FileIdentity]struct{})}
 }
 
 // SyntheticStudyRequirements returns a detached copy of the only owner

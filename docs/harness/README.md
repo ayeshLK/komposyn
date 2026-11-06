@@ -43,11 +43,13 @@ For headless configuration inspection, run `komposyn --check`. `--auth-file`
 and `--settings-file` select alternate paths for tests or isolated runs; they
 do not accept credential values. Startup creates no chat database.
 
-The auth and settings stores expose an optional host-owned protection hook for
-the experimental read-broker study. The shipped chat does not configure a
-sandbox service or filesystem tools; see the
-[protected owner integration boundary](read-broker-owner-integration.md) and
-the [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
+The auth and settings stores expose a host-owned protection hook. The shipped
+chat now wires those stores to a host sandbox composition before loading their
+contents, but generic reads remain blocked by the unresolved unknown-root-data
+gate and no filesystem tool is registered. See the
+[composition admission and sandbox service](composition-admission-sandbox-service.md),
+[protected owner integration boundary](read-broker-owner-integration.md), and
+[real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
@@ -65,8 +67,10 @@ unavailable.
 
 The proposed first sandbox composition, trusted owner coverage states,
 unknown-data refusal boundary and staged typed-read path are described in the
-[initial sandbox composition design](initial-sandbox-composition.md). This is
-design only; production composition and filesystem tools remain unavailable.
+[initial sandbox composition design](initial-sandbox-composition.md). The
+auth/settings lifecycle and pre-consumption admission seam are implemented in
+the [composition admission and sandbox service](composition-admission-sandbox-service.md).
+The unknown-data gate remains closed, and filesystem tools remain unavailable.
 
 ## Local configuration
 
@@ -435,17 +439,18 @@ for each capability and maintainer review. The
 the later object-authority target and distinguish it from the historical strict
 pathname-containment gate in the earlier policy.
 
-The [brokered read feasibility harness](read-broker-feasibility.md) adds an
-experimental host-owned protected-object registry and a fixed Bubblewrap worker
-that receives one authorized read descriptor. It is not production dispatch;
-its bounded separate-process namespace actors cover selected-root and parent
-relocation, target replacement, a late protected alias, and a moved protected
-directory child. Those source scenarios do not count as native evidence until
-the selected revision runs with a trusted Bubblewrap backend. Protected-owner
-rotation, mount boundaries, a protected-ancestor race, descendant cleanup, and
-production integration remain limited or pending; no filesystem tool is
-enabled. See the [scenario matrix](read-broker-native-actor.md) and follow the
-[manual read-broker runner guide](read-broker-manual-runner.md) to produce a
+The [brokered read feasibility harness](read-broker-feasibility.md) provides an
+experimental host-owned protected-object registry and fixed Bubblewrap worker.
+The memory-chat host composition now uses that coordinator for auth/settings
+registration and cleanup, but its independent unknown-data gate refuses generic
+reads before descriptor release. The study command's bounded separate-process
+namespace actors cover selected-root and parent relocation, target replacement,
+a late protected alias, and a moved protected directory child. Those source
+scenarios do not count as native evidence until the selected revision runs with
+a trusted Bubblewrap backend. Protected-owner rotation, mount boundaries, a
+protected-ancestor race, and descendant cleanup remain limited or pending; no
+filesystem tool is enabled. See the [scenario matrix](read-broker-native-actor.md)
+and follow the [manual read-broker runner guide](read-broker-manual-runner.md) to produce a
 bounded, checksummed archive from a normal Linux host terminal.
 The [owner inventory and admission note](read-broker-owner-inventory.md)
 records the Token Logger/provider lifecycle gaps and explains why a complete

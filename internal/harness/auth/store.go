@@ -143,7 +143,7 @@ func (s Store) EffectivePath() (string, error) { return s.path() }
 // RegisterProtection registers the current auth route and, when present, its
 // opened regular-file identity with the host-owned protection lifecycle.
 func (s Store) RegisterProtection(ctx context.Context) error {
-	path, err := s.path()
+	path, err := s.EffectivePath()
 	if err != nil {
 		return err
 	}

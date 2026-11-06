@@ -89,6 +89,32 @@ type fixtureTool struct {
 	outcome tools.Outcome
 }
 
+type preparationTestEnforcer struct {
+	prepare func(context.Context, tools.Tool, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error)
+	execute ToolEnforcer
+}
+
+func (e preparationTestEnforcer) Execute(ctx context.Context, tool tools.Tool, invocation tools.Invocation, request permissions.Request) (tools.Result, error) {
+	return e.execute.Execute(ctx, tool, invocation, request)
+}
+
+func (e preparationTestEnforcer) PrepareTool(ctx context.Context, tool tools.Tool, invocation tools.Invocation, request permissions.Request, revision uint64) (ToolPreparation, error) {
+	return e.prepare(ctx, tool, invocation, request, revision)
+}
+
+func (preparationTestEnforcer) Prepares(tools.ID) bool { return true }
+
+type closeTrackingPreparation struct{ closed *bool }
+
+func (p closeTrackingPreparation) Execute(context.Context) (tools.Result, error) {
+	return tools.Result{}, errors.New("prepared operation should not execute")
+}
+
+func (p closeTrackingPreparation) Close() error {
+	*p.closed = true
+	return nil
+}
+
 func (f *fixtureTool) Definition() tools.Definition {
 	return tools.Definition{ID: "lookup", Description: "Look up a fixture value", InputSchema: json.RawMessage(`{"type":"object","properties":{"target":{"type":"string"}}}`), MaxInput: 1024}
 }
@@ -274,6 +300,102 @@ func TestRuntimeToolLoopSerializesCorrelatedCallsAndContinues(t *testing.T) {
 	usage := chat.Snapshot().Usage
 	if len(usage) != 1 || usage[0].Input.Tokens != 8 || usage[0].Output.Tokens != 5 || usage[0].CachedRead.Partial {
 		t.Fatalf("conversation usage=%+v", usage)
+	}
+}
+
+func TestPreparationRefusalPrecedesOnceGrantConsumption(t *testing.T) {
+	tool := &fixtureTool{content: "must not execute"}
+	config := newToolConfig(tool, ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}))
+	var prepareCalls, executeCalls int
+	var closed bool
+	preparer := preparationTestEnforcer{
+		prepare: func(context.Context, tools.Tool, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error) {
+			prepareCalls++
+			return closeTrackingPreparation{closed: &closed}, errors.New("unknown root data")
+		},
+		execute: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+			executeCalls++
+			return tools.Result{}, nil
+		}),
+	}
+	config.Enforcer = preparer
+	config.Preparer = preparer
+	fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
+		if index == 0 {
+			return callResult(t, "call-before-prepare-refusal", "/safe/a"), nil
+		}
+		return finalResult("refusal handled"), nil
+	}}
+	chat, _ := makeToolLoopChat(t, fp, config)
+	turn, err := chat.Send(context.Background(), "run preparation fixture", nil)
+	if err != nil || turn.Outcome != p.OutcomeCompleted {
+		t.Fatalf("turn=%+v err=%v", turn, err)
+	}
+	if prepareCalls != 1 || executeCalls != 0 || len(tool.captured()) != 0 || !closed {
+		t.Fatalf("preparation lifecycle prepare=%d execute=%d tool_calls=%d closed=%t", prepareCalls, executeCalls, len(tool.captured()), closed)
+	}
+	if grants := chat.ToolGrants(); len(grants) == 0 {
+		t.Fatal("preparation refusal consumed the once grants")
+	}
+}
+
+func TestCancellationAfterPreparationClosesCapabilityBeforeGrantConsumption(t *testing.T) {
+	tool := &fixtureTool{content: "must not execute"}
+	config := newToolConfig(tool, ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}))
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var closed bool
+	var executeCalls int
+	preparer := preparationTestEnforcer{
+		prepare: func(ctx context.Context, _ tools.Tool, _ tools.Invocation, _ permissions.Request, _ uint64) (ToolPreparation, error) {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				<-release
+			}
+			return closeTrackingPreparation{closed: &closed}, nil
+		},
+		execute: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+			executeCalls++
+			return tools.Result{}, nil
+		}),
+	}
+	config.Enforcer = preparer
+	config.Preparer = preparer
+	fp := &toolLoopProvider{step: func(index int, _ p.ChatRequest) (p.Result, error) {
+		if index == 0 {
+			return callResult(t, "call-cancel-after-prepare", "/safe/a"), nil
+		}
+		return finalResult("cancelled"), nil
+	}}
+	chat, _ := makeToolLoopChat(t, fp, config)
+	done := make(chan Turn, 1)
+	go func() {
+		turn, _ := chat.Send(context.Background(), "cancel after prepare", nil)
+		done <- turn
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not enter preparation")
+	}
+	chat.Cancel()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled prepared operation did not return")
+	}
+	if !closed || executeCalls != 0 || len(tool.captured()) != 0 {
+		t.Fatalf("cancelled preparation leaked or executed: closed=%t executor=%d tool=%d", closed, executeCalls, len(tool.captured()))
+	}
+	if grants := chat.ToolGrants(); len(grants) == 0 {
+		t.Fatal("cancellation after preparation consumed the once grants")
 	}
 }
 
