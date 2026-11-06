@@ -16,12 +16,14 @@ creates only synthetic files inside a temporary directory and measures:
   main-journal role; that result is a refusal signal, not a useful writable
   policy API.
 - A WAL-mode request that returns `delete` rather than selecting WAL; WAL and
-  SHM fixture names stay absent. This is an ordinary read-only refusal and
-  does not show that an `xShmMap` hook ran or protected SHM.
+  SHM fixture names are absent at pre- and post-operation inspections. This is
+  an ordinary read-only refusal and does not show that an `xShmMap` hook ran or
+  protected SHM.
 - `NewBackup` with a plain destination, then with a destination independently
   selecting the named VFS. The plain control backup is produced and verified
   only inside the disposable fixture. The explicitly named destination and a
-  fresh retry are refused before destination files appear.
+  fresh retry are refused, with their target paths absent at the before/after
+  inspections.
 - Closing all connections before unregistering the VFS.
 
 The report records callback path names and fixture effects. The supported
@@ -116,6 +118,13 @@ Classification meanings:
   outside named-VFS routing, by design as a synthetic control.
 - `inconclusive`: the operation did not establish the expected refusal or the
   fixture evidence was not definitive.
+
+For WAL/SHM and refused backup destinations, the classification requires
+absence at both pre- and post-operation path inspections. Presence or an
+inspection error is reported verbatim as `present` or `inspection_error` and
+forces `inconclusive`. Before/after path observations do not rule out a
+transient create/delete between inspections; the probe does not claim to detect
+such effects or infer object identity from path state.
 
 An error-free SQLite operation is not an enforcement pass. The command and
 tests do not establish Token Logger compatibility, exact writable identities,

@@ -19,6 +19,7 @@ package sqlitevfsstudy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -68,5 +69,63 @@ func TestRunRequiresSourceCommit(t *testing.T) {
 	defer cancel()
 	if _, err := Run(ctx, ""); err == nil {
 		t.Fatal("Run accepted an absent source commit")
+	}
+}
+
+func TestWALClassificationRequiresAbsenceBeforeAndAfter(t *testing.T) {
+	clear := classifyWALRefusal(true, nil, "delete", pathAbsent, pathAbsent, pathAbsent, pathAbsent)
+	if clear.Classification != "measured_refusal" || clear.Attempted != true {
+		t.Fatalf("clear refusal classification = %+v", clear)
+	}
+	for name, states := range map[string][2]string{
+		"WAL appeared":          {pathPresent, pathAbsent},
+		"SHM appeared":          {pathAbsent, pathPresent},
+		"WAL inspection failed": {pathInspectionError, pathAbsent},
+		"SHM inspection failed": {pathAbsent, pathInspectionError},
+		"preexisting SHM":       {pathAbsent, pathAbsent},
+		"request not attempted": {pathAbsent, pathAbsent},
+	} {
+		walAfter, shmAfter := states[0], states[1]
+		attempted := name != "request not attempted"
+		beforeWAL, beforeSHM := pathAbsent, pathAbsent
+		if name == "preexisting SHM" {
+			beforeSHM = pathPresent
+		}
+		got := classifyWALRefusal(attempted, nil, "delete", beforeWAL, walAfter, beforeSHM, shmAfter)
+		if got.Classification != "inconclusive" {
+			t.Errorf("%s classified %q: %+v", name, got.Classification, got)
+		}
+		if len(got.Effects) != 2 || !strings.Contains(got.Effects[0], walAfter) || !strings.Contains(got.Effects[1], shmAfter) {
+			t.Errorf("%s effects do not reflect observations: %+v", name, got.Effects)
+		}
+	}
+}
+
+func TestBackupRefusalClassificationRequiresAbsentPaths(t *testing.T) {
+	clear := classifyBackupRefusal(true, errors.New("refused"), pathAbsent, pathAbsent, true, errors.New("refused"), pathAbsent, pathAbsent)
+	if clear.Classification != "measured_refusal" {
+		t.Fatalf("clear refusal classification = %+v", clear)
+	}
+	cases := map[string][4]string{
+		"artifact before":       {pathPresent, pathPresent, pathAbsent, pathAbsent},
+		"artifact after":        {pathAbsent, pathPresent, pathAbsent, pathAbsent},
+		"inspection error":      {pathAbsent, pathInspectionError, pathAbsent, pathAbsent},
+		"retry artifact":        {pathAbsent, pathAbsent, pathAbsent, pathPresent},
+		"retry inspect failure": {pathAbsent, pathAbsent, pathAbsent, pathInspectionError},
+	}
+	for name, states := range cases {
+		got := classifyBackupRefusal(true, errors.New("refused"), states[0], states[1], true, errors.New("refused"), states[2], states[3])
+		if got.Classification != "inconclusive" {
+			t.Errorf("%s classified %q: %+v", name, got.Classification, got)
+		}
+		for _, state := range states {
+			if !strings.Contains(got.Observed, state) {
+				t.Errorf("%s omitted observed state %q: %+v", name, state, got)
+			}
+		}
+	}
+	unexpectedSuccess := classifyBackupRefusal(true, nil, pathAbsent, pathPresent, true, errors.New("refused"), pathAbsent, pathAbsent)
+	if unexpectedSuccess.Classification != "inconclusive" || !strings.Contains(unexpectedSuccess.Observed, "returned_error(first/retry)=false/true") {
+		t.Fatalf("unexpected success was overclassified: %+v", unexpectedSuccess)
 	}
 }

@@ -59,6 +59,7 @@ type Report struct {
 
 type Case struct {
 	Name           string   `json:"name"`
+	Attempted      bool     `json:"attempted"`
 	Classification string   `json:"classification"`
 	Observed       string   `json:"observed"`
 	Identity       string   `json:"exact_object_identity"`
@@ -167,6 +168,7 @@ func Run(ctx context.Context, commit string) (Report, error) {
 	}
 	report.Cases = append(report.Cases, Case{
 		Name:           "named_vfs_read_control",
+		Attempted:      true,
 		Classification: "measured_pass",
 		Observed:       "SQLite opened the synthetic source through the non-default named VFS and returned the fixture marker.",
 		Identity:       "Not captured by the supported adapter; no inode/descriptor registration is claimed.",
@@ -186,6 +188,7 @@ func Run(ctx context.Context, commit string) (Report, error) {
 	}
 	report.Cases = append(report.Cases, Case{
 		Name:           "named_vfs_write_refusal",
+		Attempted:      true,
 		Classification: "measured_refusal",
 		Observed:       "An UPDATE through the supported named VFS failed because its xOpen refuses the main-journal role (SQLite reports SQLITE_NOMEM); the marker remained unchanged.",
 		Identity:       "Not captured; refusal is an adapter capability limit, not an identity-bound authorization decision.",
@@ -198,9 +201,9 @@ func Run(ctx context.Context, commit string) (Report, error) {
 
 	shmPath := sourcePath + "-shm"
 	walPath := sourcePath + "-wal"
-	if _, err := os.Stat(shmPath); !errors.Is(err, os.ErrNotExist) {
-		return Report{}, fmt.Errorf("unexpected SHM fixture before WAL attempt: %v", err)
-	}
+	shmBefore := inspectPath(shmPath)
+	walBefore := inspectPath(walPath)
+	walAttempted := shmBefore == pathAbsent && walBefore == pathAbsent
 	walDB, err := sql.Open("sqlite", "file:source.db?mode=ro&vfs="+name)
 	if err != nil {
 		return Report{}, err
@@ -208,35 +211,21 @@ func Run(ctx context.Context, commit string) (Report, error) {
 	defer walDB.Close()
 	walDB.SetMaxOpenConns(1)
 	var walMode string
-	walErr := walDB.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&walMode)
+	var walErr error
+	if walAttempted {
+		walErr = walDB.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&walMode)
+	} else {
+		walErr = errors.New("WAL precondition paths were not absent")
+	}
 	closeErr := walDB.Close()
 	if closeErr != nil {
 		return Report{}, fmt.Errorf("close named VFS after WAL attempt: %w", closeErr)
 	}
-	_, shmErr := os.Stat(shmPath)
-	shmAbsent := errors.Is(shmErr, os.ErrNotExist)
-	_, walStatErr := os.Stat(walPath)
-	walAbsent := errors.Is(walStatErr, os.ErrNotExist)
-	classification := "measured_refusal"
-	observed := "The named read-only VFS reported journal mode " + walMode + " for a WAL request; the requested WAL mode was not selected."
-	if walErr != nil || strings.EqualFold(walMode, "wal") {
-		classification = "inconclusive"
-		observed = "The WAL mode request did not produce a clear non-WAL refusal; this does not establish SHM identity or protection."
-	}
-	if !shmAbsent || !walAbsent {
-		classification = "inconclusive"
-		observed += " A WAL or SHM fixture appeared or could not be inspected; SHM protection is not established."
-	} else {
-		observed += " Neither WAL nor SHM fixture appeared in this read-only attempt; this does not prove an xShmMap interception."
-	}
-	report.Cases = append(report.Cases, Case{
-		Name:           "wal_shm_stop_condition",
-		Classification: classification,
-		Observed:       observed,
-		Identity:       "SHM identity was not exposed before SQLite's native SHM path; no xShmMap protection is claimed.",
-		CallbackNames:  observer.names(),
-		Effects:        []string{"WAL and SHM fixture paths absent after attempt"},
-	})
+	shmAfter := inspectPath(shmPath)
+	walAfter := inspectPath(walPath)
+	walCase := classifyWALRefusal(walAttempted, walErr, walMode, walBefore, walAfter, shmBefore, shmAfter)
+	walCase.CallbackNames = observer.names()
+	report.Cases = append(report.Cases, walCase)
 
 	backupSource, err := sql.Open("sqlite", uri)
 	if err != nil {
@@ -260,6 +249,7 @@ func Run(ctx context.Context, commit string) (Report, error) {
 	}
 	report.Cases = append(report.Cases, Case{
 		Name:           "backup_plain_destination_control",
+		Attempted:      true,
 		Classification: "measured_unprotected_control",
 		Observed:       "NewBackup's plain destination succeeded via SQLite's independently selected default VFS; source named-VFS selection did not protect it.",
 		Identity:       "Destination object was not opened through the named adapter; identity was not registered.",
@@ -267,34 +257,28 @@ func Run(ctx context.Context, commit string) (Report, error) {
 		Effects:        effectIf(plainExists, "plain-control.db created in disposable fixture", "plain-control.db absent"),
 	})
 
-	explicitURI := "file:explicit-refused.db?vfs=" + name
-	firstErr := runBackup(ctx, backupConn, explicitURI)
-	firstExists := fileExists(filepath.Join(dir, "explicit-refused.db"))
-	if firstExists {
-		if err := os.Remove(filepath.Join(dir, "explicit-refused.db")); err != nil {
-			return Report{}, fmt.Errorf("remove synthetic refused destination: %w", err)
-		}
+	firstPath := filepath.Join(dir, "explicit-refused.db")
+	secondPath := filepath.Join(dir, "retry-refused.db")
+	firstBefore := inspectPath(firstPath)
+	secondBefore := inspectPath(secondPath)
+	firstAttempted := firstBefore == pathAbsent
+	secondAttempted := secondBefore == pathAbsent
+	var firstErr, secondErr error
+	if firstAttempted {
+		firstErr = runBackup(ctx, backupConn, "file:explicit-refused.db?vfs="+name)
+	} else {
+		firstErr = errors.New("destination precondition was not absent")
 	}
-	secondErr := runBackup(ctx, backupConn, "file:retry-refused.db?vfs="+name)
-	secondExists := fileExists(filepath.Join(dir, "retry-refused.db"))
-	if secondExists {
-		_ = os.Remove(filepath.Join(dir, "retry-refused.db"))
+	firstAfter := inspectPath(firstPath)
+	if secondAttempted {
+		secondErr = runBackup(ctx, backupConn, "file:retry-refused.db?vfs="+name)
+	} else {
+		secondErr = errors.New("fresh retry precondition was not absent")
 	}
-	if firstErr == nil || secondErr == nil {
-		return Report{}, errors.New("read-only named VFS unexpectedly accepted an online-backup destination")
-	}
-	report.Cases = append(report.Cases, Case{
-		Name:           "backup_named_destination_refusal_and_fresh_retry",
-		Classification: "measured_refusal",
-		Observed:       "Explicit named-VFS backup destinations failed on the first attempt and a separate fresh retry; no protected backup bytes were written.",
-		Identity:       "No destination identity was captured; the adapter rejected its create/open path before a destination file appeared.",
-		CallbackNames:  observer.names(),
-		Effects: []string{
-			fmt.Sprintf("first destination created=%t then removed if present", firstExists),
-			fmt.Sprintf("fresh retry destination created=%t", secondExists),
-			"the plain default-VFS control backup remains fixture-only and outside the named adapter boundary",
-		},
-	})
+	secondAfter := inspectPath(secondPath)
+	backupCase := classifyBackupRefusal(firstAttempted, firstErr, firstBefore, firstAfter, secondAttempted, secondErr, secondBefore, secondAfter)
+	backupCase.CallbackNames = observer.names()
+	report.Cases = append(report.Cases, backupCase)
 
 	if err := backupConn.Close(); err != nil {
 		return Report{}, err
@@ -395,3 +379,61 @@ func (r Report) Marshal() ([]byte, error) { return json.MarshalIndent(r, "", "  
 
 // MaxRunTime is used by the command so fixture work cannot wait indefinitely.
 const MaxRunTime = 30 * time.Second
+
+const (
+	pathAbsent          = "absent"
+	pathPresent         = "present"
+	pathInspectionError = "inspection_error"
+)
+
+func inspectPath(path string) string {
+	_, err := os.Stat(path)
+	switch {
+	case err == nil:
+		return pathPresent
+	case errors.Is(err, os.ErrNotExist):
+		return pathAbsent
+	default:
+		return pathInspectionError
+	}
+}
+
+func classifyWALRefusal(attempted bool, queryErr error, journalMode, walBefore, walAfter, shmBefore, shmAfter string) Case {
+	allAbsent := walBefore == pathAbsent && walAfter == pathAbsent && shmBefore == pathAbsent && shmAfter == pathAbsent
+	classification := "inconclusive"
+	if attempted && queryErr == nil && !strings.EqualFold(journalMode, "wal") && allAbsent {
+		classification = "measured_refusal"
+	}
+	observed := fmt.Sprintf("attempted=%t, journal_mode=%q, query_error=%t; WAL path before/after=%s/%s, SHM path before/after=%s/%s. This does not prove an xShmMap interception.", attempted, journalMode, queryErr != nil, walBefore, walAfter, shmBefore, shmAfter)
+	return Case{
+		Name:           "wal_shm_stop_condition",
+		Attempted:      attempted,
+		Classification: classification,
+		Observed:       observed,
+		Identity:       "SHM identity was not exposed before SQLite's native SHM path; no xShmMap protection is claimed.",
+		Effects: []string{
+			fmt.Sprintf("WAL path state: before=%s after=%s", walBefore, walAfter),
+			fmt.Sprintf("SHM path state: before=%s after=%s", shmBefore, shmAfter),
+		},
+	}
+}
+
+func classifyBackupRefusal(firstAttempted bool, firstErr error, firstBefore, firstAfter string, secondAttempted bool, secondErr error, secondBefore, secondAfter string) Case {
+	allAbsent := firstBefore == pathAbsent && firstAfter == pathAbsent && secondBefore == pathAbsent && secondAfter == pathAbsent
+	classification := "inconclusive"
+	if firstAttempted && secondAttempted && firstErr != nil && secondErr != nil && allAbsent {
+		classification = "measured_refusal"
+	}
+	observed := fmt.Sprintf("attempted(first/retry)=%t/%t, returned_error(first/retry)=%t/%t; destination path states first=%s/%s, fresh retry=%s/%s. Final path absence cannot detect transient effects.", firstAttempted, secondAttempted, firstErr != nil, secondErr != nil, firstBefore, firstAfter, secondBefore, secondAfter)
+	return Case{
+		Name:           "backup_named_destination_refusal_and_fresh_retry",
+		Attempted:      firstAttempted || secondAttempted,
+		Classification: classification,
+		Observed:       observed,
+		Identity:       "No destination identity was captured; path observations are not object-identity proof.",
+		Effects: []string{
+			fmt.Sprintf("explicit destination path state: before=%s after=%s", firstBefore, firstAfter),
+			fmt.Sprintf("fresh retry path state: before=%s after=%s", secondBefore, secondAfter),
+		},
+	}
+}
