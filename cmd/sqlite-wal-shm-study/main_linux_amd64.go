@@ -432,6 +432,12 @@ func runWALWorkload(ctx context.Context, uri string, checkpointReady chan<- stru
 		_, err = conn2.ExecContext(ctx, "INSERT INTO sample VALUES('second')")
 	}
 	if err == nil {
+		err = conn2.QueryRowContext(ctx, "SELECT count(*) FROM sample").Scan(&out.count)
+		if err == nil && out.count != 3 {
+			err = fmt.Errorf("second connection read %d rows after second insert, want 3", out.count)
+		}
+	}
+	if err == nil {
 		close(checkpointReady)
 		select {
 		case <-checkpointRelease:
@@ -454,9 +460,6 @@ func runWALWorkload(ctx context.Context, uri string, checkpointReady chan<- stru
 	}
 	if closeErr := db.Close(); err == nil {
 		err = closeErr
-	}
-	if err == nil {
-		out.count = 3
 	}
 	out.err = err
 	return out
