@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "source_commit": "2a739dc831e9d912ddba5e1334987734ffd3ceaa",
-  "run_at_utc": "2026-11-06T09:26:36Z",
+  "source_commit": "809fe100e69902626cfb1009f2685d9b726b275d",
+  "run_at_utc": "2026-11-06T09:45:38Z",
   "os": "linux",
   "architecture": "amd64",
   "go_version": "go1.26.10",
@@ -713,7 +713,7 @@
     {
       "name": "online_backup_named_destination",
       "classification": "measured_pass",
-      "observed": "modernc online-backup API opened both source and destination through explicit named-VFS URIs; independent source/destination main-object registrations and matched destination writes were observed, then the synthetic marker was verified.",
+      "observed": "modernc online-backup API opened both source and destination through explicit named-VFS URIs; destination writes matched the registered destination object, and source-specific content replaced a distinct destination sentinel.",
       "registration_roles": [
         "main_db",
         "main_journal"
@@ -995,7 +995,7 @@
     {
       "name": "online_backup_denial_preserves_previous",
       "classification": "measured_refusal",
-      "observed": "A new destination registration was denied while overwriting a previously completed synthetic backup; the pre-existing backup bytes remained identical and no adapter xWrite/xTruncate ran.",
+      "observed": "The source registration was allowed and the destination registration explicitly refused while overwriting a prior synthetic backup; its bytes remained identical and the refused destination object had no xWrite/xTruncate.",
       "all_writes_matched": false,
       "fixture_unchanged": true,
       "fresh_retry_succeeded": false,
@@ -1013,11 +1013,38 @@
         },
         {
           "sequence": 3,
-          "kind": "registration_refused",
+          "kind": "registered",
           "role": "main_db",
           "fixture": "backup-source.db",
           "object": 49,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 5,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "backup-target.db",
+          "object": 51,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 6,
+          "kind": "registration_refused",
+          "role": "main_db",
+          "fixture": "backup-target.db",
+          "object": 51,
           "sqlite_result": 14
+        },
+        {
+          "sequence": 7,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 49,
+          "identity_matched": true,
+          "sqlite_result": 0
         }
       ],
       "evidence_complete": true
@@ -1025,7 +1052,7 @@
     {
       "name": "online_backup_fresh_retry",
       "classification": "measured_pass",
-      "observed": "The denied overwrite was not replayed; a distinct fresh destination was independently registered, written through the named VFS, and read back successfully.",
+      "observed": "The denied overwrite was not replayed; a distinct fresh destination was independently registered, received matched writes, and replaced its distinct sentinel with source-specific content.",
       "write_roles": [
         "main_journal",
         "main_db"
@@ -1041,7 +1068,7 @@
           "kind": "registration_requested",
           "role": "main_db",
           "fixture": "backup-source.db",
-          "object": 51,
+          "object": 53,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1050,7 +1077,7 @@
           "kind": "registered",
           "role": "main_db",
           "fixture": "backup-source.db",
-          "object": 51,
+          "object": 53,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1059,7 +1086,7 @@
           "kind": "registration_requested",
           "role": "main_db",
           "fixture": "fresh-backup.db",
-          "object": 53,
+          "object": 55,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1068,7 +1095,7 @@
           "kind": "registered",
           "role": "main_db",
           "fixture": "fresh-backup.db",
-          "object": 53,
+          "object": 55,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1077,7 +1104,7 @@
           "kind": "registration_requested",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 55,
+          "object": 57,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1086,7 +1113,7 @@
           "kind": "registered",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 55,
+          "object": 57,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1095,7 +1122,7 @@
           "kind": "close",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 55,
+          "object": 57,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1104,7 +1131,7 @@
           "kind": "registration_requested",
           "role": "main_journal",
           "fixture": "backup-source.db-journal",
-          "object": 57,
+          "object": 59,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1113,7 +1140,7 @@
           "kind": "registered",
           "role": "main_journal",
           "fixture": "backup-source.db-journal",
-          "object": 57,
+          "object": 59,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1122,7 +1149,7 @@
           "kind": "close",
           "role": "main_journal",
           "fixture": "backup-source.db-journal",
-          "object": 57,
+          "object": 59,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1131,7 +1158,7 @@
           "kind": "registration_requested",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 59,
+          "object": 61,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1140,7 +1167,7 @@
           "kind": "registered",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 59,
+          "object": 61,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1149,7 +1176,7 @@
           "kind": "close",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 59,
+          "object": 61,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1158,7 +1185,7 @@
           "kind": "registration_requested",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1167,7 +1194,7 @@
           "kind": "registered",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1176,7 +1203,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1185,7 +1212,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1194,7 +1221,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1203,7 +1230,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1212,7 +1239,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1221,7 +1248,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1230,7 +1257,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1239,7 +1266,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1248,7 +1275,7 @@
           "kind": "write",
           "role": "main_db",
           "fixture": "fresh-backup.db",
-          "object": 53,
+          "object": 55,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1257,7 +1284,7 @@
           "kind": "write",
           "role": "main_db",
           "fixture": "fresh-backup.db",
-          "object": 53,
+          "object": 55,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1266,7 +1293,7 @@
           "kind": "write",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1275,7 +1302,7 @@
           "kind": "close",
           "role": "main_journal",
           "fixture": "fresh-backup.db-journal",
-          "object": 61,
+          "object": 63,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1284,7 +1311,7 @@
           "kind": "close",
           "role": "main_db",
           "fixture": "fresh-backup.db",
-          "object": 53,
+          "object": 55,
           "identity_matched": true,
           "sqlite_result": 0
         },
@@ -1293,7 +1320,7 @@
           "kind": "close",
           "role": "main_db",
           "fixture": "backup-source.db",
-          "object": 51,
+          "object": 53,
           "identity_matched": true,
           "sqlite_result": 0
         }

@@ -108,7 +108,7 @@ go test -count=1 -v ./internal/research/sqlitewritebarrier
 ```
 
 The committed [sanitized native fixture report](sqlite-writable-object-barrier-report.json)
-was generated from source commit `2a739dc831e9d912ddba5e1334987734ffd3ceaa`.
+was generated from source commit `809fe100e69902626cfb1009f2685d9b726b275d`.
 It records Linux/amd64, Go 1.26.10, modernc SQLite v1.61.0, SQLite 3.54.1,
 ordered callback events and per-case classifications.
 
