@@ -66,6 +66,7 @@ type caseResult struct {
 
 type openRecord struct {
 	pin      int
+	role     string
 	object   string
 	dev, ino uint64
 	size     int64
@@ -79,18 +80,20 @@ type mapRecord struct {
 }
 
 type study struct {
-	mu               sync.Mutex
-	origOpen         uintptr
-	origMmap         uintptr
-	opened           chan openRecord
-	mapped           chan mapRecord
-	release          chan struct{}
-	pins             []int
-	nextObject       uint64
-	pinnedDev        uint64
-	pinnedIno        uint64
-	closeOnce        sync.Once
-	physicalSHMOpens uint64
+	mu                sync.Mutex
+	origOpen          uintptr
+	origMmap          uintptr
+	opened            chan openRecord
+	mapped            chan mapRecord
+	release           chan struct{}
+	checkpointReady   chan struct{}
+	checkpointRelease chan struct{}
+	checkpointOnce    sync.Once
+	pins              []int
+	objects           []openRecord
+	nextObject        uint64
+	closeOnce         sync.Once
+	physicalSHMOpens  uint64
 }
 
 func main() {
@@ -185,7 +188,11 @@ func run(sourceCommit string) (report, error) {
 		return result, err
 	}
 
-	s := &study{opened: make(chan openRecord, 4), mapped: make(chan mapRecord, 16), release: make(chan struct{})}
+	s := &study{
+		opened: make(chan openRecord, 8), mapped: make(chan mapRecord, 16),
+		release: make(chan struct{}), checkpointReady: make(chan struct{}),
+		checkpointRelease: make(chan struct{}),
+	}
 	defer s.closeRelease()
 	defer func() {
 		s.mu.Lock()
@@ -235,28 +242,38 @@ func run(sourceCommit string) (report, error) {
 		_ = set(tls, custom, nameOpen, s.origOpen)
 	}()
 
-	type workerResult struct {
-		count          int
-		checkpointBusy int
-		err            error
-	}
 	workerDone := make(chan workerResult, 1)
+	workerExited := make(chan struct{})
 	go func() {
-		workerDone <- runWALWorkload(ctx, "file:"+filepath.ToSlash(path)+"?vfs="+libc.GoString(customVFS.FzName))
+		defer close(workerExited)
+		workerDone <- runWALWorkload(ctx, "file:"+filepath.ToSlash(path)+"?vfs="+libc.GoString(customVFS.FzName), s.checkpointReady, s.checkpointRelease)
+	}()
+	defer func() {
+		s.closeRelease()
+		s.releaseCheckpoint()
+		cancel()
+		select {
+		case <-workerExited:
+		case <-time.After(2 * time.Second):
+		}
 	}()
 
-	var opened openRecord
-	select {
-	case opened = <-s.opened:
-		if opened.size != 0 {
-			return result, fmt.Errorf("synthetic SHM fixture was not empty at pre-effect checkpoint: size %d", opened.size)
+	var shm, wal openRecord
+	for shm.object == "" {
+		select {
+		case rec := <-s.opened:
+			if rec.role == "shm" {
+				shm = rec
+			} else if rec.role == "wal" {
+				wal = rec
+			}
+		case work := <-workerDone:
+			return result, fmt.Errorf("WAL workload ended before SHM registration: %w", work.err)
+		case <-ctx.Done():
+			return result, errors.New("timed out waiting for SHM open checkpoint")
 		}
-	case work := <-workerDone:
-		return result, fmt.Errorf("WAL workload ended before SHM open checkpoint: %w", work.err)
-	case <-ctx.Done():
-		return result, errors.New("timed out waiting for SHM open checkpoint")
 	}
-	if opened.object == "" || opened.pin < 0 {
+	if shm.pin < 0 {
 		return result, errors.New("SHM open hook did not retain an identity pin")
 	}
 	s.closeRelease()
@@ -269,9 +286,39 @@ func run(sourceCommit string) (report, error) {
 	case <-ctx.Done():
 		return result, errors.New("timed out waiting for SHM mapping checkpoint")
 	}
-	if mapped.object != opened.object || !mapped.shared {
+	if mapped.object != shm.object || !mapped.shared {
 		return result, errors.New("native MAP_SHARED did not use the pinned SHM object")
 	}
+	for wal.object == "" {
+		select {
+		case rec := <-s.opened:
+			if rec.role == "wal" {
+				wal = rec
+			}
+		case work := <-workerDone:
+			return result, fmt.Errorf("WAL workload ended before WAL object registration: %w", work.err)
+		case <-ctx.Done():
+			return result, errors.New("timed out waiting for WAL object registration")
+		}
+	}
+	if wal.size != 0 {
+		return result, fmt.Errorf("synthetic WAL object was not empty at open: size %d", wal.size)
+	}
+	select {
+	case <-s.checkpointReady:
+	case work := <-workerDone:
+		return result, fmt.Errorf("WAL workload ended before checkpoint gate: %w", work.err)
+	case <-ctx.Done():
+		return result, errors.New("timed out waiting for pre-checkpoint gate")
+	}
+	walAtCheckpoint, err := statSize(wal.pin)
+	if err != nil {
+		return result, fmt.Errorf("inspect pinned WAL before checkpoint: %w", err)
+	}
+	if walAtCheckpoint == 0 {
+		return result, errors.New("pinned WAL had no bytes before checkpoint")
+	}
+	s.releaseCheckpoint()
 
 	var work workerResult
 	select {
@@ -292,18 +339,33 @@ func run(sourceCommit string) (report, error) {
 		return result, fmt.Errorf("expected one physical SHM open shared by the connections, observed %d", physicalSHMOpens)
 	}
 	var after unix.Stat_t
-	if err := unix.Fstat(opened.pin, &after); err != nil {
+	if err := unix.Fstat(shm.pin, &after); err != nil {
 		return result, fmt.Errorf("retained SHM pin became unusable after SQLite close: %w", err)
 	}
-	if after.Size <= opened.size {
-		return result, fmt.Errorf("pinned SHM object did not grow after SQLite use: before=%d after=%d", opened.size, after.Size)
+	if after.Size <= shm.size {
+		return result, fmt.Errorf("pinned SHM object did not grow after SQLite use: before=%d after=%d", shm.size, after.Size)
 	}
-	if err := unix.Close(opened.pin); err != nil {
+	if err := unix.Close(shm.pin); err != nil {
 		return result, fmt.Errorf("close retained SHM pin: %w", err)
 	}
 	s.mu.Lock()
 	for i, fd := range s.pins {
-		if fd == opened.pin {
+		if fd == shm.pin {
+			s.pins = append(s.pins[:i], s.pins[i+1:]...)
+			break
+		}
+	}
+	s.mu.Unlock()
+	walAfterClose, err := statSize(wal.pin)
+	if err != nil {
+		return result, fmt.Errorf("inspect retained WAL pin after SQLite close: %w", err)
+	}
+	if err := unix.Close(wal.pin); err != nil {
+		return result, fmt.Errorf("close retained WAL pin: %w", err)
+	}
+	s.mu.Lock()
+	for i, fd := range s.pins {
+		if fd == wal.pin {
 			s.pins = append(s.pins[:i], s.pins[i+1:]...)
 			break
 		}
@@ -312,7 +374,7 @@ func run(sourceCommit string) (report, error) {
 
 	result.Cases = append(result.Cases,
 		caseResult{Name: "wal_write_readback_and_checkpoint", Classification: "measured_pass", Observed: "A synthetic WAL transaction committed two rows; a second SQLite connection read them; TRUNCATE checkpoint completed without a busy writer."},
-		caseResult{Name: "actual_shm_open_pinned_before_native_use", Classification: "measured_pass", Observed: fmt.Sprintf("The named-VFS open hook pinned process-local %s at size %d before returning the actual descriptor to SQLite; the matching MAP_SHARED call used that object and the retained pin observed growth to %d bytes after close.", opened.object, opened.size, after.Size)},
+		caseResult{Name: "actual_wal_and_shm_open_pinned_before_native_use", Classification: "measured_pass", Observed: fmt.Sprintf("The open hook pinned WAL %s at %d bytes and SHM %s at %d bytes before returning each actual descriptor; WAL contained %d bytes before checkpoint; the matching MAP_SHARED call used the pinned SHM object, which grew to %d bytes. The WAL pin remained stat-able at %d bytes after SQLite close.", wal.object, wal.size, shm.object, shm.size, walAtCheckpoint, after.Size, walAfterClose)},
 		caseResult{Name: "second_connection_shared_node", Classification: "measured_pass", Observed: "A second simultaneous connection completed a WAL read/write while the process observed only one physical SHM open; this is consistent with the pinned generated-code shared-node reuse path, not evidence of a per-connection owner callback."},
 		caseResult{Name: "denial_cancellation_and_fresh_retry", Classification: "not_run", Observed: "Not exercised: this probe only demonstrates ordering with an allow decision; the global raw syscall hook is not a trusted authorization integration."},
 	)
@@ -333,11 +395,13 @@ func prepareFixture(ctx context.Context, path string, version *string) error {
 	return err
 }
 
-func runWALWorkload(ctx context.Context, uri string) (out struct {
+type workerResult struct {
 	count          int
 	checkpointBusy int
 	err            error
-}) {
+}
+
+func runWALWorkload(ctx context.Context, uri string, checkpointReady chan<- struct{}, checkpointRelease <-chan struct{}) (out workerResult) {
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		out.err = err
@@ -369,6 +433,14 @@ func runWALWorkload(ctx context.Context, uri string) (out struct {
 		_, err = conn2.ExecContext(ctx, "INSERT INTO sample VALUES('second')")
 	}
 	if err == nil {
+		close(checkpointReady)
+		select {
+		case <-checkpointRelease:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	}
+	if err == nil {
 		err = conn1.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&out.checkpointBusy, new(int), new(int))
 	}
 	if conn2 != nil {
@@ -391,10 +463,25 @@ func runWALWorkload(ctx context.Context, uri string) (out struct {
 	return out
 }
 
+func statSize(fd int) (int64, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return 0, err
+	}
+	return st.Size, nil
+}
+
 func (s *study) callbackOpen(tls *libc.TLS, path uintptr, flags int32, mode uint32) int32 {
 	fn := function[func(*libc.TLS, uintptr, int32, uint32) int32](s.origOpen)
 	fd := fn(tls, path, flags, mode)
-	if fd < 0 || !strings.HasSuffix(libc.GoString(path), "fixture.db-shm") {
+	name := libc.GoString(path)
+	role := ""
+	if strings.HasSuffix(name, "fixture.db-shm") {
+		role = "shm"
+	} else if strings.HasSuffix(name, "fixture.db-wal") {
+		role = "wal"
+	}
+	if fd < 0 || role == "" {
 		return fd
 	}
 	var st unix.Stat_t
@@ -415,25 +502,31 @@ func (s *study) callbackOpen(tls *libc.TLS, path uintptr, flags int32, mode uint
 	}
 	s.mu.Lock()
 	s.nextObject++
-	s.physicalSHMOpens++
-	object := fmt.Sprintf("shm_object_%d", s.nextObject)
+	if role == "shm" {
+		s.physicalSHMOpens++
+	}
+	object := fmt.Sprintf("%s_object_%d", role, s.nextObject)
 	s.pins = append(s.pins, dup)
-	s.pinnedDev, s.pinnedIno = uint64(st.Dev), st.Ino
+	rec := openRecord{pin: dup, role: role, object: object, dev: uint64(st.Dev), ino: st.Ino, size: st.Size, fileName: "fixture.db-" + role}
+	s.objects = append(s.objects, rec)
 	s.mu.Unlock()
 	select {
-	case s.opened <- openRecord{pin: dup, object: object, dev: uint64(st.Dev), ino: st.Ino, size: st.Size, fileName: "fixture.db-shm"}:
+	case s.opened <- rec:
 	case <-time.After(2 * time.Second):
 		_ = unix.Close(dup)
 		_ = unix.Close(int(fd))
 		return -1
 	}
-	select {
-	case <-s.release:
-		return fd
-	case <-time.After(5 * time.Second):
-		_ = unix.Close(int(fd))
-		return -1
+	if role == "shm" {
+		select {
+		case <-s.release:
+			return fd
+		case <-time.After(5 * time.Second):
+			_ = unix.Close(int(fd))
+			return -1
+		}
 	}
+	return fd
 }
 
 func charsToString(b []byte) string {
@@ -456,8 +549,11 @@ func (s *study) callbackMmap(tls *libc.TLS, addr uintptr, length uint64, prot, f
 		}
 	}
 	s.mu.Lock()
-	if rec.dev == s.pinnedDev && rec.ino == s.pinnedIno {
-		rec.object = "shm_object_1"
+	for _, opened := range s.objects {
+		if rec.dev == opened.dev && rec.ino == opened.ino && opened.role == "shm" {
+			rec.object = opened.object
+			break
+		}
 	}
 	s.mu.Unlock()
 	rec.shared = flags&unix.MAP_SHARED != 0
@@ -472,6 +568,10 @@ func (s *study) callbackMmap(tls *libc.TLS, addr uintptr, length uint64, prot, f
 }
 
 func (s *study) closeRelease() { s.closeOnce.Do(func() { close(s.release) }) }
+
+func (s *study) releaseCheckpoint() {
+	s.checkpointOnce.Do(func() { close(s.checkpointRelease) })
+}
 
 func registerNamedVFS(tls *libc.TLS, defaultV uintptr) (uintptr, uintptr, uintptr, uintptr, error) {
 	custom := libc.Xmalloc(tls, libc.Tsize_t(unsafe.Sizeof(lib.Tsqlite3_vfs{})))
