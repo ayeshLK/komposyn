@@ -80,6 +80,7 @@ type OperationPlan struct {
 
 type OwnerLifecycle interface {
     ReserveGroup(ctx context.Context, plan OperationPlan) (OperationGroup, error)
+    BeginShutdown(ctx context.Context) (ShutdownCleanup, error)
 }
 
 type OperationGroup interface {
@@ -96,21 +97,39 @@ type RouteLease interface {
     End(EffectOutcome) error
 }
 
+type OperationToken interface {
+    Generation() Generation
+    Action() OperationAction // normal call or one enumerated cleanup action
+}
+
+type ShutdownCleanup interface {
+    // Issues only cleanup tokens for already-owned connections and pins.
+    LeaseExisting(connection ConnectionID, action CleanupAction) (CleanupToken, error)
+    Complete(EffectOutcome) error
+}
+
 type DriverHooks interface {
-    BeforeFileUse(binding DurableOwnerBinding, call CallToken,
+    BeforeFileUse(binding DurableOwnerBinding, token OperationToken,
         connection ConnectionID,
         role FileRole, opened BorrowedFile, disposition OpenDisposition) (ObjectPermit, error)
-    BeforeShmAttach(binding DurableOwnerBinding, call CallToken,
+    BeforeShmAttach(binding DurableOwnerBinding, token OperationToken,
         connection ConnectionID,
         shm SharedMemoryObject, region RegionRequest) (ObjectPermit, error)
+    BeforeFileClose(binding DurableOwnerBinding, token OperationToken,
+        connection ConnectionID, object ObjectID) error
+    BeforeShmDetach(binding DurableOwnerBinding, token OperationToken,
+        connection ConnectionID, shm SharedMemoryObject, unlink bool) error
+    BeforeDelete(binding DurableOwnerBinding, token OperationToken,
+        role FileRole, entry OwnedEntry) error
 }
 ```
 
 The production-quality form must be per connector/VFS instance and
 connection-bound, strongly rooted by the driver, and capability-reporting.
-The lifecycle adapter installs only the opaque `CallToken` in driver-owned
-connection state before entering SQLite; the VFS callback cannot reach back
-into the lifecycle coordinator to acquire a lease or wait for a group.
+The lifecycle adapter installs only an opaque normal `CallToken` or
+shutdown-scoped `CleanupToken` in driver-owned connection state before
+entering SQLite; the VFS callback cannot reach back into the lifecycle
+coordinator to acquire a lease or wait for a group.
 `BorrowedFile` must expose a narrow identity query and a safe duplicate/pin
 operation; the native connection retains ownership of its live handle. The
 host receives the pin, not a general filesystem handle. `ObjectPermit` is an
@@ -183,9 +202,13 @@ failed begin, failed reconnect, and failed close all end/abort the lease and
 group with an explicit outcome. Incomplete close retains the callback root
 and pins as `CleanupIncomplete`.
 
-No generation-changing transition may begin while a group is active. An
-object discovered by a callback may consume only a role and pin slot declared
-in that group. It advances the group's acknowledged generation; the group
+No normal generation-changing transition may begin while a group is active.
+Shutdown is the explicit exception: it closes admission, advances the owner
+and policy fence, cancels the active group, and invalidates its normal tokens.
+After its current native calls return, only fresh cleanup-only tokens may
+settle that group's resources. For ordinary operation groups, an object
+discovered by a callback may consume only a role and pin slot declared in
+that group. It advances the group's acknowledged generation; the group
 records that expected transition while global admissions are already closed.
 Any unrelated policy/owner revision makes the group stale and causes
 immediate refusal. The durable binding survives group completion, but the
@@ -201,6 +224,93 @@ the first group, then reserve the next group based on its result. No nested
 SQLite call may implicitly reopen broker admission or change generations.
 Unexpected dynamic routes refuse and make the operation partial/unknown as
 appropriate; the helper cannot widen the active group.
+
+### Shutdown and cleanup-only authority
+
+Shutdown is a distinct coordinator transition, not an ordinary operation
+group. Its ordering resolves the otherwise conflicting rules that normal
+admission closes at shutdown while active rows, transactions, and retained
+connections still need terminal cleanup:
+
+```text
+Running -> Closing
+  reject new ordinary groups; advance shutdown fence; close broker publication
+  cancel active operations; wait for currently executing native calls
+  issue fresh CleanupToken for exact owned connection/object set
+  close rows -> rollback transactions -> abort/close backups -> close idle conns
+  quiesce callbacks -> unregister VFS -> release callback roots -> close pins
+  -> Closed
+
+Any timeout/refusal -> CleanupIncomplete
+  keep admissions closed; retain callbacks, live resources, and pins
+```
+
+1. Atomically set the owner to `Closing`, reject new ordinary groups, advance
+   the owner/policy admission generations, invalidate unstarted call tokens,
+   and close broker publication/admission. Keep VFS callbacks, connection
+   bindings, and all pins rooted. Do not reopen generic read admission during
+   shutdown.
+2. Cancel active logical operations and request worker termination. Wait
+   outside Store, coordinator, registry, and SQLite locks for all currently
+   executing driver calls and native callbacks to return. A deadline here
+   yields `CleanupIncomplete`; retain all roots and pins.
+3. Once each connection is at a driver-call boundary, the shutdown
+   coordinator may mint a **fresh cleanup-only token** for that already-owned
+   connection and its currently pinned object IDs. It is not an old route
+   lease and is never accepted for normal Exec/Query/Next, Begin, backup
+   stepping, or a new connection. It permits only terminal actions such as
+   `Rows.Close`, transaction `Rollback` (never Commit), abort/finish cleanup
+   of an active backup, and native connection close. It cannot open a new
+   route or add an unregistered identity.
+4. Settle retained resources in order: close live rows; roll back active
+   transactions; stop/close backup handles while classifying any copied
+   destination as partial or unknown; then close idle connections. Every
+   native call receives a new cleanup token bound to its connection, cleanup
+   action, owner shutdown generation, and the pre-existing pinned identity
+   set. No old normal token is reused, and no normal operation group is
+   allowed to start.
+5. Cleanup may perform only SQLite rollback and VFS close/unlock/unmap work
+   on already admitted identities. It does not request a checkpoint or run
+   ordinary SQL. If SQLite close requests deletion of a SHM/sidecar entry,
+   the driver needs a dedicated pre-delete hook. That hook must verify the
+   directory entry still names the registered ephemeral object under the
+   reviewed deletion primitive. If it cannot safely establish this, refuse
+   unlink, preserve the entry, and report incomplete cleanup; do not unlink a
+   replacement by pathname. Any close-time request for a new/unpinned file or
+   an unplanned write is refused and likewise leaves cleanup incomplete.
+6. After every connection and mapping closes, wait for callback quiescence;
+   unregister the VFS only then, release callback roots next, and close
+   registry pins last. Successful shutdown requires confirmed native handle,
+   mapping, and callback cleanup. A timeout or refused required cleanup
+   operation retains live state and pins and reports `CleanupIncomplete`.
+
+The cleanup token is a host-issued teardown capability, not a grant and not a
+way to keep the conversation alive. Its allowlist is limited to owned
+connection IDs, pinned object identities, and terminal cleanup actions. It
+does not authorize content disclosure, new objects, regular mutations,
+provider work, or renewed worker dispatch. A future implementation must
+demonstrate that the driver's cleanup callbacks can enforce this distinction;
+otherwise shutdown remains unavailable rather than falling back to a stale
+normal lease or unrestricted close.
+
+`OperationToken.Action()` is checked for each VFS method, not merely when the
+connection enters SQLite. A normal call token allows only the operation kind
+declared in its route lease. A cleanup token can permit the narrowly necessary
+rollback reads/writes/truncates on already pinned DB/journal/WAL objects, row
+and connection close, and SHM detach. It cannot authorize an application
+statement, commit, new backup step, new connection, or an unplanned file role.
+This is the trusted owner's shutdown path; it does not create or reuse a
+model-facing permission grant.
+
+The driver needs pre-close and pre-detach callbacks as well as pre-use
+callbacks so the cleanup token is checked before `xClose`, SHM detach/unmap,
+or its optional unlink. `BeforeDelete` is required for path-entry deletion
+because unlink does not provide an opened file descriptor to the hook. Its
+`OwnedEntry` must be tied to a pinned ephemeral object and a reviewed
+identity-safe deletion primitive. A string path or prior `stat` is
+insufficient. If the driver cannot provide such a primitive, it refuses the
+unlink and reports a leftover-entry/cleanup outcome; it does not claim
+successful sidecar cleanup.
 
 ## Source-pinned integration points
 
@@ -443,12 +553,13 @@ Descriptor and memory ownership:
    replaced. SQLite close, unmap, unlink, worker join, and owner rotation are
    not pin-retirement permissions. No early-retirement optimization is
    proposed.
-5. Shutdown closes broker and owner-operation admission, advances generations,
-   cancels/joins workers, drains operation groups, closes SQLite connections
-   and mappings while callbacks remain rooted, unregisters the VFS, confirms
-   callback quiescence, then releases callback roots and finally closes all
-   policy pins. On timeout, report `CleanupIncomplete`; retain live state and
-   pins instead of unregistering/freeing underneath a callback.
+5. Shutdown follows the ordered cleanup-only protocol below: close ordinary
+   admission and invalidate generations, settle active resources with fresh
+   cleanup-only tokens, close remaining connections and mappings while
+   callbacks remain rooted, confirm callback quiescence, then release callback
+   roots and finally close policy pins. On timeout, report
+   `CleanupIncomplete`; retain live state and pins instead of
+   unregistering/freeing underneath a callback.
 
 The pin binds an object identity only. It does not freeze contents, enforce
 live pathname containment, discover independent copies of sensitive bytes,
@@ -530,6 +641,8 @@ and validates actual fixture bytes/sidecars rather than process exit alone.
 | Worker coordination | Hold a broker read worker; group reservation closes admissions, invalidates prepared work, cancels and joins it before the SQLite callback's `entered` barrier. A prepared-but-not-dispatched stale lease cannot start after the generation change. |
 | Retained connection lifetime | Open a connection under a group and complete it while retaining the connection. A later operation must acquire a new group and install a new lease on that same connection; the old lease and missing-lease callbacks refuse. Close the retained connection under a separately acquired close group. Cover Exec, Rows.Next/Close, Tx Commit/Rollback, reconnect, pool discard and shutdown. |
 | Nested lifecycle helpers | Run initialization with schema inspection, snapshot creation, migration, backup, metadata, and verification helpers. Each helper borrows declared subleases from the outer group; there is no nested `ReserveGroup`. If a route was not declared, the helper refuses before entering that route. Verify sequential groups only begin after all connections from the previous group are closed and its admission transition completed. |
+| Idle shutdown | With an idle retained connection, close ordinary admission and advance generations, then close it successfully using a fresh cleanup-only token scoped to that connection and its pinned objects. Verify normal tokens refuse, cleanup does not reopen readers, and callback roots/pins release only after confirmed close/quiescence. Substitute a SHM directory entry and verify cleanup refuses the unlink without deleting the replacement. |
+| Active-resource shutdown | Hold a Rows stream and a transaction at deterministic barriers. Shutdown rejects new normal work, cancels the operation, waits for its current driver call, then uses fresh cleanup-only tokens for Rows.Close and Rollback before closing the connection. Confirm no Commit/query/backup-step is admitted. Repeat with a backup mid-copy and verify its destination is classified partial/unknown. Force timeout and verify `CleanupIncomplete` retains callbacks, connections, mappings, and pins. |
 | Concurrent groups | Same-owner concurrent group preparation is serialized or refused before SQLite entry; stale generations cannot reuse old leases. Distinct-owner concurrency is tested only if disjoint route guarantees are defined. |
 | Cancellation/refusal | Cancellation during group drain prevents entering SQLite (`NotExecuted`). Callback refusal after open reports possible empty entry/metadata as partial; no page effect is claimed without fixture inspection. Fresh attempt requires a new group and new decision; no automatic replay. |
 | Rotation/aliases | Register/pin replacement before writing sensitive bytes; old pin remains until registry shutdown after path rename/unlink; aliases of old object remain protected. Registration failure keeps route unavailable. |
