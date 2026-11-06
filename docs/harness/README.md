@@ -49,8 +49,11 @@ sandbox service or filesystem tools; see the
 [protected owner integration boundary](read-broker-owner-integration.md) and
 the [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 
-The experimental named SQLite VFS probe and its writable/SHM limitations are
-documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
+The experimental named SQLite VFS read-only probe and its writable/SHM
+limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
+The separate Linux/amd64 generated-ABI write-barrier experiment is documented
+in the [writable object-barrier prototype](sqlite-writable-object-barrier-prototype.md).
+It is an isolated synthetic study and does not enable writes in KompoSyn stores.
 
 ## Local configuration
 
