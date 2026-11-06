@@ -9,6 +9,9 @@ inventories remain absent. See [protected owner integration](read-broker-owner-i
 The [owner inventory and admission contract](read-broker-owner-inventory.md)
 audits the store/discovery lifecycles and describes the fail-closed synthetic
 profile; complete fixture coverage is not production owner coverage.
+The [Token Logger lifecycle feasibility report](read-broker-tokenlogger-lifecycle.md)
+details why the current SQLite driver cannot yet provide the exact-object
+pre-write barrier needed for a real Token Logger owner registration.
 
 The follow-up native acceptance scenarios for actual auth/settings store calls
 through the live Bubblewrap worker are defined in

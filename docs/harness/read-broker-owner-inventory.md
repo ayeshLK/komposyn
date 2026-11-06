@@ -74,6 +74,14 @@ the complete synthetic profile and the normal worker contract; this is fixture
 admission evidence, not real-owner integration. Actual auth/settings store
 hooks remain separately exercised by existing study cases.
 
+## Token Logger lifecycle feasibility
+
+The detailed audit of Store, SQLite sidecar, schema-inspection snapshot, and
+migration-backup lifecycles—and the finding that the pinned driver lacks a
+supported writable pre-write VFS hook—is recorded in
+[Token Logger lifecycle feasibility](read-broker-tokenlogger-lifecycle.md).
+Token Logger remains unsupported for real owner coverage.
+
 ## Remaining decision and next bounded task
 
 No policy decision is needed to keep incomplete production coverage unavailable.
