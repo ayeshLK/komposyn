@@ -1,0 +1,1311 @@
+{
+  "schema_version": 1,
+  "source_commit": "2a739dc831e9d912ddba5e1334987734ffd3ceaa",
+  "run_at_utc": "2026-11-06T09:26:36Z",
+  "os": "linux",
+  "architecture": "amd64",
+  "go_version": "go1.26.10",
+  "driver_version": "v1.61.0",
+  "driver_source_commit": "4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738",
+  "sqlite_version": "3.54.1",
+  "named_vfs": "komposyn_write_barrier_1",
+  "generated_abi_assumption": "linux/amd64 generated modernc ABI; TunixFile size=120, Fh offset=24; default Unix VFS delegated",
+  "execution_complete": true,
+  "conclusion": "Synthetic Linux/amd64 transactions and online-backup destinations passed the exact-object xWrite barrier through the pinned generated ABI. Journal xDelete and WAL/SHM remain fail-closed; this is not production, Token Logger, or strict live-path containment evidence.",
+  "cases": [
+    {
+      "name": "main_and_rollback_journal_write",
+      "classification": "measured_pass",
+      "observed": "SQLite completed a PERSIST-mode transaction through the named adapter; fixture marker read back after; main/journal writes are individually correlated to the registered open fd and retained duplicate pin.",
+      "registration_roles": [
+        "main_db",
+        "main_journal"
+      ],
+      "write_roles": [
+        "main_journal",
+        "main_db"
+      ],
+      "all_writes_matched": true,
+      "fixture_unchanged": false,
+      "fresh_retry_succeeded": false,
+      "operation_failed": false,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 2,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "positive.db",
+          "object": 2,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 3,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "positive.db",
+          "object": 2,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 5,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 4,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 6,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 4,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 7,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 4,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 9,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 6,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 10,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 6,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 11,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 6,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 13,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 14,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 15,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 16,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 17,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 18,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 19,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 20,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 21,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 22,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 23,
+          "kind": "write",
+          "role": "main_db",
+          "fixture": "positive.db",
+          "object": 2,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 24,
+          "kind": "write",
+          "role": "main_db",
+          "fixture": "positive.db",
+          "object": 2,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 25,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 26,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "positive.db-journal",
+          "object": 8,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 27,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "positive.db",
+          "object": 2,
+          "identity_matched": true,
+          "sqlite_result": 0
+        }
+      ],
+      "evidence_complete": true
+    },
+    {
+      "name": "journal_registration_refusal",
+      "classification": "measured_refusal",
+      "observed": "Main DB registration was allowed and rollback-journal registration denied before sensitive writes; synthetic fixture content remained unchanged. Empty-entry/metadata effects are possible and are not interpreted as byte-for-byte path absence.",
+      "registration_roles": [
+        "main_db"
+      ],
+      "all_writes_matched": false,
+      "fixture_unchanged": true,
+      "fresh_retry_succeeded": false,
+      "operation_failed": true,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 2,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "denied.db",
+          "object": 11,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 3,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "denied.db",
+          "object": 11,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 5,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "denied.db-journal",
+          "object": 13,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 6,
+          "kind": "registration_refused",
+          "role": "main_journal",
+          "fixture": "denied.db-journal",
+          "object": 13,
+          "sqlite_result": 14
+        },
+        {
+          "sequence": 8,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "denied.db-journal",
+          "object": 14,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 9,
+          "kind": "registration_refused",
+          "role": "main_journal",
+          "fixture": "denied.db-journal",
+          "object": 14,
+          "sqlite_result": 14
+        },
+        {
+          "sequence": 10,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "denied.db",
+          "object": 11,
+          "identity_matched": true,
+          "sqlite_result": 0
+        }
+      ],
+      "evidence_complete": true
+    },
+    {
+      "name": "fresh_object_retry",
+      "classification": "measured_pass",
+      "observed": "A separate fresh fixture and new registration decisions completed successfully; no refused operation was replayed.",
+      "registration_roles": [
+        "main_db",
+        "main_journal"
+      ],
+      "write_roles": [
+        "main_journal",
+        "main_db"
+      ],
+      "all_writes_matched": true,
+      "fixture_unchanged": false,
+      "fresh_retry_succeeded": true,
+      "operation_failed": false,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 2,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "fresh-retry.db",
+          "object": 16,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 3,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "fresh-retry.db",
+          "object": 16,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 5,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 18,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 6,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 18,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 7,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 18,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 9,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 20,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 10,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 20,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 11,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 20,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 13,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 14,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 15,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 16,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 17,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 18,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 19,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 20,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 21,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 22,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 23,
+          "kind": "write",
+          "role": "main_db",
+          "fixture": "fresh-retry.db",
+          "object": 16,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 24,
+          "kind": "write",
+          "role": "main_db",
+          "fixture": "fresh-retry.db",
+          "object": 16,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 25,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 26,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "fresh-retry.db-journal",
+          "object": 22,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 27,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "fresh-retry.db",
+          "object": 16,
+          "identity_matched": true,
+          "sqlite_result": 0
+        }
+      ],
+      "evidence_complete": true
+    },
+    {
+      "name": "sqlite_wal_negotiation",
+      "classification": "measured_refusal",
+      "observed": "PRAGMA result mode=\"\"; query failed=true; adapter WAL/SHM refusal reached=true; SHM absent=true",
+      "all_writes_matched": false,
+      "fixture_unchanged": false,
+      "fresh_retry_succeeded": false,
+      "operation_failed": false,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 2,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "wal-fixture.db",
+          "object": 25,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 3,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "wal-fixture.db",
+          "object": 25,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 4,
+          "kind": "wal_refused",
+          "sqlite_result": 14
+        },
+        {
+          "sequence": 5,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "wal-fixture.db",
+          "object": 25,
+          "identity_matched": true,
+          "sqlite_result": 0
+        }
+      ],
+      "evidence_complete": true
+    },
+    {
+      "name": "wal_role_callback_stop",
+      "classification": "measured_pass",
+      "observed": "Direct callback invocation with SQLITE_OPEN_WAL was refused before delegating to native xOpen. The PRAGMA-based SQLite fixture may downgrade before requesting WAL; this case is callback-level evidence, not native WAL acceptance.",
+      "all_writes_matched": false,
+      "fixture_unchanged": false,
+      "fresh_retry_succeeded": false,
+      "operation_failed": false,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 1,
+          "kind": "wal_refused",
+          "sqlite_result": 14
+        }
+      ],
+      "evidence_complete": true
+    },
+    {
+      "name": "installed_shm_map_callback_stop",
+      "classification": "measured_pass",
+      "observed": "installed v2 xShmMap returned SQLITE_IOERR_SHMMAP; output cleared=true; SHM fixture absent=true",
+      "all_writes_matched": false,
+      "fixture_unchanged": false,
+      "fresh_retry_succeeded": false,
+      "operation_failed": false,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 2,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "shm-callback.db",
+          "object": 29,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 3,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "shm-callback.db",
+          "object": 29,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 5,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "shm-callback.db-journal",
+          "object": 31,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 6,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "shm-callback.db-journal",
+          "object": 31,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 7,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "shm-callback.db-journal",
+          "object": 31,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 9,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "shm-callback.db-journal",
+          "object": 33,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 10,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "shm-callback.db-journal",
+          "object": 33,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 11,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "shm-callback.db-journal",
+          "object": 33,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 12,
+          "kind": "shm_map_refused",
+          "role": "main_db",
+          "object": 29,
+          "sqlite_result": 5386
+        },
+        {
+          "sequence": 13,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "shm-callback.db",
+          "object": 29,
+          "identity_matched": true,
+          "sqlite_result": 0
+        }
+      ],
+      "evidence_complete": true
+    },
+    {
+      "name": "online_backup_named_destination",
+      "classification": "measured_pass",
+      "observed": "modernc online-backup API opened both source and destination through explicit named-VFS URIs; independent source/destination main-object registrations and matched destination writes were observed, then the synthetic marker was verified.",
+      "registration_roles": [
+        "main_db",
+        "main_journal"
+      ],
+      "write_roles": [
+        "main_journal",
+        "main_db"
+      ],
+      "all_writes_matched": true,
+      "fixture_unchanged": false,
+      "fresh_retry_succeeded": false,
+      "operation_failed": false,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 2,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 36,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 3,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 36,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 5,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "backup-target.db",
+          "object": 38,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 6,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "backup-target.db",
+          "object": 38,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 8,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 40,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 9,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 40,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 10,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 40,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 12,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "backup-source.db-journal",
+          "object": 42,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 13,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "backup-source.db-journal",
+          "object": 42,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 14,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "backup-source.db-journal",
+          "object": 42,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 16,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 44,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 17,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 44,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 18,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 44,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 20,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 21,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 22,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 23,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 24,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 25,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 26,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 27,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 28,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 29,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 30,
+          "kind": "write",
+          "role": "main_db",
+          "fixture": "backup-target.db",
+          "object": 38,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 31,
+          "kind": "write",
+          "role": "main_db",
+          "fixture": "backup-target.db",
+          "object": 38,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 32,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 33,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "backup-target.db-journal",
+          "object": 46,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 34,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "backup-target.db",
+          "object": 38,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 35,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 36,
+          "identity_matched": true,
+          "sqlite_result": 0
+        }
+      ],
+      "evidence_complete": true
+    },
+    {
+      "name": "online_backup_denial_preserves_previous",
+      "classification": "measured_refusal",
+      "observed": "A new destination registration was denied while overwriting a previously completed synthetic backup; the pre-existing backup bytes remained identical and no adapter xWrite/xTruncate ran.",
+      "all_writes_matched": false,
+      "fixture_unchanged": true,
+      "fresh_retry_succeeded": false,
+      "operation_failed": false,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 2,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 49,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 3,
+          "kind": "registration_refused",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 49,
+          "sqlite_result": 14
+        }
+      ],
+      "evidence_complete": true
+    },
+    {
+      "name": "online_backup_fresh_retry",
+      "classification": "measured_pass",
+      "observed": "The denied overwrite was not replayed; a distinct fresh destination was independently registered, written through the named VFS, and read back successfully.",
+      "write_roles": [
+        "main_journal",
+        "main_db"
+      ],
+      "all_writes_matched": true,
+      "fixture_unchanged": false,
+      "fresh_retry_succeeded": true,
+      "operation_failed": false,
+      "writes_observed": false,
+      "events": [
+        {
+          "sequence": 2,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 51,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 3,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 51,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 5,
+          "kind": "registration_requested",
+          "role": "main_db",
+          "fixture": "fresh-backup.db",
+          "object": 53,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 6,
+          "kind": "registered",
+          "role": "main_db",
+          "fixture": "fresh-backup.db",
+          "object": 53,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 8,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 55,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 9,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 55,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 10,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 55,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 12,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "backup-source.db-journal",
+          "object": 57,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 13,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "backup-source.db-journal",
+          "object": 57,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 14,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "backup-source.db-journal",
+          "object": 57,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 16,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 59,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 17,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 59,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 18,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 59,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 20,
+          "kind": "registration_requested",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 21,
+          "kind": "registered",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 22,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 23,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 24,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 25,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 26,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 27,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 28,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 29,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 30,
+          "kind": "write",
+          "role": "main_db",
+          "fixture": "fresh-backup.db",
+          "object": 53,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 31,
+          "kind": "write",
+          "role": "main_db",
+          "fixture": "fresh-backup.db",
+          "object": 53,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 32,
+          "kind": "write",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 33,
+          "kind": "close",
+          "role": "main_journal",
+          "fixture": "fresh-backup.db-journal",
+          "object": 61,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 34,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "fresh-backup.db",
+          "object": 53,
+          "identity_matched": true,
+          "sqlite_result": 0
+        },
+        {
+          "sequence": 35,
+          "kind": "close",
+          "role": "main_db",
+          "fixture": "backup-source.db",
+          "object": 51,
+          "identity_matched": true,
+          "sqlite_result": 0
+        }
+      ],
+      "evidence_complete": true
+    }
+  ],
+  "limitations": [
+    "Research-only unsafe generated ABI adapter; no upstream stability guarantee.",
+    "Native xOpen may create empty entries or metadata before registration; barrier covers observed xWrite/xTruncate only.",
+    "Only main DB and rollback journal roles are admitted; path-only xDelete always fails closed.",
+    "WAL/SHM, temporary roles, file-control operations, mmap/xFetch, production Token Logger paths, external writers and other architectures remain unsupported.",
+    "Identity pins bind opened objects, not live pathname containment, immutable contents, or independent copies."
+  ]
+}

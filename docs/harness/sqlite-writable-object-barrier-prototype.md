@@ -107,6 +107,11 @@ SQL or database contents. Run regression tests with:
 go test -count=1 -v ./internal/research/sqlitewritebarrier
 ```
 
+The committed [sanitized native fixture report](sqlite-writable-object-barrier-report.json)
+was generated from source commit `2a739dc831e9d912ddba5e1334987734ffd3ceaa`.
+It records Linux/amd64, Go 1.26.10, modernc SQLite v1.61.0, SQLite 3.54.1,
+ordered callback events and per-case classifications.
+
 The study and tests demonstrate:
 
 - Main DB and rollback journal each receive an explicit registration before
