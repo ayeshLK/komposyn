@@ -274,10 +274,10 @@ func Run(parent context.Context, sourceCommit string) (StudyReport, error) {
 
 	backupSource := filepath.Join(dir, "backup-source.db")
 	backupTarget := filepath.Join(dir, "backup-target.db")
-	if err := prepareFixture(backupSource); err != nil {
+	if err := prepareFixtureWithMarker(backupSource, "backup-source-value"); err != nil {
 		return report, err
 	}
-	if err := prepareFixture(backupTarget); err != nil {
+	if err := prepareFixtureWithMarker(backupTarget, "backup-target-sentinel"); err != nil {
 		return report, err
 	}
 	backupAdapter, err := New(ctx, allowAll)
@@ -298,22 +298,14 @@ func Run(parent context.Context, sourceCommit string) (StudyReport, error) {
 		return report, err
 	}
 	br, bw, bm := summarize(backupEvents)
-	registeredSource, registeredDestination := false, false
-	for _, e := range backupEvents {
-		if e.Kind == "registered" && e.Role == MainDB && e.Fixture == "backup-source.db" {
-			registeredSource = true
-		}
-		if e.Kind == "registered" && e.Role == MainDB && e.Fixture == "backup-target.db" {
-			registeredDestination = true
-		}
-	}
-	report.Cases = append(report.Cases, StudyCase{Name: "online_backup_named_destination", Classification: classify(backupErr == nil && backupValue == "before" && containsRole(bw, MainDB) && bm && backupComplete && registeredSource && registeredDestination), Observed: "modernc online-backup API opened both source and destination through explicit named-VFS URIs; independent source/destination main-object registrations and matched destination writes were observed, then the synthetic marker was verified.", RegistrationRoles: br, WriteRoles: bw, AllWritesMatched: bm, Events: backupEvents, EvidenceComplete: backupComplete})
+	backupSucceeded := backupSuccessEvidence(backupErr, backupValue, "backup-source-value", "backup-target-sentinel", backupEvents, "backup-source.db", "backup-target.db", backupComplete)
+	report.Cases = append(report.Cases, StudyCase{Name: "online_backup_named_destination", Classification: classify(backupSucceeded), Observed: "modernc online-backup API opened both source and destination through explicit named-VFS URIs; destination writes matched the registered destination object, and source-specific content replaced a distinct destination sentinel.", RegistrationRoles: br, WriteRoles: bw, AllWritesMatched: bm, Events: backupEvents, EvidenceComplete: backupComplete})
 	knownGoodBytes, err := os.ReadFile(backupTarget)
 	if err != nil {
 		return report, err
 	}
 	deniedBackup, err := New(ctx, func(_ context.Context, r Registration) (Decision, error) {
-		if r.Role == MainDB {
+		if r.Role == MainDB && r.Name == "backup-target.db" {
 			return Deny, nil
 		}
 		return Allow, nil
@@ -333,10 +325,11 @@ func Run(parent context.Context, sourceCommit string) (StudyReport, error) {
 		return report, err
 	}
 	backupUnchanged := bytes.Equal(knownGoodBytes, afterBytes)
-	noBackupWrites := !hasWrite(denyBackupEvents)
-	report.Cases = append(report.Cases, StudyCase{Name: "online_backup_denial_preserves_previous", Classification: classifyRefusal(denyBackupErr != nil && backupUnchanged && noBackupWrites && denyBackupComplete, !backupUnchanged || !noBackupWrites), Observed: "A new destination registration was denied while overwriting a previously completed synthetic backup; the pre-existing backup bytes remained identical and no adapter xWrite/xTruncate ran.", FixtureUnchanged: backupUnchanged, Events: denyBackupEvents, EvidenceComplete: denyBackupComplete})
+	backupRefused := backupRefusalEvidence(denyBackupErr, backupUnchanged, denyBackupEvents, "backup-source.db", "backup-target.db", denyBackupComplete)
+	backupEffect := !backupUnchanged || hasWriteForFixture(denyBackupEvents, "backup-target.db")
+	report.Cases = append(report.Cases, StudyCase{Name: "online_backup_denial_preserves_previous", Classification: classifyRefusal(backupRefused, backupEffect), Observed: "The source registration was allowed and the destination registration explicitly refused while overwriting a prior synthetic backup; its bytes remained identical and the refused destination object had no xWrite/xTruncate.", FixtureUnchanged: backupUnchanged, Events: denyBackupEvents, EvidenceComplete: denyBackupComplete})
 	freshBackupPath := filepath.Join(dir, "fresh-backup.db")
-	if err := prepareFixture(freshBackupPath); err != nil {
+	if err := prepareFixtureWithMarker(freshBackupPath, "fresh-backup-sentinel"); err != nil {
 		return report, err
 	}
 	freshBackupAdapter, err := New(ctx, allowAll)
@@ -355,7 +348,8 @@ func Run(parent context.Context, sourceCommit string) (StudyReport, error) {
 		return report, err
 	}
 	_, freshBackupWrites, freshBackupMatched := summarize(freshBackupEvents)
-	report.Cases = append(report.Cases, StudyCase{Name: "online_backup_fresh_retry", Classification: classify(freshBackupErr == nil && freshBackupValue == "before" && containsRole(freshBackupWrites, MainDB) && freshBackupMatched && freshBackupComplete), Observed: "The denied overwrite was not replayed; a distinct fresh destination was independently registered, written through the named VFS, and read back successfully.", WriteRoles: freshBackupWrites, AllWritesMatched: freshBackupMatched, FreshRetrySucceeded: freshBackupErr == nil && freshBackupValue == "before", Events: freshBackupEvents, EvidenceComplete: freshBackupComplete})
+	freshBackupSucceeded := backupSuccessEvidence(freshBackupErr, freshBackupValue, "backup-source-value", "fresh-backup-sentinel", freshBackupEvents, "backup-source.db", "fresh-backup.db", freshBackupComplete) && freshBackupMatched
+	report.Cases = append(report.Cases, StudyCase{Name: "online_backup_fresh_retry", Classification: classify(freshBackupSucceeded), Observed: "The denied overwrite was not replayed; a distinct fresh destination was independently registered, received matched writes, and replaced its distinct sentinel with source-specific content.", WriteRoles: freshBackupWrites, AllWritesMatched: freshBackupMatched, FreshRetrySucceeded: freshBackupSucceeded, Events: freshBackupEvents, EvidenceComplete: freshBackupComplete})
 	report.ExecutionComplete = true
 	allExpected, hasViolation, hasUnavailable := true, false, false
 	for _, c := range report.Cases {
@@ -460,6 +454,61 @@ func hasWrite(es []Event) bool {
 	}
 	return false
 }
+func hasRegisteredFixture(events []Event, fixture string) bool {
+	for _, e := range events {
+		if e.Kind == "registered" && e.Role == MainDB && e.Fixture == fixture {
+			return true
+		}
+	}
+	return false
+}
+
+func matchedWritesForFixture(events []Event, fixture string) bool {
+	registered := map[uint64]bool{}
+	writes := 0
+	for _, e := range events {
+		if e.Kind == "registered" && e.Role == MainDB && e.Fixture == fixture {
+			registered[e.Object] = true
+		}
+		if (e.Kind == "write" || e.Kind == "truncate") && e.Fixture == fixture {
+			writes++
+			if !e.Matched || e.Result != lib.SQLITE_OK || !registered[e.Object] {
+				return false
+			}
+		}
+	}
+	return writes > 0
+}
+
+func hasWriteForFixture(events []Event, fixture string) bool {
+	for _, e := range events {
+		if (e.Kind == "write" || e.Kind == "truncate") && e.Fixture == fixture {
+			return true
+		}
+	}
+	return false
+}
+
+func backupSuccessEvidence(operationErr error, actualValue, expectedSourceValue, destinationSentinel string, events []Event, sourceFixture, destinationFixture string, complete bool) bool {
+	return operationErr == nil && actualValue == expectedSourceValue && actualValue != destinationSentinel && hasRegisteredFixture(events, sourceFixture) && hasRegisteredFixture(events, destinationFixture) && matchedWritesForFixture(events, destinationFixture) && complete
+}
+
+func backupRefusalEvidence(operationErr error, destinationUnchanged bool, events []Event, sourceFixture, destinationFixture string, complete bool) bool {
+	return operationErr != nil && destinationUnchanged && hasRegisteredFixture(events, sourceFixture) && registrationRefusedForFixture(events, destinationFixture) && !hasWriteForFixture(events, destinationFixture) && complete
+}
+
+func registrationRefusedForFixture(events []Event, fixture string) bool {
+	requested := map[uint64]bool{}
+	for _, e := range events {
+		if e.Kind == "registration_requested" && e.Role == MainDB && e.Fixture == fixture {
+			requested[e.Object] = true
+		}
+		if e.Kind == "registration_refused" && e.Role == MainDB && e.Fixture == fixture && requested[e.Object] {
+			return true
+		}
+	}
+	return false
+}
 func hasKind(es []Event, k string) bool {
 	for _, e := range es {
 		if e.Kind == k {
@@ -469,6 +518,9 @@ func hasKind(es []Event, k string) bool {
 	return false
 }
 func prepareFixture(path string) error {
+	return prepareFixtureWithMarker(path, "before")
+}
+func prepareFixtureWithMarker(path, marker string) error {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return err
@@ -480,7 +532,7 @@ func prepareFixture(path string) error {
 	if _, err = db.Exec("CREATE TABLE fixture (marker TEXT NOT NULL)"); err != nil {
 		return err
 	}
-	_, err = db.Exec("INSERT INTO fixture VALUES ('before')")
+	_, err = db.Exec("INSERT INTO fixture VALUES (?)", marker)
 	return err
 }
 func prepareWALStudyFixture(path string) error {

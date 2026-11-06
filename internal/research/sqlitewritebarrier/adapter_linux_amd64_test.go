@@ -466,11 +466,11 @@ func TestUnsupportedRolesAndPathDeleteFailClosed(t *testing.T) {
 func TestOnlineBackupRoutesDestinationThroughNamedAdapter(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.db")
-	if err := preparePersistentDB(source); err != nil {
+	if err := preparePersistentDBWithMarker(source, "source-value"); err != nil {
 		t.Fatal(err)
 	}
 	destination := filepath.Join(dir, "destination.db")
-	if err := preparePersistentDB(destination); err != nil {
+	if err := preparePersistentDBWithMarker(destination, "destination-sentinel"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -489,14 +489,14 @@ func TestOnlineBackupRoutesDestinationThroughNamedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "before" {
+	if got != "source-value" {
 		t.Fatalf("backup content=%q", got)
 	}
-	mainWrites := 0
+	targetWrites := 0
 	sourceOpened, destinationOpened := false, false
 	for _, e := range a.Events() {
-		if e.Kind == "write" && e.Role == MainDB {
-			mainWrites++
+		if (e.Kind == "write" || e.Kind == "truncate") && e.Fixture == "destination.db" && e.Role == MainDB && e.Matched && e.Result == lib.SQLITE_OK {
+			targetWrites++
 		}
 		if e.Kind == "registered" && e.Role == MainDB && e.Fixture == "source.db" {
 			sourceOpened = true
@@ -505,8 +505,8 @@ func TestOnlineBackupRoutesDestinationThroughNamedAdapter(t *testing.T) {
 			destinationOpened = true
 		}
 	}
-	if mainWrites == 0 {
-		t.Fatalf("backup destination was not written through adapter: %+v", a.Events())
+	if targetWrites == 0 || !matchedWritesForFixture(a.Events(), "destination.db") {
+		t.Fatalf("backup destination had no correlated matched writes: %+v", a.Events())
 	}
 	if !sourceOpened || !destinationOpened {
 		t.Fatalf("source and destination did not independently select named VFS: %+v", a.Events())
@@ -516,13 +516,13 @@ func TestOnlineBackupRoutesDestinationThroughNamedAdapter(t *testing.T) {
 func TestOnlineBackupDestinationRefusalAndFreshRetry(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.db")
-	if err := preparePersistentDB(source); err != nil {
+	if err := preparePersistentDBWithMarker(source, "source-value"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	knownGood := filepath.Join(dir, "known-good-backup.db")
-	if err := preparePersistentDB(knownGood); err != nil {
+	if err := preparePersistentDBWithMarker(knownGood, "old-backup-sentinel"); err != nil {
 		t.Fatal(err)
 	}
 	prior, err := New(ctx, func(context.Context, Registration) (Decision, error) { return Allow, nil })
@@ -560,7 +560,17 @@ func TestOnlineBackupDestinationRefusalAndFreshRetry(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatalf("refused destination changed known-good backup: before=%d after=%d", len(before), len(after))
 	}
-	for _, e := range a.Events() {
+	events := a.Events()
+	if !hasRegisteredFixture(events, "source.db") {
+		t.Fatalf("source did not register before destination refusal: %+v", events)
+	}
+	if !registrationRefusedForFixture(events, "known-good-backup.db") {
+		t.Fatalf("destination refusal was not observed: %+v", events)
+	}
+	if hasWriteForFixture(events, "known-good-backup.db") {
+		t.Fatalf("destination received writes after refusal: %+v", events)
+	}
+	for _, e := range events {
 		if e.Kind == "write" {
 			t.Fatalf("write occurred after denied destination registration: %+v", e)
 		}
@@ -571,7 +581,7 @@ func TestOnlineBackupDestinationRefusalAndFreshRetry(t *testing.T) {
 
 	// Preserve the prior control target and retry using a separate fresh object.
 	fresh := filepath.Join(dir, "fresh-backup.db")
-	if err := preparePersistentDB(fresh); err != nil {
+	if err := preparePersistentDBWithMarker(fresh, "fresh-backup-sentinel"); err != nil {
 		t.Fatal(err)
 	}
 	b, err := New(ctx, func(context.Context, Registration) (Decision, error) { return Allow, nil })
@@ -588,8 +598,26 @@ func TestOnlineBackupDestinationRefusalAndFreshRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "before" {
+	if got != "source-value" {
 		t.Fatalf("fresh backup marker=%q", got)
+	}
+}
+
+func TestBackupEvidenceRejectsEarlySourceRefusalAndNoOpDestination(t *testing.T) {
+	earlySourceFailure := []Event{
+		{Kind: "registration_requested", Role: MainDB, Fixture: "source.db", Object: 1, Result: lib.SQLITE_OK},
+		{Kind: "registration_refused", Role: MainDB, Fixture: "source.db", Object: 1, Result: lib.SQLITE_CANTOPEN},
+	}
+	if backupRefusalEvidence(errors.New("source refused"), true, earlySourceFailure, "source.db", "destination.db", true) {
+		t.Fatal("source refusal was mistaken for destination refusal")
+	}
+
+	noOpDestination := []Event{
+		{Kind: "registered", Role: MainDB, Fixture: "source.db", Object: 2, Matched: true, Result: lib.SQLITE_OK},
+		{Kind: "registered", Role: MainDB, Fixture: "destination.db", Object: 3, Matched: true, Result: lib.SQLITE_OK},
+	}
+	if backupSuccessEvidence(nil, "destination-sentinel", "source-value", "destination-sentinel", noOpDestination, "source.db", "destination.db", true) {
+		t.Fatal("unchanged destination content without destination writes satisfied backup evidence")
 	}
 }
 
@@ -642,6 +670,9 @@ func runOnlineBackup(ctx context.Context, source, destinationURI string) error {
 const sqliteIOERRShmMap int32 = 5386
 
 func preparePersistentDB(path string) error {
+	return preparePersistentDBWithMarker(path, "before")
+}
+func preparePersistentDBWithMarker(path, marker string) error {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return err
@@ -653,7 +684,7 @@ func preparePersistentDB(path string) error {
 	if _, err = db.Exec("CREATE TABLE fixture (marker TEXT NOT NULL)"); err != nil {
 		return err
 	}
-	_, err = db.Exec("INSERT INTO fixture VALUES ('before')")
+	_, err = db.Exec("INSERT INTO fixture VALUES (?)", marker)
 	return err
 }
 func prepareWALDB(path string) error {

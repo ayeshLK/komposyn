@@ -124,10 +124,13 @@ The study and tests demonstrate:
 - A deliberate identity mismatch, unknown file token and cancellation fail
   closed. Shutdown closes retained pins. Path-only deletion is refused.
 - modernc's online-backup API routes both source and destination independently
-  through explicit named-VFS URIs. Their separate fixture names appear in the
-  callback record. A successful backup is verified. A denied overwrite leaves
-  a prior completed fixture backup byte-for-byte unchanged and runs no adapter
-  write callback; a separate fresh destination succeeds.
+  through explicit named-VFS URIs. Backup success requires a write/truncate
+  callback correlated to the registered destination object and source-specific
+  content replacing a distinct destination sentinel. A denied overwrite is
+  measured only after the source is registered and the destination's matching
+  registration request is refused; prior bytes must remain identical and no
+  destination write callback may occur. A separate fresh destination then
+  succeeds with the same content and callback requirements.
 - WAL-role callback refusal occurs before delegation to native `xOpen`, and
   the native PRAGMA fixture reached that refusal without creating SHM. The
   separate xShmMap method-table callback also refuses and clears the mapping
