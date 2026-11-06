@@ -49,6 +49,9 @@ sandbox service or filesystem tools; see the
 [protected owner integration boundary](read-broker-owner-integration.md) and
 the [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 
+The experimental named SQLite VFS probe and its writable/SHM limitations are
+documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
+
 ## Local configuration
 
 The default paths are `~/.komposyn/auth.json` and
