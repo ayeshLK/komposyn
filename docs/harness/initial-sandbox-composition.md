@@ -46,16 +46,21 @@ user-selected root.
 | Category | Authoritative source and actual lifecycle | Required protection | Existing evidence and gap | Initial capability consequence |
 |---|---|---|---|---|
 | Harness auth and OAuth material | `auth.Store.EffectivePath`: `--auth-file` override or `~/.komposyn/auth.json`. Stores API keys, OAuth tokens/registration and profile metadata. Saves and OAuth refresh use private temporary replacement files and atomic replacement. Environment-backed profiles resolve a named variable for the provider operation. | Register effective route and each replacement identity before sensitive bytes; retain retired identities; invalidate/join affected reads before writing. Never expose credential values or environment to worker. | Auth store protection hook and synthetic real-store tests exist (`internal/harness/auth/`, `read-broker-real-store-native-acceptance.md`), but shipped composition does not register it. Environment values are not files known to the auth store. | No read capability until hook registration and lifecycle evidence are part of the selected composition. Never pass provider credentials to worker. |
-| Harness settings | `settings.Store.EffectivePath`: `--settings-file` override or `settings.json` adjacent to effective auth path. Stores UI selection; atomic temp-file replacement. | Same route, replacement, retirement and join barrier as auth. | Optional settings protection hook and synthetic store acceptance exist; not wired in `cmd/harness`. | Same refusal as auth until registered. |
+| Harness settings | `settings.Store.EffectivePath`: `--settings-file` override or `~/.komposyn/settings.json` from `settings.DefaultPath()`. It is resolved independently of `--auth-file`; an auth-only override does not relocate settings. Stores UI selection; atomic temp-file replacement. | Resolve and register the settings store's own effective route and each replacement identity; retain retired identities; invalidate/join affected reads before writing. | Optional settings protection hook and synthetic store acceptance exist; not wired in `cmd/harness`. | Same refusal as auth until its independently resolved route and lifecycle are registered. |
 | Provider requests and returned tool data | Selected provider adapter receives the operation credential and sends requests using its HTTP client in the host process. Only a future runtime-approved tool result may be appended to provider continuation. | Keep worker isolated from credentials, clients, sockets and provider state. Bind publication to live turn, root, policy, coverage and grant generations. | Existing provider routes are tested; no filesystem worker/provider publication composition exists. OAuth and unsupported routes remain text-only for tools. | No automatic route fallback. A read result is disclosed to the selected model only after approval and final publication validation. |
 | Provider-owned source files | Collector roots/discovery/opening belong to collector/provider adapters; external providers create and rotate these files. The temporary chat composition does not read those records. | If a selected read could encounter a registered source, classify by its opened identity/route and require explicit per-invocation approval. External writes are not made cooperative by root registration. | No complete source owner registration/open-identity hook is connected to the read broker. A root is not an exhaustive source inventory. | Source classification/registration gaps make affected reads unavailable. Hiding a tool or guessing file suffixes does not enforce exclusion. |
 | Token Logger database, WAL, SHM and backups | `Store.Open` receives caller-selected DB/backup paths. SQLite creates and retires sidecars; migrations may create a backup. `cmd/harness` has no Token Logger import/open. | If the composition opens/undertakes a store, register database, sidecars, backup and temporary/recovery objects before sensitive writes, and coordinate rotation/close with worker join. | No production broker owner API or demonstrated driver barrier; #239–#241 investigate this lifecycle. The current chat's non-use is source-backed only for this process. | No Token Logger integration is required merely to start chat. It is required before a composition that opens/undertakes that store can attest its protection. Arbitrary DBs in a selected root remain unknown. |
 | Other credentials, databases and user files | No KompoSyn owner knows all files or external writers in an arbitrary root. Independent applications can create, copy, rename or link data. | The approved policy requires protected objects/locations to remain denied; object identity cannot identify independent copies of sensitive bytes. No scan, extension/content guessing, or inferred home/root inventory is allowed. | No authoritative inventory or independent-writer barrier exists. | This is the unresolved boundary. Under a strict reading of the current protection contract, generic reads from an arbitrary root cannot yet be admitted as “known safe.” |
 | Worker process environment, descriptors and host resources | Current chat has no sandbox child. OAuth browser launch is a separate host auth operation. The study worker profile clears environment and passes a small protocol descriptor set; it does not establish shipped composition behavior. | The worker receives only protocol descriptors and the single approved read capability after trusted startup and checks. No home, credentials, provider sockets/client, broad directory handle or arbitrary inherited descriptor. | Worker/profile behavior is research-only; integration and composition-specific native acceptance are absent. | Sandbox/profile unavailable means refusal, never unrestricted execution. |
 
-Auth/settings path details are implemented in `internal/harness/auth/store.go`,
-`internal/harness/auth/protection.go`, `internal/harness/settings/settings.go`
-and their platform file helpers. Composition and tool registration are in
+Auth/settings path details are implemented independently in
+`internal/harness/auth/store.go` and `internal/harness/settings/settings.go`:
+each store exposes `EffectivePath()` and each has its own default path
+resolution. `cmd/harness` constructs them from separate flags. A future
+composition must call both effective-path APIs and must not derive the
+settings route from the effective auth override. Protection hooks are in
+`internal/harness/auth/protection.go` and the settings store, with platform
+file helpers alongside them. Composition and tool registration are in
 `cmd/harness/main.go`. Provider-source lifecycle is audited in
 [`read-broker-owner-inventory.md`](read-broker-owner-inventory.md). SQLite
 lifecycle findings remain in
@@ -284,7 +289,10 @@ before a task can enable any generic exact-file read.
   until its actual DB/sidecar/backup owner obligations are met.
 - Auth/settings default and override paths register before protected writes;
   replacement object is pinned while empty; held workers block sensitive
-  writes until joined; old identities remain protected.
+  writes until joined; old identities remain protected. Exercise auth-only
+  override, settings-only override, and both overrides to unrelated
+  directories; verify each registered route matches its own store's
+  `EffectivePath()`.
 - Root, grant, coverage and policy changes invalidate queued/active work;
   once consumption has one owner; unknown coverage consumes no grant and
   starts no worker.
