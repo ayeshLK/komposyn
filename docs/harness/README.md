@@ -54,6 +54,9 @@ limitations are documented in the [named VFS feasibility prototype](sqlite-named
 The separate Linux/amd64 generated-ABI write-barrier experiment is documented
 in the [writable object-barrier prototype](sqlite-writable-object-barrier-prototype.md).
 It is an isolated synthetic study and does not enable writes in KompoSyn stores.
+The follow-up study of modernc SQLite's WAL shared-memory open, pin and mapping
+order—and why its raw syscall hook is not a production authorization API—is in
+the [WAL/SHM feasibility report](sqlite-wal-shm-feasibility.md).
 
 ## Local configuration
 
