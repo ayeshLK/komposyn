@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "source_commit": "139ddcdb238e249998cc577d824a33b7aedae51b",
+  "run_at_utc": "2026-11-06T06:02:20Z",
+  "os": "linux",
+  "architecture": "amd64",
+  "go_version": "go1.26.10",
+  "driver_version": "v1.61.0",
+  "driver_source_commit": "4df1ebea0f1cf0cd6ec3245b26f5fec4234ce738",
+  "sqlite_version": "3.54.1",
+  "named_vfs": "vfs1",
+  "default_vfs_unchanged": "preserved by non-default registration (source-inspected)",
+  "cases": [
+    {
+      "name": "named_vfs_read_control",
+      "attempted": true,
+      "classification": "measured_pass",
+      "observed": "SQLite opened the synthetic source through the non-default named VFS and returned the fixture marker.",
+      "exact_object_identity": "Not captured by the supported adapter; no inode/descriptor registration is claimed.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal"
+      ],
+      "fixture_effects": [
+        "source fixture unchanged"
+      ]
+    },
+    {
+      "name": "named_vfs_write_refusal",
+      "attempted": true,
+      "classification": "measured_refusal",
+      "observed": "An UPDATE through the supported named VFS failed because its xOpen refuses the main-journal role (SQLite reports SQLITE_NOMEM); the marker remained unchanged.",
+      "exact_object_identity": "Not captured; refusal is an adapter capability limit, not an identity-bound authorization decision.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal"
+      ],
+      "fixture_effects": [
+        "synthetic marker unchanged"
+      ]
+    },
+    {
+      "name": "wal_shm_stop_condition",
+      "attempted": true,
+      "classification": "measured_refusal",
+      "observed": "attempted=true, journal_mode=\"delete\", query_error=false; WAL path before/after=absent/absent, SHM path before/after=absent/absent. This does not prove an xShmMap interception.",
+      "exact_object_identity": "SHM identity was not exposed before SQLite's native SHM path; no xShmMap protection is claimed.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal"
+      ],
+      "fixture_effects": [
+        "WAL path state: before=absent after=absent",
+        "SHM path state: before=absent after=absent"
+      ]
+    },
+    {
+      "name": "backup_plain_destination_control",
+      "attempted": true,
+      "classification": "measured_unprotected_control",
+      "observed": "NewBackup's plain destination succeeded via SQLite's independently selected default VFS; source named-VFS selection did not protect it.",
+      "exact_object_identity": "Destination object was not opened through the named adapter; identity was not registered.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal"
+      ],
+      "fixture_effects": [
+        "plain-control.db created in disposable fixture"
+      ]
+    },
+    {
+      "name": "backup_named_destination_refusal_and_fresh_retry",
+      "attempted": true,
+      "classification": "measured_refusal",
+      "observed": "attempted(first/retry)=true/true, returned_error(first/retry)=true/true; destination path states first=absent/absent, fresh retry=absent/absent. Final path absence cannot detect transient effects.",
+      "exact_object_identity": "No destination identity was captured; path observations are not object-identity proof.",
+      "callback_names": [
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "source.db",
+        "source.db-journal",
+        "source.db-wal",
+        "explicit-refused.db",
+        "retry-refused.db"
+      ],
+      "fixture_effects": [
+        "explicit destination path state: before=absent after=absent",
+        "fresh retry path state: before=absent after=absent"
+      ]
+    }
+  ],
+  "conclusion": "The pinned driver supports non-default read-only VFS selection and SQLite demonstrates independent backup destination routing. A no-fork writable exact-object pre-write adapter and pre-native SHM protection were not demonstrated; writable Token Logger coverage remains unsupported.",
+  "limitations": [
+    "The supported modernc.org/sqlite/vfs adapter is read-only; no writable callback adapter was implemented.",
+    "No exact native descriptor was registered before SQLite writes; the experiment cannot establish a write barrier.",
+    "WAL/SHM acceptance is unavailable. A named read-only VFS refusal is not proof of a pre-native xShmMap interception.",
+    "The plain backup destination is an intentionally unprotected control and is confined to this disposable fixture.",
+    "This prototype does not cover Token Logger, concurrent external actors, rotation, production integration, or non-Linux behavior."
+  ]
+}
