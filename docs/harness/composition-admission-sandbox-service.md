@@ -69,6 +69,17 @@ reserved `read_file` ID as a guard; no such tool is registered. Existing
 `update_plan` and `request_user_input` continue through their current enforcer
 without requiring filesystem coverage or a Linux backend.
 
+If preparation cleanup fails, runtime retains the capability, returns an
+unknown result without its content, stops the current turn before another
+provider request, and retries cleanup before a later turn can make a provider
+request. Preparation handles must make `Close` safe to retry. The Linux service
+also latches an owner as pending before route/replacement registration; a
+registration error, post-registration cancellation, or opened-object identity
+mismatch keeps that owner pending in the detached coverage snapshot until a
+fresh registration and identity check both succeed. This overlay is required
+because the coordinator may complete its staged inventory update before the
+service's final descriptor check.
+
 The future prepared capability must bind the invocation, validated arguments,
 exact route/opened identity/classification, root/composition/coverage/policy
 revisions and authorization binding. It must revalidate before descriptor

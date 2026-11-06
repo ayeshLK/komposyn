@@ -41,6 +41,7 @@ type linuxImplementation struct {
 	backendErr error
 	revision   uint64
 	owners     map[string]OwnerCoverage
+	blocked    map[string]string
 	closed     bool
 }
 
@@ -67,6 +68,7 @@ func composeLinuxImplementation(registry *readbrokerstudy.Registry, launcher rea
 	impl := &linuxImplementation{
 		registry: registry, launcher: launcher, backendErr: backendErr, revision: 1,
 		inventory: readbrokerstudy.NewChatCompositionInventory(),
+		blocked:   make(map[string]string),
 		owners: map[string]OwnerCoverage{
 			auth.SensitiveOwnerAuth:     {Owner: auth.SensitiveOwnerAuth, Class: auth.SensitiveClassAuth, State: OwnerRequired, Evidence: "cmd/harness auth.Store wiring", Reason: "effective route and protected identity must be registered"},
 			auth.SensitiveOwnerSettings: {Owner: auth.SensitiveOwnerSettings, Class: auth.SensitiveClassSettings, State: OwnerRequired, Evidence: "cmd/harness settings.Store wiring", Reason: "effective route and protected identity must be registered independently"},
@@ -130,7 +132,8 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 		return ErrServiceClosed
 	}
 	coverage, exists := s.owners[owner]
-	if !exists || coverage.State != OwnerRequired && coverage.State != OwnerRegistered {
+	retryBlocked := s.blocked[owner] != "" && coverage.State == OwnerPending
+	if !exists || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !retryBlocked {
 		return errors.New("owner is not required by the trusted chat composition")
 	}
 	resourceClass, ok := hostResourceClass(class)
@@ -163,6 +166,12 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 		expected = readbrokerstudy.FileIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Type: uint32(stat.Mode & syscall.S_IFMT)}
 		registrations = append(registrations, readbrokerstudy.OwnerRegistration{Owner: owner, Class: resourceClass, Path: objectPath})
 	}
+	// A route or replacement registration is incomplete until the opened object
+	// has been checked against the identity pinned by the registry. Keep a
+	// service-level pending latch because the coordinator may finish its own
+	// update before this final owner-descriptor check completes.
+	s.blocked[owner] = "owner registration awaits opened-object identity and lifecycle validation"
+	s.revision++
 	if s.session != nil {
 		err = s.session.RegisterRotation(owner, registrations)
 	} else {
@@ -187,6 +196,7 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 			return errors.New("pinned replacement identity does not match the open owner descriptor")
 		}
 	}
+	delete(s.blocked, owner)
 	coverage.State = OwnerRegistered
 	coverage.Reason = "effective route and observed protected identities are retained until service shutdown"
 	coverage.Routes = 0
@@ -247,6 +257,15 @@ func (s *linuxImplementation) CoverageSnapshot() CoverageSnapshot {
 			coverage.Reason = owner.UnavailableReason
 			s.owners[owner.Owner] = coverage
 		}
+	}
+	for owner, reason := range s.blocked {
+		coverage, exists := s.owners[owner]
+		if !exists {
+			continue
+		}
+		coverage.State = OwnerPending
+		coverage.Reason = reason
+		s.owners[owner] = coverage
 	}
 	owners := make([]OwnerCoverage, 0, len(s.owners))
 	for _, owner := range s.owners {

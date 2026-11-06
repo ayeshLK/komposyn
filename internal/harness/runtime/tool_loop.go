@@ -23,6 +23,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/ayeshLK/komposyn/internal/harness/model"
@@ -62,9 +63,12 @@ type ToolEnforcer interface {
 }
 
 // ToolPreparation is a host-owned capability retained between admission and
-// dispatch. Runtime closes it on every path. Implementations should bind it to
-// the invocation and authorization context and revalidate their own revisions
-// before releasing any effect-capable capability.
+// dispatch. Runtime closes it on every path. If Close reports incomplete
+// cleanup, runtime retains the capability and retries Close before a later
+// provider request, so Close implementations must support a safe retry.
+// Implementations should bind the capability to the invocation and
+// authorization context and revalidate their own revisions before releasing
+// any effect-capable capability.
 type ToolPreparation interface {
 	Execute(context.Context) (tools.Result, error)
 	Close() error
@@ -114,16 +118,92 @@ type ToolRuntimeConfig struct {
 }
 
 type toolRuntime struct {
-	registry      *tools.Registry
-	authorizer    ToolAuthorizer
-	enforcer      ToolEnforcer
-	preparer      ToolPreparer
-	approval      ToolApprovalInteraction
-	clarification ToolClarificationInteraction
-	grants        *permissions.MemoryStore
-	plans         *ConversationPlans
-	evaluator     permissions.Evaluator
-	coordinator   *permissions.Coordinator
+	cleanupMu      sync.Mutex
+	pendingCleanup []ToolPreparation
+	cleanupRetry   bool
+	registry       *tools.Registry
+	authorizer     ToolAuthorizer
+	enforcer       ToolEnforcer
+	preparer       ToolPreparer
+	approval       ToolApprovalInteraction
+	clarification  ToolClarificationInteraction
+	grants         *permissions.MemoryStore
+	plans          *ConversationPlans
+	evaluator      permissions.Evaluator
+	coordinator    *permissions.Coordinator
+}
+
+var errPreparationCleanupPending = errors.New("prepared tool cleanup remains unconfirmed")
+
+func (r *toolRuntime) retainPreparation(preparation ToolPreparation) {
+	if preparation == nil {
+		return
+	}
+	r.cleanupMu.Lock()
+	r.pendingCleanup = append(r.pendingCleanup, preparation)
+	r.cleanupMu.Unlock()
+}
+
+// closePreparation transfers an unclosed capability into runtime-owned
+// cleanup state when Close cannot confirm cleanup. The runtime then blocks
+// later provider requests until a retry confirms every retained close.
+func (r *toolRuntime) closePreparation(preparation *ToolPreparation) error {
+	if preparation == nil || *preparation == nil {
+		return nil
+	}
+	owned := *preparation
+	if err := owned.Close(); err != nil {
+		r.retainPreparation(owned)
+		*preparation = nil
+		return err
+	}
+	*preparation = nil
+	return nil
+}
+
+func (r *toolRuntime) retryPendingPreparationCleanup(ctx context.Context) error {
+	r.cleanupMu.Lock()
+	if r.cleanupRetry {
+		r.cleanupMu.Unlock()
+		return errPreparationCleanupPending
+	}
+	if len(r.pendingCleanup) == 0 {
+		r.cleanupMu.Unlock()
+		return nil
+	}
+	r.cleanupRetry = true
+	pending := r.pendingCleanup
+	r.pendingCleanup = nil
+	r.cleanupMu.Unlock()
+
+	var retained []ToolPreparation
+	var closeErr error
+	for index, preparation := range pending {
+		if err := ctx.Err(); err != nil {
+			retained = append(retained, pending[index:]...)
+			closeErr = errors.Join(closeErr, err)
+			break
+		}
+		if err := preparation.Close(); err != nil {
+			retained = append(retained, preparation)
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+
+	r.cleanupMu.Lock()
+	r.pendingCleanup = append(retained, r.pendingCleanup...)
+	r.cleanupRetry = false
+	r.cleanupMu.Unlock()
+	if closeErr != nil {
+		return errors.Join(errPreparationCleanupPending, closeErr)
+	}
+	return nil
+}
+
+func (r *toolRuntime) pendingPreparationCleanupCount() int {
+	r.cleanupMu.Lock()
+	defer r.cleanupMu.Unlock()
+	return len(r.pendingCleanup)
 }
 
 type ToolActivity struct {
@@ -486,6 +566,12 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 		result.err = err
 		return result
 	}
+	if runtime != nil {
+		if err := runtime.retryPendingPreparationCleanup(ctx); err != nil {
+			result.message = "prior tool cleanup is unconfirmed; no provider request was sent"
+			return finish(provider.Result{}, provider.OutcomeInterrupted, nil)
+		}
+	}
 	recordUsage := func(response provider.Result) {
 		usage.add(response.Usage)
 		c.mu.Lock()
@@ -757,38 +843,26 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
-	preparedCleanupFailed := func(message string, cancelTurn bool) (provider.ToolResult, ToolActivity, string, bool) {
+	preparedCleanupFailed := func(message string) (provider.ToolResult, ToolActivity, string, bool) {
 		activity.Outcome = tools.OutcomeUnknown
 		activity.Message = message
 		update("finished")
-		return fixedToolResult(call.CallID, tools.OutcomeUnknown, message, maxBytes), activity, "", cancelTurn
+		return fixedToolResult(call.CallID, tools.OutcomeUnknown, message, maxBytes), activity, "", true
 	}
 	var preparation ToolPreparation
 	if r.preparer != nil && r.preparer.Prepares(call.ToolID) {
 		preparation, err = r.preparer.PrepareTool(ctx, tool, cloneInvocation(invocation), prepared, freshDecision.Revision)
 		if err != nil || preparation == nil {
-			var closeErr error
-			if preparation != nil {
-				closeErr = preparation.Close()
-			}
+			closeErr := r.closePreparation(&preparation)
 			if closeErr != nil {
-				return preparedCleanupFailed("prepared capability cleanup could not be confirmed", false)
+				return preparedCleanupFailed("prepared capability cleanup could not be confirmed")
 			}
 			return notExecuted("tool preparation or coverage admission is unavailable")
 		}
 	}
-	closePreparation := func() error {
-		if preparation == nil {
-			return nil
-		}
-		owned := preparation
-		preparation = nil
-		return owned.Close()
-	}
-	defer func() { _ = closePreparation() }()
 	if !current() || ctx.Err() != nil {
-		if closeErr := closePreparation(); closeErr != nil {
-			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after cancellation", true)
+		if closeErr := r.closePreparation(&preparation); closeErr != nil {
+			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after cancellation")
 		}
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
@@ -796,15 +870,15 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
 	if err := r.grants.ConsumeOnceMatchingAtRevision(prepared, freshDecision.Revision); err != nil {
-		if closeErr := closePreparation(); closeErr != nil {
-			return preparedCleanupFailed("once permission changed and prepared capability cleanup could not be confirmed", false)
+		if closeErr := r.closePreparation(&preparation); closeErr != nil {
+			return preparedCleanupFailed("once permission changed and prepared capability cleanup could not be confirmed")
 		}
 		return notExecuted("once permission could not be consumed")
 	}
 	update("authorized")
 	if !current() || ctx.Err() != nil {
-		if closeErr := closePreparation(); closeErr != nil {
-			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after authorization", true)
+		if closeErr := r.closePreparation(&preparation); closeErr != nil {
+			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after authorization")
 		}
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
@@ -816,8 +890,11 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	var executionErr error
 	if preparation != nil {
 		result, executionErr = preparation.Execute(ctx)
-		if closeErr := closePreparation(); closeErr != nil {
-			executionErr = errors.Join(executionErr, closeErr)
+		if closeErr := r.closePreparation(&preparation); closeErr != nil {
+			// A successful result is not publishable until cleanup has been
+			// confirmed. Do not put returned bytes in either the transcript or
+			// another provider request.
+			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after execution")
 		}
 	} else {
 		result, executionErr = r.enforcer.Execute(ctx, tool, cloneInvocation(invocation), prepared)

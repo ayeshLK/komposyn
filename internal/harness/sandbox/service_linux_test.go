@@ -19,6 +19,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -162,6 +163,107 @@ func TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate(t *testin
 	if available, _ := backendService.BackendStatus(); available {
 		t.Fatal("untrusted/missing Bubblewrap path was treated as an available backend")
 	}
+}
+
+func TestFailedOwnerIdentityValidationStaysPendingUntilSuccessfulRetry(t *testing.T) {
+	for _, composition := range []string{"coordinator-backed", "backend-unavailable"} {
+		for _, failure := range []string{"path-identity-mismatch", "cancellation-after-registration"} {
+			t.Run(composition+"/"+failure, func(t *testing.T) {
+				var service *Service
+				if composition == "coordinator-backed" {
+					var err error
+					service, err = newTestHostService()
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					registry, err := readbrokerstudy.NewRegistry()
+					if err != nil {
+						t.Fatal(err)
+					}
+					impl, err := composeLinuxImplementation(registry, nil, readbrokerstudy.ErrUnavailable)
+					if err != nil {
+						t.Fatal(err)
+					}
+					service = &Service{impl: impl}
+				}
+				t.Cleanup(func() {
+					if err := service.Close(context.Background()); err != nil {
+						t.Errorf("close service: %v", err)
+					}
+				})
+
+				route := filepath.Join(t.TempDir(), "auth.json")
+				if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, route, nil); err != nil {
+					t.Fatalf("register initially absent route: %v", err)
+				}
+				opened, err := os.CreateTemp(filepath.Dir(route), ".auth-replacement-*")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = opened.Close() })
+				var protectCtx context.Context = context.Background()
+				if failure == "path-identity-mismatch" {
+					movedPath := opened.Name() + ".moved"
+					if err := os.Rename(opened.Name(), movedPath); err != nil {
+						t.Fatal(err)
+					}
+					replacement, err := os.OpenFile(opened.Name(), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := replacement.Close(); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					protectCtx = &cancelAfterErrCalls{Context: context.Background(), cancelAt: 3}
+				}
+				if err := service.Protect(protectCtx, auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, route, opened); err == nil {
+					t.Fatal("owner update unexpectedly completed")
+				}
+				assertOwnerState(t, service.CoverageSnapshot(), OwnerPending)
+
+				// A fresh replacement at its current pathname is required to clear
+				// the failure latch; the previous pathname pin cannot do so.
+				fresh, err := os.CreateTemp(filepath.Dir(route), ".auth-retry-*")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer fresh.Close()
+				if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, route, fresh); err != nil {
+					t.Fatalf("fresh owner registration did not recover coverage: %v", err)
+				}
+				assertOwnerState(t, service.CoverageSnapshot(), OwnerRegistered)
+			})
+		}
+	}
+}
+
+type cancelAfterErrCalls struct {
+	context.Context
+	cancelAt int
+	calls    int
+}
+
+func (c *cancelAfterErrCalls) Err() error {
+	c.calls++
+	if c.calls >= c.cancelAt {
+		return context.Canceled
+	}
+	return nil
+}
+
+func assertOwnerState(t *testing.T, snapshot CoverageSnapshot, want OwnerState) {
+	t.Helper()
+	for _, owner := range snapshot.Owners {
+		if owner.Owner == auth.SensitiveOwnerAuth {
+			if owner.State != want {
+				t.Fatalf("auth coverage state=%q want=%q snapshot=%+v", owner.State, want, snapshot)
+			}
+			return
+		}
+	}
+	t.Fatalf("auth owner missing from coverage snapshot: %+v", snapshot)
 }
 
 func newTestHostService() (*Service, error) {
