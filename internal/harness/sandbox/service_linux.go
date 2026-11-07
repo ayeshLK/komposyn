@@ -345,19 +345,16 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 	}
 	metadata, err := session.WaitAdmission(ctx, reference)
 	if err != nil {
-		_ = session.CloseAdmission(context.Background(), reference)
-		return runtime.FilesystemReadAdmission{}, err
+		return runtime.FilesystemReadAdmission{}, errors.Join(err, session.CloseAdmission(ctx, reference))
 	}
 	s.mu.Lock()
 	stillEligible := !s.closed && len(s.blocked) == 0 && s.session == session && s.owners[auth.SensitiveOwnerAuth].State == OwnerRegistered && s.owners[auth.SensitiveOwnerSettings].State == OwnerRegistered
 	s.mu.Unlock()
 	if !stillEligible || coverageRevision != s.CoverageSnapshot().Revision {
-		_ = session.CloseAdmission(context.Background(), reference)
-		return runtime.FilesystemReadAdmission{}, readbrokerstudy.ErrAdmissionStale
+		return runtime.FilesystemReadAdmission{}, errors.Join(readbrokerstudy.ErrAdmissionStale, session.CloseAdmission(ctx, reference))
 	}
 	if metadata.Class == readbrokerstudy.ClassProvider {
-		_ = session.CloseAdmission(context.Background(), reference)
-		return runtime.FilesystemReadAdmission{}, ErrCoverageMissing
+		return runtime.FilesystemReadAdmission{}, errors.Join(ErrCoverageMissing, session.CloseAdmission(ctx, reference))
 	}
 	return runtimeAdmission(metadata), nil
 }
@@ -383,9 +380,8 @@ func (s *linuxImplementation) PrepareAdmittedFilesystemRead(ctx context.Context,
 		return nil, err
 	}
 	metadata := prepared.Metadata()
-	if metadata.ServiceID != admission.ServiceID || metadata.ConversationID != admission.ConversationID || metadata.TurnID == "" || metadata.CallID == "" || metadata.Root != admission.Root || metadata.Target != admission.Target || metadata.Destination != admission.Destination {
-		_ = prepared.Close(context.Background())
-		return nil, readbrokerstudy.ErrAdmissionStale
+	if metadata.ServiceID != admission.ServiceID || metadata.ConversationID != admission.ConversationID || metadata.TurnID == "" || metadata.CallID == "" || metadata.Root != admission.Root || metadata.Target != admission.Target || !metadata.Deadline.Equal(admission.Deadline) || metadata.Destination != admission.Destination {
+		return nil, errors.Join(readbrokerstudy.ErrAdmissionStale, prepared.Close(ctx))
 	}
 	return &linuxAdmissionPreparation{impl: s, inner: prepared}, nil
 }
@@ -415,7 +411,7 @@ type linuxAdmissionPreparation struct {
 func runtimeAdmission(metadata readbrokerstudy.AdmissionMetadata) runtime.FilesystemReadAdmission {
 	return runtime.FilesystemReadAdmission{
 		Reference: metadata.Reference, ServiceID: metadata.ServiceID, ConversationID: metadata.ConversationID,
-		Root: metadata.Root, AdmissionBinding: fmt.Sprintf("%x", metadata.Binding[:]), Target: metadata.Target,
+		Root: metadata.Root, Deadline: metadata.Deadline, AdmissionBinding: fmt.Sprintf("%x", metadata.Binding[:]), Target: metadata.Target,
 		Class: string(metadata.Class), Identity: fmt.Sprintf("%d:%d:%d", metadata.Identity.Device, metadata.Identity.Inode, metadata.Identity.Type),
 		RootGeneration: metadata.RootGeneration, PolicyRevision: metadata.Generations.Policy,
 		CoverageRevision: metadata.Generations.Inventory, Destination: metadata.Destination,

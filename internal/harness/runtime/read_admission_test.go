@@ -16,8 +16,11 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	"github.com/ayeshLK/komposyn/plugins/tools"
@@ -74,9 +77,17 @@ func (f *retainedPreparationFixture) Close(context.Context) error {
 }
 
 func TestRetainedReadApprovalUsesCheckedRuntimeTransactionsAndNeverDispatches(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "notes.txt")
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
 	host := &retainedAdmissionFixture{metadata: FilesystemReadAdmission{
-		Reference: new(struct{}), ServiceID: "host-service", ConversationID: "conversation", Root: "/synthetic-root",
-		AdmissionBinding: "canonical-admission-digest", Target: "/synthetic-root/notes.txt", Class: "ordinary",
+		Reference: new(struct{}), ServiceID: "host-service", ConversationID: "conversation", Root: root, Deadline: time.Now().Add(time.Minute),
+		AdmissionBinding: "canonical-admission-digest", Target: target, Class: "ordinary",
 		Identity: "1:2:32768", RootGeneration: 4, PolicyRevision: 7, CoverageRevision: 9,
 	}}
 	runtime := newToolRuntime(ToolRuntimeConfig{
@@ -85,7 +96,7 @@ func TestRetainedReadApprovalUsesCheckedRuntimeTransactionsAndNeverDispatches(t 
 			return permissions.ApprovalOnce, "", nil
 		}),
 	})
-	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"/synthetic-root/notes.txt"}`)}
+	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
 	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "openai/gpt-test/profile-revision"); err != nil {
 		t.Fatalf("checked read approval: %v", err)
 	}
@@ -99,9 +110,17 @@ func TestRetainedReadApprovalUsesCheckedRuntimeTransactionsAndNeverDispatches(t 
 }
 
 func TestRetainedReadPreparationRefusalDoesNotConsumeOnceGrant(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "file")
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
 	host := &retainedAdmissionFixture{
 		prepareError: errors.New("synthetic preparation refusal"),
-		metadata:     FilesystemReadAdmission{Reference: new(struct{}), ServiceID: "host", ConversationID: "c", Root: "/root", AdmissionBinding: "digest", Target: "/root/file", Class: "ordinary", RootGeneration: 1, PolicyRevision: 2, CoverageRevision: 3, Destination: "provider/model/profile"},
+		metadata:     FilesystemReadAdmission{Reference: new(struct{}), ServiceID: "host", ConversationID: "c", Root: root, Deadline: time.Now().Add(time.Minute), AdmissionBinding: "digest", Target: target, Class: "ordinary", RootGeneration: 1, PolicyRevision: 2, CoverageRevision: 3, Destination: "provider/model/profile"},
 	}
 	runtime := newToolRuntime(ToolRuntimeConfig{
 		Registry: tools.NewRegistry(), ReadAdmission: host,
@@ -109,7 +128,7 @@ func TestRetainedReadPreparationRefusalDoesNotConsumeOnceGrant(t *testing.T) {
 			return permissions.ApprovalOnce, "", nil
 		}),
 	})
-	invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"/root/file"}`)}
+	invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
 	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile"); err == nil {
 		t.Fatal("preparation refusal unexpectedly succeeded")
 	}
@@ -132,8 +151,8 @@ func TestRetainedReadNonApprovalChoicesDoNotPrepareOrConsume(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			host := &retainedAdmissionFixture{metadata: FilesystemReadAdmission{
-				Reference: new(struct{}), ServiceID: "host", ConversationID: "c", Root: "/root",
-				AdmissionBinding: "digest", Target: "/root/file", Class: "ordinary",
+				Reference: new(struct{}), ServiceID: "host", ConversationID: "c",
+				Deadline: time.Now().Add(time.Minute), AdmissionBinding: "digest", Class: "ordinary",
 				Identity: "1:2:32768", RootGeneration: 1, PolicyRevision: 2,
 				CoverageRevision: 3, Destination: "provider/model/profile",
 			}}
@@ -143,7 +162,17 @@ func TestRetainedReadNonApprovalChoicesDoNotPrepareOrConsume(t *testing.T) {
 					return test.choice, test.redirect, nil
 				}),
 			})
-			invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"/root/file"}`)}
+			root := t.TempDir()
+			target := filepath.Join(root, "file")
+			host.metadata.Root = root
+			host.metadata.Target = target
+			arguments, err := json.Marshal(struct {
+				Path string `json:"path"`
+			}{target})
+			if err != nil {
+				t.Fatal(err)
+			}
+			invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
 			if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile"); err == nil {
 				t.Fatal("non-approval choice unexpectedly authorized retained read")
 			}
@@ -152,5 +181,44 @@ func TestRetainedReadNonApprovalChoicesDoNotPrepareOrConsume(t *testing.T) {
 				t.Fatalf("non-approval changed authority: revision=%d grants=%d prepared=%d authority=%d", revision, len(grants), host.prepared, runtime.readAuthorityCount())
 			}
 		})
+	}
+}
+
+func TestRetainedReadDeadlineBoundsApprovalWait(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "file")
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &retainedAdmissionFixture{metadata: FilesystemReadAdmission{
+		Reference: new(struct{}), ServiceID: "host", ConversationID: "c", Root: root,
+		Deadline: time.Now().Add(25 * time.Millisecond), AdmissionBinding: "digest", Target: target,
+		Class: "ordinary", Identity: "1:2:32768", RootGeneration: 1, PolicyRevision: 2,
+		CoverageRevision: 3, Destination: "provider/model/profile",
+	}}
+	approvalReturned := make(chan struct{})
+	runtime := newToolRuntime(ToolRuntimeConfig{
+		Registry: tools.NewRegistry(), ReadAdmission: host,
+		Approval: ToolApprovalFunc(func(ctx context.Context, _ permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			defer close(approvalReturned)
+			<-ctx.Done()
+			return permissions.ApprovalOnce, "", ctx.Err()
+		}),
+	})
+	invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
+	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile"); err == nil {
+		t.Fatal("approval wait exceeded the host admission deadline")
+	}
+	select {
+	case <-approvalReturned:
+	default:
+		t.Fatal("approval callback did not observe the admission deadline")
+	}
+	_, grants := runtime.grants.Snapshot("c")
+	if host.prepared != 0 || host.closed != 1 || len(grants) != 0 {
+		t.Fatalf("expired approval progressed or leaked: prepared=%d closed=%d grants=%d", host.prepared, host.closed, len(grants))
 	}
 }

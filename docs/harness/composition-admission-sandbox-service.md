@@ -71,6 +71,14 @@ call it because `read_file` is not registered. Existing `update_plan` and
 `request_user_input` continue through their current enforcer without requiring
 filesystem coverage or a Linux backend.
 
+The original caller context and a five-minute trusted maximum admission
+lifetime remain attached from lookup through approval and preparation. Cancel or
+expiry makes later preparation/commit stale and asynchronously retires the
+host-owned object. If a constrained lookup does not acknowledge completion,
+the caller returns within its own context budget with cleanup still pending;
+the single bounded admission slot remains occupied until the late lookup closes
+its result. Cleanup lock acquisition also observes the caller deadline.
+
 If preparation cleanup fails, runtime retains the capability, returns an
 unknown result without its content, stops the current turn before another
 provider request, and retries cleanup before a later turn can make a provider

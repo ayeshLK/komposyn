@@ -114,6 +114,59 @@ func TestRetainedAdmissionRequiresCurrentRootAndOwnerCoverage(t *testing.T) {
 	}
 }
 
+func TestAdmissionCancellationAndDeadlineRemainEffectiveAfterLookup(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		timeout time.Duration
+		cancel  bool
+	}{
+		{name: "caller cancellation", cancel: true},
+		{name: "five minute policy deadline represented by trusted short test bound", timeout: 20 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "ordinary.txt")
+			if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fixture := newSessionFixture(t, root)
+			session := fixture.session.(*fixtureSession)
+			if test.timeout > 0 {
+				session.admissionTimeout = test.timeout
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			request := AdmissionRequest{ConversationID: "c", TurnID: "t", CallID: "call", Root: root, Target: target, RootGeneration: 1, Destination: "provider/model/profile"}
+			metadata, err := session.Admit(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.mu.Lock()
+			record := session.admissions[metadata.Reference.id]
+			lifetimeDone := record.lifetime.Done()
+			session.mu.Unlock()
+			if test.cancel {
+				cancel()
+			}
+			select {
+			case <-lifetimeDone:
+			case <-time.After(time.Second):
+				t.Fatal("admission lifetime did not end")
+			}
+			if _, err := session.PrepareAdmitted(context.Background(), metadata.Reference, hex.EncodeToString(metadata.Binding[:]), metadata.Generations.Policy); !errors.Is(err, ErrAdmissionStale) {
+				t.Fatalf("preparation after lifetime end=%v, want stale", err)
+			}
+			deadline := time.Now().Add(time.Second)
+			for session.admissionCount() != 0 && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if got := session.admissionCount(); got != 0 {
+				t.Fatalf("expired admission was not retired: %d records remain", got)
+			}
+		})
+	}
+}
+
 type blockingAdmissionBroker struct {
 	base    ReadBroker
 	entered chan struct{}

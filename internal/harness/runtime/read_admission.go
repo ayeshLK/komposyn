@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
@@ -35,6 +36,7 @@ type FilesystemReadAdmission struct {
 	ServiceID        string
 	ConversationID   string
 	Root             string
+	Deadline         time.Time
 	AdmissionBinding string
 	Target           string
 	Class            string
@@ -72,7 +74,7 @@ func filesystemReadActionKey() string {
 }
 
 func buildFilesystemReadRequest(invocation tools.Invocation, admission FilesystemReadAdmission) (permissions.Request, error) {
-	if invocation.ToolID != tools.ID("read_file") || invocation.ConversationID == "" || invocation.ProviderCallID == "" || admission.Reference == nil || admission.AdmissionBinding == "" || admission.Target == "" || admission.Destination == "" {
+	if invocation.ToolID != tools.ID("read_file") || invocation.ConversationID == "" || invocation.ProviderCallID == "" || admission.Reference == nil || admission.AdmissionBinding == "" || admission.Target == "" || admission.Destination == "" || admission.Deadline.IsZero() || !time.Now().Before(admission.Deadline) {
 		return permissions.Request{}, errors.New("trusted retained read admission is incomplete")
 	}
 	resourceKey := "disclosure"
@@ -116,7 +118,7 @@ func (r *toolRuntime) validateFilesystemReadApproval(ctx context.Context, invoca
 	admissionOpen := true
 	defer func() {
 		if admissionOpen {
-			err = errors.Join(err, r.readAdmission.CloseFilesystemReadAdmission(context.Background(), admission))
+			err = errors.Join(err, r.readAdmission.CloseFilesystemReadAdmission(ctx, admission))
 		}
 	}()
 	request, err := buildFilesystemReadRequest(invocation, admission)
@@ -132,8 +134,10 @@ func (r *toolRuntime) validateFilesystemReadApproval(ctx context.Context, invoca
 		r.coordinator.CancelConversation(invocation.ConversationID)
 		return errors.New("retained read approval could not be opened")
 	}
-	choice, redirect, reviewErr := r.approval.Review(ctx, pending)
-	if reviewErr != nil || choice != permissions.ApprovalOnce || redirect != "" || ctx.Err() != nil || !r.readAuthorityEpochCurrent(readEpoch) {
+	approvalCtx, cancelApproval := context.WithDeadline(ctx, admission.Deadline)
+	defer cancelApproval()
+	choice, redirect, reviewErr := r.approval.Review(approvalCtx, pending)
+	if reviewErr != nil || choice != permissions.ApprovalOnce || redirect != "" || approvalCtx.Err() != nil || ctx.Err() != nil || !r.readAuthorityEpochCurrent(readEpoch) {
 		r.coordinator.CancelConversation(invocation.ConversationID)
 		return errors.New("retained read requires an explicit once approval")
 	}
@@ -148,12 +152,12 @@ func (r *toolRuntime) validateFilesystemReadApproval(ctx context.Context, invoca
 	preparation, err := r.readAdmission.PrepareAdmittedFilesystemRead(ctx, admission, approved.Transition.AfterRevision)
 	if err != nil || preparation == nil {
 		if preparation != nil {
-			err = errors.Join(err, preparation.Close(context.Background()))
+			err = errors.Join(err, preparation.Close(ctx))
 		}
 		return errors.Join(errors.New("retained read preparation was refused before once consumption"), err)
 	}
 	admissionOpen = false // preparation now owns retirement of the same record
-	defer func() { err = errors.Join(err, preparation.Close(context.Background())) }()
+	defer func() { err = errors.Join(err, preparation.Close(ctx)) }()
 
 	preparedRequest, bindErr := buildFilesystemReadRequest(invocation, preparation.Metadata())
 	if bindErr != nil || !sameAuthorizationBinding(request, preparedRequest) {

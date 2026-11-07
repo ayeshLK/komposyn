@@ -269,8 +269,7 @@ func (s *Service) AdmitFilesystemRead(ctx context.Context, invocation tools.Invo
 	current := !s.rootClosed && !s.rootPending && s.rootPath == root && s.rootConversationID == conversationID && s.rootGeneration == rootGeneration
 	s.rootMu.Unlock()
 	if !current {
-		_ = impl.CloseFilesystemReadAdmission(context.Background(), admission)
-		return runtime.FilesystemReadAdmission{}, runtime.ErrFilesystemRootStale
+		return runtime.FilesystemReadAdmission{}, errors.Join(runtime.ErrFilesystemRootStale, impl.CloseFilesystemReadAdmission(ctx, admission))
 	}
 	return admission, nil
 }

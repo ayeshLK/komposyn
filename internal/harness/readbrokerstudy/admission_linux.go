@@ -27,7 +27,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -51,7 +50,10 @@ const (
 )
 
 type admissionRecord struct {
-	retireMu   sync.Mutex
+	retireLock chan struct{}
+	lifetime   context.Context
+	cancel     context.CancelFunc
+	deadline   time.Time
 	ref        *AdmissionReference
 	request    AdmissionRequest
 	metadata   AdmissionMetadata
@@ -103,7 +105,7 @@ func (p *retainedPreparation) WithCommit(ctx context.Context, commit func() erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record := p.record
-	if s.closed || s.admissions[record.ref.id] != record || record.ref.owner != s || record.state != admissionPrepared || record.retired || record.prepared == nil || s.root != record.request.Root || s.rootGeneration != record.request.RootGeneration || s.gen != record.metadata.Generations || s.registry.View().Generation != record.metadata.Generations.Policy || s.inventory == nil || !s.inventory.Snapshot().Complete || s.inventory.Snapshot().Revision != record.metadata.Generations.Inventory {
+	if s.closed || s.admissions[record.ref.id] != record || record.ref.owner != s || record.state != admissionPrepared || record.retired || record.lifetime == nil || record.lifetime.Err() != nil || time.Now().After(record.deadline) || record.prepared == nil || s.root != record.request.Root || s.rootGeneration != record.request.RootGeneration || s.gen != record.metadata.Generations || s.registry.View().Generation != record.metadata.Generations.Policy || s.inventory == nil || !s.inventory.Snapshot().Complete || s.inventory.Snapshot().Revision != record.metadata.Generations.Inventory {
 		return ErrAdmissionStale
 	}
 	if err := s.broker.Revalidate(record.prepared); err != nil {
@@ -169,10 +171,17 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 		s.mu.Unlock()
 		return nil, err
 	}
+	timeout := s.admissionTimeout
+	if timeout <= 0 || timeout > retainedAdmissionTimeout {
+		timeout = retainedAdmissionTimeout
+	}
+	lifetime, cancel := context.WithTimeout(ctx, timeout)
+	deadline, _ := lifetime.Deadline()
 	record := &admissionRecord{
+		retireLock: make(chan struct{}, 1), lifetime: lifetime, cancel: cancel, deadline: deadline,
 		ref: &AdmissionReference{owner: s, id: id}, request: request,
 		state: admissionOpening, lookupDone: make(chan struct{}),
-		metadata: AdmissionMetadata{ServiceID: s.serviceID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID, Root: request.Root, Target: request.Target, RootGeneration: request.RootGeneration, Destination: request.Destination, Generations: s.gen},
+		metadata: AdmissionMetadata{ServiceID: s.serviceID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID, Root: request.Root, Target: request.Target, RootGeneration: request.RootGeneration, Deadline: deadline, Destination: request.Destination, Generations: s.gen},
 	}
 	s.admissions[id] = record
 	s.mu.Unlock()
@@ -185,6 +194,16 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 			}
 		}
 		s.finishAdmissionLookup(record, prepared, err)
+	}()
+	go func() {
+		<-lifetime.Done()
+		s.mu.Lock()
+		if s.admissions[id] == record {
+			record.retired = true
+			record.state = admissionRetiring
+		}
+		s.mu.Unlock()
+		_ = s.retireAdmission(context.Background(), record)
 	}()
 
 	return record.ref, nil
@@ -203,23 +222,23 @@ func (s *fixtureSession) WaitAdmission(ctx context.Context, reference *Admission
 		s.mu.Unlock()
 		return AdmissionMetadata{}, ErrAdmissionStale
 	}
+	lifetime := record.lifetime
 	s.mu.Unlock()
-	timer := time.NewTimer(retainedAdmissionTimeout)
-	defer timer.Stop()
 	select {
 	case <-record.lookupDone:
+	case <-lifetime.Done():
+		s.mu.Lock()
+		record.retired = true
+		record.state = admissionRetiring
+		s.mu.Unlock()
+		return AdmissionMetadata{}, lifetime.Err()
 	case <-ctx.Done():
 		s.mu.Lock()
 		record.retired = true
 		record.state = admissionRetiring
+		record.cancel()
 		s.mu.Unlock()
 		return AdmissionMetadata{}, ctx.Err()
-	case <-timer.C:
-		s.mu.Lock()
-		record.retired = true
-		record.state = admissionRetiring
-		s.mu.Unlock()
-		return AdmissionMetadata{}, context.DeadlineExceeded
 	}
 
 	s.mu.Lock()
@@ -231,6 +250,16 @@ func (s *fixtureSession) WaitAdmission(ctx context.Context, reference *Admission
 		s.mu.Unlock()
 		return AdmissionMetadata{}, ErrAdmissionStale
 	}
+	if record.lifetime == nil || record.lifetime.Err() != nil || time.Now().After(record.deadline) {
+		record.retired = true
+		record.state = admissionRetiring
+		if record.cancel != nil {
+			record.cancel()
+		}
+		s.mu.Unlock()
+		_ = s.retireAdmission(ctx, record)
+		return AdmissionMetadata{}, ErrAdmissionStale
+	}
 	metadata := record.metadata
 	metadata.Reference = record.ref
 	s.mu.Unlock()
@@ -239,10 +268,13 @@ func (s *fixtureSession) WaitAdmission(ctx context.Context, reference *Admission
 
 func (s *fixtureSession) finishAdmissionLookup(record *admissionRecord, prepared PreparedRead, lookupErr error) {
 	s.mu.Lock()
-	current := !s.closed && !record.retired && s.admissions[record.ref.id] == record && s.root == record.request.Root && s.rootGeneration == record.request.RootGeneration && s.gen == record.metadata.Generations && s.registry.View().Generation == record.metadata.Generations.Policy && s.inventory != nil && s.inventory.Snapshot().Complete && s.inventory.Snapshot().Revision == record.metadata.Generations.Inventory
+	current := !s.closed && !record.retired && record.lifetime != nil && record.lifetime.Err() == nil && time.Now().Before(record.deadline) && s.admissions[record.ref.id] == record && s.root == record.request.Root && s.rootGeneration == record.request.RootGeneration && s.gen == record.metadata.Generations && s.registry.View().Generation == record.metadata.Generations.Policy && s.inventory != nil && s.inventory.Snapshot().Complete && s.inventory.Snapshot().Revision == record.metadata.Generations.Inventory
 	if !current {
 		record.retired = true
 		record.state = admissionRetiring
+		if record.cancel != nil {
+			record.cancel()
+		}
 	}
 	if current && lookupErr == nil && prepared != nil {
 		class, protected := prepared.Class(), prepared.Class() != ClassOrdinary
@@ -289,11 +321,12 @@ func admissionDigest(metadata AdmissionMetadata) ([32]byte, error) {
 		Root           string
 		Target         string
 		RootGeneration uint64
+		Deadline       time.Time
 		Destination    string
 		Identity       FileIdentity
 		Class          ResourceClass
 		Generations    GenerationSet
-	}{metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Destination, metadata.Identity, metadata.Class, metadata.Generations})
+	}{metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Identity, metadata.Class, metadata.Generations})
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -309,13 +342,23 @@ func (s *fixtureSession) PrepareAdmitted(ctx context.Context, reference *Admissi
 	}
 	s.mu.Lock()
 	record := s.admissions[reference.id]
-	if record == nil || record.ref != reference || record.state != admissionPendingApproval || record.retired {
+	if record == nil || record.ref != reference || record.state != admissionPendingApproval || record.retired || record.lifetime == nil || record.lifetime.Err() != nil || time.Now().After(record.deadline) {
+		if record != nil && s.admissions[reference.id] == record {
+			record.retired = true
+			record.state = admissionRetiring
+			if record.cancel != nil {
+				record.cancel()
+			}
+		}
 		s.mu.Unlock()
 		return nil, ErrAdmissionStale
 	}
 	if hex.EncodeToString(record.metadata.Binding[:]) != admissionBinding || record.metadata.Generations.Policy != expectedPolicy || s.root != record.request.Root || s.rootGeneration != record.request.RootGeneration || s.gen != record.metadata.Generations || s.registry.View().Generation != expectedPolicy || s.inventory == nil || !s.inventory.Snapshot().Complete || s.inventory.Snapshot().Revision != record.metadata.Generations.Inventory {
 		record.retired = true
 		record.state = admissionRetiring
+		if record.cancel != nil {
+			record.cancel()
+		}
 		s.mu.Unlock()
 		_ = s.retireAdmission(ctx, record)
 		return nil, ErrAdmissionStale
@@ -328,6 +371,9 @@ func (s *fixtureSession) PrepareAdmitted(ctx context.Context, reference *Admissi
 	if err := s.broker.Revalidate(prepared); err != nil {
 		record.retired = true
 		record.state = admissionRetiring
+		if record.cancel != nil {
+			record.cancel()
+		}
 		s.mu.Unlock()
 		_ = s.retireAdmission(ctx, record)
 		return nil, err
@@ -389,6 +435,9 @@ func (s *fixtureSession) invalidateAdmissionsLocked() []*admissionRecord {
 	for _, record := range s.admissions {
 		record.retired = true
 		record.state = admissionRetiring
+		if record.cancel != nil {
+			record.cancel()
+		}
 		records = append(records, record)
 	}
 	return records
@@ -408,8 +457,15 @@ func (s *fixtureSession) retireAdmission(ctx context.Context, record *admissionR
 	if ctx == nil {
 		return context.Canceled
 	}
-	record.retireMu.Lock()
-	defer record.retireMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return errors.Join(ErrCleanupPending, err)
+	}
+	select {
+	case record.retireLock <- struct{}{}:
+	case <-ctx.Done():
+		return errors.Join(ErrCleanupPending, ctx.Err())
+	}
+	defer func() { <-record.retireLock }()
 	s.mu.Lock()
 	if s.admissions[record.ref.id] != record {
 		s.mu.Unlock()
@@ -429,6 +485,7 @@ func (s *fixtureSession) retireAdmission(ctx context.Context, record *admissionR
 	}
 	if record.prepared != nil {
 		if err := record.prepared.Close(); err != nil {
+			record.cancel()
 			s.mu.Lock()
 			record.closeErr = errors.Join(record.closeErr, err)
 			record.state = admissionCleanupPending
@@ -438,8 +495,13 @@ func (s *fixtureSession) retireAdmission(ctx context.Context, record *admissionR
 		}
 		record.prepared = nil
 	}
+	if record.cancel != nil {
+		record.cancel()
+	}
 	s.mu.Lock()
 	if s.admissions[record.ref.id] == record {
+		record.lifetime = nil
+		record.cancel = nil
 		delete(s.admissions, record.ref.id)
 	}
 	s.mu.Unlock()
@@ -463,8 +525,4 @@ func (s *fixtureSession) admissionState(reference *AdmissionReference) (string, 
 		return "", false
 	}
 	return fmt.Sprint(record.state), true
-}
-
-func (s *fixtureSession) admissionDeadline() time.Time {
-	return time.Now().Add(retainedAdmissionTimeout)
 }

@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 )
 
 const (
@@ -134,6 +135,7 @@ type AdmissionMetadata struct {
 	Root           string
 	Target         string
 	RootGeneration uint64
+	Deadline       time.Time
 	Destination    string
 	Identity       FileIdentity
 	Class          ResourceClass
@@ -145,7 +147,7 @@ type AdmissionMetadata struct {
 // ID is only a lookup key; coordinator membership and lifecycle state remain
 // the authority check.
 type AdmissionReference struct {
-	owner *fixtureSession
+	owner any
 	id    string
 }
 

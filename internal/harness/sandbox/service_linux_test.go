@@ -21,7 +21,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
@@ -276,6 +278,109 @@ func TestHostAdmissionRefusesRegisteredOwnerRoutesAndAliases(t *testing.T) {
 	if len(impl.session.AdmissionConversations()) != 0 {
 		t.Fatal("protected refusal retained an admission")
 	}
+}
+
+func TestHostAdmissionCancellationReturnsWhileLookupCleanupRemainsOwned(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.txt")
+	if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory := readbrokerstudy.NewChatCompositionInventory()
+	blocking := &serviceAdmissionBlockingBroker{base: readbrokerstudy.NewBroker(registry), entered: make(chan struct{}), release: make(chan struct{})}
+	launcher := inertWorkerLauncher{}
+	session, err := readbrokerstudy.NewHostCoordinator(registry, blocking, launcher, hostAuthorizer{}, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, requirement := range readbrokerstudy.ChatCompositionRequirements() {
+		if err := session.DeclareCoverageOwner(requirement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	impl := &linuxImplementation{
+		registry: registry, launcher: launcher, session: session, inventory: inventory,
+		revision: 1, owners: map[string]OwnerCoverage{
+			auth.SensitiveOwnerAuth:     {Owner: auth.SensitiveOwnerAuth, Class: auth.SensitiveClassAuth, State: OwnerRequired},
+			auth.SensitiveOwnerSettings: {Owner: auth.SensitiveOwnerSettings, Class: auth.SensitiveClassSettings, State: OwnerRequired},
+		}, blocked: make(map[string]string),
+	}
+	service := &Service{impl: impl}
+	defer func() {
+		blocking.unblock()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil && !errors.Is(err, readbrokerstudy.ErrCleanupPending) {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "cancel-fixture", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "cancel-fixture", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"` + target + `"}`)}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.AdmitFilesystemRead(ctx, invocation, "openai/gpt-test/profile")
+		result <- err
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("constrained lookup did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled admission error=%v, want context cancellation", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("service admission blocked in cleanup after caller cancellation")
+	}
+	if conversations := session.AdmissionConversations(); len(conversations) != 1 {
+		t.Fatalf("opening cleanup obligation was not retained: %v", conversations)
+	}
+	blocking.unblock()
+	deadline := time.Now().Add(time.Second)
+	for len(session.AdmissionConversations()) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if conversations := session.AdmissionConversations(); len(conversations) != 0 {
+		t.Fatalf("late lookup did not acknowledge and retire cleanup: %v", conversations)
+	}
+}
+
+type serviceAdmissionBlockingBroker struct {
+	base        readbrokerstudy.ReadBroker
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	releaseOnce sync.Once
+}
+
+func (b *serviceAdmissionBlockingBroker) PrepareRead(root, target string, generation readbrokerstudy.GenerationSet) (readbrokerstudy.PreparedRead, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return b.base.PrepareRead(root, target, generation)
+}
+
+func (b *serviceAdmissionBlockingBroker) Revalidate(prepared readbrokerstudy.PreparedRead) error {
+	return b.base.Revalidate(prepared)
+}
+
+func (b *serviceAdmissionBlockingBroker) unblock() {
+	b.releaseOnce.Do(func() { close(b.release) })
 }
 
 func TestProtectedOwnerTransitionRetiresPendingAdmissionBeforeReturning(t *testing.T) {

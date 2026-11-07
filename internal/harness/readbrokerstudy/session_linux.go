@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -32,24 +33,25 @@ var (
 )
 
 type fixtureSession struct {
-	mu             sync.Mutex
-	registry       PolicyRegistry
-	inventory      *CoverageInventory
-	broker         ReadBroker
-	launcher       WorkerLauncher
-	authorizer     FixtureAuthorizer
-	root           string
-	rootGeneration uint64
-	serviceID      string
-	gen            GenerationSet
-	closed         bool
-	cleanupBlocked bool
-	claimed        map[string]struct{}
-	active         map[string]*readOperation
-	admissions     map[string]*admissionRecord
-	hook           CheckpointHook
-	published      [][]byte
-	evidence       []ReadEvidence
+	mu               sync.Mutex
+	registry         PolicyRegistry
+	inventory        *CoverageInventory
+	broker           ReadBroker
+	launcher         WorkerLauncher
+	authorizer       FixtureAuthorizer
+	root             string
+	rootGeneration   uint64
+	serviceID        string
+	admissionTimeout time.Duration
+	gen              GenerationSet
+	closed           bool
+	cleanupBlocked   bool
+	claimed          map[string]struct{}
+	active           map[string]*readOperation
+	admissions       map[string]*admissionRecord
+	hook             CheckpointHook
+	published        [][]byte
+	evidence         []ReadEvidence
 }
 
 type readOperation struct {
@@ -151,7 +153,7 @@ func newSession(registry PolicyRegistry, broker ReadBroker, launcher WorkerLaunc
 	}
 	return &fixtureSession{
 		registry: registry, inventory: coverage, broker: broker, launcher: launcher, authorizer: authorizer,
-		gen: generation, serviceID: serviceID,
+		gen: generation, serviceID: serviceID, admissionTimeout: retainedAdmissionTimeout,
 		claimed: make(map[string]struct{}), active: make(map[string]*readOperation), admissions: make(map[string]*admissionRecord),
 	}, nil
 }
