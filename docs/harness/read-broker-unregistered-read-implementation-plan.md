@@ -1,12 +1,13 @@
 # Exact-file read implementation plan
 
-**Status: staged implementation plan; disclosure policy accepted; Stages 1–2 are merged and Stage 3 retained admission is implemented on a review branch. Reads remain disabled.**
+**Status: staged implementation plan; disclosure policy accepted; Stages 1–3 are merged, and Stage 4 retained-worker execution/private capture is implemented on this review branch. Reads remain disabled.**
 This is a new source-grounded plan, not exact recovery or verification of the
 missing local handoff. The maintainer later accepted all six clauses in the
 [explicit acceptance comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902)
 for staged implementation. That supersedes the historical pending-policy
-wording below, but does not mean reads are enabled. Stages 1 and 2 are merged;
-this branch implements Stage 3 without changing tool registration.
+wording below, but does not mean reads are enabled. Stages 1–3 are merged;
+this branch implements Stage 4 without changing tool registration or provider
+dispatch.
 
 ## Baseline, durable context and evidence limits
 
@@ -389,8 +390,8 @@ registration requires a distinct enablement decision after all applicable gates.
 | 0: explicit complete policy decision | Record accepted clauses in issue/policy/status documents. | **Complete:** all six clauses were explicitly accepted in the [issue comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902). This resolves policy only. |
 | 1: root state/UI/lifecycle only | UI Client/Snapshot and tview command; Chat root state, Select/reset/CloseContext; detached service status. Explicit absolute select/status/clear, no default/persistence/grant. | **Merged in PR #246:** Chat works with no root/backend; paths with spaces, invalid/relative inputs, canonical status, replace/clear generations, fake invalidation notifications; confirmed reset/provider change/shutdown clears even with zero turns, canceled reset preserves. No target lookup or retained FD. |
 | 2: after 0–1, checked authority | Permission Coordinator/store transactions; runtime canonical full-B binding, private ledger, mutation bridge and revoke/clear lifecycle. | **Merged in PR #247:** revision-checked exact approval/once-consumption transitions, full binding, private authority ledger and lifecycle invalidation. No filesystem tool enabled. |
-| 3: after 1–2, retained admission/owners | Runtime pre-approval seam; sandbox service; broker and HostCoordinator admission registry; real auth/settings owner hooks. | **Implemented on a review branch:** one bounded exact-file lookup; host-only opaque retained reference; same-object preparation; Stage 2 checked approval and once consumption exercised then immediately retired without dispatch; root and owner invalidation include opening/pending/prepared admissions; late lookup remains owned and closes; auth/settings route and replacement hooks drain before sensitive write. Tests cover these properties. Historical study path remains separate. `read_file` remains unregistered, and no worker/read/result/provider path exists. |
-| 4: after 2–3, fixed-worker capture | Authorized-execute interface, fixed worker bootstrap/probes/release, private capture and resource retirement. | One claim/release, bounded result and truthful outcomes, join/closure before descriptor-free staging, failed cleanup retained/retried. Bytes remain private; no provider or enablement claim. |
+| 3: after 1–2, retained admission/owners | Runtime pre-approval seam; sandbox service; broker and HostCoordinator admission registry; real auth/settings owner hooks. | **Merged in PR #248:** one bounded exact-file lookup; host-only opaque retained reference; same-object preparation; checked approval and once consumption; root and owner invalidation include opening/pending/prepared admissions; late lookup remains owned and closes; auth/settings route and replacement hooks drain before sensitive write. `read_file` remains unregistered. |
+| 4: after 2–3, fixed-worker capture | Authorized-execute seam; fixed worker bootstrap/probes/release; private capture and resource retirement. | **Implemented on this review branch:** actual retained-admission membership is checked, the runtime-issued ref is claimed once, the retained FD is sent only after trusted startup/probes, the runtime authority gate is ordered with service/root/owner/session locks at transfer and read release, and bounded bytes are staged only after worker join plus duplicate/original capability retirement. Captures are opaque, bounded, in memory, expire after five minutes, and scrub on discard/invalidation. Fake-worker integration and held-capability revocation tests pass. Native Bubblewrap evidence is unavailable because this host's `/usr/bin/bwrap` is owned by UID 65534 and the required trust gate refuses it. No provider or tool-dispatch path exists. |
 | 5: after 2–4, batch/provider composition | executeOne/runToolLoop/appendToolBatch, Chat.Send history ownership and ready dispatcher; capturing fake provider. | Both invalidation windows, reverse ordering, positive multi-call/replay scope, protocol-safe exits, retired derived/native state and late-response rejection. No live inference; read_file unregistered. |
 | 6: after implementation review, exact-profile native study, then separate enablement review | New native runtime/owner/worker/fake-provider composition with exact source/overlay/backend/mode provenance. | Native effects and cleanup demonstrate changed profile; missing/untrusted/unsupported cases unavailable, never fallback. Historical #243 evidence is not substituted. Tool registration, supported routes/platforms and disclosure copy reviewed separately. |
 
@@ -399,6 +400,52 @@ consumers. They cannot prove future admission drain, worker cleanup or provider
 withholding; Stages 3–6 supply that evidence. Root alone is memory-only; existing
 auth/UI-settings persistence remains. Backend status is independent of access,
 coverage and approval. No caller can mark coverage complete by selecting a root.
+
+### Stage 4 ownership and synchronization
+
+```text
+Chat Stage 4 seam
+  -> runtime retains checked approval transitions + one opaque execution ref
+  -> Service verifies its exact admission/preparation wrapper and owner/root state
+  -> coordinator verifies admission-map pointer, service, identity and generations
+  -> runtime Claim (one attempt; no grant restoration)
+  -> fixed Bubblewrap worker starts, authenticates, installs seccomp and probes
+  -> runtime -> Service root lock -> implementation owner lock -> session lock
+       -> transfer read-only descriptor / release held read
+  -> worker returns bounded response; coordinator waits/reaps worker
+  -> close duplicate descriptor, retained target and parent capabilities
+  -> runtime -> Service -> coordinator freshness gate stages descriptor-free bytes
+  -> opaque private capture; explicit discard, invalidation or five-minute expiry
+```
+
+The lock order is runtime `readAuthorityMu` → `Service.rootMu` → Linux
+implementation `mu` → coordinator `mu` → admission record. These locks cover
+only current-state validation, bounded descriptor transfer/release, or bounded
+private staging. User approval, Bubblewrap startup/probes, socket waits, worker
+reads, joins and cleanup waits occur outside them. Owner/root code latches
+pending state before requesting runtime invalidation; a release already ordered
+first is then terminated/joined before protected owner writes may continue.
+
+Claim is attempt consumption, not freshness. `WithCurrent` verifies the actual
+private runtime-ledger member, claimed state, exact invocation/admission
+bindings, expected transition chain, runtime epoch and current grant revision
+while serializing each final host gate. The service also validates its actual
+admission/preparation records; caller-filled IDs or revisions are insufficient.
+The host calls the existing retained-object executor, never `HostCoordinator.Read`:
+it does not reopen the path or consult a second authorizer. A claimed attempt is
+not restored after startup failure, cancellation, uncertain transfer or cleanup
+failure. Provider dispatch remains outside this stage.
+
+Successful capture requires an actual worker `Wait`/join, closed duplicate
+target descriptor, and successful retirement of the retained target and parent
+capabilities. Any uncertainty suppresses bytes and leaves coordinator cleanup
+ownership reachable. Runtime storage is limited to eight captures and 1 MiB,
+with the worker's 64 KiB per-read ceiling and a five-minute timer. Captured
+bytes never enter `tools.Result`, provider messages, activity, snapshots, logs,
+or diagnostics. With no Stage 5 consumer, tests/handoff must discard captures;
+reset, grant invalidation, cancellation, shutdown and expiry scrub them. A read
+already performed is not rolled back, and the bounded worker profile does not
+prove all namespace descendants or host-wide cleanup.
 
 The accepted B policy requires reconciling unknown-file applicability with
 trusted composition declarations: unknown content can include unregistered

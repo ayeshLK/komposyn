@@ -128,6 +128,8 @@ type toolRuntime struct {
 	readAuthorityMu          sync.Mutex
 	readAuthorityEpoch       uint64
 	readAuthorities          map[string]readAuthorityRecord
+	readInvocationClaims     map[string]struct{}
+	privateReadCaptures      map[string]privateReadCaptureRecord
 	readGrantRevision        uint64
 	lastReadIssuanceRevision uint64
 	cleanupMu                sync.Mutex
@@ -139,6 +141,7 @@ type toolRuntime struct {
 	enforcer                 ToolEnforcer
 	preparer                 ToolPreparer
 	readAdmission            FilesystemReadAdmissionHost
+	readExecutionInvalidator FilesystemReadExecutionInvalidator
 	rootHost                 FilesystemRootHost
 	approval                 ToolApprovalInteraction
 	clarification            ToolClarificationInteraction
@@ -326,10 +329,13 @@ func newToolRuntime(config ToolRuntimeConfig) *toolRuntime {
 	runtime := &toolRuntime{
 		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer, readAdmission: config.ReadAdmission, rootHost: config.RootHost,
 		approval: config.Approval, clarification: config.Clarification, grants: config.Grants, plans: config.Plans, evaluator: evaluator,
-		coordinator: permissions.NewCoordinator(evaluator, config.Grants), readAuthorities: make(map[string]readAuthorityRecord),
+		coordinator: permissions.NewCoordinator(evaluator, config.Grants), readAuthorities: make(map[string]readAuthorityRecord), readInvocationClaims: make(map[string]struct{}), privateReadCaptures: make(map[string]privateReadCaptureRecord),
 	}
 	if invalidator, ok := config.ReadAdmission.(FilesystemReadAdmissionInvalidator); ok {
 		invalidator.SetFilesystemReadInvalidator(runtime.invalidateConversation)
+	}
+	if invalidator, ok := config.ReadAdmission.(FilesystemReadExecutionInvalidator); ok {
+		runtime.readExecutionInvalidator = invalidator
 	}
 	return runtime
 }

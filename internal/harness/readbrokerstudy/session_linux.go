@@ -56,6 +56,8 @@ type fixtureSession struct {
 
 type readOperation struct {
 	id                string
+	conversationID    string
+	admission         *admissionRecord
 	gen               GenerationSet
 	state             OperationState
 	worker            SandboxWorker
@@ -533,6 +535,13 @@ func (s *fixtureSession) Read(ctx context.Context, root, target, invocationID st
 }
 
 func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepared PreparedRead) WorkerResult {
+	return s.runWorkerMode(ctx, op, prepared, nil, true)
+}
+
+// runWorkerMode is shared by the historical study read and Stage 4 retained
+// execution. The latter supplies a runtime gate and never publishes to the
+// study sink.
+func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, prepared PreparedRead, authority ReadExecutionGate, publish bool) (result WorkerResult) {
 	worker, err := s.launcher.Start(ctx)
 	if err != nil {
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: "sandbox setup refused before capability handoff: " + boundedText(err.Error(), 768)}
@@ -579,6 +588,9 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	op.state = StateReady
 	op.evidence.WorkerReady = true
 	op.evidence.Outcome = ReadNotExecuted
+	if op.admission != nil && s.admissions[op.admission.ref.id] == op.admission {
+		op.admission.state = admissionReady
+	}
 	s.mu.Unlock()
 
 	if err := runCheckpoint(s.checkpointHook(), CheckpointBeforeHandoff); err != nil {
@@ -612,32 +624,48 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 		}
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("read capability could not be duplicated", cleanup)}
 	}
-	defer capability.Close()
+	capabilityClosed := false
+	defer func() {
+		if !capabilityClosed {
+			if closeErr := capability.Close(); closeErr != nil {
+				result = WorkerResult{Outcome: ReadUnknown, Detail: "read capability cleanup could not be confirmed"}
+			}
+		}
+	}()
+	withCurrent := func(operation func() error) error {
+		check := func() error {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if !s.currentLocked(op) || op.revoked {
+				return ErrPolicyChanged
+			}
+			return operation()
+		}
+		if authority != nil {
+			return authority.WithCurrent(check)
+		}
+		return check()
+	}
 
 	// This short lock serializes permission revision checks with the actual FD
 	// handoff. It does not cover filesystem namespace changes by independent
 	// same-user processes; Revalidate is a bounded observation, not a lock.
-	s.mu.Lock()
-	if !s.currentLocked(op) || op.revoked {
-		s.mu.Unlock()
+	transferErr := withCurrent(func() error {
+		if err := worker.TransferCapability(ctx, capability, prepared.Identity()); err != nil {
+			return err
+		}
+		op.released = true
+		op.evidence.CapabilitySent = true
+		op.evidence.CapabilityIdentity = prepared.Identity()
+		return nil
+	})
+	if transferErr != nil {
 		cleanup := s.terminateAndWait(op, worker)
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("revoked before handoff; worker cleanup is incomplete", cleanup)}
 		}
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("revoked before read capability handoff", cleanup)}
 	}
-	if err := worker.TransferCapability(ctx, capability, prepared.Identity()); err != nil {
-		s.mu.Unlock()
-		cleanup := s.terminateAndWait(op, worker)
-		if !cleanup.cleanupConfirmed() {
-			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("capability handoff failed and worker cleanup is incomplete", cleanup)}
-		}
-		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("capability handoff was refused", cleanup)}
-	}
-	op.released = true
-	op.evidence.CapabilitySent = true
-	op.evidence.CapabilityIdentity = prepared.Identity()
-	s.mu.Unlock()
 	if heldWorker, ok := worker.(HeldCapabilityWorker); ok {
 		if err := heldWorker.AwaitCapabilityHeld(ctx); err != nil {
 			cleanup := s.terminateAndWait(op, worker)
@@ -649,6 +677,9 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 		s.mu.Lock()
 		op.evidence.CapabilityHeld = true
 		op.state = StateCapabilityHeld
+		if op.admission != nil && s.admissions[op.admission.ref.id] == op.admission {
+			op.admission.state = admissionCapabilityHeld
+		}
 		invalid := !s.currentLocked(op) || op.revoked
 		s.mu.Unlock()
 		if invalid {
@@ -669,16 +700,12 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 		// registration/revocation. If invalidation wins, the worker is killed
 		// while still at the hold gate. If release wins, invalidation must join
 		// the worker before any sensitive owner write.
-		s.mu.Lock()
-		invalid = !s.currentLocked(op) || op.revoked
-		if !invalid {
-			if err := heldWorker.ReleaseHeldRead(ctx); err != nil {
-				s.mu.Unlock()
-				cleanup := s.terminateAndWait(op, worker)
-				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("held read release outcome is unknown", cleanup)}
-			}
+		releaseErr := withCurrent(func() error { return heldWorker.ReleaseHeldRead(ctx) })
+		invalid = errors.Is(releaseErr, ErrPolicyChanged)
+		if releaseErr != nil && !invalid {
+			cleanup := s.terminateAndWait(op, worker)
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("held read release outcome is unknown", cleanup)}
 		}
-		s.mu.Unlock()
 		if invalid {
 			cleanup := s.terminateAndWait(op, worker)
 			if !cleanup.cleanupConfirmed() {
@@ -695,6 +722,9 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	s.mu.Lock()
 	op.state = StateRunning
 	op.evidence.ReadStarted = true
+	if op.admission != nil && s.admissions[op.admission.ref.id] == op.admission {
+		op.admission.state = admissionRunning
+	}
 	stale := !s.currentLocked(op) || op.revoked
 	s.mu.Unlock()
 	if stale {
@@ -706,6 +736,7 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	}
 
 	workerResult, readErr := worker.ReadResult(ctx)
+	defer func() { clear(workerResult.Bytes) }()
 	wait := s.waitWorker(op, worker)
 	if readErr != nil || wait.ExitErr != nil || !wait.Joined {
 		return WorkerResult{Outcome: ReadUnknown, Detail: "worker result or cleanup could not be confirmed"}
@@ -728,6 +759,22 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 	}
 	if err := runCheckpoint(s.checkpointHook(), CheckpointBeforePublish); err != nil {
 		return WorkerResult{Outcome: ReadCancelled, Detail: "captured bytes discarded before publication"}
+	}
+	if err := capability.Close(); err != nil {
+		capabilityClosed = true
+		return WorkerResult{Outcome: ReadUnknown, Detail: "read capability cleanup could not be confirmed"}
+	}
+	capabilityClosed = true
+	if !publish {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.currentLocked(op) || op.revoked {
+			return WorkerResult{Outcome: ReadCancelled, Detail: "stale captured bytes suppressed before private staging"}
+		}
+		if op.admission != nil && s.admissions[op.admission.ref.id] == op.admission {
+			op.admission.state = admissionCaptured
+		}
+		return WorkerResult{Outcome: ReadSucceeded, Bytes: append([]byte(nil), workerResult.Bytes...), Detail: workerResult.Detail}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

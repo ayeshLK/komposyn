@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	"github.com/ayeshLK/komposyn/plugins/tools"
@@ -26,6 +27,7 @@ import (
 var errReadAuthorityInvalid = errors.New("read execution authority is invalid or stale")
 
 const maxReadAuthorities = MaxToolInvocationsPerTurn
+const maxReadInvocationClaims = 256
 
 // ReadExecutionReference is an opaque, runtime-issued capability. Its fields
 // are deliberately private; copying the value does not create another claim.
@@ -44,16 +46,52 @@ type ReadExecutionValidator interface {
 }
 
 type readAuthorityRecord struct {
-	conversationID string
-	turnID         string
-	callID         string
-	authorization  string
-	admission      string
-	grantRevision  uint64
-	epoch          uint64
-	claimed        bool
-	transitions    []readGrantTransition
+	conversationID  string
+	turnID          string
+	callID          string
+	authorization   string
+	admission       string
+	grantRevision   uint64
+	epoch           uint64
+	claimed         bool
+	attemptFinished bool
+	captureID       string
+	transitions     []readGrantTransition
 }
+
+// PrivateReadCapture is an opaque handle to bounded in-memory bytes. It has
+// no conversion to a tool/provider result; Stage 5 owns any future disclosure.
+type PrivateReadCapture struct {
+	owner *toolRuntime
+	id    string
+}
+
+type privateReadCaptureRecord struct {
+	conversationID      string
+	turnID              string
+	callID              string
+	serviceID           string
+	admission           string
+	authorization       string
+	identity            string
+	rootGeneration      uint64
+	policyRevision      uint64
+	coverage            uint64
+	destination         string
+	outcome             tools.Outcome
+	readStarted         bool
+	workerJoined        bool
+	capabilitiesRetired bool
+	bytes               []byte
+	expires             time.Time
+	timer               *time.Timer
+}
+
+const (
+	maxPrivateReadCaptures = MaxToolInvocationsPerTurn
+	maxPrivateReadBytes    = 1 << 20
+	privateReadLifetime    = 5 * time.Minute
+)
 
 type readGrantTransition struct {
 	before  uint64
@@ -86,12 +124,16 @@ func (r *toolRuntime) issueReadExecutionReferenceLocked(invocation tools.Invocat
 		return nil, err
 	}
 	id := hex.EncodeToString(random[:])
-	if expectedEpoch != r.readAuthorityEpoch || len(r.readAuthorities) >= maxReadAuthorities || consumption.AfterRevision <= r.lastReadIssuanceRevision {
+	invocationKey := invocation.ConversationID + "\x00" + invocation.TurnID + "\x00" + invocation.ProviderCallID
+	if expectedEpoch != r.readAuthorityEpoch || len(r.readAuthorities) >= maxReadAuthorities || len(r.readInvocationClaims) >= maxReadInvocationClaims || consumption.AfterRevision <= r.lastReadIssuanceRevision {
+		return nil, errReadAuthorityInvalid
+	}
+	if _, exists := r.readInvocationClaims[invocationKey]; exists {
 		return nil, errReadAuthorityInvalid
 	}
 	currentRevision, _ := r.grants.Snapshot(invocation.ConversationID)
 	if currentRevision != consumption.AfterRevision || r.readGrantRevision != 0 && r.readGrantRevision != consumption.AfterRevision {
-		clear(r.readAuthorities)
+		r.clearReadAuthoritiesLocked()
 		r.readAuthorityEpoch++
 		return nil, errReadAuthorityInvalid
 	}
@@ -110,6 +152,7 @@ func (r *toolRuntime) issueReadExecutionReferenceLocked(invocation tools.Invocat
 		},
 	}
 	r.readAuthorities[id] = record
+	r.readInvocationClaims[invocationKey] = struct{}{}
 	r.lastReadIssuanceRevision = consumption.AfterRevision
 	return &ReadExecutionReference{owner: r, id: id}, nil
 }
@@ -129,7 +172,7 @@ func (r *toolRuntime) ClaimReadExecution(reference *ReadExecutionReference, auth
 	}
 	currentRevision, _ := r.grants.Snapshot(record.conversationID)
 	if currentRevision != record.grantRevision || currentRevision != r.readGrantRevision {
-		clear(r.readAuthorities)
+		r.clearReadAuthoritiesLocked()
 		r.readAuthorityEpoch++
 		return errReadAuthorityInvalid
 	}
@@ -141,16 +184,146 @@ func (r *toolRuntime) ClaimReadExecution(reference *ReadExecutionReference, auth
 	return nil
 }
 
+// withClaimedReadCurrent serializes the bounded host release/staging callback
+// against runtime grant changes. It does not wait for UI, worker I/O, or join.
+func (r *toolRuntime) withClaimedReadCurrent(reference *ReadExecutionReference, authorizationBinding, admissionBinding string, operation func() error) error {
+	if r == nil || reference == nil || reference.owner != r || reference.id == "" || operation == nil {
+		return errReadAuthorityInvalid
+	}
+	r.readAuthorityMu.Lock()
+	defer r.readAuthorityMu.Unlock()
+	record, ok := r.readAuthorities[reference.id]
+	if !ok || !record.claimed || record.attemptFinished || record.captureID != "" || record.epoch != r.readAuthorityEpoch || record.authorization != authorizationBinding || record.admission != admissionBinding || !validReadTransitionChain(record) {
+		return errReadAuthorityInvalid
+	}
+	currentRevision, _ := r.grants.Snapshot(record.conversationID)
+	if currentRevision != record.grantRevision || currentRevision != r.readGrantRevision {
+		r.invalidateReadAuthorityLocked()
+		return errReadAuthorityInvalid
+	}
+	return operation()
+}
+
+func (r *toolRuntime) stagePrivateReadCaptureLocked(reference *ReadExecutionReference, admission FilesystemReadAdmission, result FilesystemReadExecutionResult) (*PrivateReadCapture, error) {
+	if r == nil || reference == nil || reference.owner != r || reference.id == "" || result.Outcome != tools.OutcomeSucceeded || !result.WorkerJoined || !result.CapabilitiesRetired || !result.ReadStarted || len(result.Bytes) > 64<<10 {
+		return nil, errReadAuthorityInvalid
+	}
+	record, ok := r.readAuthorities[reference.id]
+	if !ok || !record.claimed || record.attemptFinished || record.captureID != "" || record.conversationID != admission.ConversationID || record.turnID != admission.TurnID || record.callID != admission.CallID || record.admission != admission.AdmissionBinding || record.authorization != result.AuthorizationBinding || result.ServiceID != admission.ServiceID || result.AdmissionBinding != admission.AdmissionBinding || result.Identity != admission.Identity || result.RootGeneration != admission.RootGeneration || result.PolicyRevision != admission.PolicyRevision || result.CoverageRevision != admission.CoverageRevision || result.Destination != admission.Destination {
+		return nil, errReadAuthorityInvalid
+	}
+	r.expirePrivateReadCapturesLocked(time.Now())
+	if len(r.privateReadCaptures) >= maxPrivateReadCaptures || privateReadCaptureBytes(r.privateReadCaptures)+len(result.Bytes) > maxPrivateReadBytes {
+		return nil, errors.New("private read capture budget exhausted")
+	}
+	id, err := newReadAuthorityID()
+	if err != nil {
+		return nil, err
+	}
+	capture := privateReadCaptureRecord{
+		conversationID: admission.ConversationID, turnID: admission.TurnID, callID: admission.CallID,
+		serviceID: admission.ServiceID, admission: admission.AdmissionBinding,
+		authorization: result.AuthorizationBinding, identity: admission.Identity,
+		rootGeneration: admission.RootGeneration, policyRevision: admission.PolicyRevision,
+		coverage: admission.CoverageRevision, destination: admission.Destination,
+		outcome: result.Outcome, readStarted: result.ReadStarted,
+		workerJoined: result.WorkerJoined, capabilitiesRetired: result.CapabilitiesRetired,
+		bytes: append([]byte(nil), result.Bytes...), expires: time.Now().Add(privateReadLifetime),
+	}
+	capture.timer = time.AfterFunc(privateReadLifetime, func() { r.expirePrivateReadCapture(id) })
+	r.privateReadCaptures[id] = capture
+	record.captureID = id
+	record.attemptFinished = true
+	r.readAuthorities[reference.id] = record
+	return &PrivateReadCapture{owner: r, id: id}, nil
+}
+
+func privateReadCaptureBytes(records map[string]privateReadCaptureRecord) int {
+	total := 0
+	for _, record := range records {
+		total += len(record.bytes)
+	}
+	return total
+}
+
+func newReadAuthorityID() (string, error) {
+	var random [24]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(random[:]), nil
+}
+
+func (r *toolRuntime) expirePrivateReadCapturesLocked(now time.Time) {
+	for id, record := range r.privateReadCaptures {
+		if !now.Before(record.expires) {
+			if record.timer != nil {
+				record.timer.Stop()
+			}
+			clear(record.bytes)
+			delete(r.privateReadCaptures, id)
+			for authorityID, authority := range r.readAuthorities {
+				if authority.captureID == id {
+					delete(r.readAuthorities, authorityID)
+				}
+			}
+		}
+	}
+}
+
+func (r *toolRuntime) expirePrivateReadCapture(id string) {
+	r.readAuthorityMu.Lock()
+	defer r.readAuthorityMu.Unlock()
+	record, ok := r.privateReadCaptures[id]
+	if !ok || time.Now().Before(record.expires) {
+		return
+	}
+	clear(record.bytes)
+	delete(r.privateReadCaptures, id)
+	for authorityID, authority := range r.readAuthorities {
+		if authority.captureID == id {
+			delete(r.readAuthorities, authorityID)
+		}
+	}
+}
+
+// discardPrivateReadCapture scrubs the private payload and retires its
+// continuing authority provenance. It is currently used by Stage 4 tests and
+// failure/lifecycle paths; Stage 5 will own publication eligibility.
+func (r *toolRuntime) discardPrivateReadCapture(capture *PrivateReadCapture) error {
+	if r == nil || capture == nil || capture.owner != r || capture.id == "" {
+		return errReadAuthorityInvalid
+	}
+	r.readAuthorityMu.Lock()
+	defer r.readAuthorityMu.Unlock()
+	record, ok := r.privateReadCaptures[capture.id]
+	if !ok {
+		return errReadAuthorityInvalid
+	}
+	clear(record.bytes)
+	if record.timer != nil {
+		record.timer.Stop()
+	}
+	delete(r.privateReadCaptures, capture.id)
+	for id, authority := range r.readAuthorities {
+		if authority.captureID == capture.id {
+			delete(r.readAuthorities, id)
+		}
+	}
+	return nil
+}
+
 func (r *toolRuntime) RevokeReadExecution(reference *ReadExecutionReference) error {
 	if r == nil || reference == nil || reference.owner != r || reference.id == "" {
 		return errReadAuthorityInvalid
 	}
 	r.readAuthorityMu.Lock()
 	defer r.readAuthorityMu.Unlock()
-	_, ok := r.readAuthorities[reference.id]
+	record, ok := r.readAuthorities[reference.id]
 	if !ok {
 		return errReadAuthorityInvalid
 	}
+	r.discardAuthorityCaptureLocked(record)
 	delete(r.readAuthorities, reference.id)
 	return nil
 }
@@ -170,6 +343,12 @@ func (r *toolRuntime) finishReadExecutionLocked(reference *ReadExecutionReferenc
 	}
 	if _, ok := r.readAuthorities[reference.id]; !ok {
 		return errReadAuthorityInvalid
+	}
+	record := r.readAuthorities[reference.id]
+	if record.captureID != "" {
+		record.attemptFinished = true
+		r.readAuthorities[reference.id] = record
+		return nil
 	}
 	delete(r.readAuthorities, reference.id)
 	return nil
@@ -266,7 +445,7 @@ func (r *toolRuntime) advanceReadAuthorityRevisionLocked(transition permissions.
 		return true
 	}
 	if transition.BeforeRevision != r.readGrantRevision || transition.AfterRevision != transition.BeforeRevision+1 {
-		clear(r.readAuthorities)
+		r.clearReadAuthoritiesLocked()
 		r.readAuthorityEpoch++
 		r.readGrantRevision = transition.AfterRevision
 		return false
@@ -274,7 +453,7 @@ func (r *toolRuntime) advanceReadAuthorityRevisionLocked(transition permissions.
 	r.readGrantRevision = transition.AfterRevision
 	for id, record := range r.readAuthorities {
 		if len(record.transitions) >= maxReadAuthorities*2 {
-			clear(r.readAuthorities)
+			r.clearReadAuthoritiesLocked()
 			r.readAuthorityEpoch++
 			return false
 		}
@@ -364,7 +543,7 @@ func (r *toolRuntime) checkReadAuthorityRevision(revision uint64) bool {
 		return true
 	}
 	if revision != r.readGrantRevision {
-		clear(r.readAuthorities)
+		r.clearReadAuthoritiesLocked()
 		r.readAuthorityEpoch++
 		r.readGrantRevision = revision
 		return false
@@ -382,9 +561,36 @@ func (r *toolRuntime) invalidateReadAuthority() {
 }
 
 func (r *toolRuntime) invalidateReadAuthorityLocked() {
-	clear(r.readAuthorities)
+	r.clearReadAuthoritiesLocked()
 	r.readAuthorityEpoch++
 	r.readGrantRevision = 0
+}
+
+func (r *toolRuntime) clearReadAuthoritiesLocked() {
+	for _, authority := range r.readAuthorities {
+		r.discardAuthorityCaptureLocked(authority)
+	}
+	clear(r.readAuthorities)
+	for id, capture := range r.privateReadCaptures {
+		clear(capture.bytes)
+		if capture.timer != nil {
+			capture.timer.Stop()
+		}
+		delete(r.privateReadCaptures, id)
+	}
+}
+
+func (r *toolRuntime) discardAuthorityCaptureLocked(record readAuthorityRecord) {
+	if record.captureID == "" {
+		return
+	}
+	if capture, ok := r.privateReadCaptures[record.captureID]; ok {
+		clear(capture.bytes)
+		if capture.timer != nil {
+			capture.timer.Stop()
+		}
+		delete(r.privateReadCaptures, record.captureID)
+	}
 }
 
 func (r *toolRuntime) revokeConversationGrant(conversationID, grantID string) error {
@@ -396,18 +602,20 @@ func (r *toolRuntime) revokeConversationGrant(conversationID, grantID string) er
 	r.invalidateReadAuthorityLocked()
 	r.coordinator.CancelConversation(conversationID)
 	r.readAuthorityMu.Unlock()
+	cleanupErr := r.invalidateHostReadExecutions(conversationID)
 	r.invalidateConversationUI(conversationID)
-	return nil
+	return cleanupErr
 }
 
-func (r *toolRuntime) clearConversationGrants(conversationID string) int {
+func (r *toolRuntime) clearConversationGrants(conversationID string) (int, error) {
 	r.readAuthorityMu.Lock()
 	removed := r.grants.ClearCount(conversationID)
 	r.invalidateReadAuthorityLocked()
 	r.coordinator.CancelConversation(conversationID)
 	r.readAuthorityMu.Unlock()
+	cleanupErr := r.invalidateHostReadExecutions(conversationID)
 	r.invalidateConversationUI(conversationID)
-	return removed
+	return removed, cleanupErr
 }
 
 // clearConversationGrantsLocked is used while Chat owns its mutex; it omits
@@ -425,7 +633,15 @@ func (r *toolRuntime) invalidateConversation(conversationID string) {
 	r.invalidateReadAuthorityLocked()
 	r.coordinator.CancelConversation(conversationID)
 	r.readAuthorityMu.Unlock()
+	_ = r.invalidateHostReadExecutions(conversationID)
 	r.invalidateConversationUI(conversationID)
+}
+
+func (r *toolRuntime) invalidateHostReadExecutions(conversationID string) error {
+	if r == nil || r.readExecutionInvalidator == nil || conversationID == "" {
+		return nil
+	}
+	return r.readExecutionInvalidator.InvalidateFilesystemReadExecutions(conversationID)
 }
 
 func (r *toolRuntime) invalidateConversationUI(conversationID string) {
@@ -447,7 +663,17 @@ func (r *toolRuntime) retireReadAuthorities(conversationID string) {
 	r.readAuthorityMu.Lock()
 	for id, record := range r.readAuthorities {
 		if record.conversationID == conversationID {
+			r.discardAuthorityCaptureLocked(record)
 			delete(r.readAuthorities, id)
+		}
+	}
+	for id, capture := range r.privateReadCaptures {
+		if capture.conversationID == conversationID {
+			clear(capture.bytes)
+			if capture.timer != nil {
+				capture.timer.Stop()
+			}
+			delete(r.privateReadCaptures, id)
 		}
 	}
 	r.readAuthorityMu.Unlock()

@@ -159,6 +159,32 @@ type AdmittedPreparation interface {
 	Close(context.Context) error
 }
 
+// ReadExecutionGate is supplied only by the trusted in-process runtime. It
+// never crosses the worker protocol. WithCurrent holds the runtime authority
+// gate while the callback performs one short host validation/release step.
+type ReadExecutionGate interface {
+	Claim() error
+	WithCurrent(func() error) error
+}
+
+// RetainedReadExecutor runs the already-opened object without reopening its
+// pathname or consulting a second authorizer. capture is invoked only after
+// the worker has joined and all operation-owned descriptors have been closed.
+type RetainedReadExecutor interface {
+	ExecuteAdmitted(context.Context, AdmittedPreparation, ReadExecutionGate, func(AdmissionMetadata, ReadCompletion) error) error
+}
+
+type ConversationReadInvalidator interface {
+	InvalidateConversationReads(context.Context, string) error
+}
+
+type ReadCompletion struct {
+	Result              WorkerResult
+	WorkerJoined        bool
+	CapabilitiesRetired bool
+	ReadStarted         bool
+}
+
 type ReadBroker interface {
 	PrepareRead(root, target string, generation GenerationSet) (PreparedRead, error)
 	Revalidate(PreparedRead) error
@@ -292,9 +318,10 @@ type FixtureSession interface {
 }
 
 type WorkerResult struct {
-	Outcome ReadOutcome `json:"outcome"`
-	Bytes   []byte      `json:"bytes,omitempty"`
-	Detail  string      `json:"detail,omitempty"`
+	Outcome   ReadOutcome `json:"outcome"`
+	Bytes     []byte      `json:"bytes,omitempty"`
+	Detail    string      `json:"detail,omitempty"`
+	Truncated bool        `json:"truncated,omitempty"`
 }
 
 type WorkerProbe struct {

@@ -24,7 +24,9 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
@@ -47,6 +49,7 @@ type linuxImplementation struct {
 	blocked         map[string]string
 	readInvalidator func(string)
 	closed          bool
+	pendingOwners   atomic.Int32
 }
 
 func newHostImplementation(bubblewrapPath string) (implementation, error) {
@@ -189,6 +192,9 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 		s.mu.Unlock()
 		return errors.New("owner state changed before protected registration")
 	}
+	if s.blocked[owner] == "" {
+		s.pendingOwners.Add(1)
+	}
 	s.blocked[owner] = "owner registration awaits cleanup, identity validation and lifecycle completion"
 	s.revision++
 	session, registry := s.session, s.registry
@@ -230,6 +236,7 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 		}
 	}
 	delete(s.blocked, owner)
+	s.pendingOwners.Add(-1)
 	coverage.State = OwnerRegistered
 	coverage.Reason = "effective route and observed protected identities are retained until service shutdown"
 	coverage.Routes = 0
@@ -245,6 +252,96 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 	s.owners[owner] = coverage
 	s.revision++
 	return nil
+}
+
+func (s *linuxImplementation) ExecuteAdmittedFilesystemRead(ctx context.Context, admission runtime.FilesystemReadAdmission, preparation runtime.FilesystemReadPreparation, reference *runtime.ReadExecutionReference, authority runtime.FilesystemReadExecutionAuthority) (*runtime.PrivateReadCapture, error) {
+	if ctx == nil {
+		return nil, context.Canceled
+	}
+	reject := func(err error) (*runtime.PrivateReadCapture, error) {
+		if preparation != nil {
+			err = errors.Join(err, preparation.Close(ctx))
+		}
+		return nil, err
+	}
+	if preparation == nil || reference == nil || authority == nil {
+		return reject(readbrokerstudy.ErrAdmissionStale)
+	}
+	s.mu.Lock()
+	if s.closed || s.session == nil || s.launcher == nil || s.backendErr != nil || len(s.blocked) != 0 || s.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || s.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
+		s.mu.Unlock()
+		return reject(readbrokerstudy.ErrUnavailable)
+	}
+	session := s.session
+	s.mu.Unlock()
+	prepared, ok := preparation.(*linuxAdmissionPreparation)
+	if !ok || prepared == nil || prepared.impl != s || prepared.inner == nil {
+		return reject(readbrokerstudy.ErrAdmissionStale)
+	}
+	executor, ok := session.(readbrokerstudy.RetainedReadExecutor)
+	if !ok {
+		return reject(readbrokerstudy.ErrUnavailable)
+	}
+	var capture *runtime.PrivateReadCapture
+	var err error
+	err = executor.ExecuteAdmitted(ctx, prepared.inner, authority, func(metadata readbrokerstudy.AdmissionMetadata, completion readbrokerstudy.ReadCompletion) error {
+		// Called under runtime authority and coordinator generation gates only
+		// after worker join and host descriptor retirement. Avoid taking s.mu
+		// here: owner/root transitions latch their pending state before entering
+		// the coordinator, and pendingOwners/root state is checked separately.
+		if s.pendingOwners.Load() != 0 {
+			return ErrCoverageMissing
+		}
+		outcome := mapReadOutcome(completion.Result.Outcome)
+		if completion.Result.Truncated && outcome == tools.OutcomeSucceeded {
+			outcome = tools.OutcomePartial
+		}
+		result := runtime.FilesystemReadExecutionResult{
+			Outcome: outcome, Bytes: completion.Result.Bytes,
+			ServiceID: metadata.ServiceID, AdmissionBinding: fmt.Sprintf("%x", metadata.Binding[:]),
+			AuthorizationBinding: authority.AuthorizationBinding(), Identity: fmt.Sprintf("%d:%d:%d", metadata.Identity.Device, metadata.Identity.Inode, metadata.Identity.Type),
+			RootGeneration: metadata.RootGeneration, PolicyRevision: metadata.Generations.Policy,
+			CoverageRevision: metadata.Generations.Inventory, Destination: metadata.Destination,
+			ReadStarted: completion.ReadStarted, WorkerJoined: completion.WorkerJoined,
+			CapabilitiesRetired: completion.CapabilitiesRetired,
+		}
+		capture, err = authority.Stage(admission, result)
+		return err
+	})
+	return capture, err
+}
+
+// WithFilesystemReadExecutionCurrent holds the Linux implementation owner
+// state lock across the caller's bounded release or capture callback. Service
+// applies its root gate before calling this method, preserving root->owner
+// ordering without exposing implementation state on other platforms.
+func (s *linuxImplementation) WithFilesystemReadExecutionCurrent(operation func() error) error {
+	if s == nil || operation == nil {
+		return ErrCoverageMissing
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.pendingOwners.Load() != 0 || len(s.blocked) != 0 || s.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || s.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
+		return ErrCoverageMissing
+	}
+	return operation()
+}
+
+func mapReadOutcome(outcome readbrokerstudy.ReadOutcome) tools.Outcome {
+	switch outcome {
+	case readbrokerstudy.ReadSucceeded:
+		return tools.OutcomeSucceeded
+	case readbrokerstudy.ReadFailed:
+		return tools.OutcomeFailed
+	case readbrokerstudy.ReadPartial:
+		return tools.OutcomePartial
+	case readbrokerstudy.ReadUnknown:
+		return tools.OutcomeUnknown
+	case readbrokerstudy.ReadCancelled:
+		return tools.OutcomeCancelled
+	default:
+		return tools.OutcomeNotExecuted
+	}
 }
 
 func hostResourceClass(class string) (readbrokerstudy.ResourceClass, bool) {
@@ -294,6 +391,26 @@ func (s *linuxImplementation) InvalidateFilesystemAdmissions(ctx context.Context
 		s.invalidateConversation(conversation)
 	}
 	return session.InvalidateAdmissions(ctx)
+}
+
+func (s *linuxImplementation) InvalidateFilesystemReadExecutions(conversationID string) error {
+	if conversationID == "" {
+		return readbrokerstudy.ErrAdmissionStale
+	}
+	s.mu.Lock()
+	if s.closed || s.session == nil {
+		s.mu.Unlock()
+		return ErrServiceClosed
+	}
+	session := s.session
+	s.mu.Unlock()
+	invalidator, ok := session.(readbrokerstudy.ConversationReadInvalidator)
+	if !ok {
+		return readbrokerstudy.ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return invalidator.InvalidateConversationReads(ctx, conversationID)
 }
 
 func (s *linuxImplementation) SelectFilesystemRoot(ctx context.Context, transition runtime.FilesystemRootTransition) error {
@@ -410,7 +527,7 @@ type linuxAdmissionPreparation struct {
 
 func runtimeAdmission(metadata readbrokerstudy.AdmissionMetadata) runtime.FilesystemReadAdmission {
 	return runtime.FilesystemReadAdmission{
-		Reference: metadata.Reference, ServiceID: metadata.ServiceID, ConversationID: metadata.ConversationID,
+		Reference: metadata.Reference, ServiceID: metadata.ServiceID, ConversationID: metadata.ConversationID, TurnID: metadata.TurnID, CallID: metadata.CallID,
 		Root: metadata.Root, Deadline: metadata.Deadline, AdmissionBinding: fmt.Sprintf("%x", metadata.Binding[:]), Target: metadata.Target,
 		Class: string(metadata.Class), Identity: fmt.Sprintf("%d:%d:%d", metadata.Identity.Device, metadata.Identity.Inode, metadata.Identity.Type),
 		RootGeneration: metadata.RootGeneration, PolicyRevision: metadata.Generations.Policy,

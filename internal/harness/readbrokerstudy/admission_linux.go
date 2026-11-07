@@ -32,6 +32,7 @@ import (
 
 const maxRetainedAdmissions = 1
 const retainedAdmissionTimeout = 5 * time.Minute
+const retainedCleanupTimeout = 5 * time.Second
 
 var (
 	ErrAdmissionPending = errors.New("a retained read admission or cleanup obligation is already pending")
@@ -45,6 +46,11 @@ const (
 	admissionOpening admissionState = iota + 1
 	admissionPendingApproval
 	admissionPrepared
+	admissionLaunching
+	admissionReady
+	admissionCapabilityHeld
+	admissionRunning
+	admissionCaptured
 	admissionRetiring
 	admissionCleanupPending
 )
@@ -59,6 +65,7 @@ type admissionRecord struct {
 	metadata   AdmissionMetadata
 	state      admissionState
 	prepared   PreparedRead
+	operation  *readOperation
 	lookupDone chan struct{}
 	lookupErr  error
 	retired    bool
@@ -198,12 +205,17 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 	go func() {
 		<-lifetime.Done()
 		s.mu.Lock()
-		if s.admissions[id] == record {
+		if s.admissions[id] == record && record.lifetime == lifetime {
 			record.retired = true
 			record.state = admissionRetiring
+		} else {
+			s.mu.Unlock()
+			return
 		}
 		s.mu.Unlock()
-		_ = s.retireAdmission(context.Background(), record)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), retainedCleanupTimeout)
+		defer cancel()
+		_ = s.retireAdmission(cleanupCtx, record)
 	}()
 
 	return record.ref, nil
@@ -387,6 +399,105 @@ func (s *fixtureSession) PrepareAdmitted(ctx context.Context, reference *Admissi
 	return &retainedPreparation{session: s, record: record}, nil
 }
 
+// ExecuteAdmitted claims exactly one attempt for the same retained object
+// approved by the runtime. It never reopens a path, consults the fixture
+// authorizer, or publishes bytes to the study sink.
+func (s *fixtureSession) ExecuteAdmitted(ctx context.Context, preparation AdmittedPreparation, authority ReadExecutionGate, capture func(AdmissionMetadata, ReadCompletion) error) (err error) {
+	retained, ok := preparation.(*retainedPreparation)
+	if ctx == nil || !ok || retained == nil || retained.session != s || retained.record == nil || authority == nil || capture == nil {
+		return ErrAdmissionStale
+	}
+	record := retained.record
+	retired := false
+	retire := func() error {
+		if retired {
+			return nil
+		}
+		retired = true
+		return retained.Close(ctx)
+	}
+	defer func() {
+		if !retired {
+			err = errors.Join(err, retire())
+		}
+	}()
+	s.mu.Lock()
+	valid := !s.closed && !s.cleanupBlocked && s.admissions[record.ref.id] == record && record.ref.owner == s && record.state == admissionPrepared && !record.retired && record.prepared != nil && record.lifetime != nil && record.lifetime.Err() == nil && time.Now().Before(record.deadline) && s.root == record.request.Root && s.rootGeneration == record.request.RootGeneration && s.gen == record.metadata.Generations && s.registry.View().Generation == record.metadata.Generations.Policy && s.inventory != nil && s.inventory.Snapshot().Complete && s.inventory.Snapshot().Revision == record.metadata.Generations.Inventory
+	metadata := record.metadata
+	prepared := record.prepared
+	s.mu.Unlock()
+	if !valid || metadata.Reference != record.ref || metadata.Binding == ([32]byte{}) || prepared == nil {
+		return ErrAdmissionStale
+	}
+	if err := authority.Claim(); err != nil {
+		return err
+	}
+	var op *readOperation
+	var operationCtx context.Context
+	var cancel context.CancelFunc
+	start := func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closed || s.cleanupBlocked || s.admissions[record.ref.id] != record || record.state != admissionPrepared || record.retired || record.prepared != prepared || record.lifetime == nil || record.lifetime.Err() != nil || time.Now().After(record.deadline) || s.gen != metadata.Generations || s.registry.View().Generation != metadata.Generations.Policy || s.inventory == nil || !s.inventory.Snapshot().Complete || s.inventory.Snapshot().Revision != metadata.Generations.Inventory {
+			return ErrAdmissionStale
+		}
+		operationCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		previousCancel := record.cancel
+		record.lifetime = operationCtx
+		record.cancel = cancel
+		if deadline, ok := operationCtx.Deadline(); ok {
+			record.deadline = deadline
+		}
+		if previousCancel != nil {
+			previousCancel()
+		}
+		op = &readOperation{id: record.ref.id, conversationID: metadata.ConversationID, gen: metadata.Generations, state: StatePrepared, cancel: cancel, done: make(chan struct{}), evidence: ReadEvidence{Case: record.request.CallID, Generations: metadata.Generations, Outcome: ReadNotExecuted}}
+		record.state = admissionLaunching
+		s.active[op.id] = op
+		record.operation = op
+		op.admission = record
+		return nil
+	}
+	if err := authority.WithCurrent(start); err != nil {
+		return err
+	}
+	if op == nil {
+		return ErrAdmissionStale
+	}
+	if operationCtx == nil || cancel == nil {
+		return ErrAdmissionStale
+	}
+	// The claim is spent even if launch now refuses.
+	defer cancel()
+	result := s.runWorkerMode(operationCtx, op, prepared, authority, false)
+	cancel()
+	s.finish(op, result)
+	joined := s.workerWaitSnapshot(op).Joined
+	if result.Outcome != ReadSucceeded || !joined {
+		clear(result.Bytes)
+		return fmt.Errorf("retained worker outcome %s; join confirmed=%t", result.Outcome, joined)
+	}
+	if err := retire(); err != nil {
+		clear(result.Bytes)
+		return errors.Join(ErrCleanupPending, err)
+	}
+	completion := ReadCompletion{Result: result, WorkerJoined: joined, CapabilitiesRetired: true, ReadStarted: true}
+	stage := func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closed || s.cleanupBlocked || op.revoked || s.gen != metadata.Generations || s.registry.View().Generation != metadata.Generations.Policy || s.inventory == nil || !s.inventory.Snapshot().Complete || s.inventory.Snapshot().Revision != metadata.Generations.Inventory {
+			return ErrAdmissionStale
+		}
+		return capture(metadata, completion)
+	}
+	if err := authority.WithCurrent(stage); err != nil {
+		clear(result.Bytes)
+		return err
+	}
+	clear(result.Bytes)
+	return nil
+}
+
 func (s *fixtureSession) CloseAdmission(ctx context.Context, reference *AdmissionReference) error {
 	if reference == nil || reference.owner != s || reference.id == "" {
 		return ErrAdmissionStale
@@ -411,6 +522,32 @@ func (s *fixtureSession) InvalidateAdmissions(ctx context.Context) error {
 	records := s.invalidateAdmissionsLocked()
 	s.mu.Unlock()
 	return s.retireAdmissionRecords(ctx, records)
+}
+
+func (s *fixtureSession) InvalidateConversationReads(ctx context.Context, conversationID string) error {
+	if ctx == nil || conversationID == "" {
+		return context.Canceled
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrSessionClosed
+	}
+	s.gen.Grant++
+	workers := s.invalidateLocked(func(op *readOperation) bool { return op.conversationID == "" || op.conversationID == conversationID })
+	admissions := make([]*admissionRecord, 0)
+	for _, record := range s.admissions {
+		if record.request.ConversationID == conversationID {
+			record.retired = true
+			record.state = admissionRetiring
+			if record.cancel != nil {
+				record.cancel()
+			}
+			admissions = append(admissions, record)
+		}
+	}
+	s.mu.Unlock()
+	return errors.Join(s.terminateAndCheck(workers), s.retireAdmissionRecords(ctx, admissions))
 }
 
 func (s *fixtureSession) AdmissionConversations() []string {

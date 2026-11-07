@@ -307,6 +307,92 @@ func (s *Service) CloseFilesystemReadAdmission(ctx context.Context, admission ru
 	return impl.CloseFilesystemReadAdmission(ctx, admission)
 }
 
+// ExecuteAdmittedFilesystemRead is the only Stage 4 execution seam. It accepts
+// the exact preparation returned by this service and an unforgeable runtime
+// reference; neither target data nor the reference is exposed to a tool/UI.
+func (s *Service) ExecuteAdmittedFilesystemRead(ctx context.Context, admission runtime.FilesystemReadAdmission, preparation runtime.FilesystemReadPreparation, reference *runtime.ReadExecutionReference, authority runtime.FilesystemReadExecutionAuthority) (*runtime.PrivateReadCapture, error) {
+	wrapped, ok := preparation.(*serviceAdmissionPreparation)
+	if ctx == nil {
+		return nil, context.Canceled
+	}
+	reject := func(err error) (*runtime.PrivateReadCapture, error) {
+		if preparation != nil {
+			err = errors.Join(err, preparation.Close(ctx))
+		}
+		return nil, err
+	}
+	if s == nil || !ok || wrapped == nil || wrapped.service != s || wrapped.inner == nil || authority == nil || reference == nil {
+		return reject(ErrServiceClosed)
+	}
+	if !sameFilesystemReadAdmission(wrapped.expected, admission) || !sameFilesystemReadAdmission(wrapped.Metadata(), admission) {
+		return reject(runtime.ErrFilesystemRootStale)
+	}
+	impl, ok := s.impl.(interface {
+		ExecuteAdmittedFilesystemRead(context.Context, runtime.FilesystemReadAdmission, runtime.FilesystemReadPreparation, *runtime.ReadExecutionReference, runtime.FilesystemReadExecutionAuthority) (*runtime.PrivateReadCapture, error)
+	})
+	if !ok {
+		return reject(ErrCoverageMissing)
+	}
+	return impl.ExecuteAdmittedFilesystemRead(ctx, admission, wrapped.inner, reference, &serviceReadExecutionAuthority{service: s, inner: authority, expected: admission})
+}
+
+func (s *Service) InvalidateFilesystemReadExecutions(conversationID string) error {
+	if s == nil || s.impl == nil || conversationID == "" {
+		return ErrServiceClosed
+	}
+	impl, ok := s.impl.(interface{ InvalidateFilesystemReadExecutions(string) error })
+	if !ok {
+		return ErrCoverageMissing
+	}
+	return impl.InvalidateFilesystemReadExecutions(conversationID)
+}
+
+type serviceReadExecutionAuthority struct {
+	service  *Service
+	inner    runtime.FilesystemReadExecutionAuthority
+	expected runtime.FilesystemReadAdmission
+	inside   bool
+}
+
+func (a *serviceReadExecutionAuthority) Claim() error { return a.inner.Claim() }
+
+func (a *serviceReadExecutionAuthority) WithCurrent(operation func() error) error {
+	if a.service == nil || operation == nil {
+		return runtime.ErrFilesystemRootStale
+	}
+	return a.inner.WithCurrent(func() error {
+		a.service.rootMu.Lock()
+		defer a.service.rootMu.Unlock()
+		if a.service.rootClosed || a.service.rootPending || a.service.rootPath != a.expected.Root || a.service.rootConversationID != a.expected.ConversationID || a.service.rootGeneration != a.expected.RootGeneration {
+			return runtime.ErrFilesystemRootStale
+		}
+		impl, ok := a.service.impl.(interface {
+			WithFilesystemReadExecutionCurrent(func() error) error
+		})
+		if !ok {
+			return ErrCoverageMissing
+		}
+		a.inside = true
+		defer func() { a.inside = false }()
+		return impl.WithFilesystemReadExecutionCurrent(operation)
+	})
+}
+
+func (a *serviceReadExecutionAuthority) AuthorizationBinding() string {
+	return a.inner.AuthorizationBinding()
+}
+
+func (a *serviceReadExecutionAuthority) Stage(admission runtime.FilesystemReadAdmission, result runtime.FilesystemReadExecutionResult) (*runtime.PrivateReadCapture, error) {
+	if a.service == nil || !a.inside || !sameFilesystemReadAdmission(a.expected, admission) {
+		return nil, runtime.ErrFilesystemRootStale
+	}
+	return a.inner.Stage(admission, result)
+}
+
+func sameFilesystemReadAdmission(a, b runtime.FilesystemReadAdmission) bool {
+	return a.ServiceID == b.ServiceID && a.ConversationID == b.ConversationID && a.TurnID == b.TurnID && a.CallID == b.CallID && a.Root == b.Root && a.Deadline.Equal(b.Deadline) && a.AdmissionBinding == b.AdmissionBinding && a.Target == b.Target && a.Class == b.Class && a.Identity == b.Identity && a.RootGeneration == b.RootGeneration && a.PolicyRevision == b.PolicyRevision && a.CoverageRevision == b.CoverageRevision && a.Destination == b.Destination
+}
+
 type serviceAdmissionPreparation struct {
 	service  *Service
 	inner    runtime.FilesystemReadPreparation

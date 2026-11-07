@@ -1012,7 +1012,8 @@ func (w *sandboxWorker) ReadResult(ctx context.Context) (WorkerResult, error) {
 			}
 			result.Outcome = outcome
 			if packet[2] != 0 {
-				result.Detail = "truncated=true"
+				result.Truncated = true
+				result.Detail = "result truncated at the fixed read limit"
 			}
 			return result, nil
 		default:

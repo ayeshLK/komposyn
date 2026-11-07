@@ -1,11 +1,12 @@
 # Composition admission and non-exposing sandbox service
 
-**Status:** Stage 3 retained-admission infrastructure only. The memory-only
-chat composition injects the trusted host admission service, but does **not**
-register or enable `read_file`. The internal admission path is reachable only
-through the reserved runtime lifecycle and test seam; there is no worker start,
-descriptor transfer, content read, result capture, or provider handoff. Generic
-read dispatch remains unavailable.
+**Status:** Stages 3–4 retained admission and private worker capture are
+implemented on the Stage 4 review branch. The memory-only chat composition does
+**not** register or enable `read_file`. A narrow internal seam can execute the
+already approved retained object and produce a bounded opaque private capture;
+there is still no provider handoff, transcript integration, or generic read
+dispatch. Native worker/service acceptance remains unavailable in the current
+environment.
 
 ## Composition and ownership
 
@@ -19,8 +20,9 @@ cmd/harness starts
   -> existing text-only + conversation-tool runtime starts
        \
         -> /fs-root selects or clears an in-memory lookup root; no authority
-        -> optional retained-admission host is injected, but the tool is absent
+        -> optional retained-read host is injected, but the tool is absent
            from the registry and ordinary dispatch remains refused
+        -> tests call a runtime-owned Stage 4 seam; opaque capture is discarded
 ```
 
 The host service composes the existing Linux `Registry`, broker, Bubblewrap
@@ -63,11 +65,12 @@ The runtime has a separate, internal retained-read approval bridge. It derives
 an exact read request from the host-created admission metadata, obtains the
 normal once-only permission decision, validates Stage 2's checked approval
 transition, prepares the same retained object, and consumes the once grant
-inside the shared runtime/host authority commit gate. It immediately retires
-the synthetic read authority without dispatching anything. The host service
-does not consume grants. A preparation refusal consumes no once grant. This
-bridge is exercised by trusted package tests; ordinary chat dispatch cannot
-call it because `read_file` is not registered. Existing `update_plan` and
+inside the shared runtime/host authority commit gate. Stage 4 retains that
+runtime-issued reference through one execution attempt. The trusted service
+sends only the retained object's descriptor to the fixed worker after bootstrap
+and probes; it does not reopen the path or consume grants. A preparation
+refusal consumes no once grant. Ordinary chat dispatch cannot call this seam
+because `read_file` is not registered. Existing `update_plan` and
 `request_user_input` continue through their current enforcer without requiring
 filesystem coverage or a Linux backend.
 
@@ -156,15 +159,16 @@ text-only behavior.
   it does not become evidence for this composed chat service. Do not carry
   forward the historical `6gGbUF` pass count.
 
-Filesystem read execution remains disabled even on a host with a trusted
-Bubblewrap backend. No target descriptor reaches the fixed worker through the
-shipped chat. Provider-source owner integration remains unsupported and is
-refused; Token Logger owner hooks, listing, recursion, writes, deletion, shell,
-and non-Linux enforcement remain absent. This slice is not native worker
-acceptance evidence. Stage 4 must implement startup/claim/release/read/capture,
-and Stage 5 must separately review result publication/provider continuation.
-Neither stage may reuse the synthetic authority retired here as execution
-authority.
+Filesystem read execution remains disabled in ordinary chat even on a trusted
+Bubblewrap host. Stage 4 captures only bounded bytes in an opaque in-memory
+handle after worker join and retirement of operation-owned descriptors. Tests
+discard captures; no provider or transcript path receives their bytes.
+Provider-source owner integration remains unsupported and is refused; Token
+Logger owner hooks, listing, recursion, writes, deletion, shell, and non-Linux
+enforcement remain absent. Native Stage 4 acceptance was not run: `/usr/bin/bwrap`
+is owned by UID 65534, so the existing backend trust check refuses it. Stage 5
+must separately review result publication/provider continuation, and Stage 6
+must perform integrated native acceptance. No tool is enabled by this branch.
 
 ## Validation commands
 
