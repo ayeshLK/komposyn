@@ -101,8 +101,17 @@ type Request struct {
 	// Binding is an opaque digest of the immutable invocation and captured
 	// authorization context. It is not a substitute for re-preparing that
 	// context immediately before dispatch.
-	Binding      string
-	Requirements []Requirement
+	Binding string
+	// AdmissionBinding is the trusted host's canonical digest for admission,
+	// classification, destination and freshness context. Runtime includes it in
+	// Binding instead of replacing it with an unrelated invocation hash.
+	AdmissionBinding string
+	Requirements     []Requirement
+	// RequireOnceKeys is set by trusted runtime policy for requirements that
+	// need an invocation-bound disclosure grant even when broader rules or
+	// conversation grants would otherwise allow them. It is not a model/UI
+	// permission control; the runtime recomputes it for reserved read calls.
+	RequireOnceKeys []string
 }
 
 type Rule struct {
@@ -134,6 +143,9 @@ type Grant struct {
 	Resource          *ResourceScope
 	Lifetime          Lifetime
 	Origin            string
+	// Binding binds a once grant to the complete trusted request context. It is
+	// empty for conversation grants, whose existing scope semantics remain.
+	Binding string
 }
 
 type Decision struct {
@@ -160,18 +172,46 @@ func (e Evaluator) Evaluate(request Request) Decision {
 	if e.Grants != nil {
 		decision.Revision, grants = e.Grants.Snapshot(request.ConversationID)
 	}
+	return e.evaluateSnapshot(request, decision.Revision, grants)
+}
+
+func (e Evaluator) evaluateSnapshot(request Request, revision uint64, grants []Grant) Decision {
+	decision := Decision{Revision: revision}
 	keyCounts := make(map[string]int, len(request.Requirements))
 	for _, requirement := range request.Requirements {
 		keyCounts[requirement.Key]++
+	}
+	requireOnce := make(map[string]struct{}, len(request.RequireOnceKeys))
+	for _, key := range request.RequireOnceKeys {
+		if key == "" || keyCounts[key] != 1 {
+			decision.Denied = cloneRequirements(request.Requirements)
+			return decision
+		}
+		if _, duplicate := requireOnce[key]; duplicate {
+			decision.Denied = cloneRequirements(request.Requirements)
+			return decision
+		}
+		requireOnce[key] = struct{}{}
 	}
 	for _, requirement := range request.Requirements {
 		if !validRequirement(requirement) || keyCounts[requirement.Key] != 1 || requirement.Resource != nil && requirement.Resource.Kind == ResourceConversation && requirement.Resource.Target != request.ConversationID {
 			decision.Denied = append(decision.Denied, requirement)
 			continue
 		}
-		switch e.effectFor(requirement) {
-		case EffectDeny:
+		effect := e.effectFor(requirement)
+		if effect == EffectDeny {
 			decision.Denied = append(decision.Denied, requirement)
+			continue
+		}
+		if _, exactOnce := requireOnce[requirement.Key]; exactOnce {
+			if onceGrantCovers(grants, request, requirement) {
+				decision.Allowed = append(decision.Allowed, requirement)
+			} else {
+				decision.Missing = append(decision.Missing, requirement)
+			}
+			continue
+		}
+		switch effect {
 		case EffectAsk:
 			if onceGrantCovers(grants, request, requirement) {
 				decision.Allowed = append(decision.Allowed, requirement)
@@ -259,7 +299,7 @@ func onceGrantCovers(grants []Grant, request Request, requirement Requirement) b
 }
 
 func onceGrantMatches(grant Grant, request Request, requirement Requirement) bool {
-	if grant.Operation != requirement.Operation || grant.CallID != request.CallID || grant.RequirementKey == "" || grant.RequirementKey != requirement.Key {
+	if grant.Operation != requirement.Operation || grant.CallID != request.CallID || grant.RequirementKey == "" || grant.RequirementKey != requirement.Key || grant.Binding != request.Binding {
 		return false
 	}
 	if requirement.Kind == RequirementAction {
@@ -283,7 +323,47 @@ type MemoryStore struct {
 	grants   map[string]Grant
 }
 
+// GrantTransition is detached evidence for one checked store transaction.
+// Mutating its slices cannot alter the store or a runtime authority record.
+type GrantTransition struct {
+	BeforeRevision          uint64
+	AfterRevision           uint64
+	InsertedIDs             []string
+	InsertedRequirementKeys []string
+	Inserted                []GrantEvidence
+	ConsumedIDs             []string
+	ConsumedRequirementKeys []string
+	Consumed                []GrantEvidence
+	Snapshot                []Grant
+	Decision                Decision
+	Binding                 string
+}
+
+// GrantEvidence correlates one store ID with the exact requirement key that
+// created or consumed it within a checked transition.
+type GrantEvidence struct {
+	ID             string
+	RequirementKey string
+}
+
 func NewMemoryStore() *MemoryStore { return &MemoryStore{grants: make(map[string]Grant)} }
+
+// Clone returns an independent in-memory grant snapshot while preserving its
+// global revision. Runtime composition uses this to take ownership of the
+// store state instead of retaining a caller-mutable store pointer.
+func (s *MemoryStore) Clone() *MemoryStore {
+	copy := NewMemoryStore()
+	if s == nil {
+		return copy
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	copy.revision = s.revision
+	for id, grant := range s.grants {
+		copy.grants[id] = cloneGrant(grant)
+	}
+	return copy
+}
 
 func (s *MemoryStore) Add(grant Grant) error {
 	return s.AddMany([]Grant{grant})
@@ -297,28 +377,15 @@ func (s *MemoryStore) AddMany(grants []Grant) error {
 	validated := make([]Grant, len(grants))
 	ids := make(map[string]struct{}, len(grants))
 	for i, grant := range grants {
-		if grant.ID == "" || grant.ConversationID == "" || grant.ToolID == "" || !validOperation(grant.Operation) || grant.Origin == "" || (grant.Kind != RequirementAction && grant.Kind != RequirementResource) {
-			return ErrInvalidGrant
-		}
-		if grant.Kind == RequirementAction && (grant.Resource != nil || grant.ResourceTarget != "" || grant.ActionKey == "") || grant.Kind == RequirementResource && (grant.Resource == nil || grant.ResourceTarget == "" || grant.ActionKey != "" || !validScope(*grant.Resource) || !containsOperation(grant.Resource.Operations, grant.Operation) || !validResourceRequest(ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation}) || !scopeCovers(*grant.Resource, ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation}) || grant.Resource.Kind == ResourceConversation && (grant.ConversationID != grant.ResourceTarget || grant.Resource.Root != grant.ConversationID)) {
-			return ErrInvalidGrant
-		}
-		if grant.Lifetime == LifetimeOnce {
-			if grant.CallID == "" || grant.RequirementKey == "" {
-				return ErrInvalidGrant
-			}
-		} else if grant.Lifetime == LifetimeConversation {
-			if grant.Operation == OperationDelete || grant.Kind == RequirementAction && grant.ActionKey == "" || grant.Kind == RequirementResource && (grant.Operation == OperationExecute || containsOperation(grant.Resource.Operations, OperationDelete)) {
-				return ErrInvalidGrant
-			}
-		} else {
-			return ErrInvalidGrant
+		validatedGrant, err := validateGrant(grant)
+		if err != nil {
+			return err
 		}
 		if _, duplicate := ids[grant.ID]; duplicate {
 			return ErrInvalidGrant
 		}
 		ids[grant.ID] = struct{}{}
-		validated[i] = cloneGrant(grant)
+		validated[i] = validatedGrant
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -332,6 +399,27 @@ func (s *MemoryStore) AddMany(grants []Grant) error {
 	}
 	s.revision++
 	return nil
+}
+
+func validateGrant(grant Grant) (Grant, error) {
+	if grant.ID == "" || grant.ConversationID == "" || grant.ToolID == "" || !validOperation(grant.Operation) || grant.Origin == "" || (grant.Kind != RequirementAction && grant.Kind != RequirementResource) {
+		return Grant{}, ErrInvalidGrant
+	}
+	if grant.Kind == RequirementAction && (grant.Resource != nil || grant.ResourceTarget != "" || grant.ActionKey == "") || grant.Kind == RequirementResource && (grant.Resource == nil || grant.ResourceTarget == "" || grant.ActionKey != "" || !validScope(*grant.Resource) || !containsOperation(grant.Resource.Operations, grant.Operation) || !validResourceRequest(ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation}) || !scopeCovers(*grant.Resource, ResourceRequest{Kind: grant.Resource.Kind, Target: grant.ResourceTarget, Operation: grant.Operation}) || grant.Resource.Kind == ResourceConversation && (grant.ConversationID != grant.ResourceTarget || grant.Resource.Root != grant.ConversationID)) {
+		return Grant{}, ErrInvalidGrant
+	}
+	if grant.Lifetime == LifetimeOnce {
+		if grant.CallID == "" || grant.RequirementKey == "" {
+			return Grant{}, ErrInvalidGrant
+		}
+	} else if grant.Lifetime == LifetimeConversation {
+		if grant.Operation == OperationDelete || grant.Kind == RequirementAction && grant.ActionKey == "" || grant.Kind == RequirementResource && (grant.Operation == OperationExecute || containsOperation(grant.Resource.Operations, OperationDelete)) || grant.Binding != "" {
+			return Grant{}, ErrInvalidGrant
+		}
+	} else {
+		return Grant{}, ErrInvalidGrant
+	}
+	return cloneGrant(grant), nil
 }
 
 func validRequirement(requirement Requirement) bool {
@@ -383,6 +471,10 @@ func (s *MemoryStore) Snapshot(conversationID string) (uint64, []Grant) {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.revision, s.snapshotConversationLocked(conversationID)
+}
+
+func (s *MemoryStore) snapshotConversationLocked(conversationID string) []Grant {
 	items := make([]Grant, 0, len(s.grants))
 	for _, grant := range s.grants {
 		if grant.ConversationID == conversationID {
@@ -390,7 +482,261 @@ func (s *MemoryStore) Snapshot(conversationID string) (uint64, []Grant) {
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
-	return s.revision, items
+	return items
+}
+
+// EvaluateAtRevision evaluates the immutable request against exactly the
+// expected store revision. It is used for non-grant approval outcomes so a
+// stale dialog cannot be accepted after an intervening mutation.
+func (s *MemoryStore) EvaluateAtRevision(evaluator Evaluator, request Request, expectedRevision uint64, expectedMissing []Requirement) (Decision, error) {
+	if s == nil || request.ConversationID == "" || len(request.Requirements) == 0 {
+		return Decision{}, ErrApprovalStale
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.revision != expectedRevision {
+		return Decision{}, ErrGrantRevisionChanged
+	}
+	decision := evaluator.evaluateSnapshot(request, s.revision, s.snapshotConversationLocked(request.ConversationID))
+	if len(decision.Denied) > 0 || !sameRequirementSet(decision.Missing, expectedMissing) {
+		return Decision{}, ErrGrantRevisionChanged
+	}
+	return cloneDecision(decision), nil
+}
+
+// ApproveAtRevision validates and inserts exactly the grants corresponding
+// to the immutable pending requirements while holding the store lock. The
+// returned G1 snapshot/decision is captured in the same transaction.
+func (s *MemoryStore) ApproveAtRevision(evaluator Evaluator, request Request, expectedRevision uint64, expectedMissing []Requirement, grants []Grant) (GrantTransition, error) {
+	if s == nil || request.ConversationID == "" || request.CallID == "" || len(request.Requirements) == 0 || len(expectedMissing) == 0 || len(grants) != len(expectedMissing) {
+		return GrantTransition{}, ErrInvalidApproval
+	}
+	validated := make([]Grant, len(grants))
+	ids := make(map[string]struct{}, len(grants))
+	byKey := make(map[string]Grant, len(grants))
+	for i, grant := range grants {
+		copy, err := validateGrant(grant)
+		if err != nil {
+			return GrantTransition{}, err
+		}
+		if _, duplicate := ids[copy.ID]; duplicate {
+			return GrantTransition{}, ErrInvalidGrant
+		}
+		ids[copy.ID] = struct{}{}
+		if _, duplicate := byKey[copy.RequirementKey]; duplicate {
+			return GrantTransition{}, ErrInvalidGrant
+		}
+		byKey[copy.RequirementKey] = copy
+		validated[i] = copy
+	}
+	for _, requirement := range expectedMissing {
+		grant, ok := byKey[requirement.Key]
+		if !ok || !grantMatchesApproval(grant, request, requirement) {
+			return GrantTransition{}, ErrInvalidGrant
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revision != expectedRevision {
+		return GrantTransition{}, ErrGrantRevisionChanged
+	}
+	before := s.revision
+	current := s.snapshotConversationLocked(request.ConversationID)
+	decision := evaluator.evaluateSnapshot(request, before, current)
+	if len(decision.Denied) > 0 || !sameRequirementSet(decision.Missing, expectedMissing) {
+		return GrantTransition{}, ErrApprovalStale
+	}
+	for _, grant := range validated {
+		if _, exists := s.grants[grant.ID]; exists {
+			return GrantTransition{}, ErrInvalidGrant
+		}
+	}
+	projected := append(append([]Grant(nil), current...), validated...)
+	post := evaluator.evaluateSnapshot(request, before+1, projected)
+	if !post.Ready() {
+		return GrantTransition{}, ErrInvalidApproval
+	}
+	for _, grant := range validated {
+		s.grants[grant.ID] = grant
+	}
+	s.revision++
+	return GrantTransition{
+		BeforeRevision:          before,
+		AfterRevision:           s.revision,
+		InsertedIDs:             grantIDs(validated),
+		InsertedRequirementKeys: requirementKeys(validated),
+		Inserted:                grantEvidence(validated),
+		Snapshot:                s.snapshotConversationLocked(request.ConversationID),
+		Decision:                cloneDecision(post),
+		Binding:                 request.Binding,
+	}, nil
+}
+
+func grantMatchesApproval(grant Grant, request Request, requirement Requirement) bool {
+	if grant.ConversationID != request.ConversationID || grant.CallID != request.CallID || grant.RequirementKey != requirement.Key || grant.ToolID != requirement.ToolID || grant.Kind != requirement.Kind || grant.Operation != requirement.Operation {
+		return false
+	}
+	if grant.Lifetime == LifetimeOnce && grant.Binding != request.Binding || grant.Lifetime == LifetimeConversation && (grant.Binding != "" || containsString(request.RequireOnceKeys, requirement.Key)) {
+		return false
+	}
+	if requirement.Kind == RequirementAction {
+		return grant.ActionKey == requirement.ActionKey
+	}
+	if requirement.Resource == nil || grant.Resource == nil || grant.ResourceTarget != requirement.Resource.Target {
+		return false
+	}
+	expected, err := exactScope(*requirement.Resource)
+	return err == nil && grant.Resource.Kind == expected.Kind && grant.Resource.Root == expected.Root && grant.Resource.Recursive == expected.Recursive && sameOperations(grant.Resource.Operations, expected.Operations)
+}
+
+func sameOperations(a, b []Operation) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ConsumeAuthorizedAtRevision checks authorization and consumes every exact
+// matching once grant atomically at the expected revision. Required-once keys
+// cannot be satisfied by allow rules or conversation grants.
+func (s *MemoryStore) ConsumeAuthorizedAtRevision(evaluator Evaluator, request Request, expectedRevision uint64) (GrantTransition, error) {
+	if s == nil || request.ConversationID == "" || request.CallID == "" || len(request.Requirements) == 0 {
+		return GrantTransition{}, ErrOnceGrantMissing
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revision != expectedRevision {
+		return GrantTransition{}, ErrGrantRevisionChanged
+	}
+	before := s.revision
+	decision := evaluator.evaluateSnapshot(request, before, s.snapshotConversationLocked(request.ConversationID))
+	if !decision.Ready() {
+		return GrantTransition{}, ErrOnceGrantMissing
+	}
+	required := make(map[string]struct{}, len(request.RequireOnceKeys))
+	for _, key := range request.RequireOnceKeys {
+		if key == "" {
+			return GrantTransition{}, ErrOnceGrantMissing
+		}
+		if _, duplicate := required[key]; duplicate {
+			return GrantTransition{}, ErrOnceGrantMissing
+		}
+		required[key] = struct{}{}
+	}
+	consumed := make([]string, 0, len(request.Requirements))
+	consumedKeys := make([]string, 0, len(request.Requirements))
+	consumedEvidence := make([]GrantEvidence, 0, len(request.Requirements))
+	for _, requirement := range request.Requirements {
+		matches := make([]string, 0, 1)
+		for id, grant := range s.grants {
+			if grant.Lifetime == LifetimeOnce && grant.ConversationID == request.ConversationID && grant.CallID == request.CallID && grant.ToolID == requirement.ToolID && grant.Kind == requirement.Kind && onceGrantMatches(grant, request, requirement) {
+				matches = append(matches, id)
+			}
+		}
+		if len(matches) > 1 {
+			return GrantTransition{}, ErrOnceGrantMissing
+		}
+		if _, requiredOnce := required[requirement.Key]; requiredOnce && len(matches) != 1 {
+			return GrantTransition{}, ErrOnceGrantMissing
+		}
+		consumed = append(consumed, matches...)
+		if len(matches) != 0 {
+			consumedKeys = append(consumedKeys, requirement.Key)
+			consumedEvidence = append(consumedEvidence, GrantEvidence{ID: matches[0], RequirementKey: requirement.Key})
+		}
+	}
+	for key := range required {
+		if !hasRequirementKey(request.Requirements, key) {
+			return GrantTransition{}, ErrOnceGrantMissing
+		}
+	}
+	if len(consumed) != 0 {
+		for _, id := range consumed {
+			delete(s.grants, id)
+		}
+		s.revision++
+	}
+	return GrantTransition{
+		BeforeRevision:          before,
+		AfterRevision:           s.revision,
+		ConsumedIDs:             append([]string(nil), consumed...),
+		ConsumedRequirementKeys: append([]string(nil), consumedKeys...),
+		Consumed:                append([]GrantEvidence(nil), consumedEvidence...),
+		Snapshot:                s.snapshotConversationLocked(request.ConversationID),
+		Decision:                cloneDecision(decision),
+		Binding:                 request.Binding,
+	}, nil
+}
+
+func requirementKeys(grants []Grant) []string {
+	keys := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		keys = append(keys, grant.RequirementKey)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func grantEvidence(grants []Grant) []GrantEvidence {
+	evidence := make([]GrantEvidence, 0, len(grants))
+	for _, grant := range grants {
+		evidence = append(evidence, GrantEvidence{ID: grant.ID, RequirementKey: grant.RequirementKey})
+	}
+	sort.Slice(evidence, func(i, j int) bool { return evidence[i].ID < evidence[j].ID })
+	return evidence
+}
+
+func sameRequirementSet(a, b []Requirement) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	matched := make([]bool, len(b))
+	for _, left := range a {
+		found := false
+		for i, right := range b {
+			if !matched[i] && sameRequirements([]Requirement{left}, []Requirement{right}) {
+				matched[i], found = true, true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func grantIDs(grants []Grant) []string {
+	ids := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		ids = append(ids, grant.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRequirementKey(requirements []Requirement, key string) bool {
+	for _, requirement := range requirements {
+		if requirement.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MemoryStore) Revoke(conversationID, id string) error {
@@ -409,21 +755,29 @@ func (s *MemoryStore) Revoke(conversationID, id string) error {
 }
 
 func (s *MemoryStore) Clear(conversationID string) {
+	_ = s.ClearCount(conversationID)
+}
+
+// ClearCount atomically removes a conversation's grants and returns the exact
+// number removed. Callers that own pending authority can serialize this under
+// their outer lifecycle gate, including the empty-store case.
+func (s *MemoryStore) ClearCount(conversationID string) int {
 	if s == nil {
-		return
+		return 0
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	changed := false
+	removed := 0
 	for id, grant := range s.grants {
 		if grant.ConversationID == conversationID {
 			delete(s.grants, id)
-			changed = true
+			removed++
 		}
 	}
-	if changed {
+	if removed > 0 {
 		s.revision++
 	}
+	return removed
 }
 
 // ConsumeOnce atomically removes the once grants matching every supplied

@@ -258,6 +258,9 @@ func (c *Chat) filesystemRootHost() FilesystemRootHost {
 }
 
 func (c *Chat) changeFilesystemRootLocked(root string, reason FilesystemRootChangeReason) FilesystemRootTransition {
+	if c.toolRuntime != nil {
+		c.toolRuntime.invalidateReadAuthority()
+	}
 	previousRoot := c.filesystemRoot
 	previousGeneration := c.filesystemRootGen
 	c.filesystemRootOp++
@@ -295,6 +298,12 @@ func (c *Chat) pendingFilesystemRootEventLocked() *FilesystemRootTransition {
 }
 
 func (c *Chat) notifyFilesystemRoot(ctx context.Context, host FilesystemRootHost, event FilesystemRootTransition) error {
+	c.mu.Lock()
+	runtime := c.toolRuntime
+	c.mu.Unlock()
+	if runtime != nil {
+		runtime.invalidateConversation(event.ConversationID)
+	}
 	if host == nil {
 		c.mu.Lock()
 		if event.Generation > c.filesystemRootAck {

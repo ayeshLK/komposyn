@@ -186,6 +186,7 @@ func (c *Chat) CloseContext(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 	if runtime != nil {
+		runtime.invalidateReadAuthority()
 		runtime.beginShutdown()
 	}
 	if cancel != nil {
@@ -196,15 +197,8 @@ func (c *Chat) CloseContext(ctx context.Context) error {
 		rootErr = c.notifyFilesystemRoot(ctx, rootHost, *rootEvent)
 	}
 	if firstClose && runtime != nil && conversationID != "" {
-		runtime.grants.Clear(conversationID)
+		runtime.clearConversationGrants(conversationID)
 		runtime.plans.Close(conversationID)
-		runtime.coordinator.CancelConversation(conversationID)
-		if invalidator, ok := runtime.approval.(ToolApprovalInvalidator); ok {
-			invalidator.InvalidateConversation(conversationID)
-		}
-		if invalidator, ok := runtime.clarification.(ToolClarificationInvalidator); ok {
-			invalidator.InvalidateConversation(conversationID)
-		}
 	}
 	if activeDone != nil {
 		select {
@@ -240,14 +234,7 @@ func (c *Chat) RevokeToolGrant(id string) error {
 	if runtime == nil {
 		return errors.New("tool permissions are unavailable")
 	}
-	if err := runtime.grants.Revoke(conversation, id); err != nil {
-		return err
-	}
-	runtime.coordinator.CancelConversation(conversation)
-	if invalidator, ok := runtime.approval.(ToolApprovalInvalidator); ok {
-		invalidator.InvalidateConversation(conversation)
-	}
-	return nil
+	return runtime.revokeConversationGrant(conversation, id)
 }
 
 // ClearToolGrants clears current-conversation grants and invalidates pending
@@ -259,15 +246,7 @@ func (c *Chat) ClearToolGrants() int {
 	if runtime == nil {
 		return 0
 	}
-	_, before := runtime.grants.Snapshot(conversation)
-	runtime.grants.Clear(conversation)
-	if len(before) > 0 {
-		runtime.coordinator.CancelConversation(conversation)
-		if invalidator, ok := runtime.approval.(ToolApprovalInvalidator); ok {
-			invalidator.InvalidateConversation(conversation)
-		}
-	}
-	return len(before)
+	return runtime.clearConversationGrants(conversation)
 }
 
 func NewChatWithOAuth(providers *model.Registry, profiles auth.Store, oauth auth.Implementation) *Chat {
@@ -693,15 +672,8 @@ func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *Files
 	c.turns = nil
 	c.toolCallIDs = nil
 	if c.toolRuntime != nil && oldID != "" {
-		c.toolRuntime.grants.Clear(oldID)
+		c.toolRuntime.clearConversationGrantsLocked(oldID)
 		c.toolRuntime.plans.Close(oldID)
-		c.toolRuntime.coordinator.CancelConversation(oldID)
-		if invalidator, ok := c.toolRuntime.approval.(ToolApprovalInvalidator); ok {
-			invalidator.InvalidateConversation(oldID)
-		}
-		if invalidator, ok := c.toolRuntime.clarification.(ToolClarificationInvalidator); ok {
-			invalidator.InvalidateConversation(oldID)
-		}
 	}
 	c.conversationID, c.conversationIDErr = newConversationID()
 	if rootEvent != nil {
@@ -713,7 +685,11 @@ func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *Files
 func (c *Chat) Cancel() {
 	c.mu.Lock()
 	cancel := c.cancel
+	conversation, runtime := c.conversationID, c.toolRuntime
 	c.mu.Unlock()
+	if runtime != nil {
+		runtime.invalidateConversation(conversation)
+	}
 	if cancel != nil {
 		cancel()
 	}

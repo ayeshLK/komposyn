@@ -50,6 +50,7 @@ type PendingApproval struct {
 type ApprovalResponse struct {
 	Outcome      ApprovalOutcome
 	Decision     Decision
+	Transition   GrantTransition
 	RedirectText string
 }
 
@@ -115,13 +116,8 @@ func (c *Coordinator) Respond(id string, choice ApprovalChoice, redirectText str
 	if choice == ApprovalRedirect && redirectText == "" || choice != ApprovalRedirect && redirectText != "" {
 		return ApprovalResponse{}, ErrInvalidApproval
 	}
-	revision, _ := c.store.Snapshot(pending.Request.ConversationID)
-	if revision != pending.Decision.Revision {
-		delete(c.pending, id)
-		return ApprovalResponse{}, ErrApprovalStale
-	}
-	decision := c.evaluator.Evaluate(pending.Request)
-	if decision.Revision != pending.Decision.Revision || len(decision.Denied) > 0 || !sameRequirements(decision.Missing, pending.Decision.Missing) {
+	decision, err := c.store.EvaluateAtRevision(c.evaluator, pending.Request, pending.Decision.Revision, pending.Decision.Missing)
+	if err != nil {
 		delete(c.pending, id)
 		return ApprovalResponse{}, ErrApprovalStale
 	}
@@ -141,11 +137,14 @@ func (c *Coordinator) Respond(id string, choice ApprovalChoice, redirectText str
 		if err != nil {
 			return ApprovalResponse{}, err
 		}
-		if err := c.store.AddMany(grants); err != nil {
+		transition, err := c.store.ApproveAtRevision(c.evaluator, pending.Request, pending.Decision.Revision, pending.Decision.Missing, grants)
+		if err != nil {
+			delete(c.pending, id)
 			return ApprovalResponse{}, err
 		}
 		response.Outcome = ApprovalGranted
-		response.Decision = c.evaluator.Evaluate(pending.Request)
+		response.Transition = transition
+		response.Decision = cloneDecision(transition.Decision)
 	}
 	delete(c.pending, id)
 	return response, nil
@@ -165,11 +164,18 @@ func (c *Coordinator) CancelConversation(conversationID string) {
 }
 
 func grantsForApproval(pending PendingApproval, choice ApprovalChoice) ([]Grant, error) {
+	requiredOnce := make(map[string]struct{}, len(pending.Request.RequireOnceKeys))
+	for _, key := range pending.Request.RequireOnceKeys {
+		requiredOnce[key] = struct{}{}
+	}
 	grants := make([]Grant, 0, len(pending.Decision.Missing))
 	for _, requirement := range pending.Decision.Missing {
 		lifetime := LifetimeOnce
 		if choice == ApprovalConversation {
 			if !requirement.SessionAllowed || requirement.Operation == OperationDelete {
+				return nil, ErrSessionNotAllowed
+			}
+			if _, required := requiredOnce[requirement.Key]; required {
 				return nil, ErrSessionNotAllowed
 			}
 			lifetime = LifetimeConversation
@@ -186,6 +192,9 @@ func grantsForApproval(pending PendingApproval, choice ApprovalChoice) ([]Grant,
 			ActionKey:         requirement.ActionKey,
 			Lifetime:          lifetime,
 			Origin:            "user_approval",
+		}
+		if lifetime == LifetimeOnce {
+			grant.Binding = pending.Request.Binding
 		}
 		if requirement.Kind == RequirementResource {
 			grant.ResourceTarget = requirement.Resource.Target
@@ -220,7 +229,7 @@ func sameRequirements(a, b []Requirement) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].Kind != b[i].Kind || a[i].Key != b[i].Key || a[i].ToolID != b[i].ToolID || a[i].Description != b[i].Description || a[i].Operation != b[i].Operation || a[i].ActionKey != b[i].ActionKey || !sameResource(a[i].Resource, b[i].Resource) {
+		if a[i].Kind != b[i].Kind || a[i].Key != b[i].Key || a[i].ToolID != b[i].ToolID || a[i].Description != b[i].Description || a[i].Operation != b[i].Operation || a[i].ActionKey != b[i].ActionKey || a[i].SessionAllowed != b[i].SessionAllowed || !sameResource(a[i].Resource, b[i].Resource) {
 			return false
 		}
 	}
@@ -236,6 +245,7 @@ func sameResource(a, b *ResourceRequest) bool {
 
 func cloneRequest(request Request) Request {
 	request.Requirements = append([]Requirement(nil), request.Requirements...)
+	request.RequireOnceKeys = append([]string(nil), request.RequireOnceKeys...)
 	for i := range request.Requirements {
 		if request.Requirements[i].Resource != nil {
 			resource := *request.Requirements[i].Resource

@@ -1,13 +1,14 @@
 # Exact-file read implementation plan
 
-**Status: staged implementation plan; disclosure policy accepted for implementation; reads remain disabled.**
+**Status: staged implementation plan; disclosure policy accepted; Stage 2 checked-authority work is implemented on a review branch, while reads remain disabled.**
 This is a new source-grounded plan, not exact recovery or verification of the
 missing local handoff. The maintainer later accepted all six clauses in the
 [explicit acceptance comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902)
 for staged implementation. That supersedes the historical pending-policy
-wording below, but does not mean reads are implemented or enabled. This plan
-itself changes no runtime behavior, permissions, coverage declaration or tool
-registration.
+wording below, but does not mean reads are enabled. The plan is design
+material; the separate Stage 2 implementation adds checked permission
+transitions and private synthetic authority bookkeeping without changing
+coverage declarations or tool registration.
 
 ## Baseline, durable context and evidence limits
 
@@ -482,8 +483,73 @@ corrections for canonical binding, zero-turn model changes and uncancelled
 in-flight lookup ownership. Proposed APIs/counters and tests do not exist merely
 because they are listed. No approval or new native result is recorded here.
 
-For the documentation change, verify local links, source symbol references,
-Markdown code fences, whitespace and a diff limited to documentation. Reconfirm
-the isolated checkout baseline and preserve user's worktree. Go/native suites
-are unnecessary because no executable code changed; report only actual checks
-in the review handoff. Keep the issue open and publish nothing automatically.
+For the original documentation-only review, local links, source symbol
+references, Markdown fences, whitespace and a docs-only diff were the applicable
+checks. That validation note predates the implementation status below. Stage 2
+has executable-code checks recorded in its review handoff; no native filesystem
+or worker enforcement claim follows from them. Keep the issue open and publish
+nothing automatically.
+
+## Stage 2 implementation status (review branch)
+
+The Stage 2 branch adds permission-store transactions that check the expected
+revision and missing requirement set while holding the store lock. Approval
+returns its exact post-insertion G1 decision and inserted grant IDs; once
+consumption returns G1→G2 evidence with consumed grant IDs and requirement
+keys. Once grants bind to the canonical runtime authorization digest. For the
+reserved `read_file` ID only, read-resource requirements are forced to require
+an invocation-bound once grant even in the presence of allow rules or broader
+conversation grants. Conversation-only tools keep their existing behavior.
+
+`bindAuthorizationRequest` canonicalizes validated JSON arguments and includes
+the trusted host `AdmissionBinding` digest with invocation identity and exact
+requirements before computing the grant-matching binding. A read request with
+no host admission digest is refused. The future trusted admission is expected
+to hash the service/admission identity, root and route, opened-object identity,
+type/classification, composition and destination profile, disclosure version,
+and relevant freshness epochs. Stage 2 opens no target and does not fabricate
+that admission; this digest contract is an integration requirement for Stage 3.
+
+Runtime's private ledger accepts only the checked read approval/consumption
+chain, issues an unforgeable in-process reference, binds it to the owning
+runtime, exact authorization/admission digests and permission revision, and
+allows one claim. A claimed operation identity remains addressable for
+operation-specific revocation until `FinishReadExecution`; conversation clear,
+grant revoke, reset, cancellation and shutdown invalidate it independently of
+the consumed once-grant ID. Stage 2 revocation prevents future claims; it does
+not terminate a worker already released, which requires the later host-service
+termination barrier. Validated sibling read transactions in the active runtime
+advance existing records only through contiguous G transitions and retain
+their binding/ID provenance. A gap or untracked store revision invalidates
+those records. Root changes, conversation reset, grant revoke, clear even when
+empty, cancellation and shutdown retire records. The ledger is bounded to the
+per-turn invocation ceiling and holds no file data or descriptor. A monotonic
+last-issued G watermark is retained after individual record retirement, so the
+same consumed transition cannot mint a second reference; this is one scalar,
+not an unbounded audit log.
+
+The runtime epoch is distinct from permission revision G and host-service
+generations. Stage 2 uses the runtime authority mutex as a short outer
+ordering gate for approval response, once consumption, claim, revoke/clear and
+lifecycle invalidation. The lock order is Chat mutex → authority gate for
+conversation/root reset; otherwise authority gate → coordinator → permission
+store. Claim uses authority gate → permission snapshot. No code under the
+permission-store lock calls back into Chat or the authority gate. User waits,
+host callbacks, execution and cleanup remain outside the gate. Dialog
+invalidation callbacks run after Chat and authority locks are released. Runtime
+composition clones the injected in-memory grants so the caller cannot retain a
+mutation handle to its live store; Chat revoke/clear/reset/shutdown use the
+runtime-owned ordering gate. Untracked revisions remain fail-closed.
+
+Lifecycle invalidation does not imply that a future worker is terminated or
+that publication is synchronized; Stage 3–5 must provide the host barrier and
+dispatcher integration. A `ClaimReadExecution` is a one-shot validation seam
+only. The shipped tool catalog remains unchanged, `read_file` is still
+unavailable, and no target admission, read, result capture or provider handoff
+was added. Stage 3 owner barriers, Stage 4 sandbox/capture, Stage 5
+batch/publication lifecycle and Stage 6 native acceptance remain pending.
+
+Stage 2 validation on the review branch passed `go mod verify`, `go vet ./...`,
+`go test ./...`, `go test -race ./...`, `make check`, and `git diff --check`
+using Go 1.26.10. These are repository/authority checks, not native
+filesystem-enforcement evidence.

@@ -131,16 +131,23 @@ text-only behavior.
 
 Generic reads remain disabled even on a host with a trusted Bubblewrap backend.
 The fixed worker is composed for future reviewed use but receives no target
-descriptor through the shipped chat. This slice does not implement the unknown
-in-root-data policy, provider-source owner integration, Token Logger owner
-hooks, read_file, listing, recursion, writes, deletion,
-shell execution, or non-Linux enforcement. Real native positive-control
-evidence and implementation review remain required before any typed-read
-enablement task. The maintainer has accepted the unknown in-root disclosure
+descriptor through the shipped chat. This slice does not enable generic reads
+under the accepted unknown in-root-data policy. Provider-source owner
+integration, Token Logger owner hooks, `read_file`, listing, recursion, writes,
+deletion, shell execution, and non-Linux enforcement remain absent. Real native
+positive-control evidence and implementation review remain required before
+any typed-read enablement task. The maintainer has accepted the unknown in-root disclosure
 policy for staged implementation. Stage 1 adds only explicit
 in-memory `/fs-root` selection/status/clear and a lifecycle invalidation seam.
-It does not alter the read refusal, grant permission, or prove future worker
-enforcement. Later implementation stages remain pending.
+Stage 2, on the current checked-authority review branch, adds revision-checked
+approval/once-consumption evidence, canonical request binding that includes a
+trusted host admission digest, and a bounded private one-shot authority ledger
+with runtime lifecycle invalidation. It does not open a file, create an
+admission, expose a read tool, capture content or connect publication to a
+provider request. Host-service generation barriers and worker/publication
+synchronization remain later-stage requirements; the runtime epoch is not a
+substitute for those barriers. The shipped registry still has no `read_file`,
+and generic reads remain refused.
 
 ## Validation commands
 
