@@ -28,6 +28,7 @@ import (
 	oauthauth "github.com/ayeshLK/komposyn/internal/harness/auth/openai"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
+	"github.com/ayeshLK/komposyn/internal/harness/sandbox"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
 	harnessui "github.com/ayeshLK/komposyn/internal/harness/ui"
 	provideranthropic "github.com/ayeshLK/komposyn/plugins/model-provider/anthropic"
@@ -43,6 +44,9 @@ var cliVersion = "dev"
 var cliCommit = "unknown"
 
 func main() {
+	if handled, code := sandbox.WorkerBootstrap(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	if err := newCommand().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -58,9 +62,40 @@ func newCommand() *cobra.Command {
 		Short:   "Start a temporary text chat with an OpenAI or Anthropic model",
 		Long:    "KompoSyn runs a local experimental chat. Use /model to add a provider profile, discover models, and select one. Messages and model selection exist only until exit; credentials and UI settings are stored locally.",
 		Args:    cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			profileStore := auth.Store{Path: authPath}
-			settingsStore := settings.Store{Path: settingsPath}
+		RunE: func(cmd *cobra.Command, _ []string) (runErr error) {
+			hostSandbox, err := sandbox.NewHostService("/usr/bin/bwrap")
+			if err != nil {
+				return err
+			}
+			serviceClosed := false
+			closeSandbox := func(ctx context.Context) error {
+				if serviceClosed {
+					return nil
+				}
+				err := hostSandbox.Close(ctx)
+				if err == nil {
+					serviceClosed = true
+				}
+				return err
+			}
+			defer func() {
+				if !serviceClosed {
+					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					defer cancel()
+					runErr = errors.Join(runErr, closeSandbox(ctx))
+				}
+			}()
+			profileStore := auth.Store{Path: authPath, Protection: hostSandbox}
+			settingsStore := settings.Store{Path: settingsPath, Protection: hostSandbox}
+			// Register each store's own effective path before loading or exposing
+			// auth/settings state. In particular, --auth-file does not relocate
+			// the settings default.
+			if err := profileStore.RegisterProtection(cmd.Context()); err != nil {
+				return fmt.Errorf("register auth protection: %w", err)
+			}
+			if err := settingsStore.RegisterProtection(cmd.Context()); err != nil {
+				return fmt.Errorf("register settings protection: %w", err)
+			}
 			prefs, err := settingsStore.Load()
 			if err != nil {
 				return err
@@ -105,12 +140,13 @@ func newCommand() *cobra.Command {
 			approvalBridge := harnessui.NewApprovalBridge()
 			clarificationBridge := harnessui.NewClarificationBridge()
 			toolRuntime := runtime.BundledConversationToolRuntimeConfig(approvalBridge, clarificationBridge)
+			toolRuntime.Preparer = hostSandbox
 			chat := runtime.NewChatWithToolRuntime(registry, profileStore, authRegistry, toolRuntime)
-			runErr := frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore, Version: cliVersion, Approval: approvalBridge, Clarification: clarificationBridge})
-			chat.Close()
+			runErr = frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore, Version: cliVersion, Approval: approvalBridge, Clarification: clarificationBridge})
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			return errors.Join(runErr, oauthManager.Close(shutdownCtx))
+			chatCloseErr := chat.CloseContext(shutdownCtx)
+			return errors.Join(runErr, chatCloseErr, oauthManager.Close(shutdownCtx), closeSandbox(shutdownCtx))
 		},
 	}
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")

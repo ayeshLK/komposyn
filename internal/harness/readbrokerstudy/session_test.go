@@ -322,7 +322,7 @@ func newSessionFixture(t *testing.T, root string) *sessionFixture {
 func newCoveredSession(t *testing.T, registry *Registry, root string, launcher WorkerLauncher, authorizer FixtureAuthorizer) FixtureSession {
 	t.Helper()
 	coverage := NewSyntheticStudyInventory()
-	session, err := NewFixtureSession(registry, NewBroker(registry), launcher, authorizer, coverage)
+	session, err := NewHostCoordinator(registry, NewBroker(registry), launcher, authorizer, coverage)
 	if err != nil {
 		t.Fatal(err)
 	}

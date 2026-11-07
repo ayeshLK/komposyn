@@ -524,7 +524,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
 	coverage := newSyntheticStudyInventory()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
+	session, err := readbrokerstudy.NewHostCoordinator(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
 	if err != nil {
 		_ = registry.Close()
 		return results, err
@@ -833,7 +833,7 @@ func newStudySession(bwrap, workerPath, root string, hold bool) (*readbrokerstud
 	}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
 	coverage := newSyntheticStudyInventory()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
+	session, err := readbrokerstudy.NewHostCoordinator(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
 	if err != nil {
 		_ = launcher.Close()
 		_ = registry.Close()
@@ -1158,7 +1158,7 @@ func runLifecycleCoordinator(args []string) error {
 	observed := &observedWorkerLauncher{inner: launcher}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
 	coverage := newSyntheticStudyInventory()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), observed, authorizer, coverage)
+	session, err := readbrokerstudy.NewHostCoordinator(registry, readbrokerstudy.NewBroker(registry), observed, authorizer, coverage)
 	if err != nil {
 		_ = observed.Close()
 		_ = registry.Close()
@@ -1818,7 +1818,7 @@ func newObservedSession(bwrap, workerPath, root string, hold bool, gate *termina
 	launcher := &observedWorkerLauncher{inner: native, gate: gate}
 	authorizer := readbrokerstudy.NewOnceGrantFixture()
 	coverage := newSyntheticStudyInventory()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
+	session, err := readbrokerstudy.NewHostCoordinator(registry, readbrokerstudy.NewBroker(registry), launcher, authorizer, coverage)
 	if err != nil {
 		_ = launcher.Close()
 		_ = registry.Close()
@@ -2827,7 +2827,7 @@ func newProviderFixture(bwrap, workerPath, parent, name string) (*providerFixtur
 		after: make(map[string]func(readbrokerstudy.AuthorizationRequest)),
 	}
 	coverage := newSyntheticStudyInventory()
-	session, err := readbrokerstudy.NewFixtureSession(registry, readbrokerstudy.NewBroker(registry), launcher, mutating, coverage)
+	session, err := readbrokerstudy.NewHostCoordinator(registry, readbrokerstudy.NewBroker(registry), launcher, mutating, coverage)
 	if err != nil {
 		_ = launcher.Close()
 		_ = registry.Close()

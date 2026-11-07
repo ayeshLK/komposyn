@@ -113,6 +113,18 @@ func withTerminationDiagnostic(detail string, result workerTerminationResult) st
 var _ FixtureSession = (*fixtureSession)(nil)
 
 func NewFixtureSession(registry PolicyRegistry, broker ReadBroker, launcher WorkerLauncher, authorizer FixtureAuthorizer, inventory ...*CoverageInventory) (FixtureSession, error) {
+	return newSession(registry, broker, launcher, authorizer, inventory...)
+}
+
+// NewHostCoordinator composes the broker, fixed worker, trusted authorization
+// adapter, and caller-owned coverage inventory. The production chat uses a
+// profile whose unknown-root gate is kept outside this coordinator and
+// permanently closed; synthetic inventories remain confined to the study.
+func NewHostCoordinator(registry PolicyRegistry, broker ReadBroker, launcher WorkerLauncher, authorizer FixtureAuthorizer, inventory *CoverageInventory) (HostCoordinator, error) {
+	return newSession(registry, broker, launcher, authorizer, inventory)
+}
+
+func newSession(registry PolicyRegistry, broker ReadBroker, launcher WorkerLauncher, authorizer FixtureAuthorizer, inventory ...*CoverageInventory) (*fixtureSession, error) {
 	if registry == nil || broker == nil || launcher == nil || authorizer == nil {
 		return nil, ErrUnavailable
 	}

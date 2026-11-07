@@ -17,6 +17,7 @@ package readbrokerstudy
 type OwnerEvidence string
 
 const OwnerEvidenceFixture OwnerEvidence = "synthetic_fixture"
+const OwnerEvidenceComposition OwnerEvidence = "trusted_chat_composition"
 
 type OwnerLifecycle string
 

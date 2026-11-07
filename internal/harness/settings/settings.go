@@ -62,7 +62,7 @@ func (s Store) EffectivePath() (string, error) { return s.path() }
 // RegisterProtection registers the effective settings route and current
 // object, if present, with the host-owned protection lifecycle.
 func (s Store) RegisterProtection(ctx context.Context) error {
-	path, err := s.path()
+	path, err := s.EffectivePath()
 	if err != nil {
 		return err
 	}

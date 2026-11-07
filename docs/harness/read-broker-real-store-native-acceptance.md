@@ -10,8 +10,10 @@ registers synthetic paths and writes through a synthetic descriptor. Tests in
 `cmd/read-broker-study/owner_integration_test.go` call the real auth and
 settings stores with `ownerLifecycleTestSession`, not Bubblewrap. This study
 adds separately named cases that use the public stores with the actual
-`FixtureSession`, study adapter and Bubblewrap worker. Older rows retain their
-historical meaning and are not substituted for these cases.
+`FixtureSession`, study adapter and Bubblewrap worker. The shipped chat now has
+a separate host composition adapter and coordinator for auth/settings
+protection, but its unknown-root gate prevents target reads. Older rows retain
+their historical meaning and are not substituted for these cases.
 
 ## Composition exercised by the new cases
 
@@ -27,8 +29,10 @@ auth.Store or settings.Store (explicit disposable override path)
 Only synthetic values and temporary files are used. The fixture does not open
 user auth/settings paths, use provider credentials, connect to a provider, or
 expose synthetic secret bytes in logs or reports. The store receives the
-research-only adapter through its existing optional protection hook. No adapter
-or worker is installed in `cmd/harness`.
+research-only observation adapter through its existing optional protection
+hook. `cmd/harness` separately injects its host service through the same store
+hooks before loading configuration. Its generic-read gate remains closed and
+no model-facing filesystem tool is registered.
 
 The report gives auth and settings distinct IDs under the `real_auth_` and
 `real_settings_` prefixes. The additive `real_store` object identifies store,
@@ -36,7 +40,10 @@ operation, override/registration state, identity and cleanup correlations,
 policy generations, once-grant counts, and stale-publication suppression. It
 contains no paths, serialized JSON, credentials, or worker result bytes. Normal
 environment preflight still applies: an unavailable trusted Bubblewrap backend
-makes native rows unavailable, not passed.
+makes native rows unavailable, not passed. The study's observation adapter is
+research-only; `cmd/harness` separately wires its own host service adapter to
+the same store hooks before loading configuration. This does not enable a
+model-facing filesystem tool.
 
 When a case cannot confirm direct worker join, active-operation completion,
 and pin release, it is downgraded to `inconclusive` with

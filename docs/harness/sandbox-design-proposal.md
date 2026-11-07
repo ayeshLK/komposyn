@@ -6,6 +6,11 @@ This document consolidates the direction reviewed for
 that target from the experimental code currently delivered. It does not enable
 filesystem or shell tools. Native run records belong in the tracking issue.
 
+This implementation wires the current chat's auth/settings owner lifecycle
+and a pre-consumption runtime refusal seam around the fixed Linux worker. It does
+not change the unknown-root-data gate or add a model-facing filesystem tool;
+see [composition admission and sandbox service](composition-admission-sandbox-service.md).
+
 ## Authority and permission target
 
 The agreed direction is **mounted-tree/object authority (B)**. An approved
@@ -79,7 +84,9 @@ Unknown required coverage makes an affected capability unavailable.
 Protection must cover reserved locations and protected objects, aliases,
 replacement and rotation. A pinned directory alone is not an inventory of all
 past, present and future descendants. Owner coordination must precede sensitive
-writes; the research registry is not yet that production integration.
+writes. The memory-chat host service now wires the real auth/settings store
+hooks through the existing registry and coordinator, but this does not cover
+provider sources, Token Logger databases or arbitrary root contents.
 Directory grants describe current entries, while an exact-file preparation
 binds the approved identity and requires fresh preparation after replacement.
 
@@ -96,8 +103,9 @@ Parent death and descendant cleanup need their own native evidence.
 | --- | --- |
 | [Filesystem foundation](filesystem-enforcement-foundation.md), PR #212, and [policy/counterexamples](filesystem-enablement-policy.md), PR #213 | Host-side primitives demonstrate why retained descriptors do not establish A; no model-facing access. |
 | [Linux sandbox study](sandbox-feasibility-study.md), PR #216 | Disposable experiments, not a reusable execution service. |
-| [Brokered read harness](read-broker-feasibility.md), PR #219 | Fixed worker, fixture registry and publication coordinator; no application/provider integration. |
+| [Brokered read harness](read-broker-feasibility.md), PR #219 | Fixed worker, fixture registry and publication coordinator; no auth/settings or provider-source integration at that point. |
 | Worker startup and Bubblewrap compatibility, PRs #220–#221 | Descriptor-bind or bounded sealed-copy launch selected by features; each mode still needs native evidence. |
+| Composition admission and non-exposing host service (this implementation) | Auth/settings registrations and the runtime preparation seam are wired to the fixed worker coordinator; the independent unknown-root gate still refuses every generic read. |
 | [Manual evidence runner](read-broker-manual-runner.md), PR #222 | Reproducible source and bounded reports; its default remains the older #221 baseline. |
 | Read handoff and outcome corrections, PR #223 | Fixes valid packet decoding, joined-worker classification and conservative directory-coverage refusals; merged fixes are not a verified native pass. |
 
@@ -126,8 +134,11 @@ Remaining gates are:
    unit tests from actual sandbox observations.
 3. Verify parent-death behavior, worker termination and descriptor/resource
    cleanup, including incomplete shutdown and stale-result suppression.
-4. Integrate authoritative owner inventory and the reviewed lifecycle with the
-   real runtime, permissions UI, root selection and provider publication path.
+4. Extend the trusted composition beyond auth/settings only when the actual
+   host graph owns those resources; provider-source identity/open lifecycle
+   and the unknown-root-data boundary remain unresolved. The runtime has a
+   pre-consumption preparation seam, but no read tool, root UI, or provider
+   publication path is enabled.
 5. Review typed-read enablement independently. Write, rename, deletion and shell
    need their own profiles, limits and acceptance evidence before registration.
 
