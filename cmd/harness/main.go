@@ -141,6 +141,7 @@ func newCommand() *cobra.Command {
 			clarificationBridge := harnessui.NewClarificationBridge()
 			toolRuntime := runtime.BundledConversationToolRuntimeConfig(approvalBridge, clarificationBridge)
 			toolRuntime.Preparer = hostSandbox
+			toolRuntime.RootHost = hostSandbox
 			chat := runtime.NewChatWithToolRuntime(registry, profileStore, authRegistry, toolRuntime)
 			runErr = frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore, Version: cliVersion, Approval: approvalBridge, Clarification: clarificationBridge})
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

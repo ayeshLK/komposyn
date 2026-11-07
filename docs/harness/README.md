@@ -45,8 +45,11 @@ do not accept credential values. Startup creates no chat database.
 
 The auth and settings stores expose a host-owned protection hook. The shipped
 chat now wires those stores to a host sandbox composition before loading their
-contents, but generic reads remain blocked by the unresolved unknown-root-data
-gate and no filesystem tool is registered. See the
+contents. The maintainer has accepted the bounded exact-file disclosure policy
+for staged implementation, but generic reads remain unavailable until later
+stages implement and validate the authority pipeline. `/fs-root` selects an
+in-memory lookup root; selection grants no access. No filesystem tool is
+registered. See the
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).

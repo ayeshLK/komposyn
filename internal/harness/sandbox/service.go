@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
@@ -74,10 +75,18 @@ type implementation interface {
 // Service is constructed only by trusted executable composition. The
 // constructor fixes the production profile; callers cannot submit owner
 // applicability or a generic-read completeness assertion.
-type Service struct{ impl implementation }
+type Service struct {
+	impl               implementation
+	rootMu             sync.Mutex
+	rootClosed         bool
+	rootConversationID string
+	rootGeneration     uint64
+	rootPath           string
+}
 
 var _ auth.SensitiveFileProtector = (*Service)(nil)
 var _ runtime.ToolPreparer = (*Service)(nil)
+var _ runtime.FilesystemRootHost = (*Service)(nil)
 
 func NewHostService(bubblewrapPath string) (*Service, error) {
 	impl, err := newHostImplementation(bubblewrapPath)
@@ -106,7 +115,56 @@ func (s *Service) Close(ctx context.Context) error {
 	if s == nil || s.impl == nil {
 		return nil
 	}
+	s.rootMu.Lock()
+	s.rootClosed = true
+	s.rootPath = ""
+	s.rootConversationID = ""
+	s.rootGeneration++
+	s.rootMu.Unlock()
 	return s.impl.Close(ctx)
+}
+
+// ValidateFilesystemRoot checks only the user-selected path for display and
+// future lookup. It opens no target, retains no descriptor, and does not turn
+// selection into permission.
+func (s *Service) ValidateFilesystemRoot(ctx context.Context, path string) (string, error) {
+	if s == nil || s.impl == nil {
+		return "", ErrServiceClosed
+	}
+	s.rootMu.Lock()
+	closed := s.rootClosed
+	s.rootMu.Unlock()
+	if closed {
+		return "", ErrServiceClosed
+	}
+	return runtime.CanonicalFilesystemRoot(ctx, path)
+}
+
+// InvalidateFilesystemRoot records the newest conversation root generation.
+// This Stage 1 service has no admitted read work to join; later stages must
+// extend this callback to cancel and confirm cleanup before acknowledging it.
+func (s *Service) InvalidateFilesystemRoot(ctx context.Context, transition runtime.FilesystemRootTransition) error {
+	if ctx == nil {
+		return context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || s.impl == nil {
+		return ErrServiceClosed
+	}
+	s.rootMu.Lock()
+	defer s.rootMu.Unlock()
+	if s.rootClosed {
+		return ErrServiceClosed
+	}
+	if transition.Generation < s.rootGeneration {
+		return nil
+	}
+	s.rootConversationID = transition.ConversationID
+	s.rootGeneration = transition.Generation
+	s.rootPath = transition.Root
+	return ctx.Err()
 }
 
 func (s *Service) CoverageSnapshot() CoverageSnapshot {

@@ -8,7 +8,7 @@ tools, or establish production owner coverage. It is based on source at
 The subsequent implementation of the auth/settings composition, runtime
 pre-consumption seam and non-exposing Linux service is documented in
 [composition admission and sandbox service](composition-admission-sandbox-service.md).
-This proposal remains the source for the reviewed unknown-data refusal
+This proposal records the historical design and current unknown-data refusal
 boundary; implementation has not enabled generic reads.
 
 ## Recommendation
@@ -195,18 +195,22 @@ generic read profile under the accepted mandatory-protection rules.
 
 The separate decision packet
 ([unregistered exact-file read policy](read-broker-unregistered-read-policy.md))
-compares retaining this refusal with a proposed once-approved disclosure of an
-otherwise-unregistered exact file. The latter is a recommendation for
-maintainer review, not an accepted policy. The service's current behavior and
-this document's refusal remain in force unless the maintainer explicitly
-accepts a revised rule. The historical #243 service result and its reproducible
+compares retaining this refusal with a once-approved disclosure of an
+otherwise-unregistered exact file. The maintainer accepted the consolidated
+six-clause contract for staged implementation in the [issue decision
+comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902).
+The service's current behavior and this document's refusal remain in force
+until implementation and enablement gates are separately completed. Stage 1
+adds `/fs-root` selection/status/clear as in-memory lookup scope only; it does
+not change access. The historical #243 service result and its reproducible
 runner are recorded in [composition native acceptance](read-broker-composition-native-acceptance.md);
 that evidence does not alter the gate.
 
 ## Proposed user and runtime lifecycle
 
-This is a design for a later implementation; the existing executable has no
-filesystem-root command.
+This diagram records the staged design. Stage 1 implements explicit root
+selection/status/clear and lifecycle invalidation; admission, approval, worker,
+capture and publication remain future work.
 
 ```text
 text-only chat (no root required)

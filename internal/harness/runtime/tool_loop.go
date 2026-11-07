@@ -111,6 +111,7 @@ type ToolRuntimeConfig struct {
 	Authorizer    ToolAuthorizer
 	Enforcer      ToolEnforcer
 	Preparer      ToolPreparer
+	RootHost      FilesystemRootHost
 	Approval      ToolApprovalInteraction
 	Clarification ToolClarificationInteraction
 	Grants        *permissions.MemoryStore
@@ -127,6 +128,7 @@ type toolRuntime struct {
 	authorizer     ToolAuthorizer
 	enforcer       ToolEnforcer
 	preparer       ToolPreparer
+	rootHost       FilesystemRootHost
 	approval       ToolApprovalInteraction
 	clarification  ToolClarificationInteraction
 	grants         *permissions.MemoryStore
@@ -309,7 +311,7 @@ func newToolRuntime(config ToolRuntimeConfig) *toolRuntime {
 	}
 	evaluator := permissions.Evaluator{Rules: config.Rules, Grants: config.Grants}
 	return &toolRuntime{
-		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer,
+		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer, rootHost: config.RootHost,
 		approval: config.Approval, clarification: config.Clarification, grants: config.Grants, plans: config.Plans, evaluator: evaluator,
 		coordinator: permissions.NewCoordinator(evaluator, config.Grants),
 	}
