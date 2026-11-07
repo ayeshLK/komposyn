@@ -60,6 +60,7 @@ type Snapshot struct {
 	Active         bool
 	ToolActivities []ToolActivity
 	Plan           []tools.PlanStep
+	FilesystemRoot FilesystemRootStatus
 }
 type UsageMetric struct {
 	Tokens  int64
@@ -98,6 +99,11 @@ type Chat struct {
 	conversationIDErr     error
 	toolCallIDs           map[string]struct{}
 	activeToolActivities  []ToolActivity
+	filesystemRoot        string
+	filesystemRootGen     uint64
+	filesystemRootAck     uint64
+	filesystemRootOp      uint64
+	filesystemRootEvent   *FilesystemRootTransition
 	closed                bool
 }
 
@@ -122,7 +128,7 @@ func NewChatWithAuth(providers *model.Registry, profiles auth.Store, registry *a
 		registry = auth.NewRegistry()
 	}
 	conversationID, conversationErr := newConversationID()
-	chat := &Chat{catalog: model.Catalog{Providers: providers, Profiles: profiles, Auth: registry}, profiles: profiles, authRegistry: registry, timeout: 2 * time.Minute, conversationID: conversationID, conversationIDErr: conversationErr}
+	chat := &Chat{catalog: model.Catalog{Providers: providers, Profiles: profiles, Auth: registry}, profiles: profiles, authRegistry: registry, timeout: 2 * time.Minute, conversationID: conversationID, conversationIDErr: conversationErr, filesystemRootGen: 1, filesystemRootAck: 1}
 	if implementation, ok := registry.Lookup("openai", auth.MethodOAuth); ok {
 		if coordinator, ok := implementation.(auth.OAuthCoordinator); ok {
 			chat.oauth = coordinator
@@ -163,20 +169,31 @@ func (c *Chat) CloseContext(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	firstClose := !c.closed
+	var rootEvent *FilesystemRootTransition
 	if firstClose {
 		c.closed = true
 		c.history = nil
 		c.toolCallIDs = nil
+		rootEvent = c.clearFilesystemRootLocked(FilesystemRootShutdown, true)
 	}
 	cancel := c.cancel
 	activeDone := c.activeDone
 	conversationID, runtime := c.conversationID, c.toolRuntime
+	rootHost := c.filesystemRootHostLocked()
+	if rootEvent == nil && c.filesystemRootAck < c.filesystemRootGen && c.filesystemRootEvent != nil {
+		copy := *c.filesystemRootEvent
+		rootEvent = &copy
+	}
 	c.mu.Unlock()
 	if runtime != nil {
 		runtime.beginShutdown()
 	}
 	if cancel != nil {
 		cancel()
+	}
+	var rootErr error
+	if rootEvent != nil {
+		rootErr = c.notifyFilesystemRoot(ctx, rootHost, *rootEvent)
 	}
 	if firstClose && runtime != nil && conversationID != "" {
 		runtime.grants.Clear(conversationID)
@@ -193,13 +210,13 @@ func (c *Chat) CloseContext(ctx context.Context) error {
 		select {
 		case <-activeDone:
 		case <-ctx.Done():
-			return fmt.Errorf("active chat turn did not stop before shutdown: %w", ctx.Err())
+			return errors.Join(rootErr, fmt.Errorf("active chat turn did not stop before shutdown: %w", ctx.Err()))
 		}
 	}
 	if runtime != nil {
-		return runtime.shutdownAndDrain(ctx)
+		return errors.Join(rootErr, runtime.shutdownAndDrain(ctx))
 	}
-	return nil
+	return rootErr
 }
 
 // ToolGrants returns detached, in-memory grants for the current conversation.
@@ -282,6 +299,10 @@ func (c *Chat) StartLogin(ctx context.Context, providerID string, method auth.Me
 		c.mu.Unlock()
 		return auth.OAuthLoginAttempt{}, ErrRequestActive
 	}
+	selectedProfile := c.selected != nil && c.selected.ProfileID == profileID
+	if selectedProfile {
+		c.supersedeFilesystemRootOperationsLocked()
+	}
 	c.credentialBusy = true
 	c.credentialBusyProfile = profileID
 	c.mu.Unlock()
@@ -304,15 +325,21 @@ func (c *Chat) StartLogin(ctx context.Context, providerID string, method auth.Me
 	c.loginMu.Unlock()
 	go func() {
 		result := <-loginDone
-		if result.Err == nil {
-			c.mu.Lock()
-			c.discovery = nil
-			c.mu.Unlock()
-		}
 		c.mu.Lock()
+		var rootEvent *FilesystemRootTransition
+		if result.Err == nil && !c.closed {
+			c.discovery = nil
+			if c.selected != nil && c.selected.ProfileID == profileID {
+				rootEvent = c.clearFilesystemRootLocked(FilesystemRootProfileChanged, true)
+			}
+		}
 		c.credentialBusy = false
 		c.credentialBusyProfile = ""
+		rootHost := c.filesystemRootHostLocked()
 		c.mu.Unlock()
+		if rootEvent != nil {
+			_ = c.notifyFilesystemRoot(context.Background(), rootHost, *rootEvent)
+		}
 		c.loginMu.Lock()
 		delete(c.loginOwners, attempt.ID)
 		c.loginMu.Unlock()
@@ -372,21 +399,28 @@ func (c *Chat) Disconnect(ctx context.Context, providerID string, method auth.Me
 		c.mu.Unlock()
 		return auth.OAuthDisconnectResult{}, ErrConversationReset
 	}
+	if selected {
+		c.supersedeFilesystemRootOperationsLocked()
+	}
 	c.credentialBusy = true
 	c.credentialBusyProfile = profileID
 	c.mu.Unlock()
 	result, err := coordinator.Disconnect(ctx, profileID, removeRegistration)
 	c.mu.Lock()
+	var rootEvent *FilesystemRootTransition
 	if result.LocalTokensRemoved || result.LocalRegistrationRemoved {
 		if selected && c.selected != nil && c.selected.ProfileID == profileID {
 			c.selected = nil
-			c.clearConversationLocked()
+			rootEvent = c.clearConversationLocked(FilesystemRootProfileChanged)
 		}
 		c.discovery = nil
 	}
 	c.credentialBusy = false
 	c.credentialBusyProfile = ""
 	c.mu.Unlock()
+	if rootEvent != nil {
+		err = errors.Join(err, c.notifyFilesystemRoot(ctx, c.filesystemRootHost(), *rootEvent))
+	}
 	return result, err
 }
 
@@ -405,7 +439,6 @@ func (c *Chat) Discover(ctx context.Context) model.Discovery {
 }
 func (c *Chat) Snapshot() Snapshot {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	var selected *model.Model
 	if c.selected != nil {
 		x := *c.selected
@@ -430,7 +463,11 @@ func (c *Chat) Snapshot() Snapshot {
 	if c.toolRuntime != nil {
 		plan = c.toolRuntime.plans.Snapshot(c.conversationID)
 	}
-	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: c.active, ToolActivities: activities, Plan: plan}
+	rootPath, rootGeneration, rootAck := c.filesystemRoot, c.filesystemRootGen, c.filesystemRootAck
+	rootHost := c.filesystemRootHostLocked()
+	active := c.active
+	c.mu.Unlock()
+	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan, FilesystemRoot: filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost)}
 }
 
 func (c *Chat) recordUsageLocked(providerID provider.ID, modelID string, usage provider.Usage) {
@@ -537,19 +574,28 @@ func (c *Chat) ReplaceProfile(ctx context.Context, id, label, key string, route 
 		c.mu.Unlock()
 		return ErrConversationReset
 	}
+	if c.selected != nil && c.selected.ProfileID == id {
+		c.supersedeFilesystemRootOperationsLocked()
+	}
 	c.mu.Unlock()
 	if err := c.profiles.ReplaceAPIKeyContext(ctx, id, label, key, route); err != nil {
 		return err
 	}
 	c.mu.Lock()
 	c.discovery = nil
+	var rootEvent *FilesystemRootTransition
 	if c.selected != nil && c.selected.ProfileID == id {
 		if len(c.turns) > 0 {
-			c.clearConversationLocked()
+			rootEvent = c.clearConversationLocked(FilesystemRootProfileChanged)
+		} else {
+			rootEvent = c.clearFilesystemRootLocked(FilesystemRootProfileChanged, true)
 		}
 		c.selected = nil
 	}
 	c.mu.Unlock()
+	if rootEvent != nil {
+		return c.notifyFilesystemRoot(ctx, c.filesystemRootHost(), *rootEvent)
+	}
 	return nil
 }
 func (c *Chat) RemoveProfile(id string, confirmReset bool) error {
@@ -562,21 +608,29 @@ func (c *Chat) RemoveProfile(id string, confirmReset bool) error {
 		c.mu.Unlock()
 		return ErrConversationReset
 	}
+	if c.selected != nil && c.selected.ProfileID == id {
+		c.supersedeFilesystemRootOperationsLocked()
+	}
 	c.credentialBusy = true
 	c.credentialBusyProfile = id
 	c.mu.Unlock()
 	err := c.profiles.RemoveContext(context.Background(), id)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.credentialBusy = false
 	c.credentialBusyProfile = ""
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
 	c.discovery = nil
+	var rootEvent *FilesystemRootTransition
 	if c.selected != nil && c.selected.ProfileID == id {
 		c.selected = nil
-		c.clearConversationLocked()
+		rootEvent = c.clearConversationLocked(FilesystemRootProfileChanged)
+	}
+	c.mu.Unlock()
+	if rootEvent != nil {
+		return c.notifyFilesystemRoot(context.Background(), c.filesystemRootHost(), *rootEvent)
 	}
 	return nil
 }
@@ -606,24 +660,35 @@ func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error 
 		return ErrNoSuchModel
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.active || c.credentialBusy {
+		c.mu.Unlock()
 		return ErrRequestActive
 	}
 	if c.selected != nil && c.selected.Key() == selected.Key() {
+		c.mu.Unlock()
 		return nil
 	}
 	if len(c.turns) > 0 && !confirmReset {
+		c.mu.Unlock()
 		return ErrConversationReset
 	}
+	var rootEvent *FilesystemRootTransition
 	if len(c.turns) > 0 {
-		c.clearConversationLocked()
+		rootEvent = c.clearConversationLocked(FilesystemRootModelChanged)
+	} else {
+		rootEvent = c.clearFilesystemRootLocked(FilesystemRootModelChanged, true)
 	}
 	c.selected = &selected
+	rootHost := c.filesystemRootHostLocked()
+	c.mu.Unlock()
+	if rootEvent != nil {
+		return c.notifyFilesystemRoot(ctx, rootHost, *rootEvent)
+	}
 	return nil
 }
-func (c *Chat) clearConversationLocked() {
+func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *FilesystemRootTransition {
 	oldID := c.conversationID
+	rootEvent := c.clearFilesystemRootLocked(reason, true)
 	c.history = nil
 	c.turns = nil
 	c.toolCallIDs = nil
@@ -639,6 +704,10 @@ func (c *Chat) clearConversationLocked() {
 		}
 	}
 	c.conversationID, c.conversationIDErr = newConversationID()
+	if rootEvent != nil {
+		rootEvent.ConversationID = oldID
+	}
+	return rootEvent
 }
 
 func (c *Chat) Cancel() {

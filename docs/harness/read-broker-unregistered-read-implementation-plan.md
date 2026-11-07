@@ -1,10 +1,13 @@
-# Exact-file read implementation plan: reconstructed planning proposal
+# Exact-file read implementation plan
 
-**Status: reconstructed for review; disclosure policy unapproved; reads disabled.**
+**Status: staged implementation plan; disclosure policy accepted for implementation; reads remain disabled.**
 This is a new source-grounded plan, not exact recovery or verification of the
-missing local handoff. It changes no runtime behavior, permissions, root UI,
-coverage declaration or tool registration. Requesting this document, accepting
-opened-object authority B, and merging #244 do not approve disclosure option B.
+missing local handoff. The maintainer later accepted all six clauses in the
+[explicit acceptance comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902)
+for staged implementation. That supersedes the historical pending-policy
+wording below, but does not mean reads are implemented or enabled. This plan
+itself changes no runtime behavior, permissions, coverage declaration or tool
+registration.
 
 ## Baseline, durable context and evidence limits
 
@@ -41,21 +44,25 @@ was `native_unavailable` after backend trust refusal; unavailable is not an
 isolation pass. Do not combine results or repeat #244 preservation work.
 No proposed implementation or native tests were run for this reconstruction.
 
-## One complete policy decision
+## Accepted policy decision
 
 Opened-object authority B is accepted direction: an independent ordinary
 rename/alias alone need not invalidate the approved opened object. Registered
-sensitive identities and authoritative owner transitions still dominate. This
-is distinct from **unregistered-file disclosure B**, which remains unapproved.
+sensitive identities and authoritative owner transitions still dominate.
+This is distinct from unregistered-file disclosure; the consolidated policy
+below has since been explicitly accepted for staged implementation.
 
-A retains the current refusal for unknown root data. Recommended B permits a
+A retains the current refusal for unknown root data. Accepted B permits a
 bounded exact-file disclosure despite unknown contents, with the complete
-lifecycle below. The single statement is the proposed policy authority for
-this handoff; implementation details later in the document do not approve it.
+lifecycle below. The accepted statement records the policy; the implementation
+details below do not imply that any stage has passed its separate review gate.
 
-### Copyable proposed maintainer acceptance statement
+### Accepted maintainer decision
 
-**Proposal only. Accept or revise all six clauses explicitly.**
+**The maintainer accepted all six clauses** in the [issue decision
+comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902).
+The quoted contract is retained here as provenance; implementation and
+enablement remain separate reviewed gates.
 
 > I accept the following bounded initial read-disclosure contract:
 >
@@ -94,16 +101,14 @@ this handoff; implementation details later in the document do not approve it.
 >    before another request. Late responses cannot repopulate it. Previously
 >    displayed or externally delivered copies cannot be recalled.
 
-Accepting only an earlier exact-file statement does not accept replay,
-commitment or retirement. If all recommended clauses are accepted together,
-no additional disclosure-policy answer blocks Stage 1. Revisions must be
-reconciled across design, copy and tests before implementation. Choosing A or
-leaving clauses unresolved keeps the B admission work blocked. Implementation
-review, exact-profile native acceptance and tool enablement remain separate.
+The acceptance covers replay, commitment and retirement as well as exact-file
+disclosure. No additional policy answer blocks staged implementation.
+Implementation review, exact-profile native acceptance and tool enablement
+remain separate.
 
 ### Remaining decisions and tradeoffs
 
-| Decision | Recommended initial answer, still unapproved | Alternative and practical consequence |
+| Decision | Accepted initial answer | Alternative and practical consequence |
 | --- | --- | --- |
 | Unknown file | B: exact once-approved execution and named-provider disclosure, preserving mandatory denials. | A: retain refusal. An unregistered `notes.txt` can contain a copied credential; neither name nor confirmation proves safety. |
 | Later context transmission | Allow already committed content only within clause 4's same valid binding, without another filesystem execution. State this in initial consent. | Fresh consent per later disclosure, or omit/reset sensitive context. Provider-native replay and assistant-derived text must be handled too; deleting one visible tool result does not prove omission. A follow-up about the file can otherwise resend its content. |
@@ -382,8 +387,8 @@ registration requires a distinct enablement decision after all applicable gates.
 
 | Stage / dependency | Scope and likely symbols | Acceptance / stays disabled |
 | --- | --- | --- |
-| 0: explicit complete policy decision | Record accepted/revised clauses in issue/policy/status documents through a separately authorized change. | All policy choices resolved explicitly; A or unresolved B means no unknown-file admission. This planning task records no acceptance. |
-| 1: after 0, root state/UI/lifecycle only | UI Client/Snapshot and tview supportedCommands/runCommand; Chat root state, Select/reset/CloseContext; detached service status. Explicit absolute select/status/clear, no default/persistence/grant. | Chat works with no root/backend; paths with spaces, invalid/relative inputs, canonical status, replace/clear generations, fake invalidation notifications; confirmed reset/provider change/shutdown clears even with zero turns, canceled reset preserves. Unknown gate/tool availability unchanged. No target lookup, retained FD, grant API, worker or provider integration claim. |
+| 0: explicit complete policy decision | Record accepted clauses in issue/policy/status documents. | **Complete:** all six clauses were explicitly accepted in the [issue comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902). This resolves policy only. |
+| 1: root state/UI/lifecycle only | UI Client/Snapshot and tview command; Chat root state, Select/reset/CloseContext; detached service status. Explicit absolute select/status/clear, no default/persistence/grant. | **This change:** Stage 1 only. Chat works with no root/backend; paths with spaces, invalid/relative inputs, canonical status, replace/clear generations, fake invalidation notifications; confirmed reset/provider change/shutdown clears even with zero turns, canceled reset preserves. Read tool and generic admission remain refused. No target lookup, retained FD, grant API, worker or provider integration claim. |
 | 2: after 0–1, checked authority | Permission Coordinator/store transactions; runtime canonical full-B binding, private ledger, mutation bridge and revoke/clear lifecycle. | G0/G1/G2 exact evidence, stronger read-specific once requirement, expected siblings, unrelated mutation refusal, consumed revoke/empty-store clear, duplicate/uncertain no replay. No filesystem tool enabled. |
 | 3: after 1–2, retained admission/owners | Runtime pre-approval seam; sandbox service; broker and HostCoordinator operation registry; real auth/settings owner hooks. | One lookup, bound retained object, no second consumer; denials and owner pending/drain before sensitive writes; timeout/late FD and prelaunch cleanup ownership. Historical study path remains separate. |
 | 4: after 2–3, fixed-worker capture | Authorized-execute interface, fixed worker bootstrap/probes/release, private capture and resource retirement. | One claim/release, bounded result and truthful outcomes, join/closure before descriptor-free staging, failed cleanup retained/retried. Bytes remain private; no provider or enablement claim. |
@@ -396,9 +401,10 @@ withholding; Stages 3–6 supply that evidence. Root alone is memory-only; exist
 auth/UI-settings persistence remains. Backend status is independent of access,
 coverage and approval. No caller can mark coverage complete by selecting a root.
 
-If B is accepted, Stage 0 must reconcile unknown-file applicability with trusted
-composition declarations: unknown content can include unregistered sources,
-but authoritatively classified sources still need their separate approval.
+The accepted B policy requires reconciling unknown-file applicability with
+trusted composition declarations: unknown content can include unregistered
+sources, but authoritatively classified sources still need their separate
+approval.
 Do not relabel unsupported source-owner integration as implemented or use a
 synthetic inventory to bypass required coverage. Missing required declared
 owners and incomplete directory coverage still refuse. Real source-owner
@@ -440,15 +446,14 @@ persistent project/session/task/conversation or new module is introduced.
 
 ## Conditional first implementation-worker prompt
 
-Use only after explicit policy acceptance/reconciliation; this is copyable
-future task text, not authorization to implement during this planning review.
+Policy acceptance is established by the [maintainer's six-clause issue
+comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902).
+This copyable prompt records Stage 1's scope; it does not authorize later
+stages or filesystem-read enablement.
 
-> Implement Stage 1 only of the reviewed issue #215 exact-file read plan.
-> First quote explicit maintainer acceptance of the complete consolidated
-> disclosure contract (or a fully reconciled revision), including replay,
-> logical handoff and continuation retirement. An old exact-file statement,
-> authority B, merged #244 or a planning request is insufficient. If absent,
-> return a design-only report and preserve current behavior.
+> Implement Stage 1 only of the reviewed issue #215 exact-file read plan,
+> preserving the accepted six-clause contract linked above. Do not treat that
+> acceptance as authorization for later stages or read enablement.
 >
 > Read repository conventions, verify current upstream source and preserve
 > unrelated work in an isolated checkout. Implement explicit in-memory

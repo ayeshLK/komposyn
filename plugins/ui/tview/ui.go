@@ -224,7 +224,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
 	u.planPane = tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
 	u.planPane.SetBorder(true).SetTitle(" Plan · this conversation only ")
-	u.footer = tv.NewTextView().SetText("/copy reply · /copy all · drag/double/triple select · Ctrl+T terminal select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
+	u.footer = tv.NewTextView().SetText("/fs-root · /copy reply · /copy all · drag/double/triple select · Ctrl+T terminal select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
@@ -564,6 +564,7 @@ func supportedCommands() []command {
 		{name: "/cancel", description: "stop the active reply", action: "cancel"},
 		{name: "/exit", description: "close KompoSyn", action: "exit"},
 		{name: "/permissions", description: "inspect and revoke tool grants for this conversation", action: "permissions"},
+		{name: "/fs-root", description: "select, inspect, or clear the temporary filesystem root", action: "filesystem-root"},
 		{name: "/plan", description: "show the current conversation plan", action: "plan"},
 		{name: "/copy", description: "copy latest completed reply; /copy all copies visible transcript text", action: "copy"},
 	}
@@ -1031,10 +1032,18 @@ func (u *terminal) runCommand(text string) {
 		u.openPermissions(false, false)
 	case "plan":
 		u.showPlan()
+	case "filesystem-root":
+		if trimmed == "/fs-root clear" {
+			u.clearFilesystemRoot()
+		} else if trimmed == "/fs-root" {
+			u.showFilesystemRoot()
+		} else {
+			u.write("Use /fs-root to select and inspect a root, or /fs-root clear to remove it.\n")
+		}
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model, /help, /cancel, /exit, /permissions, /plan, /copy, /copy all.\nTools on supported API-key routes: update_plan and request_user_input. Clarification answers are sent to the selected model.\nKeyboard: Up/Down recalls prompts; Ctrl+L clears display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scrolls usage; Ctrl+C copies a selection or cancels; Escape clears selection; Ctrl+T releases mouse capture.\n")
+		u.write("Commands: /model, /fs-root, /fs-root clear, /help, /cancel, /exit, /permissions, /plan, /copy, /copy all.\n/fs-root selects an explicit temporary directory; selecting it grants no file access. Filesystem reads remain disabled.\nTools on supported API-key routes: update_plan and request_user_input. Clarification answers are sent to the selected model.\nKeyboard: Up/Down recalls prompts; Ctrl+L clears display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scrolls usage; Ctrl+C copies a selection or cancels; Escape clears selection; Ctrl+T releases mouse capture.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
@@ -1042,6 +1051,108 @@ func (u *terminal) runCommand(text string) {
 		u.stop()
 	}
 	u.input.SetText("")
+}
+
+func renderFilesystemRootStatus(status ui.FilesystemRootStatus) string {
+	root := "none selected"
+	if status.Selected {
+		root = safeTerminalText(status.Path)
+	}
+	backend := "unavailable"
+	if status.BackendAvailable {
+		backend = "candidate inspection passed; worker enforcement has not been established"
+	}
+	detail := safeTerminalText(status.BackendStatus)
+	if detail == "" {
+		detail = "No sandbox backend status is available."
+	}
+	var text strings.Builder
+	fmt.Fprintf(&text, "Selected root: %s\nBackend: %s\n%s\nRead capability: disabled. Root selection grants no access.\n", root, backend, detail)
+	if status.InvalidationPending {
+		text.WriteString("Root change cleanup/invalidation is pending; filesystem work must remain unavailable.\n")
+	}
+	return text.String()
+}
+
+func (u *terminal) showFilesystemRoot() {
+	status := tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
+	status.SetBorder(true).SetTitle(" Filesystem root · temporary, no permission grant ")
+	path := tv.NewInputField().SetLabel("Absolute directory: ").SetFieldWidth(0)
+	form := tv.NewForm().SetButtonsAlign(tv.AlignCenter).AddFormItem(path)
+	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(status, 0, 1, true).AddItem(form, 3, 0, false)
+	layout.SetBorder(true).SetTitle(" /fs-root ")
+	refresh := func(message string) {
+		text := renderFilesystemRootStatus(u.client.Snapshot().FilesystemRoot)
+		if message != "" {
+			text += "\n" + safeTerminalText(message)
+		}
+		status.SetText(text)
+	}
+	refresh("")
+	selectRoot := func() {
+		selectedPath := path.GetText()
+		if selectedPath == "" {
+			refresh("Enter an absolute directory path.")
+			return
+		}
+		u.launch(func() {
+			err := u.client.SelectFilesystemRoot(u.ctx, selectedPath)
+			u.queue(func() {
+				if err != nil {
+					refresh("Root selection failed: " + err.Error())
+					return
+				}
+				refresh("Selected root updated. No filesystem permission was granted.")
+				u.updateBanner()
+			})
+		})
+	}
+	path.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEnter {
+			selectRoot()
+		}
+	})
+	form.AddButton("Select", selectRoot)
+	form.AddButton("Clear", func() {
+		u.launch(func() {
+			err := u.client.ClearFilesystemRoot(u.ctx)
+			u.queue(func() {
+				if err != nil {
+					refresh("Root clear failed: " + err.Error())
+					return
+				}
+				refresh("Root cleared. No filesystem permission was changed.")
+				u.updateBanner()
+			})
+		})
+	})
+	form.AddButton("Back", func() { u.returnToChat() })
+	status.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			u.app.SetFocus(path)
+			return nil
+		}
+		if event.Key() == tcell.KeyEscape {
+			u.returnToChat()
+			return nil
+		}
+		return event
+	})
+	u.app.SetRoot(layout, true).SetFocus(path)
+}
+
+func (u *terminal) clearFilesystemRoot() {
+	u.launch(func() {
+		err := u.client.ClearFilesystemRoot(u.ctx)
+		u.queue(func() {
+			if err != nil {
+				u.write("Filesystem root clear failed: " + safeTerminalText(err.Error()) + "\n")
+			} else {
+				u.write("Filesystem root cleared. Filesystem reads remain disabled.\n")
+			}
+			u.updateBanner()
+		})
+	})
 }
 
 func (u *terminal) openPicker() {

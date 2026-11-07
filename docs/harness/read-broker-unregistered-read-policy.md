@@ -1,18 +1,18 @@
 # Policy decision: unregistered exact-file reads
 
-**Decision requested; no policy change is approved by this document.** The
+**Decision recorded; policy accepted for staged implementation.** The
 current service refuses generic reads because it cannot prove complete
-protected-data coverage for an arbitrary selected root. This note recommends
-one narrowly scoped policy alternative for maintainer review. It neither opens
-the gate nor authorizes a root-selection UI, filesystem tool, or production
-dispatch path.
+protected-data coverage for an arbitrary selected root. This note preserves the
+originally proposed policy alternative and its evidence. Acceptance authorizes
+staged implementation; it does not open the gate, enable a filesystem tool, or
+authorize production dispatch.
 
-For the reconstructed complete disclosure/replay decision and staged handoff,
-see the [implementation planning proposal](read-broker-unregistered-read-implementation-plan.md).
-It is unapproved and does not enable reads; its consolidated statement includes
-replay, commitment and continuation retirement that require explicit review.
-Use that plan's Stage 1 prompt for the first assignment after full acceptance;
-the broad outline below does not authorize implementing the whole pipeline.
+For the complete disclosure/replay decision and staged handoff, see the
+[implementation plan](read-broker-unregistered-read-implementation-plan.md).
+The maintainer explicitly accepted its six clauses in the [issue decision
+comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902).
+That authorizes staged implementation; it does not enable reads. This note
+retains its original proposal and evidence provenance.
 
 ## Current behavior and the question
 
@@ -25,7 +25,7 @@ provider record, or independent copy of sensitive bytes. The service's
 `unknown-root-data` gate therefore returns `ErrUnknownRootData` before grant
 consumption, preparation, descriptor release, or worker launch.
 
-The decision is whether a user may explicitly authorize disclosure of one
+The accepted decision permits a user to explicitly authorize disclosure of one
 unregistered exact file despite that classification gap, while registered
 protected routes and identities remain non-approvable. Root selection and a
 warning alone do not answer this question.
@@ -35,16 +35,16 @@ warning alone do not answer this question.
 | Choice | Rule | Security and usability consequence |
 | --- | --- | --- |
 | **A. Keep the refusal** | Generic reads remain unavailable until all required protected data in the selected scope has authoritative coverage. | Preserves a conservative interpretation of the protected-data rule. Arbitrary roots may remain unusable because independent applications and copies cannot be exhaustively registered. This does not make a future inventory complete by scanning filenames or extensions. |
-| **B. Explicit exact-file disclosure (recommended for review)** | Permit a once-approved read of one otherwise-unregistered exact regular-file object under the selected root, with a clear confirmation that its contents will be sent to the selected provider. Preserve mandatory protections for registered routes/identities and classified provider sources. | Makes narrow reads useful without claiming unknown files are safe. A user can deliberately disclose an unregistered credential, database, or provider record; the tool cannot identify it by content or origin. The approval authorizes disclosure of that exact opened object, not its safety. **This is a policy change and remains unapproved.** |
+| **B. Explicit exact-file disclosure (accepted)** | Permit a once-approved read of one otherwise-unregistered exact regular-file object under the selected root, with a clear confirmation that its contents will be sent to the selected provider. Preserve mandatory protections for registered routes/identities and classified provider sources. | Makes narrow reads useful without claiming unknown files are safe. A user can deliberately disclose an unregistered credential, database, or provider record; the tool cannot identify it by content or origin. The approval authorizes disclosure of that exact opened object, not its safety. |
 
 A broad root grant, warning-only notice, suffix/content heuristic, default path
 list, or machine-wide scan is not a third safe answer. A manual per-file
 declaration could help the user understand a file's origin, but cannot prove
 its bytes contain no other sensitive data.
 
-## Proposed semantics if Choice B is accepted
+## Accepted semantics
 
-These are decision details for review, not implemented behavior.
+These policy details are accepted; enforcement remains staged and incomplete.
 
 ### Target and scope
 
@@ -149,16 +149,16 @@ the service refuses before asking for ordinary approval. If a trusted provider
 owner classifies the target as a provider source, only the separate
 provider-source approval can authorize that invocation.
 
-## Gated implementation outline
+## Staged implementation outline
 
-Begin only after an explicit maintainer decision accepting/revising Choice A
-or B. Do not treat this document's recommendation or its inclusion in a PR as
-acceptance.
+The maintainer accepted the six-clause policy in the [issue decision
+comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902).
+Implementation remains gated by separate reviewed stages; policy acceptance
+alone does not enable reads.
 
-1. **Record the policy and threat-model choice.** Specify the treatment of
-   unknown credentials/provider files and the exact text shown before
-   disclosure. Keep no implementation flag or default bypass.
-2. **Design root UX separately from permission.** Add explicit absolute-root
+1. **Record the policy and threat-model choice.** Complete. Keep no
+   implementation flag or default bypass.
+2. **Design root UX separately from permission.** Stage 1 adds explicit absolute-root
    selection for the in-memory conversation; show canonical root and backend
    status; clear on reset/shutdown; invalidate pending approvals and prepared
    work on root change. Preserve chat operation without a root.
@@ -188,10 +188,11 @@ acceptance.
    and `read_file` registration separately. A green unit suite or this
    historical native result is not that acceptance.
 
-### Copyable next-worker prompt outline (after decision only)
+### Copyable next-worker prompt outline
 
 > Implement the explicitly accepted unregistered exact-file read policy in
-> KompoSyn issue #215. First quote the maintainer's accepted decision and
+> KompoSyn issue #215. Preserve and link the maintainer's accepted decision at
+> https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902 and
 > preserve every registered auth/settings/provider-source rule. Keep the
 > current gate closed until the accepted policy, explicit root UX, once-only
 > approval and runtime-owned preparation are all represented. Implement one

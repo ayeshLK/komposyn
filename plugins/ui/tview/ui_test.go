@@ -49,6 +49,11 @@ type clientStub struct {
 	clarificationResponses chan ui.ClarificationResponse
 	toolGrants             []ui.ToolGrant
 	plan                   []ui.PlanStep
+	filesystemRoot         ui.FilesystemRootStatus
+	rootSelections         []string
+	rootClears             int
+	rootSelectionHook      func(context.Context, string) error
+	rootClearHook          func(context.Context) error
 	revoked                []string
 	cleared                int
 }
@@ -149,7 +154,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...)}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), FilesystemRoot: c.filesystemRoot}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -192,6 +197,32 @@ func (c *clientStub) ClearPermissions(context.Context) (int, error) {
 	c.toolGrants = nil
 	c.cleared += count
 	return count, nil
+}
+func (c *clientStub) SelectFilesystemRoot(ctx context.Context, path string) error {
+	c.mu.Lock()
+	c.rootSelections = append(c.rootSelections, path)
+	hook := c.rootSelectionHook
+	if hook == nil {
+		c.filesystemRoot = ui.FilesystemRootStatus{Path: path, Selected: true}
+	}
+	c.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, path)
+	}
+	return nil
+}
+func (c *clientStub) ClearFilesystemRoot(ctx context.Context) error {
+	c.mu.Lock()
+	c.rootClears++
+	hook := c.rootClearHook
+	if hook == nil {
+		c.filesystemRoot = ui.FilesystemRootStatus{}
+	}
+	c.mu.Unlock()
+	if hook != nil {
+		return hook(ctx)
+	}
+	return nil
 }
 
 func TestApprovalDialogRequiresExplicitChoiceAndEscapeCancelsTurn(t *testing.T) {
@@ -1184,7 +1215,7 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 		t.Fatalf("/m suggestions = %+v", u.commandItems)
 	}
 	u.refreshCommandSuggestions("/")
-	if len(u.commandItems) != 7 {
+	if len(u.commandItems) != 8 {
 		t.Fatalf("root slash suggestions = %+v", u.commandItems)
 	}
 	u.commandList.SetCurrentItem(1)
@@ -1207,6 +1238,84 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 	u.refreshCommandSuggestions("ordinary draft")
 	if u.suggestionsActive() {
 		t.Fatal("ordinary draft opened command suggestions")
+	}
+}
+
+func TestFilesystemRootStatusIsExplicitAndTerminalSafe(t *testing.T) {
+	status := renderFilesystemRootStatus(ui.FilesystemRootStatus{
+		Selected:            true,
+		Path:                "/tmp/review root\x1b[31m",
+		BackendAvailable:    true,
+		BackendStatus:       "inspection passed\x00; worker not started",
+		InvalidationPending: true,
+	})
+	for _, expected := range []string{
+		"Selected root: /tmp/review root\\x1b[31m",
+		"candidate inspection passed; worker enforcement has not been established",
+		"inspection passed\\x00; worker not started",
+		"Read capability: disabled. Root selection grants no access.",
+		"invalidation is pending",
+	} {
+		if !strings.Contains(status, expected) {
+			t.Errorf("root status %q does not contain %q", status, expected)
+		}
+	}
+	if strings.Contains(status, "\x1b") || strings.Contains(status, "\x00") {
+		t.Fatalf("root status contains raw terminal control: %q", status)
+	}
+	if got := renderFilesystemRootStatus(ui.FilesystemRootStatus{}); !strings.Contains(got, "Selected root: none selected") || !strings.Contains(got, "Backend: unavailable") {
+		t.Fatalf("empty root/backend status=%q", got)
+	}
+}
+
+func TestFilesystemRootDialogPassesAbsolutePathWithSpaces(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 32)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	client := &clientStub{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	for _, r := range "/fs-root" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "Filesystem root", "")
+	waitForScreen(t, safe, "Read capability: disabled", "")
+	selectedPath := "/tmp/komposyn-root with spaces"
+	for _, r := range selectedPath {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyEnter, 0)
+	deadline := time.After(2 * time.Second)
+	for {
+		client.mu.Lock()
+		got := append([]string(nil), client.rootSelections...)
+		client.mu.Unlock()
+		if len(got) > 0 {
+			if len(got) != 1 || got[0] != selectedPath {
+				t.Fatalf("selected root path=%q, want %q", got, selectedPath)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("filesystem root dialog did not submit the explicit path")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("filesystem root UI did not stop")
 	}
 }
 

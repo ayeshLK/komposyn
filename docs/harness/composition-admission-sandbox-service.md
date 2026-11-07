@@ -18,6 +18,7 @@ cmd/harness starts
   -> current routes/objects are pinned before Load/ListMetadata/UI exposure
   -> existing text-only + conversation-tool runtime starts
        \
+        -> /fs-root selects or clears an in-memory lookup root; no authority
         -> read_file pre-consumption guard exists but is not registered
            and always refuses unknown-root data
 ```
@@ -132,10 +133,14 @@ Generic reads remain disabled even on a host with a trusted Bubblewrap backend.
 The fixed worker is composed for future reviewed use but receives no target
 descriptor through the shipped chat. This slice does not implement the unknown
 in-root-data policy, provider-source owner integration, Token Logger owner
-hooks, a filesystem-root UI, read_file, listing, recursion, writes, deletion,
+hooks, read_file, listing, recursion, writes, deletion,
 shell execution, or non-Linux enforcement. Real native positive-control
-evidence and an explicit maintainer decision on unknown in-root objects remain
-required before any typed-read enablement task.
+evidence and implementation review remain required before any typed-read
+enablement task. The maintainer has accepted the unknown in-root disclosure
+policy for staged implementation. Stage 1 adds only explicit
+in-memory `/fs-root` selection/status/clear and a lifecycle invalidation seam.
+It does not alter the read refusal, grant permission, or prove future worker
+enforcement. Later implementation stages remain pending.
 
 ## Validation commands
 
