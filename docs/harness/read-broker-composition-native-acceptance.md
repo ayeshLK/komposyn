@@ -91,8 +91,10 @@ descendants. This is an environment-specific trust refusal, not a claim that
 Bubblewrap is unavailable on the host generally and not a native enforcement
 pass. No trust bypass or elevated retry was attempted.
 
-The new attempt's results archive SHA-256 is
-`6ff96557f656744577b4b2435970006dd144e11379716cbe9a373f82e4072f18`; the
-archive and binary are not committed. Its sanitized outcome is in the JSON
-record. Use the runner guide's exact normal-host command to reproduce on a
-host where the existing trust policy accepts the installed backend.
+The new attempt recorded in the JSON has results archive SHA-256
+`7602c5af0c660f12fead3968d4ca6cc36b7567a5e97004effb36006d42a3af63` and
+native test binary SHA-256
+`e9705575c7427930716757975b4ec065a0ba2dcf1eee6bcb23ea164237b6a6ef`;
+the archive and binary are not committed. Its sanitized outcome is in the
+JSON record. Use the runner guide's exact normal-host command to reproduce on
+a host where the existing trust policy accepts the installed backend.
