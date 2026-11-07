@@ -66,6 +66,15 @@ type readGrantTransition struct {
 // the exact checked approval and once-consumption chain. It is intentionally
 // private so neither a UI nor a tool can mint a reference.
 func (r *toolRuntime) issueReadExecutionReference(invocation tools.Invocation, request permissions.Request, approval, consumption permissions.GrantTransition, expectedEpoch uint64) (*ReadExecutionReference, error) {
+	if r == nil {
+		return nil, errReadAuthorityInvalid
+	}
+	r.readAuthorityMu.Lock()
+	defer r.readAuthorityMu.Unlock()
+	return r.issueReadExecutionReferenceLocked(invocation, request, approval, consumption, expectedEpoch)
+}
+
+func (r *toolRuntime) issueReadExecutionReferenceLocked(invocation tools.Invocation, request permissions.Request, approval, consumption permissions.GrantTransition, expectedEpoch uint64) (*ReadExecutionReference, error) {
 	if r == nil || invocation.ToolID != tools.ID("read_file") || request.ConversationID != invocation.ConversationID || request.CallID != invocation.ProviderCallID || request.Binding == "" || request.AdmissionBinding == "" || approval.Binding != request.Binding || consumption.Binding != request.Binding || approval.AfterRevision == 0 || approval.AfterRevision != consumption.BeforeRevision || consumption.AfterRevision <= consumption.BeforeRevision {
 		return nil, errReadAuthorityInvalid
 	}
@@ -77,8 +86,6 @@ func (r *toolRuntime) issueReadExecutionReference(invocation tools.Invocation, r
 		return nil, err
 	}
 	id := hex.EncodeToString(random[:])
-	r.readAuthorityMu.Lock()
-	defer r.readAuthorityMu.Unlock()
 	if expectedEpoch != r.readAuthorityEpoch || len(r.readAuthorities) >= maxReadAuthorities || consumption.AfterRevision <= r.lastReadIssuanceRevision {
 		return nil, errReadAuthorityInvalid
 	}
@@ -154,6 +161,13 @@ func (r *toolRuntime) FinishReadExecution(reference *ReadExecutionReference) err
 	}
 	r.readAuthorityMu.Lock()
 	defer r.readAuthorityMu.Unlock()
+	return r.finishReadExecutionLocked(reference)
+}
+
+func (r *toolRuntime) finishReadExecutionLocked(reference *ReadExecutionReference) error {
+	if r == nil || reference == nil || reference.owner != r || reference.id == "" {
+		return errReadAuthorityInvalid
+	}
 	if _, ok := r.readAuthorities[reference.id]; !ok {
 		return errReadAuthorityInvalid
 	}
@@ -307,6 +321,10 @@ func (r *toolRuntime) respondApproval(id string, choice permissions.ApprovalChoi
 func (r *toolRuntime) consumePermission(request permissions.Request, expectedRevision, expectedEpoch uint64, readCall bool) (permissions.GrantTransition, error) {
 	r.readAuthorityMu.Lock()
 	defer r.readAuthorityMu.Unlock()
+	return r.consumePermissionLocked(request, expectedRevision, expectedEpoch, readCall)
+}
+
+func (r *toolRuntime) consumePermissionLocked(request permissions.Request, expectedRevision, expectedEpoch uint64, readCall bool) (permissions.GrantTransition, error) {
 	if expectedEpoch != r.readAuthorityEpoch {
 		return permissions.GrantTransition{}, errReadAuthorityInvalid
 	}
@@ -322,6 +340,18 @@ func (r *toolRuntime) consumePermission(request permissions.Request, expectedRev
 		r.invalidateReadAuthorityLocked()
 	}
 	return transition, nil
+}
+
+func (r *toolRuntime) withReadAuthorityGate(expectedEpoch uint64, operation func() error) error {
+	if r == nil || operation == nil {
+		return errReadAuthorityInvalid
+	}
+	r.readAuthorityMu.Lock()
+	defer r.readAuthorityMu.Unlock()
+	if expectedEpoch != r.readAuthorityEpoch {
+		return errReadAuthorityInvalid
+	}
+	return operation()
 }
 
 func (r *toolRuntime) checkReadAuthorityRevision(revision uint64) bool {

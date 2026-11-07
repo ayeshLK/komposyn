@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 )
 
 const (
@@ -108,6 +109,54 @@ type PreparedRead interface {
 	RequestDigest() [32]byte
 	DuplicateForWorker() (*os.File, error)
 	Close() error
+}
+
+// AdmissionRequest is trusted host context for one exact-file lookup. Root is
+// the explicitly selected lookup root; Destination identifies the selected
+// provider/model/profile binding for consent. Neither field grants access.
+type AdmissionRequest struct {
+	ConversationID string
+	TurnID         string
+	CallID         string
+	Root           string
+	Target         string
+	RootGeneration uint64
+	Destination    string
+}
+
+// AdmissionMetadata is detached disclosure metadata. The opaque reference is
+// host-created and is validated against the owning coordinator's record map.
+type AdmissionMetadata struct {
+	Reference      *AdmissionReference
+	ServiceID      string
+	ConversationID string
+	TurnID         string
+	CallID         string
+	Root           string
+	Target         string
+	RootGeneration uint64
+	Deadline       time.Time
+	Destination    string
+	Identity       FileIdentity
+	Class          ResourceClass
+	Generations    GenerationSet
+	Binding        [32]byte
+}
+
+// AdmissionReference cannot be constructed outside this package. Its random
+// ID is only a lookup key; coordinator membership and lifecycle state remain
+// the authority check.
+type AdmissionReference struct {
+	owner any
+	id    string
+}
+
+// AdmittedPreparation is a host-owned retained object after the runtime has
+// validated checked approval. It has no execution or descriptor-transfer API.
+type AdmittedPreparation interface {
+	Metadata() AdmissionMetadata
+	WithCommit(context.Context, func() error) error
+	Close(context.Context) error
 }
 
 type ReadBroker interface {
@@ -212,11 +261,20 @@ type CheckpointHook func(Checkpoint) error
 // authorizer and coverage profile; tool/model inputs cannot construct either.
 type HostCoordinator interface {
 	Read(context.Context, string, string, string) (WorkerResult, error)
+	Admit(context.Context, AdmissionRequest) (AdmissionMetadata, error)
+	BeginAdmission(context.Context, AdmissionRequest) (*AdmissionReference, error)
+	WaitAdmission(context.Context, *AdmissionReference) (AdmissionMetadata, error)
+	PrepareAdmitted(context.Context, *AdmissionReference, string, uint64) (AdmittedPreparation, error)
+	CloseAdmission(context.Context, *AdmissionReference) error
+	InvalidateAdmissions(context.Context) error
+	AdmissionConversations() []string
 	DeclareCoverageOwner(OwnerRequirement) error
 	RetireCoverageOwner(string) error
 	Register(OwnerRegistration) error
 	RegisterRotation(owner string, next []OwnerRegistration) error
+	RegisterRotationContext(context.Context, string, []OwnerRegistration) error
 	SelectRoot(root string) error
+	SelectRootGeneration(context.Context, string, uint64) error
 	Revoke(invocationID string) error
 	SetCheckpointHook(CheckpointHook)
 	PublishedResults() [][]byte

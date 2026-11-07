@@ -31,7 +31,9 @@ import (
 // dispatch. A nil object registers the route; a non-nil object registers both
 // that route and the exact temporary object before the owner writes it.
 type studyOwnerProtection struct {
-	session  readbrokerstudy.FixtureSession
+	session interface {
+		RegisterRotation(string, []readbrokerstudy.OwnerRegistration) error
+	}
 	registry *readbrokerstudy.Registry
 }
 

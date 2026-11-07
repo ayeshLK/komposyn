@@ -21,7 +21,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
@@ -162,6 +164,260 @@ func TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate(t *testin
 	defer backendService.Close(context.Background())
 	if available, _ := backendService.BackendStatus(); available {
 		t.Fatal("untrusted/missing Bubblewrap path was treated as an available backend")
+	}
+}
+
+func TestHostAdmissionRetainsOneObjectThroughPreparationWithoutWorker(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(target, []byte("synthetic admitted contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "conversation-fixture", Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "conversation-fixture", TurnID: "turn-fixture", ProviderCallID: "call-fixture", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"` + target + `"}`)}
+	destination := "openai/gpt-test/profile-revision"
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, destination)
+	if err != nil {
+		t.Fatalf("admit synthetic regular file: %v", err)
+	}
+	if admission.Class != string(readbrokerstudy.ClassOrdinary) || admission.Identity == "" || admission.AdmissionBinding == "" || admission.Reference == nil || admission.RootGeneration != 1 {
+		t.Fatalf("detached admission metadata is incomplete: %+v", admission)
+	}
+	originalIdentity := admission.Identity
+	moved := filepath.Join(root, "moved-original.txt")
+	if err := os.Rename(target, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("synthetic replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := service.PrepareAdmittedFilesystemRead(context.Background(), admission, 1)
+	if err != nil {
+		t.Fatalf("prepare same admitted object: %v", err)
+	}
+	prepared := preparation.Metadata()
+	if prepared.Identity != originalIdentity || prepared.Target != target || prepared.AdmissionBinding != admission.AdmissionBinding {
+		t.Fatalf("preparation reopened or rebound the target: %+v", prepared)
+	}
+	committed := false
+	if err := preparation.WithAuthorityCommit(context.Background(), func() error { committed = true; return nil }); err != nil {
+		t.Fatalf("current preparation commit gate: %v", err)
+	}
+	if !committed {
+		t.Fatal("host authority commit callback was not invoked")
+	}
+	if err := preparation.Close(context.Background()); err != nil {
+		t.Fatalf("close preparation: %v", err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	if impl.session.ActiveOperationCount() != 0 {
+		t.Fatal("host-only admission appeared as a worker operation")
+	}
+}
+
+func TestHostAdmissionRefusesRegisteredOwnerRoutesAndAliases(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+	root := t.TempDir()
+	authPath := filepath.Join(root, "auth.json")
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	authStore := auth.Store{Path: authPath, Protection: service}
+	settingsStore := settings.Store{Path: settingsPath, Protection: service}
+	if err := authStore.RegisterProtection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := authStore.AddAPIKey("fixture", "openai", "synthetic", "synthetic-secret", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.RegisterProtection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.SaveContext(context.Background(), settings.Settings{Plugin: settings.DefaultUI}); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "ordinary-looking.json")
+	if err := os.Link(authPath, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "protected-fixture", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{authPath, alias} {
+		t.Run(filepath.Base(target), func(t *testing.T) {
+			invocation := tools.Invocation{ConversationID: "protected-fixture", TurnID: "turn", ProviderCallID: "call-" + filepath.Base(target), ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"` + target + `"}`)}
+			if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); err == nil {
+				t.Fatal("registered auth route or alias was admitted for ordinary approval")
+			}
+		})
+	}
+	impl := service.impl.(*linuxImplementation)
+	if len(impl.session.AdmissionConversations()) != 0 {
+		t.Fatal("protected refusal retained an admission")
+	}
+}
+
+func TestHostAdmissionCancellationReturnsWhileLookupCleanupRemainsOwned(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.txt")
+	if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory := readbrokerstudy.NewChatCompositionInventory()
+	blocking := &serviceAdmissionBlockingBroker{base: readbrokerstudy.NewBroker(registry), entered: make(chan struct{}), release: make(chan struct{})}
+	launcher := inertWorkerLauncher{}
+	session, err := readbrokerstudy.NewHostCoordinator(registry, blocking, launcher, hostAuthorizer{}, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, requirement := range readbrokerstudy.ChatCompositionRequirements() {
+		if err := session.DeclareCoverageOwner(requirement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	impl := &linuxImplementation{
+		registry: registry, launcher: launcher, session: session, inventory: inventory,
+		revision: 1, owners: map[string]OwnerCoverage{
+			auth.SensitiveOwnerAuth:     {Owner: auth.SensitiveOwnerAuth, Class: auth.SensitiveClassAuth, State: OwnerRequired},
+			auth.SensitiveOwnerSettings: {Owner: auth.SensitiveOwnerSettings, Class: auth.SensitiveClassSettings, State: OwnerRequired},
+		}, blocked: make(map[string]string),
+	}
+	service := &Service{impl: impl}
+	defer func() {
+		blocking.unblock()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil && !errors.Is(err, readbrokerstudy.ErrCleanupPending) {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "cancel-fixture", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "cancel-fixture", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"` + target + `"}`)}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.AdmitFilesystemRead(ctx, invocation, "openai/gpt-test/profile")
+		result <- err
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("constrained lookup did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled admission error=%v, want context cancellation", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("service admission blocked in cleanup after caller cancellation")
+	}
+	if conversations := session.AdmissionConversations(); len(conversations) != 1 {
+		t.Fatalf("opening cleanup obligation was not retained: %v", conversations)
+	}
+	blocking.unblock()
+	deadline := time.Now().Add(time.Second)
+	for len(session.AdmissionConversations()) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if conversations := session.AdmissionConversations(); len(conversations) != 0 {
+		t.Fatalf("late lookup did not acknowledge and retire cleanup: %v", conversations)
+	}
+}
+
+type serviceAdmissionBlockingBroker struct {
+	base        readbrokerstudy.ReadBroker
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	releaseOnce sync.Once
+}
+
+func (b *serviceAdmissionBlockingBroker) PrepareRead(root, target string, generation readbrokerstudy.GenerationSet) (readbrokerstudy.PreparedRead, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return b.base.PrepareRead(root, target, generation)
+}
+
+func (b *serviceAdmissionBlockingBroker) Revalidate(prepared readbrokerstudy.PreparedRead) error {
+	return b.base.Revalidate(prepared)
+}
+
+func (b *serviceAdmissionBlockingBroker) unblock() {
+	b.releaseOnce.Do(func() { close(b.release) })
+}
+
+func TestProtectedOwnerTransitionRetiresPendingAdmissionBeforeReturning(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close(context.Background())
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.txt")
+	if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "c", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"` + target + `"}`)}
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRoute := filepath.Join(t.TempDir(), "auth-rotated.json")
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, newRoute, nil); err != nil {
+		t.Fatalf("protected owner transition: %v", err)
+	}
+	if _, err := service.PrepareAdmittedFilesystemRead(context.Background(), admission, 1); err == nil {
+		t.Fatal("owner transition left a stale admission preparable")
+	}
+	impl := service.impl.(*linuxImplementation)
+	if conversations := impl.session.AdmissionConversations(); len(conversations) != 0 {
+		t.Fatal("owner transition returned before host admission retirement")
 	}
 }
 

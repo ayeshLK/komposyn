@@ -168,6 +168,15 @@ func (i *CoverageInventory) completeOwnerUpdate(owner string, token uint64) bool
 	return true
 }
 
+func (i *CoverageInventory) ownerUpdateCurrent(owner string, token uint64) bool {
+	if i == nil {
+		return false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return !i.closed && token != 0 && i.pending[owner] == token && !i.retired[owner]
+}
+
 func (i *CoverageInventory) observe(view PolicyView) bool {
 	if i == nil {
 		return false

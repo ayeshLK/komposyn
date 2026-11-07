@@ -1717,8 +1717,8 @@ func TestOwnerRotationWaitsForWorkerJoinBeforeWritingRegisteredObject(t *testing
 			oldPinned = true
 		}
 	}
-	if !oldPinned || !newPinned {
-		t.Fatalf("rotation must retain old pin and stage new pin before cleanup: old=%t new=%t entries=%+v", oldPinned, newPinned, view.Entries)
+	if !oldPinned || newPinned {
+		t.Fatalf("rotation must retain the old pin and withhold the replacement pin until cleanup: old=%t new=%t entries=%+v", oldPinned, newPinned, view.Entries)
 	}
 
 	close(fixture.worker.waitRelease)

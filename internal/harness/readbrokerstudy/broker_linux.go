@@ -40,15 +40,17 @@ type broker struct {
 }
 
 type preparedRead struct {
-	mu         sync.Mutex
-	file       *os.File
-	parent     *os.File
-	path       string
-	identity   FileIdentity
-	class      ResourceClass
-	generation GenerationSet
-	digest     [32]byte
-	closed     bool
+	mu             sync.Mutex
+	file           *os.File
+	parent         *os.File
+	path           string
+	identity       FileIdentity
+	class          ResourceClass
+	generation     GenerationSet
+	digest         [32]byte
+	closed         bool
+	closeAttempted bool
+	closeErr       error
 }
 
 var _ PreparedRead = (*preparedRead)(nil)
@@ -170,6 +172,10 @@ func (b *broker) Revalidate(capability PreparedRead) error {
 	if view.Generation != prepared.generation.Policy {
 		return ErrPolicyChanged
 	}
+	identity, err := identityFromFile(prepared.file)
+	if err != nil || identity != prepared.identity || identity.Type != unix.S_IFREG {
+		return ErrStaleReceipt
+	}
 	if b.registry.DirectoryCoverageIncomplete(prepared.identity) {
 		return ErrDirectoryCoverage
 	}
@@ -244,24 +250,24 @@ func (p *preparedRead) Close() error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
-		return nil
+	if p.closeAttempted {
+		return p.closeErr
 	}
+	p.closeAttempted = true
 	p.closed = true
 	var errs []error
 	if p.file != nil {
 		if err := p.file.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		p.file = nil
 	}
 	if p.parent != nil {
 		if err := p.parent.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		p.parent = nil
 	}
-	return errors.Join(errs...)
+	p.closeErr = errors.Join(errs...)
+	return p.closeErr
 }
 
 func requestDigest(root, target string, id FileIdentity, class ResourceClass, generation GenerationSet) [32]byte {

@@ -1026,13 +1026,19 @@ func (g *terminationRequestGate) release() error {
 	return worker.Terminate()
 }
 
-func closeStudySession(session readbrokerstudy.FixtureSession) error {
+func closeStudySession(session interface {
+	Close(context.Context) error
+}) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	return session.Close(ctx)
 }
 
-func closeStudySessionVerified(registry *readbrokerstudy.Registry, session readbrokerstudy.FixtureSession) error {
+func closeStudySessionVerified(registry *readbrokerstudy.Registry, session interface {
+	Close(context.Context) error
+	ActiveOperationCount() int
+	Evidence() []readbrokerstudy.ReadEvidence
+}) error {
 	if err := closeStudySession(session); err != nil {
 		return err
 	}
@@ -1102,7 +1108,7 @@ func settingsRetryPublicationAccepted(pinned bool, original, registered, publish
 	return pinned && registered != (readbrokerstudy.FileIdentity{}) && registered != original && published == registered
 }
 
-func activeOperationCount(session readbrokerstudy.FixtureSession) int {
+func activeOperationCount(session interface{ ActiveOperationCount() int }) int {
 	return session.ActiveOperationCount()
 }
 
@@ -3014,7 +3020,17 @@ func runProviderReadCase(fixture *providerFixture, name, invocationID, target st
 	return row
 }
 
-func runDirectoryCoverageCases(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root string) ([]caseResult, error) {
+type fixtureReadSession interface {
+	Read(context.Context, string, string, string) (readbrokerstudy.WorkerResult, error)
+	SelectRoot(string) error
+	Register(readbrokerstudy.OwnerRegistration) error
+	SetCheckpointHook(readbrokerstudy.CheckpointHook)
+	GenerationSnapshot() readbrokerstudy.GenerationSet
+	CoverageSnapshot() readbrokerstudy.CoverageSnapshot
+	Evidence() []readbrokerstudy.ReadEvidence
+}
+
+func runDirectoryCoverageCases(session fixtureReadSession, auth *readbrokerstudy.OnceGrantFixture, root string) ([]caseResult, error) {
 	if err := session.SelectRoot(root); err != nil {
 		return nil, err
 	}
@@ -3038,11 +3054,11 @@ func runDirectoryCoverageCases(session readbrokerstudy.FixtureSession, auth *rea
 	return []caseResult{inside, moved}, nil
 }
 
-func executeCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string, expectedOutcome readbrokerstudy.ReadOutcome) caseResult {
+func executeCase(session fixtureReadSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string, expectedOutcome readbrokerstudy.ReadOutcome) caseResult {
 	return executeCaseWithHook(session, auth, root, name, path, invocationID, expected, expectedOutcome, nil)
 }
 
-func executeCaseWithHook(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string, expectedOutcome readbrokerstudy.ReadOutcome, hook readbrokerstudy.CheckpointHook) caseResult {
+func executeCaseWithHook(session fixtureReadSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string, expectedOutcome readbrokerstudy.ReadOutcome, hook readbrokerstudy.CheckpointHook) caseResult {
 	_ = auth.ApproveOnce(invocationID)
 	expectedBytes, snapshotErr := os.ReadFile(path)
 	if snapshotErr != nil {
@@ -3271,7 +3287,10 @@ func applyReadEvidence(row *caseResult, result readbrokerstudy.WorkerResult, evi
 }
 
 type fixtureOwnerWriter struct {
-	session       readbrokerstudy.FixtureSession
+	session interface {
+		GenerationSnapshot() readbrokerstudy.GenerationSet
+		RegisterRotation(string, []readbrokerstudy.OwnerRegistration) error
+	}
 	registry      *readbrokerstudy.Registry
 	owner         string
 	registrations []readbrokerstudy.OwnerRegistration
