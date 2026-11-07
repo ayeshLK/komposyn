@@ -193,6 +193,16 @@ This is not a claim that all reads are impossible in principle. It is a precise
 reason the present implementation cannot honestly advertise an available
 generic read profile under the accepted mandatory-protection rules.
 
+The separate decision packet
+([unregistered exact-file read policy](read-broker-unregistered-read-policy.md))
+compares retaining this refusal with a proposed once-approved disclosure of an
+otherwise-unregistered exact file. The latter is a recommendation for
+maintainer review, not an accepted policy. The service's current behavior and
+this document's refusal remain in force unless the maintainer explicitly
+accepts a revised rule. The historical #243 service result and its reproducible
+runner are recorded in [composition native acceptance](read-broker-composition-native-acceptance.md);
+that evidence does not alter the gate.
+
 ## Proposed user and runtime lifecycle
 
 This is a design for a later implementation; the existing executable has no
