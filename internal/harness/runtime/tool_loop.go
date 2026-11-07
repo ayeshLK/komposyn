@@ -124,25 +124,26 @@ type ToolRuntimeConfig struct {
 }
 
 type toolRuntime struct {
-	readAuthorityMu    sync.Mutex
-	readAuthorityEpoch uint64
-	readAuthorities    map[string]readAuthorityRecord
-	readGrantRevision  uint64
-	cleanupMu          sync.Mutex
-	pendingCleanup     []ToolPreparation
-	cleanupRetry       bool
-	shuttingDown       bool
-	registry           *tools.Registry
-	authorizer         ToolAuthorizer
-	enforcer           ToolEnforcer
-	preparer           ToolPreparer
-	rootHost           FilesystemRootHost
-	approval           ToolApprovalInteraction
-	clarification      ToolClarificationInteraction
-	grants             *permissions.MemoryStore
-	plans              *ConversationPlans
-	evaluator          permissions.Evaluator
-	coordinator        *permissions.Coordinator
+	readAuthorityMu          sync.Mutex
+	readAuthorityEpoch       uint64
+	readAuthorities          map[string]readAuthorityRecord
+	readGrantRevision        uint64
+	lastReadIssuanceRevision uint64
+	cleanupMu                sync.Mutex
+	pendingCleanup           []ToolPreparation
+	cleanupRetry             bool
+	shuttingDown             bool
+	registry                 *tools.Registry
+	authorizer               ToolAuthorizer
+	enforcer                 ToolEnforcer
+	preparer                 ToolPreparer
+	rootHost                 FilesystemRootHost
+	approval                 ToolApprovalInteraction
+	clarification            ToolClarificationInteraction
+	grants                   *permissions.MemoryStore
+	plans                    *ConversationPlans
+	evaluator                permissions.Evaluator
+	coordinator              *permissions.Coordinator
 }
 
 var errPreparationCleanupPending = errors.New("prepared tool cleanup remains unconfirmed")

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
@@ -68,22 +69,42 @@ func syntheticAuthorityRuntime() *toolRuntime {
 	return newToolRuntime(ToolRuntimeConfig{Registry: tools.NewRegistry(), Grants: permissions.NewMemoryStore()})
 }
 
+func syntheticReadInvocation(t *testing.T, conversationID, turnID, callID, target string) tools.Invocation {
+	t.Helper()
+	arguments, err := json.Marshal(map[string]string{"path": target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tools.Invocation{ConversationID: conversationID, TurnID: turnID, ProviderCallID: callID, ToolID: tools.ID("read_file"), Arguments: arguments}
+}
+
 func TestReadBindingIncludesAdmissionAndCanonicalArguments(t *testing.T) {
-	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/file","limit":12}`)}
-	first, err := bindAuthorizationRequest(invocation, syntheticReadRequest(invocation, "/root/file", "admission-object-a"))
+	target := filepath.Join(t.TempDir(), "file")
+	invocation := syntheticReadInvocation(t, "conversation", "turn", "call", target)
+	arguments, err := json.Marshal(map[string]any{"path": target, "limit": 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation.Arguments = arguments
+	first, err := bindAuthorizationRequest(invocation, syntheticReadRequest(invocation, target, "admission-object-a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	whitespace := invocation
-	whitespace.Arguments = json.RawMessage("{ \"limit\": 12, \"path\": \"/root/file\" }")
-	canonical, err := bindAuthorizationRequest(whitespace, syntheticReadRequest(whitespace, "/root/file", "admission-object-a"))
+	pathJSON, err := json.Marshal(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	whitespace.Arguments = append([]byte(`{ "limit": 12, "path": `), pathJSON...)
+	whitespace.Arguments = append(whitespace.Arguments, []byte(" }")...)
+	canonical, err := bindAuthorizationRequest(whitespace, syntheticReadRequest(whitespace, target, "admission-object-a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Binding != canonical.Binding {
 		t.Fatal("semantically identical JSON arguments produced different binding")
 	}
-	other, err := bindAuthorizationRequest(invocation, syntheticReadRequest(invocation, "/root/file", "admission-object-b"))
+	other, err := bindAuthorizationRequest(invocation, syntheticReadRequest(invocation, target, "admission-object-b"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,12 +115,16 @@ func TestReadBindingIncludesAdmissionAndCanonicalArguments(t *testing.T) {
 
 func TestReadExecutionAuthorityIsOpaqueOneShotAndInstanceBound(t *testing.T) {
 	runtime := syntheticAuthorityRuntime()
-	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call-a", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/a"}`)}
+	target := filepath.Join(t.TempDir(), "a")
+	invocation := syntheticReadInvocation(t, "conversation", "turn", "call-a", target)
 	epoch := runtime.readAuthorityEpochSnapshot()
-	request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, "/root/a", "admission-a")
+	request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission-a")
 	reference, err := runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch); !errors.Is(err, errReadAuthorityInvalid) {
+		t.Fatalf("same consumed transaction issued a second reference: %v", err)
 	}
 	if err := runtime.ClaimReadExecution(reference, "wrong-binding", "admission-a"); !errors.Is(err, errReadAuthorityInvalid) {
 		t.Fatalf("wrong authorization binding claim = %v", err)
@@ -122,27 +147,34 @@ func TestReadExecutionAuthorityIsOpaqueOneShotAndInstanceBound(t *testing.T) {
 	if err := runtime.FinishReadExecution(reference); err != nil || runtime.readAuthorityCount() != 0 {
 		t.Fatalf("finish reference err=%v retained=%d", err, runtime.readAuthorityCount())
 	}
+	runtime.retireReadAuthorities(invocation.ConversationID)
+	if _, err := runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch); !errors.Is(err, errReadAuthorityInvalid) {
+		t.Fatalf("retired transaction was issued again: %v", err)
+	}
 }
 
 func TestReadAuthoritySurvivesOnlyRegisteredSiblingTransitions(t *testing.T) {
 	runtime := syntheticAuthorityRuntime()
-	a := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call-a", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/a"}`)}
+	root := t.TempDir()
+	targetA, targetB := filepath.Join(root, "a"), filepath.Join(root, "b")
+	a := syntheticReadInvocation(t, "conversation", "turn", "call-a", targetA)
 	epochA := runtime.readAuthorityEpochSnapshot()
-	requestA, approvalA, consumptionA := approveAndConsumeSyntheticRead(t, runtime, a, "/root/a", "admission-a")
+	requestA, approvalA, consumptionA := approveAndConsumeSyntheticRead(t, runtime, a, targetA, "admission-a")
 	referenceA, err := runtime.issueReadExecutionReference(a, requestA, approvalA, consumptionA, epochA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call-b", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/b"}`)}
-	_, _, _ = approveAndConsumeSyntheticRead(t, runtime, b, "/root/b", "admission-b")
+	b := syntheticReadInvocation(t, "conversation", "turn", "call-b", targetB)
+	_, _, _ = approveAndConsumeSyntheticRead(t, runtime, b, targetB, "admission-b")
 	if err := runtime.ClaimReadExecution(referenceA, requestA.Binding, "admission-a"); err != nil {
 		t.Fatalf("registered sibling transition invalidated A: %v", err)
 	}
 
 	other := syntheticAuthorityRuntime()
-	c := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call-c", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/c"}`)}
+	targetC, targetD := filepath.Join(root, "c"), filepath.Join(root, "d")
+	c := syntheticReadInvocation(t, "conversation", "turn", "call-c", targetC)
 	epochC := other.readAuthorityEpochSnapshot()
-	requestC, approvalC, consumptionC := approveAndConsumeSyntheticRead(t, other, c, "/root/c", "admission-c")
+	requestC, approvalC, consumptionC := approveAndConsumeSyntheticRead(t, other, c, targetC, "admission-c")
 	referenceC, err := other.issueReadExecutionReference(c, requestC, approvalC, consumptionC, epochC)
 	if err != nil {
 		t.Fatal(err)
@@ -150,8 +182,8 @@ func TestReadAuthoritySurvivesOnlyRegisteredSiblingTransitions(t *testing.T) {
 	if err := other.grants.Add(permissions.Grant{ID: "untracked", ConversationID: "conversation", ToolID: "update_plan", Kind: permissions.RequirementAction, Operation: permissions.OperationInteract, ActionKey: "update", Lifetime: permissions.LifetimeConversation, Origin: "external"}); err != nil {
 		t.Fatal(err)
 	}
-	d := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call-d", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/d"}`)}
-	requestD, err := bindAuthorizationRequest(d, syntheticReadRequest(d, "/root/d", "admission-d"))
+	d := syntheticReadInvocation(t, "conversation", "turn", "call-d", targetD)
+	requestD, err := bindAuthorizationRequest(d, syntheticReadRequest(d, targetD, "admission-d"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,9 +205,10 @@ func TestReadAuthoritySurvivesOnlyRegisteredSiblingTransitions(t *testing.T) {
 
 func TestReadAuthorityRetiresWhenConversationToolLoopEnds(t *testing.T) {
 	runtime := syntheticAuthorityRuntime()
-	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/a"}`)}
+	target := filepath.Join(t.TempDir(), "a")
+	invocation := syntheticReadInvocation(t, "conversation", "turn", "call", target)
 	epoch := runtime.readAuthorityEpochSnapshot()
-	request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, "/root/a", "admission")
+	request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission")
 	reference, err := runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch)
 	if err != nil {
 		t.Fatal(err)
@@ -191,8 +224,9 @@ func TestReadAuthorityRetiresWhenConversationToolLoopEnds(t *testing.T) {
 
 func TestRuntimeGateOrdersInvalidationBeforeApprovalAndConsumption(t *testing.T) {
 	runtime := syntheticAuthorityRuntime()
-	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call-gated", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/a"}`)}
-	request, err := bindAuthorizationRequest(invocation, syntheticReadRequest(invocation, "/root/a", "admission-gated"))
+	target := filepath.Join(t.TempDir(), "a")
+	invocation := syntheticReadInvocation(t, "conversation", "turn", "call-gated", target)
+	request, err := bindAuthorizationRequest(invocation, syntheticReadRequest(invocation, target, "admission-gated"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,9 +294,10 @@ func TestChatClearAndRevokeInvalidateConsumedReadAuthority(t *testing.T) {
 	if _, err := runtime.coordinator.Respond(pending.ID, permissions.ApprovalOnce, ""); !errors.Is(err, permissions.ErrApprovalNotFound) {
 		t.Fatalf("empty clear did not cancel pending response: %v", err)
 	}
-	invocation := tools.Invocation{ConversationID: chat.conversationID, TurnID: "turn", ProviderCallID: "call-clear", ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/a"}`)}
+	target := filepath.Join(t.TempDir(), "a")
+	invocation := syntheticReadInvocation(t, chat.conversationID, "turn", "call-clear", target)
 	epoch := runtime.readAuthorityEpochSnapshot()
-	request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, "/root/a", "admission-a")
+	request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission-a")
 	reference, err := runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch)
 	if err != nil {
 		t.Fatal(err)
@@ -276,7 +311,7 @@ func TestChatClearAndRevokeInvalidateConsumedReadAuthority(t *testing.T) {
 
 	invocation.ProviderCallID = "call-revoke"
 	epoch = runtime.readAuthorityEpochSnapshot()
-	request, approval, consumption = approveAndConsumeSyntheticRead(t, runtime, invocation, "/root/a", "admission-b")
+	request, approval, consumption = approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission-b")
 	reference, err = runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch)
 	if err != nil {
 		t.Fatal(err)
@@ -293,7 +328,7 @@ func TestChatClearAndRevokeInvalidateConsumedReadAuthority(t *testing.T) {
 
 	invocation.ProviderCallID = "call-operation-revoke"
 	epoch = runtime.readAuthorityEpochSnapshot()
-	request, approval, consumption = approveAndConsumeSyntheticRead(t, runtime, invocation, "/root/a", "admission-c")
+	request, approval, consumption = approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission-c")
 	reference, err = runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch)
 	if err != nil {
 		t.Fatal(err)
@@ -314,9 +349,10 @@ func TestChatLifecycleInvalidatesReadAuthority(t *testing.T) {
 		t.Run(lifecycle, func(t *testing.T) {
 			runtime := syntheticAuthorityRuntime()
 			chat := &Chat{toolRuntime: runtime, conversationID: "conversation"}
-			invocation := tools.Invocation{ConversationID: chat.conversationID, TurnID: "turn", ProviderCallID: "call-" + lifecycle, ToolID: tools.ID("read_file"), Arguments: json.RawMessage(`{"path":"/root/a"}`)}
+			target := filepath.Join(t.TempDir(), "a")
+			invocation := syntheticReadInvocation(t, chat.conversationID, "turn", "call-"+lifecycle, target)
 			epoch := runtime.readAuthorityEpochSnapshot()
-			request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, "/root/a", "admission-"+lifecycle)
+			request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission-"+lifecycle)
 			reference, err := runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch)
 			if err != nil {
 				t.Fatal(err)
@@ -326,7 +362,7 @@ func TestChatLifecycleInvalidatesReadAuthority(t *testing.T) {
 				chat.Cancel()
 			case "root":
 				chat.mu.Lock()
-				chat.changeFilesystemRootLocked("/explicit/root", FilesystemRootSelected)
+				chat.changeFilesystemRootLocked(filepath.Join(t.TempDir(), "explicit-root"), FilesystemRootSelected)
 				chat.mu.Unlock()
 			case "reset":
 				pending, _, err := runtime.coordinator.Begin(permissions.Request{ConversationID: chat.conversationID, CallID: "late", Requirements: []permissions.Requirement{{Kind: permissions.RequirementAction, Key: "plan", ToolID: "update_plan", Operation: permissions.OperationInteract, ActionKey: "plan"}}})

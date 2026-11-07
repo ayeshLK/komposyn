@@ -523,7 +523,10 @@ advance existing records only through contiguous G transitions and retain
 their binding/ID provenance. A gap or untracked store revision invalidates
 those records. Root changes, conversation reset, grant revoke, clear even when
 empty, cancellation and shutdown retire records. The ledger is bounded to the
-per-turn invocation ceiling and holds no file data or descriptor.
+per-turn invocation ceiling and holds no file data or descriptor. A monotonic
+last-issued G watermark is retained after individual record retirement, so the
+same consumed transition cannot mint a second reference; this is one scalar,
+not an unbounded audit log.
 
 The runtime epoch is distinct from permission revision G and host-service
 generations. Stage 2 uses the runtime authority mutex as a short outer

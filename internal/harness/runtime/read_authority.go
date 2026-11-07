@@ -79,7 +79,7 @@ func (r *toolRuntime) issueReadExecutionReference(invocation tools.Invocation, r
 	id := hex.EncodeToString(random[:])
 	r.readAuthorityMu.Lock()
 	defer r.readAuthorityMu.Unlock()
-	if expectedEpoch != r.readAuthorityEpoch || len(r.readAuthorities) >= maxReadAuthorities {
+	if expectedEpoch != r.readAuthorityEpoch || len(r.readAuthorities) >= maxReadAuthorities || consumption.AfterRevision <= r.lastReadIssuanceRevision {
 		return nil, errReadAuthorityInvalid
 	}
 	currentRevision, _ := r.grants.Snapshot(invocation.ConversationID)
@@ -103,6 +103,7 @@ func (r *toolRuntime) issueReadExecutionReference(invocation tools.Invocation, r
 		},
 	}
 	r.readAuthorities[id] = record
+	r.lastReadIssuanceRevision = consumption.AfterRevision
 	return &ReadExecutionReference{owner: r, id: id}, nil
 }
 
