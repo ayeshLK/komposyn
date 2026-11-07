@@ -17,6 +17,7 @@ package permissions
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -57,6 +58,260 @@ func TestApprovalCoordinatorCombinesRequirementsAndBindsOnceGrant(t *testing.T) 
 	}
 	if got := coordinator.evaluator.Evaluate(request); got.Ready() {
 		t.Fatalf("consumed once permissions were reusable: %+v", got)
+	}
+}
+
+func TestCheckedApprovalReturnsDetachedG1Evidence(t *testing.T) {
+	store := NewMemoryStore()
+	coordinator := NewCoordinator(Evaluator{}, store)
+	target := filepath.Join(t.TempDir(), "exact file")
+	resource := ResourceRequest{Kind: ResourceFilesystem, Target: target, Operation: OperationRead}
+	request := Request{ConversationID: "conversation", CallID: "call", Binding: "binding-a", Requirements: []Requirement{
+		{Kind: RequirementAction, Key: "action", ToolID: "read_file", Operation: OperationRead, ActionKey: "action-a"},
+		{Kind: RequirementResource, Key: "disclosure", ToolID: "read_file", Operation: OperationRead, Resource: &resource},
+	}, RequireOnceKeys: []string{"disclosure"}}
+	pending, decision, err := coordinator.Begin(request)
+	if err != nil || pending.ID == "" || decision.Revision != 0 || len(decision.Missing) != 2 {
+		t.Fatalf("begin pending=%+v decision=%+v err=%v", pending, decision, err)
+	}
+	approved, err := coordinator.Respond(pending.ID, ApprovalOnce, "")
+	if err != nil || approved.Outcome != ApprovalGranted || !approved.Decision.Ready() {
+		t.Fatalf("approval=%+v err=%v", approved, err)
+	}
+	transition := approved.Transition
+	if transition.BeforeRevision != 0 || transition.AfterRevision != 1 || transition.Binding != request.Binding || len(transition.InsertedIDs) != 2 || len(transition.Inserted) != 2 || len(transition.Snapshot) != 2 || !transition.Decision.Ready() || transition.Decision.Revision != 1 {
+		t.Fatalf("G1 transaction evidence=%+v", transition)
+	}
+	transition.Snapshot[0].ID = "caller-mutated"
+	transition.Decision.Allowed[0].Key = "caller-mutated"
+	if err := store.Add(Grant{Kind: RequirementAction, ID: "later", ConversationID: "conversation", ToolID: "other", Operation: OperationInteract, ActionKey: "later", Lifetime: LifetimeConversation, Origin: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if transition.AfterRevision != 1 || transition.Decision.Revision != 1 {
+		t.Fatalf("later mutation altered immutable transaction revision evidence: %+v", transition)
+	}
+	if _, grants := store.Snapshot("conversation"); len(grants) != 3 || grants[0].ID == "caller-mutated" {
+		t.Fatalf("caller edits to detached evidence mutated the store: %+v", grants)
+	}
+}
+
+func TestMemoryStoreClonePreservesRevisionButOwnsMutableState(t *testing.T) {
+	store := NewMemoryStore()
+	grant := Grant{Kind: RequirementAction, ID: "existing", ConversationID: "c", ToolID: "update_plan", Operation: OperationInteract, ActionKey: "plan", Lifetime: LifetimeConversation, Origin: "test"}
+	if err := store.Add(grant); err != nil {
+		t.Fatal(err)
+	}
+	clone := store.Clone()
+	originalRevision, _ := store.Snapshot("c")
+	cloneRevision, cloned := clone.Snapshot("c")
+	if originalRevision != cloneRevision || len(cloned) != 1 {
+		t.Fatalf("clone revision/state mismatch: original=%d clone=%d grants=%+v", originalRevision, cloneRevision, cloned)
+	}
+	if err := store.Add(Grant{Kind: RequirementAction, ID: "later", ConversationID: "c", ToolID: "update_plan", Operation: OperationInteract, ActionKey: "later", Lifetime: LifetimeConversation, Origin: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if revision, grants := clone.Snapshot("c"); revision != cloneRevision || len(grants) != 1 || grants[0].ID != "existing" {
+		t.Fatalf("caller mutation changed runtime clone: revision=%d grants=%+v", revision, grants)
+	}
+}
+
+func TestCheckedApprovalRejectsInterveningMutationWithoutPartialInsert(t *testing.T) {
+	store := NewMemoryStore()
+	coordinator := NewCoordinator(Evaluator{}, store)
+	request := Request{ConversationID: "c", CallID: "call", Binding: "bind", Requirements: []Requirement{
+		{Kind: RequirementAction, Key: "a", ToolID: "exec_command", Operation: OperationExecute, ActionKey: "command"},
+	}}
+	pending, _, err := coordinator.Begin(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(Grant{Kind: RequirementAction, ID: "intervening", ConversationID: "c", ToolID: "other", Operation: OperationInteract, ActionKey: "other", Lifetime: LifetimeConversation, Origin: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Respond(pending.ID, ApprovalOnce, ""); !errors.Is(err, ErrApprovalStale) {
+		t.Fatalf("stale approval error=%v", err)
+	}
+	revision, grants := store.Snapshot("c")
+	if revision != 1 || len(grants) != 1 || grants[0].ID != "intervening" {
+		t.Fatalf("failed checked approval partially inserted: revision=%d grants=%+v", revision, grants)
+	}
+}
+
+func TestCheckedApprovalRejectsWidenedResourceScope(t *testing.T) {
+	store := NewMemoryStore()
+	root := t.TempDir()
+	target := filepath.Join(root, "approved.txt")
+	resource := ResourceRequest{Kind: ResourceFilesystem, Target: target, Operation: OperationRead}
+	request := Request{ConversationID: "c", CallID: "call", Binding: "binding", Requirements: []Requirement{{Kind: RequirementResource, Key: "resource", ToolID: "read_file", Operation: OperationRead, Resource: &resource}}, RequireOnceKeys: []string{"resource"}}
+	widened := Grant{Kind: RequirementResource, ID: "widened", ConversationID: "c", CallID: "call", RequirementKey: "resource", ToolID: "read_file", Operation: OperationRead, Lifetime: LifetimeOnce, Origin: "user_approval", Binding: "binding", ResourceTarget: target, Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Recursive: true, Operations: []Operation{OperationRead}}}
+	if _, err := store.ApproveAtRevision(Evaluator{}, request, 0, request.Requirements, []Grant{widened}); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("widened scope approval error=%v", err)
+	}
+	if revision, grants := store.Snapshot("c"); revision != 0 || len(grants) != 0 {
+		t.Fatalf("widened approval partially mutated state: revision=%d grants=%+v", revision, grants)
+	}
+}
+
+func TestCheckedApprovalRacesUnrelatedMutationAtomically(t *testing.T) {
+	for iteration := 0; iteration < 20; iteration++ {
+		store := NewMemoryStore()
+		coordinator := NewCoordinator(Evaluator{}, store)
+		request := Request{ConversationID: "c", CallID: "call", Binding: "binding", Requirements: []Requirement{{Kind: RequirementAction, Key: "action", ToolID: "read_file", Operation: OperationRead, ActionKey: "read"}}}
+		pending, _, err := coordinator.Begin(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var wait sync.WaitGroup
+		wait.Add(2)
+		var response ApprovalResponse
+		var respondErr error
+		var mutationErr error
+		go func() {
+			defer wait.Done()
+			<-start
+			response, respondErr = coordinator.Respond(pending.ID, ApprovalOnce, "")
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			mutationErr = store.Add(Grant{Kind: RequirementAction, ID: "other", ConversationID: "c", ToolID: "other", Operation: OperationInteract, ActionKey: "other", Lifetime: LifetimeConversation, Origin: "test"})
+		}()
+		close(start)
+		wait.Wait()
+		if mutationErr != nil {
+			t.Fatal(mutationErr)
+		}
+		_, grants := store.Snapshot("c")
+		if respondErr == nil {
+			if response.Outcome != ApprovalGranted || !response.Decision.Ready() || len(grants) != 2 {
+				t.Fatalf("iteration %d successful approval was not atomic: response=%+v grants=%+v", iteration, response, grants)
+			}
+		} else if (!errors.Is(respondErr, ErrApprovalStale) && !errors.Is(respondErr, ErrGrantRevisionChanged)) || len(grants) != 1 || grants[0].ID != "other" {
+			t.Fatalf("iteration %d stale approval partially committed: response=%+v err=%v grants=%+v", iteration, response, respondErr, grants)
+		}
+	}
+}
+
+func TestRequiredOnceDisclosureOverridesBroadRulesAndConversationGrants(t *testing.T) {
+	store := NewMemoryStore()
+	root := t.TempDir()
+	ordinary := ResourceRequest{Kind: ResourceFilesystem, Target: filepath.Join(root, "ordinary.txt"), Operation: OperationRead}
+	source := ResourceRequest{Kind: ResourceFilesystem, Target: filepath.Join(root, "provider-source.jsonl"), Operation: OperationRead}
+	request := Request{ConversationID: "c", CallID: "call", Binding: "binding-exact", RequireOnceKeys: []string{"ordinary-disclosure", "source-disclosure"}, Requirements: []Requirement{
+		{Kind: RequirementAction, Key: "action", ToolID: "read_file", Operation: OperationRead, ActionKey: "read-action"},
+		{Kind: RequirementResource, Key: "ordinary-disclosure", ToolID: "read_file", Operation: OperationRead, SessionAllowed: true, Resource: &ordinary},
+		{Kind: RequirementResource, Key: "source-disclosure", ToolID: "read_file", Operation: OperationRead, SessionAllowed: true, Resource: &source},
+	}}
+	evaluator := Evaluator{Rules: []Rule{
+		{Kind: RequirementAction, ToolID: "read_file", Operation: OperationRead, Effect: EffectAllow},
+		{Kind: RequirementResource, ToolID: "read_file", Operation: OperationRead, Effect: EffectAllow},
+	}}
+	if err := store.Add(Grant{Kind: RequirementResource, ID: "broad-session", ConversationID: "c", ToolID: "read_file", Operation: OperationRead, ResourceTarget: root, Resource: &ResourceScope{Kind: ResourceFilesystem, Root: root, Recursive: true, Operations: []Operation{OperationRead}}, Lifetime: LifetimeConversation, Origin: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	decision := (Evaluator{Rules: evaluator.Rules, Grants: store}).Evaluate(request)
+	if len(decision.Missing) != 2 || len(decision.Allowed) != 1 || len(decision.Denied) != 0 {
+		t.Fatalf("broad allow/session grant bypassed required once disclosure: %+v", decision)
+	}
+	coordinator := NewCoordinator(evaluator, store)
+	pending, _, err := coordinator.Begin(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Respond(pending.ID, ApprovalConversation, ""); !errors.Is(err, ErrSessionNotAllowed) {
+		t.Fatalf("conversation lifetime satisfied required-once read: %v", err)
+	}
+	if _, err := coordinator.Respond(pending.ID, ApprovalOnce, ""); err != nil {
+		t.Fatalf("exact once approval failed: %v", err)
+	}
+	if got := (Evaluator{Rules: evaluator.Rules, Grants: store}).Evaluate(request); !got.Ready() {
+		t.Fatalf("exact approval did not satisfy separate requirements: %+v", got)
+	}
+	changed := cloneRequest(request)
+	changed.Binding = "different-object-or-context"
+	if got := (Evaluator{Rules: evaluator.Rules, Grants: store}).Evaluate(changed); got.Ready() {
+		t.Fatalf("once read grant crossed host binding: %+v", got)
+	}
+}
+
+func TestConsumeAuthorizedAtRevisionRequiresAndConsumesExactOnceBinding(t *testing.T) {
+	store := NewMemoryStore()
+	resource := ResourceRequest{Kind: ResourceFilesystem, Target: filepath.Join(t.TempDir(), "target"), Operation: OperationRead}
+	request := Request{ConversationID: "c", CallID: "call", Binding: "admission-object-a", RequireOnceKeys: []string{"disclosure"}, Requirements: []Requirement{
+		{Kind: RequirementResource, Key: "disclosure", ToolID: "read_file", Operation: OperationRead, Resource: &resource},
+	}}
+	evaluator := Evaluator{Rules: []Rule{{Kind: RequirementResource, ToolID: "read_file", Operation: OperationRead, Effect: EffectAllow}}, Grants: store}
+	if err := store.Add(Grant{Kind: RequirementResource, ID: "wrong-binding", ConversationID: "c", CallID: "call", RequirementKey: "disclosure", ToolID: "read_file", Operation: OperationRead, ResourceTarget: resource.Target, Resource: &ResourceScope{Kind: ResourceFilesystem, Root: resource.Target, Operations: []Operation{OperationRead}}, Lifetime: LifetimeOnce, Origin: "test", Binding: "other-object"}); err != nil {
+		t.Fatal(err)
+	}
+	revision, _ := store.Snapshot("c")
+	if _, err := store.ConsumeAuthorizedAtRevision(evaluator, request, revision); !errors.Is(err, ErrOnceGrantMissing) {
+		t.Fatalf("wrong binding consumed: %v", err)
+	}
+	_, grants := store.Snapshot("c")
+	if len(grants) != 1 || grants[0].ID != "wrong-binding" {
+		t.Fatalf("failed consume mutated grants: %+v", grants)
+	}
+	if err := store.Add(Grant{Kind: RequirementResource, ID: "exact", ConversationID: "c", CallID: "call", RequirementKey: "disclosure", ToolID: "read_file", Operation: OperationRead, ResourceTarget: resource.Target, Resource: &ResourceScope{Kind: ResourceFilesystem, Root: resource.Target, Operations: []Operation{OperationRead}}, Lifetime: LifetimeOnce, Origin: "test", Binding: request.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	revision, _ = store.Snapshot("c")
+	transition, err := store.ConsumeAuthorizedAtRevision(evaluator, request, revision)
+	if err != nil || transition.BeforeRevision != revision || transition.AfterRevision != revision+1 || len(transition.ConsumedIDs) != 1 || transition.ConsumedIDs[0] != "exact" || len(transition.Consumed) != 1 || transition.Consumed[0] != (GrantEvidence{ID: "exact", RequirementKey: "disclosure"}) || transition.Binding != request.Binding {
+		t.Fatalf("consume transition=%+v err=%v", transition, err)
+	}
+	if _, err := store.ConsumeAuthorizedAtRevision(evaluator, request, revision); !errors.Is(err, ErrGrantRevisionChanged) {
+		t.Fatalf("replay with stale revision error=%v", err)
+	}
+	if got := evaluator.Evaluate(request); got.Ready() {
+		t.Fatalf("consumed once grant was restored: %+v", got)
+	}
+}
+
+func TestCheckedConsumeRacesUnrelatedMutationWithoutPartialConsumption(t *testing.T) {
+	for iteration := 0; iteration < 20; iteration++ {
+		store := NewMemoryStore()
+		resource := ResourceRequest{Kind: ResourceFilesystem, Target: filepath.Join(t.TempDir(), "target"), Operation: OperationRead}
+		request := Request{ConversationID: "c", CallID: "call", Binding: "exact", RequireOnceKeys: []string{"disclosure"}, Requirements: []Requirement{{Kind: RequirementResource, Key: "disclosure", ToolID: "read_file", Operation: OperationRead, Resource: &resource}}}
+		coordinator := NewCoordinator(Evaluator{}, store)
+		pending, _, err := coordinator.Begin(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved, err := coordinator.Respond(pending.ID, ApprovalOnce, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		evaluator := Evaluator{Grants: store}
+		start := make(chan struct{})
+		var wait sync.WaitGroup
+		wait.Add(2)
+		var consumption GrantTransition
+		var consumeErr, mutationErr error
+		go func() {
+			defer wait.Done()
+			<-start
+			consumption, consumeErr = store.ConsumeAuthorizedAtRevision(evaluator, request, approved.Transition.AfterRevision)
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			mutationErr = store.Add(Grant{Kind: RequirementAction, ID: "other", ConversationID: "c", ToolID: "other", Operation: OperationInteract, ActionKey: "other", Lifetime: LifetimeConversation, Origin: "test"})
+		}()
+		close(start)
+		wait.Wait()
+		if mutationErr != nil {
+			t.Fatal(mutationErr)
+		}
+		_, grants := store.Snapshot("c")
+		if consumeErr == nil {
+			if len(consumption.ConsumedIDs) != 1 || len(consumption.ConsumedRequirementKeys) != 1 || len(grants) != 1 || grants[0].ID != "other" {
+				t.Fatalf("iteration %d successful consumption evidence/state mismatch: transition=%+v grants=%+v", iteration, consumption, grants)
+			}
+		} else if !errors.Is(consumeErr, ErrGrantRevisionChanged) || len(grants) != 2 {
+			t.Fatalf("iteration %d failed consume partially mutated grants: err=%v grants=%+v", iteration, consumeErr, grants)
+		}
 	}
 }
 

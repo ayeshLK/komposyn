@@ -15,12 +15,14 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,27 +116,33 @@ type ToolRuntimeConfig struct {
 	RootHost      FilesystemRootHost
 	Approval      ToolApprovalInteraction
 	Clarification ToolClarificationInteraction
-	Grants        *permissions.MemoryStore
-	Plans         *ConversationPlans
-	Rules         []permissions.Rule
+	// Grants is copied into runtime-owned state during composition; callers
+	// cannot keep a mutation handle to the live store.
+	Grants *permissions.MemoryStore
+	Plans  *ConversationPlans
+	Rules  []permissions.Rule
 }
 
 type toolRuntime struct {
-	cleanupMu      sync.Mutex
-	pendingCleanup []ToolPreparation
-	cleanupRetry   bool
-	shuttingDown   bool
-	registry       *tools.Registry
-	authorizer     ToolAuthorizer
-	enforcer       ToolEnforcer
-	preparer       ToolPreparer
-	rootHost       FilesystemRootHost
-	approval       ToolApprovalInteraction
-	clarification  ToolClarificationInteraction
-	grants         *permissions.MemoryStore
-	plans          *ConversationPlans
-	evaluator      permissions.Evaluator
-	coordinator    *permissions.Coordinator
+	readAuthorityMu    sync.Mutex
+	readAuthorityEpoch uint64
+	readAuthorities    map[string]readAuthorityRecord
+	readGrantRevision  uint64
+	cleanupMu          sync.Mutex
+	pendingCleanup     []ToolPreparation
+	cleanupRetry       bool
+	shuttingDown       bool
+	registry           *tools.Registry
+	authorizer         ToolAuthorizer
+	enforcer           ToolEnforcer
+	preparer           ToolPreparer
+	rootHost           FilesystemRootHost
+	approval           ToolApprovalInteraction
+	clarification      ToolClarificationInteraction
+	grants             *permissions.MemoryStore
+	plans              *ConversationPlans
+	evaluator          permissions.Evaluator
+	coordinator        *permissions.Coordinator
 }
 
 var errPreparationCleanupPending = errors.New("prepared tool cleanup remains unconfirmed")
@@ -305,16 +313,30 @@ func newToolRuntime(config ToolRuntimeConfig) *toolRuntime {
 	}
 	if config.Grants == nil {
 		config.Grants = permissions.NewMemoryStore()
+	} else {
+		config.Grants = config.Grants.Clone()
 	}
 	if config.Plans == nil {
 		config.Plans = NewConversationPlans()
 	}
-	evaluator := permissions.Evaluator{Rules: config.Rules, Grants: config.Grants}
+	evaluator := permissions.Evaluator{Rules: clonePermissionRules(config.Rules), Grants: config.Grants}
 	return &toolRuntime{
 		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer, rootHost: config.RootHost,
 		approval: config.Approval, clarification: config.Clarification, grants: config.Grants, plans: config.Plans, evaluator: evaluator,
-		coordinator: permissions.NewCoordinator(evaluator, config.Grants),
+		coordinator: permissions.NewCoordinator(evaluator, config.Grants), readAuthorities: make(map[string]readAuthorityRecord),
 	}
+}
+
+func clonePermissionRules(rules []permissions.Rule) []permissions.Rule {
+	cloned := append([]permissions.Rule(nil), rules...)
+	for i := range cloned {
+		if cloned[i].Resource != nil {
+			resource := *cloned[i].Resource
+			resource.Operations = append([]permissions.Operation(nil), resource.Operations...)
+			cloned[i].Resource = &resource
+		}
+	}
+	return cloned
 }
 
 func (r *toolRuntime) definitions(p provider.Provider, method provider.AuthMethod) []tools.Definition {
@@ -353,20 +375,49 @@ func bindAuthorizationRequest(invocation tools.Invocation, request permissions.R
 	if !hasAction || !hasResource {
 		return permissions.Request{}, errors.New("tool authorization requires action and resource requirements")
 	}
+	if request.AdmissionBinding == "" {
+		request.AdmissionBinding = request.Binding
+	}
+	if invocation.ToolID == tools.ID("read_file") && request.AdmissionBinding == "" {
+		return permissions.Request{}, errors.New("trusted host admission binding is required")
+	}
+	canonicalArguments, err := canonicalJSON(invocation.Arguments)
+	if err != nil {
+		return permissions.Request{}, err
+	}
 	canonical, err := json.Marshal(struct {
-		ConversationID string
-		TurnID         string
-		CallID         string
-		ToolID         tools.ID
-		Arguments      json.RawMessage
-		Requirements   []permissions.Requirement
-	}{invocation.ConversationID, invocation.TurnID, invocation.ProviderCallID, invocation.ToolID, invocation.Arguments, request.Requirements})
+		ConversationID   string
+		TurnID           string
+		CallID           string
+		ToolID           tools.ID
+		Arguments        json.RawMessage
+		Requirements     []permissions.Requirement
+		AdmissionBinding string
+		RequireOnce      []string
+	}{invocation.ConversationID, invocation.TurnID, invocation.ProviderCallID, invocation.ToolID, canonicalArguments, request.Requirements, request.AdmissionBinding, request.RequireOnceKeys})
 	if err != nil {
 		return permissions.Request{}, err
 	}
 	digest := sha256.Sum256(canonical)
 	request.Binding = hex.EncodeToString(digest[:])
 	return request, nil
+}
+
+func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return nil, errors.New("tool arguments contain trailing JSON")
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return canonical, nil
 }
 
 func sameAuthorizationBinding(a, b permissions.Request) bool {
@@ -377,6 +428,23 @@ func (r *toolRuntime) authorize(ctx context.Context, invocation tools.Invocation
 	request, err := r.authorizer.Prepare(ctx, cloneInvocation(invocation))
 	if err != nil {
 		return permissions.Request{}, permissions.Decision{}, err
+	}
+	if invocation.ToolID == tools.ID("read_file") {
+		if request.AdmissionBinding == "" {
+			request.AdmissionBinding = request.Binding
+		}
+		if request.AdmissionBinding == "" {
+			return permissions.Request{}, permissions.Decision{}, errors.New("read authorization requires trusted admission binding")
+		}
+		request.RequireOnceKeys = nil
+		for _, requirement := range request.Requirements {
+			if requirement.Kind == permissions.RequirementResource && requirement.Operation == permissions.OperationRead {
+				request.RequireOnceKeys = append(request.RequireOnceKeys, requirement.Key)
+			}
+		}
+		if len(request.RequireOnceKeys) == 0 {
+			return permissions.Request{}, permissions.Decision{}, errors.New("read authorization requires exact resource disclosure")
+		}
 	}
 	request, err = bindAuthorizationRequest(invocation, request)
 	if err != nil {
@@ -568,6 +636,9 @@ func boundedRedirect(text string) (string, bool) {
 
 func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection model.Model, plug provider.Provider, credential provider.Credential, history []provider.Message, requestID, conversationID string, conversationIDErr error, current func() bool, delta func(string)) toolLoopResult {
 	runtime := c.toolRuntime
+	if runtime != nil {
+		defer runtime.retireReadAuthorities(conversationID)
+	}
 	definitions := []tools.Definition(nil)
 	if conversationIDErr == nil && conversationID != "" && runtime != nil {
 		definitions = runtime.definitions(plug, credential.Method)
@@ -756,6 +827,9 @@ func fmtRequestID(base string, request int) string {
 }
 
 func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID string, call provider.ToolCall, advertised []tools.Definition, maxBytes int, current func() bool, publish func(ToolActivity)) (provider.ToolResult, ToolActivity, string, bool) {
+	readCall := call.ToolID == tools.ID("read_file")
+	readEpoch := r.readAuthorityEpochSnapshot()
+	lifecycleCurrent := func() bool { return !readCall || r.readAuthorityEpochCurrent(readEpoch) }
 	activity := ToolActivity{CallID: call.CallID, ToolID: call.ToolID}
 	update := func(phase string) {
 		activity.Phase = phase
@@ -772,6 +846,9 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	if !validToolCall(call) {
 		return notExecuted("provider call identity is invalid")
 	}
+	if call.ToolID == tools.ID("read_file") {
+		return notExecuted("filesystem reads remain unavailable until retained admission and checked dispatch are implemented")
+	}
 	tool, ok := r.registry.Lookup(call.ToolID)
 	if !ok {
 		return notExecuted("tool is unavailable")
@@ -786,16 +863,20 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	}
 	invocation := tools.Invocation{ConversationID: conversationID, TurnID: turnID, ProviderCallID: call.CallID, ToolID: call.ToolID, Arguments: arguments}
 	request, decision, err := r.authorize(ctx, invocation)
-	if err != nil {
+	if err != nil || !lifecycleCurrent() {
 		return notExecuted("tool authorization requirements could not be prepared")
+	}
+	if !r.checkReadAuthorityRevision(decision.Revision) {
+		return notExecuted("permission revision changed while read authority was retained")
 	}
 	if len(decision.Denied) > 0 {
 		return notExecuted("tool operation is denied by policy")
 	}
 	if len(decision.Missing) > 0 {
 		update("awaiting approval")
-		pending, _, beginErr := r.coordinator.Begin(request)
-		if beginErr != nil {
+		pending, beginDecision, beginErr := r.beginApproval(request, readEpoch)
+		if beginErr != nil || beginDecision.Revision != decision.Revision {
+			r.coordinator.CancelConversation(conversationID)
 			return notExecuted("tool approval is unavailable")
 		}
 		if pending.ID != "" {
@@ -804,7 +885,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 				return notExecuted("tool approval is unavailable")
 			}
 			choice, redirectText, reviewErr := r.approval.Review(ctx, pending)
-			if ctx.Err() != nil || !current() {
+			if ctx.Err() != nil || !current() || !lifecycleCurrent() {
 				r.coordinator.CancelConversation(conversationID)
 				activity.Outcome = tools.OutcomeNotExecuted
 				activity.Message = "turn cancelled before execution"
@@ -823,7 +904,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 				}
 				redirectText = bounded
 			}
-			approved, respondErr := r.coordinator.Respond(pending.ID, choice, redirectText)
+			approved, respondErr := r.respondApproval(pending.ID, choice, redirectText, request, readCall, readEpoch)
 			if respondErr != nil {
 				return notExecuted("tool approval is stale or invalid")
 			}
@@ -844,25 +925,30 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 				if !approved.Decision.Ready() {
 					return notExecuted("tool permissions remain incomplete")
 				}
+				if approved.Transition.AfterRevision == 0 || approved.Transition.BeforeRevision != decision.Revision || approved.Transition.Binding != request.Binding {
+					return notExecuted("approval transaction evidence is invalid")
+				}
+				decision = approved.Decision
 			default:
 				return notExecuted("tool approval did not grant permission")
 			}
 		}
 	}
-	if !current() || ctx.Err() != nil {
+	expectedRevision := decision.Revision
+	if !current() || ctx.Err() != nil || !lifecycleCurrent() {
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
 		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
 	prepared, freshDecision, err := r.authorize(ctx, invocation)
-	if err != nil || !sameAuthorizationBinding(request, prepared) || !freshDecision.Ready() {
+	if err != nil || !sameAuthorizationBinding(request, prepared) || !freshDecision.Ready() || freshDecision.Revision != expectedRevision {
 		return notExecuted("tool authorization changed before execution")
 	}
 	if r.enforcer == nil {
 		return notExecuted("required execution enforcement is unavailable")
 	}
-	if !current() || ctx.Err() != nil {
+	if !current() || ctx.Err() != nil || !lifecycleCurrent() {
 		activity.Outcome = tools.OutcomeNotExecuted
 		activity.Message = "turn cancelled before execution"
 		update("finished")
@@ -876,7 +962,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	}
 	var preparation ToolPreparation
 	if r.preparer != nil && r.preparer.Prepares(call.ToolID) {
-		preparation, err = r.preparer.PrepareTool(ctx, tool, cloneInvocation(invocation), prepared, freshDecision.Revision)
+		preparation, err = r.preparer.PrepareTool(ctx, tool, cloneInvocation(invocation), prepared, expectedRevision)
 		if err != nil || preparation == nil {
 			closeErr := r.closePreparation(ctx, &preparation)
 			if closeErr != nil {
@@ -885,7 +971,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 			return notExecuted("tool preparation or coverage admission is unavailable")
 		}
 	}
-	if !current() || ctx.Err() != nil {
+	if !current() || ctx.Err() != nil || !lifecycleCurrent() {
 		if closeErr := r.closePreparation(ctx, &preparation); closeErr != nil {
 			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after cancellation")
 		}
@@ -894,14 +980,27 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true
 	}
-	if err := r.grants.ConsumeOnceMatchingAtRevision(prepared, freshDecision.Revision); err != nil {
+	consumption, err := r.consumePermission(prepared, expectedRevision, readEpoch, readCall)
+	if err != nil {
 		if closeErr := r.closePreparation(ctx, &preparation); closeErr != nil {
 			return preparedCleanupFailed("once permission changed and prepared capability cleanup could not be confirmed")
 		}
 		return notExecuted("once permission could not be consumed")
 	}
+	if consumption.BeforeRevision != expectedRevision || consumption.Binding != prepared.Binding {
+		if closeErr := r.closePreparation(ctx, &preparation); closeErr != nil {
+			return preparedCleanupFailed("consumed permission evidence is invalid and cleanup could not be confirmed")
+		}
+		return notExecuted("consumed permission evidence is invalid")
+	}
+	if !lifecycleCurrent() {
+		if closeErr := r.closePreparation(ctx, &preparation); closeErr != nil {
+			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after invalidation")
+		}
+		return notExecuted("read authorization was invalidated before execution")
+	}
 	update("authorized")
-	if !current() || ctx.Err() != nil {
+	if !current() || ctx.Err() != nil || !lifecycleCurrent() {
 		if closeErr := r.closePreparation(ctx, &preparation); closeErr != nil {
 			return preparedCleanupFailed("prepared capability cleanup could not be confirmed after authorization")
 		}

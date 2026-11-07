@@ -343,7 +343,7 @@ func TestRuntimeToolLoopSerializesCorrelatedCallsAndContinues(t *testing.T) {
 	if got := tool.captured(); len(got) != 2 || got[0].ProviderCallID != "call-a" || got[1].ProviderCallID != "call-b" {
 		t.Fatalf("execution order=%+v", got)
 	}
-	if _, grants := config.Grants.Snapshot(tool.captured()[0].ConversationID); len(grants) != 0 {
+	if _, grants := chat.toolRuntime.grants.Snapshot(tool.captured()[0].ConversationID); len(grants) != 0 {
 		t.Fatalf("once grants survived their dispatch: %+v", grants)
 	}
 	requests := fp.captured()
@@ -1000,9 +1000,9 @@ func TestRuntimeRevalidatesAuthorizationAndStaleApproval(t *testing.T) {
 	t.Run("stale grant revision", func(t *testing.T) {
 		tool := &fixtureTool{}
 		config := newToolConfig(tool, nil)
-		store := config.Grants
+		var chat *Chat
 		config.Approval = ToolApprovalFunc(func(_ context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
-			if err := store.Add(permissions.Grant{Kind: permissions.RequirementAction, ID: "concurrent-grant", ConversationID: pending.Request.ConversationID, CallID: "other-call", RequirementKey: "action", ToolID: "lookup", Operation: permissions.OperationRead, ActionKey: "other-action", Lifetime: permissions.LifetimeOnce, Origin: "test"}); err != nil {
+			if err := chat.toolRuntime.grants.Add(permissions.Grant{Kind: permissions.RequirementAction, ID: "concurrent-grant", ConversationID: pending.Request.ConversationID, CallID: "other-call", RequirementKey: "action", ToolID: "lookup", Operation: permissions.OperationRead, ActionKey: "other-action", Lifetime: permissions.LifetimeOnce, Origin: "test"}); err != nil {
 				t.Fatal(err)
 			}
 			return permissions.ApprovalOnce, "", nil
@@ -1013,7 +1013,7 @@ func TestRuntimeRevalidatesAuthorizationAndStaleApproval(t *testing.T) {
 			}
 			return finalResult("no execution"), nil
 		}}
-		chat, _ := makeToolLoopChat(t, fp, config)
+		chat, _ = makeToolLoopChat(t, fp, config)
 		turn, err := chat.Send(context.Background(), "read", nil)
 		if err != nil || len(tool.captured()) != 0 || turn.ToolActivities[0].Outcome != tools.OutcomeNotExecuted {
 			t.Fatalf("stale approval dispatched: %+v err=%v", turn, err)
@@ -1106,7 +1106,7 @@ func TestRuntimeConversationGrantReuseAndCloseClear(t *testing.T) {
 		t.Fatalf("conversation grant not reused: approvals=%d calls=%d", approvals, len(tool.captured()))
 	}
 	conversationID := tool.captured()[0].ConversationID
-	if _, grants := config.Grants.Snapshot(conversationID); len(grants) == 0 {
+	if grants := chat.ToolGrants(); len(grants) == 0 {
 		t.Fatal("conversation grant disappeared before shutdown")
 	}
 	discovery := chat.Discover(context.Background())
@@ -1122,11 +1122,11 @@ func TestRuntimeConversationGrantReuseAndCloseClear(t *testing.T) {
 	if err := chat.Select(context.Background(), otherModel, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, grants := config.Grants.Snapshot(conversationID); len(grants) != 0 {
+	if _, grants := chat.toolRuntime.grants.Snapshot(conversationID); len(grants) != 0 {
 		t.Fatalf("confirmed model reset retained conversation grants: %+v", grants)
 	}
 	chat.Close()
-	if _, grants := config.Grants.Snapshot(conversationID); len(grants) != 0 {
+	if _, grants := chat.toolRuntime.grants.Snapshot(conversationID); len(grants) != 0 {
 		t.Fatal("shutdown retained conversation grants")
 	}
 }
