@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "historical_native_service_fixture_acceptance",
+  "source_commit": "d43a7dd7005ae6ccc8102936d00bd2920bbd9fcf",
+  "harness_revision": 2,
+  "provenance": {
+    "source_archive_sha256": "4debb9b01cffbf81c4dfb78989ffcab5caadb5178b16ba21b8fe2497cb2c7396",
+    "test_overlay_sha256": "3861d527558ce69722e9901a59fe0886a08faa67ed5e33026bc3cf2ac96dde11",
+    "runner_sha256": "fb844f048a23a1ad01c3fa36c972bdf645665ab0dc32d519a2e00b1b382acb63",
+    "capture_helper_sha256": "fade10f56a5b762489375c8c58e7f033ea50c1b37c7cc57dde81938b2560b7da",
+    "native_test_binary_sha256": "c25793178e7d95ad5129977d7f5ad4976a684c07c64e1844f6cba56b3455df11",
+    "results_archive_sha256": "4bb30f9ab696b9f039ca94cda57d1a0b1558a6ae61c51198e16eec9edb9c6876"
+  },
+  "environment": {
+    "os": "linux",
+    "architecture": "amd64",
+    "kernel": "7.0.0-42-generic",
+    "go_version": "1.26.10",
+    "uid_class": "regular_non_root",
+    "bubblewrap": {
+      "version": "0.9.0",
+      "owner_class": "root",
+      "mode": "0755",
+      "sha256": "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71",
+      "bind_mode": "ro-bind-fd"
+    }
+  },
+  "result": {
+    "status": "scoped_native_pass",
+    "passed_cases": 9,
+    "total_cases": 9,
+    "cleanup_confirmed_for_every_case": true,
+    "timeouts": 0,
+    "truncated_stages": 0,
+    "remaining_captured_descendants": 0
+  },
+  "cases": [
+    {
+      "id": "TestNativeShippedGenericReadGate",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["shipped_generic_read_refused"]
+    },
+    {
+      "id": "TestNativeServicePositiveRead",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["expected_fixture_bytes_verified", "worker_ready", "capability_held", "read_started", "worker_join_confirmed", "private_result_published"]
+    },
+    {
+      "id": "TestNativeServiceProtectedRoutesAndAliases",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["auth_route_refused_before_once_consumption", "settings_route_refused_before_once_consumption", "auth_hard_link_alias_refused_before_once_consumption", "no_worker_launched_for_refusals"]
+    },
+    {
+      "id": "TestNativeServiceRotationJoinsHeldWorker",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["cleanup_pending_preserved_destination", "worker_join_before_sensitive_write", "fresh_distinct_replacement_registered_empty", "retired_alias_refused"]
+    },
+    {
+      "id": "TestNativeServicePostCaptureRevocation",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["read_and_join_confirmed", "captured_result_suppressed_before_publication"]
+    },
+    {
+      "id": "TestNativeServiceAuthRotationJoinsHeldWorker",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["cleanup_pending_preserved_destination", "worker_join_before_sensitive_write", "fresh_distinct_replacement_registered_empty", "retired_alias_refused"]
+    },
+    {
+      "id": "TestNativeServiceRootChangeWhileHeld",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["old_invocation_cleanup_pending", "old_invocation_no_read_or_publication", "fresh_invocation_succeeded_under_new_root_generation"]
+    },
+    {
+      "id": "TestNativeServiceCancellationWhileHeld",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["worker_joined", "no_read_or_publication", "outcome_remained_unknown"]
+    },
+    {
+      "id": "TestNativeServiceShutdownRetryWhileHeld",
+      "status": "measured_pass",
+      "cleanup_confirmed": true,
+      "assertions": ["incomplete_cleanup_reported", "fresh_shutdown_retry_drained", "worker_joined_without_read_or_publication", "deterministic_coordinator_hold_not_natural_kernel_hang"]
+    }
+  ],
+  "limitations": [
+    "The test-only fixture replaces only the deny-only authorizer with explicit synthetic once approvals; the shipped service still refuses generic reads.",
+    "Private coordinator publication is not a provider request.",
+    "This run does not prove sealed-copy mode, arbitrary roots, independent-copy detection, provider-source lifecycle, Token Logger coverage, enabled provider integration, all platforms, resource limits, arbitrary descendants, or filesystem/shell tool safety."
+  ],
+  "reproduction_attempt": {
+    "date": "2026-11-07",
+    "source_commit": "d43a7dd7005ae6ccc8102936d00bd2920bbd9fcf",
+    "runner_sha256": "fb844f048a23a1ad01c3fa36c972bdf645665ab0dc32d519a2e00b1b382acb63",
+    "test_overlay_sha256": "3861d527558ce69722e9901a59fe0886a08faa67ed5e33026bc3cf2ac96dde11",
+    "results_archive_sha256": "7602c5af0c660f12fead3968d4ca6cc36b7567a5e97004effb36006d42a3af63",
+    "native_test_binary_sha256": "e9705575c7427930716757975b4ec065a0ba2dcf1eee6bcb23ea164237b6a6ef",
+    "environment": {
+      "os": "linux",
+      "architecture": "amd64",
+      "kernel": "7.0.0-42-generic",
+      "go_version": "1.26.10",
+      "python_version": "3.12.3",
+      "uid_class": "regular_non_root"
+    },
+    "backend": {
+      "version": "0.9.0",
+      "owner_class": "untrusted_non_root_uid_65534",
+      "sha256": "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71",
+      "trust_result": "refused_before_backend_probes"
+    },
+    "runner_exit_code": 2,
+    "status": "native_unavailable",
+    "unit_checks": "passed",
+    "native_test_binary_build": "passed",
+    "native_test_process": "ran",
+    "candidate_worker_started": false,
+    "case_counts": {
+      "generic_read_gate_behavior_passed_without_worker": 1,
+      "backend_dependent_cases_unavailable": 8,
+      "observed_violations": 0
+    },
+    "capture_cleanup_confirmed": true,
+    "timeouts": 0,
+    "truncated_output": false,
+    "remaining_captured_descendants": 0,
+    "archive_committed": false
+  }
+}

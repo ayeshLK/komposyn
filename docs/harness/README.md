@@ -71,6 +71,14 @@ unknown-data refusal boundary and staged typed-read path are described in the
 auth/settings lifecycle and pre-consumption admission seam are implemented in
 the [composition admission and sandbox service](composition-admission-sandbox-service.md).
 The unknown-data gate remains closed, and filesystem tools remain unavailable.
+The reviewed #243 native service-fixture result, its provenance, and the
+checkout-safe reproduction runner are recorded in
+[composition native acceptance](read-broker-composition-native-acceptance.md)
+and [`scripts/native-acceptance/`](../../scripts/native-acceptance/README.md).
+The still-open choice for unknown unregistered files is laid out in the
+[unregistered exact-file policy decision](read-broker-unregistered-read-policy.md);
+its recommendation is not accepted policy, and the generic-read gate remains
+closed.
 
 ## Local configuration
 
