@@ -18,8 +18,12 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
@@ -72,6 +76,15 @@ type implementation interface {
 	PrepareGenericRead(context.Context, string, string) error
 }
 
+type readAdmissionImplementation interface {
+	AdmitFilesystemRead(context.Context, tools.Invocation, string, string, uint64, uint64) (runtime.FilesystemReadAdmission, error)
+	PrepareAdmittedFilesystemRead(context.Context, runtime.FilesystemReadAdmission, uint64) (runtime.FilesystemReadPreparation, error)
+	CloseFilesystemReadAdmission(context.Context, runtime.FilesystemReadAdmission) error
+	SelectFilesystemRoot(context.Context, runtime.FilesystemRootTransition) error
+	InvalidateFilesystemAdmissions(context.Context) error
+	SetFilesystemReadInvalidator(func(string))
+}
+
 // Service is constructed only by trusted executable composition. The
 // constructor fixes the production profile; callers cannot submit owner
 // applicability or a generic-read completeness assertion.
@@ -82,11 +95,13 @@ type Service struct {
 	rootConversationID string
 	rootGeneration     uint64
 	rootPath           string
+	rootPending        bool
 }
 
 var _ auth.SensitiveFileProtector = (*Service)(nil)
 var _ runtime.ToolPreparer = (*Service)(nil)
 var _ runtime.FilesystemRootHost = (*Service)(nil)
+var _ runtime.FilesystemReadAdmissionHost = (*Service)(nil)
 
 func NewHostService(bubblewrapPath string) (*Service, error) {
 	impl, err := newHostImplementation(bubblewrapPath)
@@ -117,6 +132,7 @@ func (s *Service) Close(ctx context.Context) error {
 	}
 	s.rootMu.Lock()
 	s.rootClosed = true
+	s.rootPending = true
 	s.rootPath = ""
 	s.rootConversationID = ""
 	s.rootGeneration++
@@ -141,8 +157,8 @@ func (s *Service) ValidateFilesystemRoot(ctx context.Context, path string) (stri
 }
 
 // InvalidateFilesystemRoot records the newest conversation root generation.
-// This Stage 1 service has no admitted read work to join; later stages must
-// extend this callback to cancel and confirm cleanup before acknowledging it.
+// Root invalidation marks the selected root unavailable before draining
+// retained admissions. Older asynchronous notifications cannot restore it.
 func (s *Service) InvalidateFilesystemRoot(ctx context.Context, transition runtime.FilesystemRootTransition) error {
 	if ctx == nil {
 		return context.Canceled
@@ -154,17 +170,44 @@ func (s *Service) InvalidateFilesystemRoot(ctx context.Context, transition runti
 		return ErrServiceClosed
 	}
 	s.rootMu.Lock()
-	defer s.rootMu.Unlock()
 	if s.rootClosed {
+		s.rootMu.Unlock()
 		return ErrServiceClosed
 	}
 	if transition.Generation < s.rootGeneration {
+		s.rootMu.Unlock()
 		return nil
+	}
+	if transition.Generation == s.rootGeneration && s.rootGeneration != 0 &&
+		(transition.ConversationID != s.rootConversationID || transition.Root != s.rootPath) {
+		s.rootMu.Unlock()
+		return runtime.ErrFilesystemRootStale
 	}
 	s.rootConversationID = transition.ConversationID
 	s.rootGeneration = transition.Generation
 	s.rootPath = transition.Root
+	s.rootPending = true
+	s.rootMu.Unlock()
+	if impl, ok := s.impl.(readAdmissionImplementation); ok {
+		if err := impl.SelectFilesystemRoot(ctx, transition); err != nil {
+			return err
+		}
+	}
+	s.rootMu.Lock()
+	if s.rootGeneration == transition.Generation && s.rootConversationID == transition.ConversationID {
+		s.rootPending = false
+	}
+	s.rootMu.Unlock()
 	return ctx.Err()
+}
+
+func (s *Service) SetFilesystemReadInvalidator(invalidate func(string)) {
+	if s == nil || s.impl == nil {
+		return
+	}
+	if impl, ok := s.impl.(readAdmissionImplementation); ok {
+		impl.SetFilesystemReadInvalidator(invalidate)
+	}
 }
 
 func (s *Service) CoverageSnapshot() CoverageSnapshot {
@@ -198,4 +241,119 @@ func (s *Service) PrepareGenericRead(ctx context.Context, root, target string) e
 		return ErrServiceClosed
 	}
 	return s.impl.PrepareGenericRead(ctx, root, target)
+}
+
+func (s *Service) AdmitFilesystemRead(ctx context.Context, invocation tools.Invocation, destination string) (runtime.FilesystemReadAdmission, error) {
+	if ctx == nil || s == nil || s.impl == nil {
+		return runtime.FilesystemReadAdmission{}, ErrServiceClosed
+	}
+	if invocation.ToolID != tools.ID("read_file") || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
+		return runtime.FilesystemReadAdmission{}, errors.New("read admission invocation identity is invalid")
+	}
+	s.rootMu.Lock()
+	if s.rootClosed || s.rootPending || s.rootPath == "" || invocation.ConversationID != s.rootConversationID {
+		s.rootMu.Unlock()
+		return runtime.FilesystemReadAdmission{}, ErrCoverageMissing
+	}
+	root, conversationID, rootGeneration := s.rootPath, s.rootConversationID, s.rootGeneration
+	s.rootMu.Unlock()
+	impl, ok := s.impl.(readAdmissionImplementation)
+	if !ok {
+		return runtime.FilesystemReadAdmission{}, ErrCoverageMissing
+	}
+	admission, err := impl.AdmitFilesystemRead(ctx, invocation, destination, root, rootGeneration, s.CoverageSnapshot().Revision)
+	if err != nil {
+		return runtime.FilesystemReadAdmission{}, err
+	}
+	s.rootMu.Lock()
+	current := !s.rootClosed && !s.rootPending && s.rootPath == root && s.rootConversationID == conversationID && s.rootGeneration == rootGeneration
+	s.rootMu.Unlock()
+	if !current {
+		_ = impl.CloseFilesystemReadAdmission(context.Background(), admission)
+		return runtime.FilesystemReadAdmission{}, runtime.ErrFilesystemRootStale
+	}
+	return admission, nil
+}
+
+func (s *Service) PrepareAdmittedFilesystemRead(ctx context.Context, admission runtime.FilesystemReadAdmission, expectedRevision uint64) (runtime.FilesystemReadPreparation, error) {
+	if ctx == nil || s == nil || s.impl == nil {
+		return nil, ErrServiceClosed
+	}
+	impl, ok := s.impl.(readAdmissionImplementation)
+	if !ok {
+		return nil, ErrCoverageMissing
+	}
+	s.rootMu.Lock()
+	current := !s.rootClosed && !s.rootPending && s.rootPath == admission.Root && s.rootConversationID == admission.ConversationID && s.rootGeneration == admission.RootGeneration
+	if !current {
+		s.rootMu.Unlock()
+		return nil, runtime.ErrFilesystemRootStale
+	}
+	preparation, err := impl.PrepareAdmittedFilesystemRead(ctx, admission, expectedRevision)
+	s.rootMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &serviceAdmissionPreparation{service: s, inner: preparation, expected: admission}, nil
+}
+
+func (s *Service) CloseFilesystemReadAdmission(ctx context.Context, admission runtime.FilesystemReadAdmission) error {
+	if s == nil || s.impl == nil {
+		return ErrServiceClosed
+	}
+	impl, ok := s.impl.(readAdmissionImplementation)
+	if !ok {
+		return ErrCoverageMissing
+	}
+	return impl.CloseFilesystemReadAdmission(ctx, admission)
+}
+
+type serviceAdmissionPreparation struct {
+	service  *Service
+	inner    runtime.FilesystemReadPreparation
+	expected runtime.FilesystemReadAdmission
+}
+
+func (p *serviceAdmissionPreparation) Metadata() runtime.FilesystemReadAdmission {
+	if p == nil || p.inner == nil {
+		return runtime.FilesystemReadAdmission{}
+	}
+	return p.inner.Metadata()
+}
+
+func (p *serviceAdmissionPreparation) WithAuthorityCommit(ctx context.Context, commit func() error) error {
+	if p == nil || p.service == nil || p.inner == nil || ctx == nil {
+		return ErrServiceClosed
+	}
+	p.service.rootMu.Lock()
+	defer p.service.rootMu.Unlock()
+	if p.service.rootClosed || p.service.rootPending || p.service.rootPath != p.expected.Root || p.service.rootConversationID != p.expected.ConversationID || p.service.rootGeneration != p.expected.RootGeneration {
+		return runtime.ErrFilesystemRootStale
+	}
+	return p.inner.WithAuthorityCommit(ctx, commit)
+}
+
+func (p *serviceAdmissionPreparation) Close(ctx context.Context) error {
+	if p == nil || p.inner == nil {
+		return nil
+	}
+	return p.inner.Close(ctx)
+}
+
+func exactReadTarget(raw json.RawMessage) (string, error) {
+	var arguments struct {
+		Path string `json:"path"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&arguments); err != nil || arguments.Path == "" {
+		return "", errors.New("read request must name one exact file path")
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return "", errors.New("read request arguments contain trailing data")
+	}
+	if !filepath.IsAbs(arguments.Path) || filepath.Clean(arguments.Path) != arguments.Path || strings.ContainsRune(arguments.Path, '\x00') {
+		return "", errors.New("read target must be a clean absolute path")
+	}
+	return arguments.Path, nil
 }

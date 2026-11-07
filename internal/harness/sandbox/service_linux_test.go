@@ -165,6 +165,157 @@ func TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate(t *testin
 	}
 }
 
+func TestHostAdmissionRetainsOneObjectThroughPreparationWithoutWorker(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(target, []byte("synthetic admitted contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "conversation-fixture", Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "conversation-fixture", TurnID: "turn-fixture", ProviderCallID: "call-fixture", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"` + target + `"}`)}
+	destination := "openai/gpt-test/profile-revision"
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, destination)
+	if err != nil {
+		t.Fatalf("admit synthetic regular file: %v", err)
+	}
+	if admission.Class != string(readbrokerstudy.ClassOrdinary) || admission.Identity == "" || admission.AdmissionBinding == "" || admission.Reference == nil || admission.RootGeneration != 1 {
+		t.Fatalf("detached admission metadata is incomplete: %+v", admission)
+	}
+	originalIdentity := admission.Identity
+	moved := filepath.Join(root, "moved-original.txt")
+	if err := os.Rename(target, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("synthetic replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := service.PrepareAdmittedFilesystemRead(context.Background(), admission, 1)
+	if err != nil {
+		t.Fatalf("prepare same admitted object: %v", err)
+	}
+	prepared := preparation.Metadata()
+	if prepared.Identity != originalIdentity || prepared.Target != target || prepared.AdmissionBinding != admission.AdmissionBinding {
+		t.Fatalf("preparation reopened or rebound the target: %+v", prepared)
+	}
+	committed := false
+	if err := preparation.WithAuthorityCommit(context.Background(), func() error { committed = true; return nil }); err != nil {
+		t.Fatalf("current preparation commit gate: %v", err)
+	}
+	if !committed {
+		t.Fatal("host authority commit callback was not invoked")
+	}
+	if err := preparation.Close(context.Background()); err != nil {
+		t.Fatalf("close preparation: %v", err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	if impl.session.ActiveOperationCount() != 0 {
+		t.Fatal("host-only admission appeared as a worker operation")
+	}
+}
+
+func TestHostAdmissionRefusesRegisteredOwnerRoutesAndAliases(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+	root := t.TempDir()
+	authPath := filepath.Join(root, "auth.json")
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	authStore := auth.Store{Path: authPath, Protection: service}
+	settingsStore := settings.Store{Path: settingsPath, Protection: service}
+	if err := authStore.RegisterProtection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := authStore.AddAPIKey("fixture", "openai", "synthetic", "synthetic-secret", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.RegisterProtection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.SaveContext(context.Background(), settings.Settings{Plugin: settings.DefaultUI}); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "ordinary-looking.json")
+	if err := os.Link(authPath, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "protected-fixture", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{authPath, alias} {
+		t.Run(filepath.Base(target), func(t *testing.T) {
+			invocation := tools.Invocation{ConversationID: "protected-fixture", TurnID: "turn", ProviderCallID: "call-" + filepath.Base(target), ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"` + target + `"}`)}
+			if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); err == nil {
+				t.Fatal("registered auth route or alias was admitted for ordinary approval")
+			}
+		})
+	}
+	impl := service.impl.(*linuxImplementation)
+	if len(impl.session.AdmissionConversations()) != 0 {
+		t.Fatal("protected refusal retained an admission")
+	}
+}
+
+func TestProtectedOwnerTransitionRetiresPendingAdmissionBeforeReturning(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close(context.Background())
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.txt")
+	if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "c", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: []byte(`{"path":"` + target + `"}`)}
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRoute := filepath.Join(t.TempDir(), "auth-rotated.json")
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, newRoute, nil); err != nil {
+		t.Fatalf("protected owner transition: %v", err)
+	}
+	if _, err := service.PrepareAdmittedFilesystemRead(context.Background(), admission, 1); err == nil {
+		t.Fatal("owner transition left a stale admission preparable")
+	}
+	impl := service.impl.(*linuxImplementation)
+	if conversations := impl.session.AdmissionConversations(); len(conversations) != 0 {
+		t.Fatal("owner transition returned before host admission retirement")
+	}
+}
+
 func TestFailedOwnerIdentityValidationStaysPendingUntilSuccessfulRetry(t *testing.T) {
 	for _, composition := range []string{"coordinator-backed", "backend-unavailable"} {
 		for _, failure := range []string{"path-identity-mismatch", "cancellation-after-registration"} {

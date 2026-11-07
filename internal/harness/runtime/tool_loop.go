@@ -113,6 +113,7 @@ type ToolRuntimeConfig struct {
 	Authorizer    ToolAuthorizer
 	Enforcer      ToolEnforcer
 	Preparer      ToolPreparer
+	ReadAdmission FilesystemReadAdmissionHost
 	RootHost      FilesystemRootHost
 	Approval      ToolApprovalInteraction
 	Clarification ToolClarificationInteraction
@@ -137,6 +138,7 @@ type toolRuntime struct {
 	authorizer               ToolAuthorizer
 	enforcer                 ToolEnforcer
 	preparer                 ToolPreparer
+	readAdmission            FilesystemReadAdmissionHost
 	rootHost                 FilesystemRootHost
 	approval                 ToolApprovalInteraction
 	clarification            ToolClarificationInteraction
@@ -321,11 +323,15 @@ func newToolRuntime(config ToolRuntimeConfig) *toolRuntime {
 		config.Plans = NewConversationPlans()
 	}
 	evaluator := permissions.Evaluator{Rules: clonePermissionRules(config.Rules), Grants: config.Grants}
-	return &toolRuntime{
-		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer, rootHost: config.RootHost,
+	runtime := &toolRuntime{
+		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer, readAdmission: config.ReadAdmission, rootHost: config.RootHost,
 		approval: config.Approval, clarification: config.Clarification, grants: config.Grants, plans: config.Plans, evaluator: evaluator,
 		coordinator: permissions.NewCoordinator(evaluator, config.Grants), readAuthorities: make(map[string]readAuthorityRecord),
 	}
+	if invalidator, ok := config.ReadAdmission.(FilesystemReadAdmissionInvalidator); ok {
+		invalidator.SetFilesystemReadInvalidator(runtime.invalidateConversation)
+	}
+	return runtime
 }
 
 func clonePermissionRules(rules []permissions.Rule) []permissions.Rule {

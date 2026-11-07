@@ -1,11 +1,11 @@
 # Composition admission and non-exposing sandbox service
 
-**Status:** implementation infrastructure only. This change wires the
-memory-only chat's auth/settings protection lifecycle and a pre-consumption
-runtime admission seam to the fixed Linux worker coordinator. It does **not**
-register or enable filesystem tools. Generic reads remain unconditionally
-unavailable while unknown data in a selected root lacks a reviewed protection
-boundary.
+**Status:** Stage 3 retained-admission infrastructure only. The memory-only
+chat composition injects the trusted host admission service, but does **not**
+register or enable `read_file`. The internal admission path is reachable only
+through the reserved runtime lifecycle and test seam; there is no worker start,
+descriptor transfer, content read, result capture, or provider handoff. Generic
+read dispatch remains unavailable.
 
 ## Composition and ownership
 
@@ -19,17 +19,18 @@ cmd/harness starts
   -> existing text-only + conversation-tool runtime starts
        \
         -> /fs-root selects or clears an in-memory lookup root; no authority
-        -> read_file pre-consumption guard exists but is not registered
-           and always refuses unknown-root data
+        -> optional retained-admission host is injected, but the tool is absent
+           from the registry and ordinary dispatch remains refused
 ```
 
 The host service composes the existing Linux `Registry`, broker, Bubblewrap
-launcher and `HostCoordinator`. The coordinator retains owner pins and its
-worker cleanup barrier. Its host authorizer is deny-only; the service's
-independent unknown-root gate rejects before broker preparation, grant use, or
-worker launch. No model, tool or UI data can construct or complete a coverage
-profile. The synthetic four-owner inventory remains in the study command and
-is not used by `cmd/harness`.
+launcher and `HostCoordinator`. Its host authorizer remains deny-only. The
+Stage 3 admission API can retain one exact regular-file object only after the
+explicit root, required auth/settings owner registrations, backend, and
+coverage checks succeed. This is an internal pre-approval operation, not a
+general authorization or dispatch API. No model, tool or UI data can construct
+or complete a coverage profile. The synthetic four-owner inventory remains in
+the study command and is not used by `cmd/harness`.
 
 The host profile is fixed by trusted code:
 
@@ -58,17 +59,17 @@ the stores.
 
 ## Runtime admission ordering
 
-The runtime now accepts an optional, internal `ToolPreparer`. For a tool ID
-the trusted preparer owns, runtime invokes it only after validated invocation,
-approval and fresh permission evaluation, but before the atomic once-grant
-consumption. A preparation refusal therefore consumes no once grant. If
-preparation returns a retained host capability, runtime owns its `Close` on
-every path and executes that handle only after grant consumption. Cancellation
-or a grant revision change closes the preparation before dispatch. A cleanup
-failure is surfaced as an unknown outcome. The host service handles only the
-reserved `read_file` ID as a guard; no such tool is registered. Existing
-`update_plan` and `request_user_input` continue through their current enforcer
-without requiring filesystem coverage or a Linux backend.
+The runtime has a separate, internal retained-read approval bridge. It derives
+an exact read request from the host-created admission metadata, obtains the
+normal once-only permission decision, validates Stage 2's checked approval
+transition, prepares the same retained object, and consumes the once grant
+inside the shared runtime/host authority commit gate. It immediately retires
+the synthetic read authority without dispatching anything. The host service
+does not consume grants. A preparation refusal consumes no once grant. This
+bridge is exercised by trusted package tests; ordinary chat dispatch cannot
+call it because `read_file` is not registered. Existing `update_plan` and
+`request_user_input` continue through their current enforcer without requiring
+filesystem coverage or a Linux backend.
 
 If preparation cleanup fails, runtime retains the capability, returns an
 unknown result without its content, stops the current turn before another
@@ -87,12 +88,28 @@ identity check both succeed. This overlay is required because the coordinator
 may complete its staged inventory update before the service's final descriptor
 check.
 
-The future prepared capability must bind the invocation, validated arguments,
-exact route/opened identity/classification, root/composition/coverage/policy
-revisions and authorization binding. It must revalidate before descriptor
-release and publication. This runtime seam does not make preparation a lock
-against independent namespace writers. Runtime remains the sole once-grant
-consumer; the service's deny-only authorizer cannot consume grants.
+The host-owned digest binds service and conversation/turn/call identity,
+selected root and generation, exact target, opened object identity and class,
+provider destination, and policy/inventory generations. Preparation revalidates
+the same open target descriptor and current registry/coverage state; it never
+reopens the path. The descriptor remains host-owned and no read method is
+exposed. This does not freeze file contents, detect independent sensitive
+copies, or promise live-path containment against namespace writers. Runtime
+remains the sole once-grant consumer; the service's deny-only authorizer cannot
+consume grants.
+
+The lock order for the retained authorization commit is: Chat/runtime read
+authority gate → service root gate → Linux service state gate → coordinator
+state gate → registry/inventory snapshots → permission-store revision check.
+Owner updates serialize through a separate owner-update mutex, latch pending
+under the short service-state lock, invalidate runtime authority, then release
+broad locks while admissions/lookups drain. Only after the coordinator has
+registered and pinned the new route/replacement identity does the service
+verify the owner's still-open descriptor and clear its pending latch. No store
+callback runs while the coordinator or registry lock is held. Root changes
+publish pending state before coordinator drain; stale older notifications are
+ignored, and conflicting notifications with the same nonzero generation are
+rejected.
 
 ## Worker entry and backend behavior
 
@@ -116,9 +133,11 @@ text-only behavior.
 
 ## Evidence and limits
 
-- Focused runtime, sandbox, broker-study and command package tests exercise the
-  new preparation ordering, auth/settings path overrides, replacement
-  registration, unknown-root refusal, owner refusal and text-only composition.
+- Focused runtime, sandbox, and broker-study tests exercise one retained
+  lookup, same-object preparation after pathname replacement, checked approval
+  and once consumption without dispatch, preparation refusal without
+  consumption, pending owner drain, root/owner invalidation, late lookup
+  cleanup, and existing text-only/auth/settings composition behavior.
 - `cmd/harness --check` was built and run against synthetic auth/settings
   overrides. It reported zero configured profiles and completed successfully.
 - This environment is Linux/amd64, Go 1.26.10, UID 1000. Its `/usr/bin/bwrap`
@@ -129,25 +148,15 @@ text-only behavior.
   it does not become evidence for this composed chat service. Do not carry
   forward the historical `6gGbUF` pass count.
 
-Generic reads remain disabled even on a host with a trusted Bubblewrap backend.
-The fixed worker is composed for future reviewed use but receives no target
-descriptor through the shipped chat. This slice does not enable generic reads
-under the accepted unknown in-root-data policy. Provider-source owner
-integration, Token Logger owner hooks, `read_file`, listing, recursion, writes,
-deletion, shell execution, and non-Linux enforcement remain absent. Real native
-positive-control evidence and implementation review remain required before
-any typed-read enablement task. The maintainer has accepted the unknown in-root disclosure
-policy for staged implementation. Stage 1 adds only explicit
-in-memory `/fs-root` selection/status/clear and a lifecycle invalidation seam.
-Stage 2, on the current checked-authority review branch, adds revision-checked
-approval/once-consumption evidence, canonical request binding that includes a
-trusted host admission digest, and a bounded private one-shot authority ledger
-with runtime lifecycle invalidation. It does not open a file, create an
-admission, expose a read tool, capture content or connect publication to a
-provider request. Host-service generation barriers and worker/publication
-synchronization remain later-stage requirements; the runtime epoch is not a
-substitute for those barriers. The shipped registry still has no `read_file`,
-and generic reads remain refused.
+Filesystem read execution remains disabled even on a host with a trusted
+Bubblewrap backend. No target descriptor reaches the fixed worker through the
+shipped chat. Provider-source owner integration remains unsupported and is
+refused; Token Logger owner hooks, listing, recursion, writes, deletion, shell,
+and non-Linux enforcement remain absent. This slice is not native worker
+acceptance evidence. Stage 4 must implement startup/claim/release/read/capture,
+and Stage 5 must separately review result publication/provider continuation.
+Neither stage may reuse the synthetic authority retired here as execution
+authority.
 
 ## Validation commands
 

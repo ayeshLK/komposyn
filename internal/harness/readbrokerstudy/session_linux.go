@@ -39,11 +39,14 @@ type fixtureSession struct {
 	launcher       WorkerLauncher
 	authorizer     FixtureAuthorizer
 	root           string
+	rootGeneration uint64
+	serviceID      string
 	gen            GenerationSet
 	closed         bool
 	cleanupBlocked bool
 	claimed        map[string]struct{}
 	active         map[string]*readOperation
+	admissions     map[string]*admissionRecord
 	hook           CheckpointHook
 	published      [][]byte
 	evidence       []ReadEvidence
@@ -142,10 +145,14 @@ func newSession(registry PolicyRegistry, broker ReadBroker, launcher WorkerLaunc
 	if coverage != nil {
 		generation.Inventory = coverage.Snapshot().Revision
 	}
+	serviceID, err := newAdmissionID()
+	if err != nil {
+		return nil, err
+	}
 	return &fixtureSession{
 		registry: registry, inventory: coverage, broker: broker, launcher: launcher, authorizer: authorizer,
-		gen:     generation,
-		claimed: make(map[string]struct{}), active: make(map[string]*readOperation),
+		gen: generation, serviceID: serviceID,
+		claimed: make(map[string]struct{}), active: make(map[string]*readOperation), admissions: make(map[string]*admissionRecord),
 	}, nil
 }
 
@@ -165,8 +172,9 @@ func (s *fixtureSession) DeclareCoverageOwner(requirement OwnerRequirement) erro
 	}
 	s.syncInventoryLocked()
 	workers := s.invalidateLocked(func(op *readOperation) bool { return op.gen.Inventory != s.gen.Inventory })
+	admissions := s.invalidateAdmissionsLocked()
 	s.mu.Unlock()
-	return s.terminateAndCheck(workers)
+	return errors.Join(s.terminateAndCheck(workers), s.retireAdmissionRecords(context.Background(), admissions))
 }
 
 // RetireCoverageOwner permanently invalidates this owner attestation for the
@@ -188,8 +196,9 @@ func (s *fixtureSession) RetireCoverageOwner(owner string) error {
 	}
 	s.gen.Inventory = s.inventory.Snapshot().Revision
 	workers := s.invalidateLocked(func(op *readOperation) bool { return op.gen.Inventory != s.gen.Inventory })
+	admissions := s.invalidateAdmissionsLocked()
 	s.mu.Unlock()
-	return s.terminateAndCheck(workers)
+	return errors.Join(s.terminateAndCheck(workers), s.retireAdmissionRecords(context.Background(), admissions))
 }
 
 func (s *fixtureSession) CoverageSnapshot() CoverageSnapshot {
@@ -220,86 +229,122 @@ func (s *fixtureSession) SelectRoot(root string) error {
 	}
 	s.root = root
 	s.gen.Root++
+	s.rootGeneration++
 	workers := s.invalidateLocked(func(op *readOperation) bool { return true })
+	admissions := s.invalidateAdmissionsLocked()
 	s.mu.Unlock()
-	return s.terminateAndCheck(workers)
+	return errors.Join(s.terminateAndCheck(workers), s.retireAdmissionRecords(context.Background(), admissions))
+}
+
+func (s *fixtureSession) SelectRootGeneration(ctx context.Context, root string, generation uint64) error {
+	if ctx == nil || generation == 0 || root != "" && (!filepath.IsAbs(root) || filepath.Clean(root) != root || strings.ContainsRune(root, '\x00')) {
+		return ErrInvalidPath
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrSessionClosed
+	}
+	if generation < s.rootGeneration {
+		s.mu.Unlock()
+		return nil
+	}
+	if generation == s.rootGeneration {
+		if root != s.root {
+			s.mu.Unlock()
+			return ErrPolicyChanged
+		}
+		s.mu.Unlock()
+		return nil
+	}
+	s.root = root
+	s.rootGeneration = generation
+	s.gen.Root++
+	workers := s.invalidateLocked(func(op *readOperation) bool { return true })
+	admissions := s.invalidateAdmissionsLocked()
+	s.mu.Unlock()
+	return errors.Join(s.terminateAndCheck(workers), s.retireAdmissionRecords(ctx, admissions))
 }
 
 func (s *fixtureSession) Register(registration OwnerRegistration) error {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return ErrSessionClosed
-	}
-	updateToken, tracked := s.inventory.beginOwnerUpdate(registration.Owner)
-	if tracked {
-		s.gen.Inventory = s.inventory.Snapshot().Revision
-	}
-	workers := s.invalidateLocked(func(op *readOperation) bool { return tracked && op.gen.Inventory != s.gen.Inventory })
-	registrationErr := s.registry.Register(registration)
-	if registrationErr == nil {
-		s.gen.Policy = s.registry.View().Generation
-		s.syncInventoryLocked()
-		workers = append(workers, s.invalidateLocked(func(op *readOperation) bool { return op.gen.Policy != s.gen.Policy })...)
-	}
-	s.mu.Unlock()
-	cleanupErr := s.terminateAndCheck(workers)
-	if registrationErr != nil {
-		return errors.Join(registrationErr, cleanupErr)
-	}
-	if cleanupErr != nil {
-		return cleanupErr
-	}
-	if tracked {
-		s.mu.Lock()
-		completed := s.inventory.completeOwnerUpdate(registration.Owner, updateToken)
-		if completed {
-			s.gen.Inventory = s.inventory.Snapshot().Revision
-		}
-		s.mu.Unlock()
-		if !completed {
-			return ErrInventoryIncomplete
-		}
-	}
-	return nil
+	return s.registerOwnerRotation(context.Background(), registration.Owner, []OwnerRegistration{registration})
 }
 
 func (s *fixtureSession) RegisterRotation(owner string, next []OwnerRegistration) error {
+	return s.registerOwnerRotation(context.Background(), owner, next)
+}
+
+func (s *fixtureSession) RegisterRotationContext(ctx context.Context, owner string, next []OwnerRegistration) error {
+	return s.registerOwnerRotation(ctx, owner, next)
+}
+
+func (s *fixtureSession) registerOwnerRotation(ctx context.Context, owner string, next []OwnerRegistration) error {
+	if ctx == nil {
+		return context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if owner == "" || len(next) == 0 {
+		return ErrInventoryIncomplete
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return ErrSessionClosed
+	}
+	if s.inventory == nil {
+		s.mu.Unlock()
+		return ErrInventoryIncomplete
 	}
 	updateToken, tracked := s.inventory.beginOwnerUpdate(owner)
 	if tracked {
 		s.gen.Inventory = s.inventory.Snapshot().Revision
 	}
-	workers := s.invalidateLocked(func(op *readOperation) bool { return tracked && op.gen.Inventory != s.gen.Inventory })
-	registrationErr := s.registry.RegisterRotation(owner, next)
-	if registrationErr == nil {
-		s.gen.Policy = s.registry.View().Generation
-		s.syncInventoryLocked()
-		workers = append(workers, s.invalidateLocked(func(op *readOperation) bool { return op.gen.Policy != s.gen.Policy })...)
-	}
+	// The host grant epoch also changes for an owner update that is not part of
+	// the current inventory (for example a fixture owner). This invalidates all
+	// prepared/active work before any new route or identity is registered.
+	s.gen.Grant++
+	workers := s.invalidateLocked(func(*readOperation) bool { return true })
+	admissions := s.invalidateAdmissionsLocked()
 	s.mu.Unlock()
-	cleanupErr := s.terminateAndCheck(workers)
-	if registrationErr != nil {
-		return errors.Join(registrationErr, cleanupErr)
+	for _, registration := range next {
+		if registration.Owner != owner || !filepath.IsAbs(registration.Path) || filepath.Clean(registration.Path) != registration.Path || strings.ContainsRune(registration.Path, '\x00') {
+			return ErrInvalidPath
+		}
 	}
+	cleanupErr := errors.Join(s.terminateAndCheck(workers), s.retireAdmissionRecords(ctx, admissions))
 	if cleanupErr != nil {
 		return cleanupErr
 	}
-	if tracked {
-		s.mu.Lock()
-		completed := s.inventory.completeOwnerUpdate(owner, updateToken)
-		if completed {
-			s.gen.Inventory = s.inventory.Snapshot().Revision
-		}
+	// Owner routes and replacement pins are not published until all prior
+	// retained admissions and active workers have completed cleanup.
+	s.mu.Lock()
+	if s.closed {
 		s.mu.Unlock()
-		if !completed {
-			return ErrInventoryIncomplete
-		}
+		return ErrSessionClosed
 	}
+	if tracked && !s.inventory.ownerUpdateCurrent(owner, updateToken) {
+		s.mu.Unlock()
+		return ErrInventoryIncomplete
+	}
+	if err := s.registry.RegisterRotation(owner, next); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.gen.Policy = s.registry.View().Generation
+	s.syncInventoryLocked()
+	if tracked && !s.inventory.completeOwnerUpdate(owner, updateToken) {
+		s.mu.Unlock()
+		return ErrInventoryIncomplete
+	}
+	if tracked {
+		s.gen.Inventory = s.inventory.Snapshot().Revision
+	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -935,6 +980,7 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 		s.gen.Inventory = s.inventory.Snapshot().Revision
 	}
 	workers := s.invalidateLocked(func(*readOperation) bool { return true })
+	admissions := s.invalidateAdmissionsLocked()
 	done := make([]<-chan struct{}, 0, len(s.active))
 	activeOps := make([]*readOperation, 0, len(s.active))
 	type workerWait struct {
@@ -952,6 +998,7 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 	s.mu.Unlock()
 
 	terminateErr := terminateWorkers(workers)
+	terminateErr = errors.Join(terminateErr, s.retireAdmissionRecords(ctx, admissions))
 	for _, item := range waits {
 		if item.worker.Joined() {
 			s.mu.Lock()
@@ -986,6 +1033,12 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 			return errors.Join(ctx.Err(), terminateErr)
 		}
 	}
+	s.mu.Lock()
+	if len(s.admissions) != 0 {
+		s.mu.Unlock()
+		return errors.Join(terminateErr, ErrCleanupPending)
+	}
+	s.mu.Unlock()
 	launcherErr := s.launcher.Close()
 	return errors.Join(terminateErr, launcherErr, s.registry.Close())
 }

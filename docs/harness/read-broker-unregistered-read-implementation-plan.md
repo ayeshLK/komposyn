@@ -1,14 +1,12 @@
 # Exact-file read implementation plan
 
-**Status: staged implementation plan; disclosure policy accepted; Stage 2 checked-authority work is implemented on a review branch, while reads remain disabled.**
+**Status: staged implementation plan; disclosure policy accepted; Stages 1–2 are merged and Stage 3 retained admission is implemented on a review branch. Reads remain disabled.**
 This is a new source-grounded plan, not exact recovery or verification of the
 missing local handoff. The maintainer later accepted all six clauses in the
 [explicit acceptance comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902)
 for staged implementation. That supersedes the historical pending-policy
-wording below, but does not mean reads are enabled. The plan is design
-material; the separate Stage 2 implementation adds checked permission
-transitions and private synthetic authority bookkeeping without changing
-coverage declarations or tool registration.
+wording below, but does not mean reads are enabled. Stages 1 and 2 are merged;
+this branch implements Stage 3 without changing tool registration.
 
 ## Baseline, durable context and evidence limits
 
@@ -389,9 +387,9 @@ registration requires a distinct enablement decision after all applicable gates.
 | Stage / dependency | Scope and likely symbols | Acceptance / stays disabled |
 | --- | --- | --- |
 | 0: explicit complete policy decision | Record accepted clauses in issue/policy/status documents. | **Complete:** all six clauses were explicitly accepted in the [issue comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902). This resolves policy only. |
-| 1: root state/UI/lifecycle only | UI Client/Snapshot and tview command; Chat root state, Select/reset/CloseContext; detached service status. Explicit absolute select/status/clear, no default/persistence/grant. | **This change:** Stage 1 only. Chat works with no root/backend; paths with spaces, invalid/relative inputs, canonical status, replace/clear generations, fake invalidation notifications; confirmed reset/provider change/shutdown clears even with zero turns, canceled reset preserves. Read tool and generic admission remain refused. No target lookup, retained FD, grant API, worker or provider integration claim. |
-| 2: after 0–1, checked authority | Permission Coordinator/store transactions; runtime canonical full-B binding, private ledger, mutation bridge and revoke/clear lifecycle. | G0/G1/G2 exact evidence, stronger read-specific once requirement, expected siblings, unrelated mutation refusal, consumed revoke/empty-store clear, duplicate/uncertain no replay. No filesystem tool enabled. |
-| 3: after 1–2, retained admission/owners | Runtime pre-approval seam; sandbox service; broker and HostCoordinator operation registry; real auth/settings owner hooks. | One lookup, bound retained object, no second consumer; denials and owner pending/drain before sensitive writes; timeout/late FD and prelaunch cleanup ownership. Historical study path remains separate. |
+| 1: root state/UI/lifecycle only | UI Client/Snapshot and tview command; Chat root state, Select/reset/CloseContext; detached service status. Explicit absolute select/status/clear, no default/persistence/grant. | **Merged in PR #246:** Chat works with no root/backend; paths with spaces, invalid/relative inputs, canonical status, replace/clear generations, fake invalidation notifications; confirmed reset/provider change/shutdown clears even with zero turns, canceled reset preserves. No target lookup or retained FD. |
+| 2: after 0–1, checked authority | Permission Coordinator/store transactions; runtime canonical full-B binding, private ledger, mutation bridge and revoke/clear lifecycle. | **Merged in PR #247:** revision-checked exact approval/once-consumption transitions, full binding, private authority ledger and lifecycle invalidation. No filesystem tool enabled. |
+| 3: after 1–2, retained admission/owners | Runtime pre-approval seam; sandbox service; broker and HostCoordinator admission registry; real auth/settings owner hooks. | **Implemented on a review branch:** one bounded exact-file lookup; host-only opaque retained reference; same-object preparation; Stage 2 checked approval and once consumption exercised then immediately retired without dispatch; root and owner invalidation include opening/pending/prepared admissions; late lookup remains owned and closes; auth/settings route and replacement hooks drain before sensitive write. Tests cover these properties. Historical study path remains separate. `read_file` remains unregistered, and no worker/read/result/provider path exists. |
 | 4: after 2–3, fixed-worker capture | Authorized-execute interface, fixed worker bootstrap/probes/release, private capture and resource retirement. | One claim/release, bounded result and truthful outcomes, join/closure before descriptor-free staging, failed cleanup retained/retried. Bytes remain private; no provider or enablement claim. |
 | 5: after 2–4, batch/provider composition | executeOne/runToolLoop/appendToolBatch, Chat.Send history ownership and ready dispatcher; capturing fake provider. | Both invalidation windows, reverse ordering, positive multi-call/replay scope, protocol-safe exits, retired derived/native state and late-response rejection. No live inference; read_file unregistered. |
 | 6: after implementation review, exact-profile native study, then separate enablement review | New native runtime/owner/worker/fake-provider composition with exact source/overlay/backend/mode provenance. | Native effects and cleanup demonstrate changed profile; missing/untrusted/unsupported cases unavailable, never fallback. Historical #243 evidence is not substituted. Tool registration, supported routes/platforms and disclosure copy reviewed separately. |
