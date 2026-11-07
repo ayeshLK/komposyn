@@ -7,6 +7,13 @@ one narrowly scoped policy alternative for maintainer review. It neither opens
 the gate nor authorizes a root-selection UI, filesystem tool, or production
 dispatch path.
 
+For the reconstructed complete disclosure/replay decision and staged handoff,
+see the [implementation planning proposal](read-broker-unregistered-read-implementation-plan.md).
+It is unapproved and does not enable reads; its consolidated statement includes
+replay, commitment and continuation retirement that require explicit review.
+Use that plan's Stage 1 prompt for the first assignment after full acceptance;
+the broad outline below does not authorize implementing the whole pipeline.
+
 ## Current behavior and the question
 
 The #243 host service registers the effective auth and settings locations and
