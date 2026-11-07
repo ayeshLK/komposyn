@@ -1,6 +1,6 @@
 # Collector validated append continuation design
 
-Status: approved and merged in [PR #144](https://github.com/ayeshLK/komposyn/pull/144), based on [core issue #139](https://github.com/ayeshLK/komposyn/issues/139). The accepted design is implemented in the issue #139 continuation PR; validation and limitations are tracked in [docs/issue-139-implementation-evidence.md](issue-139-implementation-evidence.md).
+Status: approved and merged in [PR #144](https://github.com/ayeshLK/komposyn/pull/144), based on [core issue #139](https://github.com/ayeshLK/komposyn/issues/139). The accepted design is implemented; validation history is in [issue #139](https://github.com/ayeshLK/komposyn/issues/139) and its pull requests.
 
 ## Baseline and scope
 
