@@ -72,6 +72,15 @@ func newFilesystemRootTestChat(t *testing.T, host FilesystemRootHost) *Chat {
 	return chat
 }
 
+func canonicalFilesystemRootFixture(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := CanonicalFilesystemRoot(context.Background(), path)
+	if err != nil {
+		t.Fatalf("canonicalize root fixture %q: %v", path, err)
+	}
+	return canonical
+}
+
 func TestFilesystemRootStartsUnsetAndSelectionIsNotPermission(t *testing.T) {
 	host := &filesystemRootHostFixture{available: true, backendStatus: "candidate inspected; no worker launched"}
 	chat := newFilesystemRootTestChat(t, host)
@@ -83,10 +92,20 @@ func TestFilesystemRootStartsUnsetAndSelectionIsNotPermission(t *testing.T) {
 		t.Fatal("root selection fixture unexpectedly had grants")
 	}
 
-	root := filepath.Join(t.TempDir(), "selected root with spaces")
+	tempParent := t.TempDir()
+	canonicalParent := filepath.Join(tempParent, "real temporary root")
+	if err := os.Mkdir(canonicalParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	symlinkedTempRoot := filepath.Join(tempParent, "symlinked temporary root")
+	if err := os.Symlink(canonicalParent, symlinkedTempRoot); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(symlinkedTempRoot, "selected root with spaces")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	canonicalRoot := canonicalFilesystemRootFixture(t, root)
 	alias := filepath.Join(t.TempDir(), "root alias")
 	if err := os.Symlink(root, alias); err != nil {
 		t.Fatal(err)
@@ -95,17 +114,17 @@ func TestFilesystemRootStartsUnsetAndSelectionIsNotPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	selected := chat.Snapshot().FilesystemRoot
-	if !selected.Selected || selected.Path != root || selected.Generation == initial.Generation || len(chat.ToolGrants()) != 0 {
+	if !selected.Selected || selected.Path != canonicalRoot || selected.Generation == initial.Generation || len(chat.ToolGrants()) != 0 {
 		t.Fatalf("selected status=%+v grants=%+v", selected, chat.ToolGrants())
 	}
 	if err := chat.SelectFilesystemRoot(context.Background(), alias); err != nil {
 		t.Fatal(err)
 	}
-	if got := chat.Snapshot().FilesystemRoot; got.Path != root || got.Generation != selected.Generation {
+	if got := chat.Snapshot().FilesystemRoot; got.Path != canonicalRoot || got.Generation != selected.Generation {
 		t.Fatalf("same canonical root changed state: selected=%+v got=%+v", selected, got)
 	}
 	transitions := host.transitionsSnapshot()
-	if len(transitions) != 1 || transitions[0].Reason != FilesystemRootSelected || transitions[0].Root != root {
+	if len(transitions) != 1 || transitions[0].Reason != FilesystemRootSelected || transitions[0].Root != canonicalRoot {
 		t.Fatalf("root transitions=%+v", transitions)
 	}
 }
@@ -159,6 +178,7 @@ func TestFilesystemRootClearAndInvalidationFailureRetry(t *testing.T) {
 		t.Fatal("clearing an empty root emitted an invalidation")
 	}
 	root := t.TempDir()
+	canonicalRoot := canonicalFilesystemRootFixture(t, root)
 	fail := true
 	host.invalidate = func(ctx context.Context, _ FilesystemRootTransition) error {
 		if fail {
@@ -170,7 +190,7 @@ func TestFilesystemRootClearAndInvalidationFailureRetry(t *testing.T) {
 		t.Fatalf("selection error=%v", err)
 	}
 	pending := chat.Snapshot().FilesystemRoot
-	if !pending.Selected || pending.Path != root || !pending.InvalidationPending || pending.Generation <= initial.Generation {
+	if !pending.Selected || pending.Path != canonicalRoot || !pending.InvalidationPending || pending.Generation <= initial.Generation {
 		t.Fatalf("committed selection status=%+v", pending)
 	}
 	fail = false
@@ -317,6 +337,7 @@ func TestFilesystemRootDelayedValidationCannotOverwriteNewerRootOrReset(t *testi
 	chat := newFilesystemRootTestChat(t, host)
 	first := t.TempDir()
 	second := t.TempDir()
+	canonicalSecond := canonicalFilesystemRootFixture(t, second)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	host.validate = func(ctx context.Context, path string) (string, error) {
@@ -340,7 +361,7 @@ func TestFilesystemRootDelayedValidationCannotOverwriteNewerRootOrReset(t *testi
 	if err := <-firstDone; !errors.Is(err, ErrFilesystemRootStale) {
 		t.Fatalf("older selection error=%v", err)
 	}
-	if got := chat.Snapshot().FilesystemRoot.Path; got != second {
+	if got := chat.Snapshot().FilesystemRoot.Path; got != canonicalSecond {
 		t.Fatalf("older selection replaced newer root: %q", got)
 	}
 }
@@ -352,11 +373,12 @@ func TestFilesystemRootOperationDuringActiveTurnIsExplicitAndInvalidated(t *test
 	chat.active = true
 	chat.mu.Unlock()
 	root := t.TempDir()
+	canonicalRoot := canonicalFilesystemRootFixture(t, root)
 	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
 	transitions := host.transitionsSnapshot()
-	if len(transitions) != 1 || transitions[0].Root != root {
+	if len(transitions) != 1 || transitions[0].Root != canonicalRoot {
 		t.Fatalf("active-turn root transition=%+v", transitions)
 	}
 	chat.mu.Lock()
