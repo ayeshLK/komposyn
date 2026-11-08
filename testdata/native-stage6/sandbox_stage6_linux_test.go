@@ -1502,9 +1502,9 @@ func TestStage6CancellationAndCleanupBeforeReadRelease(t *testing.T) {
 	if len(evidence) != 1 {
 		t.Fatalf("worker evidence entries=%d, want one", len(evidence))
 	}
-	initial := evidence[0]
-	if (initial.Outcome != readbrokerstudy.ReadCancelled && initial.Outcome != readbrokerstudy.ReadUnknown) || !initial.WorkerStarted || !initial.WorkerReady || !initial.CapabilitySent || !initial.CapabilityHeld || initial.ReadStarted || initial.Published || !initial.Probe.NoNewPrivs || initial.Probe.SeccompMode != 2 || !initial.Probe.SocketCreationDenied || !initial.Probe.PathOpenDenied || !initial.Probe.ReadCapabilityInitiallyAbsent || !initial.Probe.OnlyProtocolDescriptor || !initial.Probe.EnvironmentCleared {
-		t.Fatalf("held-worker cancellation initial evidence=%+v", initial)
+	initialEvidence := evidence[0]
+	if (initialEvidence.Outcome != readbrokerstudy.ReadCancelled && initialEvidence.Outcome != readbrokerstudy.ReadUnknown) || !initialEvidence.WorkerStarted || !initialEvidence.WorkerReady || !initialEvidence.CapabilitySent || !initialEvidence.CapabilityHeld || initialEvidence.ReadStarted || initialEvidence.Published || !initialEvidence.Probe.NoNewPrivs || initialEvidence.Probe.SeccompMode != 2 || !initialEvidence.Probe.SocketCreationDenied || !initialEvidence.Probe.PathOpenDenied || !initialEvidence.Probe.ReadCapabilityInitiallyAbsent || !initialEvidence.Probe.OnlyProtocolDescriptor || !initialEvidence.Probe.EnvironmentCleared {
+		t.Fatalf("held-worker cancellation initial evidence=%+v", initialEvidence)
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cleanupCancel()
@@ -1530,8 +1530,8 @@ func TestStage6CancellationAndCleanupBeforeReadRelease(t *testing.T) {
 		t.Fatalf("worker evidence after bounded cleanup=%d, want one", len(evidence))
 	}
 	item := evidence[0]
-	if item.Outcome != initial.Outcome || item.WorkerJoined != initial.WorkerJoined || !item.CapabilityHeld || item.ReadStarted || item.Published {
-		t.Fatalf("cleanup rewrote the original operation evidence: before=%+v after=%+v", initial, item)
+	if item.Outcome != initialEvidence.Outcome || item.WorkerJoined != initialEvidence.WorkerJoined || !item.CapabilityHeld || item.ReadStarted || item.Published {
+		t.Fatalf("cleanup rewrote the original operation evidence: before=%+v after=%+v", initialEvidence, item)
 	}
 	if active := session.ActiveOperationCount(); active != 0 {
 		t.Fatalf("active operations after bounded cleanup=%d", active)
@@ -1545,7 +1545,7 @@ func TestStage6CancellationAndCleanupBeforeReadRelease(t *testing.T) {
 	stage6Update("cancellation_and_cleanup", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined, item.CleanupConfirmed = true, true, true, true
 		item.CapabilityTransferred, item.CapabilityHeld, item.ReadStarted = true, true, false
-		item.ReadOutcome, item.ProbePassed, item.OnceApprovalCount = string(initial.Outcome), true, fixture.approvals.Load()
+		item.ReadOutcome, item.ProbePassed, item.OnceApprovalCount = string(initialEvidence.Outcome), true, fixture.approvals.Load()
 		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = len(requests), true, true
 	})
 	stage6Pass("cancellation_and_cleanup", "cancelled after the worker held the approved descriptor but before read release; the initial outcome remained cancelled or unknown as cleanup evidence allowed, a separate bounded shutdown joined the worker, and no read, publication, or provider continuation occurred")
