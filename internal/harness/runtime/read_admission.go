@@ -149,6 +149,9 @@ type FilesystemReadPublicationGate interface {
 	WithFilesystemReadPublicationCurrent(context.Context, string, string, uint64, uint64, uint64, func() error) error
 }
 
+// FilesystemReadAdmissionInvalidator receives host lifecycle notifications.
+// An empty conversation ID requests global capture/continuation retirement for
+// host-wide owner or policy transitions.
 type FilesystemReadAdmissionInvalidator interface {
 	SetFilesystemReadInvalidator(func(string))
 }

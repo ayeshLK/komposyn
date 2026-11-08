@@ -855,11 +855,26 @@ func TestStage5OwnerRotationAfterCaptureRetiresClosedAdmissionContinuation(t *te
 	if len(launcher.readBytes) == 0 {
 		t.Fatal("retained worker did not produce synthetic bytes")
 	}
+	policy, coverage := impl.registry.View().Generation, impl.inventory.Snapshot().Revision
+	service.rootMu.Lock()
+	conversation, rootGeneration := service.rootConversationID, service.rootGeneration
+	service.rootMu.Unlock()
+	handoffAccepted := false
+	if err := service.WithFilesystemReadPublicationCurrent(context.Background(), conversation, root, rootGeneration, policy, coverage, func() error {
+		handoffAccepted = true // stands for the runtime's accepted dispatcher handoff
+		return nil
+	}); err != nil || !handoffAccepted {
+		t.Fatalf("post-capture handoff gate accepted=%v err=%v", handoffAccepted, err)
+	}
 	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth-rotated.json"), nil); err != nil {
 		t.Fatalf("rotate protected owner after completed admission: %v", err)
 	}
 	if err := chat.DiscardPrivateReadCapture(capture); err == nil {
 		t.Fatal("owner rotation left a post-admission private capture eligible")
+	}
+	replayReachedGate := false
+	if err := service.WithFilesystemReadPublicationCurrent(context.Background(), conversation, root, rootGeneration, policy, coverage, func() error { replayReachedGate = true; return nil }); err == nil || replayReachedGate {
+		t.Fatal("owner rotation allowed a stale-generation continuation handoff")
 	}
 }
 
