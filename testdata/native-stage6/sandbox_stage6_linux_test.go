@@ -64,6 +64,9 @@ type stage6Case struct {
 	FixtureBytesMatched       bool   `json:"fixture_bytes_matched"`
 	DisclosureWithheld        bool   `json:"disclosure_withheld"`
 	StaleDataAbsent           bool   `json:"stale_data_absent"`
+	LateResponseReturned      bool   `json:"late_response_returned"`
+	LateDeltaAttempted        bool   `json:"late_delta_attempted"`
+	LateDeltaSuppressed       bool   `json:"late_delta_suppressed"`
 	CleanupConfirmed          bool   `json:"cleanup_confirmed"`
 }
 
@@ -176,6 +179,11 @@ type stage6Provider struct {
 	target          string
 	blockSecond     bool
 	firstToolCall   bool
+	multipleReads   bool
+	secondTarget    string
+	lateDelta       string
+	lateResponses   atomic.Int32
+	lateDeltas      atomic.Int32
 	secondStarted   chan struct{}
 	releaseSecond   chan struct{}
 	secondStartOnce sync.Once
@@ -194,7 +202,7 @@ func (p *stage6Provider) Authenticate(_ context.Context, credential provider.Cre
 func (p *stage6Provider) ListModels(context.Context, provider.Credential) ([]provider.Model, error) {
 	return []provider.Model{{ID: "stage6-fixture-model", DisplayName: "Stage 6 fixture", Compatibility: provider.CompatibilitySupported}}, nil
 }
-func (p *stage6Provider) StreamChat(ctx context.Context, request provider.ChatRequest, _ func(string)) (provider.Result, error) {
+func (p *stage6Provider) StreamChat(ctx context.Context, request provider.ChatRequest, delta func(string)) (provider.Result, error) {
 	p.mu.Lock()
 	p.requests = append(p.requests, request)
 	call := len(p.requests)
@@ -205,13 +213,21 @@ func (p *stage6Provider) StreamChat(ctx context.Context, request provider.ChatRe
 			Native: []json.RawMessage{json.RawMessage(`{"type":"message","content":"Synthetic fixture answer."}`)}}, nil
 	}
 	if call == 1 {
-		arguments, _ := json.Marshal(map[string]string{"path": p.target})
-		nativeArguments, _ := json.Marshal(string(arguments))
-		native := json.RawMessage(`{"type":"function_call","id":"stage6-item-read","call_id":"stage6-read","name":"read_file","arguments":` + string(nativeArguments) + `,"status":"completed"}`)
+		paths := []struct{ callID, itemID, path string }{{"stage6-read", "stage6-item-read", p.target}}
+		if p.multipleReads {
+			paths = append(paths, struct{ callID, itemID, path string }{"stage6-read-b", "stage6-item-read-b", p.secondTarget})
+		}
+		calls := make([]provider.ToolCall, 0, len(paths))
+		nativeCalls := make([]json.RawMessage, 0, len(paths))
+		for _, item := range paths {
+			arguments, _ := json.Marshal(map[string]string{"path": item.path})
+			nativeArguments, _ := json.Marshal(string(arguments))
+			nativeCalls = append(nativeCalls, json.RawMessage(`{"type":"function_call","id":"`+item.itemID+`","call_id":"`+item.callID+`","name":"read_file","arguments":`+string(nativeArguments)+`,"status":"completed"}`))
+			calls = append(calls, provider.ToolCall{CallID: item.callID, ToolID: tools.ID("read_file"), Arguments: arguments})
+		}
 		return provider.Result{
 			RequestID: request.RequestID, ModelID: request.ModelID, Outcome: provider.OutcomeCompleted,
-			Completion: provider.CompletionToolCalls, Text: "Reading the exact fixture.", Native: []json.RawMessage{native},
-			ToolCalls: []provider.ToolCall{{CallID: "stage6-read", ToolID: tools.ID("read_file"), Arguments: arguments}},
+			Completion: provider.CompletionToolCalls, Text: "Reading the exact fixture.", Native: nativeCalls, ToolCalls: calls,
 		}, nil
 	}
 	if call == 2 && p.blockSecond {
@@ -221,6 +237,13 @@ func (p *stage6Provider) StreamChat(ctx context.Context, request provider.ChatRe
 		case <-ctx.Done():
 			return provider.Result{}, ctx.Err()
 		}
+	}
+	if call == 2 && p.lateDelta != "" && delta != nil {
+		p.lateDeltas.Add(1)
+		delta(p.lateDelta)
+	}
+	if call == 2 {
+		p.lateResponses.Add(1)
 	}
 	return provider.Result{RequestID: request.RequestID, ModelID: request.ModelID, Outcome: provider.OutcomeCompleted,
 		Completion: provider.CompletionFinal, Text: "Synthetic fixture answer.",
@@ -262,15 +285,21 @@ func (h *stage6ReadHost) WithFilesystemReadPublicationCurrent(ctx context.Contex
 }
 
 type stage6Fixture struct {
-	service     *Service
-	chat        *runtime.Chat
-	provider    *stage6Provider
-	authStore   auth.Store
-	root        string
-	authPath    string
-	content     string
-	approvals   atomic.Int32
-	reportCases []string
+	service             *Service
+	chat                *runtime.Chat
+	provider            *stage6Provider
+	authStore           auth.Store
+	root                string
+	authPath            string
+	content             string
+	approvals           atomic.Int32
+	approvalWaitAt      atomic.Int32
+	approvalEntered     chan struct{}
+	approvalRelease     chan struct{}
+	approvalReleaseOnce sync.Once
+	approvalWaitOnce    sync.Once
+	secondContent       string
+	reportCases         []string
 }
 
 func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool, beforeHandoff func() error) *stage6Fixture {
@@ -344,6 +373,7 @@ func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool,
 		t.Fatalf("synthetic settings setup failed: %v", err)
 	}
 	content := "stage6-synthetic-private-content"
+	secondContent := "stage6-second-synthetic-private-content"
 	if targetKind == "empty" {
 		content = ""
 	}
@@ -358,20 +388,35 @@ func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool,
 		_ = service.Close(context.Background())
 		t.Fatalf("synthetic target setup failed: %v", err)
 	}
-	base := &stage6Provider{target: target, blockSecond: blockSecond, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
+	secondTarget := filepath.Join(root, "second-notes.txt")
+	if targetKind == "multiple" {
+		if err := os.WriteFile(secondTarget, []byte(secondContent), 0600); err != nil {
+			_ = service.Close(context.Background())
+			t.Fatalf("second synthetic target setup failed: %v", err)
+		}
+	}
+	base := &stage6Provider{target: target, secondTarget: secondTarget, multipleReads: targetKind == "multiple", blockSecond: blockSecond, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
 	providers, err := model.NewRegistry(base)
 	if err != nil {
 		_ = service.Close(context.Background())
 		t.Fatalf("fixture provider registry failed: %v", err)
 	}
-	fixture := &stage6Fixture{service: service, provider: base, authStore: authStore, root: root, authPath: authPath, content: content}
+	fixture := &stage6Fixture{service: service, provider: base, authStore: authStore, root: root, authPath: authPath, content: content, secondContent: secondContent, approvalEntered: make(chan struct{}), approvalRelease: make(chan struct{})}
 	config := runtime.ToolRuntimeConfig{
 		Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: &stage6ReadHost{service: service, beforeHandoff: beforeHandoff}, RootHost: service,
 		Approval: runtime.ToolApprovalFunc(func(ctx context.Context, _ permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 			if err := ctx.Err(); err != nil {
 				return "", "", err
 			}
-			fixture.approvals.Add(1)
+			count := fixture.approvals.Add(1)
+			if fixture.approvalWaitAt.Load() == count {
+				fixture.approvalWaitOnce.Do(func() { close(fixture.approvalEntered) })
+				select {
+				case <-fixture.approvalRelease:
+				case <-ctx.Done():
+					return "", "", ctx.Err()
+				}
+			}
 			return permissions.ApprovalOnce, "", nil
 		}), Grants: permissions.NewMemoryStore(),
 	}
@@ -683,6 +728,62 @@ func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
 	stage6Pass("protected_settings_refusal", "registered synthetic settings route refused before approval, worker launch or provider disclosure")
 }
 
+func TestStage6ClearDuringSecondApprovalWithholdsFirstCapture(t *testing.T) {
+	stage6Begin("captured_batch_revocation")
+	fixture := newStage6Fixture(t, "captured_batch_revocation", "multiple", false, nil)
+	fixture.reportCases = []string{"captured_batch_revocation"}
+	fixture.approvalWaitAt.Store(2)
+	defer fixture.approvalReleaseOnce.Do(func() { close(fixture.approvalRelease) })
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := fixture.chat.Send(ctx, "read two synthetic files", nil)
+		result <- err
+	}()
+	select {
+	case <-fixture.approvalEntered:
+	case <-time.After(12 * time.Second):
+		t.Fatal("second read did not reach the approval interaction")
+	}
+	if _, err := fixture.chat.ClearToolGrants(); err != nil {
+		t.Fatalf("clear during the pending approval failed: %v", err)
+	}
+	fixture.approvalReleaseOnce.Do(func() { close(fixture.approvalRelease) })
+	select {
+	case <-result:
+	case <-time.After(12 * time.Second):
+		t.Fatal("turn did not finish after clearing authority and releasing approval")
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider accepted %d requests; pending batch must be withheld", len(requests)-1)
+	}
+	encoded, _ := json.Marshal(requests[0].Messages)
+	if strings.Contains(string(encoded), fixture.content) || strings.Contains(string(encoded), fixture.secondContent) {
+		t.Fatal("captured batch bytes reached the provider after grants were cleared")
+	}
+	sensitive, messages := runtime.NativeReadStudyState(fixture.chat)
+	if sensitive || messages != 0 {
+		t.Fatal("revoked capture remained in conversation history")
+	}
+	impl := fixture.service.impl.(*linuxImplementation)
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined {
+		t.Fatal("first read was not completed and joined before the second approval wait")
+	}
+	if fixture.approvals.Load() != 2 {
+		t.Fatalf("approval interactions=%d, want first and pending second call", fixture.approvals.Load())
+	}
+	stage6Update("captured_batch_revocation", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.OnceApprovalCount, item.ProviderRequestCount = fixture.approvals.Load(), len(requests)
+		item.DisclosureWithheld, item.StaleDataAbsent = true, true
+	})
+	stage6Pass("captured_batch_revocation", "first capture remained private while the second call awaited approval; clearing grants invalidated the batch before provider handoff")
+}
+
 func TestStage6OwnerRotationBeforeHandoffWithholdsCapture(t *testing.T) {
 	stage6Begin("pre_handoff_owner_invalidation")
 	entered := make(chan struct{})
@@ -742,13 +843,21 @@ func TestStage6OwnerRotationBeforeHandoffWithholdsCapture(t *testing.T) {
 
 func TestStage6OwnerRotationAfterHandoffRetiresContinuation(t *testing.T) {
 	stage6Begin("post_handoff_owner_invalidation")
+	stage6Begin("late_response_and_delta_retirement")
 	fixture := newStage6Fixture(t, "post_handoff_owner_invalidation", "ordinary", true, nil)
-	fixture.reportCases = []string{"post_handoff_owner_invalidation"}
+	fixture.reportCases = []string{"post_handoff_owner_invalidation", "late_response_and_delta_retirement"}
+	fixture.provider.lateDelta = "stage6-late-sensitive-delta"
+	var deltaMu sync.Mutex
+	var deltas []string
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(fixture.provider.releaseSecond) })
 	result := make(chan error, 1)
 	go func() {
-		_, err := fixture.chat.Send(context.Background(), "read before post-handoff rotation", nil)
+		_, err := fixture.chat.Send(context.Background(), "read before post-handoff rotation", func(value string) {
+			deltaMu.Lock()
+			deltas = append(deltas, value)
+			deltaMu.Unlock()
+		})
 		result <- err
 	}()
 	select {
@@ -778,6 +887,18 @@ func TestStage6OwnerRotationAfterHandoffRetiresContinuation(t *testing.T) {
 	if sensitive || messages != 0 {
 		t.Fatal("owner invalidation did not retire the committed in-memory continuation")
 	}
+	deltaMu.Lock()
+	observedDeltas := append([]string(nil), deltas...)
+	deltaMu.Unlock()
+	if len(observedDeltas) != 0 {
+		t.Fatalf("late provider delta reached the UI after owner invalidation: %q", observedDeltas)
+	}
+	if got := fixture.provider.lateResponses.Load(); got != 1 {
+		t.Fatalf("late provider response returned %d times, want exactly once", got)
+	}
+	if got := fixture.provider.lateDeltas.Load(); got != 1 {
+		t.Fatalf("late provider delta was attempted %d times, want exactly once", got)
+	}
 	impl := fixture.service.impl.(*linuxImplementation)
 	evidence := impl.session.Evidence()
 	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted {
@@ -790,6 +911,14 @@ func TestStage6OwnerRotationAfterHandoffRetiresContinuation(t *testing.T) {
 		item.FixtureBytesMatched, item.StaleDataAbsent = true, true
 	})
 	stage6Pass("post_handoff_owner_invalidation", "fake provider accepted the disclosure before the real owner rotation; the late response was rejected and continuation retired without a recall claim")
+	stage6Update("late_response_and_delta_retirement", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.OnceApprovalCount, item.ProviderRequestCount = fixture.approvals.Load(), len(requests)
+		item.FixtureBytesMatched, item.StaleDataAbsent = true, true
+		item.LateResponseReturned, item.LateDeltaAttempted, item.LateDeltaSuppressed = true, true, len(observedDeltas) == 0
+	})
+	stage6Pass("late_response_and_delta_retirement", "late provider response and delta after owner invalidation were suppressed; prior accepted disclosure is not claimed recalled")
 }
 
 func rotateSyntheticAuth(t *testing.T, fixture *stage6Fixture) {
