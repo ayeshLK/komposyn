@@ -1,16 +1,17 @@
 # Issue #215 completion tracking and Stage 6 acceptance contract
 
-Status: current source audit at `a61a3dfa4843f309bc533061f7be6e767f9b49b2`
-(2026-11-08). This is a tracking and evidence contract, not an enablement
-decision. The six-clause exact-file disclosure policy is accepted, while
+Status: reviewed after PR #252 and the Stage 6 review fixes (2026-11-08).
+This is a tracking and evidence contract, not an enablement decision. The
+six-clause exact-file disclosure policy is accepted, while
 `read_file` remains unregistered and unavailable in shipped chat.
 
 The plan was reconstructed from the current issue, its decision/research
 comments, the merged implementation plan, source, and existing evidence. It is
 not a claim that earlier native evidence covers the Stage 6 composition. PR
-#251 merged at the source revision above, but GitHub currently reports issue
-#215 closed while its completion checklist is unfinished. Reopen the issue and
-use this mapping as the current audit; do not erase historical records.
+#251 merged at `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. PR #252 merged the
+tracking contract at `97229b2eafd0d598cffa38aed81f7083e58d7bde`; issue #215
+was reopened because its completion checklist is unfinished. Keep the issue
+open and preserve historical evidence.
 
 ## Current stage audit
 
@@ -22,7 +23,7 @@ use this mapping as the current audit; do not erase historical records.
 | 3: retained admission | Merged | [PR #248](https://github.com/ayeshLK/komposyn/pull/248). Exact retained-object admission and owner barriers; no reopen or second once consumer. |
 | 4: worker and private capture | Merged | [PR #250](https://github.com/ayeshLK/komposyn/pull/250). One-attempt fixed worker, private bounded capture after join/descriptor retirement; native integrated acceptance remains open. |
 | 5: publication and continuation | Merged | [PR #251](https://github.com/ayeshLK/komposyn/pull/251), merge `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. Synchronized batch/provider handoff, replay provenance, owner-gated continuation retirement and stale-response tests. |
-| 6: integrated native acceptance | Not started | Requires one reviewed runner to exercise actual runtime, Service/registry, fixed worker, and a capturing fake provider under the exact candidate profile. No historical service-only run substitutes. |
+| 6: integrated native acceptance | Partial runner in [draft PR #253](https://github.com/ayeshLK/komposyn/pull/253); native worker cases unavailable | The [Stage 6 runner guide](issue-215-stage6-runner.md) records invocation and current case coverage. The current runner composes the runtime, Service/registry, fixed worker and fake provider; synthetic forwarding tests cover the runtime-to-Service executor seam without OS-enforcement claims. Exact-run provenance and current results are recorded in [issue #215](https://github.com/ayeshLK/komposyn/issues/215). The last local attempt trust-refused `/usr/bin/bwrap` (UID 65534) before probes or worker launch. Five synthetic controls cover no-root chat/read refusal, one-time approval/execution transitions, unsupported provider-source registration, and incomplete required-owner inventory. Remaining runner cases and an eligible trusted-host run/review are required. |
 | Typed-read enablement | Not approved | Requires Stage 6 acceptance, owner/launch gates, and a distinct reviewed enablement decision. |
 
 Production `cmd/harness` still offers only `update_plan` and
@@ -81,9 +82,10 @@ actual sandbox Service / registry ──> runtime approval + once consumption
                                   in-memory test sink and assertions
 ```
 
-The runner may use the unexported `readPublicationTestMode` switch solely to
-exercise the reserved read path in a test-only runtime composition; this switch
-must never reach the shipped executable. It must not use a fixture authorizer
+The separately compiled test binary uses a Go overlay to expose the unexported
+`readPublicationTestMode` switch solely to exercise the reserved read path in a
+test-only runtime composition; the overlay is absent from the shipped executable.
+It must not use a fixture authorizer
 in place of the runtime permission coordinator or a callback that stands in
 for the host publication gate. Compose the runtime with the real
 `sandbox.Service` APIs, substituting only explicit synthetic owner
@@ -101,7 +103,7 @@ deterministic handshakes, never timing-only sleeps for ordering races.
 
 | Case | Expected evidence |
 | --- | --- |
-| Ordinary chat without root/backend | Text request remains usable; no worker/read capability is created. Backend failure is a sanitized refusal for filesystem work, not a text-chat failure. |
+| No-root controls without a backend | Text request remains usable. A provider-requested read is refused before approval, worker creation, or continuation disclosure. These are synthetic runtime/composition controls, not native enforcement evidence. |
 | Positive exact file, explicit once approval | One admission and one worker read; expected bytes reach only the capturing provider after the read; joined worker and retired descriptors before capture/publication. |
 | Empty regular file and bounded partial/error behavior | Empty result is valid; over-limit, malformed, or interrupted reads preserve typed outcome and do not trigger automatic replay. |
 | Auth/settings registered target, alias and replacement | Refusal precedes once consumption, worker start, transfer, read and provider disclosure; inspect fixture bytes/identity after each operation. |
@@ -131,6 +133,8 @@ overlay, backend, launch mode, host metadata and timestamps. Each case carries:
 
 - `case_id`, `status` (`measured_pass`, `observed_violation`, `unavailable`,
   `inconclusive`), and a short sanitized reason;
+- `evidence_kind`, distinguishing native-integrated results from synthetic
+  runtime/composition controls;
 - expected assertions and separately observed assertions;
 - whether worker start/read/join, descriptor transfer/retirement, once
   consumption, provider acceptance and output publication happened;
