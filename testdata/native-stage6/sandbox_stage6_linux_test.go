@@ -92,7 +92,7 @@ var stage6Mu sync.Mutex
 
 func newStage6Report() stage6Report {
 	ids := []string{
-		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "positive_exact_read_and_replay", "empty_file_read",
+		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "empty_file_read",
 		"protected_auth_refusal", "protected_settings_refusal", "provider_source_owner",
 		"incomplete_owner_inventory", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
@@ -455,6 +455,7 @@ func (i *stage6SyntheticHostImplementation) ExecuteAdmittedFilesystemRead(_ cont
 }
 
 func TestStage6SyntheticRuntimeReadForwarding(t *testing.T) {
+	stage6Begin("synthetic_once_authority_flow")
 	root := t.TempDir()
 	impl := &stage6SyntheticHostImplementation{}
 	service := &Service{impl: impl}
@@ -466,12 +467,14 @@ func TestStage6SyntheticRuntimeReadForwarding(t *testing.T) {
 	authStore := auth.Store{Path: filepath.Join(root, "synthetic-auth.json"), Protection: service}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	var approvals atomic.Int32
 	if err := authStore.RegisterProtection(ctx); err != nil {
 		t.Fatalf("synthetic auth owner registration failed: %v", err)
 	}
 	chat := runtime.NewChatWithToolRuntime(providers, authStore, nil, runtime.ToolRuntimeConfig{
 		Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: &stage6ReadHost{service: service}, RootHost: service,
 		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			approvals.Add(1)
 			return permissions.ApprovalOnce, "", nil
 		}), Grants: permissions.NewMemoryStore(),
 	})
@@ -491,6 +494,10 @@ func TestStage6SyntheticRuntimeReadForwarding(t *testing.T) {
 	if err := runtime.EnableNativeReadStudy(chat); err != nil {
 		t.Fatal(err)
 	}
+	grantRevisionBefore, grantsBefore := runtime.NativeReadStudyGrantState(chat)
+	if grantsBefore != 0 {
+		t.Fatalf("synthetic read had %d preexisting grants, want none", grantsBefore)
+	}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -506,8 +513,8 @@ func TestStage6SyntheticRuntimeReadForwarding(t *testing.T) {
 		t.Fatalf("synthetic read continuation failed: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := base.captured()
-	if len(requests) != 2 || impl.executions != 1 {
-		t.Fatalf("synthetic read requests=%d executions=%d, want 2 and 1", len(requests), impl.executions)
+	if len(requests) != 2 || impl.executions != 1 || approvals.Load() != 1 {
+		t.Fatalf("synthetic read requests=%d executions=%d approvals=%d, want 2, 1 and 1", len(requests), impl.executions, approvals.Load())
 	}
 	first, _ := json.Marshal(requests[0].Messages)
 	if strings.Contains(string(first), "stage6-synthetic-forwarded-content") {
@@ -517,6 +524,16 @@ func TestStage6SyntheticRuntimeReadForwarding(t *testing.T) {
 	if !found || content != `{"outcome":"succeeded","truncated":false,"content":"stage6-synthetic-forwarded-content"}` {
 		t.Fatalf("synthetic forwarded result=%q found=%t", content, found)
 	}
+	grantRevisionAfter, grantsAfter := runtime.NativeReadStudyGrantState(chat)
+	if grantRevisionAfter != grantRevisionBefore+2 || grantsAfter != 0 {
+		t.Fatalf("synthetic once-grant transition revision=%d→%d remaining=%d, want two transitions and no reusable grant", grantRevisionBefore, grantRevisionAfter, grantsAfter)
+	}
+	stage6Update("synthetic_once_authority_flow", func(item *stage6Case) {
+		item.EvidenceKind, item.OnceApprovalCount, item.OnceGrantConsumptionCount = "synthetic-runtime-composition", approvals.Load(), 1
+		item.GrantRevisionBefore, item.GrantRevisionAfter, item.RemainingGrantCount = grantRevisionBefore, grantRevisionAfter, grantsAfter
+		item.ProviderRequestCount, item.WorkerJoined, item.FixtureBytesMatched = len(requests), true, true
+	})
+	stage6PassSynthetic("synthetic_once_authority_flow", "runtime performed one explicit once approval, advanced the grant revision for approval and consumption, executed once, and retained no reusable grant")
 }
 
 type stage6Fixture struct {

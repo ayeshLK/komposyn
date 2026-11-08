@@ -61,8 +61,10 @@ explicit once-approved exact read plus same-context replay, empty-file read,
 synthetic provider-source registration refusal, synthetic auth/settings
 refusals, incomplete required-owner inventory admission, captured-batch
 revocation, and pre-/post-handoff owner rotation using the actual Service and
-runtime gate. The owner-inventory case verifies that missing auth/settings
-routes and identities block admission before approval or worker state. The
+runtime gate. A synthetic once-authority case verifies one explicit approval,
+one execution, the approval/consumption revision transitions, and no reusable
+grant. The owner-inventory case verifies that missing auth/settings routes and
+identities block admission before approval or worker state. The
 provider-source case confirms that this composition refuses registration
 because it does not own a source lifecycle; it does not exercise approved
 source disclosure or rotation. Its Stage 6 wrapper implements the full runtime
