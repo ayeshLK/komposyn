@@ -432,10 +432,23 @@ func TestStage6OrdinaryChatWithoutRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fixture provider registry failed: %v", err)
 	}
-	chat := runtime.NewChat(providers, store)
+	backendPath := filepath.Join(root, "missing-bubblewrap")
+	service, err := NewHostService(backendPath)
+	if err != nil {
+		t.Fatalf("unavailable backend service should preserve text chat: %v", err)
+	}
+	if available, _ := service.BackendStatus(); available {
+		t.Fatal("missing synthetic backend was reported available")
+	}
+	config := runtime.ToolRuntimeConfig{
+		Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: service, RootHost: service,
+	}
+	chat := runtime.NewChatWithToolRuntime(providers, store, nil, config)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := chat.AddProfile(ctx, "ordinary-profile", "openai", "synthetic profile", "synthetic-never-real-key", nil); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
 		t.Fatalf("synthetic profile setup failed: %v", err)
 	}
 	discovery := chat.Discover(ctx)
@@ -452,10 +465,18 @@ func TestStage6OrdinaryChatWithoutRoot(t *testing.T) {
 	if chat.Snapshot().FilesystemRoot.Selected {
 		t.Fatal("ordinary chat unexpectedly selected a filesystem root")
 	}
+	impl, ok := service.impl.(*linuxImplementation)
+	if !ok || impl.session != nil {
+		t.Fatal("unavailable backend created a worker coordinator")
+	}
 	if err := chat.CloseContext(ctx); err != nil {
 		t.Fatalf("ordinary chat cleanup failed: %v", err)
 	}
-	stage6Pass("ordinary_chat_without_root", "fake-provider text chat completed with no filesystem service, backend launch or selected root")
+	if err := service.Close(ctx); err != nil {
+		t.Fatalf("unavailable sandbox service cleanup failed: %v", err)
+	}
+	stage6Update("ordinary_chat_without_root", func(item *stage6Case) { item.ProviderRequestCount, item.CleanupConfirmed = 1, true })
+	stage6Pass("ordinary_chat_without_root", "fake-provider text chat completed with a safely unavailable sandbox service and no selected root or worker")
 }
 
 func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {
