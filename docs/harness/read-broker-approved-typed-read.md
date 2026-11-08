@@ -1,6 +1,6 @@
 # Approved exact-file typed-read profile
 
-**Status:** implementation target approved in [issue #215 decision record](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377). Stage 4 retained-worker execution and private capture are implemented on the review branch; native acceptance and later publication integration remain pending. This does not enable model-facing filesystem or shell tools or complete production-owner integration.
+**Status:** implementation target approved in [issue #215 decision record](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377). Stages 4–5 implement retained-worker capture and fake-provider publication/replay on the review branch. Native acceptance remains outstanding; `read_file` remains unregistered in production and provider-source owner integration is incomplete. This does not enable model-facing filesystem or shell tools.
 
 ## Contract
 

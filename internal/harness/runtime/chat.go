@@ -79,6 +79,9 @@ type Chat struct {
 	authRegistry          *auth.Registry
 	oauth                 auth.OAuthCoordinator
 	history               []provider.Message
+	historySensitive      bool
+	historyReadEpoch      uint64
+	historyDestination    string
 	turns                 []Turn
 	usage                 map[string]*ModelUsage
 	selected              *model.Model
@@ -148,6 +151,9 @@ func NewChatWithToolRuntime(providers *model.Registry, profiles auth.Store, regi
 		chat = NewChatWithAuth(providers, profiles, registry)
 	}
 	chat.toolRuntime = newToolRuntime(config)
+	if chat.toolRuntime != nil {
+		chat.toolRuntime.retireHistory = chat.retireReadHistory
+	}
 	return chat
 }
 
@@ -173,6 +179,8 @@ func (c *Chat) CloseContext(ctx context.Context) error {
 	if firstClose {
 		c.closed = true
 		c.history = nil
+		c.historySensitive = false
+		c.historyDestination = ""
 		c.toolCallIDs = nil
 		rootEvent = c.clearFilesystemRootLocked(FilesystemRootShutdown, true)
 	}
@@ -670,6 +678,8 @@ func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *Files
 	oldID := c.conversationID
 	rootEvent := c.clearFilesystemRootLocked(reason, true)
 	c.history = nil
+	c.historySensitive = false
+	c.historyDestination = ""
 	c.turns = nil
 	c.toolCallIDs = nil
 	if c.toolRuntime != nil && oldID != "" {
@@ -736,7 +746,10 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	c.activeToolActivities = nil
 	c.activeProfile = selection.ProfileID
 	c.cancel = cancel
-	history := append([]provider.Message(nil), c.history...)
+	if c.historySensitive && !c.readContinuationCurrentLocked(c.conversationID, selection, c.historyReadEpoch) {
+		c.retireReadHistoryLocked()
+	}
+	history := cloneMessages(c.history)
 	history = append(history, provider.Message{Role: provider.RoleUser, Text: prompt})
 	requestID := fmt.Sprintf("chat-%d", generation)
 	conversationID, conversationIDErr := c.conversationID, c.conversationIDErr
@@ -873,15 +886,33 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	var finalGate *toolRuntime
+	if loop.historySensitive && c.toolRuntime != nil {
+		finalGate = c.toolRuntime
+		finalGate.readAuthorityMu.Lock()
+		defer finalGate.readAuthorityMu.Unlock()
+	}
 	if c.generation != generation || c.closed {
 		return turn, errors.New("stale provider result discarded")
 	}
 	c.active = false
 	c.activeProfile = ""
 	c.cancel = nil
+	keepSensitiveHistory := true
+	if loop.historySensitive {
+		keepSensitiveHistory = finalGate != nil && c.readContinuationStateCurrentLocked(conversationID, selection, loop.historyEpoch, finalGate)
+		if !keepSensitiveHistory {
+			c.retireReadHistoryLocked()
+			turn.Text, turn.Refusal = "", ""
+			turn.Outcome = provider.OutcomeInterrupted
+			turn.Message = "Conversation context was retired before the provider response could be retained. Start a fresh conversation to continue."
+		}
+	}
 	if loop.persist {
-		c.history = cloneMessages(loop.history)
-	} else if turn.Outcome == provider.OutcomeCompleted || turn.Outcome == provider.OutcomeRefused {
+		if !loop.historySensitive || keepSensitiveHistory {
+			c.history = cloneMessages(loop.history)
+		}
+	} else if !loop.historySensitive && (turn.Outcome == provider.OutcomeCompleted || turn.Outcome == provider.OutcomeRefused) {
 		if len(result.Native) == 0 {
 			turn.Outcome = provider.OutcomeUnsupported
 			turn.Message = "provider returned no replayable continuation data"
@@ -964,5 +995,26 @@ func messageForProviderCode(code string) string {
 		return "ChatGPT plan authorization was rejected. Reconnect the selected account and verify its plan-use permission."
 	default:
 		return "OpenAI could not complete this request. The selected profile remains in use; no billing fallback occurred."
+	}
+}
+
+func (c *Chat) retireReadHistory(conversationID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conversationID != conversationID || !c.historySensitive {
+		return
+	}
+	c.retireReadHistoryLocked()
+}
+
+func (c *Chat) retireReadHistoryLocked() {
+	c.history = nil
+	c.historySensitive = false
+	c.historyDestination = ""
+	c.historyReadEpoch++
+	for i := range c.turns {
+		c.turns[i].Text = ""
+		c.turns[i].Refusal = ""
+		c.turns[i].Message = "Conversation context was retired after an authorization change. Start a fresh conversation to continue."
 	}
 }

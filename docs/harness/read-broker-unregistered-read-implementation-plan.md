@@ -1,13 +1,12 @@
 # Exact-file read implementation plan
 
-**Status: staged implementation plan; disclosure policy accepted; Stages 1–3 are merged, and Stage 4 retained-worker execution/private capture is implemented on this review branch. Reads remain disabled.**
+**Status: disclosure policy accepted; Stages 1–3 are merged; Stages 4–5 are implemented on the current review branch. The integrated path is internal/test-only, uses fake providers and worker fixtures, and does not register or advertise `read_file` in the shipped executable. Native Stage 4 acceptance and Stage 6 remain outstanding.**
 This is a new source-grounded plan, not exact recovery or verification of the
 missing local handoff. The maintainer later accepted all six clauses in the
 [explicit acceptance comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902)
 for staged implementation. That supersedes the historical pending-policy
 wording below, but does not mean reads are enabled. Stages 1–3 are merged;
-this branch implements Stage 4 without changing tool registration or provider
-dispatch.
+this branch implements Stages 4–5 without changing shipped tool registration.
 
 ## Baseline, durable context and evidence limits
 
@@ -392,7 +391,7 @@ registration requires a distinct enablement decision after all applicable gates.
 | 2: after 0–1, checked authority | Permission Coordinator/store transactions; runtime canonical full-B binding, private ledger, mutation bridge and revoke/clear lifecycle. | **Merged in PR #247:** revision-checked exact approval/once-consumption transitions, full binding, private authority ledger and lifecycle invalidation. No filesystem tool enabled. |
 | 3: after 1–2, retained admission/owners | Runtime pre-approval seam; sandbox service; broker and HostCoordinator admission registry; real auth/settings owner hooks. | **Merged in PR #248:** one bounded exact-file lookup; host-only opaque retained reference; same-object preparation; checked approval and once consumption; root and owner invalidation include opening/pending/prepared admissions; late lookup remains owned and closes; auth/settings route and replacement hooks drain before sensitive write. `read_file` remains unregistered. |
 | 4: after 2–3, fixed-worker capture | Authorized-execute seam; fixed worker bootstrap/probes/release; private capture and resource retirement. | **Implemented on this review branch:** actual retained-admission membership is checked, the runtime-issued ref is claimed once, the retained FD is sent only after trusted startup/probes, the runtime authority gate is ordered with service/root/owner/session locks at transfer and read release, and bounded bytes are staged only after worker join plus duplicate/original capability retirement. Captures are opaque, bounded, in memory, expire after five minutes, and scrub on discard/invalidation. Fake-worker integration and held-capability revocation tests pass. Native Bubblewrap evidence is unavailable because this host's `/usr/bin/bwrap` is owned by UID 65534 and the required trust gate refuses it. No provider or tool-dispatch path exists. |
-| 5: after 2–4, batch/provider composition | executeOne/runToolLoop/appendToolBatch, Chat.Send history ownership and ready dispatcher; capturing fake provider. | Both invalidation windows, reverse ordering, positive multi-call/replay scope, protocol-safe exits, retired derived/native state and late-response rejection. No live inference; read_file unregistered. |
+| 5: after 2–4, batch/provider composition | executeOne/runToolLoop/appendToolBatch, Chat.Send history ownership and ready dispatcher; capturing fake provider. | **Implemented on this review branch, fixture-only:** successful retained read captures enter the fake provider only after a one-use dispatcher reservation, runtime authorization gate validation and atomic in-memory history/request handoff. Same-binding context replay uses committed bytes without another read. Invalidation clears the complete Chat replay history and derived turn text; late responses/deltas are suppressed. A sibling approval invalidation test proves pending bytes stay private. No real provider calls; production `read_file` remains unavailable. Native Stage 6 remains pending. |
 | 6: after implementation review, exact-profile native study, then separate enablement review | New native runtime/owner/worker/fake-provider composition with exact source/overlay/backend/mode provenance. | Native effects and cleanup demonstrate changed profile; missing/untrusted/unsupported cases unavailable, never fallback. Historical #243 evidence is not substituted. Tool registration, supported routes/platforms and disclosure copy reviewed separately. |
 
 Stage 1 tests use synthetic roots, simulated UI and bounded fake lifecycle
@@ -596,10 +595,63 @@ that publication is synchronized; Stage 3–5 must provide the host barrier and
 dispatcher integration. A `ClaimReadExecution` is a one-shot validation seam
 only. The shipped tool catalog remains unchanged, `read_file` is still
 unavailable, and no target admission, read, result capture or provider handoff
-was added. Stage 3 owner barriers, Stage 4 sandbox/capture, Stage 5
-batch/publication lifecycle and Stage 6 native acceptance remain pending.
+was added. Stage 3 owner barriers and Stage 4 sandbox/capture remain subject to exact-profile native acceptance. Stage 5's fake-provider publication behavior is implemented on this branch; Stage 6 must still execute the integrated owner/worker/runtime profile natively before any separate tool-enablement decision.
 
 Stage 2 validation on the review branch passed `go mod verify`, `go vet ./...`,
 `go test ./...`, `go test -race ./...`, `make check`, and `git diff --check`
 using Go 1.26.10. These are repository/authority checks, not native
 filesystem-enforcement evidence.
+
+
+### Stage 5 publication and continuation implementation (review branch)
+
+The internal fake-provider composition now exercises the retained admission,
+checked once approval/consumption, Stage 4 opaque capture, result pairing,
+publication and context replay. `readPublicationTestMode` is an unexported
+runtime field set only by package tests; the shipped executable does not set
+it, and the provider catalog never advertises `read_file` in normal composition.
+No real inference or credentials were used.
+
+A provider dispatch reservation starts a one-request receiver before the
+publication gate. The caller privately builds a bounded candidate request,
+then takes Chat mutex → runtime `readAuthorityMu` → permission-store snapshot.
+It validates conversation/model/profile destination, root generation and
+acknowledgement, current grant revision, exact tracked transition chain, every
+opaque capture, worker join/capability retirement, expiry and result protocol
+pairing. For a valid batch, it materializes the bounded provider envelope,
+accepts it into the reserved dispatcher, and installs the matching transcript
+history before releasing either lock. The dispatcher waits on a separate
+release signal and performs `StreamChat` only after those locks are released.
+A failed validation/acceptance does not install history; all new captures are
+scrubbed and the turn stops. Ordinary non-sensitive chat keeps its prior
+commit-on-success behavior.
+
+Captured bytes remain in the runtime's bounded Stage 4 map while later calls
+await approval. Drafts contain only opaque capture references. Batch validation
+is all-or-nothing; count/byte/lifetime limits are enforced before ownership
+transfer. Publication scrubs the capture buffers and moves descriptor-free
+identity, root/policy/coverage/destination, grant-chain and byte-count metadata
+into a bounded in-memory continuation record. The current per-conversation
+read-content ceiling is 1 MiB across replays; Stage 4 retains its eight-capture
+and five-minute undisclosed-capture limits. Replay sends the already committed
+provider history only for the same conversation and destination, without a
+second read or grant consumption.
+
+Runtime invalidation advances the read epoch and clears continuation metadata
+under the runtime gate. After releasing that gate, revocation, clear, root/owner
+invalidation and cancellation retire Chat's complete sensitive history and
+assistant-derived turn text. Chat final history/turn installation holds
+Chat mutex then the runtime gate, so a late response cannot reinstall retired
+native or derived content. Usage is retained. Once the dispatcher accepts the
+immutable request, disclosure is logically committed; later cancellation is
+best effort and does not promise physical-send cancellation or external recall.
+
+Deterministic tests cover: first-request payload absence; approved capture
+handoff; same-context replay without another execution; clear while a sibling
+approval is pending; no later resurrection; and a response/delta held after
+handoff then invalidated, with output suppression and usage retained. They use
+synthetic metadata/content and a fake provider/worker fixture. They do not prove
+OS sandbox enforcement, real owner rotation, a native provider transport, or
+Stage 6's exact integrated profile. Invalidation removes future in-memory
+replay and snapshots but cannot recall already delivered UI copies or bytes
+accepted by a provider dispatcher.
