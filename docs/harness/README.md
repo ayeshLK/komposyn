@@ -44,15 +44,17 @@ and `--settings-file` select alternate paths for tests or isolated runs; they
 do not accept credential values. Startup creates no chat database.
 
 The auth and settings stores expose a host-owned protection hook. The shipped
-chat now wires those stores to a host sandbox composition before loading their
-contents. The maintainer has accepted the bounded exact-file disclosure policy
-for staged implementation, but generic reads remain unavailable until later
-stages implement and validate the authority pipeline. `/fs-root` selects an
-in-memory lookup root; selection grants no access. No filesystem tool is
-registered. See the
+chat wires those stores to a host sandbox composition before loading their
+contents. The six-clause bounded exact-file disclosure policy is accepted, and
+implementation Stages 1–5 are merged. Integrated Stage 6 native acceptance and
+a separate enablement review remain pending; generic reads remain unavailable
+and no filesystem tool is registered. `/fs-root` selects an in-memory lookup
+root; selection grants no access. See the
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
+The current stage audit, complete issue-checklist mapping and Stage 6 evidence
+contract are in the [#215 completion tracking plan](issue-215-completion-tracking.md).
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
@@ -78,10 +80,10 @@ The reviewed #243 native service-fixture result, its provenance, and the
 checkout-safe reproduction runner are recorded in
 [composition native acceptance](read-broker-composition-native-acceptance.md)
 and [`scripts/native-acceptance/`](../../scripts/native-acceptance/README.md).
-The still-open choice for unknown unregistered files is laid out in the
-[unregistered exact-file policy decision](read-broker-unregistered-read-policy.md);
-its recommendation is not accepted policy, and the generic-read gate remains
-closed.
+The accepted unregistered exact-file policy and implementation stages are
+recorded in the [read implementation plan](read-broker-unregistered-read-implementation-plan.md).
+Acceptance is not tool enablement: the generic-read gate remains closed pending
+integrated native evidence and separate review.
 
 ## Local configuration
 

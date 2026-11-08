@@ -1,22 +1,24 @@
 # Exact-file read implementation plan
 
-**Status: disclosure policy accepted; Stages 1–3 are merged; Stages 4–5 are implemented on the current review branch. The integrated path is internal/test-only, uses fake providers and worker fixtures, and does not register or advertise `read_file` in the shipped executable. Native Stage 4 acceptance and Stage 6 remain outstanding.**
+**Current status (2026-11-08): disclosure policy accepted; Stages 1–5 are merged through PR #251 (`a61a3dfa4843f309bc533061f7be6e767f9b49b2`). The integrated path remains internal/test-only and `read_file` is not registered or advertised in the shipped executable. Stage 6 native acceptance and separate typed-read enablement review remain outstanding.**
 This is a new source-grounded plan, not exact recovery or verification of the
 missing local handoff. The maintainer later accepted all six clauses in the
 [explicit acceptance comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902)
 for staged implementation. That supersedes the historical pending-policy
-wording below, but does not mean reads are enabled. Stages 1–3 are merged;
-this branch implements Stages 4–5 without changing shipped tool registration.
+wording below, but does not mean reads are enabled. Stages 1–5 are now merged;
+the current issue-to-package mapping is in
+[Issue #215 completion tracking](issue-215-completion-tracking.md).
 
 ## Baseline, durable context and evidence limits
 
-On 2026-11-07, upstream `refs/heads/master` was verified as
-`f809a791f3fd4696ea0786d702f1b6ee116ae095`; the isolated documentation branch
-started at that exact commit. GitHub reports [PR #244](https://github.com/ayeshLK/komposyn/pull/244)
+Historical reconstruction baseline (2026-11-07): upstream `refs/heads/master`
+was verified as `f809a791f3fd4696ea0786d702f1b6ee116ae095`; the isolated
+documentation branch started at that exact commit. GitHub reported [PR #244](https://github.com/ayeshLK/komposyn/pull/244)
 merged there. This file was absent from that tree. The user's older local
-`master` was not changed or used as current source. This is a Git checkout,
-not an initialized source archive. Recheck upstream before implementation and
-identify later changes separately.
+`master` was not changed or used as current source. Current source is
+`a61a3dfa4843f309bc533061f7be6e767f9b49b2`; changes since the historical
+reconstruction include reviewed Stages 1–5. This is a Git checkout, not an
+initialized source archive.
 
 Planning inputs are the current [issue #215](https://github.com/ayeshLK/komposyn/issues/215),
 its [recovery checkpoint](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6708377457),
