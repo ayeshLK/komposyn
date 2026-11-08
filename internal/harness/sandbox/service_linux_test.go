@@ -1198,6 +1198,134 @@ func TestStage4CancelledStalledJoinReturnsCleanupPendingAndRetainsPreparation(t 
 	}
 }
 
+func TestStage4CancellationBeforeHeldReadReleasePreservesUnknownUntilDelayedJoin(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "held-cancel.txt")
+	if err := os.WriteFile(target, []byte("must remain unread before held-read release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage4WorkerLauncher{waitEntered: make(chan struct{}), waitRelease: make(chan struct{})}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := impl.session
+	service := &Service{impl: impl}
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{Registry: tools.NewRegistry(), ReadAdmission: service, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	var releaseOnce sync.Once
+	releaseWait := func() { releaseOnce.Do(func() { close(launcher.waitRelease) }) }
+	t.Cleanup(func() {
+		releaseWait()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := chat.CloseContext(ctx); err != nil {
+			t.Errorf("close delayed-join chat: %v", err)
+		}
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("close delayed-join service: %v", err)
+		}
+	})
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []struct{ name, class string }{{auth.SensitiveOwnerAuth, auth.SensitiveClassAuth}, {auth.SensitiveOwnerSettings, auth.SensitiveClassSettings}} {
+		if err := service.Protect(context.Background(), owner.name, owner.class, filepath.Join(t.TempDir(), owner.name+".json"), nil); err != nil {
+			t.Fatalf("register %s owner: %v", owner.name, err)
+		}
+	}
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint == readbrokerstudy.CheckpointAfterCapabilityHeld {
+			cancel()
+			return context.Canceled
+		}
+		return nil
+	})
+	type execution struct {
+		capture *runtime.PrivateReadCapture
+		err     error
+	}
+	result := make(chan execution, 1)
+	go func() {
+		capture, executeErr := chat.ExecuteFilesystemRead(ctx, tools.Invocation{TurnID: "turn", ProviderCallID: "held-cancel", ToolID: "read_file", Arguments: arguments}, "openai/model/profile")
+		result <- execution{capture: capture, err: executeErr}
+	}()
+	select {
+	case <-launcher.waitEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled held read did not reach the deliberately delayed worker join")
+	}
+	var initial execution
+	select {
+	case initial = <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled execution blocked instead of reporting incomplete cleanup")
+	}
+	if initial.capture != nil || !errors.Is(initial.err, readbrokerstudy.ErrCleanupPending) {
+		t.Fatalf("unjoined held read capture=%v err=%v, want cleanup pending without captured data", initial.capture, initial.err)
+	}
+	if impl.session.ActiveOperationCount() != 1 || launcher.starts.Load() != 1 || len(launcher.readBytes) != 0 || len(impl.session.PublishedResults()) != 0 {
+		t.Fatalf("unjoined held read was not retained safely: active=%d starts=%d read=%q published=%d", impl.session.ActiveOperationCount(), launcher.starts.Load(), launcher.readBytes, len(impl.session.PublishedResults()))
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadUnknown || evidence[0].WorkerJoined || !evidence[0].CapabilityHeld || !evidence[0].CapabilitySent || evidence[0].ReadStarted || evidence[0].Published {
+		t.Fatalf("initial delayed-join evidence=%+v, want unknown with held capability and no read/publication", evidence)
+	}
+
+	// The supported shutdown API uses an independent bounded context after the
+	// caller's cancelled operation has returned. Joining later retires the
+	// obligation but must not retroactively turn the unknown result into a
+	// cancelled result.
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cleanupCancel()
+	releaseWait()
+	for {
+		err := chat.CloseContext(cleanupCtx)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, runtime.ErrFilesystemRootPending) {
+			t.Fatalf("bounded shutdown failed while joining the held worker: %v", err)
+		}
+		select {
+		case <-cleanupCtx.Done():
+			t.Fatalf("bounded shutdown did not join the held worker: %v", errors.Join(err, cleanupCtx.Err()))
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if err := service.Close(cleanupCtx); err != nil {
+		t.Fatalf("bounded service shutdown did not drain the worker: %v", err)
+	}
+	if active := session.ActiveOperationCount(); active != 0 {
+		t.Fatalf("independent bounded cleanup did not observe the worker join: active=%d", active)
+	}
+	evidence = session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadUnknown || evidence[0].WorkerJoined || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
+		t.Fatalf("post-join evidence=%+v, want preserved initial unknown observation without read/publication", evidence)
+	}
+	launcher.mu.Lock()
+	worker := launcher.lastWorker
+	launcher.mu.Unlock()
+	if worker == nil || !worker.Joined() {
+		t.Fatal("bounded service shutdown returned without confirming the delayed worker join")
+	}
+}
+
 type inertWorkerLauncher struct{}
 
 func (inertWorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
@@ -1212,11 +1340,17 @@ type stage4WorkerLauncher struct {
 	waitEntered chan struct{}
 	waitRelease chan struct{}
 	truncated   bool
+	mu          sync.Mutex
+	lastWorker  *stage4Worker
 }
 
 func (l *stage4WorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
 	l.starts.Add(1)
-	return &stage4Worker{launcher: l}, nil
+	worker := &stage4Worker{launcher: l}
+	l.mu.Lock()
+	l.lastWorker = worker
+	l.mu.Unlock()
+	return worker, nil
 }
 func (*stage4WorkerLauncher) Close() error { return nil }
 

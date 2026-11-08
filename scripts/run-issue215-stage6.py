@@ -35,7 +35,7 @@ import time
 sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
 
-RUNNER_VERSION = "3"
+RUNNER_VERSION = "4"
 DEFAULT_BWRAP = "/usr/bin/bwrap"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 BUILD_TIMEOUT = 300
@@ -155,20 +155,23 @@ def summarize(report, build, run):
         "",
         "## Cases",
         "",
-        "| Case | Status | Evidence kind | Worker started | Capability transferred | Read started | Disclosure withheld | Reason |",
-        "|---|---|---|---:|---:|---:|---:|---|",
+        "| Case | Status | Evidence kind | Worker started | Capability transferred | Capability held | Read started | Read outcome | Disclosure withheld | Cleanup confirmed | Reason |",
+        "|---|---|---|---:|---:|---:|---:|---|---:|---:|---|",
     ]
     for case in report.get("cases", []):
         reason = str(case.get("reason", "")).replace("|", "\\|").replace("\n", " ")
         lines.append(
-            "| {case} | {status} | {evidence} | {worker} | {cap} | {read} | {withheld} | {reason} |".format(
+            "| {case} | {status} | {evidence} | {worker} | {cap} | {held} | {read} | {outcome} | {withheld} | {cleanup} | {reason} |".format(
                 case=case.get("case_id", "unknown"),
                 status=case.get("status", "unknown"),
                 evidence=case.get("evidence_kind", "unclassified"),
                 worker=case.get("worker_started", False),
                 cap=case.get("capability_transferred", False),
+                held=case.get("capability_held", False),
                 read=case.get("read_started", False),
+                outcome=case.get("read_outcome", ""),
                 withheld=case.get("disclosure_withheld", False),
+                cleanup=case.get("cleanup_confirmed", False),
                 reason=reason,
             )
         )
