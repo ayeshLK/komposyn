@@ -17,10 +17,13 @@
 package sandbox
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	stdruntime "runtime"
 	"strings"
@@ -28,6 +31,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
@@ -52,36 +57,42 @@ func init() {
 }
 
 type stage6Case struct {
-	ID                        string `json:"case_id"`
-	Status                    string `json:"status"`
-	EvidenceKind              string `json:"evidence_kind,omitempty"`
-	Reason                    string `json:"reason,omitempty"`
-	WorkerStarted             bool   `json:"worker_started"`
-	WorkerReady               bool   `json:"worker_ready"`
-	WorkerJoined              bool   `json:"worker_joined"`
-	CapabilityTransferred     bool   `json:"capability_transferred"`
-	CapabilityHeld            bool   `json:"capability_held"`
-	ReadStarted               bool   `json:"read_started"`
-	ReadOutcome               string `json:"read_outcome,omitempty"`
-	ProbePassed               bool   `json:"required_probe_passed"`
-	OnceApprovalCount         int32  `json:"once_approval_count"`
-	OnceGrantConsumptionCount int    `json:"once_grant_consumption_count"`
-	GrantRevisionBefore       uint64 `json:"grant_revision_before"`
-	GrantRevisionAfter        uint64 `json:"grant_revision_after"`
-	RemainingGrantCount       int    `json:"remaining_grant_count"`
-	ProviderRequestCount      int    `json:"provider_request_count"`
-	FixtureBytesMatched       bool   `json:"fixture_bytes_matched"`
-	DisclosureWithheld        bool   `json:"disclosure_withheld"`
-	StaleDataAbsent           bool   `json:"stale_data_absent"`
-	LateResponseReturned      bool   `json:"late_response_returned"`
-	LateDeltaAttempted        bool   `json:"late_delta_attempted"`
-	LateDeltaSuppressed       bool   `json:"late_delta_suppressed"`
-	ActorStarted              bool   `json:"actor_started"`
-	ActorTransitionCompleted  bool   `json:"actor_transition_completed"`
-	ActorJoined               bool   `json:"actor_joined"`
-	ActorTransitionCount      int    `json:"actor_transition_count"`
-	AuthorityObservation      string `json:"authority_observation,omitempty"`
-	CleanupConfirmed          bool   `json:"cleanup_confirmed"`
+	ID                        string         `json:"case_id"`
+	Status                    string         `json:"status"`
+	EvidenceKind              string         `json:"evidence_kind,omitempty"`
+	Reason                    string         `json:"reason,omitempty"`
+	LaunchPolicy              map[string]any `json:"launch_policy,omitempty"`
+	WorkerStarted             bool           `json:"worker_started"`
+	WorkerReady               bool           `json:"worker_ready"`
+	WorkerJoined              bool           `json:"worker_joined"`
+	CapabilityTransferred     bool           `json:"capability_transferred"`
+	CapabilityHeld            bool           `json:"capability_held"`
+	ReadStarted               bool           `json:"read_started"`
+	ReadOutcome               string         `json:"read_outcome,omitempty"`
+	ProbePassed               bool           `json:"required_probe_passed"`
+	OnceApprovalCount         int32          `json:"once_approval_count"`
+	OnceGrantConsumptionCount int            `json:"once_grant_consumption_count"`
+	GrantRevisionBefore       uint64         `json:"grant_revision_before"`
+	GrantRevisionAfter        uint64         `json:"grant_revision_after"`
+	RemainingGrantCount       int            `json:"remaining_grant_count"`
+	ProviderRequestCount      int            `json:"provider_request_count"`
+	FixtureBytesMatched       bool           `json:"fixture_bytes_matched"`
+	DisclosureWithheld        bool           `json:"disclosure_withheld"`
+	StaleDataAbsent           bool           `json:"stale_data_absent"`
+	LateResponseReturned      bool           `json:"late_response_returned"`
+	LateDeltaAttempted        bool           `json:"late_delta_attempted"`
+	LateDeltaSuppressed       bool           `json:"late_delta_suppressed"`
+	ActorStarted              bool           `json:"actor_started"`
+	ActorTransitionCompleted  bool           `json:"actor_transition_completed"`
+	ActorJoined               bool           `json:"actor_joined"`
+	ActorTransitionCount      int            `json:"actor_transition_count"`
+	AuthorityObservation      string         `json:"authority_observation,omitempty"`
+	CleanupConfirmed          bool           `json:"cleanup_confirmed"`
+	CoordinatorStarted        bool           `json:"coordinator_started"`
+	CoordinatorJoined         bool           `json:"coordinator_joined"`
+	BubblewrapExitObserved    bool           `json:"bubblewrap_exit_observed"`
+	NamespaceInitExitObserved bool           `json:"namespace_init_exit_observed"`
+	ObservedProcessesGone     bool           `json:"observed_processes_gone"`
 }
 
 type stage6Report struct {
@@ -110,7 +121,7 @@ func newStage6Report() stage6Report {
 		"incomplete_owner_inventory", "actor_helper_control", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
 		"late_response_and_delta_retirement", "cancellation_and_cleanup", "launch_profile_and_limits",
-		"mutation_profile", "shell_profile",
+		"mutation_profile", "shell_profile", "parent_death_cleanup",
 	}
 	syntheticCases := map[string]struct{}{
 		"ordinary_chat_without_root":           {},
@@ -120,6 +131,7 @@ func newStage6Report() stage6Report {
 		"incomplete_owner_inventory":           {},
 	}
 	actorFixtureCases := map[string]struct{}{"actor_helper_control": {}}
+	workerLifecycleCases := map[string]struct{}{"parent_death_cleanup": {}}
 	unimplementedCases := map[string]struct{}{
 		"mutation_profile": {},
 		"shell_profile":    {},
@@ -137,14 +149,17 @@ func newStage6Report() stage6Report {
 			item.Reason = "synthetic separate-process actor helper control was not executed"
 		} else if unimplemented {
 			item.EvidenceKind = "not-implemented"
-			item.Reason = "case is not implemented by Stage 6 runner version 4"
+			item.Reason = "case is not implemented by Stage 6 runner version 5"
+		} else if _, workerLifecycle := workerLifecycleCases[id]; workerLifecycle {
+			item.EvidenceKind = "native-worker-lifecycle"
+			item.Reason = "fixed worker parent-death lifecycle case was not executed"
 		} else {
 			item.EvidenceKind = "native-integrated"
 		}
 		cases = append(cases, item)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "4",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "5",
 		OS: "linux", Architecture: stdruntime.GOARCH, UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: []string{
@@ -206,6 +221,7 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 		"synthetic-runtime-composition": 5,
 		"synthetic-actor-fixture":       1,
 		"native-integrated":             12,
+		"native-worker-lifecycle":       1,
 		"not-implemented":               2,
 	}
 	if len(counts) != len(want) {
@@ -228,6 +244,280 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	if allNativeCasesUnavailable(report.Cases) {
 		t.Fatal("a measured native case was classified as wholly unavailable")
 	}
+}
+
+func TestStage6PIDFDExitObservationUsesProcessIdentity(t *testing.T) {
+	if os.Getenv("KOMPOSYN_STAGE6_PIDFD_CHILD") == "1" {
+		select {}
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestStage6PIDFDExitObservationUsesProcessIdentity$")
+	child.Stdout, child.Stderr = io.Discard, io.Discard
+	child.Env = []string{"KOMPOSYN_STAGE6_PIDFD_CHILD=1"}
+	if err := child.Start(); err != nil {
+		t.Fatal("could not start bounded process-observation fixture")
+	}
+	joined := false
+	defer func() {
+		if !joined {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var identity readbrokerstudy.HostProcessIdentity
+	for time.Now().Before(deadline) {
+		start, err := readbrokerstudy.ReadHostProcessStartTime(child.Process.Pid)
+		if err == nil && start != 0 {
+			identity = readbrokerstudy.HostProcessIdentity{PID: child.Process.Pid, StartTimeTicks: start}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if identity.PID == 0 {
+		t.Fatal("process fixture did not become observable within its deadline")
+	}
+	pidfd, err := readbrokerstudy.OpenVerifiedPIDFD(identity)
+	if err != nil {
+		t.Skip("kernel or host policy does not provide verified pidfds")
+	}
+	defer unix.Close(pidfd)
+	if waitForPIDFDExit(pidfd, 20*time.Millisecond) {
+		t.Fatal("live process pidfd was reported exited")
+	}
+	if processIdentityGone(identity) {
+		t.Fatal("live process identity was reported gone")
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal("could not stop bounded process-observation fixture")
+	}
+	_ = child.Wait()
+	joined = true
+	if !waitForPIDFDExit(pidfd, 2*time.Second) {
+		t.Fatal("pidfd did not become readable after process exit")
+	}
+	if !processIdentityGone(identity) {
+		t.Fatal("reaped process identity was still present")
+	}
+}
+
+// TestStage6ParentDeathCoordinatorHelper runs only in its isolated re-exec
+// process. Its pipe carries bounded, private process identities to the test
+// supervisor; those identities are never written to the shareable report.
+func TestStage6ParentDeathCoordinatorHelper(t *testing.T) {
+	if os.Getenv("KOMPOSYN_PARENT_DEATH_HELPER") != "1" {
+		return
+	}
+	pipe := os.NewFile(3, "parent-death-handshake")
+	if pipe == nil {
+		t.Fatal("private parent-death handshake descriptor is missing")
+	}
+	defer pipe.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	if err := readbrokerstudy.RunParentDeathStudyCoordinator(ctx, os.Getenv("KOMPOSYN_PARENT_DEATH_BWRAP"), os.Getenv("KOMPOSYN_PARENT_DEATH_TARGET"), pipe); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("fixed parent-death worker coordinator failed: %v", err)
+	}
+}
+
+func TestStage6ParentDeathCleanup(t *testing.T) {
+	stage6Begin("parent_death_cleanup")
+	backendPath := os.Getenv("KOMPOSYN_STAGE6_BWRAP")
+	if backendPath == "" {
+		backendPath = "/usr/bin/bwrap"
+	}
+	inspection := readbrokerstudy.InspectBubblewrap(backendPath)
+	stage6Mu.Lock()
+	stage6.Backend = map[string]any{
+		"path": backendPath, "uid": inspection.UID, "mode": inspection.Mode,
+		"trusted": inspection.Trusted, "sha256": inspection.SHA256,
+		"version": inspection.Version, "bind_mode": inspection.BindMode,
+		"features": append([]string(nil), inspection.Capabilities...), "reason": inspection.Error,
+	}
+	stage6Mu.Unlock()
+	if !inspection.Trusted || inspection.Error != "" {
+		stage6Skip("parent_death_cleanup", "trusted backend validation refused before backend probes or worker launch")
+		t.Skip("trusted native Bubblewrap backend unavailable; no probe or worker launch was attempted")
+	}
+	selfStart, err := readbrokerstudy.ReadHostProcessStartTime(os.Getpid())
+	if err != nil || selfStart == 0 {
+		stage6Skip("parent_death_cleanup", "host process identity observation is unavailable before worker launch")
+		t.Skip("host process identity observation is unavailable")
+	}
+	probePIDFD, err := readbrokerstudy.OpenVerifiedPIDFD(readbrokerstudy.HostProcessIdentity{PID: os.Getpid(), StartTimeTicks: selfStart})
+	if err != nil {
+		stage6Skip("parent_death_cleanup", "verified pidfd observation is unavailable before worker launch")
+		t.Skip("verified pidfd observation is unavailable")
+	}
+	_ = unix.Close(probePIDFD)
+	stage6Update("parent_death_cleanup", func(item *stage6Case) {
+		item.LaunchPolicy = map[string]any{
+			"effective_bubblewrap_arguments": readbrokerstudy.EffectiveBubblewrapArgumentsWithCapabilityHold(inspection.BindMode),
+			"required_namespaces":            []string{"mount", "user", "pid", "ipc", "uts", "network"},
+			"network":                        "unshared; no network access",
+			"root_mount":                     "private 8 MiB tmpfs",
+			"worker_mount":                   "one fixed worker image, read-only",
+			"worker_environment":             []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"},
+			"inherited_descriptors":          []string{"fd 3: seccomp filter", "fd 4: local protocol socket", "fd 5: consumed worker source", "fd 6: retained worker verification image"},
+			"target_capability":              "one synthetic read-only file descriptor transferred after worker readiness and held without read release",
+			"authorization_scope":            "profile-only lifecycle fixture; does not exercise runtime grants or approval",
+			"termination":                    "test coordinator is killed after startup, probes, capability-held acknowledgement and verified pidfd observation",
+			"aggregate_cgroup_limits":        "not provisioned or claimed",
+		}
+	})
+
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal("could not make synthetic parent-death root private")
+	}
+	target := filepath.Join(root, "synthetic-parent-death.fixture")
+	if err := os.WriteFile(target, []byte("synthetic held-read fixture\n"), 0o600); err != nil {
+		t.Fatal("could not create synthetic parent-death fixture")
+	}
+
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatal("could not create private parent-death handshake")
+	}
+	defer readPipe.Close()
+	helper := exec.Command(os.Args[0], "-test.run=^TestStage6ParentDeathCoordinatorHelper$")
+	helper.ExtraFiles = []*os.File{writePipe}
+	helper.Stdout, helper.Stderr = io.Discard, io.Discard
+	helper.Env = []string{
+		"KOMPOSYN_PARENT_DEATH_HELPER=1",
+		"KOMPOSYN_PARENT_DEATH_BWRAP=" + backendPath,
+		"KOMPOSYN_PARENT_DEATH_TARGET=" + target,
+		"TMPDIR=" + os.TempDir(),
+	}
+	if err := helper.Start(); err != nil {
+		_ = writePipe.Close()
+		t.Fatal("could not start bounded parent-death coordinator")
+	}
+	_ = writePipe.Close()
+	joined := false
+	var reader *bufio.Scanner
+	defer func() {
+		if !joined && helper.Process != nil {
+			waited := make(chan error, 1)
+			go func() { waited <- helper.Wait() }()
+			select {
+			case <-waited:
+				joined = true
+			case <-time.After(28 * time.Second):
+				_ = helper.Process.Kill()
+				<-waited
+				joined = true
+			}
+			if reader != nil {
+				for reader.Scan() {
+					var event readbrokerstudy.ParentDeathStudyEvent
+					if json.Unmarshal(reader.Bytes(), &event) == nil && event.Phase == "worker_cleanup" {
+						stage6Update("parent_death_cleanup", func(item *stage6Case) { item.WorkerJoined = event.WorkerJoined })
+					}
+				}
+			}
+			stage6Update("parent_death_cleanup", func(item *stage6Case) { item.CoordinatorJoined = joined })
+		}
+	}()
+	stage6Update("parent_death_cleanup", func(item *stage6Case) { item.CoordinatorStarted = true })
+
+	reader = bufio.NewScanner(readPipe)
+	reader.Buffer(make([]byte, 256), 4096)
+	phases := make(map[string]bool)
+	var identities struct {
+		Bubblewrap    readbrokerstudy.HostProcessIdentity `json:"bubblewrap"`
+		NamespaceInit readbrokerstudy.HostProcessIdentity `json:"namespace_init"`
+	}
+	handshakeCtx, cancel := context.WithTimeout(context.Background(), 28*time.Second)
+	defer cancel()
+	for reader.Scan() {
+		var event readbrokerstudy.ParentDeathStudyEvent
+		if err := json.Unmarshal(reader.Bytes(), &event); err != nil {
+			t.Fatalf("private parent-death handshake was malformed: %v", err)
+		}
+		phases[event.Phase] = true
+		if event.Phase == "worker_cleanup" {
+			stage6Update("parent_death_cleanup", func(item *stage6Case) { item.WorkerJoined = event.WorkerJoined })
+		}
+		if event.Phase == "processes_observed" {
+			identities.Bubblewrap, identities.NamespaceInit = event.Bubblewrap, event.NamespaceInit
+			break
+		}
+		select {
+		case <-handshakeCtx.Done():
+			t.Fatal("fixed worker did not reach held-capability state before deadline")
+		default:
+		}
+	}
+	if err := reader.Err(); err != nil {
+		t.Fatalf("private parent-death handshake read failed: %v", err)
+	}
+	if !phases["worker_started"] || !phases["worker_ready"] || !phases["capability_held"] || identities.Bubblewrap.PID <= 0 || identities.NamespaceInit.PID <= 0 {
+		t.Fatal("fixed worker did not acknowledge startup, held capability and process identities")
+	}
+	stage6Update("parent_death_cleanup", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady = true, true
+		item.CapabilityTransferred, item.CapabilityHeld = true, true
+		item.ReadStarted = false
+	})
+	bwrapFD, err := readbrokerstudy.OpenVerifiedPIDFD(identities.Bubblewrap)
+	if err != nil {
+		t.Fatalf("observed Bubblewrap identity could not be pinned before parent death: %v", err)
+	}
+	defer unix.Close(bwrapFD)
+	initFD, err := readbrokerstudy.OpenVerifiedPIDFD(identities.NamespaceInit)
+	if err != nil {
+		t.Fatalf("observed namespace-init identity could not be pinned before parent death: %v", err)
+	}
+	defer unix.Close(initFD)
+	if err := helper.Process.Kill(); err != nil {
+		t.Fatalf("could not terminate held-read coordinator: %v", err)
+	}
+	helpErr := helper.Wait()
+	joined = true
+	if helpErr == nil {
+		t.Fatal("coordinator unexpectedly exited successfully after forced parent death")
+	}
+	stage6Update("parent_death_cleanup", func(item *stage6Case) { item.CoordinatorJoined = true })
+	bwrapExited := waitForPIDFDExit(bwrapFD, 5*time.Second)
+	initExited := waitForPIDFDExit(initFD, 5*time.Second)
+	processesGone := bwrapExited && initExited && processIdentityGone(identities.Bubblewrap) && processIdentityGone(identities.NamespaceInit)
+	stage6Update("parent_death_cleanup", func(item *stage6Case) {
+		item.BubblewrapExitObserved, item.NamespaceInitExitObserved = bwrapExited, initExited
+		item.ObservedProcessesGone, item.CleanupConfirmed = processesGone, processesGone
+	})
+	if !processesGone {
+		t.Fatal("observed Bubblewrap or namespace-init process remained after bounded parent-death cleanup")
+	}
+	stage6PassWithEvidence("parent_death_cleanup", "native-worker-lifecycle", "killing the coordinator after the fixed worker held its read descriptor, without sending read release, caused the observed Bubblewrap process and PID-namespace init to exit and disappear; this is limited to the fixed profile and does not prove arbitrary-descendant cleanup")
+}
+
+func waitForPIDFDExit(fd int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		ms := int(remaining / time.Millisecond)
+		if ms > 100 {
+			ms = 100
+		}
+		_, err := unix.Poll(poll, ms)
+		if err == nil && poll[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
+			return true
+		}
+		if err != nil && !errors.Is(err, unix.EINTR) {
+			return false
+		}
+	}
+	return false
+}
+
+func processIdentityGone(identity readbrokerstudy.HostProcessIdentity) bool {
+	startTime, err := readbrokerstudy.ReadHostProcessStartTime(identity.PID)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	return err == nil && startTime != identity.StartTimeTicks
 }
 
 func TestStage6ActorHelperControlUsesSeparateProcess(t *testing.T) {

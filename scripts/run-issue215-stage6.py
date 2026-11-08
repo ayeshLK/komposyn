@@ -35,7 +35,7 @@ import time
 sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
 
-RUNNER_VERSION = "4"
+RUNNER_VERSION = "5"
 DEFAULT_BWRAP = "/usr/bin/bwrap"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 BUILD_TIMEOUT = 300
