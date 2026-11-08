@@ -34,6 +34,36 @@ SPEC.loader.exec_module(RUNNER)
 
 
 class Stage6RunnerTests(unittest.TestCase):
+    def test_summary_keeps_synthetic_and_native_evidence_distinct(self):
+        report = {
+            "overall_status": "native_unavailable",
+            "cases": [
+                {
+                    "case_id": "synthetic-refusal",
+                    "status": "measured_pass",
+                    "evidence_kind": "synthetic-runtime-composition",
+                    "disclosure_withheld": True,
+                },
+                {
+                    "case_id": "native-read",
+                    "status": "unavailable",
+                    "evidence_kind": "native-integrated",
+                    "worker_started": False,
+                },
+            ],
+            "limitations": ["native worker did not run"],
+        }
+        summary = RUNNER.summarize(report, {"exit_code": 0}, {"exit_code": 0})
+
+        self.assertIn(
+            "| synthetic-refusal | measured_pass | synthetic-runtime-composition |",
+            summary,
+        )
+        self.assertIn(
+            "| native-read | unavailable | native-integrated |",
+            summary,
+        )
+
     def test_backend_metadata_is_read_only_and_hashes_regular_file(self):
         with tempfile.TemporaryDirectory() as directory:
             backend = Path(directory) / "backend"
