@@ -22,7 +22,7 @@ use this mapping as the current audit; do not erase historical records.
 | 3: retained admission | Merged | [PR #248](https://github.com/ayeshLK/komposyn/pull/248). Exact retained-object admission and owner barriers; no reopen or second once consumer. |
 | 4: worker and private capture | Merged | [PR #250](https://github.com/ayeshLK/komposyn/pull/250). One-attempt fixed worker, private bounded capture after join/descriptor retirement; native integrated acceptance remains open. |
 | 5: publication and continuation | Merged | [PR #251](https://github.com/ayeshLK/komposyn/pull/251), merge `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. Synchronized batch/provider handoff, replay provenance, owner-gated continuation retirement and stale-response tests. |
-| 6: integrated native acceptance | Not started | Requires one reviewed runner to exercise actual runtime, Service/registry, fixed worker, and a capturing fake provider under the exact candidate profile. No historical service-only run substitutes. |
+| 6: integrated native acceptance | Runner implemented in the Stage 6 work package; native execution unavailable here | The [Stage 6 runner guide](issue-215-stage6-runner.md) records the exact invocation and case coverage. It composes runtime, Service/registry, fixed worker, and fake provider. Current environment trust-refuses `/usr/bin/bwrap` before probes because it is UID 65534; this is unavailable evidence. An eligible trusted-host run and review remain required. |
 | Typed-read enablement | Not approved | Requires Stage 6 acceptance, owner/launch gates, and a distinct reviewed enablement decision. |
 
 Production `cmd/harness` still offers only `update_plan` and
@@ -81,9 +81,10 @@ actual sandbox Service / registry ──> runtime approval + once consumption
                                   in-memory test sink and assertions
 ```
 
-The runner may use the unexported `readPublicationTestMode` switch solely to
-exercise the reserved read path in a test-only runtime composition; this switch
-must never reach the shipped executable. It must not use a fixture authorizer
+The separately compiled test binary uses a Go overlay to expose the unexported
+`readPublicationTestMode` switch solely to exercise the reserved read path in a
+test-only runtime composition; the overlay is absent from the shipped executable.
+It must not use a fixture authorizer
 in place of the runtime permission coordinator or a callback that stands in
 for the host publication gate. Compose the runtime with the real
 `sandbox.Service` APIs, substituting only explicit synthetic owner

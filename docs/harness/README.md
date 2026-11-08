@@ -55,6 +55,8 @@ root; selection grants no access. See the
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 The current stage audit, complete issue-checklist mapping and Stage 6 evidence
 contract are in the [#215 completion tracking plan](issue-215-completion-tracking.md).
+The integrated test-only runner and reproduction steps are described in the
+[Stage 6 runner guide](issue-215-stage6-runner.md).
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
