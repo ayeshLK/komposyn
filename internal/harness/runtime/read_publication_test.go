@@ -35,13 +35,15 @@ import (
 )
 
 type publicationHost struct {
-	mu        sync.Mutex
-	content   []byte
-	reads     int
-	rootGen   uint64
-	root      string
-	target    string
-	reference *ReadExecutionReference
+	mu         sync.Mutex
+	content    []byte
+	reads      int
+	rootGen    uint64
+	root       string
+	target     string
+	reference  *ReadExecutionReference
+	rejectGate atomic.Bool
+	gateCalls  atomic.Int32
 }
 type publicationAdmission struct {
 	metadata FilesystemReadAdmission
@@ -77,13 +79,180 @@ func (h *publicationHost) InvalidateFilesystemRoot(_ context.Context, transition
 func (h *publicationHost) BackendStatus() (bool, string) { return true, "synthetic fixture" }
 
 func (h *publicationHost) WithFilesystemReadPublicationCurrent(ctx context.Context, conversationID, root string, generation, policy, coverage uint64, operation func() error) error {
+	h.gateCalls.Add(1)
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if h.rejectGate.Load() {
+		return ErrFilesystemRootStale
 	}
 	if conversationID == "" || root != h.root || generation != h.rootGen || policy != 1 || coverage != 1 {
 		return ErrFilesystemRootStale
 	}
 	return operation()
+}
+
+type blockingPublicationOAuthResolver struct {
+	store   auth.Store
+	mu      sync.Mutex
+	started chan struct{}
+	release chan struct{}
+	block   bool
+}
+
+func (*blockingPublicationOAuthResolver) Provider() string    { return "openai" }
+func (*blockingPublicationOAuthResolver) Method() auth.Method { return auth.MethodOAuth }
+func (r *blockingPublicationOAuthResolver) Resolve(ctx context.Context, id string) (auth.Profile, string, error) {
+	r.mu.Lock()
+	block := r.block
+	r.block = false
+	r.mu.Unlock()
+	if block {
+		close(r.started)
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return auth.Profile{}, "", ctx.Err()
+		}
+	}
+	profile, err := r.store.Get(id)
+	return profile, "publication-fixture-token", err
+}
+
+func newPublicationOAuthChat(t *testing.T, fp *publicationProvider, host *publicationHost, resolver *blockingPublicationOAuthResolver) *Chat {
+	t.Helper()
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := auth.NewRegistry()
+	if err := registry.Register("openai", auth.MethodOAuth, resolver); err != nil {
+		t.Fatal(err)
+	}
+	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+		return tools.Result{}, nil
+	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	chat := NewChatWithToolRuntime(providers, resolver.store, registry, config)
+	chat.toolRuntime.readPublicationTestMode = true
+	profile, err := resolver.store.Get("profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := model.Model{Provider: provider.OpenAI, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "chat-model", DisplayName: "Chat Model", Compatibility: provider.CompatibilitySupported, ProfileVersion: model.ProfileVersion(profile, "publication-fixture-token")}
+	chat.selected = &selected
+	host.root = filepath.Dir(fp.target)
+	if err := chat.SelectFilesystemRoot(context.Background(), filepath.Dir(fp.target)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(chat.Close)
+	return chat
+}
+
+func TestStage5LaterTurnSensitiveHistoryStillUsesHostPublicationGate(t *testing.T) {
+	const sentinel = "later-turn-sensitive-history-sentinel"
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: publicationTarget(t, "notes.txt")}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &publicationHost{content: []byte(sentinel), root: filepath.Dir(fp.target), target: fp.target}
+	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+		return tools.Result{}, nil
+	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	chat.toolRuntime.readPublicationTestMode = true
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+		t.Fatal(err)
+	}
+	selectFirst(t, chat)
+	selectPublicationRoot(t, chat, host, filepath.Dir(fp.target))
+	t.Cleanup(chat.Close)
+	if turn, err := chat.Send(context.Background(), "read the fixture", nil); err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("initial sensitive turn=%+v err=%v", turn, err)
+	}
+	if !chat.historySensitive || !strings.Contains(providerMessagesText(chat.history), sentinel) {
+		t.Fatal("fixture did not establish sensitive continuation history")
+	}
+	host.rejectGate.Store(true)
+	turn, err := chat.Send(context.Background(), "continue discussing the file", nil)
+	if turn.Outcome != provider.OutcomeInterrupted || err == nil {
+		t.Fatalf("blocked continuation turn=%+v err=%v; want an interrupted turn with a gate refusal", turn, err)
+	}
+	if got := len(fp.captured()); got != 2 {
+		t.Fatalf("provider accepted %d requests; blocked later turn must not dispatch", got)
+	}
+	if host.gateCalls.Load() < 3 {
+		t.Fatalf("publication gate calls=%d; expected both initial disclosures and later-turn replay", host.gateCalls.Load())
+	}
+}
+
+func TestStage5InvalidationAfterHistorySnapshotCannotReclassifyDraft(t *testing.T) {
+	const sentinel = "retired-snapshot-must-not-be-redisclosed"
+	store := auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	hostID, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := auth.NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := auth.Profile{ID: "profile", Provider: "openai", Label: "Fixture", Revision: revision, Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "fixture-client", Issuer: "https://auth.openai.com", Subject: "fixture-subject", HostID: hostID, IDToken: "synthetic-id", AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(time.Hour)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: publicationTarget(t, "notes.txt")}
+	root := filepath.Dir(fp.target)
+	host := &publicationHost{content: []byte(sentinel), root: root, target: fp.target}
+	resolver := &blockingPublicationOAuthResolver{store: store, started: make(chan struct{}), release: make(chan struct{})}
+	chat := newPublicationOAuthChat(t, fp, host, resolver)
+	if turn, err := chat.Send(context.Background(), "read the fixture", nil); err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("initial sensitive turn=%+v err=%v", turn, err)
+	}
+	if !chat.historySensitive || !strings.Contains(providerMessagesText(chat.history), sentinel) {
+		t.Fatal("fixture did not establish sensitive continuation history")
+	}
+	resolver.mu.Lock()
+	resolver.block = true
+	resolver.mu.Unlock()
+	done := make(chan Turn, 1)
+	go func() {
+		turn, _ := chat.Send(context.Background(), "continue after the snapshot", nil)
+		done <- turn
+	}()
+	select {
+	case <-resolver.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not pause in credential resolution after taking its history snapshot")
+	}
+	if _, err := chat.ClearToolGrants(); err != nil {
+		t.Fatalf("clear during credential resolution: %v", err)
+	}
+	if chat.historySensitive || len(chat.history) != 0 {
+		t.Fatal("invalidation did not retire committed sensitive history")
+	}
+	close(resolver.release)
+	select {
+	case turn := <-done:
+		if turn.Outcome != provider.OutcomeInterrupted {
+			t.Fatalf("retired draft outcome=%s, want interrupted", turn.Outcome)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("send remained blocked after credential resolution was released")
+	}
+	requests := fp.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider accepted %d requests after invalidation; want only the initial disclosure cycle", len(requests))
+	}
+	for _, request := range requests {
+		if strings.Contains(providerMessagesText(request.Messages), "continue after the snapshot") {
+			t.Fatal("stale user draft was dispatched after its sensitive history was retired")
+		}
+	}
 }
 func (p *publicationPreparation) Metadata() FilesystemReadAdmission { return p.metadata }
 func (p *publicationPreparation) WithAuthorityCommit(ctx context.Context, commit func() error) error {

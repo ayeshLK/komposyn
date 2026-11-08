@@ -658,7 +658,7 @@ func boundedRedirect(text string) (string, bool) {
 	return text[:cut], true
 }
 
-func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection model.Model, plug provider.Provider, credential provider.Credential, history []provider.Message, requestID, conversationID string, conversationIDErr error, current func() bool, delta func(string)) toolLoopResult {
+func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection model.Model, plug provider.Provider, credential provider.Credential, history []provider.Message, historySensitive bool, historyEpoch uint64, historyDestination string, requestID, conversationID string, conversationIDErr error, current func() bool, delta func(string)) toolLoopResult {
 	runtime := c.toolRuntime
 	if runtime != nil {
 		defer runtime.retireReadAuthorities(conversationID)
@@ -673,7 +673,10 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 			definitions = append(definitions, readFilePublicationDefinition())
 		}
 	}
-	result := toolLoopResult{history: cloneMessages(history)}
+	result := toolLoopResult{
+		history: cloneMessages(history), historySensitive: historySensitive,
+		historyEpoch: historyEpoch, historyDestination: historyDestination,
+	}
 	var usage usageSum
 	requestCount, invocationCount, resultBytes := 0, 0, 0
 	var visibleText strings.Builder

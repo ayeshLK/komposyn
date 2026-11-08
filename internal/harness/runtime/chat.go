@@ -749,6 +749,12 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	if c.historySensitive && !c.readContinuationCurrentLocked(c.conversationID, selection, c.historyReadEpoch) {
 		c.retireReadHistoryLocked()
 	}
+	// Keep the authority metadata paired with this private transcript snapshot.
+	// A later invalidation can clear c.history after we release the mutex, but it
+	// must not make this already-copied sensitive draft look like ordinary text.
+	historySensitive := c.historySensitive
+	historyEpoch := c.historyReadEpoch
+	historyDestination := c.historyDestination
 	history := cloneMessages(c.history)
 	history = append(history, provider.Message{Role: provider.RoleUser, Text: prompt})
 	requestID := fmt.Sprintf("chat-%d", generation)
@@ -854,7 +860,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		}
 		return Turn{}, errors.New("chat selection changed while resolving credentials")
 	}
-	loop := c.runToolLoop(ctx, generation, selection, plug, modelCredential(prof, key), history, requestID, conversationID, conversationIDErr, stateIsCurrent, func(delta string) {
+	loop := c.runToolLoop(ctx, generation, selection, plug, modelCredential(prof, key), history, historySensitive, historyEpoch, historyDestination, requestID, conversationID, conversationIDErr, stateIsCurrent, func(delta string) {
 		if stateIsCurrent() && onDelta != nil {
 			onDelta(delta)
 		}
