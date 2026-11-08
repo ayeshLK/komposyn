@@ -501,21 +501,22 @@ func (*checkpointTestWorker) Probe() readbrokerstudy.WorkerProbe {
 func (w *checkpointTestWorker) TransferCapability(_ context.Context, file *os.File, identity readbrokerstudy.FileIdentity) error {
 	info, err := file.Stat()
 	if err != nil {
-		_ = file.Close()
 		return err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		_ = file.Close()
 		return errors.New("fixture file identity is unavailable")
 	}
 	w.identity = readbrokerstudy.FileIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Type: uint32(stat.Mode) & uint32(unix.S_IFMT)}
 	if w.identity != identity {
-		_ = file.Close()
 		return readbrokerstudy.ErrStaleReceipt
 	}
+	fd, err := unix.Dup(int(file.Fd()))
+	if err != nil {
+		return err
+	}
 	w.mu.Lock()
-	w.file = file
+	w.file = os.NewFile(uintptr(fd), "fixture-read-capability")
 	w.mu.Unlock()
 	return nil
 }
@@ -689,7 +690,6 @@ func (*injectedProviderWorker) Probe() readbrokerstudy.WorkerProbe {
 }
 func (w *injectedProviderWorker) TransferCapability(_ context.Context, file *os.File, _ readbrokerstudy.FileIdentity) error {
 	if w.transferErr != nil {
-		_ = file.Close()
 		return w.transferErr
 	}
 	content, err := io.ReadAll(file)

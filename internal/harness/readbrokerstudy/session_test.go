@@ -92,29 +92,32 @@ func (w *fakeWorker) Probe() WorkerProbe {
 
 func (w *fakeWorker) TransferCapability(ctx context.Context, file *os.File, identity FileIdentity) error {
 	if err := ctx.Err(); err != nil {
-		_ = file.Close()
 		return err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.transferErr != nil {
-		_ = file.Close()
 		return w.transferErr
 	}
 	if w.transferred {
-		_ = file.Close()
 		return errors.New("capability transferred twice")
 	}
 	actual, err := identityFromFile(file)
 	if err != nil {
-		_ = file.Close()
 		return err
 	}
 	if actual != identity {
-		_ = file.Close()
 		return ErrStaleReceipt
 	}
-	w.capability = file
+	fd, err := unix.FcntlInt(file.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	w.capability = os.NewFile(uintptr(fd), "fake-worker-read-capability")
+	if w.capability == nil {
+		_ = unix.Close(fd)
+		return ErrProtocol
+	}
 	w.identity = identity
 	w.transferred = true
 	return nil

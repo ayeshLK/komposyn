@@ -1,6 +1,6 @@
 # Approved exact-file typed-read profile
 
-**Status:** implementation target approved in [issue #215 decision record](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377); experimental harness implementation and native acceptance remain pending until this change is validated. This document does not enable model-facing filesystem or shell tools or integrate production owners.
+**Status:** implementation target approved in [issue #215 decision record](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377). Stage 4 retained-worker execution and private capture are implemented on the review branch; native acceptance and later publication integration remain pending. This does not enable model-facing filesystem or shell tools or complete production-owner integration.
 
 ## Contract
 

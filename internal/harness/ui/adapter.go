@@ -90,7 +90,7 @@ func (c Client) ClearPermissions(ctx context.Context) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	return c.Chat.ClearToolGrants(), nil
+	return c.Chat.ClearToolGrants()
 }
 
 func (c Client) Profiles(ctx context.Context) ([]ui.Profile, error) {

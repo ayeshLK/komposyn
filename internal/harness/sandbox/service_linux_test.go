@@ -18,10 +18,13 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +34,7 @@ import (
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
 	"github.com/ayeshLK/komposyn/plugins/tools"
+	"golang.org/x/sys/unix"
 )
 
 func TestHostCompositionRegistersIndependentAuthAndSettingsRoutes(t *testing.T) {
@@ -534,6 +538,422 @@ func newTestHostService() (*Service, error) {
 	return &Service{impl: impl}, nil
 }
 
+func TestInvalidateReadExecutionIsNoopWithoutBackendSession(t *testing.T) {
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, nil, readbrokerstudy.ErrUnavailable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{impl: impl}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := service.InvalidateFilesystemReadExecutions("conversation"); err != nil {
+		t.Fatalf("service with no backend session should have no work to invalidate: %v", err)
+	}
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{Registry: tools.NewRegistry(), ReadAdmission: service})
+	if err := chat.RevokeToolGrant("missing"); !errors.Is(err, permissions.ErrGrantNotFound) {
+		t.Fatalf("revoke without a grant should report permission state, not backend unavailability: %v", err)
+	}
+	if count, err := chat.ClearToolGrants(); count != 0 || err != nil {
+		t.Fatalf("clear with unavailable read backend: count=%d err=%v", count, err)
+	}
+}
+
+func TestStage4RuntimeExecutesRetainedObjectIntoPrivateCapture(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "notes.txt")
+	want := []byte("retained original bytes\n")
+	if err := os.WriteFile(target, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage4WorkerLauncher{}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{impl: impl}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{
+		Registry: tools.NewRegistry(), ReadAdmission: service, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			if err := os.Rename(target, target+".moved"); err != nil {
+				return "", "", err
+			}
+			if err := os.WriteFile(target, []byte("replacement object must not be read"), 0o600); err != nil {
+				return "", "", err
+			}
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := chat.ExecuteFilesystemRead(context.Background(), tools.Invocation{TurnID: "turn-1", ProviderCallID: "call-1", ToolID: "read_file", Arguments: arguments}, "openai/gpt-test/profile-test")
+	if err != nil || capture == nil {
+		t.Fatalf("retained execution capture=%v err=%v", capture, err)
+	}
+	if launcher.starts.Load() != 1 || string(launcher.readBytes) != string(want) {
+		t.Fatalf("worker starts=%d read=%q want exact retained bytes %q", launcher.starts.Load(), launcher.readBytes, want)
+	}
+	if len(impl.session.PublishedResults()) != 0 || len(chat.Snapshot().Turns) != 0 {
+		t.Fatal("Stage 4 capture escaped into study publication or chat transcript")
+	}
+	if err := chat.DiscardPrivateReadCapture(capture); err != nil {
+		t.Fatalf("discard private capture: %v", err)
+	}
+	if err := chat.CloseContext(context.Background()); err != nil {
+		t.Fatalf("close chat: %v", err)
+	}
+}
+
+func TestStage4TruncatedWorkerResponseIsNotStagedAsComplete(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "truncated.txt")
+	if err := os.WriteFile(target, []byte("fixture prefix only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage4WorkerLauncher{truncated: true}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{impl: impl}
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{Registry: tools.NewRegistry(), ReadAdmission: service, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := chat.ExecuteFilesystemRead(context.Background(), tools.Invocation{TurnID: "turn", ProviderCallID: "truncated-call", ToolID: "read_file", Arguments: arguments}, "openai/model/profile")
+	if err == nil || capture != nil {
+		t.Fatalf("truncated worker response became a complete private capture: capture=%v err=%v", capture, err)
+	}
+	if string(launcher.readBytes) != "fixture prefix only" || impl.session.ActiveOperationCount() != 0 || len(impl.session.PublishedResults()) != 0 {
+		t.Fatalf("truncated response handling lost read evidence or leaked content: bytes=%q active=%d published=%d", launcher.readBytes, impl.session.ActiveOperationCount(), len(impl.session.PublishedResults()))
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadPartial {
+		t.Fatalf("truncated response outcome evidence=%+v, want partial", evidence)
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := chat.CloseContext(cleanupCtx); err != nil {
+		t.Fatalf("chat shutdown: %v", err)
+	}
+	if err := service.Close(cleanupCtx); err != nil {
+		t.Fatalf("service shutdown: %v", err)
+	}
+}
+
+func TestStage4RevocationWhileCapabilityHeldPreventsReadRelease(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "held.txt")
+	if err := os.WriteFile(target, []byte("must remain unread"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage4WorkerLauncher{}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{impl: impl}
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{Registry: tools.NewRegistry(), ReadAdmission: service, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	held := make(chan struct{})
+	resume := make(chan struct{})
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint == readbrokerstudy.CheckpointAfterCapabilityHeld {
+			close(held)
+			<-resume
+		}
+		return nil
+	})
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan struct {
+		capture *runtime.PrivateReadCapture
+		err     error
+	}, 1)
+	go func() {
+		capture, execErr := chat.ExecuteFilesystemRead(context.Background(), tools.Invocation{TurnID: "turn", ProviderCallID: "held-call", ToolID: "read_file", Arguments: arguments}, "openai/model/profile")
+		result <- struct {
+			capture *runtime.PrivateReadCapture
+			err     error
+		}{capture, execErr}
+	}()
+	select {
+	case <-held:
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker never reached held capability checkpoint")
+	}
+	if count, err := chat.ClearToolGrants(); count != 0 || err == nil {
+		t.Fatalf("empty-store revocation did not report pending worker cleanup: count=%d err=%v", count, err)
+	}
+	close(resume)
+	select {
+	case completed := <-result:
+		if completed.err == nil || completed.capture != nil {
+			t.Fatalf("revoked held read staged a capture: capture=%v err=%v", completed.capture, completed.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("revoked held worker did not settle within the bounded wait")
+	}
+	settleDeadline := time.Now().Add(3 * time.Second)
+	for impl.session.ActiveOperationCount() != 0 && time.Now().Before(settleDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if launcher.starts.Load() != 1 || len(launcher.readBytes) != 0 || impl.session.ActiveOperationCount() != 0 {
+		t.Fatalf("revoked held operation started/read/leaked: starts=%d bytes=%q active=%d", launcher.starts.Load(), launcher.readBytes, impl.session.ActiveOperationCount())
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := chat.CloseContext(cleanupCtx); err != nil {
+		t.Fatalf("chat shutdown after joined cancellation: %v", err)
+	}
+	if err := service.Close(cleanupCtx); err != nil {
+		t.Fatalf("service shutdown after joined cancellation: %v", err)
+	}
+}
+
+func TestStage4RevocationAfterWorkerCapturePreventsPrivateStaging(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "captured.txt")
+	if err := os.WriteFile(target, []byte("captured but must not be staged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage4WorkerLauncher{}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{impl: impl}
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{Registry: tools.NewRegistry(), ReadAdmission: service, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	captured := make(chan struct{})
+	resume := make(chan struct{})
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint == readbrokerstudy.CheckpointBeforePublish {
+			close(captured)
+			<-resume
+		}
+		return nil
+	})
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type execution struct {
+		capture *runtime.PrivateReadCapture
+		err     error
+	}
+	result := make(chan execution, 1)
+	go func() {
+		capture, execErr := chat.ExecuteFilesystemRead(context.Background(), tools.Invocation{TurnID: "turn", ProviderCallID: "captured-call", ToolID: "read_file", Arguments: arguments}, "openai/model/profile")
+		result <- execution{capture: capture, err: execErr}
+	}()
+	select {
+	case <-captured:
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not reach post-read/pre-staging checkpoint")
+	}
+	if count, err := chat.ClearToolGrants(); count != 0 || err != nil {
+		t.Fatalf("revocation after capture did not retire already joined worker: count=%d err=%v", count, err)
+	}
+	close(resume)
+	select {
+	case completed := <-result:
+		if completed.err == nil || completed.capture != nil {
+			t.Fatalf("revoked post-read operation staged a private capture: capture=%v err=%v", completed.capture, completed.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("post-capture revocation did not settle within the bounded wait")
+	}
+	if len(launcher.readBytes) == 0 || impl.session.ActiveOperationCount() != 0 {
+		t.Fatalf("expected read to have completed before revocation and no active operation: bytes=%q active=%d", launcher.readBytes, impl.session.ActiveOperationCount())
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := chat.CloseContext(cleanupCtx); err != nil {
+		t.Fatalf("chat shutdown after post-capture revocation: %v", err)
+	}
+	if err := service.Close(cleanupCtx); err != nil {
+		t.Fatalf("service shutdown after post-capture revocation: %v", err)
+	}
+}
+
+func TestStage4CancelledStalledJoinReturnsCleanupPendingAndRetainsPreparation(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "stalled.txt")
+	if err := os.WriteFile(target, []byte("read result awaits process join"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage4WorkerLauncher{waitEntered: make(chan struct{}), waitRelease: make(chan struct{})}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{impl: impl}
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{Registry: tools.NewRegistry(), ReadAdmission: service, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	type execution struct {
+		capture *runtime.PrivateReadCapture
+		err     error
+	}
+	result := make(chan execution, 1)
+	go func() {
+		capture, execErr := chat.ExecuteFilesystemRead(ctx, tools.Invocation{TurnID: "turn", ProviderCallID: "stalled-call", ToolID: "read_file", Arguments: arguments}, "openai/model/profile")
+		result <- execution{capture: capture, err: execErr}
+	}()
+	select {
+	case <-launcher.waitEntered:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("worker did not enter the deliberately stalled Wait")
+	}
+	cancel()
+	var completed execution
+	select {
+	case completed = <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled execution remained blocked in worker.Wait")
+	}
+	if completed.capture != nil || !errors.Is(completed.err, readbrokerstudy.ErrCleanupPending) {
+		t.Fatalf("stalled join should return cleanup-pending without capture: capture=%v err=%v", completed.capture, completed.err)
+	}
+	if impl.session.ActiveOperationCount() != 1 {
+		t.Fatalf("unjoined worker obligation was dropped: active=%d", impl.session.ActiveOperationCount())
+	}
+	if err := service.InvalidateFilesystemReadExecutions("conversation"); !errors.Is(err, readbrokerstudy.ErrCleanupPending) {
+		t.Fatalf("revocation should retain/report unjoined worker: %v", err)
+	}
+	close(launcher.waitRelease)
+	deadline := time.Now().Add(3 * time.Second)
+	for impl.session.ActiveOperationCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if active := impl.session.ActiveOperationCount(); active != 0 {
+		t.Fatalf("late worker join did not settle retained operation: active=%d", active)
+	}
+	if err := service.InvalidateFilesystemReadExecutions("conversation"); err != nil {
+		t.Fatalf("bounded cleanup retry after confirmed join: %v", err)
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cleanupCancel()
+	if err := chat.CloseContext(cleanupCtx); err != nil {
+		t.Fatalf("chat shutdown after bounded cleanup retry: %v", err)
+	}
+	if err := service.Close(cleanupCtx); err != nil {
+		t.Fatalf("service shutdown after bounded cleanup retry: %v", err)
+	}
+}
+
 type inertWorkerLauncher struct{}
 
 func (inertWorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
@@ -541,3 +961,114 @@ func (inertWorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker
 }
 
 func (inertWorkerLauncher) Close() error { return nil }
+
+type stage4WorkerLauncher struct {
+	starts      atomic.Int32
+	readBytes   []byte
+	waitEntered chan struct{}
+	waitRelease chan struct{}
+	truncated   bool
+}
+
+func (l *stage4WorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
+	l.starts.Add(1)
+	return &stage4Worker{launcher: l}, nil
+}
+func (*stage4WorkerLauncher) Close() error { return nil }
+
+type stage4Worker struct {
+	launcher   *stage4WorkerLauncher
+	capability *os.File
+	data       []byte
+	joined     bool
+	mu         sync.Mutex
+	waitOnce   sync.Once
+	released   bool
+	terminated bool
+}
+
+func (*stage4Worker) Ready(context.Context) error { return nil }
+func (*stage4Worker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{NoNewPrivs: true, SeccompMode: 2, SocketCreationDenied: true, PathOpenDenied: true, ReadCapabilityInitiallyAbsent: true, OnlyProtocolDescriptor: true, EnvironmentCleared: true}
+}
+func (w *stage4Worker) TransferCapability(ctx context.Context, file *os.File, identity readbrokerstudy.FileIdentity) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
+		return err
+	}
+	if uint64(stat.Dev) != identity.Device || stat.Ino != identity.Inode || uint32(stat.Mode&unix.S_IFMT) != identity.Type {
+		return readbrokerstudy.ErrStaleReceipt
+	}
+	fd, err := unix.FcntlInt(file.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	w.capability = os.NewFile(uintptr(fd), "stage4-test-worker-capability")
+	if w.capability == nil {
+		_ = unix.Close(fd)
+		return readbrokerstudy.ErrProtocol
+	}
+	return nil
+}
+func (w *stage4Worker) AwaitReadStarted(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	released := w.released
+	capability := w.capability
+	w.mu.Unlock()
+	if capability == nil || !released {
+		return readbrokerstudy.ErrProtocol
+	}
+	w.data, _ = io.ReadAll(io.NewSectionReader(capability, 0, readbrokerstudy.MaxReadBytes+1))
+	if len(w.data) > readbrokerstudy.MaxReadBytes {
+		return readbrokerstudy.ErrResultTooLarge
+	}
+	w.launcher.readBytes = append([]byte(nil), w.data...)
+	return nil
+}
+func (w *stage4Worker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: append([]byte(nil), w.data...), Truncated: w.launcher.truncated}, nil
+}
+func (w *stage4Worker) AwaitCapabilityHeld(ctx context.Context) error { return ctx.Err() }
+func (w *stage4Worker) ReleaseHeldRead(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.terminated || w.released {
+		return readbrokerstudy.ErrProtocol
+	}
+	w.released = true
+	return nil
+}
+func (w *stage4Worker) Terminate() error {
+	w.mu.Lock()
+	w.terminated = true
+	w.mu.Unlock()
+	return nil
+}
+func (w *stage4Worker) Wait() error {
+	if w.launcher.waitEntered != nil {
+		w.waitOnce.Do(func() { close(w.launcher.waitEntered) })
+		<-w.launcher.waitRelease
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.capability != nil {
+		_ = w.capability.Close()
+		w.capability = nil
+	}
+	w.joined = true
+	return nil
+}
+func (w *stage4Worker) Joined() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.joined
+}

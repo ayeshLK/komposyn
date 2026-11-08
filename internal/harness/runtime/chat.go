@@ -238,13 +238,14 @@ func (c *Chat) RevokeToolGrant(id string) error {
 }
 
 // ClearToolGrants clears current-conversation grants and invalidates pending
-// approvals only when authority changed.
-func (c *Chat) ClearToolGrants() int {
+// approvals and retained read executions, including when the grant store was
+// already empty.
+func (c *Chat) ClearToolGrants() (int, error) {
 	c.mu.Lock()
 	conversation, runtime := c.conversationID, c.toolRuntime
 	c.mu.Unlock()
 	if runtime == nil {
-		return 0
+		return 0, nil
 	}
 	return runtime.clearConversationGrants(conversation)
 }

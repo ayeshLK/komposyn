@@ -153,6 +153,66 @@ func TestReadExecutionAuthorityIsOpaqueOneShotAndInstanceBound(t *testing.T) {
 	}
 }
 
+func TestPrivateReadCaptureRequiresCurrentClaimAndScrubsOnDiscard(t *testing.T) {
+	runtime := syntheticAuthorityRuntime()
+	target := filepath.Join(t.TempDir(), "file")
+	invocation := syntheticReadInvocation(t, "conversation", "turn", "capture-call", target)
+	epoch := runtime.readAuthorityEpochSnapshot()
+	request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission-capture")
+	reference, err := runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ClaimReadExecution(reference, request.Binding, request.AdmissionBinding); err != nil {
+		t.Fatal(err)
+	}
+	admission := FilesystemReadAdmission{ServiceID: "service", ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID, AdmissionBinding: request.AdmissionBinding, Identity: "dev:ino:type", RootGeneration: 3, PolicyRevision: 5, CoverageRevision: 7, Destination: "provider/model/profile"}
+	content := []byte("synthetic private bytes")
+	result := FilesystemReadExecutionResult{Outcome: tools.OutcomeSucceeded, Bytes: content, ServiceID: admission.ServiceID, AdmissionBinding: admission.AdmissionBinding, AuthorizationBinding: request.Binding, Identity: admission.Identity, RootGeneration: admission.RootGeneration, PolicyRevision: admission.PolicyRevision, CoverageRevision: admission.CoverageRevision, Destination: admission.Destination, ReadStarted: true, WorkerJoined: true, CapabilitiesRetired: true}
+	var capture *PrivateReadCapture
+	err = runtime.withClaimedReadCurrent(reference, request.Binding, request.AdmissionBinding, func() error {
+		var stageErr error
+		capture, stageErr = runtime.stagePrivateReadCaptureLocked(reference, admission, result)
+		return stageErr
+	})
+	if err != nil || capture == nil {
+		t.Fatalf("stage private capture=%v err=%v", capture, err)
+	}
+	stored := runtime.privateReadCaptures[capture.id].bytes
+	if string(stored) != string(content) {
+		t.Fatalf("captured bytes=%q want=%q", stored, content)
+	}
+	if err := runtime.withClaimedReadCurrent(reference, request.Binding, request.AdmissionBinding, func() error { return nil }); !errors.Is(err, errReadAuthorityInvalid) {
+		t.Fatalf("captured execution remained releasable: %v", err)
+	}
+	if err := runtime.discardPrivateReadCapture(capture); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range stored {
+		if b != 0 {
+			t.Fatal("discard left the aliased capture payload in memory")
+		}
+	}
+	if runtime.readAuthorityCount() != 0 || len(runtime.privateReadCaptures) != 0 {
+		t.Fatal("discard did not retire private result provenance")
+	}
+}
+
+func TestDuplicateReadInvocationCannotReceiveFreshExecutionReference(t *testing.T) {
+	runtime := syntheticAuthorityRuntime()
+	target := filepath.Join(t.TempDir(), "file")
+	invocation := syntheticReadInvocation(t, "conversation", "turn", "same-call", target)
+	epoch := runtime.readAuthorityEpochSnapshot()
+	request, approval, consumption := approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission-one")
+	if _, err := runtime.issueReadExecutionReference(invocation, request, approval, consumption, epoch); err != nil {
+		t.Fatal(err)
+	}
+	request2, approval2, consumption2 := approveAndConsumeSyntheticRead(t, runtime, invocation, target, "admission-two")
+	if _, err := runtime.issueReadExecutionReference(invocation, request2, approval2, consumption2, epoch); !errors.Is(err, errReadAuthorityInvalid) {
+		t.Fatalf("duplicate provider call received fresh execution reference: %v", err)
+	}
+}
+
 func TestReadAuthoritySurvivesOnlyRegisteredSiblingTransitions(t *testing.T) {
 	runtime := syntheticAuthorityRuntime()
 	root := t.TempDir()
@@ -288,7 +348,7 @@ func TestChatClearAndRevokeInvalidateConsumedReadAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chat.ClearToolGrants() != 0 {
+	if count, err := chat.ClearToolGrants(); count != 0 || err != nil {
 		t.Fatal("empty clear unexpectedly removed a grant")
 	}
 	if _, err := runtime.coordinator.Respond(pending.ID, permissions.ApprovalOnce, ""); !errors.Is(err, permissions.ErrApprovalNotFound) {
@@ -302,8 +362,8 @@ func TestChatClearAndRevokeInvalidateConsumedReadAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := chat.ClearToolGrants(); count != 0 || runtime.readAuthorityCount() != 0 {
-		t.Fatalf("empty clear count=%d retained=%d", count, runtime.readAuthorityCount())
+	if count, err := chat.ClearToolGrants(); count != 0 || err != nil || runtime.readAuthorityCount() != 0 {
+		t.Fatalf("empty clear count=%d err=%v retained=%d", count, err, runtime.readAuthorityCount())
 	}
 	if err := chat.ClaimReadExecution(reference, request.Binding, request.AdmissionBinding); !errors.Is(err, errReadAuthorityInvalid) {
 		t.Fatalf("clear left consumed authority claimable: %v", err)
@@ -341,6 +401,23 @@ func TestChatClearAndRevokeInvalidateConsumedReadAuthority(t *testing.T) {
 	}
 	if err := chat.ClaimReadExecution(reference, request.Binding, request.AdmissionBinding); !errors.Is(err, errReadAuthorityInvalid) {
 		t.Fatalf("revoked consumed operation remained claimable: %v", err)
+	}
+}
+
+func TestPermissionClearAndRevokeDoNotRequireReadBackend(t *testing.T) {
+	runtime := newToolRuntime(ToolRuntimeConfig{Registry: tools.NewRegistry()})
+	chat := &Chat{toolRuntime: runtime, conversationID: "conversation"}
+	if err := runtime.grants.Add(permissions.Grant{ID: "clear-me", ConversationID: chat.conversationID, ToolID: "update_plan", Kind: permissions.RequirementAction, Operation: permissions.OperationInteract, ActionKey: "plan", Lifetime: permissions.LifetimeConversation, Origin: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := chat.ClearToolGrants(); count != 1 || err != nil {
+		t.Fatalf("clear without read backend: count=%d err=%v", count, err)
+	}
+	if err := runtime.grants.Add(permissions.Grant{ID: "revoke-me", ConversationID: chat.conversationID, ToolID: "update_plan", Kind: permissions.RequirementAction, Operation: permissions.OperationInteract, ActionKey: "plan", Lifetime: permissions.LifetimeConversation, Origin: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.RevokeToolGrant("revoke-me"); err != nil {
+		t.Fatalf("revoke without read backend: %v", err)
 	}
 }
 
