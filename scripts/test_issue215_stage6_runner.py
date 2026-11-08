@@ -20,11 +20,13 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.dont_write_bytecode = True
 SCRIPT = Path(__file__).with_name("run-issue215-stage6.py").resolve()
 SPEC = importlib.util.spec_from_file_location("stage6_runner", SCRIPT)
 RUNNER = importlib.util.module_from_spec(SPEC)
@@ -58,9 +60,32 @@ class Stage6RunnerTests(unittest.TestCase):
     def test_dirty_checkout_refusal_retains_manifest_and_valid_archive(self):
         if os.getuid() == 0:
             self.skipTest("runner intentionally refuses root")
-        with tempfile.TemporaryDirectory() as output_root:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            scripts = checkout / "scripts"
+            scripts.mkdir(parents=True)
+            fixture_script = scripts / SCRIPT.name
+            fixture_helper = scripts / "read-broker-study-capture.py"
+            fixture_script.write_bytes(SCRIPT.read_bytes())
+            fixture_helper.write_bytes((SCRIPT.parent / fixture_helper.name).read_bytes())
+            subprocess.run(["git", "init", "--quiet", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "add", "scripts"], check=True)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "GIT_AUTHOR_NAME": "Stage 6 test",
+                    "GIT_AUTHOR_EMAIL": "stage6@example.invalid",
+                    "GIT_COMMITTER_NAME": "Stage 6 test",
+                    "GIT_COMMITTER_EMAIL": "stage6@example.invalid",
+                }
+            )
+            subprocess.run(["git", "-C", str(checkout), "commit", "--quiet", "-m", "fixture"], check=True, env=env)
+            (checkout / "dirty.marker").write_text("deliberately dirty fixture\n")
+            output_root = root / "output"
+            output_root.mkdir()
             process = subprocess.run(
-                ["python3", str(SCRIPT), "--revision", "HEAD", "--bwrap", "/nonexistent/synthetic-bwrap", "--output-root", output_root],
+                [sys.executable, "-B", str(fixture_script), "--revision", "HEAD", "--bwrap", "/nonexistent/synthetic-bwrap", "--output-root", str(output_root)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -73,6 +98,8 @@ class Stage6RunnerTests(unittest.TestCase):
             manifest = json.loads((result_path / "manifest.json").read_text())
             self.assertEqual(manifest["classification"], "refused_dirty_or_non_head_source")
             self.assertTrue(manifest["source"]["checkout_clean"] is False)
+            self.assertEqual(manifest["build"]["status"], "not_started")
+            self.assertEqual(manifest["study"]["status"], "not_started")
             with tarfile.open(archive_path, "r:gz") as archive:
                 archive.extractall(Path(output_root) / "unpacked", filter="data")
             unpacked = Path(output_root) / "unpacked" / result_path.name

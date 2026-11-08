@@ -260,11 +260,20 @@ type stage6ReadHost struct {
 	beforeHandoff func() error
 }
 
+var _ runtime.FilesystemReadAdmissionHost = (*stage6ReadHost)(nil)
+var _ runtime.FilesystemReadAdmissionInvalidator = (*stage6ReadHost)(nil)
+var _ runtime.FilesystemReadExecutionHost = (*stage6ReadHost)(nil)
+var _ runtime.FilesystemReadExecutionInvalidator = (*stage6ReadHost)(nil)
+var _ runtime.FilesystemReadPublicationGate = (*stage6ReadHost)(nil)
+
 func (h *stage6ReadHost) AdmitFilesystemRead(ctx context.Context, invocation tools.Invocation, destination string) (runtime.FilesystemReadAdmission, error) {
 	return h.service.AdmitFilesystemRead(ctx, invocation, destination)
 }
 func (h *stage6ReadHost) PrepareAdmittedFilesystemRead(ctx context.Context, admission runtime.FilesystemReadAdmission, revision uint64) (runtime.FilesystemReadPreparation, error) {
 	return h.service.PrepareAdmittedFilesystemRead(ctx, admission, revision)
+}
+func (h *stage6ReadHost) ExecuteAdmittedFilesystemRead(ctx context.Context, admission runtime.FilesystemReadAdmission, preparation runtime.FilesystemReadPreparation, reference *runtime.ReadExecutionReference, authority runtime.FilesystemReadExecutionAuthority) (*runtime.PrivateReadCapture, error) {
+	return h.service.ExecuteAdmittedFilesystemRead(ctx, admission, preparation, reference, authority)
 }
 func (h *stage6ReadHost) CloseFilesystemReadAdmission(ctx context.Context, admission runtime.FilesystemReadAdmission) error {
 	return h.service.CloseFilesystemReadAdmission(ctx, admission)
@@ -282,6 +291,221 @@ func (h *stage6ReadHost) WithFilesystemReadPublicationCurrent(ctx context.Contex
 		}
 	}
 	return h.service.WithFilesystemReadPublicationCurrent(ctx, conversationID, root, generation, policyRevision, coverageRevision, operation)
+}
+
+type stage6ExecutionPreparation struct {
+	admission runtime.FilesystemReadAdmission
+}
+
+func (p *stage6ExecutionPreparation) Metadata() runtime.FilesystemReadAdmission {
+	return p.admission
+}
+func (*stage6ExecutionPreparation) WithAuthorityCommit(_ context.Context, operation func() error) error {
+	return operation()
+}
+func (*stage6ExecutionPreparation) Close(context.Context) error { return nil }
+
+type stage6ExecutionImplementation struct {
+	calls              int
+	validForwardedArgs bool
+	wantAdmission      runtime.FilesystemReadAdmission
+	wantPreparation    runtime.FilesystemReadPreparation
+}
+
+var _ implementation = (*stage6ExecutionImplementation)(nil)
+
+func (*stage6ExecutionImplementation) Protect(context.Context, string, string, string, *os.File) error {
+	return nil
+}
+func (*stage6ExecutionImplementation) Close(context.Context) error { return nil }
+func (*stage6ExecutionImplementation) CoverageSnapshot() CoverageSnapshot {
+	return CoverageSnapshot{}
+}
+func (*stage6ExecutionImplementation) BackendStatus() (bool, string) {
+	return true, "synthetic execution forwarding"
+}
+func (*stage6ExecutionImplementation) PrepareGenericRead(context.Context, string, string) error {
+	return nil
+}
+
+func (i *stage6ExecutionImplementation) ExecuteAdmittedFilesystemRead(_ context.Context, admission runtime.FilesystemReadAdmission, preparation runtime.FilesystemReadPreparation, reference *runtime.ReadExecutionReference, authority runtime.FilesystemReadExecutionAuthority) (*runtime.PrivateReadCapture, error) {
+	i.calls++
+	i.validForwardedArgs = sameFilesystemReadAdmission(i.wantAdmission, admission) && preparation == i.wantPreparation && reference != nil && authority != nil
+	return nil, nil
+}
+
+type stage6ExecutionAuthority struct{}
+
+func (stage6ExecutionAuthority) Claim() error                             { return nil }
+func (stage6ExecutionAuthority) WithCurrent(operation func() error) error { return operation() }
+func (stage6ExecutionAuthority) AuthorizationBinding() string             { return "synthetic-binding" }
+func (stage6ExecutionAuthority) Stage(runtime.FilesystemReadAdmission, runtime.FilesystemReadExecutionResult) (*runtime.PrivateReadCapture, error) {
+	return nil, nil
+}
+
+func TestStage6ExecutionForwarderReachesService(t *testing.T) {
+	impl := &stage6ExecutionImplementation{}
+	service := &Service{impl: impl}
+	admission := runtime.FilesystemReadAdmission{
+		Reference: &struct{}{}, ServiceID: "synthetic-service", ConversationID: "synthetic-conversation",
+		TurnID: "synthetic-turn", CallID: "synthetic-call", Root: "/synthetic-root", Target: "/synthetic-root/fixture",
+		AdmissionBinding: "synthetic-admission", Identity: "synthetic-object", Destination: "synthetic-destination",
+	}
+	inner := &stage6ExecutionPreparation{admission: admission}
+	wrapped := &serviceAdmissionPreparation{service: service, inner: inner, expected: admission}
+	impl.wantAdmission, impl.wantPreparation = admission, inner
+	host := &stage6ReadHost{service: service}
+	if _, err := host.ExecuteAdmittedFilesystemRead(context.Background(), admission, wrapped, &runtime.ReadExecutionReference{}, stage6ExecutionAuthority{}); err != nil {
+		t.Fatalf("synthetic execution forwarding failed: %v", err)
+	}
+	if impl.calls != 1 {
+		t.Fatalf("service executions=%d, want exactly one", impl.calls)
+	}
+	if !impl.validForwardedArgs {
+		t.Fatal("service execution did not receive the exact prepared admission, reference, and authority")
+	}
+}
+
+type stage6SyntheticHostImplementation struct {
+	executions  int
+	invalidator func(string)
+}
+
+var _ implementation = (*stage6SyntheticHostImplementation)(nil)
+var _ readAdmissionImplementation = (*stage6SyntheticHostImplementation)(nil)
+
+func (*stage6SyntheticHostImplementation) Protect(context.Context, string, string, string, *os.File) error {
+	return nil
+}
+func (*stage6SyntheticHostImplementation) Close(context.Context) error { return nil }
+func (*stage6SyntheticHostImplementation) CoverageSnapshot() CoverageSnapshot {
+	return CoverageSnapshot{Revision: 1, Composition: "stage6-synthetic", Capability: "synthetic-read", Owners: []OwnerCoverage{
+		{Owner: "auth", State: OwnerRegistered}, {Owner: "settings", State: OwnerRegistered},
+	}}
+}
+func (*stage6SyntheticHostImplementation) BackendStatus() (bool, string) {
+	return true, "synthetic execution test only"
+}
+func (*stage6SyntheticHostImplementation) PrepareGenericRead(context.Context, string, string) error {
+	return nil
+}
+func (i *stage6SyntheticHostImplementation) AdmitFilesystemRead(_ context.Context, invocation tools.Invocation, destination, root string, rootGeneration, coverageRevision uint64) (runtime.FilesystemReadAdmission, error) {
+	return runtime.FilesystemReadAdmission{
+		Reference: &struct{}{}, ServiceID: "stage6-synthetic-service", ConversationID: invocation.ConversationID,
+		TurnID: invocation.TurnID, CallID: invocation.ProviderCallID, Root: root,
+		Deadline: time.Now().Add(30 * time.Second), AdmissionBinding: "stage6-synthetic-" + invocation.ProviderCallID,
+		Target: filepath.Join(root, "synthetic.txt"), Class: "ordinary", Identity: "stage6-synthetic-object",
+		RootGeneration: rootGeneration, PolicyRevision: 1, CoverageRevision: coverageRevision, Destination: destination,
+	}, nil
+}
+func (*stage6SyntheticHostImplementation) PrepareAdmittedFilesystemRead(_ context.Context, admission runtime.FilesystemReadAdmission, _ uint64) (runtime.FilesystemReadPreparation, error) {
+	return &stage6ExecutionPreparation{admission: admission}, nil
+}
+func (*stage6SyntheticHostImplementation) CloseFilesystemReadAdmission(context.Context, runtime.FilesystemReadAdmission) error {
+	return nil
+}
+func (*stage6SyntheticHostImplementation) SelectFilesystemRoot(context.Context, runtime.FilesystemRootTransition) error {
+	return nil
+}
+func (*stage6SyntheticHostImplementation) InvalidateFilesystemAdmissions(context.Context) error {
+	return nil
+}
+func (i *stage6SyntheticHostImplementation) SetFilesystemReadInvalidator(invalidate func(string)) {
+	i.invalidator = invalidate
+}
+func (*stage6SyntheticHostImplementation) WithFilesystemReadPublicationCurrent(_ uint64, _ uint64, operation func() error) error {
+	return operation()
+}
+func (*stage6SyntheticHostImplementation) WithFilesystemReadExecutionCurrent(operation func() error) error {
+	return operation()
+}
+func (*stage6SyntheticHostImplementation) InvalidateFilesystemReadExecutions(string) error {
+	return nil
+}
+func (i *stage6SyntheticHostImplementation) ExecuteAdmittedFilesystemRead(_ context.Context, admission runtime.FilesystemReadAdmission, _ runtime.FilesystemReadPreparation, _ *runtime.ReadExecutionReference, authority runtime.FilesystemReadExecutionAuthority) (*runtime.PrivateReadCapture, error) {
+	i.executions++
+	if err := authority.Claim(); err != nil {
+		return nil, err
+	}
+	var capture *runtime.PrivateReadCapture
+	err := authority.WithCurrent(func() error {
+		var stageErr error
+		capture, stageErr = authority.Stage(admission, runtime.FilesystemReadExecutionResult{
+			Outcome: tools.OutcomeSucceeded, Bytes: []byte("stage6-synthetic-forwarded-content"),
+			ServiceID: admission.ServiceID, AdmissionBinding: admission.AdmissionBinding,
+			AuthorizationBinding: authority.AuthorizationBinding(), Identity: admission.Identity,
+			RootGeneration: admission.RootGeneration, PolicyRevision: admission.PolicyRevision,
+			CoverageRevision: admission.CoverageRevision, Destination: admission.Destination,
+			ReadStarted: true, WorkerJoined: true, CapabilitiesRetired: true,
+		})
+		return stageErr
+	})
+	return capture, err
+}
+
+func TestStage6SyntheticRuntimeReadForwarding(t *testing.T) {
+	root := t.TempDir()
+	impl := &stage6SyntheticHostImplementation{}
+	service := &Service{impl: impl}
+	base := &stage6Provider{target: filepath.Join(root, "synthetic.txt"), firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
+	providers, err := model.NewRegistry(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authStore := auth.Store{Path: filepath.Join(root, "synthetic-auth.json"), Protection: service}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := authStore.RegisterProtection(ctx); err != nil {
+		t.Fatalf("synthetic auth owner registration failed: %v", err)
+	}
+	chat := runtime.NewChatWithToolRuntime(providers, authStore, nil, runtime.ToolRuntimeConfig{
+		Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: &stage6ReadHost{service: service}, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}), Grants: permissions.NewMemoryStore(),
+	})
+	if err := chat.AddProfile(ctx, "stage6-synthetic-profile", "openai", "synthetic profile", "synthetic-only", nil); err != nil {
+		t.Fatalf("synthetic profile setup failed: %v", err)
+	}
+	discovery := chat.Discover(ctx)
+	if len(discovery.Models) != 1 {
+		t.Fatalf("synthetic provider discovery returned %d models", len(discovery.Models))
+	}
+	if err := chat.Select(ctx, discovery.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.SelectFilesystemRoot(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.EnableNativeReadStudy(chat); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := chat.CloseContext(cleanupCtx); err != nil {
+			t.Errorf("synthetic chat cleanup failed: %v", err)
+		}
+		if err := service.Close(cleanupCtx); err != nil {
+			t.Errorf("synthetic service cleanup failed: %v", err)
+		}
+	})
+	turn, err := chat.Send(ctx, "read synthetic fixture", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("synthetic read continuation failed: outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := base.captured()
+	if len(requests) != 2 || impl.executions != 1 {
+		t.Fatalf("synthetic read requests=%d executions=%d, want 2 and 1", len(requests), impl.executions)
+	}
+	first, _ := json.Marshal(requests[0].Messages)
+	if strings.Contains(string(first), "stage6-synthetic-forwarded-content") {
+		t.Fatal("synthetic read bytes appeared before execution and provider continuation")
+	}
+	content, found := readResultContent(requests[1], "stage6-read")
+	if !found || content != `{"outcome":"succeeded","truncated":false,"content":"stage6-synthetic-forwarded-content"}` {
+		t.Fatalf("synthetic forwarded result=%q found=%t", content, found)
+	}
 }
 
 type stage6Fixture struct {
@@ -665,12 +889,12 @@ func TestStage6ProtectedAuthObjectIsWithheld(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	turn, err := fixture.chat.Send(ctx, "request the protected fixture", nil)
-	if err != nil || turn.Outcome != provider.OutcomeCompleted {
-		t.Fatalf("protected refusal continuation failed: outcome=%s err=%v", turn.Outcome, err)
+	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
+		t.Fatalf("protected auth refusal did not interrupt before continuation: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := fixture.provider.captured()
-	if len(requests) != 2 {
-		t.Fatalf("provider request count=%d, want initial request plus refusal continuation", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want only the initial request before protected-read refusal", len(requests))
 	}
 	for _, request := range requests {
 		encoded, _ := json.Marshal(request.Messages)
@@ -684,6 +908,10 @@ func TestStage6ProtectedAuthObjectIsWithheld(t *testing.T) {
 	}
 	if fixture.approvals.Load() != 0 {
 		t.Fatalf("protected auth request reached approval UI %d times", fixture.approvals.Load())
+	}
+	_, historyMessages, toolResults, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(fixture.chat, "synthetic-never-real-key")
+	if historyMessages == 0 || toolResults != 1 || markerFound || !payloadFree {
+		t.Fatalf("protected auth refusal history was not payload-free: messages=%d tool_results=%d marker=%t payload_free=%t", historyMessages, toolResults, markerFound, payloadFree)
 	}
 	stage6Update("protected_auth_refusal", func(item *stage6Case) {
 		item.ProviderRequestCount, item.DisclosureWithheld = len(requests), true
@@ -700,12 +928,12 @@ func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	turn, err := fixture.chat.Send(ctx, "request the protected fixture", nil)
-	if err != nil || turn.Outcome != provider.OutcomeCompleted {
-		t.Fatalf("protected settings refusal continuation failed: outcome=%s err=%v", turn.Outcome, err)
+	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
+		t.Fatalf("protected settings refusal did not interrupt before continuation: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := fixture.provider.captured()
-	if len(requests) != 2 {
-		t.Fatalf("provider request count=%d, want initial request plus refusal continuation", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want only the initial request before protected-read refusal", len(requests))
 	}
 	for _, request := range requests {
 		encoded, _ := json.Marshal(request.Messages)
@@ -719,6 +947,10 @@ func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
 	}
 	if fixture.approvals.Load() != 0 {
 		t.Fatalf("protected settings request reached approval UI %d times", fixture.approvals.Load())
+	}
+	_, historyMessages, toolResults, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(fixture.chat, "synthetic-settings-marker")
+	if historyMessages == 0 || toolResults != 1 || markerFound || !payloadFree {
+		t.Fatalf("protected settings refusal history was not payload-free: messages=%d tool_results=%d marker=%t payload_free=%t", historyMessages, toolResults, markerFound, payloadFree)
 	}
 	stage6Update("protected_settings_refusal", func(item *stage6Case) {
 		item.ProviderRequestCount, item.DisclosureWithheld = len(requests), true
@@ -736,10 +968,14 @@ func TestStage6ClearDuringSecondApprovalWithholdsFirstCapture(t *testing.T) {
 	defer fixture.approvalReleaseOnce.Do(func() { close(fixture.approvalRelease) })
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	result := make(chan error, 1)
+	type sendResult struct {
+		turn runtime.Turn
+		err  error
+	}
+	result := make(chan sendResult, 1)
 	go func() {
-		_, err := fixture.chat.Send(ctx, "read two synthetic files", nil)
-		result <- err
+		turn, err := fixture.chat.Send(ctx, "read two synthetic files", nil)
+		result <- sendResult{turn: turn, err: err}
 	}()
 	select {
 	case <-fixture.approvalEntered:
@@ -751,7 +987,10 @@ func TestStage6ClearDuringSecondApprovalWithholdsFirstCapture(t *testing.T) {
 	}
 	fixture.approvalReleaseOnce.Do(func() { close(fixture.approvalRelease) })
 	select {
-	case <-result:
+	case completed := <-result:
+		if completed.err != nil || completed.turn.Outcome != provider.OutcomeInterrupted {
+			t.Fatalf("revoked read batch did not interrupt without continuation: outcome=%s err=%v", completed.turn.Outcome, completed.err)
+		}
 	case <-time.After(12 * time.Second):
 		t.Fatal("turn did not finish after clearing authority and releasing approval")
 	}
@@ -763,9 +1002,9 @@ func TestStage6ClearDuringSecondApprovalWithholdsFirstCapture(t *testing.T) {
 	if strings.Contains(string(encoded), fixture.content) || strings.Contains(string(encoded), fixture.secondContent) {
 		t.Fatal("captured batch bytes reached the provider after grants were cleared")
 	}
-	sensitive, messages := runtime.NativeReadStudyState(fixture.chat)
-	if sensitive || messages != 0 {
-		t.Fatal("revoked capture remained in conversation history")
+	sensitive, messages, toolResults, markersFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(fixture.chat, fixture.content, fixture.secondContent)
+	if sensitive || messages == 0 || toolResults != 2 || markersFound || !payloadFree {
+		t.Fatalf("revoked capture history was not limited to correlated payload-free results: sensitive=%t messages=%d tool_results=%d markers=%t payload_free=%t", sensitive, messages, toolResults, markersFound, payloadFree)
 	}
 	impl := fixture.service.impl.(*linuxImplementation)
 	evidence := impl.session.Evidence()
@@ -851,14 +1090,18 @@ func TestStage6OwnerRotationAfterHandoffRetiresContinuation(t *testing.T) {
 	var deltas []string
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(fixture.provider.releaseSecond) })
-	result := make(chan error, 1)
+	type sendResult struct {
+		turn runtime.Turn
+		err  error
+	}
+	result := make(chan sendResult, 1)
 	go func() {
-		_, err := fixture.chat.Send(context.Background(), "read before post-handoff rotation", func(value string) {
+		turn, err := fixture.chat.Send(context.Background(), "read before post-handoff rotation", func(value string) {
 			deltaMu.Lock()
 			deltas = append(deltas, value)
 			deltaMu.Unlock()
 		})
-		result <- err
+		result <- sendResult{turn: turn, err: err}
 	}()
 	select {
 	case <-fixture.provider.secondStarted:
@@ -876,9 +1119,9 @@ func TestStage6OwnerRotationAfterHandoffRetiresContinuation(t *testing.T) {
 	rotateSyntheticAuth(t, fixture)
 	releaseOnce.Do(func() { close(fixture.provider.releaseSecond) })
 	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("late provider response after invalidation was not rejected")
+	case completed := <-result:
+		if completed.err != nil || completed.turn.Outcome != provider.OutcomeInterrupted {
+			t.Fatalf("late provider response after invalidation was not retired: outcome=%s err=%v", completed.turn.Outcome, completed.err)
 		}
 	case <-time.After(12 * time.Second):
 		t.Fatal("provider turn did not finish after release")

@@ -16,7 +16,11 @@
 
 package runtime
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+)
 
 // EnableNativeReadStudy exposes only the reserved filesystem-read path to the
 // separately built native acceptance test binary. This file is overlaid from
@@ -38,6 +42,46 @@ func NativeReadStudyState(chat *Chat) (bool, int) {
 	chat.mu.Lock()
 	defer chat.mu.Unlock()
 	return chat.historySensitive, len(chat.history)
+}
+
+// NativeReadStudyHistoryEvidence returns only structural checks over private
+// history. It never returns fixture contents or arbitrary transcript text.
+func NativeReadStudyHistoryEvidence(chat *Chat, sensitiveMarkers ...string) (historySensitive bool, messageCount, toolResultCount int, markerFound, payloadFreeToolResults bool) {
+	if chat == nil {
+		return false, 0, 0, false, true
+	}
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	messageCount = len(chat.history)
+	historySensitive = chat.historySensitive
+	payloadFreeToolResults = true
+	containsMarker := func(value string) bool {
+		for _, marker := range sensitiveMarkers {
+			if marker != "" && strings.Contains(value, marker) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, message := range chat.history {
+		markerFound = markerFound || containsMarker(message.Text)
+		for _, native := range message.Native {
+			markerFound = markerFound || containsMarker(string(native))
+		}
+		if message.ToolResult == nil {
+			continue
+		}
+		toolResultCount++
+		markerFound = markerFound || containsMarker(message.ToolResult.Content)
+		var envelope struct {
+			Outcome string `json:"outcome"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal([]byte(message.ToolResult.Content), &envelope) != nil || envelope.Outcome == "" || envelope.Content == "" {
+			payloadFreeToolResults = false
+		}
+	}
+	return historySensitive, messageCount, toolResultCount, markerFound, payloadFreeToolResults
 }
 
 // NativeReadStudyGrantState exposes only revision and remaining grant count.

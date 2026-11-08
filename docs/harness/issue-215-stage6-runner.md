@@ -53,12 +53,15 @@ not in source control. Share the reviewed archive with issue #215 only after
 checking that the manifest contains the intended revision and no private
 material.
 
-The current native test suite exercises a no-root text-chat control, an
-explicit once-approved exact read plus same-context replay, refusal of a
-registered synthetic auth object, and pre-/post-handoff owner rotation using
-the actual Service and runtime gate. Other Stage 6 cases remain explicitly
-unavailable or not implemented in this runner revision. A host trust refusal
-means none of the worker-path cases ran. The runner does not establish
-provider-source owner coverage, independent namespace actor cases, complete
-late-output/cancellation behavior, aggregate cgroup quotas, mutation, shell,
-non-Linux enforcement, or production readiness.
+The test binary includes a no-root text-chat control, explicit once-approved
+exact read plus same-context replay, empty-file read, synthetic auth/settings
+refusals, captured-batch revocation, and pre-/post-handoff owner rotation using
+the actual Service and runtime gate. Its Stage 6 wrapper implements the full
+runtime read execution interface; a synthetic forwarding test exercises that
+interface independently of Bubblewrap availability. That synthetic test is
+ordinary composition evidence, not OS-enforcement evidence. Other Stage 6
+cases remain explicitly unavailable or not implemented in this runner
+revision. A host trust refusal means none of the worker-path cases ran. The
+runner does not establish provider-source owner coverage, independent
+namespace actor cases, native cancellation/cleanup, aggregate cgroup quotas,
+mutation, shell, non-Linux enforcement, or production readiness.
