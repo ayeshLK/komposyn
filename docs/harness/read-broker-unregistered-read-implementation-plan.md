@@ -391,7 +391,7 @@ registration requires a distinct enablement decision after all applicable gates.
 | 2: after 0–1, checked authority | Permission Coordinator/store transactions; runtime canonical full-B binding, private ledger, mutation bridge and revoke/clear lifecycle. | **Merged in PR #247:** revision-checked exact approval/once-consumption transitions, full binding, private authority ledger and lifecycle invalidation. No filesystem tool enabled. |
 | 3: after 1–2, retained admission/owners | Runtime pre-approval seam; sandbox service; broker and HostCoordinator admission registry; real auth/settings owner hooks. | **Merged in PR #248:** one bounded exact-file lookup; host-only opaque retained reference; same-object preparation; checked approval and once consumption; root and owner invalidation include opening/pending/prepared admissions; late lookup remains owned and closes; auth/settings route and replacement hooks drain before sensitive write. `read_file` remains unregistered. |
 | 4: after 2–3, fixed-worker capture | Authorized-execute seam; fixed worker bootstrap/probes/release; private capture and resource retirement. | **Implemented on this review branch:** actual retained-admission membership is checked, the runtime-issued ref is claimed once, the retained FD is sent only after trusted startup/probes, the runtime authority gate is ordered with service/root/owner/session locks at transfer and read release, and bounded bytes are staged only after worker join plus duplicate/original capability retirement. Captures are opaque, bounded, in memory, expire after five minutes, and scrub on discard/invalidation. Fake-worker integration and held-capability revocation tests pass. Native Bubblewrap evidence is unavailable because this host's `/usr/bin/bwrap` is owned by UID 65534 and the required trust gate refuses it. No provider or tool-dispatch path exists. |
-| 5: after 2–4, batch/provider composition | executeOne/runToolLoop/appendToolBatch, Chat.Send history ownership and ready dispatcher; capturing fake provider. | **Implemented on this review branch, fixture-only:** successful retained read captures enter the fake provider only after a one-use dispatcher reservation, runtime authorization gate validation and atomic in-memory history/request handoff. Same-binding context replay uses committed bytes without another read. Invalidation clears the complete Chat replay history and derived turn text; late responses/deltas are suppressed. A sibling approval invalidation test proves pending bytes stay private. No real provider calls; production `read_file` remains unavailable. Native Stage 6 remains pending. |
+| 5: after 2–4, batch/provider composition | executeOne/runToolLoop/appendToolBatch, Chat.Send history ownership and ready dispatcher; capturing fake provider. | **Implemented on this review branch, fixture-only:** successful retained read captures enter the fake provider only after a one-use dispatcher reservation, runtime authorization gate validation and atomic in-memory history/request handoff. The host gate serializes against selected-root and `Protect` owner changes and compares current registry/inventory generations; owner changes globally retire captures even after admissions close. Same-binding replay supports empty reads and uses committed bytes without another read. Late output is gated and stale history cannot be reinstalled. Runtime fake-provider tests and separate actual Service/Registry/retained-worker owner-rotation tests pass, including Windows-native fixture paths. No real provider calls; production `read_file` remains unavailable. Native Stage 6 remains pending. |
 | 6: after implementation review, exact-profile native study, then separate enablement review | New native runtime/owner/worker/fake-provider composition with exact source/overlay/backend/mode provenance. | Native effects and cleanup demonstrate changed profile; missing/untrusted/unsupported cases unavailable, never fallback. Historical #243 evidence is not substituted. Tool registration, supported routes/platforms and disclosure copy reviewed separately. |
 
 Stage 1 tests use synthetic roots, simulated UI and bounded fake lifecycle
@@ -613,15 +613,27 @@ it, and the provider catalog never advertises `read_file` in normal composition.
 No real inference or credentials were used.
 
 A provider dispatch reservation starts a one-request receiver before the
-publication gate. The caller privately builds a bounded candidate request,
-then takes Chat mutex → runtime `readAuthorityMu` → permission-store snapshot.
-It validates conversation/model/profile destination, root generation and
-acknowledgement, current grant revision, exact tracked transition chain, every
-opaque capture, worker join/capability retirement, expiry and result protocol
-pairing. For a valid batch, it materializes the bounded provider envelope,
-accepts it into the reserved dispatcher, and installs the matching transcript
-history before releasing either lock. The dispatcher waits on a separate
-release signal and performs `StreamChat` only after those locks are released.
+publication gate. The caller privately builds a bounded candidate request and
+snapshots the expected root and policy/coverage generations. Sensitive commits
+then enter the host gate in this order: Service root lock → Linux owner-update
+mutex → Chat mutex → runtime `readAuthorityMu` → permission-store snapshot. The
+host gate uses a nonblocking owner-mutex acquisition and refuses while an owner
+transition is active. `Service.Protect` holds that same owner mutex from its
+pending latch through registry rotation, invalidation callbacks, and final
+coverage update. The selected-root transition holds the Service root lock
+through the callback. The runtime validates conversation/model/profile
+destination, root generation and acknowledgement, the admitted policy and
+coverage generations against the current Registry/Inventory, current grant
+revision, exact tracked transition chain, every opaque capture, worker
+join/capability retirement, expiry and result protocol pairing. For a valid
+batch, it materializes the bounded provider envelope, accepts it into the
+reserved dispatcher, and installs matching transcript history before
+releasing the gate. The dispatcher waits on a separate release signal and
+performs `StreamChat` only after all lifecycle, Chat, and runtime locks are
+released. A failed gate, validation, or acceptance installs no sensitive
+history and withholds the entire new batch. Once host mutation or handoff wins
+the common gate, the other operation observes the resulting generation/state;
+there is no check-unlock-owner-callback gap.
 A failed validation/acceptance does not install history; all new captures are
 scrubbed and the turn stops. Ordinary non-sensitive chat keeps its prior
 commit-on-success behavior.
@@ -640,18 +652,26 @@ second read or grant consumption.
 Runtime invalidation advances the read epoch and clears continuation metadata
 under the runtime gate. After releasing that gate, revocation, clear, root/owner
 invalidation and cancellation retire Chat's complete sensitive history and
-assistant-derived turn text. Chat final history/turn installation holds
-Chat mutex then the runtime gate, so a late response cannot reinstall retired
-native or derived content. Usage is retained. Once the dispatcher accepts the
-immutable request, disclosure is logically committed; later cancellation is
+assistant-derived turn text. Sensitive late-delta checks and final history/turn
+installation reacquire the same host gate before Chat mutex → runtime gate, so
+owner rotation cannot slip between a generation check and exposing derived
+output or reinstalling history. Usage is retained. Once the dispatcher accepts
+the immutable request, disclosure is logically committed; later cancellation is
 best effort and does not promise physical-send cancellation or external recall.
 
 Deterministic tests cover: first-request payload absence; approved capture
 handoff; same-context replay without another execution; clear while a sibling
 approval is pending; no later resurrection; and a response/delta held after
 handoff then invalidated, with output suppression and usage retained. They use
-synthetic metadata/content and a fake provider/worker fixture. They do not prove
-OS sandbox enforcement, real owner rotation, a native provider transport, or
-Stage 6's exact integrated profile. Invalidation removes future in-memory
-replay and snapshots but cannot recall already delivered UI copies or bytes
-accepted by a provider dispatcher.
+synthetic metadata/content and a fake provider/worker fixture. A separate Linux
+integration fixture uses the real Service, Registry, retained fake worker and
+runtime capture: it rotates an auth owner after the admission is closed and
+verifies the capture is no longer eligible. Service-gate tests verify that a
+rotation completed before handoff rejects the prior policy/coverage generation,
+and a rotation contending with a callback that represents dispatcher acceptance
+runs after that handoff; replay with the old generation is refused. These
+separate tests do not prove an end-to-end real-Service/read-worker/fake-provider
+composition, OS sandbox enforcement, native provider transport or Stage 6's
+exact integrated profile. Invalidation removes future in-memory replay and
+snapshots but cannot recall already delivered UI copies or bytes accepted by a
+provider dispatcher.

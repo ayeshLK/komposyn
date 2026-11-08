@@ -884,48 +884,99 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	if loop.message != "" && turn.Message == "" {
 		turn.Message = loop.message
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var finalGate *toolRuntime
-	if loop.historySensitive && c.toolRuntime != nil {
-		finalGate = c.toolRuntime
-		finalGate.readAuthorityMu.Lock()
-		defer finalGate.readAuthorityMu.Unlock()
+	finalize := func() error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.generation != generation || c.closed {
+			return errors.New("stale provider result discarded")
+		}
+		var finalGate *toolRuntime
+		if loop.historySensitive && c.toolRuntime != nil {
+			finalGate = c.toolRuntime
+			finalGate.readAuthorityMu.Lock()
+			defer finalGate.readAuthorityMu.Unlock()
+		}
+		c.active = false
+		c.activeProfile = ""
+		c.cancel = nil
+		keepSensitiveHistory := true
+		if loop.historySensitive {
+			keepSensitiveHistory = finalGate != nil && c.readContinuationStateCurrentLocked(conversationID, selection, loop.historyEpoch, finalGate)
+			if !keepSensitiveHistory {
+				c.retireReadHistoryLocked()
+				turn.Text, turn.Refusal = "", ""
+				turn.Outcome = provider.OutcomeInterrupted
+				turn.Message = "Conversation context was retired before the provider response could be retained. Start a fresh conversation to continue."
+			}
+		}
+		if loop.persist {
+			if !loop.historySensitive || keepSensitiveHistory {
+				c.history = cloneMessages(loop.history)
+			}
+		} else if !loop.historySensitive && (turn.Outcome == provider.OutcomeCompleted || turn.Outcome == provider.OutcomeRefused) {
+			if len(result.Native) == 0 {
+				turn.Outcome = provider.OutcomeUnsupported
+				turn.Message = "provider returned no replayable continuation data"
+				turn.DiagnosticCode = provider.DiagnosticRuntimeMissingNative
+			} else {
+				c.history = append(c.history, provider.Message{Role: provider.RoleUser, Text: prompt}, provider.Message{Role: provider.RoleAssistant, Text: result.Text, Native: cloneRaw(result.Native)})
+			}
+		}
+		c.turns = append(c.turns, turn)
+		return nil
 	}
-	if c.generation != generation || c.closed {
-		return turn, errors.New("stale provider result discarded")
-	}
-	c.active = false
-	c.activeProfile = ""
-	c.cancel = nil
-	keepSensitiveHistory := true
 	if loop.historySensitive {
-		keepSensitiveHistory = finalGate != nil && c.readContinuationStateCurrentLocked(conversationID, selection, loop.historyEpoch, finalGate)
-		if !keepSensitiveHistory {
-			c.retireReadHistoryLocked()
-			turn.Text, turn.Refusal = "", ""
-			turn.Outcome = provider.OutcomeInterrupted
-			turn.Message = "Conversation context was retired before the provider response could be retained. Start a fresh conversation to continue."
+		c.mu.Lock()
+		finalGate := c.toolRuntime
+		root, rootGeneration := c.filesystemRoot, c.filesystemRootGen
+		current := c.generation == generation && !c.closed
+		c.mu.Unlock()
+		if !current {
+			return turn, errors.New("stale provider result discarded")
 		}
+		if finalGate == nil || finalGate.readPublicationGate == nil {
+			return c.finishRetiredSensitiveTurn(generation, &turn), callErr
+		}
+		policy, coverage, revisionsOK := finalGate.readPublicationRevisions(conversationID, nil)
+		if !revisionsOK {
+			return c.finishRetiredSensitiveTurn(generation, &turn), callErr
+		}
+		err := finalGate.readPublicationGate.WithFilesystemReadPublicationCurrent(ctx, conversationID, root, rootGeneration, policy, coverage, finalize)
+		if err != nil {
+			c.mu.Lock()
+			stillCurrent := c.generation == generation && !c.closed
+			c.mu.Unlock()
+			if !stillCurrent {
+				return turn, errors.New("stale provider result discarded")
+			}
+			return c.finishRetiredSensitiveTurn(generation, &turn), callErr
+		}
+	} else if err := finalize(); err != nil {
+		return turn, err
 	}
-	if loop.persist {
-		if !loop.historySensitive || keepSensitiveHistory {
-			c.history = cloneMessages(loop.history)
-		}
-	} else if !loop.historySensitive && (turn.Outcome == provider.OutcomeCompleted || turn.Outcome == provider.OutcomeRefused) {
-		if len(result.Native) == 0 {
-			turn.Outcome = provider.OutcomeUnsupported
-			turn.Message = "provider returned no replayable continuation data"
-			turn.DiagnosticCode = provider.DiagnosticRuntimeMissingNative
-		} else {
-			c.history = append(c.history, provider.Message{Role: provider.RoleUser, Text: prompt}, provider.Message{Role: provider.RoleAssistant, Text: result.Text, Native: cloneRaw(result.Native)})
-		}
-	}
-	c.turns = append(c.turns, turn)
 	if callErr != nil {
 		return turn, callErr
 	}
 	return turn, nil
+}
+
+func (c *Chat) finishRetiredSensitiveTurn(generation uint64, turn *Turn) Turn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generation != generation || c.closed {
+		return *turn
+	}
+	c.active = false
+	c.activeProfile = ""
+	c.cancel = nil
+	if c.historySensitive {
+		c.retireReadHistoryLocked()
+	}
+	turn.Text, turn.Refusal = "", ""
+	turn.Outcome = provider.OutcomeInterrupted
+	turn.Message = "Conversation context was retired before the provider response could be retained. Start a fresh conversation to continue."
+	c.turns = append(c.turns, *turn)
+	return *turn
 }
 
 func (c *Chat) updateToolActivity(generation uint64, activity ToolActivity) {

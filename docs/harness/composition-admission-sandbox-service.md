@@ -22,7 +22,9 @@ cmd/harness starts
         -> optional retained-read host is injected, but the tool is absent
            from the registry and ordinary dispatch remains refused
         -> tests may enable an unexported Stage 5 fixture seam; fake-provider handoff
-           occurs only after the synchronized publication gate
+           occurs only after the synchronized publication gate, which takes
+           Service root -> owner-update -> Chat -> runtime authorization locks
+           and validates policy/coverage generations before handoff
 ```
 
 The host service composes the existing Linux `Registry`, broker, Bubblewrap
@@ -30,7 +32,15 @@ launcher and `HostCoordinator`. Its host authorizer remains deny-only. The
 Stage 3 admission API can retain one exact regular-file object only after the
 explicit root, required auth/settings owner registrations, backend, and
 coverage checks succeed. This is an internal pre-approval operation, not a
-general authorization or dispatch API. No model, tool or UI data can construct
+general authorization or dispatch API. Stage 5 sensitive handoff compares the
+read's admitted policy and inventory revisions to current host state while
+holding the service root lock and Linux owner-update gate, before entering Chat
+and runtime authority locks. Owner rotation holds the same owner-update gate
+from its pending latch through registry rotation, invalidation callbacks and
+final coverage update. Handoff fails closed if a rotation is already active; a
+later rotation is ordered after accepted handoff. The owner callback globally
+retires captures and continuations, including those whose host admission has
+already closed. No model, tool or UI data can construct
 or complete a coverage profile. The synthetic four-owner inventory remains in
 the study command and is not used by `cmd/harness`.
 

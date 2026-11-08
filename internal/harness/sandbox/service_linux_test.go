@@ -387,6 +387,107 @@ func (b *serviceAdmissionBlockingBroker) unblock() {
 	b.releaseOnce.Do(func() { close(b.release) })
 }
 
+func TestPublicationGateSerializesProtectedOwnerRotation(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	for _, owner := range []struct{ name, class string }{{auth.SensitiveOwnerAuth, auth.SensitiveClassAuth}, {auth.SensitiveOwnerSettings, auth.SensitiveClassSettings}} {
+		if err := service.Protect(context.Background(), owner.name, owner.class, filepath.Join(t.TempDir(), owner.name+".json"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := t.TempDir()
+	conversation := "publication-gate-fixture"
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: conversation, Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	policy, coverage := impl.registry.View().Generation, impl.inventory.Snapshot().Revision
+	if policy == 0 || coverage == 0 {
+		t.Fatalf("fixture generations unavailable: policy=%d coverage=%d", policy, coverage)
+	}
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	handoff := make(chan error, 1)
+	go func() {
+		handoff <- service.WithFilesystemReadPublicationCurrent(context.Background(), conversation, root, 1, policy, coverage, func() error {
+			close(entered)
+			<-release
+			return nil // deterministic synthetic dispatcher acceptance point
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("publication gate did not enter its commit callback")
+	}
+	if impl.ownerUpdateMu.TryLock() {
+		impl.ownerUpdateMu.Unlock()
+		t.Fatal("publication callback did not retain the owner-transition ordering gate")
+	}
+	rotation := make(chan error, 1)
+	go func() {
+		rotation <- service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth-after-handoff.json"), nil)
+	}()
+	close(release)
+	select {
+	case err := <-handoff:
+		if err != nil {
+			t.Fatalf("handoff: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("publication gate did not release")
+	}
+	select {
+	case err := <-rotation:
+		if err != nil {
+			t.Fatalf("owner rotation after handoff: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("owner rotation did not proceed after handoff")
+	}
+	called := false
+	if err := service.WithFilesystemReadPublicationCurrent(context.Background(), conversation, root, 1, policy, coverage, func() error { called = true; return nil }); err == nil || called {
+		t.Fatal("replay with pre-rotation policy/coverage generations crossed the host gate")
+	}
+}
+
+func TestPublicationGateRejectsOwnerRotationCompletedBeforeHandoff(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	for _, owner := range []struct{ name, class string }{{auth.SensitiveOwnerAuth, auth.SensitiveClassAuth}, {auth.SensitiveOwnerSettings, auth.SensitiveClassSettings}} {
+		if err := service.Protect(context.Background(), owner.name, owner.class, filepath.Join(t.TempDir(), owner.name+".json"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, conversation := t.TempDir(), "mutation-before-handoff"
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: conversation, Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	policy, coverage := impl.registry.View().Generation, impl.inventory.Snapshot().Revision
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth-rotated.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	if err := service.WithFilesystemReadPublicationCurrent(context.Background(), conversation, root, 1, policy, coverage, func() error { called = true; return nil }); err == nil || called {
+		t.Fatal("stale owner/policy generations were accepted for publication")
+	}
+}
+
 func TestProtectedOwnerTransitionRetiresPendingAdmissionBeforeReturning(t *testing.T) {
 	service, err := newTestHostService()
 	if err != nil {
@@ -631,6 +732,134 @@ func TestStage4RuntimeExecutesRetainedObjectIntoPrivateCapture(t *testing.T) {
 	}
 	if err := chat.CloseContext(context.Background()); err != nil {
 		t.Fatalf("close chat: %v", err)
+	}
+}
+
+func TestStage5ServiceOwnerRotationRetiresCaptureAfterAdmissionCloses(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.txt")
+	if err := os.WriteFile(target, []byte("synthetic owner rotation capture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage4WorkerLauncher{}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{impl: impl}
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{
+		Registry: tools.NewRegistry(), ReadAdmission: service, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := chat.CloseContext(ctx); err != nil {
+			t.Errorf("close chat: %v", err)
+		}
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []struct{ name, class string }{{auth.SensitiveOwnerAuth, auth.SensitiveClassAuth}, {auth.SensitiveOwnerSettings, auth.SensitiveClassSettings}} {
+		if err := service.Protect(context.Background(), owner.name, owner.class, filepath.Join(t.TempDir(), owner.name+".json"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := chat.ExecuteFilesystemRead(context.Background(), tools.Invocation{TurnID: "stage5-turn", ProviderCallID: "stage5-capture", ToolID: "read_file", Arguments: arguments}, "openai/model/profile")
+	if err != nil || capture == nil {
+		t.Fatalf("capture=%v err=%v", capture, err)
+	}
+	if len(impl.session.AdmissionConversations()) != 0 {
+		t.Fatal("fixture admission remained open after capture")
+	}
+	if len(launcher.readBytes) == 0 {
+		t.Fatal("retained worker did not produce synthetic bytes")
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth-rotated.json"), nil); err != nil {
+		t.Fatalf("rotate protected owner after capture: %v", err)
+	}
+	if err := chat.DiscardPrivateReadCapture(capture); err == nil {
+		t.Fatal("owner rotation left the post-admission private capture eligible")
+	}
+}
+
+func TestStage5OwnerRotationAfterCaptureRetiresClosedAdmissionContinuation(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.txt")
+	if err := os.WriteFile(target, []byte("synthetic bytes retained only in private capture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage4WorkerLauncher{}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{impl: impl}
+	chat := runtime.NewChatWithToolRuntime(nil, auth.Store{}, nil, runtime.ToolRuntimeConfig{
+		Registry: tools.NewRegistry(), ReadAdmission: service, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := chat.CloseContext(ctx); err != nil {
+			t.Errorf("close chat: %v", err)
+		}
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []struct{ name, class string }{{auth.SensitiveOwnerAuth, auth.SensitiveClassAuth}, {auth.SensitiveOwnerSettings, auth.SensitiveClassSettings}} {
+		if err := service.Protect(context.Background(), owner.name, owner.class, filepath.Join(t.TempDir(), owner.name+".json"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := chat.ExecuteFilesystemRead(context.Background(), tools.Invocation{TurnID: "stage5-turn", ProviderCallID: "stage5-capture", ToolID: "read_file", Arguments: arguments}, "openai/model/profile")
+	if err != nil || capture == nil {
+		t.Fatalf("capture=%v err=%v", capture, err)
+	}
+	if len(impl.session.AdmissionConversations()) != 0 {
+		t.Fatal("fixture admission remained open after capture")
+	}
+	if len(launcher.readBytes) == 0 {
+		t.Fatal("retained worker did not produce synthetic bytes")
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth-rotated.json"), nil); err != nil {
+		t.Fatalf("rotate protected owner after completed admission: %v", err)
+	}
+	if err := chat.DiscardPrivateReadCapture(capture); err == nil {
+		t.Fatal("owner rotation left a post-admission private capture eligible")
 	}
 }
 

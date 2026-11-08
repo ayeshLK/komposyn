@@ -708,6 +708,13 @@ func (r *toolRuntime) clearConversationGrantsLocked(conversationID string) {
 }
 
 func (r *toolRuntime) invalidateConversation(conversationID string) {
+	if r == nil {
+		return
+	}
+	if conversationID == "" {
+		r.invalidateAllReadConversations()
+		return
+	}
 	r.readAuthorityMu.Lock()
 	r.invalidateReadAuthorityLocked()
 	r.coordinator.CancelConversation(conversationID)
@@ -716,6 +723,40 @@ func (r *toolRuntime) invalidateConversation(conversationID string) {
 	r.invalidateConversationUI(conversationID)
 	if r.retireHistory != nil {
 		r.retireHistory(conversationID)
+	}
+}
+
+// invalidateAllReadConversations retires runtime-owned captures and replay
+// provenance even after the host has closed the admission that originally
+// identified the conversation. Host owner rotation uses the empty callback ID
+// as this deliberately global, fail-closed invalidation request.
+func (r *toolRuntime) invalidateAllReadConversations() {
+	r.readAuthorityMu.Lock()
+	conversations := make(map[string]struct{})
+	for _, authority := range r.readAuthorities {
+		if authority.conversationID != "" {
+			conversations[authority.conversationID] = struct{}{}
+		}
+	}
+	for _, capture := range r.privateReadCaptures {
+		if capture.conversationID != "" {
+			conversations[capture.conversationID] = struct{}{}
+		}
+	}
+	for conversationID := range r.readContinuations {
+		conversations[conversationID] = struct{}{}
+	}
+	r.invalidateReadAuthorityLocked()
+	for conversationID := range conversations {
+		r.coordinator.CancelConversation(conversationID)
+	}
+	r.readAuthorityMu.Unlock()
+	for conversationID := range conversations {
+		_ = r.invalidateHostReadExecutions(conversationID)
+		r.invalidateConversationUI(conversationID)
+		if r.retireHistory != nil {
+			r.retireHistory(conversationID)
+		}
 	}
 }
 
@@ -922,6 +963,45 @@ func validReadTransitions(transitions []readGrantTransition, revision uint64) bo
 	return valid && ((len(merged) == 0 && revision == 0) || (len(merged) > 0 && merged[len(merged)-1].after == revision))
 }
 
+func (r *toolRuntime) readPublicationRevisions(conversationID string, captures map[string]*PrivateReadCapture) (uint64, uint64, bool) {
+	if r == nil {
+		return 0, 0, false
+	}
+	r.readAuthorityMu.Lock()
+	defer r.readAuthorityMu.Unlock()
+	var policy, coverage uint64
+	set := func(itemPolicy, itemCoverage uint64) bool {
+		if itemPolicy == 0 || itemCoverage == 0 {
+			return false
+		}
+		if policy != 0 && (policy != itemPolicy || coverage != itemCoverage) {
+			return false
+		}
+		policy, coverage = itemPolicy, itemCoverage
+		return true
+	}
+	if continuation, ok := r.readContinuations[conversationID]; ok {
+		if len(continuation.policyRevisions) == 0 || len(continuation.coverageRevisions) != len(continuation.policyRevisions) {
+			return 0, 0, false
+		}
+		for i := range continuation.policyRevisions {
+			if !set(continuation.policyRevisions[i], continuation.coverageRevisions[i]) {
+				return 0, 0, false
+			}
+		}
+	}
+	for _, handle := range captures {
+		if handle == nil || handle.owner != r {
+			return 0, 0, false
+		}
+		capture, ok := r.privateReadCaptures[handle.id]
+		if !ok || capture.conversationID != conversationID || !set(capture.policyRevision, capture.coverage) {
+			return 0, 0, false
+		}
+	}
+	return policy, coverage, policy != 0 && coverage != 0
+}
+
 func (r *toolRuntime) privateReadEnvelopeSize(handle *PrivateReadCapture, maxBytes int) (int, bool) {
 	if r == nil || handle == nil || handle.owner != r || maxBytes <= 0 {
 		return 0, false
@@ -941,7 +1021,7 @@ func (r *toolRuntime) privateReadEnvelopeSize(handle *PrivateReadCapture, maxByt
 
 func validReadContinuationRecord(record readContinuationRecord, revision uint64) bool {
 	n := len(record.identities)
-	if n == 0 || n > maxReadInvocationClaims || len(record.classes) != n || len(record.serviceIDs) != n || len(record.admissionBindings) != n || len(record.authorizationBindings) != n || len(record.rootGenerations) != n || len(record.policyRevisions) != n || len(record.coverageRevisions) != n || len(record.authorityIDs) != n || record.payloadBytes <= 0 || record.payloadBytes > maxPrivateReadBytes || record.destination == "" {
+	if n == 0 || n > maxReadInvocationClaims || len(record.classes) != n || len(record.serviceIDs) != n || len(record.admissionBindings) != n || len(record.authorizationBindings) != n || len(record.rootGenerations) != n || len(record.policyRevisions) != n || len(record.coverageRevisions) != n || len(record.authorityIDs) != n || record.payloadBytes < 0 || record.payloadBytes > maxPrivateReadBytes || record.destination == "" {
 		return false
 	}
 	for i := 0; i < n; i++ {

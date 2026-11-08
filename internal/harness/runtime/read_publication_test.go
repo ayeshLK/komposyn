@@ -19,6 +19,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +39,8 @@ type publicationHost struct {
 	content   []byte
 	reads     int
 	rootGen   uint64
+	root      string
+	target    string
 	reference *ReadExecutionReference
 }
 type publicationAdmission struct {
@@ -49,13 +53,37 @@ type publicationPreparation struct {
 }
 
 func (h *publicationHost) AdmitFilesystemRead(_ context.Context, invocation tools.Invocation, destination string) (FilesystemReadAdmission, error) {
-	return FilesystemReadAdmission{Reference: new(struct{}), ServiceID: "fixture-service", ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID, Root: "/synthetic", Deadline: time.Now().Add(time.Minute), AdmissionBinding: "synthetic-admission", Target: "/synthetic/notes.txt", Class: "ordinary", Identity: "fixture-object-1", RootGeneration: h.rootGen, PolicyRevision: 1, CoverageRevision: 1, Destination: destination}, nil
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(invocation.Arguments, &args); err != nil || args.Path == "" {
+		return FilesystemReadAdmission{}, errors.New("invalid fixture target")
+	}
+	return FilesystemReadAdmission{Reference: new(struct{}), ServiceID: "fixture-service", ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID, Root: h.root, Deadline: time.Now().Add(time.Minute), AdmissionBinding: "synthetic-admission", Target: args.Path, Class: "ordinary", Identity: "fixture-object-1", RootGeneration: h.rootGen, PolicyRevision: 1, CoverageRevision: 1, Destination: destination}, nil
 }
 func (h *publicationHost) PrepareAdmittedFilesystemRead(_ context.Context, admission FilesystemReadAdmission, _ uint64) (FilesystemReadPreparation, error) {
 	return &publicationPreparation{metadata: admission}, nil
 }
 func (h *publicationHost) CloseFilesystemReadAdmission(context.Context, FilesystemReadAdmission) error {
 	return nil
+}
+func (h *publicationHost) ValidateFilesystemRoot(ctx context.Context, root string) (string, error) {
+	return CanonicalFilesystemRoot(ctx, root)
+}
+func (h *publicationHost) InvalidateFilesystemRoot(_ context.Context, transition FilesystemRootTransition) error {
+	h.root, h.rootGen = transition.Root, transition.Generation
+	return nil
+}
+func (h *publicationHost) BackendStatus() (bool, string) { return true, "synthetic fixture" }
+
+func (h *publicationHost) WithFilesystemReadPublicationCurrent(ctx context.Context, conversationID, root string, generation, policy, coverage uint64, operation func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if conversationID == "" || root != h.root || generation != h.rootGen || policy != 1 || coverage != 1 {
+		return ErrFilesystemRootStale
+	}
+	return operation()
 }
 func (p *publicationPreparation) Metadata() FilesystemReadAdmission { return p.metadata }
 func (p *publicationPreparation) WithAuthorityCommit(ctx context.Context, commit func() error) error {
@@ -84,12 +112,30 @@ func (h *publicationHost) ExecuteAdmittedFilesystemRead(ctx context.Context, adm
 	return capture, errors.Join(err, closeErr)
 }
 
+func selectPublicationRoot(t *testing.T, chat *Chat, host *publicationHost, root string) {
+	t.Helper()
+	host.root = root
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatalf("select fixture root: %v", err)
+	}
+}
+
+func publicationTarget(t *testing.T, name string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "synthetic")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(root, name)
+}
+
 type publicationProvider struct {
 	*fakeProvider
 	mu2             sync.Mutex
 	calls           int
 	seen            []string
 	blockResponse   bool
+	target          string
 	responseStarted chan struct{}
 	releaseResponse chan struct{}
 }
@@ -104,8 +150,9 @@ func (p *publicationProvider) StreamChat(ctx context.Context, request provider.C
 	p.seen = append(p.seen, providerMessagesText(request.Messages))
 	p.mu2.Unlock()
 	if call == 1 {
-		args := json.RawMessage(`{"path":"/synthetic/notes.txt"}`)
-		raw := json.RawMessage(`{"type":"function_call","id":"item-read-1","call_id":"read-1","name":"read_file","arguments":"{\"path\":\"/synthetic/notes.txt\"}","status":"completed"}`)
+		args, _ := json.Marshal(map[string]string{"path": p.target})
+		nativeArgs, _ := json.Marshal(string(args))
+		raw := json.RawMessage(`{"type":"function_call","id":"item-read-1","call_id":"read-1","name":"read_file","arguments":` + string(nativeArgs) + `,"status":"completed"}`)
 		return provider.Result{RequestID: request.RequestID, ModelID: request.ModelID, Outcome: provider.OutcomeCompleted, Completion: provider.CompletionToolCalls, Text: "Reading.", Native: []json.RawMessage{raw}, ToolCalls: []provider.ToolCall{{CallID: "read-1", ToolID: tools.ID("read_file"), Arguments: args}}}, nil
 	}
 	if p.blockResponse {
@@ -124,25 +171,25 @@ func providerMessagesText(messages []provider.Message) string {
 
 func TestStage5ReadPublicationAndSameContextReplay(t *testing.T) {
 	const sentinel = "stage5-private-synthetic-sentinel"
-	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}}
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: publicationTarget(t, "notes.txt")}
 	providers, err := model.NewRegistry(fp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := auth.Store{Path: t.TempDir() + "/auth.json"}
-	host := &publicationHost{content: []byte(sentinel)}
+	store := auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	host := &publicationHost{content: []byte(sentinel), root: filepath.Dir(fp.target), target: fp.target}
 	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
 		return tools.Result{}, nil
 	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
-	}), ReadAdmission: host, Grants: permissions.NewMemoryStore()}
+	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
 	chat := NewChatWithToolRuntime(providers, store, nil, config)
 	chat.toolRuntime.readPublicationTestMode = true
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
 	selectFirst(t, chat)
-	host.rootGen = chat.filesystemRootGen
+	selectPublicationRoot(t, chat, host, filepath.Dir(fp.target))
 	t.Cleanup(chat.Close)
 	turn, err := chat.Send(context.Background(), "summarize the file", nil)
 	if err != nil || turn.Outcome != provider.OutcomeCompleted {
@@ -196,6 +243,56 @@ func TestStage5ReadPublicationAndSameContextReplay(t *testing.T) {
 	}
 }
 
+func TestStage5EmptyReadPublishesAndReplaysInSameContext(t *testing.T) {
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: publicationTarget(t, "empty.txt")}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &publicationHost{root: filepath.Dir(fp.target), target: fp.target}
+	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+		return tools.Result{}, nil
+	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	chat.toolRuntime.readPublicationTestMode = true
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+		t.Fatal(err)
+	}
+	selectFirst(t, chat)
+	selectPublicationRoot(t, chat, host, filepath.Dir(fp.target))
+	t.Cleanup(chat.Close)
+	turn, err := chat.Send(context.Background(), "summarize the empty file", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("first turn=%+v err=%v", turn, err)
+	}
+	if !chat.historySensitive || len(chat.toolRuntime.readContinuations) != 1 {
+		t.Fatal("empty disclosure provenance was rejected")
+	}
+	requests := fp.captured()
+	if len(requests) != 2 {
+		t.Fatalf("requests=%d", len(requests))
+	}
+	body := providerMessagesText(requests[1].Messages)
+	if !strings.Contains(body, `"CallID":"read-1"`) || !strings.Contains(body, `\"outcome\":\"succeeded\"`) || !strings.Contains(body, `\"content\":\"\"`) {
+		t.Fatalf("empty result envelope missing or malformed: %s", body)
+	}
+	if turn, err = chat.Send(context.Background(), "explain the empty result", nil); err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("replay turn=%+v err=%v", turn, err)
+	}
+	requests = fp.captured()
+	if len(requests) != 3 || !strings.Contains(providerMessagesText(requests[2].Messages), `"CallID":"read-1"`) {
+		t.Fatal("empty read continuation did not replay in its original context")
+	}
+	host.mu.Lock()
+	reads := host.reads
+	host.mu.Unlock()
+	if reads != 1 {
+		t.Fatalf("empty read was re-executed: %d", reads)
+	}
+}
+
 func TestProductionCatalogDoesNotAdvertiseReadFile(t *testing.T) {
 	fp := &fakeProvider{id: provider.OpenAI}
 	chat, _ := makeChat(t, fp)
@@ -216,6 +313,7 @@ type twoReadProvider struct {
 	muCalls  sync.Mutex
 	calls    int
 	requests []provider.ChatRequest
+	root     string
 }
 
 func (p *twoReadProvider) StreamChat(ctx context.Context, request provider.ChatRequest, delta func(string)) (provider.Result, error) {
@@ -226,13 +324,15 @@ func (p *twoReadProvider) StreamChat(ctx context.Context, request provider.ChatR
 	p.muCalls.Unlock()
 	if call == 1 {
 		mk := func(id string) provider.ToolCall {
-			args, _ := json.Marshal(map[string]string{"path": "/synthetic/" + id + ".txt"})
+			args, _ := json.Marshal(map[string]string{"path": filepath.Join(p.root, id+".txt")})
 			return provider.ToolCall{CallID: id, ToolID: tools.ID("read_file"), Arguments: args}
 		}
 		calls := []provider.ToolCall{mk("read-a"), mk("read-b")}
-		native := []json.RawMessage{
-			json.RawMessage(`{"type":"function_call","id":"item-read-a","call_id":"read-a","name":"read_file","arguments":"{\"path\":\"/synthetic/read-a.txt\"}","status":"completed"}`),
-			json.RawMessage(`{"type":"function_call","id":"item-read-b","call_id":"read-b","name":"read_file","arguments":"{\"path\":\"/synthetic/read-b.txt\"}","status":"completed"}`),
+		native := make([]json.RawMessage, 0, len(calls))
+		for index, call := range calls {
+			encodedArgs, _ := json.Marshal(string(call.Arguments))
+			item, _ := json.Marshal(map[string]any{"type": "function_call", "id": "item-read-" + string(rune('a'+index)), "call_id": call.CallID, "name": string(call.ToolID), "arguments": json.RawMessage(encodedArgs), "status": "completed"})
+			native = append(native, item)
 		}
 		return provider.Result{RequestID: request.RequestID, ModelID: request.ModelID, Outcome: provider.OutcomeCompleted, Completion: provider.CompletionToolCalls, Text: "Reading two files.", Native: native, ToolCalls: calls}, nil
 	}
@@ -241,12 +341,16 @@ func (p *twoReadProvider) StreamChat(ctx context.Context, request provider.ChatR
 
 func TestStage5InvalidationWhileSiblingApprovalWaitsWithholdsWholeBatch(t *testing.T) {
 	const sentinel = "must-never-publish-after-sibling-invalidation"
-	fp := &twoReadProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}}
+	root := filepath.Join(t.TempDir(), "synthetic")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fp := &twoReadProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, root: root}
 	providers, err := model.NewRegistry(fp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := &publicationHost{content: []byte(sentinel)}
+	host := &publicationHost{content: []byte(sentinel), root: root}
 	waitingB := make(chan struct{})
 	releaseB := make(chan struct{})
 	var approvals atomic.Int32
@@ -264,14 +368,14 @@ func TestStage5InvalidationWhileSiblingApprovalWaitsWithholdsWholeBatch(t *testi
 	})
 	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
 		return tools.Result{}, nil
-	}), Approval: approval, ReadAdmission: host, Grants: permissions.NewMemoryStore()}
-	chat := NewChatWithToolRuntime(providers, auth.Store{Path: t.TempDir() + "/auth.json"}, nil, config)
+	}), Approval: approval, ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
 	chat.toolRuntime.readPublicationTestMode = true
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
 	selectFirst(t, chat)
-	host.rootGen = chat.filesystemRootGen
+	selectPublicationRoot(t, chat, host, root)
 	t.Cleanup(chat.Close)
 	done := make(chan Turn, 1)
 	go func() { turn, _ := chat.Send(context.Background(), "inspect both", nil); done <- turn }()
@@ -318,24 +422,24 @@ func TestStage5InvalidationWhileSiblingApprovalWaitsWithholdsWholeBatch(t *testi
 
 func TestStage5LateProviderResponseCannotReinstallRetiredContext(t *testing.T) {
 	const sentinel = "late-response-sensitive-synthetic-sentinel"
-	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, blockResponse: true, responseStarted: make(chan struct{}), releaseResponse: make(chan struct{})}
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: publicationTarget(t, "notes.txt"), blockResponse: true, responseStarted: make(chan struct{}), releaseResponse: make(chan struct{})}
 	providers, err := model.NewRegistry(fp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := &publicationHost{content: []byte(sentinel)}
+	host := &publicationHost{content: []byte(sentinel), root: filepath.Dir(fp.target), target: fp.target}
 	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
 		return tools.Result{}, nil
 	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
-	}), ReadAdmission: host, Grants: permissions.NewMemoryStore()}
-	chat := NewChatWithToolRuntime(providers, auth.Store{Path: t.TempDir() + "/auth.json"}, nil, config)
+	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
 	chat.toolRuntime.readPublicationTestMode = true
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
 	selectFirst(t, chat)
-	host.rootGen = chat.filesystemRootGen
+	selectPublicationRoot(t, chat, host, filepath.Dir(fp.target))
 	t.Cleanup(chat.Close)
 	deltas := make(chan string, 1)
 	done := make(chan Turn, 1)
@@ -381,24 +485,28 @@ func TestStage5LateProviderResponseCannotReinstallRetiredContext(t *testing.T) {
 
 func TestStage5SiblingReadTransactionsCommitAsOneBatch(t *testing.T) {
 	const sentinel = "two-read-batch-content"
-	fp := &twoReadProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}}
+	root := filepath.Join(t.TempDir(), "synthetic")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fp := &twoReadProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, root: root}
 	providers, err := model.NewRegistry(fp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := &publicationHost{content: []byte(sentinel)}
+	host := &publicationHost{content: []byte(sentinel), root: root}
 	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
 		return tools.Result{}, nil
 	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
-	}), ReadAdmission: host, Grants: permissions.NewMemoryStore()}
-	chat := NewChatWithToolRuntime(providers, auth.Store{Path: t.TempDir() + "/auth.json"}, nil, config)
+	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
 	chat.toolRuntime.readPublicationTestMode = true
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
 	selectFirst(t, chat)
-	host.rootGen = chat.filesystemRootGen
+	selectPublicationRoot(t, chat, host, root)
 	t.Cleanup(chat.Close)
 	turn, err := chat.Send(context.Background(), "read both", nil)
 	if err != nil || turn.Outcome != provider.OutcomeCompleted {
@@ -430,24 +538,24 @@ func TestStage5SiblingReadTransactionsCommitAsOneBatch(t *testing.T) {
 }
 
 func TestStage5OversizedEncodedReadIsWithheldWithoutPartialDisclosure(t *testing.T) {
-	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}}
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: publicationTarget(t, "notes.txt")}
 	providers, err := model.NewRegistry(fp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := &publicationHost{content: bytes.Repeat([]byte{0}, 50<<10)}
+	host := &publicationHost{content: bytes.Repeat([]byte{0}, 50<<10), root: filepath.Dir(fp.target), target: fp.target}
 	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
 		return tools.Result{}, nil
 	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
-	}), ReadAdmission: host, Grants: permissions.NewMemoryStore()}
-	chat := NewChatWithToolRuntime(providers, auth.Store{Path: t.TempDir() + "/auth.json"}, nil, config)
+	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
 	chat.toolRuntime.readPublicationTestMode = true
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
 	selectFirst(t, chat)
-	host.rootGen = chat.filesystemRootGen
+	selectPublicationRoot(t, chat, host, filepath.Dir(fp.target))
 	t.Cleanup(chat.Close)
 	turn, err := chat.Send(context.Background(), "read an oversized encoded file", nil)
 	if err != nil || turn.Outcome != provider.OutcomeCompleted {

@@ -144,6 +144,7 @@ type toolRuntime struct {
 	enforcer                 ToolEnforcer
 	preparer                 ToolPreparer
 	readAdmission            FilesystemReadAdmissionHost
+	readPublicationGate      FilesystemReadPublicationGate
 	readExecutionInvalidator FilesystemReadExecutionInvalidator
 	rootHost                 FilesystemRootHost
 	approval                 ToolApprovalInteraction
@@ -337,6 +338,9 @@ func newToolRuntime(config ToolRuntimeConfig) *toolRuntime {
 		approval: config.Approval, clarification: config.Clarification, grants: config.Grants, plans: config.Plans, evaluator: evaluator,
 		coordinator: permissions.NewCoordinator(evaluator, config.Grants), readAuthorities: make(map[string]readAuthorityRecord), readInvocationClaims: make(map[string]struct{}), privateReadCaptures: make(map[string]privateReadCaptureRecord),
 		readContinuations: make(map[string]readContinuationRecord),
+	}
+	if gate, ok := config.ReadAdmission.(FilesystemReadPublicationGate); ok {
+		runtime.readPublicationGate = gate
 	}
 	if invalidator, ok := config.ReadAdmission.(FilesystemReadAdmissionInvalidator); ok {
 		invalidator.SetFilesystemReadInvalidator(runtime.invalidateConversation)
@@ -746,7 +750,7 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 			RequestID: fmtRequestID(requestID, requestCount), ModelID: selection.ID, Credential: credential,
 			Messages: cloneMessages(result.history), Instructions: instructions, MaxOutput: 4096, Tools: append([]tools.Definition(nil), requestTools...),
 		}
-		committedHistory, epoch, sensitive, commitErr := c.commitAndDispatch(providerCtx, reservation, generation, selection, conversationID, plug, request, result.history, pendingCaptures, captureBudgets, dispatchDelta)
+		committedHistory, epoch, sensitive, commitErr := c.commitAndDispatch(providerCtx, reservation, generation, selection, conversationID, plug, request, result.history, pendingCaptures, captureBudgets, result.historySensitive || len(pendingCaptures) > 0, dispatchDelta)
 		if commitErr != nil {
 			for callID := range pendingCaptures {
 				for index := range result.activities {

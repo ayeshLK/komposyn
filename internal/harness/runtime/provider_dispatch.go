@@ -105,7 +105,42 @@ func (r *providerDispatchReservation) Wait(context.Context) (provider.Result, er
 // commitAndDispatch makes the transcript visible and accepts its immutable
 // provider request while Chat and runtime authorization state are both held.
 // The dispatcher is already reserved; its worker remains gated until Release.
-func (c *Chat) commitAndDispatch(ctx context.Context, reservation *providerDispatchReservation, generation uint64, selection model.Model, conversationID string, plug provider.Provider, request provider.ChatRequest, messages []provider.Message, captures map[string]*PrivateReadCapture, captureBudgets map[string]int, delta func(string)) ([]provider.Message, uint64, bool, error) {
+func (c *Chat) commitAndDispatch(ctx context.Context, reservation *providerDispatchReservation, generation uint64, selection model.Model, conversationID string, plug provider.Provider, request provider.ChatRequest, messages []provider.Message, captures map[string]*PrivateReadCapture, captureBudgets map[string]int, sensitiveCandidate bool, delta func(string)) ([]provider.Message, uint64, bool, error) {
+	if reservation == nil {
+		return nil, 0, false, errors.New("provider dispatcher reservation is unavailable")
+	}
+	if !sensitiveCandidate {
+		return c.commitAndDispatchUnderGate(ctx, reservation, generation, selection, conversationID, plug, request, messages, captures, captureBudgets, delta, false)
+	}
+	c.mu.Lock()
+	root, rootGeneration := c.filesystemRoot, c.filesystemRootGen
+	runtime := c.toolRuntime
+	c.mu.Unlock()
+	if runtime == nil || runtime.readPublicationGate == nil {
+		reservation.Abort()
+		return nil, 0, false, errors.New("host owner publication gate is unavailable")
+	}
+	var committed []provider.Message
+	var epoch uint64
+	var sensitive bool
+	policyRevision, coverageRevision, ok := runtime.readPublicationRevisions(conversationID, captures)
+	if !ok {
+		reservation.Abort()
+		return nil, 0, false, errors.New("read continuation generations are unavailable")
+	}
+	err := runtime.readPublicationGate.WithFilesystemReadPublicationCurrent(ctx, conversationID, root, rootGeneration, policyRevision, coverageRevision, func() error {
+		var commitErr error
+		committed, epoch, sensitive, commitErr = c.commitAndDispatchUnderGate(ctx, reservation, generation, selection, conversationID, plug, request, messages, captures, captureBudgets, delta, true)
+		return commitErr
+	})
+	if err != nil {
+		reservation.Abort()
+		return nil, 0, false, err
+	}
+	return committed, epoch, sensitive, nil
+}
+
+func (c *Chat) commitAndDispatchUnderGate(ctx context.Context, reservation *providerDispatchReservation, generation uint64, selection model.Model, conversationID string, plug provider.Provider, request provider.ChatRequest, messages []provider.Message, captures map[string]*PrivateReadCapture, captureBudgets map[string]int, delta func(string), sensitiveCandidate bool) ([]provider.Message, uint64, bool, error) {
 	if reservation == nil {
 		return nil, 0, false, errors.New("provider dispatcher reservation is unavailable")
 	}
@@ -120,12 +155,23 @@ func (c *Chat) commitAndDispatch(ctx context.Context, reservation *providerDispa
 	destination := readDestination(selection)
 	var epoch uint64
 	sensitive := false
+	if sensitiveCandidate && runtime == nil {
+		c.mu.Unlock()
+		reservation.Abort()
+		return nil, 0, false, errors.New("read continuation runtime is unavailable")
+	}
 	if runtime != nil {
 		runtime.readAuthorityMu.Lock()
 		epoch = runtime.readAuthorityEpoch
 		continuation, hasContinuation := runtime.readContinuations[conversationID]
 		if hasContinuation && !continuationMatchesRoot(continuation, c.filesystemRootGen) {
 			hasContinuation = false
+		}
+		if sensitiveCandidate && len(captures) == 0 && !c.historySensitive {
+			runtime.readAuthorityMu.Unlock()
+			c.mu.Unlock()
+			reservation.Abort()
+			return nil, 0, false, errors.New("sensitive draft was retired before provider handoff")
 		}
 		if c.historySensitive && (!hasContinuation || !continuationMatchesRoot(continuation, c.filesystemRootGen) || continuation.destination != destination || continuation.epoch != epoch || continuation.grantRevision != runtime.readGrantRevision || c.historyReadEpoch != epoch || c.historyDestination != destination) {
 			c.retireReadHistoryLocked()
@@ -199,19 +245,31 @@ func (c *Chat) commitAndDispatch(ctx context.Context, reservation *providerDispa
 
 func (c *Chat) readContinuationCurrent(conversationID string, selection model.Model, epoch uint64) bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed || c.conversationID != conversationID || c.selected == nil || *c.selected != selection || (c.credentialBusy && c.credentialBusyProfile == selection.ProfileID) || !c.historySensitive || c.historyDestination != readDestination(selection) || c.historyReadEpoch != epoch || c.filesystemRootAck < c.filesystemRootGen {
+		c.mu.Unlock()
 		return false
 	}
 	runtime := c.toolRuntime
-	if runtime == nil {
+	root, rootGeneration := c.filesystemRoot, c.filesystemRootGen
+	c.mu.Unlock()
+	if runtime == nil || runtime.readPublicationGate == nil {
 		return false
 	}
-	runtime.readAuthorityMu.Lock()
-	defer runtime.readAuthorityMu.Unlock()
-	continuation, ok := runtime.readContinuations[conversationID]
-	currentRevision, _ := runtime.grants.Snapshot(conversationID)
-	return ok && continuation.destination == readDestination(selection) && continuationMatchesRoot(continuation, c.filesystemRootGen) && continuation.epoch == epoch && epoch == runtime.readAuthorityEpoch && continuation.grantRevision == currentRevision && runtime.readGrantRevision == currentRevision && validReadContinuationRecord(continuation, currentRevision)
+	policy, coverage, ok := runtime.readPublicationRevisions(conversationID, nil)
+	if !ok {
+		return false
+	}
+	current := false
+	err := runtime.readPublicationGate.WithFilesystemReadPublicationCurrent(context.Background(), conversationID, root, rootGeneration, policy, coverage, func() error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.closed || c.conversationID != conversationID || c.selected == nil || *c.selected != selection || (c.credentialBusy && c.credentialBusyProfile == selection.ProfileID) || !c.historySensitive || c.historyDestination != readDestination(selection) || c.historyReadEpoch != epoch || c.filesystemRootAck < c.filesystemRootGen {
+			return nil
+		}
+		current = c.readContinuationCurrentLocked(conversationID, selection, epoch)
+		return nil
+	})
+	return err == nil && current
 }
 
 func (c *Chat) readContinuationCurrentLocked(conversationID string, selection model.Model, epoch uint64) bool {
