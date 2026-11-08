@@ -426,7 +426,6 @@ func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool,
 func TestStage6OrdinaryChatWithoutRoot(t *testing.T) {
 	stage6Begin("ordinary_chat_without_root")
 	root := t.TempDir()
-	store := auth.Store{Path: filepath.Join(root, "synthetic-auth.json")}
 	base := &stage6Provider{firstToolCall: false, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
 	providers, err := model.NewRegistry(base)
 	if err != nil {
@@ -440,12 +439,26 @@ func TestStage6OrdinaryChatWithoutRoot(t *testing.T) {
 	if available, _ := service.BackendStatus(); available {
 		t.Fatal("missing synthetic backend was reported available")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	store := auth.Store{Path: filepath.Join(root, "synthetic-auth.json"), Protection: service}
+	settingsStore := settings.Store{Path: filepath.Join(root, "synthetic-settings.json"), Protection: service}
+	if err := store.RegisterProtection(ctx); err != nil {
+		_ = service.Close(context.Background())
+		t.Fatalf("auth owner registration failed with unavailable backend: %v", err)
+	}
+	if err := settingsStore.RegisterProtection(ctx); err != nil {
+		_ = service.Close(context.Background())
+		t.Fatalf("settings owner registration failed with unavailable backend: %v", err)
+	}
+	if _, err := settingsStore.Load(); err != nil {
+		_ = service.Close(context.Background())
+		t.Fatalf("settings loading failed with unavailable backend: %v", err)
+	}
 	config := runtime.ToolRuntimeConfig{
 		Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: service, RootHost: service,
 	}
 	chat := runtime.NewChatWithToolRuntime(providers, store, nil, config)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	if err := chat.AddProfile(ctx, "ordinary-profile", "openai", "synthetic profile", "synthetic-never-real-key", nil); err != nil {
 		_ = chat.CloseContext(context.Background())
 		_ = service.Close(context.Background())
