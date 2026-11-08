@@ -199,10 +199,11 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 	s.revision++
 	session, registry := s.session, s.registry
 	s.mu.Unlock()
+	// Invalidate runtime captures and continuations globally, not only
+	// conversations with still-open admissions. A completed capture may have
+	// already retired its host admission while remaining eligible for handoff.
+	s.invalidateConversation("")
 	if session != nil {
-		for _, conversation := range session.AdmissionConversations() {
-			s.invalidateConversation(conversation)
-		}
 		err = session.InvalidateAdmissions(ctx)
 		if err == nil {
 			err = session.RegisterRotationContext(ctx, owner, registrations)
@@ -311,6 +312,34 @@ func (s *linuxImplementation) ExecuteAdmittedFilesystemRead(ctx context.Context,
 	return capture, err
 }
 
+// WithFilesystemReadPublicationCurrent serializes the commit/handoff with
+// every Service.Protect owner rotation. ownerUpdateMu spans the mutation's
+// pending latch, registry transition, invalidation callbacks, and final state
+// update; no callback can observe an intermediate owner snapshot. The callback
+// must not perform provider I/O.
+func (s *linuxImplementation) WithFilesystemReadPublicationCurrent(policyRevision, coverageRevision uint64, operation func() error) error {
+	if s == nil || operation == nil {
+		return ErrCoverageMissing
+	}
+	if !s.ownerUpdateMu.TryLock() {
+		return ErrCoverageMissing
+	}
+	defer s.ownerUpdateMu.Unlock()
+	s.mu.Lock()
+	if s.registry == nil || s.inventory == nil {
+		s.mu.Unlock()
+		return ErrCoverageMissing
+	}
+	view := s.registry.View()
+	coverage := s.inventory.Snapshot()
+	current := !s.closed && s.pendingOwners.Load() == 0 && len(s.blocked) == 0 && s.owners[auth.SensitiveOwnerAuth].State == OwnerRegistered && s.owners[auth.SensitiveOwnerSettings].State == OwnerRegistered && view.Generation == policyRevision && coverage.Complete && coverage.Revision == coverageRevision
+	s.mu.Unlock()
+	if !current {
+		return ErrCoverageMissing
+	}
+	return operation()
+}
+
 // WithFilesystemReadExecutionCurrent holds the Linux implementation owner
 // state lock across the caller's bounded release or capture callback. Service
 // applies its root gate before calling this method, preserving root->owner
@@ -368,7 +397,7 @@ func (s *linuxImplementation) invalidateConversation(conversation string) {
 	s.mu.Lock()
 	callback := s.readInvalidator
 	s.mu.Unlock()
-	if callback != nil && conversation != "" {
+	if callback != nil {
 		callback(conversation)
 	}
 }

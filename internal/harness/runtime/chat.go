@@ -79,6 +79,9 @@ type Chat struct {
 	authRegistry          *auth.Registry
 	oauth                 auth.OAuthCoordinator
 	history               []provider.Message
+	historySensitive      bool
+	historyReadEpoch      uint64
+	historyDestination    string
 	turns                 []Turn
 	usage                 map[string]*ModelUsage
 	selected              *model.Model
@@ -148,6 +151,9 @@ func NewChatWithToolRuntime(providers *model.Registry, profiles auth.Store, regi
 		chat = NewChatWithAuth(providers, profiles, registry)
 	}
 	chat.toolRuntime = newToolRuntime(config)
+	if chat.toolRuntime != nil {
+		chat.toolRuntime.retireHistory = chat.retireReadHistory
+	}
 	return chat
 }
 
@@ -173,6 +179,8 @@ func (c *Chat) CloseContext(ctx context.Context) error {
 	if firstClose {
 		c.closed = true
 		c.history = nil
+		c.historySensitive = false
+		c.historyDestination = ""
 		c.toolCallIDs = nil
 		rootEvent = c.clearFilesystemRootLocked(FilesystemRootShutdown, true)
 	}
@@ -670,6 +678,8 @@ func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *Files
 	oldID := c.conversationID
 	rootEvent := c.clearFilesystemRootLocked(reason, true)
 	c.history = nil
+	c.historySensitive = false
+	c.historyDestination = ""
 	c.turns = nil
 	c.toolCallIDs = nil
 	if c.toolRuntime != nil && oldID != "" {
@@ -736,7 +746,16 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	c.activeToolActivities = nil
 	c.activeProfile = selection.ProfileID
 	c.cancel = cancel
-	history := append([]provider.Message(nil), c.history...)
+	if c.historySensitive && !c.readContinuationCurrentLocked(c.conversationID, selection, c.historyReadEpoch) {
+		c.retireReadHistoryLocked()
+	}
+	// Keep the authority metadata paired with this private transcript snapshot.
+	// A later invalidation can clear c.history after we release the mutex, but it
+	// must not make this already-copied sensitive draft look like ordinary text.
+	historySensitive := c.historySensitive
+	historyEpoch := c.historyReadEpoch
+	historyDestination := c.historyDestination
+	history := cloneMessages(c.history)
 	history = append(history, provider.Message{Role: provider.RoleUser, Text: prompt})
 	requestID := fmt.Sprintf("chat-%d", generation)
 	conversationID, conversationIDErr := c.conversationID, c.conversationIDErr
@@ -841,7 +860,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		}
 		return Turn{}, errors.New("chat selection changed while resolving credentials")
 	}
-	loop := c.runToolLoop(ctx, generation, selection, plug, modelCredential(prof, key), history, requestID, conversationID, conversationIDErr, stateIsCurrent, func(delta string) {
+	loop := c.runToolLoop(ctx, generation, selection, plug, modelCredential(prof, key), history, historySensitive, historyEpoch, historyDestination, requestID, conversationID, conversationIDErr, stateIsCurrent, func(delta string) {
 		if stateIsCurrent() && onDelta != nil {
 			onDelta(delta)
 		}
@@ -871,30 +890,99 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	if loop.message != "" && turn.Message == "" {
 		turn.Message = loop.message
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.generation != generation || c.closed {
-		return turn, errors.New("stale provider result discarded")
-	}
-	c.active = false
-	c.activeProfile = ""
-	c.cancel = nil
-	if loop.persist {
-		c.history = cloneMessages(loop.history)
-	} else if turn.Outcome == provider.OutcomeCompleted || turn.Outcome == provider.OutcomeRefused {
-		if len(result.Native) == 0 {
-			turn.Outcome = provider.OutcomeUnsupported
-			turn.Message = "provider returned no replayable continuation data"
-			turn.DiagnosticCode = provider.DiagnosticRuntimeMissingNative
-		} else {
-			c.history = append(c.history, provider.Message{Role: provider.RoleUser, Text: prompt}, provider.Message{Role: provider.RoleAssistant, Text: result.Text, Native: cloneRaw(result.Native)})
+	finalize := func() error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.generation != generation || c.closed {
+			return errors.New("stale provider result discarded")
 		}
+		var finalGate *toolRuntime
+		if loop.historySensitive && c.toolRuntime != nil {
+			finalGate = c.toolRuntime
+			finalGate.readAuthorityMu.Lock()
+			defer finalGate.readAuthorityMu.Unlock()
+		}
+		c.active = false
+		c.activeProfile = ""
+		c.cancel = nil
+		keepSensitiveHistory := true
+		if loop.historySensitive {
+			keepSensitiveHistory = finalGate != nil && c.readContinuationStateCurrentLocked(conversationID, selection, loop.historyEpoch, finalGate)
+			if !keepSensitiveHistory {
+				c.retireReadHistoryLocked()
+				turn.Text, turn.Refusal = "", ""
+				turn.Outcome = provider.OutcomeInterrupted
+				turn.Message = "Conversation context was retired before the provider response could be retained. Start a fresh conversation to continue."
+			}
+		}
+		if loop.persist {
+			if !loop.historySensitive || keepSensitiveHistory {
+				c.history = cloneMessages(loop.history)
+			}
+		} else if !loop.historySensitive && (turn.Outcome == provider.OutcomeCompleted || turn.Outcome == provider.OutcomeRefused) {
+			if len(result.Native) == 0 {
+				turn.Outcome = provider.OutcomeUnsupported
+				turn.Message = "provider returned no replayable continuation data"
+				turn.DiagnosticCode = provider.DiagnosticRuntimeMissingNative
+			} else {
+				c.history = append(c.history, provider.Message{Role: provider.RoleUser, Text: prompt}, provider.Message{Role: provider.RoleAssistant, Text: result.Text, Native: cloneRaw(result.Native)})
+			}
+		}
+		c.turns = append(c.turns, turn)
+		return nil
 	}
-	c.turns = append(c.turns, turn)
+	if loop.historySensitive {
+		c.mu.Lock()
+		finalGate := c.toolRuntime
+		root, rootGeneration := c.filesystemRoot, c.filesystemRootGen
+		current := c.generation == generation && !c.closed
+		c.mu.Unlock()
+		if !current {
+			return turn, errors.New("stale provider result discarded")
+		}
+		if finalGate == nil || finalGate.readPublicationGate == nil {
+			return c.finishRetiredSensitiveTurn(generation, &turn), callErr
+		}
+		policy, coverage, revisionsOK := finalGate.readPublicationRevisions(conversationID, nil)
+		if !revisionsOK {
+			return c.finishRetiredSensitiveTurn(generation, &turn), callErr
+		}
+		err := finalGate.readPublicationGate.WithFilesystemReadPublicationCurrent(ctx, conversationID, root, rootGeneration, policy, coverage, finalize)
+		if err != nil {
+			c.mu.Lock()
+			stillCurrent := c.generation == generation && !c.closed
+			c.mu.Unlock()
+			if !stillCurrent {
+				return turn, errors.New("stale provider result discarded")
+			}
+			return c.finishRetiredSensitiveTurn(generation, &turn), callErr
+		}
+	} else if err := finalize(); err != nil {
+		return turn, err
+	}
 	if callErr != nil {
 		return turn, callErr
 	}
 	return turn, nil
+}
+
+func (c *Chat) finishRetiredSensitiveTurn(generation uint64, turn *Turn) Turn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generation != generation || c.closed {
+		return *turn
+	}
+	c.active = false
+	c.activeProfile = ""
+	c.cancel = nil
+	if c.historySensitive {
+		c.retireReadHistoryLocked()
+	}
+	turn.Text, turn.Refusal = "", ""
+	turn.Outcome = provider.OutcomeInterrupted
+	turn.Message = "Conversation context was retired before the provider response could be retained. Start a fresh conversation to continue."
+	c.turns = append(c.turns, *turn)
+	return *turn
 }
 
 func (c *Chat) updateToolActivity(generation uint64, activity ToolActivity) {
@@ -964,5 +1052,26 @@ func messageForProviderCode(code string) string {
 		return "ChatGPT plan authorization was rejected. Reconnect the selected account and verify its plan-use permission."
 	default:
 		return "OpenAI could not complete this request. The selected profile remains in use; no billing fallback occurred."
+	}
+}
+
+func (c *Chat) retireReadHistory(conversationID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conversationID != conversationID || !c.historySensitive {
+		return
+	}
+	c.retireReadHistoryLocked()
+}
+
+func (c *Chat) retireReadHistoryLocked() {
+	c.history = nil
+	c.historySensitive = false
+	c.historyDestination = ""
+	c.historyReadEpoch++
+	for i := range c.turns {
+		c.turns[i].Text = ""
+		c.turns[i].Refusal = ""
+		c.turns[i].Message = "Conversation context was retired after an authorization change. Start a fresh conversation to continue."
 	}
 }

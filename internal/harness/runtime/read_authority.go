@@ -18,9 +18,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sort"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
+	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/tools"
 )
 
@@ -56,11 +59,33 @@ type readAuthorityRecord struct {
 	claimed         bool
 	attemptFinished bool
 	captureID       string
+	disclosed       bool
 	transitions     []readGrantTransition
 }
 
+// readContinuationRecord contains no payload or OS resource. It records the
+// authority dependencies of content already committed to provider history.
+type readContinuationRecord struct {
+	conversationID        string
+	destination           string
+	epoch                 uint64
+	grantRevision         uint64
+	identities            []string
+	classes               []string
+	serviceIDs            []string
+	admissionBindings     []string
+	authorizationBindings []string
+	rootGenerations       []uint64
+	policyRevisions       []uint64
+	coverageRevisions     []uint64
+	authorityIDs          []string
+	transitions           []readGrantTransition
+	payloadBytes          int
+}
+
 // PrivateReadCapture is an opaque handle to bounded in-memory bytes. It has
-// no conversion to a tool/provider result; Stage 5 owns any future disclosure.
+// no conversion to a tool/provider result; only the Stage 5 coordinator can
+// disclose it after synchronized commitment.
 type PrivateReadCapture struct {
 	owner *toolRuntime
 	id    string
@@ -74,6 +99,7 @@ type privateReadCaptureRecord struct {
 	admission           string
 	authorization       string
 	identity            string
+	class               string
 	rootGeneration      uint64
 	policyRevision      uint64
 	coverage            uint64
@@ -225,7 +251,7 @@ func (r *toolRuntime) stagePrivateReadCaptureLocked(reference *ReadExecutionRefe
 		serviceID: admission.ServiceID, admission: admission.AdmissionBinding,
 		authorization: result.AuthorizationBinding, identity: admission.Identity,
 		rootGeneration: admission.RootGeneration, policyRevision: admission.PolicyRevision,
-		coverage: admission.CoverageRevision, destination: admission.Destination,
+		coverage: admission.CoverageRevision, destination: admission.Destination, class: admission.Class,
 		outcome: result.Outcome, readStarted: result.ReadStarted,
 		workerJoined: result.WorkerJoined, capabilitiesRetired: result.CapabilitiesRetired,
 		bytes: append([]byte(nil), result.Bytes...), expires: time.Now().Add(privateReadLifetime),
@@ -318,14 +344,32 @@ func (r *toolRuntime) RevokeReadExecution(reference *ReadExecutionReference) err
 		return errReadAuthorityInvalid
 	}
 	r.readAuthorityMu.Lock()
-	defer r.readAuthorityMu.Unlock()
-	record, ok := r.readAuthorities[reference.id]
-	if !ok {
+	conversationID := ""
+	for conversation, continuation := range r.readContinuations {
+		for _, id := range continuation.authorityIDs {
+			if id == reference.id {
+				conversationID = conversation
+				break
+			}
+		}
+	}
+	if record, ok := r.readAuthorities[reference.id]; ok {
+		r.discardAuthorityCaptureLocked(record)
+		conversationID = record.conversationID
+	}
+	if conversationID == "" {
+		r.readAuthorityMu.Unlock()
 		return errReadAuthorityInvalid
 	}
-	r.discardAuthorityCaptureLocked(record)
-	delete(r.readAuthorities, reference.id)
-	return nil
+	r.invalidateReadAuthorityLocked()
+	r.coordinator.CancelConversation(conversationID)
+	r.readAuthorityMu.Unlock()
+	cleanupErr := r.invalidateHostReadExecutions(conversationID)
+	r.invalidateConversationUI(conversationID)
+	if r.retireHistory != nil {
+		r.retireHistory(conversationID)
+	}
+	return cleanupErr
 }
 
 func (r *toolRuntime) FinishReadExecution(reference *ReadExecutionReference) error {
@@ -440,7 +484,7 @@ func (r *toolRuntime) advanceReadAuthorityRevisionLocked(transition permissions.
 			return false
 		}
 	}
-	if len(r.readAuthorities) == 0 {
+	if len(r.readAuthorities) == 0 && len(r.readContinuations) == 0 {
 		r.readGrantRevision = transition.AfterRevision
 		return true
 	}
@@ -451,6 +495,19 @@ func (r *toolRuntime) advanceReadAuthorityRevisionLocked(transition permissions.
 		return false
 	}
 	r.readGrantRevision = transition.AfterRevision
+	for conversationID, continuation := range r.readContinuations {
+		if conversationID != request.ConversationID || continuation.epoch != r.readAuthorityEpoch || continuation.grantRevision != transition.BeforeRevision {
+			r.invalidateReadAuthorityLocked()
+			return false
+		}
+		continuation.grantRevision = transition.AfterRevision
+		ids := transition.InsertedIDs
+		if !approval {
+			ids = transition.ConsumedIDs
+		}
+		continuation.transitions = append(continuation.transitions, readGrantTransition{before: transition.BeforeRevision, after: transition.AfterRevision, binding: transition.Binding, ids: append([]string(nil), ids...)})
+		r.readContinuations[conversationID] = continuation
+	}
 	for id, record := range r.readAuthorities {
 		if len(record.transitions) >= maxReadAuthorities*2 {
 			r.clearReadAuthoritiesLocked()
@@ -479,28 +536,43 @@ func (r *toolRuntime) beginApproval(request permissions.Request, expectedEpoch u
 
 func (r *toolRuntime) respondApproval(id string, choice permissions.ApprovalChoice, redirect string, request permissions.Request, readCall bool, expectedEpoch uint64) (permissions.ApprovalResponse, error) {
 	r.readAuthorityMu.Lock()
-	defer r.readAuthorityMu.Unlock()
+	beforeEpoch := r.readAuthorityEpoch
 	if expectedEpoch != r.readAuthorityEpoch {
+		r.readAuthorityMu.Unlock()
 		return permissions.ApprovalResponse{}, errReadAuthorityInvalid
 	}
 	response, err := r.coordinator.Respond(id, choice, redirect)
+	if err == nil {
+		if readCall && response.Outcome == permissions.ApprovalGranted {
+			if !r.advanceReadAuthorityRevisionLocked(response.Transition, request, true) {
+				err = errReadAuthorityInvalid
+			}
+		} else if len(r.readAuthorities) > 0 || len(r.readContinuations) > 0 {
+			r.invalidateReadAuthorityLocked()
+		}
+	}
+	conversationID := request.ConversationID
+	retired := beforeEpoch != r.readAuthorityEpoch
+	r.readAuthorityMu.Unlock()
+	if retired && r.retireHistory != nil {
+		r.retireHistory(conversationID)
+	}
 	if err != nil {
 		return permissions.ApprovalResponse{}, err
-	}
-	if readCall && response.Outcome == permissions.ApprovalGranted {
-		if !r.advanceReadAuthorityRevisionLocked(response.Transition, request, true) {
-			return permissions.ApprovalResponse{}, errReadAuthorityInvalid
-		}
-	} else if len(r.readAuthorities) > 0 {
-		r.invalidateReadAuthorityLocked()
 	}
 	return response, nil
 }
 
 func (r *toolRuntime) consumePermission(request permissions.Request, expectedRevision, expectedEpoch uint64, readCall bool) (permissions.GrantTransition, error) {
 	r.readAuthorityMu.Lock()
-	defer r.readAuthorityMu.Unlock()
-	return r.consumePermissionLocked(request, expectedRevision, expectedEpoch, readCall)
+	beforeEpoch := r.readAuthorityEpoch
+	transition, err := r.consumePermissionLocked(request, expectedRevision, expectedEpoch, readCall)
+	retired := beforeEpoch != r.readAuthorityEpoch
+	r.readAuthorityMu.Unlock()
+	if retired && r.retireHistory != nil {
+		r.retireHistory(request.ConversationID)
+	}
+	return transition, err
 }
 
 func (r *toolRuntime) consumePermissionLocked(request permissions.Request, expectedRevision, expectedEpoch uint64, readCall bool) (permissions.GrantTransition, error) {
@@ -515,7 +587,7 @@ func (r *toolRuntime) consumePermissionLocked(request permissions.Request, expec
 		if !r.advanceReadAuthorityRevisionLocked(transition, request, false) {
 			return permissions.GrantTransition{}, errReadAuthorityInvalid
 		}
-	} else if len(r.readAuthorities) > 0 {
+	} else if len(r.readAuthorities) > 0 || len(r.readContinuations) > 0 {
 		r.invalidateReadAuthorityLocked()
 	}
 	return transition, nil
@@ -539,7 +611,7 @@ func (r *toolRuntime) checkReadAuthorityRevision(revision uint64) bool {
 	}
 	r.readAuthorityMu.Lock()
 	defer r.readAuthorityMu.Unlock()
-	if len(r.readAuthorities) == 0 {
+	if len(r.readAuthorities) == 0 && len(r.readContinuations) == 0 {
 		return true
 	}
 	if revision != r.readGrantRevision {
@@ -571,6 +643,7 @@ func (r *toolRuntime) clearReadAuthoritiesLocked() {
 		r.discardAuthorityCaptureLocked(authority)
 	}
 	clear(r.readAuthorities)
+	clear(r.readContinuations)
 	for id, capture := range r.privateReadCaptures {
 		clear(capture.bytes)
 		if capture.timer != nil {
@@ -604,6 +677,9 @@ func (r *toolRuntime) revokeConversationGrant(conversationID, grantID string) er
 	r.readAuthorityMu.Unlock()
 	cleanupErr := r.invalidateHostReadExecutions(conversationID)
 	r.invalidateConversationUI(conversationID)
+	if r.retireHistory != nil {
+		r.retireHistory(conversationID)
+	}
 	return cleanupErr
 }
 
@@ -615,6 +691,9 @@ func (r *toolRuntime) clearConversationGrants(conversationID string) (int, error
 	r.readAuthorityMu.Unlock()
 	cleanupErr := r.invalidateHostReadExecutions(conversationID)
 	r.invalidateConversationUI(conversationID)
+	if r.retireHistory != nil {
+		r.retireHistory(conversationID)
+	}
 	return removed, cleanupErr
 }
 
@@ -629,12 +708,56 @@ func (r *toolRuntime) clearConversationGrantsLocked(conversationID string) {
 }
 
 func (r *toolRuntime) invalidateConversation(conversationID string) {
+	if r == nil {
+		return
+	}
+	if conversationID == "" {
+		r.invalidateAllReadConversations()
+		return
+	}
 	r.readAuthorityMu.Lock()
 	r.invalidateReadAuthorityLocked()
 	r.coordinator.CancelConversation(conversationID)
 	r.readAuthorityMu.Unlock()
 	_ = r.invalidateHostReadExecutions(conversationID)
 	r.invalidateConversationUI(conversationID)
+	if r.retireHistory != nil {
+		r.retireHistory(conversationID)
+	}
+}
+
+// invalidateAllReadConversations retires runtime-owned captures and replay
+// provenance even after the host has closed the admission that originally
+// identified the conversation. Host owner rotation uses the empty callback ID
+// as this deliberately global, fail-closed invalidation request.
+func (r *toolRuntime) invalidateAllReadConversations() {
+	r.readAuthorityMu.Lock()
+	conversations := make(map[string]struct{})
+	for _, authority := range r.readAuthorities {
+		if authority.conversationID != "" {
+			conversations[authority.conversationID] = struct{}{}
+		}
+	}
+	for _, capture := range r.privateReadCaptures {
+		if capture.conversationID != "" {
+			conversations[capture.conversationID] = struct{}{}
+		}
+	}
+	for conversationID := range r.readContinuations {
+		conversations[conversationID] = struct{}{}
+	}
+	r.invalidateReadAuthorityLocked()
+	for conversationID := range conversations {
+		r.coordinator.CancelConversation(conversationID)
+	}
+	r.readAuthorityMu.Unlock()
+	for conversationID := range conversations {
+		_ = r.invalidateHostReadExecutions(conversationID)
+		r.invalidateConversationUI(conversationID)
+		if r.retireHistory != nil {
+			r.retireHistory(conversationID)
+		}
+	}
 }
 
 func (r *toolRuntime) invalidateHostReadExecutions(conversationID string) error {
@@ -662,10 +785,11 @@ func (r *toolRuntime) retireReadAuthorities(conversationID string) {
 	}
 	r.readAuthorityMu.Lock()
 	for id, record := range r.readAuthorities {
-		if record.conversationID == conversationID {
-			r.discardAuthorityCaptureLocked(record)
-			delete(r.readAuthorities, id)
+		if record.conversationID != conversationID {
+			continue
 		}
+		r.discardAuthorityCaptureLocked(record)
+		delete(r.readAuthorities, id)
 	}
 	for id, capture := range r.privateReadCaptures {
 		if capture.conversationID == conversationID {
@@ -677,6 +801,255 @@ func (r *toolRuntime) retireReadAuthorities(conversationID string) {
 		}
 	}
 	r.readAuthorityMu.Unlock()
+}
+
+// publishReadCapturesLocked materializes only captures still owned by this
+// runtime and commits their descriptor-free provenance. The caller holds the
+// authorization/publication gate. Payload work is bounded by existing capture
+// and tool-result limits.
+func (r *toolRuntime) publishReadCapturesLocked(conversationID, destination string, messages, historyMessages []provider.Message, captures map[string]*PrivateReadCapture, budgets map[string]int) ([]provider.Message, bool) {
+	if r == nil {
+		return nil, false
+	}
+	currentRevision, _ := r.grants.Snapshot(conversationID)
+	continuation, hasContinuation := r.readContinuations[conversationID]
+	if hasContinuation && (continuation.epoch != r.readAuthorityEpoch || continuation.grantRevision != currentRevision || r.readGrantRevision != currentRevision || continuation.destination != destination || !validReadContinuationRecord(continuation, currentRevision)) {
+		return nil, false
+	}
+	out := messages
+	if !hasContinuation {
+		continuation = readContinuationRecord{conversationID: conversationID, destination: destination, epoch: r.readAuthorityEpoch, grantRevision: currentRevision}
+	}
+	if len(captures) == 0 {
+		return out, true
+	}
+	type validatedCapture struct {
+		handle      *PrivateReadCapture
+		record      privateReadCaptureRecord
+		authorityID string
+		authority   readAuthorityRecord
+	}
+	validated := make([]validatedCapture, 0, len(captures))
+	allTransitions := append([]readGrantTransition(nil), continuation.transitions...)
+	addedBytes := 0
+	for callID, handle := range captures {
+		if handle == nil || handle.owner != r || handle.id == "" {
+			return nil, false
+		}
+		capture, ok := r.privateReadCaptures[handle.id]
+		if !ok || capture.conversationID != conversationID || capture.callID != callID || capture.destination != destination || !time.Now().Before(capture.expires) || capture.outcome != tools.OutcomeSucceeded || !capture.readStarted || !capture.workerJoined || !capture.capabilitiesRetired || !utf8.Valid(capture.bytes) {
+			return nil, false
+		}
+		var authorityID string
+		var authority readAuthorityRecord
+		for id, candidate := range r.readAuthorities {
+			if candidate.captureID == handle.id {
+				authorityID, authority = id, candidate
+				break
+			}
+		}
+		if authorityID == "" || !authority.claimed || !authority.attemptFinished || authority.disclosed || authority.epoch != r.readAuthorityEpoch || authority.grantRevision != currentRevision || r.readGrantRevision != currentRevision || !validReadTransitionChain(authority) {
+			return nil, false
+		}
+		found := false
+		for index := range out {
+			item := out[index].ToolResult
+			if out[index].Role == provider.RoleTool && item != nil && item.CallID == callID {
+				maxBytes := budgets[callID]
+				if maxBytes <= 0 || maxBytes > MaxToolResultBytes {
+					return nil, false
+				}
+				content, truncated, err := envelopeForToolResult(tools.OutcomeSucceeded, []tools.Content{{Kind: tools.ContentText, Text: string(capture.bytes)}}, false, maxBytes)
+				if err != nil || truncated {
+					return nil, false
+				}
+				item.Content, item.IsError = content, false
+				for historyIndex := range historyMessages {
+					historyResult := historyMessages[historyIndex].ToolResult
+					if historyMessages[historyIndex].Role == provider.RoleTool && historyResult != nil && historyResult.CallID == callID {
+						historyResult.Content, historyResult.IsError = content, false
+						break
+					}
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, false
+		}
+		addedBytes += len(capture.bytes)
+		validated = append(validated, validatedCapture{handle: handle, record: capture, authorityID: authorityID, authority: authority})
+		allTransitions = append(allTransitions, authority.transitions...)
+	}
+	if addedBytes > maxPrivateReadBytes-continuation.payloadBytes {
+		return nil, false
+	}
+	merged, valid := mergeReadTransitions(allTransitions)
+	if !valid || (len(merged) > 0 && merged[len(merged)-1].after != currentRevision) {
+		return nil, false
+	}
+	// Batch validation is complete before ownership or bytes are changed.
+	for _, item := range validated {
+		continuation.identities = append(continuation.identities, item.record.identity)
+		continuation.classes = append(continuation.classes, item.record.class)
+		continuation.serviceIDs = append(continuation.serviceIDs, item.record.serviceID)
+		continuation.admissionBindings = append(continuation.admissionBindings, item.record.admission)
+		continuation.authorizationBindings = append(continuation.authorizationBindings, item.record.authorization)
+		continuation.rootGenerations = append(continuation.rootGenerations, item.record.rootGeneration)
+		continuation.policyRevisions = append(continuation.policyRevisions, item.record.policyRevision)
+		continuation.coverageRevisions = append(continuation.coverageRevisions, item.record.coverage)
+		continuation.authorityIDs = append(continuation.authorityIDs, item.authorityID)
+		item.authority.disclosed = true
+		item.authority.captureID = ""
+		r.readAuthorities[item.authorityID] = item.authority
+		clear(item.record.bytes)
+		if item.record.timer != nil {
+			item.record.timer.Stop()
+		}
+		delete(r.privateReadCaptures, item.handle.id)
+	}
+	continuation.epoch, continuation.grantRevision = r.readAuthorityEpoch, currentRevision
+	continuation.payloadBytes += addedBytes
+	continuation.transitions = merged
+	r.readContinuations[conversationID] = continuation
+	return out, true
+}
+
+func mergeReadTransitions(transitions []readGrantTransition) ([]readGrantTransition, bool) {
+	byBefore := make(map[uint64]readGrantTransition, len(transitions))
+	for _, transition := range transitions {
+		if transition.binding == "" || transition.after != transition.before+1 || len(transition.ids) == 0 {
+			return nil, false
+		}
+		if prior, exists := byBefore[transition.before]; exists {
+			if prior.after != transition.after || prior.binding != transition.binding || !sameStringList(prior.ids, transition.ids) {
+				return nil, false
+			}
+			continue
+		}
+		byBefore[transition.before] = transition
+	}
+	starts := make([]uint64, 0, len(byBefore))
+	for before := range byBefore {
+		starts = append(starts, before)
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
+	merged := make([]readGrantTransition, 0, len(starts))
+	for _, before := range starts {
+		transition := byBefore[before]
+		if len(merged) > 0 && merged[len(merged)-1].after != transition.before {
+			return nil, false
+		}
+		merged = append(merged, transition)
+	}
+	return merged, true
+}
+
+func sameStringList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func validReadTransitions(transitions []readGrantTransition, revision uint64) bool {
+	merged, valid := mergeReadTransitions(transitions)
+	return valid && ((len(merged) == 0 && revision == 0) || (len(merged) > 0 && merged[len(merged)-1].after == revision))
+}
+
+func (r *toolRuntime) readPublicationRevisions(conversationID string, captures map[string]*PrivateReadCapture) (uint64, uint64, bool) {
+	if r == nil {
+		return 0, 0, false
+	}
+	r.readAuthorityMu.Lock()
+	defer r.readAuthorityMu.Unlock()
+	var policy, coverage uint64
+	set := func(itemPolicy, itemCoverage uint64) bool {
+		if itemPolicy == 0 || itemCoverage == 0 {
+			return false
+		}
+		if policy != 0 && (policy != itemPolicy || coverage != itemCoverage) {
+			return false
+		}
+		policy, coverage = itemPolicy, itemCoverage
+		return true
+	}
+	if continuation, ok := r.readContinuations[conversationID]; ok {
+		if len(continuation.policyRevisions) == 0 || len(continuation.coverageRevisions) != len(continuation.policyRevisions) {
+			return 0, 0, false
+		}
+		for i := range continuation.policyRevisions {
+			if !set(continuation.policyRevisions[i], continuation.coverageRevisions[i]) {
+				return 0, 0, false
+			}
+		}
+	}
+	for _, handle := range captures {
+		if handle == nil || handle.owner != r {
+			return 0, 0, false
+		}
+		capture, ok := r.privateReadCaptures[handle.id]
+		if !ok || capture.conversationID != conversationID || !set(capture.policyRevision, capture.coverage) {
+			return 0, 0, false
+		}
+	}
+	return policy, coverage, policy != 0 && coverage != 0
+}
+
+func (r *toolRuntime) privateReadEnvelopeSize(handle *PrivateReadCapture, maxBytes int) (int, bool) {
+	if r == nil || handle == nil || handle.owner != r || maxBytes <= 0 {
+		return 0, false
+	}
+	r.readAuthorityMu.Lock()
+	defer r.readAuthorityMu.Unlock()
+	capture, ok := r.privateReadCaptures[handle.id]
+	if !ok || !time.Now().Before(capture.expires) || !utf8.Valid(capture.bytes) {
+		return 0, false
+	}
+	content, truncated, err := envelopeForToolResult(tools.OutcomeSucceeded, []tools.Content{{Kind: tools.ContentText, Text: string(capture.bytes)}}, false, maxBytes)
+	if err != nil || truncated {
+		return 0, false
+	}
+	return len(content), true
+}
+
+func validReadContinuationRecord(record readContinuationRecord, revision uint64) bool {
+	n := len(record.identities)
+	if n == 0 || n > maxReadInvocationClaims || len(record.classes) != n || len(record.serviceIDs) != n || len(record.admissionBindings) != n || len(record.authorizationBindings) != n || len(record.rootGenerations) != n || len(record.policyRevisions) != n || len(record.coverageRevisions) != n || len(record.authorityIDs) != n || record.payloadBytes < 0 || record.payloadBytes > maxPrivateReadBytes || record.destination == "" {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		if record.identities[i] == "" || record.classes[i] == "" || record.serviceIDs[i] == "" || record.admissionBindings[i] == "" || record.authorizationBindings[i] == "" || record.rootGenerations[i] == 0 || record.authorityIDs[i] == "" {
+			return false
+		}
+	}
+	return validReadTransitions(record.transitions, revision)
+}
+
+func (r *toolRuntime) discardCaptureHandleLocked(handle *PrivateReadCapture) {
+	if r == nil || handle == nil || handle.owner != r {
+		return
+	}
+	capture, ok := r.privateReadCaptures[handle.id]
+	if !ok {
+		return
+	}
+	clear(capture.bytes)
+	if capture.timer != nil {
+		capture.timer.Stop()
+	}
+	delete(r.privateReadCaptures, handle.id)
+	for id, authority := range r.readAuthorities {
+		if authority.captureID == handle.id {
+			delete(r.readAuthorities, id)
+		}
+	}
 }
 
 func (r *toolRuntime) readAuthorityCount() int {

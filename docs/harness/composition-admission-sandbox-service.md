@@ -1,12 +1,11 @@
 # Composition admission and non-exposing sandbox service
 
-**Status:** Stages 3–4 retained admission and private worker capture are
-implemented on the Stage 4 review branch. The memory-only chat composition does
-**not** register or enable `read_file`. A narrow internal seam can execute the
-already approved retained object and produce a bounded opaque private capture;
-there is still no provider handoff, transcript integration, or generic read
-dispatch. Native worker/service acceptance remains unavailable in the current
-environment.
+**Status:** Stages 3–5 are implemented on the current review branch. Production
+composition still does **not** register or advertise `read_file`. An unexported,
+package-test-only composition exercises retained worker capture, synchronized
+fake-provider publication and same-context replay. No live provider call occurs.
+Native worker/service acceptance and Stage 6 integrated-profile evidence remain
+outstanding.
 
 ## Composition and ownership
 
@@ -22,7 +21,10 @@ cmd/harness starts
         -> /fs-root selects or clears an in-memory lookup root; no authority
         -> optional retained-read host is injected, but the tool is absent
            from the registry and ordinary dispatch remains refused
-        -> tests call a runtime-owned Stage 4 seam; opaque capture is discarded
+        -> tests may enable an unexported Stage 5 fixture seam; fake-provider handoff
+           occurs only after the synchronized publication gate, which takes
+           Service root -> owner-update -> Chat -> runtime authorization locks
+           and validates policy/coverage generations before handoff
 ```
 
 The host service composes the existing Linux `Registry`, broker, Bubblewrap
@@ -30,7 +32,15 @@ launcher and `HostCoordinator`. Its host authorizer remains deny-only. The
 Stage 3 admission API can retain one exact regular-file object only after the
 explicit root, required auth/settings owner registrations, backend, and
 coverage checks succeed. This is an internal pre-approval operation, not a
-general authorization or dispatch API. No model, tool or UI data can construct
+general authorization or dispatch API. Stage 5 sensitive handoff compares the
+read's admitted policy and inventory revisions to current host state while
+holding the service root lock and Linux owner-update gate, before entering Chat
+and runtime authority locks. Owner rotation holds the same owner-update gate
+from its pending latch through registry rotation, invalidation callbacks and
+final coverage update. Handoff fails closed if a rotation is already active; a
+later rotation is ordered after accepted handoff. The owner callback globally
+retires captures and continuations, including those whose host admission has
+already closed. No model, tool or UI data can construct
 or complete a coverage profile. The synthetic four-owner inventory remains in
 the study command and is not used by `cmd/harness`.
 

@@ -201,6 +201,38 @@ func (s *Service) InvalidateFilesystemRoot(ctx context.Context, transition runti
 	return ctx.Err()
 }
 
+// WithFilesystemReadPublicationCurrent orders the final provider handoff with
+// selected-root and protected-owner transitions. The host root lock is held
+// while the Linux owner gate runs the bounded transcript/request commit.
+func (s *Service) WithFilesystemReadPublicationCurrent(ctx context.Context, conversationID, root string, generation, policyRevision, coverageRevision uint64, operation func() error) error {
+	if ctx == nil || operation == nil {
+		return ErrServiceClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || s.impl == nil {
+		return ErrServiceClosed
+	}
+	s.rootMu.Lock()
+	defer s.rootMu.Unlock()
+	if s.rootClosed || s.rootPending || s.rootPath == "" || s.rootPath != root || s.rootConversationID != conversationID || s.rootGeneration != generation {
+		return runtime.ErrFilesystemRootStale
+	}
+	impl, ok := s.impl.(interface {
+		WithFilesystemReadPublicationCurrent(uint64, uint64, func() error) error
+	})
+	if !ok {
+		return ErrCoverageMissing
+	}
+	return impl.WithFilesystemReadPublicationCurrent(policyRevision, coverageRevision, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return operation()
+	})
+}
+
 func (s *Service) SetFilesystemReadInvalidator(invalidate func(string)) {
 	if s == nil || s.impl == nil {
 		return

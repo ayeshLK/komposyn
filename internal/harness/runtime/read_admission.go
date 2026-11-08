@@ -142,6 +142,16 @@ type FilesystemReadAdmissionHost interface {
 	CloseFilesystemReadAdmission(context.Context, FilesystemReadAdmission) error
 }
 
+// FilesystemReadPublicationGate serializes final sensitive transcript and
+// provider-request commitment with host owner, policy, and selected-root
+// changes. The callback must remain bounded and must not perform provider I/O.
+type FilesystemReadPublicationGate interface {
+	WithFilesystemReadPublicationCurrent(context.Context, string, string, uint64, uint64, uint64, func() error) error
+}
+
+// FilesystemReadAdmissionInvalidator receives host lifecycle notifications.
+// An empty conversation ID requests global capture/continuation retirement for
+// host-wide owner or policy transitions.
 type FilesystemReadAdmissionInvalidator interface {
 	SetFilesystemReadInvalidator(func(string))
 }
