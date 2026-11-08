@@ -1,6 +1,6 @@
 # Issue #215 completion tracking and Stage 6 acceptance contract
 
-Status: current source audit at `a61a3dfa4843f309bc533061f7be6e767f9b49b2`
+Status: current source audit at `899da73890e55922fe690c18be3df902857e4bae`
 (2026-11-08). This is a tracking and evidence contract, not an enablement
 decision. The six-clause exact-file disclosure policy is accepted, while
 `read_file` remains unregistered and unavailable in shipped chat.
@@ -8,9 +8,10 @@ decision. The six-clause exact-file disclosure policy is accepted, while
 The plan was reconstructed from the current issue, its decision/research
 comments, the merged implementation plan, source, and existing evidence. It is
 not a claim that earlier native evidence covers the Stage 6 composition. PR
-#251 merged at the source revision above, but GitHub currently reports issue
-#215 closed while its completion checklist is unfinished. Reopen the issue and
-use this mapping as the current audit; do not erase historical records.
+#251 merged at `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. PR #252 merged the
+tracking contract at `97229b2eafd0d598cffa38aed81f7083e58d7bde`; issue #215
+was reopened because its completion checklist is unfinished. Keep the issue
+open and preserve historical evidence.
 
 ## Current stage audit
 
@@ -22,7 +23,7 @@ use this mapping as the current audit; do not erase historical records.
 | 3: retained admission | Merged | [PR #248](https://github.com/ayeshLK/komposyn/pull/248). Exact retained-object admission and owner barriers; no reopen or second once consumer. |
 | 4: worker and private capture | Merged | [PR #250](https://github.com/ayeshLK/komposyn/pull/250). One-attempt fixed worker, private bounded capture after join/descriptor retirement; native integrated acceptance remains open. |
 | 5: publication and continuation | Merged | [PR #251](https://github.com/ayeshLK/komposyn/pull/251), merge `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. Synchronized batch/provider handoff, replay provenance, owner-gated continuation retirement and stale-response tests. |
-| 6: integrated native acceptance | Runner implemented in the Stage 6 work package; native execution unavailable here | The [Stage 6 runner guide](issue-215-stage6-runner.md) records the exact invocation and case coverage. It composes runtime, Service/registry, fixed worker, and fake provider. Current environment trust-refuses `/usr/bin/bwrap` before probes because it is UID 65534; this is unavailable evidence. An eligible trusted-host run and review remain required. |
+| 6: integrated native acceptance | Partial runner in [draft PR #253](https://github.com/ayeshLK/komposyn/pull/253); native worker cases unavailable | The [Stage 6 runner guide](issue-215-stage6-runner.md) records invocation and current case coverage. Head `899da73890e55922fe690c18be3df902857e4bae` composes the runtime, Service/registry, fixed worker and fake provider; synthetic forwarding tests cover the runtime-to-Service executor seam without OS-enforcement claims. The latest run [reported on #215](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6718440845) built and ran the harness but trust-refused `/usr/bin/bwrap` (UID 65534) before probes or worker launch. Only no-root text chat measured a pass. Remaining runner cases and an eligible trusted-host run/review are required. |
 | Typed-read enablement | Not approved | Requires Stage 6 acceptance, owner/launch gates, and a distinct reviewed enablement decision. |
 
 Production `cmd/harness` still offers only `update_plan` and
