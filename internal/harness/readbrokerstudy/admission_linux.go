@@ -472,10 +472,29 @@ func (s *fixtureSession) ExecuteAdmitted(ctx context.Context, preparation Admitt
 	result := s.runWorkerMode(operationCtx, op, prepared, authority, false)
 	cancel()
 	s.finish(op, result)
-	joined := s.workerWaitSnapshot(op).Joined
+	s.mu.Lock()
+	joined, cleanupRequired := op.workerJoined, op.cleanupRequired
+	s.mu.Unlock()
+	if !joined && cleanupRequired {
+		// Do not close the retained preparation while the worker may still own
+		// its transferred descriptor. Keep the admission and cleanup obligation
+		// reachable for a later bounded retirement retry.
+		s.mu.Lock()
+		if s.admissions[record.ref.id] == record {
+			record.retired = true
+			record.state = admissionCleanupPending
+			s.cleanupBlocked = true
+		}
+		s.mu.Unlock()
+		retired = true
+	}
 	if result.Outcome != ReadSucceeded || !joined {
 		clear(result.Bytes)
-		return fmt.Errorf("retained worker outcome %s; join confirmed=%t", result.Outcome, joined)
+		outcomeErr := fmt.Errorf("retained worker outcome %s; join confirmed=%t", result.Outcome, joined)
+		if cleanupRequired && !joined {
+			return errors.Join(ErrCleanupPending, outcomeErr)
+		}
+		return outcomeErr
 	}
 	if err := retire(); err != nil {
 		clear(result.Bytes)
@@ -621,6 +640,17 @@ func (s *fixtureSession) retireAdmission(ctx context.Context, record *admissionR
 		return errors.Join(ErrCleanupPending, ctx.Err())
 	}
 	if record.prepared != nil {
+		s.mu.Lock()
+		workerPending := record.operation != nil && record.operation.cleanupRequired && !record.operation.workerJoined
+		if workerPending {
+			record.retired = true
+			record.state = admissionCleanupPending
+			s.cleanupBlocked = true
+		}
+		s.mu.Unlock()
+		if workerPending {
+			return ErrCleanupPending
+		}
 		if err := record.prepared.Close(); err != nil {
 			record.cancel()
 			s.mu.Lock()

@@ -342,7 +342,7 @@ func (s *Service) InvalidateFilesystemReadExecutions(conversationID string) erro
 	}
 	impl, ok := s.impl.(interface{ InvalidateFilesystemReadExecutions(string) error })
 	if !ok {
-		return ErrCoverageMissing
+		return nil // unsupported read execution has no worker state to invalidate
 	}
 	return impl.InvalidateFilesystemReadExecutions(conversationID)
 }

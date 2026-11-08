@@ -552,15 +552,21 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	op.evidence.WorkerStarted = true
 	invalid := !s.currentLocked(op) || op.revoked
 	s.mu.Unlock()
+	terminateAndWait := func() workerTerminationResult {
+		if publish {
+			return s.terminateAndWait(op, worker)
+		}
+		return s.terminateAndWaitContext(ctx, op, worker)
+	}
 	if invalid {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("revoked worker cleanup could not be confirmed", cleanup)}
 		}
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("revoked before startup acknowledgement", cleanup)}
 	}
 	if err := worker.Ready(ctx); err != nil {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		diagnostic := workerFailureDiagnostic(worker, err)
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("startup refused and worker cleanup is incomplete: "+diagnostic, cleanup)}
@@ -570,7 +576,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	op.probe = worker.Probe()
 	op.evidence.Probe = op.probe
 	if !validWorkerProbe(op.probe) {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("sandbox probe failed and worker cleanup is incomplete", cleanup)}
 		}
@@ -579,7 +585,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	s.mu.Lock()
 	if !s.currentLocked(op) || op.revoked {
 		s.mu.Unlock()
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("revoked worker cleanup could not be confirmed", cleanup)}
 		}
@@ -594,14 +600,14 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	s.mu.Unlock()
 
 	if err := runCheckpoint(s.checkpointHook(), CheckpointBeforeHandoff); err != nil {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("cancelled before handoff; worker cleanup is incomplete", cleanup)}
 		}
 		return WorkerResult{Outcome: ReadCancelled, Detail: withTerminationDiagnostic("cancelled before read capability handoff; no target-data descriptor was released", cleanup)}
 	}
 	if err := s.broker.Revalidate(prepared); err != nil {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("protected-location refusal and worker cleanup is incomplete", cleanup)}
 		}
@@ -610,7 +616,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 		return refusal
 	}
 	if err := runCheckpoint(s.checkpointHook(), CheckpointAfterFinalRevalidation); err != nil {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("post-validation fixture transition failed and worker cleanup is incomplete", cleanup)}
 		}
@@ -618,7 +624,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	}
 	capability, err := prepared.DuplicateForWorker()
 	if err != nil {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("read capability could not be duplicated and worker cleanup is incomplete", cleanup)}
 		}
@@ -660,7 +666,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 		return nil
 	})
 	if transferErr != nil {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("revoked before handoff; worker cleanup is incomplete", cleanup)}
 		}
@@ -668,7 +674,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	}
 	if heldWorker, ok := worker.(HeldCapabilityWorker); ok {
 		if err := heldWorker.AwaitCapabilityHeld(ctx); err != nil {
-			cleanup := s.terminateAndWait(op, worker)
+			cleanup := terminateAndWait()
 			if !cleanup.cleanupConfirmed() {
 				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("held-capability acknowledgement and cleanup are unconfirmed", cleanup)}
 			}
@@ -683,14 +689,14 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 		invalid := !s.currentLocked(op) || op.revoked
 		s.mu.Unlock()
 		if invalid {
-			cleanup := s.terminateAndWait(op, worker)
+			cleanup := terminateAndWait()
 			if !cleanup.cleanupConfirmed() {
 				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("policy changed while worker held the capability; cleanup is unconfirmed", cleanup)}
 			}
 			return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("policy changed before held read release; no read started", cleanup)}
 		}
 		if err := runCheckpoint(s.checkpointHook(), CheckpointAfterCapabilityHeld); err != nil {
-			cleanup := s.terminateAndWait(op, worker)
+			cleanup := terminateAndWait()
 			if !cleanup.cleanupConfirmed() {
 				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("held read cancelled and cleanup is unconfirmed", cleanup)}
 			}
@@ -703,11 +709,11 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 		releaseErr := withCurrent(func() error { return heldWorker.ReleaseHeldRead(ctx) })
 		invalid = errors.Is(releaseErr, ErrPolicyChanged)
 		if releaseErr != nil && !invalid {
-			cleanup := s.terminateAndWait(op, worker)
+			cleanup := terminateAndWait()
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("held read release outcome is unknown", cleanup)}
 		}
 		if invalid {
-			cleanup := s.terminateAndWait(op, worker)
+			cleanup := terminateAndWait()
 			if !cleanup.cleanupConfirmed() {
 				return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("invalidated held read cleanup is unconfirmed", cleanup)}
 			}
@@ -716,7 +722,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	}
 
 	if err := worker.AwaitReadStarted(ctx); err != nil {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("capability was released but read-start acknowledgement is missing", cleanup)}
 	}
 	s.mu.Lock()
@@ -728,7 +734,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	stale := !s.currentLocked(op) || op.revoked
 	s.mu.Unlock()
 	if stale {
-		cleanup := s.terminateAndWait(op, worker)
+		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("read capability was released before its authorization generation became stale; read outcome and cleanup are unconfirmed", cleanup)}
 		}
@@ -737,7 +743,17 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 
 	workerResult, readErr := worker.ReadResult(ctx)
 	defer func() { clear(workerResult.Bytes) }()
-	wait := s.waitWorker(op, worker)
+	var wait workerWaitResult
+	if publish {
+		wait = s.waitWorker(op, worker)
+	} else {
+		var waitErr error
+		wait, waitErr = s.waitWorkerContext(ctx, op, worker)
+		if waitErr != nil {
+			cleanup := terminateAndWait()
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("worker join exceeded the execution deadline; cleanup remains pending", cleanup)}
+		}
+	}
 	if readErr != nil || wait.ExitErr != nil || !wait.Joined {
 		return WorkerResult{Outcome: ReadUnknown, Detail: "worker result or cleanup could not be confirmed"}
 	}
@@ -750,6 +766,10 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 			workerResult.Outcome = ReadUnknown
 		}
 		return workerResult
+	}
+	if workerResult.Truncated {
+		workerResult.Bytes = nil
+		return WorkerResult{Outcome: ReadPartial, Truncated: true, Detail: "truncated worker response is not eligible for private capture"}
 	}
 	if err := runCheckpoint(s.checkpointHook(), CheckpointAfterCapture); err != nil {
 		return WorkerResult{Outcome: ReadCancelled, Detail: "captured bytes discarded after cancellation"}
@@ -942,6 +962,9 @@ func (s *fixtureSession) startWorkerWait(op *readOperation, worker SandboxWorker
 			s.mu.Lock()
 			op.waitErr = err
 			op.workerJoined = joined
+			if joined && op.cleanupObligation && !op.completed {
+				s.completeJoinedLocked(op, WorkerResult{Outcome: ReadUnknown, Detail: "worker joined after the execution deadline; result suppressed"})
+			}
 			s.mu.Unlock()
 			close(op.waitDone)
 		}()
@@ -954,6 +977,25 @@ func (s *fixtureSession) terminateAndWait(op *readOperation, worker SandboxWorke
 		return workerTerminationResult{Wait: workerWaitResult{Joined: true}}
 	}
 	return workerTerminationResult{TerminationErr: worker.Terminate(), Wait: s.waitWorker(op, worker)}
+}
+
+func (s *fixtureSession) terminateAndWaitContext(ctx context.Context, op *readOperation, worker SandboxWorker) workerTerminationResult {
+	if worker == nil {
+		return workerTerminationResult{Wait: workerWaitResult{Joined: true}}
+	}
+	terminationErr := worker.Terminate()
+	wait, waitErr := s.waitWorkerContext(ctx, op, worker)
+	if waitErr != nil {
+		wait = s.workerWaitSnapshot(op)
+	}
+	if !wait.Joined {
+		s.mu.Lock()
+		op.cleanupObligation = true
+		op.state = StateTerminating
+		s.cleanupBlocked = true
+		s.mu.Unlock()
+	}
+	return workerTerminationResult{TerminationErr: errors.Join(terminationErr, waitErr), Wait: wait}
 }
 
 func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {

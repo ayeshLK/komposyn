@@ -425,6 +425,11 @@ private staging. User approval, Bubblewrap startup/probes, socket waits, worker
 reads, joins and cleanup waits occur outside them. Owner/root code latches
 pending state before requesting runtime invalidation; a release already ordered
 first is then terminated/joined before protected owner writes may continue.
+Stage 4 worker waits observe the execution context. If `Wait` has not joined by
+the deadline, the call returns unknown/cleanup-pending, suppresses its bytes, and
+retains the admission, preparation and join obligation. A later bounded
+invalidation/shutdown retry may retire the retained preparation only after the
+join is confirmed; the timed-out attempt is never replayed.
 
 Claim is attempt consumption, not freshness. `WithCurrent` verifies the actual
 private runtime-ledger member, claimed state, exact invocation/admission

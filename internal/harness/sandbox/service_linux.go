@@ -398,12 +398,15 @@ func (s *linuxImplementation) InvalidateFilesystemReadExecutions(conversationID 
 		return readbrokerstudy.ErrAdmissionStale
 	}
 	s.mu.Lock()
-	if s.closed || s.session == nil {
+	if s.closed {
 		s.mu.Unlock()
 		return ErrServiceClosed
 	}
 	session := s.session
 	s.mu.Unlock()
+	if session == nil {
+		return nil // no backend session means there can be no retained worker/read
+	}
 	invalidator, ok := session.(readbrokerstudy.ConversationReadInvalidator)
 	if !ok {
 		return readbrokerstudy.ErrUnavailable

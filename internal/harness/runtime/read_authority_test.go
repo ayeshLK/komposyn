@@ -404,6 +404,23 @@ func TestChatClearAndRevokeInvalidateConsumedReadAuthority(t *testing.T) {
 	}
 }
 
+func TestPermissionClearAndRevokeDoNotRequireReadBackend(t *testing.T) {
+	runtime := newToolRuntime(ToolRuntimeConfig{Registry: tools.NewRegistry()})
+	chat := &Chat{toolRuntime: runtime, conversationID: "conversation"}
+	if err := runtime.grants.Add(permissions.Grant{ID: "clear-me", ConversationID: chat.conversationID, ToolID: "update_plan", Kind: permissions.RequirementAction, Operation: permissions.OperationInteract, ActionKey: "plan", Lifetime: permissions.LifetimeConversation, Origin: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := chat.ClearToolGrants(); count != 1 || err != nil {
+		t.Fatalf("clear without read backend: count=%d err=%v", count, err)
+	}
+	if err := runtime.grants.Add(permissions.Grant{ID: "revoke-me", ConversationID: chat.conversationID, ToolID: "update_plan", Kind: permissions.RequirementAction, Operation: permissions.OperationInteract, ActionKey: "plan", Lifetime: permissions.LifetimeConversation, Origin: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.RevokeToolGrant("revoke-me"); err != nil {
+		t.Fatalf("revoke without read backend: %v", err)
+	}
+}
+
 func TestChatLifecycleInvalidatesReadAuthority(t *testing.T) {
 	for _, lifecycle := range []string{"cancel", "root", "reset", "shutdown"} {
 		t.Run(lifecycle, func(t *testing.T) {
