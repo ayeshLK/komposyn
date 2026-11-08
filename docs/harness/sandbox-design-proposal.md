@@ -5,6 +5,9 @@ This document consolidates the direction reviewed for
 [issue #215](https://github.com/ayeshLK/komposyn/issues/215) and distinguishes
 that target from the experimental code currently delivered. It does not enable
 filesystem or shell tools. Native run records belong in the tracking issue.
+For later implementation and evidence status, see the current
+[issue #215 completion tracking plan](issue-215-completion-tracking.md); the
+baseline command below predates the merged Stage 6 runner.
 
 This implementation wires the current chat's auth/settings owner lifecycle
 and a pre-consumption runtime refusal seam around the fixed Linux worker. It does
@@ -109,8 +112,11 @@ Parent death and descendant cleanup need their own native evidence.
 | [Manual evidence runner](read-broker-manual-runner.md), PR #222 | Reproducible source and bounded reports; its default remains the older #221 baseline. |
 | Read handoff and outcome corrections, PR #223 | Fixes valid packet decoding, joined-worker classification and conservative directory-coverage refusals; merged fixes are not a verified native pass. |
 
-Next, rerun the corrected baseline from a normal Linux host terminal, using a
-checkout that contains the runner:
+The following command reproduces the historical PR #223 baseline from a normal
+Linux host terminal. It is not the integrated Stage 6 acceptance run and cannot
+close the current native gate. Follow the
+[Stage 6 runner guide](issue-215-stage6-runner.md) and current
+[completion tracking plan](issue-215-completion-tracking.md) for that gate.
 
 ```sh
 git fetch origin master
