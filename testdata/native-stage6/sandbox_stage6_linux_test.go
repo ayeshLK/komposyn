@@ -17,10 +17,10 @@
 package sandbox
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -310,6 +310,12 @@ func TestStage6ParentDeathCoordinatorHelper(t *testing.T) {
 	if os.Getenv("KOMPOSYN_PARENT_DEATH_HELPER") != "1" {
 		return
 	}
+	if os.Getenv("KOMPOSYN_PARENT_DEATH_STALL") == "1" {
+		// Keep descriptor 3 open without sending an event so the supervisor's
+		// handshake deadline and process cleanup path can be tested offline.
+		time.Sleep(time.Hour)
+		return
+	}
 	pipe := os.NewFile(3, "parent-death-handshake")
 	if pipe == nil {
 		t.Fatal("private parent-death handshake descriptor is missing")
@@ -382,6 +388,10 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 		t.Fatal("could not create private parent-death handshake")
 	}
 	defer readPipe.Close()
+	if err := unix.SetNonblock(int(readPipe.Fd()), true); err != nil {
+		_ = writePipe.Close()
+		t.Fatal("could not make private handshake reader nonblocking")
+	}
 	helper := exec.Command(os.Args[0], "-test.run=^TestStage6ParentDeathCoordinatorHelper$")
 	helper.ExtraFiles = []*os.File{writePipe}
 	helper.Stdout, helper.Stderr = io.Discard, io.Discard
@@ -397,34 +407,16 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 	}
 	_ = writePipe.Close()
 	joined := false
-	var reader *bufio.Scanner
 	defer func() {
 		if !joined && helper.Process != nil {
-			waited := make(chan error, 1)
-			go func() { waited <- helper.Wait() }()
-			select {
-			case <-waited:
-				joined = true
-			case <-time.After(28 * time.Second):
-				_ = helper.Process.Kill()
-				<-waited
-				joined = true
-			}
-			if reader != nil {
-				for reader.Scan() {
-					var event readbrokerstudy.ParentDeathStudyEvent
-					if json.Unmarshal(reader.Bytes(), &event) == nil && event.Phase == "worker_cleanup" {
-						stage6Update("parent_death_cleanup", func(item *stage6Case) { item.WorkerJoined = event.WorkerJoined })
-					}
-				}
-			}
+			_ = helper.Process.Kill()
+			_ = helper.Wait()
+			joined = true
 			stage6Update("parent_death_cleanup", func(item *stage6Case) { item.CoordinatorJoined = joined })
 		}
 	}()
 	stage6Update("parent_death_cleanup", func(item *stage6Case) { item.CoordinatorStarted = true })
 
-	reader = bufio.NewScanner(readPipe)
-	reader.Buffer(make([]byte, 256), 4096)
 	phases := make(map[string]bool)
 	var identities struct {
 		Bubblewrap    readbrokerstudy.HostProcessIdentity `json:"bubblewrap"`
@@ -432,10 +424,17 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 	}
 	handshakeCtx, cancel := context.WithTimeout(context.Background(), 28*time.Second)
 	defer cancel()
-	for reader.Scan() {
-		var event readbrokerstudy.ParentDeathStudyEvent
-		if err := json.Unmarshal(reader.Bytes(), &event); err != nil {
-			t.Fatalf("private parent-death handshake was malformed: %v", err)
+	var pending []byte
+	for {
+		event, readErr := readParentDeathEvent(handshakeCtx, int(readPipe.Fd()), &pending)
+		if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, context.Canceled) {
+			_ = helper.Process.Kill()
+			_ = helper.Wait()
+			joined = true
+			t.Fatalf("fixed worker did not reach held-capability state before deadline: %v", readErr)
+		}
+		if readErr != nil {
+			t.Fatalf("private parent-death handshake read failed: %v", readErr)
 		}
 		phases[event.Phase] = true
 		if event.Phase == "worker_cleanup" {
@@ -445,14 +444,6 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 			identities.Bubblewrap, identities.NamespaceInit = event.Bubblewrap, event.NamespaceInit
 			break
 		}
-		select {
-		case <-handshakeCtx.Done():
-			t.Fatal("fixed worker did not reach held-capability state before deadline")
-		default:
-		}
-	}
-	if err := reader.Err(); err != nil {
-		t.Fatalf("private parent-death handshake read failed: %v", err)
 	}
 	if !phases["worker_started"] || !phases["worker_ready"] || !phases["capability_held"] || identities.Bubblewrap.PID <= 0 || identities.NamespaceInit.PID <= 0 {
 		t.Fatal("fixed worker did not acknowledge startup, held capability and process identities")
@@ -483,7 +474,9 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 	stage6Update("parent_death_cleanup", func(item *stage6Case) { item.CoordinatorJoined = true })
 	bwrapExited := waitForPIDFDExit(bwrapFD, 5*time.Second)
 	initExited := waitForPIDFDExit(initFD, 5*time.Second)
-	processesGone := bwrapExited && initExited && processIdentityGone(identities.Bubblewrap) && processIdentityGone(identities.NamespaceInit)
+	bwrapGone := bwrapExited && waitForProcessIdentityGone(identities.Bubblewrap, 5*time.Second)
+	initGone := initExited && waitForProcessIdentityGone(identities.NamespaceInit, 5*time.Second)
+	processesGone := bwrapGone && initGone
 	stage6Update("parent_death_cleanup", func(item *stage6Case) {
 		item.BubblewrapExitObserved, item.NamespaceInitExitObserved = bwrapExited, initExited
 		item.ObservedProcessesGone, item.CleanupConfirmed = processesGone, processesGone
@@ -492,6 +485,72 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 		t.Fatal("observed Bubblewrap or namespace-init process remained after bounded parent-death cleanup")
 	}
 	stage6PassWithEvidence("parent_death_cleanup", "native-worker-lifecycle", "killing the coordinator after the fixed worker held its read descriptor, without sending read release, caused the observed Bubblewrap process and PID-namespace init to exit and disappear; this is limited to the fixed profile and does not prove arbitrary-descendant cleanup")
+}
+
+const maxParentDeathEventBytes = 4096
+
+// readParentDeathEvent uses poll on a nonblocking pipe so its context deadline
+// can interrupt a coordinator that keeps the pipe open without sending data.
+func readParentDeathEvent(ctx context.Context, fd int, pending *[]byte) (readbrokerstudy.ParentDeathStudyEvent, error) {
+	for {
+		if newline := indexByte(*pending, '\n'); newline >= 0 {
+			if newline > maxParentDeathEventBytes {
+				return readbrokerstudy.ParentDeathStudyEvent{}, errors.New("parent-death event exceeded its byte limit")
+			}
+			line := append([]byte(nil), (*pending)[:newline]...)
+			*pending = (*pending)[newline+1:]
+			var event readbrokerstudy.ParentDeathStudyEvent
+			if err := json.Unmarshal(line, &event); err != nil {
+				return event, fmt.Errorf("decode bounded parent-death event: %w", err)
+			}
+			return event, nil
+		}
+		if len(*pending) > maxParentDeathEventBytes {
+			return readbrokerstudy.ParentDeathStudyEvent{}, errors.New("parent-death event exceeded its byte limit")
+		}
+		if err := ctx.Err(); err != nil {
+			return readbrokerstudy.ParentDeathStudyEvent{}, err
+		}
+		wait := 100 * time.Millisecond
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < wait {
+			wait = time.Until(deadline)
+		}
+		if wait < 0 {
+			wait = 0
+		}
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN | unix.POLLHUP}}
+		_, err := unix.Poll(poll, int(wait/time.Millisecond))
+		if err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			return readbrokerstudy.ParentDeathStudyEvent{}, fmt.Errorf("poll parent-death handshake: %w", err)
+		}
+		if poll[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) == 0 {
+			continue
+		}
+		chunk := make([]byte, maxParentDeathEventBytes+1)
+		n, readErr := unix.Read(fd, chunk)
+		if readErr != nil {
+			if errors.Is(readErr, unix.EAGAIN) || errors.Is(readErr, unix.EWOULDBLOCK) || errors.Is(readErr, unix.EINTR) {
+				continue
+			}
+			return readbrokerstudy.ParentDeathStudyEvent{}, fmt.Errorf("read parent-death handshake: %w", readErr)
+		}
+		if n == 0 {
+			return readbrokerstudy.ParentDeathStudyEvent{}, io.EOF
+		}
+		*pending = append(*pending, chunk[:n]...)
+	}
+}
+
+func indexByte(data []byte, value byte) int {
+	for i, current := range data {
+		if current == value {
+			return i
+		}
+	}
+	return -1
 }
 
 func waitForPIDFDExit(fd int, timeout time.Duration) bool {
@@ -520,6 +579,148 @@ func processIdentityGone(identity readbrokerstudy.HostProcessIdentity) bool {
 		return true
 	}
 	return err == nil && startTime != identity.StartTimeTicks
+}
+
+func waitForProcessIdentityGone(identity readbrokerstudy.HostProcessIdentity, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if processIdentityGone(identity) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestStage6ParentDeathHandshakeDeadlineIsInterruptible(t *testing.T) {
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatal("could not create stalled-handshake fixture")
+	}
+	if err := unix.SetNonblock(int(readPipe.Fd()), true); err != nil {
+		t.Fatal("could not make stalled-handshake reader nonblocking")
+	}
+	defer readPipe.Close()
+	helper := exec.Command(os.Args[0], "-test.run=^TestStage6ParentDeathCoordinatorHelper$")
+	helper.ExtraFiles = []*os.File{writePipe}
+	helper.Stdout, helper.Stderr = io.Discard, io.Discard
+	helper.Env = []string{"KOMPOSYN_PARENT_DEATH_HELPER=1", "KOMPOSYN_PARENT_DEATH_STALL=1"}
+	if err := helper.Start(); err != nil {
+		_ = writePipe.Close()
+		t.Fatal("could not start stalled-handshake fixture")
+	}
+	_ = writePipe.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	var pending []byte
+	_, err = readParentDeathEvent(ctx, int(readPipe.Fd()), &pending)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		_ = helper.Process.Kill()
+		_ = helper.Wait()
+		t.Fatalf("stalled coordinator error=%v, want deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		_ = helper.Process.Kill()
+		_ = helper.Wait()
+		t.Fatalf("handshake deadline took %s, want under one second", elapsed)
+	}
+	if err := helper.Process.Kill(); err != nil {
+		t.Fatalf("could not terminate stalled coordinator: %v", err)
+	}
+	if err := helper.Wait(); err == nil {
+		t.Fatal("stalled coordinator unexpectedly exited successfully")
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cleanupCancel()
+	var pendingDrain []byte
+	if _, err := readParentDeathEvent(cleanupCtx, int(readPipe.Fd()), &pendingDrain); !errors.Is(err, io.EOF) {
+		t.Fatalf("bounded stalled-handshake cleanup returned %v, want EOF", err)
+	}
+}
+
+func TestStage6DelayedOrphanReapingControl(t *testing.T) {
+	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
+		t.Skipf("child-subreaper control unavailable: %v", err)
+	}
+	defer func() {
+		if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 0, 0, 0, 0); err != nil {
+			t.Errorf("restore child-subreaper setting: %v", err)
+		}
+	}()
+	helper := exec.Command(os.Args[0], "-test.run=^TestStage6DelayedReapFixtureHelper$")
+	helper.Env = []string{"KOMPOSYN_DELAYED_REAP_PARENT=1"}
+	output, err := helper.Output()
+	if err != nil {
+		t.Fatalf("start orphan-reaping control: %v", err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(string(output), "%d", &pid); err != nil || pid <= 0 {
+		t.Fatalf("orphan-reaping control returned invalid pid %q: %v", output, err)
+	}
+	identityDeadline := time.Now().Add(2 * time.Second)
+	var identity readbrokerstudy.HostProcessIdentity
+	for time.Now().Before(identityDeadline) {
+		start, statErr := readbrokerstudy.ReadHostProcessStartTime(pid)
+		if statErr == nil && start != 0 {
+			identity = readbrokerstudy.HostProcessIdentity{PID: pid, StartTimeTicks: start}
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if identity.PID == 0 {
+		t.Fatal("orphaned child identity was not observable")
+	}
+	reaped := false
+	defer func() {
+		if reaped {
+			return
+		}
+		_ = unix.Kill(pid, unix.SIGKILL)
+		var status unix.WaitStatus
+		_, _ = unix.Wait4(pid, &status, 0, nil)
+	}()
+	pidfd, err := readbrokerstudy.OpenVerifiedPIDFD(identity)
+	if err != nil {
+		t.Fatalf("open orphaned child pidfd: %v", err)
+	}
+	defer unix.Close(pidfd)
+	if !waitForPIDFDExit(pidfd, 2*time.Second) {
+		t.Fatal("orphaned child did not exit")
+	}
+	if processIdentityGone(identity) {
+		t.Fatal("orphaned child disappeared before the owning subreaper called wait4")
+	}
+	var status unix.WaitStatus
+	if _, err := unix.Wait4(pid, &status, 0, nil); err != nil {
+		t.Fatalf("subreaper could not reap delayed orphan: %v", err)
+	}
+	reaped = true
+	if !waitForProcessIdentityGone(identity, time.Second) {
+		t.Fatal("process identity remained after explicit orphan reaping")
+	}
+}
+
+func TestStage6DelayedReapFixtureHelper(t *testing.T) {
+	if os.Getenv("KOMPOSYN_DELAYED_REAP_CHILD") == "1" {
+		time.Sleep(150 * time.Millisecond)
+		return
+	}
+	if os.Getenv("KOMPOSYN_DELAYED_REAP_PARENT") != "1" {
+		return
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestStage6DelayedReapFixtureHelper$")
+	child.Env = []string{"KOMPOSYN_DELAYED_REAP_CHILD=1"}
+	child.Stdout, child.Stderr = io.Discard, io.Discard
+	if err := child.Start(); err != nil {
+		t.Fatal("start orphan fixture child")
+	}
+	if _, err := fmt.Fprintln(os.Stdout, child.Process.Pid); err != nil {
+		t.Fatal("publish orphan fixture identity")
+	}
+	return
 }
 
 func TestStage6ActorHelperControlUsesSeparateProcess(t *testing.T) {
