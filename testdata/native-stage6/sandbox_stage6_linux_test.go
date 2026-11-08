@@ -110,7 +110,7 @@ func newStage6Report() stage6Report {
 		Limitations: []string{
 			"This runner does not enable or register read_file in the shipped executable.",
 			"Native acceptance remains incomplete until every required case is measured on the final integrated profile.",
-			"Provider-source, mutation, shell, aggregate cgroup quotas, and non-Linux enforcement are not established here.",
+			"Provider-source positive authorization/rotation, mutation, shell, aggregate cgroup quotas, and non-Linux enforcement are not established here.",
 		},
 	}
 }
@@ -888,6 +888,64 @@ func TestStage6ReadRefusedWithoutRootOrBackend(t *testing.T) {
 		item.EvidenceKind, item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = "synthetic-runtime-composition", len(requests), true, true
 	})
 	stage6PassSynthetic("read_refused_without_root_or_backend", "actual runtime and unavailable host Service refused a provider-requested read before approval, backend worker creation, or continuation disclosure")
+}
+
+func TestStage6ProviderSourceOwnerRemainsUnsupported(t *testing.T) {
+	stage6Begin("provider_source_owner")
+	root := t.TempDir()
+	backendPath := filepath.Join(root, "missing-bubblewrap")
+	service, err := NewHostService(backendPath)
+	if err != nil {
+		t.Fatalf("missing backend should preserve the fail-closed owner snapshot: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("provider-source refusal service cleanup failed: %v", err)
+		} else {
+			stage6Update("provider_source_owner", func(item *stage6Case) { item.CleanupConfirmed = true })
+		}
+	})
+	sourcePath := filepath.Join(root, "synthetic-provider-source.jsonl")
+	if err := os.WriteFile(sourcePath, []byte("synthetic-source-fixture\n"), 0600); err != nil {
+		t.Fatalf("synthetic source fixture creation failed: %v", err)
+	}
+	snapshot := service.CoverageSnapshot()
+	var sourceOwner *OwnerCoverage
+	for index := range snapshot.Owners {
+		if snapshot.Owners[index].Owner == "provider-source" {
+			owner := snapshot.Owners[index]
+			sourceOwner = &owner
+			break
+		}
+	}
+	if sourceOwner == nil || sourceOwner.State != OwnerUnsupported || sourceOwner.Routes != 0 || sourceOwner.Identities != 0 || sourceOwner.Reason == "" {
+		t.Fatalf("provider-source owner was not explicitly unsupported: %+v", sourceOwner)
+	}
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatalf("open synthetic source fixture: %v", err)
+	}
+	registerErr := service.Protect(context.Background(), "provider-source", "provider_source", sourcePath, file)
+	closeErr := file.Close()
+	if registerErr == nil {
+		t.Fatal("current chat composition accepted an unowned provider-source registration")
+	}
+	if closeErr != nil {
+		t.Fatalf("synthetic source descriptor cleanup failed: %v", closeErr)
+	}
+	after := service.CoverageSnapshot()
+	for _, owner := range after.Owners {
+		if owner.Owner == "provider-source" && (owner.State != OwnerUnsupported || owner.Routes != 0 || owner.Identities != 0) {
+			t.Fatalf("failed source registration changed the protected-owner inventory: %+v", owner)
+		}
+	}
+	if impl, ok := service.impl.(*linuxImplementation); !ok || impl.session != nil {
+		t.Fatal("synthetic source-owner refusal unexpectedly created a native worker coordinator")
+	}
+	stage6Update("provider_source_owner", func(item *stage6Case) { item.DisclosureWithheld, item.StaleDataAbsent = true, true })
+	stage6PassSynthetic("provider_source_owner", "current memory-chat composition has no provider-source lifecycle; synthetic registration was refused and left the owner unsupported with zero routes/identities")
 }
 
 func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {

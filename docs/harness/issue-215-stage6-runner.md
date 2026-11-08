@@ -58,8 +58,11 @@ material.
 
 The test binary includes no-root text chat and attempted-read refusal controls,
 explicit once-approved exact read plus same-context replay, empty-file read,
-synthetic auth/settings refusals, captured-batch revocation, and pre-/post-
-handoff owner rotation using the actual Service and runtime gate. Its Stage 6
+synthetic provider-source registration refusal, synthetic auth/settings
+refusals, captured-batch revocation, and pre-/post-handoff owner rotation
+using the actual Service and runtime gate. The provider-source case confirms
+that this composition refuses registration because it does not own a source
+lifecycle; it does not exercise approved source disclosure or rotation. Its Stage 6
 wrapper implements the full runtime read execution interface; a synthetic
 forwarding test exercises that interface independently of Bubblewrap
 availability. Reports distinguish these synthetic-runtime controls from
