@@ -34,6 +34,26 @@ Production `cmd/harness` still offers only `update_plan` and
 `request_user_input`. The test-only read composition is not a provider route,
 production enforcer, or tool registration.
 
+### Current launch profile inventory (not native acceptance)
+
+The trusted host composition currently has one Linux worker profile and two
+feature-selected Bubblewrap executable-construction modes:
+
+| Profile part | Implemented behavior | Evidence boundary |
+| --- | --- | --- |
+| Platform | Linux only. The seccomp audit architecture is implemented for amd64 and arm64; other Linux architectures fail closed. Non-Linux builds retain text-only behavior. | amd64/arm64 support in code and cross-builds is not native enforcement evidence. No successful native worker run is recorded for either architecture. |
+| Backend selection/trust | Trusted composition defaults to absolute `/usr/bin/bwrap`; it performs no PATH lookup or fallback. Before executing probes, every path component and the binary must pass the root-owned, non-group/world-writable trust check. | Current environment fails this precondition because the binary owner is UID/GID 65534; capability probes and worker startup therefore did not run. |
+| Executable construction | Feature detection prefers `--ro-bind-fd`; otherwise it requires both `--perms` and `--ro-bind-data` and uses a bounded sealed executable snapshot. Version strings alone do not select the mode. | Both paths have unit coverage; neither path has successful integrated native acceptance on a trusted backend. |
+| Namespace/mount policy | Requests user, mount (Bubblewrap-created), PID, IPC, UTS, and network namespaces; disables nested user namespaces, drops capabilities, clears worker environment, uses an 8 MiB empty tmpfs root, and mounts no host `/proc`, `/sys`, `/dev`, home, sockets, or libraries. | Effective native namespace and mount behavior remains unavailable until the integrated run passes backend trust and startup probes. |
+| Worker confinement | Fixed static Go worker; seccomp is installed with TSYNC and `no_new_privs` before readiness. It allows only the reviewed runtime thread-clone flags and denies process-like clone/exec, path opens, socket creation/use, mount and process-inspection operations. Post-bootstrap worker descriptor checks require only the control socket beyond stdio. | Real-filter Go runtime/GC tests and in-worker probes exist. These do not establish that Bubblewrap started or that host namespace policy was effective in this environment. |
+| Per-worker bounds | Five-second normal worker watchdog, 64 KiB result cap, 7 MiB executable snapshot cap, 8 MiB tmpfs size, bounded protocol/stderr, and bounded direct-child cleanup. | These are per-worker bounds, not aggregate CPU, memory, or process quotas. Namespace-wide descendant cleanup is unverified. No cgroup quota is provisioned or claimed; exhaustion safety is untested. |
+
+The current native report is therefore an early trust refusal, not a failed
+namespace experiment and not a pass. Stage 6 must still be run on an eligible
+host with an already trusted backend. Record the selected executable mode and
+worker probes in that run; do not promote a mode based on unit tests,
+cross-compilation, or Bubblewrap version alone.
+
 ## Outstanding issue checklist mapped to work packages
 
 Use the package labels from the completion roadmap. A checked row below means
