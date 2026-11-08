@@ -248,7 +248,9 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 
 func TestStage6PIDFDExitObservationUsesProcessIdentity(t *testing.T) {
 	if os.Getenv("KOMPOSYN_STAGE6_PIDFD_CHILD") == "1" {
-		select {}
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 	child := exec.Command(os.Args[0], "-test.run=^TestStage6PIDFDExitObservationUsesProcessIdentity$")
 	child.Stdout, child.Stderr = io.Discard, io.Discard
