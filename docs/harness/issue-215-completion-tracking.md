@@ -1,17 +1,20 @@
 # Issue #215 completion tracking and Stage 6 acceptance contract
 
-Status: reviewed after PR #252 and the Stage 6 review fixes (2026-11-08).
-This is a tracking and evidence contract, not an enablement decision. The
-six-clause exact-file disclosure policy is accepted, while
-`read_file` remains unregistered and unavailable in shipped chat.
+Status: reviewed against master `6d9f71808daf2f57c1aa3cefbe28fc5648dc4153`
+(2026-11-08). This is a tracking and evidence contract, not an enablement
+decision. The six-clause exact-file disclosure policy is accepted, while
+`read_file` remains unregistered and unavailable in shipped chat. Issue #215
+is open; the Stage 6 runner and independent-actor extension have merged, but
+the latest lifecycle follow-up remains under review and trusted-host native
+acceptance is pending.
 
 The plan was reconstructed from the current issue, its decision/research
 comments, the merged implementation plan, source, and existing evidence. It is
-not a claim that earlier native evidence covers the Stage 6 composition. PR
-#251 merged at `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. PR #252 merged the
-tracking contract at `97229b2eafd0d598cffa38aed81f7083e58d7bde`; issue #215
-was reopened because its completion checklist is unfinished. Keep the issue
-open and preserve historical evidence.
+not a claim that earlier native evidence covers the Stage 6 composition. The
+Stage 5 implementation merged in #251; the Stage 6 runner and independent
+actor extension merged in #253 and #254. The current follow-up is PR #255 at
+`f3665a7f4245820d184d92922f75dcc4b664e9a9`. The completion checklist remains
+unfinished. Keep #215 open and preserve historical evidence.
 
 ## Current stage audit
 
@@ -23,7 +26,7 @@ open and preserve historical evidence.
 | 3: retained admission | Merged | [PR #248](https://github.com/ayeshLK/komposyn/pull/248). Exact retained-object admission and owner barriers; no reopen or second once consumer. |
 | 4: worker and private capture | Merged | [PR #250](https://github.com/ayeshLK/komposyn/pull/250). One-attempt fixed worker, private bounded capture after join/descriptor retirement; native integrated acceptance remains open. |
 | 5: publication and continuation | Merged | [PR #251](https://github.com/ayeshLK/komposyn/pull/251), merge `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. Synchronized batch/provider handoff, replay provenance, owner-gated continuation retirement and stale-response tests. |
-| 6: integrated native acceptance | Partial runner in [draft PR #253](https://github.com/ayeshLK/komposyn/pull/253); native worker cases unavailable | The [Stage 6 runner guide](issue-215-stage6-runner.md) records invocation and current case coverage. The current runner composes the runtime, Service/registry, fixed worker and fake provider; synthetic forwarding tests cover the runtime-to-Service executor seam without OS-enforcement claims. Exact-run provenance and current results are recorded in [issue #215](https://github.com/ayeshLK/komposyn/issues/215). The last local attempt trust-refused `/usr/bin/bwrap` (UID 65534) before probes or worker launch. Five synthetic controls cover no-root chat/read refusal, one-time approval/execution transitions, unsupported provider-source registration, and incomplete required-owner inventory. Remaining runner cases and an eligible trusted-host run/review are required. |
+| 6: integrated native acceptance | Runner merged; acceptance pending | The Stage 6 runner and independent-actor extension are merged in [PR #253](https://github.com/ayeshLK/komposyn/pull/253) and [PR #254](https://github.com/ayeshLK/komposyn/pull/254). Follow-up [PR #255](https://github.com/ayeshLK/komposyn/pull/255) at `f3665a7f4245820d184d92922f75dcc4b664e9a9` adds held-worker cancellation/cleanup and bounded-read profile cases; it is ready for review, not merged. An exact-head run built and exited cleanly but classified `native_unavailable`: `/usr/bin/bwrap` was UID/GID 65534 and trust validation refused it before probes or worker launch. No native worker/read ran. See the [exact-head issue report](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6720531454). |
 | Typed-read enablement | Not approved | Requires Stage 6 acceptance, owner/launch gates, and a distinct reviewed enablement decision. |
 
 Production `cmd/harness` still offers only `update_plan` and
@@ -39,15 +42,15 @@ pass.
 
 | Outstanding #215 item | Package / dependency | Required result and closure evidence |
 | --- | --- | --- |
-| Stage 6 exact integrated profile | **B → C** | Build the runner, review it, execute it as a regular user on an eligible trusted Linux host, inspect fixture effects and archive, fix defects, then repeat affected cases and the full final profile. |
+| Stage 6 exact integrated profile | **B → C** | Runner and independent actor are merged (#253/#254); review and merge the held-worker/profile follow-up (#255), then run the final exact head as a regular user on an eligible trusted Linux host. Inspect the archive and fixture effects, fix defects, and repeat affected cases plus the full final profile. The recorded attempt is unavailable, not a pass: trusted-backend validation stopped before probes or worker launch. |
 | Complete accepted exact-file boundary through provider integration | **B → C → F** | Prove capture-to-provider behavior and native boundaries; then a separate production adapter/registration PR and explicit enablement review. Until F, reads stay unavailable. |
-| Provider-source owner lifecycle and real-owner coverage | **D**, then C rerun if the profile changes | Establish the actual participating owner contract and route applicability. Unsupported routes remain refused; prove negative admission and rotation with synthetic sources before claiming coverage. |
+| Provider-source owner lifecycle and real-owner coverage | **D**, then C rerun if the profile changes | The memory-chat composition has no provider-source open/identity/rotation lifecycle; provider-source ownership remains unsupported and refused. Collector roots or discovered paths are not an exhaustive object inventory. Keep this unavailable unless a future composition selects a concrete source owner and supplies its route, opened identity/generation, and invalidation lifecycle; then prove negative admission and rotation with applicable synthetic and native evidence. |
 | Negative inventory-admission native scenarios | **C/D** | Missing/incomplete registrations must refuse before once consumption, worker startup, read descriptor transfer, and provider publication. Coordinator-only tests are insufficient for a native claim. |
 | Running-worker revocation, stale-result suppression and continuation retirement in complete composition | **B → C** | Exercise runtime once consumption, actual Service owner invalidation, fixed worker, fake provider, and history/delta sink together. Assert both before- and after-handoff orderings. |
 | Remaining launch modes, platform, namespaces, packaging and resource limits | **E** | Inventory every offered mode and platform. Keep any unproven mode unavailable or remove it from the supported claim by review. Record effective namespace/FD/environment/IPC/network policy, parent death and cleanup. Aggregate quotas are not implied by per-worker bounds. |
 | Typed-read enablement | **F** | Separate review after C/D/E applicable gates. Review target-specific consent, exact routes, UI wording, complete tool-call/result pairing and later-turn retirement in the shipped composition. |
 | Write/rename/delete implementation and native acceptance | **G** | First review operation semantics and protected-object behavior, then implement dedicated workers in small slices. Accepted target: scoped write includes read/create/modify/rename/delete once proven; execute and network remain separate. Read evidence cannot prove mutations. |
-| Shell profile and native acceptance | **H** | Separate read-only shell design, then fixed profile implementation, descendant supervision and native tests. A write grant is not shell permission; typed-worker evidence is not shell evidence. |
+| Shell profile and native acceptance | **H: unavailable by maintainer direction** | Shell remains unregistered and unavailable. Do not start shell implementation or imply process/descendant, quota, or native safety from typed-worker evidence. Reopen only through a separate reviewed design and enablement decision. |
 | Token Logger / SQLite lifecycle and hook work | **Deferred until a composition opens or undertakes that Store** | Do not add a Store or SQLite hook solely to close this item. If composed later, follow the owner-aware hook contract and reopen the applicable D/C evidence gates. |
 
 Historical #243 acceptance remains valid only for its service fixture and
@@ -122,9 +125,13 @@ The worker must be the exact fixed read worker with the current trusted absolute
 Bubblewrap path and existing fail-closed integrity checks. The run records the
 source commit, dirty state, runner/overlay hashes, backend path/owner/mode/hash,
 version/features, selected bind mode, host architecture/kernel and relevant
-namespace availability. A probe failure or blocked outer agent launcher must
-retain its phase and diagnostic; do not elevate, bypass trust, retry
-unrestricted, or treat the environment as universally incapable.
+namespace availability. The [latest exact-head issue report](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6720531454)
+records a trusted-backend refusal before probes or worker launch. This does not
+establish host-wide Bubblewrap unavailability. Per-run metadata and sanitized
+results belong in the issue evidence, not duplicated in this tracking contract.
+A probe failure or blocked outer agent launcher must retain its phase and
+diagnostic; do not elevate, bypass trust, retry unrestricted, or treat the
+environment as universally incapable.
 
 ### Result and archive contract
 
