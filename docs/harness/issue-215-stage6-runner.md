@@ -106,6 +106,9 @@ bounded service shutdown to confirm eventual join, then checks that the read
 never starts, no result is published, and the provider receives no continuation
 request. A synthetic delayed-`Wait` regression runs without Bubblewrap so this
 cleanup behavior remains covered when native prerequisites are unavailable.
+That control is `TestStage4CancellationBeforeHeldReadReleasePreservesUnknownUntilDelayedJoin`
+in the ordinary sandbox test suite; it is synthetic lifecycle evidence and is
+not counted as a native Stage 6 case.
 This does not cover cancellation after release, parent death, or every cleanup
 failure mode.
 
