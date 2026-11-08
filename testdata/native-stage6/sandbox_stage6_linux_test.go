@@ -948,6 +948,131 @@ func TestStage6ProviderSourceOwnerRemainsUnsupported(t *testing.T) {
 	stage6PassSynthetic("provider_source_owner", "current memory-chat composition has no provider-source lifecycle; synthetic registration was refused and left the owner unsupported with zero routes/identities")
 }
 
+type stage6NeverStartedLauncher struct {
+	starts atomic.Int32
+}
+
+func (l *stage6NeverStartedLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
+	l.starts.Add(1)
+	return nil, readbrokerstudy.ErrUnavailable
+}
+
+func (*stage6NeverStartedLauncher) Close() error { return nil }
+
+func TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission(t *testing.T) {
+	stage6Begin("incomplete_owner_inventory")
+	root := t.TempDir()
+	content := "stage6-incomplete-inventory-private-content"
+	target := filepath.Join(root, "synthetic-private.txt")
+	if err := os.WriteFile(target, []byte(content), 0600); err != nil {
+		t.Fatalf("synthetic target creation failed: %v", err)
+	}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage6NeverStartedLauncher{}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatalf("synthetic host coordinator setup failed: %v", err)
+	}
+	service := &Service{impl: impl}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	authStore := auth.Store{Path: filepath.Join(root, "synthetic-chat-auth.json")}
+	base := &stage6Provider{target: target, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
+	providers, err := model.NewRegistry(base)
+	if err != nil {
+		_ = service.Close(context.Background())
+		t.Fatal(err)
+	}
+	var approvals atomic.Int32
+	chat := runtime.NewChatWithToolRuntime(providers, authStore, nil, runtime.ToolRuntimeConfig{
+		Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: &stage6ReadHost{service: service}, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			approvals.Add(1)
+			return permissions.ApprovalOnce, "", nil
+		}), Grants: permissions.NewMemoryStore(),
+	})
+	if err := chat.AddProfile(ctx, "stage6-incomplete-profile", "openai", "synthetic profile", "synthetic-only-key", nil); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic profile setup failed: %v", err)
+	}
+	discovery := chat.Discover(ctx)
+	if len(discovery.Models) != 1 {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic model discovery returned %d models", len(discovery.Models))
+	}
+	if err := chat.Select(ctx, discovery.Models[0].Key(), false); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic model selection failed: %v", err)
+	}
+	if err := chat.SelectFilesystemRoot(ctx, root); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic root selection failed: %v", err)
+	}
+	if err := runtime.EnableNativeReadStudy(chat); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("test-only read path setup failed: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := chat.CloseContext(ctx); err != nil {
+			t.Errorf("incomplete-inventory chat cleanup failed: %v", err)
+		}
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("incomplete-inventory service cleanup failed: %v", err)
+		} else {
+			stage6Update("incomplete_owner_inventory", func(item *stage6Case) { item.CleanupConfirmed = true })
+		}
+	})
+	coverage := service.CoverageSnapshot()
+	for _, ownerID := range []string{auth.SensitiveOwnerAuth, auth.SensitiveOwnerSettings} {
+		found := false
+		for _, owner := range coverage.Owners {
+			if owner.Owner == ownerID {
+				found = owner.State == OwnerRequired && owner.Routes == 0 && owner.Identities == 0
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("required owner %q did not remain incomplete in the inventory: %+v", ownerID, coverage.Owners)
+		}
+	}
+	turn, err := chat.Send(ctx, "read the synthetic private fixture", nil)
+	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
+		t.Fatalf("incomplete inventory did not interrupt before continuation: outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := base.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want only the initial tool-call request", len(requests))
+	}
+	encoded, _ := json.Marshal(requests[0].Messages)
+	if strings.Contains(string(encoded), content) {
+		t.Fatal("private fixture content reached the provider through incomplete owner coverage")
+	}
+	if approvals.Load() != 0 {
+		t.Fatalf("approval interactions=%d, want inventory refusal before approval", approvals.Load())
+	}
+	if launcher.starts.Load() != 0 || len(impl.session.AdmissionConversations()) != 0 {
+		t.Fatalf("incomplete inventory created worker/admission state: starts=%d admissions=%v", launcher.starts.Load(), impl.session.AdmissionConversations())
+	}
+	_, messages, results, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(chat, content)
+	if messages == 0 || results != 1 || markerFound || !payloadFree {
+		t.Fatalf("incomplete-inventory history was not payload-free: messages=%d results=%d marker=%t payload_free=%t", messages, results, markerFound, payloadFree)
+	}
+	stage6Update("incomplete_owner_inventory", func(item *stage6Case) {
+		item.EvidenceKind, item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = "synthetic-runtime-composition", len(requests), true, true
+	})
+	stage6PassSynthetic("incomplete_owner_inventory", "actual runtime and Service refused admission while required auth/settings owners had no registered routes or identities; no approval, admission, worker, or continuation followed")
+}
+
 func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {
 	stage6Begin("positive_exact_read_and_replay")
 	fixture := newStage6Fixture(t, "positive_exact_read_and_replay", "ordinary", false, nil)

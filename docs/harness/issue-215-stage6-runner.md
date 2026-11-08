@@ -59,16 +59,18 @@ material.
 The test binary includes no-root text chat and attempted-read refusal controls,
 explicit once-approved exact read plus same-context replay, empty-file read,
 synthetic provider-source registration refusal, synthetic auth/settings
-refusals, captured-batch revocation, and pre-/post-handoff owner rotation
-using the actual Service and runtime gate. The provider-source case confirms
-that this composition refuses registration because it does not own a source
-lifecycle; it does not exercise approved source disclosure or rotation. Its Stage 6
-wrapper implements the full runtime read execution interface; a synthetic
-forwarding test exercises that interface independently of Bubblewrap
-availability. Reports distinguish these synthetic-runtime controls from
-native-integrated cases. Other Stage 6 cases remain explicitly unavailable or
-not implemented in this runner revision. A host trust refusal means none of the
-worker-path cases ran. The runner does not establish provider-source owner
-coverage, independent namespace actor cases, native cancellation/cleanup,
-aggregate cgroup quotas, mutation, shell, non-Linux enforcement, or production
-readiness.
+refusals, incomplete required-owner inventory admission, captured-batch
+revocation, and pre-/post-handoff owner rotation using the actual Service and
+runtime gate. The owner-inventory case verifies that missing auth/settings
+routes and identities block admission before approval or worker state. The
+provider-source case confirms that this composition refuses registration
+because it does not own a source lifecycle; it does not exercise approved
+source disclosure or rotation. Its Stage 6 wrapper implements the full runtime
+read execution interface; a synthetic forwarding test exercises that interface
+independently of Bubblewrap availability. Reports distinguish these synthetic-
+runtime controls from native-integrated cases. Other Stage 6 cases remain
+explicitly unavailable or not implemented in this runner revision. A host trust
+refusal means none of the worker-path cases ran. The runner does not establish
+provider-source owner lifecycle/positive authorization, independent namespace
+actor cases, native cancellation/cleanup, aggregate cgroup quotas, mutation,
+shell, non-Linux enforcement, or production readiness.
