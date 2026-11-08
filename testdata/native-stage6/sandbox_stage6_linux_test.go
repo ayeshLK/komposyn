@@ -43,6 +43,12 @@ func init() {
 	if handled, code := WorkerBootstrap(os.Args[1:]); handled {
 		os.Exit(code)
 	}
+	if handled, err := readbrokerstudy.RunNativeActorMode(os.Args[1:]); handled {
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
 }
 
 type stage6Case struct {
@@ -68,6 +74,11 @@ type stage6Case struct {
 	LateResponseReturned      bool   `json:"late_response_returned"`
 	LateDeltaAttempted        bool   `json:"late_delta_attempted"`
 	LateDeltaSuppressed       bool   `json:"late_delta_suppressed"`
+	ActorStarted              bool   `json:"actor_started"`
+	ActorTransitionCompleted  bool   `json:"actor_transition_completed"`
+	ActorJoined               bool   `json:"actor_joined"`
+	ActorTransitionCount      int    `json:"actor_transition_count"`
+	AuthorityObservation      string `json:"authority_observation,omitempty"`
 	CleanupConfirmed          bool   `json:"cleanup_confirmed"`
 }
 
@@ -94,7 +105,7 @@ func newStage6Report() stage6Report {
 	ids := []string{
 		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "empty_file_read",
 		"protected_auth_refusal", "protected_settings_refusal", "provider_source_owner",
-		"incomplete_owner_inventory", "independent_namespace_actor", "expected_once_transitions",
+		"incomplete_owner_inventory", "actor_helper_control", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
 		"late_response_and_delta_retirement", "cancellation_and_cleanup", "launch_profile_and_limits",
 		"mutation_profile", "shell_profile",
@@ -106,12 +117,12 @@ func newStage6Report() stage6Report {
 		"provider_source_owner":                {},
 		"incomplete_owner_inventory":           {},
 	}
+	actorFixtureCases := map[string]struct{}{"actor_helper_control": {}}
 	unimplementedCases := map[string]struct{}{
-		"independent_namespace_actor": {},
-		"cancellation_and_cleanup":    {},
-		"launch_profile_and_limits":   {},
-		"mutation_profile":            {},
-		"shell_profile":               {},
+		"cancellation_and_cleanup":  {},
+		"launch_profile_and_limits": {},
+		"mutation_profile":          {},
+		"shell_profile":             {},
 	}
 	cases := make([]stage6Case, 0, len(ids))
 	for _, id := range ids {
@@ -121,16 +132,19 @@ func newStage6Report() stage6Report {
 		if synthetic {
 			item.EvidenceKind = "synthetic-runtime-composition"
 			item.Reason = "synthetic runtime/composition control was not executed"
+		} else if _, actorFixture := actorFixtureCases[id]; actorFixture {
+			item.EvidenceKind = "synthetic-actor-fixture"
+			item.Reason = "synthetic separate-process actor helper control was not executed"
 		} else if unimplemented {
 			item.EvidenceKind = "not-implemented"
-			item.Reason = "case is not implemented by Stage 6 runner version 2"
+			item.Reason = "case is not implemented by Stage 6 runner version 3"
 		} else {
 			item.EvidenceKind = "native-integrated"
 		}
 		cases = append(cases, item)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "2",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "3",
 		OS: "linux", Architecture: stdruntime.GOARCH, UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: []string{
@@ -190,8 +204,9 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	}
 	want := map[string]int{
 		"synthetic-runtime-composition": 5,
-		"native-integrated":             9,
-		"not-implemented":               5,
+		"synthetic-actor-fixture":       1,
+		"native-integrated":             10,
+		"not-implemented":               4,
 	}
 	if len(counts) != len(want) {
 		t.Fatalf("unexpected evidence classifications: got %v want %v", counts, want)
@@ -213,6 +228,53 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	if allNativeCasesUnavailable(report.Cases) {
 		t.Fatal("a measured native case was classified as wholly unavailable")
 	}
+}
+
+func TestStage6ActorHelperControlUsesSeparateProcess(t *testing.T) {
+	stage6Begin("actor_helper_control")
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("make synthetic actor root private: %v", err)
+	}
+	source := filepath.Join(root, "before.fixture")
+	target := filepath.Join(root, "after.fixture")
+	want := "synthetic actor control\n"
+	if err := os.WriteFile(source, []byte(want), 0o600); err != nil {
+		t.Fatalf("write synthetic actor source: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	actor, err := readbrokerstudy.NewNativeActor(ctx, os.Args[0], root, readbrokerstudy.NativeActorRename, "before.fixture", "after.fixture")
+	if err != nil {
+		t.Fatalf("start synthetic actor helper: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := actor.Close(); err != nil {
+			t.Errorf("ensure synthetic actor helper cleanup: %v", err)
+		}
+	})
+	if err := actor.Run(ctx); err != nil {
+		t.Fatalf("run synthetic actor helper: %v", err)
+	}
+	if err := actor.Close(); err != nil {
+		t.Fatalf("close synthetic actor helper: %v", err)
+	}
+	if !actor.Ready() || !actor.TransitionCompleted() || !actor.Joined() {
+		t.Fatalf("actor lifecycle ready=%t transition=%t joined=%t", actor.Ready(), actor.TransitionCompleted(), actor.Joined())
+	}
+	if _, err := os.Lstat(source); !os.IsNotExist(err) {
+		t.Fatalf("synthetic actor left the original name: %v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != want {
+		t.Fatalf("synthetic actor target=%q err=%v, want fixture bytes", data, err)
+	}
+	stage6Update("actor_helper_control", func(item *stage6Case) {
+		item.EvidenceKind = "synthetic-actor-fixture"
+		item.ActorStarted, item.ActorTransitionCompleted, item.ActorJoined = actor.Ready(), actor.TransitionCompleted(), actor.Joined()
+		item.CleanupConfirmed = actor.Joined()
+	})
+	stage6PassWithEvidence("actor_helper_control", "synthetic-actor-fixture", "the isolated fixed actor re-exec mode performed one bounded fixture rename and was joined; this does not exercise Bubblewrap or enforce filesystem authority")
 }
 
 func stage6Update(id string, update func(*stage6Case)) {
@@ -653,7 +715,7 @@ func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool,
 	}
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
-		for _, id := range []string{"positive_exact_read_and_replay", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "late_response_and_delta_retirement", "expected_once_transitions"} {
+		for _, id := range []string{"positive_exact_read_and_replay", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "late_response_and_delta_retirement", "expected_once_transitions"} {
 			stage6Skip(id, "trusted backend validation refused before backend probes or worker launch")
 		}
 		t.Skip("trusted native Bubblewrap backend unavailable; no probe or worker launch was attempted")
@@ -1232,6 +1294,137 @@ func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {
 		item.GrantRevisionBefore, item.GrantRevisionAfter, item.RemainingGrantCount = grantRevisionBefore, grantRevisionAfter, grantsAfter
 	})
 	stage6Pass("expected_once_transitions", "one explicit once approval created a revision, runtime dispatch consumed it at the next revision, and no grant remained")
+}
+
+func TestStage6IndependentActorMovesOpenedObjectAfterFinalRevalidation(t *testing.T) {
+	stage6Begin("independent_namespace_actor")
+	fixture := newStage6Fixture(t, "independent_namespace_actor", "ordinary", false, nil)
+	fixture.reportCases = []string{"independent_namespace_actor"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	actorRoot := filepath.Dir(fixture.root)
+	outside := filepath.Join(actorRoot, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatalf("create disposable actor destination: %v", err)
+	}
+	archive := filepath.Join(actorRoot, "archive")
+	if err := os.Mkdir(archive, 0o700); err != nil {
+		t.Fatalf("create disposable actor archive: %v", err)
+	}
+	target := filepath.Join(fixture.root, "nested", "notes.txt")
+	if err := os.Remove(filepath.Join(fixture.root, "notes.txt")); err != nil {
+		t.Fatalf("remove unused synthetic root-level target: %v", err)
+	}
+	if err := os.Mkdir(filepath.Dir(target), 0o700); err != nil {
+		t.Fatalf("create synthetic target parent: %v", err)
+	}
+	if err := os.WriteFile(target, []byte(fixture.content), 0o600); err != nil {
+		t.Fatalf("write nested synthetic target: %v", err)
+	}
+	fixture.provider.target = target
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat approved fixture before actor: %v", err)
+	}
+	rootRelative := filepath.Base(fixture.root)
+	actors := make([]*readbrokerstudy.NativeActor, 0, 3)
+	runActor := func(action readbrokerstudy.NativeActorAction, source, destination string) {
+		t.Helper()
+		actor, err := readbrokerstudy.NewNativeActor(ctx, os.Args[0], actorRoot, action, source, destination)
+		if err != nil {
+			t.Fatalf("start independent namespace actor: %v", err)
+		}
+		actors = append(actors, actor)
+		t.Cleanup(func() {
+			if err := actor.Close(); err != nil {
+				t.Errorf("ensure independent namespace actor cleanup: %v", err)
+			}
+		})
+		if !actor.Ready() {
+			t.Fatal("independent namespace actor did not complete startup handshake")
+		}
+		if err := actor.Run(ctx); err != nil {
+			t.Fatalf("independent namespace actor transition failed: %v", err)
+		}
+		if err := actor.Close(); err != nil {
+			t.Fatalf("join independent namespace actor: %v", err)
+		}
+		if !actor.TransitionCompleted() || !actor.Joined() {
+			t.Fatalf("independent namespace actor completion=%t joined=%t", actor.TransitionCompleted(), actor.Joined())
+		}
+	}
+
+	impl := fixture.service.impl.(*linuxImplementation)
+	if impl.session == nil {
+		t.Fatal("native fixture session is unavailable")
+	}
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint != readbrokerstudy.CheckpointAfterFinalRevalidation {
+			return nil
+		}
+		// These independent processes move the authorized object with its
+		// parent and selected root, then replace its final pathname. The fixed
+		// worker receives only the already-open descriptor after they exit.
+		runActor(readbrokerstudy.NativeActorRename, filepath.Join(rootRelative, "nested"), filepath.Join("outside", "nested"))
+		runActor(readbrokerstudy.NativeActorRename, rootRelative, filepath.Join("outside", "selected-root"))
+		runActor(readbrokerstudy.NativeActorReplace, filepath.Join("outside", "nested", "notes.txt"), filepath.Join("archive", "original-notes.txt"))
+		return nil
+	})
+	turn, sendErr := fixture.chat.Send(ctx, "read the approved synthetic fixture", nil)
+	if sendErr != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("read of the retained object did not complete after its pathname moved: outcome=%s err=%v", turn.Outcome, sendErr)
+	}
+	if _, err := os.Lstat(fixture.root); !os.IsNotExist(err) {
+		t.Fatalf("selected-root pathname remains after actor relocation: lstat=%v", err)
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("approved target pathname remains after parent relocation: lstat=%v", err)
+	}
+	replacement := filepath.Join(outside, "nested", "notes.txt")
+	replacementBytes, err := os.ReadFile(replacement)
+	if err != nil || string(replacementBytes) != "actor-substitute\n" {
+		t.Fatalf("replacement path content=%q err=%v, want actor substitute", replacementBytes, err)
+	}
+	moved := filepath.Join(archive, "original-notes.txt")
+	after, err := os.Stat(moved)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("archived target is not the approved opened object: same=%t err=%v", err == nil && os.SameFile(before, after), err)
+	}
+	if rel, err := filepath.Rel(fixture.root, moved); err != nil || rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("retained object archive did not leave the selected-root pathname: relative=%q err=%v", rel, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial request and one read continuation", len(requests))
+	}
+	content, found := readResultContent(requests[1], "stage6-read")
+	if !found || !strings.Contains(content, fixture.content) {
+		t.Fatalf("provider continuation did not contain bytes from the approved opened object: found=%t", found)
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !evidence[0].Probe.NoNewPrivs || evidence[0].Probe.SeccompMode != 2 || !evidence[0].Probe.SocketCreationDenied || !evidence[0].Probe.PathOpenDenied || !evidence[0].Probe.ReadCapabilityInitiallyAbsent || !evidence[0].Probe.OnlyProtocolDescriptor || !evidence[0].Probe.EnvironmentCleared {
+		t.Fatal("moved-object read did not complete through the required probed sandbox worker")
+	}
+	if fixture.approvals.Load() != 1 {
+		t.Fatalf("once approval interactions=%d, want one", fixture.approvals.Load())
+	}
+	allActorsCompleted := len(actors) == 3
+	for _, actor := range actors {
+		allActorsCompleted = allActorsCompleted && actor.Ready() && actor.TransitionCompleted() && actor.Joined()
+	}
+	if !allActorsCompleted {
+		t.Fatal("not all independent namespace actors completed and joined")
+	}
+	stage6Update("independent_namespace_actor", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.ProbePassed, item.OnceApprovalCount, item.ProviderRequestCount = true, fixture.approvals.Load(), len(requests)
+		item.FixtureBytesMatched, item.ActorStarted, item.ActorTransitionCompleted, item.ActorJoined = true, allActorsCompleted, allActorsCompleted, allActorsCompleted
+		item.ActorTransitionCount = len(actors)
+		item.AuthorityObservation = "three independent same-user actors moved the target parent and selected root outside their approved pathnames, then replaced the target pathname after final revalidation; the worker disclosed bytes from the retained opened object, consistent with object authority B; strict live-path containment A is not claimed"
+	})
+	stage6Pass("independent_namespace_actor", "three separate actor processes moved the target parent and selected root outside their approved pathnames, then replaced the target pathname after final revalidation; the sandbox worker read the same opened object and its bytes reached the capturing provider under authority B")
 }
 
 func TestStage6EmptyFileRead(t *testing.T) {
