@@ -1,11 +1,13 @@
 # Composition admission and non-exposing sandbox service
 
-**Status:** Stages 3–5 are implemented on the current review branch. Production
-composition still does **not** register or advertise `read_file`. An unexported,
-package-test-only composition exercises retained worker capture, synchronized
-fake-provider publication and same-context replay. No live provider call occurs.
-Native worker/service acceptance and Stage 6 integrated-profile evidence remain
-outstanding.
+**Status:** Stages 3–5 are merged in PRs #248, #250, and #251. The Stage 6
+runner and lifecycle follow-ups are merged in PRs #253–#255, but trusted-host
+native acceptance remains outstanding. The latest attempt classified
+`native_unavailable` because Bubblewrap trust validation refused the selected
+backend before probes or worker startup. Production composition still does
+**not** register or advertise `read_file`. An unexported, package-test-only
+composition exercises retained worker capture, synchronized fake-provider
+publication and same-context replay. No live provider call occurs.
 
 ## Composition and ownership
 
@@ -172,13 +174,15 @@ text-only behavior.
 Filesystem read execution remains disabled in ordinary chat even on a trusted
 Bubblewrap host. Stage 4 captures only bounded bytes in an opaque in-memory
 handle after worker join and retirement of operation-owned descriptors. Tests
-discard captures; no provider or transcript path receives their bytes.
-Provider-source owner integration remains unsupported and is refused; Token
-Logger owner hooks, listing, recursion, writes, deletion, shell, and non-Linux
-enforcement remain absent. Native Stage 4 acceptance was not run: `/usr/bin/bwrap`
-is owned by UID 65534, so the existing backend trust check refuses it. Stage 5
-must separately review result publication/provider continuation, and Stage 6
-must perform integrated native acceptance. No tool is enabled by this branch.
+discard captures; Stage 5's synchronized result publication/provider
+continuation is implemented in merged PR #251, but its fixture evidence is not
+native enforcement evidence. Provider-source owner integration remains
+unsupported and is refused; Token Logger owner hooks, listing, recursion,
+writes, deletion, shell, and non-Linux enforcement remain absent. The current
+integrated Stage 6 attempt did not pass backend trust: `/usr/bin/bwrap` is owned
+by UID 65534, so the trust check refused it before probes or worker startup.
+The Stage 6 runner is merged, but eligible-host native acceptance is still
+required. No tool is enabled.
 
 ## Validation commands
 
