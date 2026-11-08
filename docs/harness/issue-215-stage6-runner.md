@@ -112,6 +112,24 @@ not counted as a native Stage 6 case.
 This does not cover cancellation after release, parent death, or every cleanup
 failure mode.
 
+A separate `native-worker-lifecycle` case exercises parent death for the fixed
+held-read Bubblewrap profile. A short-lived coordinator starts the same test
+binary as the fixed worker, waits for startup probes and the
+`CAPABILITY_HELD` acknowledgement, then reports Bubblewrap and namespace-init
+identities over a private pipe. The supervisor opens verified pidfds, kills
+and joins that coordinator without sending read release, and requires both
+observed processes to exit and disappear from host procfs within bounded
+deadlines. The report contains only booleans, never the local PIDs. This
+demonstrates cleanup for the observed processes in this exact profile; it does
+not prove cleanup of arbitrary descendants, naturally hung workers, production
+coordinator behavior, or every failure mode. If backend trust or pidfd
+observation is unavailable, the case remains unavailable. A trusted-host run
+is required before this lifecycle behavior can be claimed as measured. This
+profile-only fixture does not model runtime grants or approval; it transfers
+only one synthetic descriptor after worker readiness and deliberately does not
+release it for reading. Its report includes its own exact hold-mode launch
+arguments, separate from the ordinary Stage 6 worker profile.
+
 A third native-integrated case records the actual selected Bubblewrap argument
 profile, probes the worker's seccomp/FD/environment restrictions, and reads a
 synthetic file larger than the fixed 64 KiB cap. It requires a truthful partial
@@ -126,14 +144,16 @@ fields record the later bounded shutdown result; they do not imply a successful
 read or reclassify an unknown operation.
 
 Reports classify the actor helper as `synthetic-actor-fixture`, runtime controls
-as `synthetic-runtime-composition`, worker cases as `native-integrated`, and
-unimplemented cases as `not-implemented`. Additional namespace actor cases,
-post-release cancellation, parent-death cleanup, aggregate cgroup quotas,
-mutation, shell, provider-source lifecycle/positive authorization, non-Linux
-enforcement, and production readiness remain unproven. A host trust refusal
-means none of the worker-path cases ran.
+as `synthetic-runtime-composition`, worker cases as `native-integrated`, the
+fixed-profile parent-death case as `native-worker-lifecycle`, and unimplemented
+cases as `not-implemented`. Additional namespace actor cases, post-release
+cancellation, aggregate cgroup quotas, mutation, shell, provider-source
+lifecycle/positive authorization, non-Linux enforcement, and production
+readiness remain unproven. A host trust refusal means none of the worker-path
+cases ran.
 
 Every case is explicitly classified; unavailable native cases are not
 conflated with cases that this runner revision does not implement. The report
 currently contains five synthetic-runtime controls, one actor-helper fixture,
-twelve native-integrated cases, and two unimplemented cases.
+twelve native-integrated cases, one native-worker-lifecycle case, and two
+unimplemented cases.
