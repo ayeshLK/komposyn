@@ -76,16 +76,23 @@ provider-source case confirms that this composition refuses registration
 because it does not own a source lifecycle; it does not exercise approved
 source disclosure or rotation. Its Stage 6 wrapper implements the full runtime
 read execution interface; a synthetic forwarding test exercises that interface
-independently of Bubblewrap availability. Reports distinguish these synthetic-
-runtime controls from native-integrated cases. Other Stage 6 cases remain
-explicitly unavailable or not implemented in this runner revision. A host trust
-refusal means none of the worker-path cases ran. The runner does not establish
-provider-source owner lifecycle/positive authorization, independent namespace
-actor cases, native cancellation/cleanup, aggregate cgroup quotas, mutation,
-shell, non-Linux enforcement, or production readiness.
+independently of Bubblewrap availability.
 
-Every case is labeled as `synthetic-runtime-composition`, `native-integrated`,
-or `not-implemented`; unavailable native cases are not conflated with cases
-that this runner revision does not implement. The report currently contains
-five synthetic controls, nine native-integrated cases, and five unimplemented
-cases.
+The runner separately tests the fixed actor re-exec helper with a disposable
+fixture, then has one native-integrated case release an independent same-user
+actor after final target revalidation. The actor moves the approved file beyond
+the selected-root pathname before capability transfer. The worker is expected
+to return bytes from the retained opened object, which is consistent with
+object-authority B; this test does not claim strict live-path containment A.
+Reports classify the actor helper as `synthetic-actor-fixture`, runtime controls
+as `synthetic-runtime-composition`, worker cases as `native-integrated`, and
+unimplemented cases as `not-implemented`. Additional namespace actor cases,
+native cancellation/cleanup, aggregate cgroup quotas, mutation, shell,
+provider-source lifecycle/positive authorization, non-Linux enforcement, and
+production readiness remain unproven. A host trust refusal means none of the
+worker-path cases ran.
+
+Every case is explicitly classified; unavailable native cases are not
+conflated with cases that this runner revision does not implement. The report
+currently contains five synthetic-runtime controls, one actor-helper fixture,
+ten native-integrated cases, and four unimplemented cases.
