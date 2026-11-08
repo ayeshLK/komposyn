@@ -473,3 +473,18 @@ bounded, checksummed archive from a normal Linux host terminal.
 The [owner inventory and admission note](read-broker-owner-inventory.md)
 records the Token Logger/provider lifecycle gaps and explains why a complete
 synthetic fixture profile does not establish production coverage.
+
+## Native study prerequisite
+
+The brokered-read study is experimental and does not enable a filesystem tool.
+Its current host profile requires a trusted, system-installed Bubblewrap at the
+absolute path `/usr/bin/bwrap`, usable user/mount/PID/IPC/UTS/network namespaces,
+and the worker's seccomp support. The harness validates the executable and its
+path before running probes; it does not search `PATH`, install or upgrade
+Bubblewrap, change host permissions, or retry with weaker isolation. The
+release installer does not include Bubblewrap. Missing, untrusted, incompatible,
+or host-blocked prerequisites leave the worker unavailable; the study records
+that as unavailable evidence, not a pass. Never run the study as root or change
+ownership/host security settings to get past the trust check. See the
+[manual native-validation runner](read-broker-manual-runner.md) for the exact
+prerequisites and evidence handling.
