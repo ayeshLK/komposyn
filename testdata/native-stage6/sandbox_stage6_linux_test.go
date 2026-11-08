@@ -48,6 +48,7 @@ func init() {
 type stage6Case struct {
 	ID                        string `json:"case_id"`
 	Status                    string `json:"status"`
+	EvidenceKind              string `json:"evidence_kind,omitempty"`
 	Reason                    string `json:"reason,omitempty"`
 	WorkerStarted             bool   `json:"worker_started"`
 	WorkerReady               bool   `json:"worker_ready"`
@@ -91,7 +92,7 @@ var stage6Mu sync.Mutex
 
 func newStage6Report() stage6Report {
 	ids := []string{
-		"ordinary_chat_without_root", "positive_exact_read_and_replay", "empty_file_read",
+		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "positive_exact_read_and_replay", "empty_file_read",
 		"protected_auth_refusal", "protected_settings_refusal", "provider_source_owner",
 		"incomplete_owner_inventory", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
@@ -166,7 +167,17 @@ func stage6Begin(id string) {
 }
 
 func stage6Pass(id string, reason string) {
-	stage6Update(id, func(item *stage6Case) { item.Status, item.Reason = "measured_pass", reason })
+	stage6PassWithEvidence(id, "native-integrated", reason)
+}
+
+func stage6PassSynthetic(id string, reason string) {
+	stage6PassWithEvidence(id, "synthetic-runtime-composition", reason)
+}
+
+func stage6PassWithEvidence(id, evidenceKind, reason string) {
+	stage6Update(id, func(item *stage6Case) {
+		item.Status, item.EvidenceKind, item.Reason = "measured_pass", evidenceKind, reason
+	})
 }
 
 func stage6Skip(id, reason string) {
@@ -758,7 +769,125 @@ func TestStage6OrdinaryChatWithoutRoot(t *testing.T) {
 		t.Fatalf("unavailable sandbox service cleanup failed: %v", err)
 	}
 	stage6Update("ordinary_chat_without_root", func(item *stage6Case) { item.ProviderRequestCount, item.CleanupConfirmed = 1, true })
-	stage6Pass("ordinary_chat_without_root", "fake-provider text chat completed with a safely unavailable sandbox service and no selected root or worker")
+	stage6PassSynthetic("ordinary_chat_without_root", "fake-provider text chat completed with a safely unavailable sandbox service and no selected root or worker")
+}
+
+func TestStage6ReadRefusedWithoutRootOrBackend(t *testing.T) {
+	stage6Begin("read_refused_without_root_or_backend")
+	root := t.TempDir()
+	target := filepath.Join(root, "synthetic-private.txt")
+	content := "stage6-no-root-private-content"
+	if err := os.WriteFile(target, []byte(content), 0600); err != nil {
+		t.Fatalf("synthetic target creation failed: %v", err)
+	}
+	base := &stage6Provider{target: target, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
+	providers, err := model.NewRegistry(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewHostService(filepath.Join(root, "missing-bubblewrap"))
+	if err != nil {
+		t.Fatalf("missing backend should leave text chat available: %v", err)
+	}
+	available, _ := service.BackendStatus()
+	if available {
+		t.Fatal("missing synthetic backend was reported available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	store := auth.Store{Path: filepath.Join(root, "synthetic-auth.json"), Protection: service}
+	settingsStore := settings.Store{Path: filepath.Join(root, "synthetic-settings.json"), Protection: service}
+	if err := store.RegisterProtection(ctx); err != nil {
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic auth owner registration failed: %v", err)
+	}
+	if err := settingsStore.RegisterProtection(ctx); err != nil {
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic settings owner registration failed: %v", err)
+	}
+	if _, err := settingsStore.Load(); err != nil {
+		_ = service.Close(context.Background())
+		t.Fatalf("settings loading failed with unavailable backend: %v", err)
+	}
+	var approvals atomic.Int32
+	chat := runtime.NewChatWithToolRuntime(providers, store, nil, runtime.ToolRuntimeConfig{
+		Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: &stage6ReadHost{service: service}, RootHost: service,
+		Approval: runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			approvals.Add(1)
+			return permissions.ApprovalOnce, "", nil
+		}), Grants: permissions.NewMemoryStore(),
+	})
+	if err := chat.AddProfile(ctx, "stage6-no-root-profile", "openai", "synthetic profile", "synthetic-only-key", nil); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic profile setup failed: %v", err)
+	}
+	discovery := chat.Discover(ctx)
+	if len(discovery.Models) != 1 {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic model discovery returned %d models", len(discovery.Models))
+	}
+	if err := chat.Select(ctx, discovery.Models[0].Key(), false); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic model selection failed: %v", err)
+	}
+	if chat.Snapshot().FilesystemRoot.Selected {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatal("read refusal fixture unexpectedly selected a filesystem root")
+	}
+	if err := runtime.EnableNativeReadStudy(chat); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("test-only read path setup failed: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		clean := true
+		if err := chat.CloseContext(cleanupCtx); err != nil {
+			t.Errorf("no-root chat cleanup failed: %v", err)
+			clean = false
+		}
+		if err := service.Close(cleanupCtx); err != nil {
+			t.Errorf("no-root service cleanup failed: %v", err)
+			clean = false
+		}
+		if clean {
+			stage6Update("read_refused_without_root_or_backend", func(item *stage6Case) { item.CleanupConfirmed = true })
+		}
+	})
+	turn, err := chat.Send(ctx, "read the synthetic private fixture", nil)
+	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
+		t.Fatalf("read without root was not refused before continuation: outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := base.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want only the initial tool-call request", len(requests))
+	}
+	for _, request := range requests {
+		encoded, _ := json.Marshal(request.Messages)
+		if strings.Contains(string(encoded), content) {
+			t.Fatal("private fixture content reached the provider without a selected root")
+		}
+	}
+	if approvals.Load() != 0 {
+		t.Fatalf("approval interactions=%d, want no approval before root admission", approvals.Load())
+	}
+	impl, ok := service.impl.(*linuxImplementation)
+	if !ok || impl.session != nil {
+		t.Fatal("no-root refusal unexpectedly created a worker coordinator")
+	}
+	_, messages, results, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(chat, content)
+	if messages == 0 || results != 1 || markerFound || !payloadFree {
+		t.Fatalf("no-root refusal history was not payload-free: messages=%d results=%d marker=%t payload_free=%t", messages, results, markerFound, payloadFree)
+	}
+	stage6Update("read_refused_without_root_or_backend", func(item *stage6Case) {
+		item.EvidenceKind, item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = "synthetic-runtime-composition", len(requests), true, true
+	})
+	stage6PassSynthetic("read_refused_without_root_or_backend", "actual runtime and unavailable host Service refused a provider-requested read before approval, backend worker creation, or continuation disclosure")
 }
 
 func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {

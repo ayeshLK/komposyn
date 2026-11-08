@@ -129,15 +129,16 @@ def summarize(report, build, run):
         "",
         "## Cases",
         "",
-        "| Case | Status | Worker started | Capability transferred | Read started | Disclosure withheld | Reason |",
-        "|---|---|---:|---:|---:|---:|---|",
+        "| Case | Status | Evidence kind | Worker started | Capability transferred | Read started | Disclosure withheld | Reason |",
+        "|---|---|---|---:|---:|---:|---:|---|",
     ]
     for case in report.get("cases", []):
         reason = str(case.get("reason", "")).replace("|", "\\|").replace("\n", " ")
         lines.append(
-            "| {case} | {status} | {worker} | {cap} | {read} | {withheld} | {reason} |".format(
+            "| {case} | {status} | {evidence} | {worker} | {cap} | {read} | {withheld} | {reason} |".format(
                 case=case.get("case_id", "unknown"),
                 status=case.get("status", "unknown"),
+                evidence=case.get("evidence_kind", "unclassified"),
                 worker=case.get("worker_started", False),
                 cap=case.get("capability_transferred", False),
                 read=case.get("read_started", False),

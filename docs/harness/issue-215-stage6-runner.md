@@ -25,12 +25,15 @@ separate temporary Go build/module cache, then executes the test binary with a
 finite deadline. The existing bounded process-group capture helper terminates
 and reaps children on timeout; no unrestricted/elevated retry is attempted.
 
-The test composition runs the authoritative Bubblewrap trust and capability
+The native cases run the authoritative Bubblewrap trust and capability
 inspection before any backend probe. If the backend is untrusted, missing, or
-unsupported, the filesystem cases are reported unavailable and no worker is
-launched. The ordinary text-only case has no root or backend dependency. The
-runner records filesystem metadata for the backend but does not use that as a
-substitute for the Go harness trust check.
+unsupported, those worker cases are reported unavailable and no worker is
+launched. Separate synthetic-runtime controls verify that ordinary chat still
+works without a root/backend and that a provider-requested read is refused
+before approval, worker creation, or continuation disclosure. The report marks
+those controls as `synthetic-runtime-composition`; they are not native
+enforcement evidence. The runner records filesystem metadata for the backend
+but does not use that as a substitute for the Go harness trust check.
 
 ## Results
 
@@ -53,15 +56,16 @@ not in source control. Share the reviewed archive with issue #215 only after
 checking that the manifest contains the intended revision and no private
 material.
 
-The test binary includes a no-root text-chat control, explicit once-approved
-exact read plus same-context replay, empty-file read, synthetic auth/settings
-refusals, captured-batch revocation, and pre-/post-handoff owner rotation using
-the actual Service and runtime gate. Its Stage 6 wrapper implements the full
-runtime read execution interface; a synthetic forwarding test exercises that
-interface independently of Bubblewrap availability. That synthetic test is
-ordinary composition evidence, not OS-enforcement evidence. Other Stage 6
-cases remain explicitly unavailable or not implemented in this runner
-revision. A host trust refusal means none of the worker-path cases ran. The
-runner does not establish provider-source owner coverage, independent
-namespace actor cases, native cancellation/cleanup, aggregate cgroup quotas,
-mutation, shell, non-Linux enforcement, or production readiness.
+The test binary includes no-root text chat and attempted-read refusal controls,
+explicit once-approved exact read plus same-context replay, empty-file read,
+synthetic auth/settings refusals, captured-batch revocation, and pre-/post-
+handoff owner rotation using the actual Service and runtime gate. Its Stage 6
+wrapper implements the full runtime read execution interface; a synthetic
+forwarding test exercises that interface independently of Bubblewrap
+availability. Reports distinguish these synthetic-runtime controls from
+native-integrated cases. Other Stage 6 cases remain explicitly unavailable or
+not implemented in this runner revision. A host trust refusal means none of the
+worker-path cases ran. The runner does not establish provider-source owner
+coverage, independent namespace actor cases, native cancellation/cleanup,
+aggregate cgroup quotas, mutation, shell, non-Linux enforcement, or production
+readiness.

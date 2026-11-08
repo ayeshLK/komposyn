@@ -23,7 +23,7 @@ open and preserve historical evidence.
 | 3: retained admission | Merged | [PR #248](https://github.com/ayeshLK/komposyn/pull/248). Exact retained-object admission and owner barriers; no reopen or second once consumer. |
 | 4: worker and private capture | Merged | [PR #250](https://github.com/ayeshLK/komposyn/pull/250). One-attempt fixed worker, private bounded capture after join/descriptor retirement; native integrated acceptance remains open. |
 | 5: publication and continuation | Merged | [PR #251](https://github.com/ayeshLK/komposyn/pull/251), merge `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. Synchronized batch/provider handoff, replay provenance, owner-gated continuation retirement and stale-response tests. |
-| 6: integrated native acceptance | Partial runner in [draft PR #253](https://github.com/ayeshLK/komposyn/pull/253); native worker cases unavailable | The [Stage 6 runner guide](issue-215-stage6-runner.md) records invocation and current case coverage. Review-fix code at `7b071ce` composes the runtime, Service/registry, fixed worker and fake provider; synthetic forwarding tests cover the runtime-to-Service executor seam without OS-enforcement claims. The latest run [reported on #215](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6718477216) built and ran the harness but trust-refused `/usr/bin/bwrap` (UID 65534) before probes or worker launch. Only no-root text chat measured a pass. Remaining runner cases and an eligible trusted-host run/review are required. |
+| 6: integrated native acceptance | Partial runner in [draft PR #253](https://github.com/ayeshLK/komposyn/pull/253); native worker cases unavailable | The [Stage 6 runner guide](issue-215-stage6-runner.md) records invocation and current case coverage. The current runner composes the runtime, Service/registry, fixed worker and fake provider; synthetic forwarding tests cover the runtime-to-Service executor seam without OS-enforcement claims. Exact-run provenance and current results are recorded in [issue #215](https://github.com/ayeshLK/komposyn/issues/215). The last local attempt trust-refused `/usr/bin/bwrap` (UID 65534) before probes or worker launch. No-root text and attempted-read controls measured synthetic runtime passes. Remaining runner cases and an eligible trusted-host run/review are required. |
 | Typed-read enablement | Not approved | Requires Stage 6 acceptance, owner/launch gates, and a distinct reviewed enablement decision. |
 
 Production `cmd/harness` still offers only `update_plan` and
@@ -103,7 +103,7 @@ deterministic handshakes, never timing-only sleeps for ordering races.
 
 | Case | Expected evidence |
 | --- | --- |
-| Ordinary chat without root/backend | Text request remains usable; no worker/read capability is created. Backend failure is a sanitized refusal for filesystem work, not a text-chat failure. |
+| No-root controls without a backend | Text request remains usable. A provider-requested read is refused before approval, worker creation, or continuation disclosure. These are synthetic runtime/composition controls, not native enforcement evidence. |
 | Positive exact file, explicit once approval | One admission and one worker read; expected bytes reach only the capturing provider after the read; joined worker and retired descriptors before capture/publication. |
 | Empty regular file and bounded partial/error behavior | Empty result is valid; over-limit, malformed, or interrupted reads preserve typed outcome and do not trigger automatic replay. |
 | Auth/settings registered target, alias and replacement | Refusal precedes once consumption, worker start, transfer, read and provider disclosure; inspect fixture bytes/identity after each operation. |
@@ -133,6 +133,8 @@ overlay, backend, launch mode, host metadata and timestamps. Each case carries:
 
 - `case_id`, `status` (`measured_pass`, `observed_violation`, `unavailable`,
   `inconclusive`), and a short sanitized reason;
+- `evidence_kind`, distinguishing native-integrated results from synthetic
+  runtime/composition controls;
 - expected assertions and separately observed assertions;
 - whether worker start/read/join, descriptor transfer/retirement, once
   consumption, provider acceptance and output publication happened;
