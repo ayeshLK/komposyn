@@ -99,9 +99,14 @@ object-authority B; this test does not claim strict live-path containment A.
 
 A second native-integrated lifecycle case uses the fixed capability-hold worker
 profile. It cancels after the worker has acknowledged the read descriptor but
-before read release, and checks that the child is joined, the read never starts,
-no result is published, and the provider receives no continuation request. This
-does not cover cancellation after release, parent death, or every cleanup
+before read release. The returned operation outcome may be `cancelled` when the
+join is already confirmed, or `unknown` when cleanup remains pending; a later
+join must not rewrite an `unknown` operation outcome. The test uses a separate
+bounded service shutdown to confirm eventual join, then checks that the read
+never starts, no result is published, and the provider receives no continuation
+request. A synthetic delayed-`Wait` regression runs without Bubblewrap so this
+cleanup behavior remains covered when native prerequisites are unavailable.
+This does not cover cancellation after release, parent death, or every cleanup
 failure mode.
 
 A third native-integrated case records the actual selected Bubblewrap argument
@@ -111,6 +116,11 @@ outcome with no published or provider-disclosed content. The report continues to
 state that aggregate cgroup quotas are not provisioned or claimed; this case does
 not run exhaustion tests. It only measures the selected bind mode in that run,
 so each mode that is offered still needs its own trusted-host run.
+
+The cancellation report's operation outcome records the result observed before
+the independent cleanup drain. Its final `worker_joined` and `cleanup_confirmed`
+fields record the later bounded shutdown result; they do not imply a successful
+read or reclassify an unknown operation.
 
 Reports classify the actor helper as `synthetic-actor-fixture`, runtime controls
 as `synthetic-runtime-composition`, worker cases as `native-integrated`, and

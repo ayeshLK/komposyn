@@ -1470,6 +1470,7 @@ func TestStage6CancellationAndCleanupBeforeReadRelease(t *testing.T) {
 	if !ok || impl.session == nil {
 		t.Fatal("native fixture session is unavailable")
 	}
+	session := impl.session
 	checkpointReached := atomic.Bool{}
 	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
 		if checkpoint != readbrokerstudy.CheckpointAfterCapabilityHeld {
@@ -1501,26 +1502,53 @@ func TestStage6CancellationAndCleanupBeforeReadRelease(t *testing.T) {
 	if len(evidence) != 1 {
 		t.Fatalf("worker evidence entries=%d, want one", len(evidence))
 	}
+	initial := evidence[0]
+	if (initial.Outcome != readbrokerstudy.ReadCancelled && initial.Outcome != readbrokerstudy.ReadUnknown) || !initial.WorkerStarted || !initial.WorkerReady || !initial.CapabilitySent || !initial.CapabilityHeld || initial.ReadStarted || initial.Published || !initial.Probe.NoNewPrivs || initial.Probe.SeccompMode != 2 || !initial.Probe.SocketCreationDenied || !initial.Probe.PathOpenDenied || !initial.Probe.ReadCapabilityInitiallyAbsent || !initial.Probe.OnlyProtocolDescriptor || !initial.Probe.EnvironmentCleared {
+		t.Fatalf("held-worker cancellation initial evidence=%+v", initial)
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cleanupCancel()
+	for {
+		err := fixture.chat.CloseContext(cleanupCtx)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, runtime.ErrFilesystemRootPending) {
+			t.Fatalf("bounded shutdown failed while joining cancelled held worker: %v", err)
+		}
+		select {
+		case <-cleanupCtx.Done():
+			t.Fatalf("bounded shutdown did not join cancelled held worker: %v", errors.Join(err, cleanupCtx.Err()))
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if err := fixture.service.Close(cleanupCtx); err != nil {
+		t.Fatalf("bounded service shutdown did not drain cancelled worker: %v", err)
+	}
+	evidence = session.Evidence()
+	if len(evidence) != 1 {
+		t.Fatalf("worker evidence after bounded cleanup=%d, want one", len(evidence))
+	}
 	item := evidence[0]
-	if item.Outcome != readbrokerstudy.ReadCancelled || !item.WorkerStarted || !item.WorkerReady || !item.WorkerJoined || !item.CapabilitySent || !item.CapabilityHeld || item.ReadStarted || item.Published || !item.Probe.NoNewPrivs || item.Probe.SeccompMode != 2 || !item.Probe.SocketCreationDenied || !item.Probe.PathOpenDenied || !item.Probe.ReadCapabilityInitiallyAbsent || !item.Probe.OnlyProtocolDescriptor || !item.Probe.EnvironmentCleared {
-		t.Fatalf("held-worker cancellation evidence=%+v", item)
+	if item.Outcome != initial.Outcome || item.WorkerJoined != initial.WorkerJoined || !item.CapabilityHeld || item.ReadStarted || item.Published {
+		t.Fatalf("cleanup rewrote the original operation evidence: before=%+v after=%+v", initial, item)
 	}
-	if active := impl.session.ActiveOperationCount(); active != 0 {
-		t.Fatalf("active operations after joined cancellation=%d", active)
+	if active := session.ActiveOperationCount(); active != 0 {
+		t.Fatalf("active operations after bounded cleanup=%d", active)
 	}
-	if published := impl.session.PublishedResults(); len(published) != 0 {
+	if published := session.PublishedResults(); len(published) != 0 {
 		t.Fatalf("cancelled held read published %d results", len(published))
 	}
 	if fixture.approvals.Load() != 1 {
 		t.Fatalf("once approval count=%d, want exactly one consumed approval", fixture.approvals.Load())
 	}
 	stage6Update("cancellation_and_cleanup", func(item *stage6Case) {
-		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = true, true, true
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined, item.CleanupConfirmed = true, true, true, true
 		item.CapabilityTransferred, item.CapabilityHeld, item.ReadStarted = true, true, false
-		item.ReadOutcome, item.ProbePassed, item.OnceApprovalCount = string(evidence[0].Outcome), true, fixture.approvals.Load()
+		item.ReadOutcome, item.ProbePassed, item.OnceApprovalCount = string(initial.Outcome), true, fixture.approvals.Load()
 		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = len(requests), true, true
 	})
-	stage6Pass("cancellation_and_cleanup", "cancelled after the sandboxed worker held the approved descriptor but before read release; the worker joined, no read or publication occurred, and provider continuation did not run")
+	stage6Pass("cancellation_and_cleanup", "cancelled after the worker held the approved descriptor but before read release; the initial outcome remained cancelled or unknown as cleanup evidence allowed, a separate bounded shutdown joined the worker, and no read, publication, or provider continuation occurred")
 }
 
 func TestStage6LaunchProfileAndLimits(t *testing.T) {
