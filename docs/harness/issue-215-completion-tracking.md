@@ -1,20 +1,21 @@
 # Issue #215 completion tracking and Stage 6 acceptance contract
 
-Status: reviewed against master `6d9f71808daf2f57c1aa3cefbe28fc5648dc4153`
+Status: reviewed against master `9e58b466132d269746bcd275926f8a9bbb94d086`
 (2026-11-08). This is a tracking and evidence contract, not an enablement
 decision. The six-clause exact-file disclosure policy is accepted, while
 `read_file` remains unregistered and unavailable in shipped chat. Issue #215
-is open; the Stage 6 runner and independent-actor extension have merged, but
-the latest lifecycle follow-up remains under review and trusted-host native
-acceptance is pending.
+was reopened for completion tracking; the Stage 6 runner, independent-actor
+extension, and held-worker/profile follow-up have merged. Trusted-host native
+acceptance remains pending.
 
 The plan was reconstructed from the current issue, its decision/research
 comments, the merged implementation plan, source, and existing evidence. It is
 not a claim that earlier native evidence covers the Stage 6 composition. The
-Stage 5 implementation merged in #251; the Stage 6 runner and independent
-actor extension merged in #253 and #254. The current follow-up is PR #255 at
-`f3665a7f4245820d184d92922f75dcc4b664e9a9`. The completion checklist remains
-unfinished. Keep #215 open and preserve historical evidence.
+Stage 5 implementation merged in #251; the Stage 6 runner, independent actor,
+and held-worker/profile follow-up merged in #253, #254, and #255. The #255
+tested head `f3665a7f4245820d184d92922f75dcc4b664e9a9` has the same source tree
+as current master `9e58b466132d269746bcd275926f8a9bbb94d086`. The completion
+checklist remains unfinished. Keep #215 open and preserve historical evidence.
 
 ## Current stage audit
 
@@ -26,7 +27,7 @@ unfinished. Keep #215 open and preserve historical evidence.
 | 3: retained admission | Merged | [PR #248](https://github.com/ayeshLK/komposyn/pull/248). Exact retained-object admission and owner barriers; no reopen or second once consumer. |
 | 4: worker and private capture | Merged | [PR #250](https://github.com/ayeshLK/komposyn/pull/250). One-attempt fixed worker, private bounded capture after join/descriptor retirement; native integrated acceptance remains open. |
 | 5: publication and continuation | Merged | [PR #251](https://github.com/ayeshLK/komposyn/pull/251), merge `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. Synchronized batch/provider handoff, replay provenance, owner-gated continuation retirement and stale-response tests. |
-| 6: integrated native acceptance | Runner merged; acceptance pending | The Stage 6 runner and independent-actor extension are merged in [PR #253](https://github.com/ayeshLK/komposyn/pull/253) and [PR #254](https://github.com/ayeshLK/komposyn/pull/254). Follow-up [PR #255](https://github.com/ayeshLK/komposyn/pull/255) at `f3665a7f4245820d184d92922f75dcc4b664e9a9` adds held-worker cancellation/cleanup and bounded-read profile cases; it is ready for review, not merged. An exact-head run built and exited cleanly but classified `native_unavailable`: `/usr/bin/bwrap` was UID/GID 65534 and trust validation refused it before probes or worker launch. No native worker/read ran. See the [exact-head issue report](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6720531454). |
+| 6: integrated native acceptance | Runner and follow-ups merged; acceptance pending | The Stage 6 runner, independent-actor extension, and held-worker/profile follow-up are merged in [PR #253](https://github.com/ayeshLK/komposyn/pull/253), [PR #254](https://github.com/ayeshLK/komposyn/pull/254), and [PR #255](https://github.com/ayeshLK/komposyn/pull/255). The #255 tested tree is the current master tree. Its exact-head run built and exited cleanly but classified `native_unavailable`: `/usr/bin/bwrap` was UID/GID 65534 and trust validation refused it before probes or worker launch. No native worker/read ran. See the [exact-head issue report](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6720531454). |
 | Typed-read enablement | Not approved | Requires Stage 6 acceptance, owner/launch gates, and a distinct reviewed enablement decision. |
 
 Production `cmd/harness` still offers only `update_plan` and
@@ -42,7 +43,7 @@ pass.
 
 | Outstanding #215 item | Package / dependency | Required result and closure evidence |
 | --- | --- | --- |
-| Stage 6 exact integrated profile | **B → C** | Runner and independent actor are merged (#253/#254); review and merge the held-worker/profile follow-up (#255), then run the final exact head as a regular user on an eligible trusted Linux host. Inspect the archive and fixture effects, fix defects, and repeat affected cases plus the full final profile. The recorded attempt is unavailable, not a pass: trusted-backend validation stopped before probes or worker launch. |
+| Stage 6 exact integrated profile | **B → C** | Runner, independent actor, and held-worker/profile follow-up are merged (#253–#255). Run the current exact master tree as a regular user on an eligible trusted Linux host. Inspect the archive and fixture effects, fix defects, and repeat affected cases plus the full final profile. The recorded attempt is unavailable, not a pass: trusted-backend validation stopped before probes or worker launch. |
 | Complete accepted exact-file boundary through provider integration | **B → C → F** | Prove capture-to-provider behavior and native boundaries; then a separate production adapter/registration PR and explicit enablement review. Until F, reads stay unavailable. |
 | Provider-source owner lifecycle and real-owner coverage | **D**, then C rerun if the profile changes | The memory-chat composition has no provider-source open/identity/rotation lifecycle; provider-source ownership remains unsupported and refused. Collector roots or discovered paths are not an exhaustive object inventory. Keep this unavailable unless a future composition selects a concrete source owner and supplies its route, opened identity/generation, and invalidation lifecycle; then prove negative admission and rotation with applicable synthetic and native evidence. |
 | Negative inventory-admission native scenarios | **C/D** | Missing/incomplete registrations must refuse before once consumption, worker startup, read descriptor transfer, and provider publication. Coordinator-only tests are insufficient for a native claim. |
