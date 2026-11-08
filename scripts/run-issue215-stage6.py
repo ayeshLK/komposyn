@@ -30,6 +30,9 @@ import sys
 import tarfile
 import tempfile
 import time
+
+# Loading the existing bounded capture helper must not dirty the source tree.
+sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
 
 RUNNER_VERSION = "1"
