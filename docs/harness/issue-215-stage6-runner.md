@@ -6,17 +6,29 @@ synthetic auth/settings stores and file contents.
 
 ## Reproduction
 
-Run from a clean Linux checkout using a regular user, Go 1.26.10 or newer, and
-the reviewed absolute Bubblewrap executable. The command requires an exact
-clean `HEAD`; it archives that commit into a private temporary source snapshot
-and refuses to label dirty source as a commit.
+Run from a clean Linux checkout using a regular user, an already-installed Go
+1.26.10 or newer toolchain, and the reviewed absolute Bubblewrap executable.
+Put that toolchain first on `PATH`; the runner uses `GOTOOLCHAIN=local` and will
+not download or switch toolchains. If the default `go` launcher selects a
+toolchain from `GOTOOLCHAIN`, resolve its installed `GOROOT` once and verify
+the binary before launching the runner. The command requires an exact clean
+`HEAD`; it archives that commit into a private temporary source snapshot and
+refuses to label dirty source as a commit.
 
 ```sh
-python3 scripts/run-issue215-stage6.py \
+go_root="$(go env GOROOT)"
+"$go_root/bin/go" version
+PATH="$go_root/bin:$PATH" python3 -B scripts/run-issue215-stage6.py \
   --revision "$(git rev-parse HEAD)" \
   --bwrap /usr/bin/bwrap \
   --output-root /tmp
 ```
+
+Confirm the printed version is Go 1.26.10 or newer before proceeding. If
+`go env GOROOT` resolves to an older base installation, set `go_root` to the
+`GOROOT` of an already-installed compatible toolchain. Do not rely on runner
+toolchain auto-download; native execution must remain tied to the verified
+local toolchain and exact source revision.
 
 The runner refuses root, non-Linux hosts, unsupported architectures, relative
 backend paths, dirty checkouts, and a revision other than the current clean
