@@ -92,6 +92,14 @@ no result is published, and the provider receives no continuation request. This
 does not cover cancellation after release, parent death, or every cleanup
 failure mode.
 
+A third native-integrated case records the actual selected Bubblewrap argument
+profile, probes the worker's seccomp/FD/environment restrictions, and reads a
+synthetic file larger than the fixed 64 KiB cap. It requires a truthful partial
+outcome with no published or provider-disclosed content. The report continues to
+state that aggregate cgroup quotas are not provisioned or claimed; this case does
+not run exhaustion tests. It only measures the selected bind mode in that run,
+so each mode that is offered still needs its own trusted-host run.
+
 Reports classify the actor helper as `synthetic-actor-fixture`, runtime controls
 as `synthetic-runtime-composition`, worker cases as `native-integrated`, and
 unimplemented cases as `not-implemented`. Additional namespace actor cases,
@@ -103,4 +111,4 @@ means none of the worker-path cases ran.
 Every case is explicitly classified; unavailable native cases are not
 conflated with cases that this runner revision does not implement. The report
 currently contains five synthetic-runtime controls, one actor-helper fixture,
-eleven native-integrated cases, and three unimplemented cases.
+twelve native-integrated cases, and two unimplemented cases.

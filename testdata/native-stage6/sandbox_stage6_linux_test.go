@@ -121,9 +121,8 @@ func newStage6Report() stage6Report {
 	}
 	actorFixtureCases := map[string]struct{}{"actor_helper_control": {}}
 	unimplementedCases := map[string]struct{}{
-		"launch_profile_and_limits": {},
-		"mutation_profile":          {},
-		"shell_profile":             {},
+		"mutation_profile": {},
+		"shell_profile":    {},
 	}
 	cases := make([]stage6Case, 0, len(ids))
 	for _, id := range ids {
@@ -206,8 +205,8 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	want := map[string]int{
 		"synthetic-runtime-composition": 5,
 		"synthetic-actor-fixture":       1,
-		"native-integrated":             11,
-		"not-implemented":               3,
+		"native-integrated":             12,
+		"not-implemented":               2,
 	}
 	if len(counts) != len(want) {
 		t.Fatalf("unexpected evidence classifications: got %v want %v", counts, want)
@@ -742,7 +741,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	}
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
-		for _, id := range []string{"positive_exact_read_and_replay", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "late_response_and_delta_retirement", "expected_once_transitions"} {
+		for _, id := range []string{"positive_exact_read_and_replay", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
 			stage6Skip(id, "trusted backend validation refused before backend probes or worker launch")
 		}
 		t.Skip("trusted native Bubblewrap backend unavailable; no probe or worker launch was attempted")
@@ -1522,6 +1521,111 @@ func TestStage6CancellationAndCleanupBeforeReadRelease(t *testing.T) {
 		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = len(requests), true, true
 	})
 	stage6Pass("cancellation_and_cleanup", "cancelled after the sandboxed worker held the approved descriptor but before read release; the worker joined, no read or publication occurred, and provider continuation did not run")
+}
+
+func TestStage6LaunchProfileAndLimits(t *testing.T) {
+	stage6Begin("launch_profile_and_limits")
+	fixture := newStage6Fixture(t, "launch_profile_and_limits", "ordinary", false, nil)
+	fixture.reportCases = []string{"launch_profile_and_limits"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	marker := "stage6-boundary-marker-"
+	oversized := strings.Repeat(marker, readbrokerstudy.MaxReadBytes/len(marker)+2)
+	target := filepath.Join(fixture.root, "notes.txt")
+	if err := os.WriteFile(target, []byte(oversized), 0o600); err != nil {
+		t.Fatalf("write bounded synthetic fixture: %v", err)
+	}
+	fixture.content = oversized
+	turn, sendErr := fixture.chat.Send(ctx, "read the approved synthetic fixture", nil)
+	if sendErr != nil || turn.Outcome != provider.OutcomeInterrupted {
+		t.Fatalf("oversized read did not stop without disclosure: outcome=%s err=%v", turn.Outcome, sendErr)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want no continuation after the bounded partial result", len(requests))
+	}
+	initial, err := json.Marshal(requests[0].Messages)
+	if err != nil || strings.Contains(string(initial), marker) {
+		t.Fatal("synthetic file content appeared in the provider request before a complete read")
+	}
+	impl, ok := fixture.service.impl.(*linuxImplementation)
+	if !ok || impl.session == nil {
+		t.Fatal("native fixture session is unavailable")
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 {
+		t.Fatalf("worker evidence entries=%d, want one", len(evidence))
+	}
+	read := evidence[0]
+	if read.Outcome != readbrokerstudy.ReadPartial || !read.WorkerStarted || !read.WorkerReady || !read.WorkerJoined || !read.CapabilitySent || !read.ReadStarted || read.Published || !read.Probe.NoNewPrivs || read.Probe.SeccompMode != 2 || !read.Probe.SocketCreationDenied || !read.Probe.PathOpenDenied || !read.Probe.ReadCapabilityInitiallyAbsent || !read.Probe.OnlyProtocolDescriptor || !read.Probe.EnvironmentCleared {
+		t.Fatalf("bounded read evidence=%+v", read)
+	}
+	if fixture.approvals.Load() != 1 {
+		t.Fatalf("once approval count=%d, want one", fixture.approvals.Load())
+	}
+	stage6Mu.Lock()
+	args, argsOK := stage6.LaunchPolicy["effective_bubblewrap_arguments"].([]string)
+	mode, modeOK := stage6.Backend["bind_mode"].(readbrokerstudy.BindMode)
+	aggregateLimits := stage6.LaunchPolicy["aggregate_cgroup_limits"]
+	stage6Mu.Unlock()
+	if !argsOK || !modeOK {
+		t.Fatalf("effective Bubblewrap policy is unavailable: args=%t mode=%t", argsOK, modeOK)
+	}
+	hasSequence := func(want ...string) bool {
+		for start := 0; start+len(want) <= len(args); start++ {
+			matched := true
+			for offset := range want {
+				if args[start+offset] != want[offset] {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return true
+			}
+		}
+		return false
+	}
+	for _, required := range [][]string{
+		{"--die-with-parent"}, {"--new-session"}, {"--unshare-user"}, {"--unshare-pid"},
+		{"--unshare-ipc"}, {"--unshare-uts"}, {"--unshare-net"}, {"--as-pid-1"},
+		{"--disable-userns"}, {"--cap-drop", "ALL"}, {"--clearenv"}, {"--size", "8388608"},
+		{"--tmpfs", "/"}, {"--sync-fd", "6"}, {"--seccomp-fd"},
+	} {
+		if !hasSequence(required...) {
+			t.Fatalf("effective Bubblewrap arguments lack %q: %v", required, args)
+		}
+	}
+	switch mode {
+	case readbrokerstudy.BindModeDescriptor:
+		if !hasSequence("--ro-bind-fd", "5", "/worker") {
+			t.Fatalf("descriptor bind mode arguments=%v", args)
+		}
+	case readbrokerstudy.BindModeFileSnapshot:
+		if !hasSequence("--perms", "0500", "--ro-bind-data", "5", "/worker") {
+			t.Fatalf("sealed snapshot bind mode arguments=%v", args)
+		}
+	default:
+		t.Fatalf("unsupported worker bind mode %q", mode)
+	}
+	for _, hostPath := range []string{"/proc", "/home", "/run", "/dev"} {
+		for _, arg := range args {
+			if arg == hostPath {
+				t.Fatalf("launch policy exposes an unreviewed host path %q", hostPath)
+			}
+		}
+	}
+	if aggregateLimits != "not provisioned or claimed" || readbrokerstudy.MaxReadBytes != 64<<10 {
+		t.Fatalf("resource policy changed unexpectedly: aggregate=%v max_read=%d", aggregateLimits, readbrokerstudy.MaxReadBytes)
+	}
+	stage6Update("launch_profile_and_limits", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = true, true, true
+		item.CapabilityTransferred, item.ReadStarted, item.ReadOutcome = true, true, string(read.Outcome)
+		item.ProbePassed, item.OnceApprovalCount, item.ProviderRequestCount = true, fixture.approvals.Load(), len(requests)
+		item.DisclosureWithheld, item.StaleDataAbsent = true, true
+	})
+	stage6Pass("launch_profile_and_limits", "the selected Bubblewrap mode established the fixed namespace/tmpfs/seccomp/FD/environment profile; an oversized synthetic file was capped at 64 KiB and withheld as partial; aggregate cgroup quotas remain unprovisioned and unclaimed")
 }
 
 func TestStage6EmptyFileRead(t *testing.T) {
