@@ -79,20 +79,28 @@ read execution interface; a synthetic forwarding test exercises that interface
 independently of Bubblewrap availability.
 
 The runner separately tests the fixed actor re-exec helper with a disposable
-fixture, then has one native-integrated case release an independent same-user
-actor after final target revalidation. The actor moves the approved file beyond
-the selected-root pathname before capability transfer. The worker is expected
+fixture, then has one native-integrated case release independent same-user
+actors after final target revalidation. The actors move the target parent and
+selected root, then replace the final target pathname. The worker is expected
 to return bytes from the retained opened object, which is consistent with
 object-authority B; this test does not claim strict live-path containment A.
+
+A second native-integrated lifecycle case uses the fixed capability-hold worker
+profile. It cancels after the worker has acknowledged the read descriptor but
+before read release, and checks that the child is joined, the read never starts,
+no result is published, and the provider receives no continuation request. This
+does not cover cancellation after release, parent death, or every cleanup
+failure mode.
+
 Reports classify the actor helper as `synthetic-actor-fixture`, runtime controls
 as `synthetic-runtime-composition`, worker cases as `native-integrated`, and
 unimplemented cases as `not-implemented`. Additional namespace actor cases,
-native cancellation/cleanup, aggregate cgroup quotas, mutation, shell,
-provider-source lifecycle/positive authorization, non-Linux enforcement, and
-production readiness remain unproven. A host trust refusal means none of the
-worker-path cases ran.
+post-release cancellation, parent-death cleanup, aggregate cgroup quotas,
+mutation, shell, provider-source lifecycle/positive authorization, non-Linux
+enforcement, and production readiness remain unproven. A host trust refusal
+means none of the worker-path cases ran.
 
 Every case is explicitly classified; unavailable native cases are not
 conflated with cases that this runner revision does not implement. The report
 currently contains five synthetic-runtime controls, one actor-helper fixture,
-ten native-integrated cases, and four unimplemented cases.
+eleven native-integrated cases, and three unimplemented cases.

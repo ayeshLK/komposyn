@@ -60,7 +60,9 @@ type stage6Case struct {
 	WorkerReady               bool   `json:"worker_ready"`
 	WorkerJoined              bool   `json:"worker_joined"`
 	CapabilityTransferred     bool   `json:"capability_transferred"`
+	CapabilityHeld            bool   `json:"capability_held"`
 	ReadStarted               bool   `json:"read_started"`
+	ReadOutcome               string `json:"read_outcome,omitempty"`
 	ProbePassed               bool   `json:"required_probe_passed"`
 	OnceApprovalCount         int32  `json:"once_approval_count"`
 	OnceGrantConsumptionCount int    `json:"once_grant_consumption_count"`
@@ -119,7 +121,6 @@ func newStage6Report() stage6Report {
 	}
 	actorFixtureCases := map[string]struct{}{"actor_helper_control": {}}
 	unimplementedCases := map[string]struct{}{
-		"cancellation_and_cleanup":  {},
 		"launch_profile_and_limits": {},
 		"mutation_profile":          {},
 		"shell_profile":             {},
@@ -137,14 +138,14 @@ func newStage6Report() stage6Report {
 			item.Reason = "synthetic separate-process actor helper control was not executed"
 		} else if unimplemented {
 			item.EvidenceKind = "not-implemented"
-			item.Reason = "case is not implemented by Stage 6 runner version 3"
+			item.Reason = "case is not implemented by Stage 6 runner version 4"
 		} else {
 			item.EvidenceKind = "native-integrated"
 		}
 		cases = append(cases, item)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "3",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "4",
 		OS: "linux", Architecture: stdruntime.GOARCH, UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: []string{
@@ -205,8 +206,8 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	want := map[string]int{
 		"synthetic-runtime-composition": 5,
 		"synthetic-actor-fixture":       1,
-		"native-integrated":             10,
-		"not-implemented":               4,
+		"native-integrated":             11,
+		"not-implemented":               3,
 	}
 	if len(counts) != len(want) {
 		t.Fatalf("unexpected evidence classifications: got %v want %v", counts, want)
@@ -683,7 +684,33 @@ type stage6Fixture struct {
 	reportCases         []string
 }
 
+func newStage6HostServiceWithCapabilityHold(backendPath string) (*Service, error) {
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		return nil, err
+	}
+	workerPath, err := os.Executable()
+	if err != nil {
+		_ = registry.Close()
+		return nil, err
+	}
+	launcher, err := readbrokerstudy.NewWorkerLauncherWithCapabilityHold(backendPath, workerPath)
+	if err != nil {
+		_ = registry.Close()
+		return nil, err
+	}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &Service{impl: impl}, nil
+}
+
 func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool, beforeHandoff func() error) *stage6Fixture {
+	return newStage6FixtureWithHold(t, caseID, targetKind, blockSecond, beforeHandoff, false)
+}
+
+func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSecond bool, beforeHandoff func() error, holdWorker bool) *stage6Fixture {
 	t.Helper()
 	backendPath := os.Getenv("KOMPOSYN_STAGE6_BWRAP")
 	if backendPath == "" {
@@ -720,7 +747,13 @@ func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool,
 		}
 		t.Skip("trusted native Bubblewrap backend unavailable; no probe or worker launch was attempted")
 	}
-	service, err := NewHostService(backendPath)
+	var service *Service
+	var err error
+	if holdWorker {
+		service, err = newStage6HostServiceWithCapabilityHold(backendPath)
+	} else {
+		service, err = NewHostService(backendPath)
+	}
 	if err != nil {
 		stage6Skip(caseID, "trusted backend passed inspection but host service composition was unavailable")
 		t.Skip("host sandbox service could not be composed")
@@ -1425,6 +1458,70 @@ func TestStage6IndependentActorMovesOpenedObjectAfterFinalRevalidation(t *testin
 		item.AuthorityObservation = "three independent same-user actors moved the target parent and selected root outside their approved pathnames, then replaced the target pathname after final revalidation; the worker disclosed bytes from the retained opened object, consistent with object authority B; strict live-path containment A is not claimed"
 	})
 	stage6Pass("independent_namespace_actor", "three separate actor processes moved the target parent and selected root outside their approved pathnames, then replaced the target pathname after final revalidation; the sandbox worker read the same opened object and its bytes reached the capturing provider under authority B")
+}
+
+func TestStage6CancellationAndCleanupBeforeReadRelease(t *testing.T) {
+	stage6Begin("cancellation_and_cleanup")
+	fixture := newStage6FixtureWithHold(t, "cancellation_and_cleanup", "ordinary", false, nil, true)
+	fixture.reportCases = []string{"cancellation_and_cleanup"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	impl, ok := fixture.service.impl.(*linuxImplementation)
+	if !ok || impl.session == nil {
+		t.Fatal("native fixture session is unavailable")
+	}
+	checkpointReached := atomic.Bool{}
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint != readbrokerstudy.CheckpointAfterCapabilityHeld {
+			return nil
+		}
+		checkpointReached.Store(true)
+		cancel()
+		return context.Canceled
+	})
+	turn, sendErr := fixture.chat.Send(ctx, "read the approved synthetic fixture", nil)
+	if !checkpointReached.Load() {
+		t.Fatal("worker did not reach the held-capability checkpoint")
+	}
+	if sendErr != nil && !errors.Is(sendErr, context.Canceled) {
+		t.Fatalf("cancelled read returned an unrelated error: %v", sendErr)
+	}
+	if turn.Outcome != provider.OutcomeInterrupted || ctx.Err() == nil {
+		t.Fatalf("cancelled held read outcome=%s context=%v", turn.Outcome, ctx.Err())
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want initial request only; cancelled turn must not continue", len(requests))
+	}
+	initial, err := json.Marshal(requests[0].Messages)
+	if err != nil || strings.Contains(string(initial), fixture.content) {
+		t.Fatalf("unread fixture bytes appeared in provider input: marshal_error=%v", err)
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 {
+		t.Fatalf("worker evidence entries=%d, want one", len(evidence))
+	}
+	item := evidence[0]
+	if item.Outcome != readbrokerstudy.ReadCancelled || !item.WorkerStarted || !item.WorkerReady || !item.WorkerJoined || !item.CapabilitySent || !item.CapabilityHeld || item.ReadStarted || item.Published || !item.Probe.NoNewPrivs || item.Probe.SeccompMode != 2 || !item.Probe.SocketCreationDenied || !item.Probe.PathOpenDenied || !item.Probe.ReadCapabilityInitiallyAbsent || !item.Probe.OnlyProtocolDescriptor || !item.Probe.EnvironmentCleared {
+		t.Fatalf("held-worker cancellation evidence=%+v", item)
+	}
+	if active := impl.session.ActiveOperationCount(); active != 0 {
+		t.Fatalf("active operations after joined cancellation=%d", active)
+	}
+	if published := impl.session.PublishedResults(); len(published) != 0 {
+		t.Fatalf("cancelled held read published %d results", len(published))
+	}
+	if fixture.approvals.Load() != 1 {
+		t.Fatalf("once approval count=%d, want exactly one consumed approval", fixture.approvals.Load())
+	}
+	stage6Update("cancellation_and_cleanup", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = true, true, true
+		item.CapabilityTransferred, item.CapabilityHeld, item.ReadStarted = true, true, false
+		item.ReadOutcome, item.ProbePassed, item.OnceApprovalCount = string(evidence[0].Outcome), true, fixture.approvals.Load()
+		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = len(requests), true, true
+	})
+	stage6Pass("cancellation_and_cleanup", "cancelled after the sandboxed worker held the approved descriptor but before read release; the worker joined, no read or publication occurred, and provider continuation did not run")
 }
 
 func TestStage6EmptyFileRead(t *testing.T) {
