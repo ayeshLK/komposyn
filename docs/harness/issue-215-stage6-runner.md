@@ -6,17 +6,29 @@ synthetic auth/settings stores and file contents.
 
 ## Reproduction
 
-Run from a clean Linux checkout using a regular user, Go 1.26.10 or newer, and
-the reviewed absolute Bubblewrap executable. The command requires an exact
-clean `HEAD`; it archives that commit into a private temporary source snapshot
-and refuses to label dirty source as a commit.
+Run from a clean Linux checkout using a regular user, an already-installed Go
+1.26.10 or newer toolchain, and the reviewed absolute Bubblewrap executable.
+Put that toolchain first on `PATH`; the runner uses `GOTOOLCHAIN=local` and will
+not download or switch toolchains. If the default `go` launcher selects a
+toolchain from `GOTOOLCHAIN`, resolve its installed `GOROOT` once and verify
+the binary before launching the runner. The command requires an exact clean
+`HEAD`; it archives that commit into a private temporary source snapshot and
+refuses to label dirty source as a commit.
 
 ```sh
-python3 scripts/run-issue215-stage6.py \
+go_root="$(go env GOROOT)"
+"$go_root/bin/go" version
+PATH="$go_root/bin:$PATH" python3 -B scripts/run-issue215-stage6.py \
   --revision "$(git rev-parse HEAD)" \
   --bwrap /usr/bin/bwrap \
   --output-root /tmp
 ```
+
+Confirm the printed version is Go 1.26.10 or newer before proceeding. If
+`go env GOROOT` resolves to an older base installation, set `go_root` to the
+`GOROOT` of an already-installed compatible toolchain. Do not rely on runner
+toolchain auto-download; native execution must remain tied to the verified
+local toolchain and exact source revision.
 
 The runner refuses root, non-Linux hosts, unsupported architectures, relative
 backend paths, dirty checkouts, and a revision other than the current clean
@@ -79,20 +91,49 @@ read execution interface; a synthetic forwarding test exercises that interface
 independently of Bubblewrap availability.
 
 The runner separately tests the fixed actor re-exec helper with a disposable
-fixture, then has one native-integrated case release an independent same-user
-actor after final target revalidation. The actor moves the approved file beyond
-the selected-root pathname before capability transfer. The worker is expected
+fixture, then has one native-integrated case release independent same-user
+actors after final target revalidation. The actors move the target parent and
+selected root, then replace the final target pathname. The worker is expected
 to return bytes from the retained opened object, which is consistent with
 object-authority B; this test does not claim strict live-path containment A.
+
+A second native-integrated lifecycle case uses the fixed capability-hold worker
+profile. It cancels after the worker has acknowledged the read descriptor but
+before read release. The returned operation outcome may be `cancelled` when the
+join is already confirmed, or `unknown` when cleanup remains pending; a later
+join must not rewrite an `unknown` operation outcome. The test uses a separate
+bounded service shutdown to confirm eventual join, then checks that the read
+never starts, no result is published, and the provider receives no continuation
+request. A synthetic delayed-`Wait` regression runs without Bubblewrap so this
+cleanup behavior remains covered when native prerequisites are unavailable.
+That control is `TestStage4CancellationBeforeHeldReadReleasePreservesUnknownUntilDelayedJoin`
+in the ordinary sandbox test suite; it is synthetic lifecycle evidence and is
+not counted as a native Stage 6 case.
+This does not cover cancellation after release, parent death, or every cleanup
+failure mode.
+
+A third native-integrated case records the actual selected Bubblewrap argument
+profile, probes the worker's seccomp/FD/environment restrictions, and reads a
+synthetic file larger than the fixed 64 KiB cap. It requires a truthful partial
+outcome with no published or provider-disclosed content. The report continues to
+state that aggregate cgroup quotas are not provisioned or claimed; this case does
+not run exhaustion tests. It only measures the selected bind mode in that run,
+so each mode that is offered still needs its own trusted-host run.
+
+The cancellation report's operation outcome records the result observed before
+the independent cleanup drain. Its final `worker_joined` and `cleanup_confirmed`
+fields record the later bounded shutdown result; they do not imply a successful
+read or reclassify an unknown operation.
+
 Reports classify the actor helper as `synthetic-actor-fixture`, runtime controls
 as `synthetic-runtime-composition`, worker cases as `native-integrated`, and
 unimplemented cases as `not-implemented`. Additional namespace actor cases,
-native cancellation/cleanup, aggregate cgroup quotas, mutation, shell,
-provider-source lifecycle/positive authorization, non-Linux enforcement, and
-production readiness remain unproven. A host trust refusal means none of the
-worker-path cases ran.
+post-release cancellation, parent-death cleanup, aggregate cgroup quotas,
+mutation, shell, provider-source lifecycle/positive authorization, non-Linux
+enforcement, and production readiness remain unproven. A host trust refusal
+means none of the worker-path cases ran.
 
 Every case is explicitly classified; unavailable native cases are not
 conflated with cases that this runner revision does not implement. The report
 currently contains five synthetic-runtime controls, one actor-helper fixture,
-ten native-integrated cases, and four unimplemented cases.
+twelve native-integrated cases, and two unimplemented cases.
