@@ -73,6 +73,42 @@ class Stage6RunnerTests(unittest.TestCase):
             self.assertTrue(metadata["regular_file"])
             self.assertEqual(metadata["sha256"], hashlib.sha256(b"synthetic executable").hexdigest())
 
+    def test_build_environment_does_not_inherit_home_or_proxy_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private_home = root / "host-home"
+            private_home.mkdir()
+            (private_home / ".netrc").write_text("machine proxy.example login secret password secret\n")
+            work = root / "work"
+            work.mkdir()
+            cache = work / "cache"
+            module_cache = work / "module-cache"
+            cache.mkdir()
+            module_cache.mkdir()
+            old = {key: os.environ.get(key) for key in ("HOME", "GOPROXY", "GOAUTH")}
+            try:
+                os.environ["HOME"] = str(private_home)
+                os.environ["GOPROXY"] = "https://user:password@private-proxy.invalid"
+                os.environ["GOAUTH"] = "git /host/credential-helper"
+                env = RUNNER.build_go_environment(work, cache, module_cache)
+            finally:
+                for key, value in old.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+            self.assertEqual(env["HOME"], str(work / "home"))
+            self.assertNotEqual(env["HOME"], str(private_home))
+            self.assertFalse((Path(env["HOME"]) / ".netrc").exists())
+            self.assertEqual(env["GOPROXY"], "https://proxy.golang.org")
+            self.assertEqual(env["GOAUTH"], "off")
+            self.assertEqual(env["GOVCS"], "*:off")
+            self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+            command = RUNNER.isolated_environment_command(env, ["go", "version"])
+            self.assertNotIn("private-proxy", " ".join(command))
+            self.assertNotIn("credential-helper", " ".join(command))
+
     def test_archive_extraction_rejects_parent_traversal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

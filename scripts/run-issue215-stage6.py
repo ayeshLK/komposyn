@@ -35,7 +35,7 @@ import time
 sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
 
-RUNNER_VERSION = "1"
+RUNNER_VERSION = "2"
 DEFAULT_BWRAP = "/usr/bin/bwrap"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 BUILD_TIMEOUT = 300
@@ -93,6 +93,32 @@ def bounded_capture(run_capture, argv, timeout, stdout, stderr, cwd):
         str(stderr),
         str(cwd),
     )
+
+
+def isolated_environment_command(env, argv):
+    return ["/usr/bin/env", "-i", *[f"{key}={value}" for key, value in env.items()], *argv]
+
+
+def build_go_environment(work, cache_dir, module_cache):
+    home = work / "home"
+    home.mkdir(mode=0o700)
+    os.chmod(home, 0o700)
+    return {
+        "HOME": str(home),
+        "PATH": "/usr/bin:/bin",
+        "GOCACHE": str(cache_dir),
+        "GOMODCACHE": str(module_cache),
+        "GOWORK": "off",
+        "GOENV": "off",
+        "GOTOOLCHAIN": "local",
+        "GOPROXY": "https://proxy.golang.org",
+        "GOAUTH": "off",
+        "GOVCS": "*:off",
+        "GOSUMDB": "sum.golang.org",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "CGO_ENABLED": "0",
+    }
 
 
 def backend_metadata(path):
@@ -262,19 +288,9 @@ def main():
         if not go:
             manifest["go"]["status"] = "unavailable"
             raise RuntimeError("Go is not available on PATH")
-        env = {
-            "HOME": os.environ.get("HOME", str(work)),
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "GOCACHE": str(cache_dir),
-            "GOMODCACHE": str(module_cache),
-            "GOWORK": "off",
-            "GOENV": "off",
-            "GOTOOLCHAIN": "local",
-            "GOPROXY": os.environ.get("GOPROXY", "https://proxy.golang.org,direct"),
-            "CGO_ENABLED": "0",
-        }
+        env = build_go_environment(work, cache_dir, module_cache)
         version_stdout, version_stderr = output / "go-version.stdout.log", output / "go-version.stderr.log"
-        version_result = bounded_capture(run_capture, [go, "version"], 10, version_stdout, version_stderr, source_dir)
+        version_result = bounded_capture(run_capture, isolated_environment_command(env, [go, "version"]), 10, version_stdout, version_stderr, source_dir)
         manifest["go"]["status"] = "recorded" if version_result.get("exit_code") == 0 else "unavailable"
         manifest["go"]["capture"] = version_result
         try:
@@ -303,7 +319,7 @@ def main():
         executable = build_dir / "stage6-worker.test"
         build_command = [go, "test", "-c", "-buildvcs=false", "-tags=komposyn_stage6_study", "-overlay=" + str(overlay_path), "-o", str(executable), "./internal/harness/sandbox"]
         manifest["build"] = {"status": "running", "command_template": ["go", "test", "-c", "-buildvcs=false", "-tags=komposyn_stage6_study", "-overlay=<temporary overlay>", "-o <temporary binary>", "./internal/harness/sandbox"], "cgo_enabled": "0", "timeout_seconds": BUILD_TIMEOUT, "output_limit_bytes_per_stream": MAX_LOG_BYTES}
-        build = bounded_capture(run_capture, ["/usr/bin/env", "-i", *[f"{key}={value}" for key, value in env.items()], *build_command], BUILD_TIMEOUT, output / "build.stdout.log", output / "build.stderr.log", source_dir)
+        build = bounded_capture(run_capture, isolated_environment_command(env, build_command), BUILD_TIMEOUT, output / "build.stdout.log", output / "build.stderr.log", source_dir)
         manifest["build"].update(build)
         manifest["build"]["binary_sha256"] = sha256_file(executable) if executable.exists() else None
         manifest["build"]["status"] = "built" if build.get("exit_code") == 0 and executable.exists() else ("timeout" if build.get("timed_out") else "failed")
@@ -319,7 +335,7 @@ def main():
         })
         run_command = [str(executable), "-test.run=^TestStage6", "-test.timeout=120s", "-test.count=1"]
         manifest["study"] = {"status": "running", "command_template": ["<built test binary>", "-test.run=^TestStage6", "-test.timeout=120s", "-test.count=1"], "timeout_seconds": RUN_TIMEOUT, "output_limit_bytes_per_stream": MAX_LOG_BYTES}
-        run = bounded_capture(run_capture, ["/usr/bin/env", "-i", *[f"{key}={value}" for key, value in test_env.items()], *run_command], RUN_TIMEOUT, output / "study.stdout.log", output / "study.stderr.log", source_dir)
+        run = bounded_capture(run_capture, isolated_environment_command(test_env, run_command), RUN_TIMEOUT, output / "study.stdout.log", output / "study.stderr.log", source_dir)
         manifest["study"].update(run)
         manifest["study"]["status"] = "completed" if run.get("exit_code") == 0 and not run.get("timed_out") else ("timeout" if run.get("timed_out") else "failed")
         if report_path.exists():

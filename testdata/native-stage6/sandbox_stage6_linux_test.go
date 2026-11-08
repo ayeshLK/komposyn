@@ -99,12 +99,38 @@ func newStage6Report() stage6Report {
 		"late_response_and_delta_retirement", "cancellation_and_cleanup", "launch_profile_and_limits",
 		"mutation_profile", "shell_profile",
 	}
+	syntheticCases := map[string]struct{}{
+		"ordinary_chat_without_root":           {},
+		"read_refused_without_root_or_backend": {},
+		"synthetic_once_authority_flow":        {},
+		"provider_source_owner":                {},
+		"incomplete_owner_inventory":           {},
+	}
+	unimplementedCases := map[string]struct{}{
+		"independent_namespace_actor": {},
+		"cancellation_and_cleanup":    {},
+		"launch_profile_and_limits":   {},
+		"mutation_profile":            {},
+		"shell_profile":               {},
+	}
 	cases := make([]stage6Case, 0, len(ids))
 	for _, id := range ids {
-		cases = append(cases, stage6Case{ID: id, Status: "unavailable", Reason: "not exercised by native runner revision 1"})
+		item := stage6Case{ID: id, Status: "unavailable", Reason: "native-integrated case was not executed"}
+		_, synthetic := syntheticCases[id]
+		_, unimplemented := unimplementedCases[id]
+		if synthetic {
+			item.EvidenceKind = "synthetic-runtime-composition"
+			item.Reason = "synthetic runtime/composition control was not executed"
+		} else if unimplemented {
+			item.EvidenceKind = "not-implemented"
+			item.Reason = "case is not implemented by Stage 6 runner version 2"
+		} else {
+			item.EvidenceKind = "native-integrated"
+		}
+		cases = append(cases, item)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "1",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "2",
 		OS: "linux", Architecture: stdruntime.GOARCH, UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: []string{
@@ -140,12 +166,53 @@ func TestMain(m *testing.M) {
 }
 
 func allNativeCasesUnavailable(cases []stage6Case) bool {
+	foundNative := false
 	for _, item := range cases {
+		if item.EvidenceKind != "native-integrated" {
+			continue
+		}
+		foundNative = true
 		if item.Status != "unavailable" {
 			return false
 		}
 	}
-	return true
+	return foundNative
+}
+
+func TestStage6ReportClassifiesEveryCase(t *testing.T) {
+	report := newStage6Report()
+	counts := map[string]int{}
+	for _, item := range report.Cases {
+		if item.EvidenceKind == "" {
+			t.Fatalf("case %q has no evidence classification", item.ID)
+		}
+		counts[item.EvidenceKind]++
+	}
+	want := map[string]int{
+		"synthetic-runtime-composition": 5,
+		"native-integrated":             9,
+		"not-implemented":               5,
+	}
+	if len(counts) != len(want) {
+		t.Fatalf("unexpected evidence classifications: got %v want %v", counts, want)
+	}
+	for kind, count := range want {
+		if counts[kind] != count {
+			t.Errorf("%s cases = %d, want %d", kind, counts[kind], count)
+		}
+	}
+	if !allNativeCasesUnavailable(report.Cases) {
+		t.Fatal("synthetic or unimplemented cases incorrectly prevented native_unavailable classification")
+	}
+	for index := range report.Cases {
+		if report.Cases[index].EvidenceKind == "native-integrated" {
+			report.Cases[index].Status = "measured_pass"
+			break
+		}
+	}
+	if allNativeCasesUnavailable(report.Cases) {
+		t.Fatal("a measured native case was classified as wholly unavailable")
+	}
 }
 
 func stage6Update(id string, update func(*stage6Case)) {

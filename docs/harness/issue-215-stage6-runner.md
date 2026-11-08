@@ -25,6 +25,13 @@ separate temporary Go build/module cache, then executes the test binary with a
 finite deadline. The existing bounded process-group capture helper terminates
 and reaps children on timeout; no unrestricted/elevated retry is attempted.
 
+The Go build uses a private temporary `HOME` and Go/module caches, the public
+Go module proxy with Go authentication disabled, and no host `.netrc`, proxy
+credentials, Go configuration, or Git credentials. Direct VCS fallback is
+disabled for module downloads. A cold private module cache still requires the
+public module proxy and checksum database; that is dependency retrieval, not
+provider traffic or live inference.
+
 The native cases run the authoritative Bubblewrap trust and capability
 inspection before any backend probe. If the backend is untrusted, missing, or
 unsupported, those worker cases are reported unavailable and no worker is
@@ -76,3 +83,9 @@ refusal means none of the worker-path cases ran. The runner does not establish
 provider-source owner lifecycle/positive authorization, independent namespace
 actor cases, native cancellation/cleanup, aggregate cgroup quotas, mutation,
 shell, non-Linux enforcement, or production readiness.
+
+Every case is labeled as `synthetic-runtime-composition`, `native-integrated`,
+or `not-implemented`; unavailable native cases are not conflated with cases
+that this runner revision does not implement. The report currently contains
+five synthetic controls, nine native-integrated cases, and five unimplemented
+cases.
