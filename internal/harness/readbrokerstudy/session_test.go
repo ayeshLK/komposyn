@@ -70,6 +70,16 @@ type fakeWorker struct {
 	joinedOnce       sync.Once
 }
 
+type startupDiagnosticWorker struct {
+	*fakeWorker
+	readyErr error
+	detail   string
+}
+
+func (w *startupDiagnosticWorker) Ready(context.Context) error { return w.readyErr }
+
+func (w *startupDiagnosticWorker) FailureDetail() string { return w.detail }
+
 func (w *fakeWorker) Ready(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -260,7 +270,7 @@ func cloneWorkerResult(result WorkerResult) WorkerResult {
 
 type fakeLauncher struct {
 	mu       sync.Mutex
-	worker   *fakeWorker
+	worker   SandboxWorker
 	workers  []*fakeWorker
 	starts   int
 	startErr error
@@ -1768,6 +1778,31 @@ func TestFixtureSessionRefusesRegisteredCredentialWithoutWorker(t *testing.T) {
 	}
 	if fixture.authorizer.ConsumptionCount("call-secret") != 0 || fixture.launcher.starts != 0 || len(fixture.session.PublishedResults()) != 0 {
 		t.Fatal("protected credential consumed approval, started worker, or published bytes")
+	}
+}
+
+func TestFixtureSessionRecordsBoundedWorkerStartupDiagnostic(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ordinary.fixture")
+	if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newSessionFixture(t, root)
+	fixture.launcher.worker = &startupDiagnosticWorker{
+		fakeWorker: fixture.worker,
+		readyErr:   errors.New("startup handshake failed"),
+		detail:     "bubblewrap: synthetic startup diagnostic " + strings.Repeat("x", 900),
+	}
+	if err := fixture.authorizer.ApproveOnce("startup-diagnostic"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.session.Read(context.Background(), root, target, "startup-diagnostic")
+	if err != nil || result.Outcome != ReadNotExecuted {
+		t.Fatalf("startup failure result=(%s,%v), want not executed", result.Outcome, err)
+	}
+	evidence := fixture.session.Evidence()
+	if len(evidence) != 1 || !strings.Contains(evidence[0].FailureDetail, "bubblewrap: synthetic startup diagnostic") || len(evidence[0].FailureDetail) != 768 {
+		t.Fatalf("startup evidence=%+v, want bounded startup diagnostic", evidence)
 	}
 }
 

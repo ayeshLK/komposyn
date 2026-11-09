@@ -1007,6 +1007,7 @@ func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
 		op.state = StateTerminating
 		op.completed = false
 		op.evidence.Outcome = ReadUnknown
+		op.evidence.FailureDetail = workerFailureEvidence(op, result.Detail)
 		op.evidence.WorkerJoined = false
 		if !op.evidenceRecorded {
 			s.evidence = append(s.evidence, op.evidence)
@@ -1045,6 +1046,9 @@ func (s *fixtureSession) completeJoinedLocked(op *readOperation, result WorkerRe
 	if !op.evidence.Published {
 		op.evidence.Outcome = result.Outcome
 	}
+	if result.Outcome != ReadSucceeded {
+		op.evidence.FailureDetail = workerFailureEvidence(op, result.Detail)
+	}
 	if op.evidence.WorkerStarted && !op.evidence.ReadStarted && op.evidence.Outcome == "" {
 		op.evidence.Outcome = ReadNotExecuted
 	}
@@ -1055,6 +1059,19 @@ func (s *fixtureSession) completeJoinedLocked(op *readOperation, result WorkerRe
 	delete(s.active, op.id)
 	close(op.done)
 	s.refreshCleanupBarrierLocked()
+}
+
+func workerFailureEvidence(op *readOperation, detail string) string {
+	if detail == "" {
+		return ""
+	}
+	// Broker and authorization errors may contain host paths. Only preserve
+	// diagnostics produced after a worker exists, plus the launcher-prefixed
+	// setup error whose paths are already redacted by the trusted launcher.
+	if op.worker == nil && !strings.HasPrefix(detail, "sandbox setup refused before capability handoff:") {
+		return ""
+	}
+	return boundedText(detail, 768)
 }
 
 func (s *fixtureSession) Close(ctx context.Context) error {

@@ -46,13 +46,13 @@ do not accept credential values. Startup creates no chat database.
 The auth and settings stores expose a host-owned protection hook. The shipped
 chat wires those stores to a host sandbox composition before loading their
 contents. The six-clause bounded exact-file disclosure policy is accepted, and
-Stages 1–5 plus the Stage 6 runner/lifecycle implementation are merged. The
-latest exact-head Stage 6 run is classified `native_unavailable`: Bubblewrap
-trust validation refused the candidate before probes or worker startup. Native
-acceptance on an eligible trusted Linux host and a separate enablement review
-remain pending; generic reads remain unavailable and no filesystem tool is
-registered. `/fs-root` selects an in-memory lookup root; selection grants no
-access. See the
+Stages 1–5 plus the Stage 6 runner/lifecycle implementation are merged. A
+trusted-host Stage 6 attempt reached Bubblewrap 0.9.0 but failed before any
+worker became ready or received a read capability; the report and follow-up
+run records are kept on [issue #215](https://github.com/ayeshLK/komposyn/issues/215).
+Native acceptance and a separate enablement review remain pending; generic
+reads remain unavailable and no filesystem tool is registered. `/fs-root`
+selects an in-memory lookup root; selection grants no access. See the
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).

@@ -62,7 +62,9 @@ The archive contains:
 - `manifest.json`: source revision/cleanliness, runner and overlay hashes,
   host/Go/backend metadata, bounded process status, and overall classification;
 - `stage6-report.json`: per-case observations from the test binary when
-  produced;
+  produced, including bounded, path-redacted worker startup diagnostics and
+  the parent-death helper's bounded stderr/exit status when a worker does not
+  reach readiness;
 - bounded build, test and Go-version stdout/stderr logs;
 - `summary.md` and `SHA256SUMS`.
 

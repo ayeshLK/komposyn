@@ -49,6 +49,7 @@ class Stage6RunnerTests(unittest.TestCase):
                     "status": "unavailable",
                     "evidence_kind": "native-integrated",
                     "worker_started": False,
+                    "failure_diagnostic": "worker startup failed: synthetic error",
                 },
             ],
             "limitations": ["native worker did not run"],
@@ -63,6 +64,7 @@ class Stage6RunnerTests(unittest.TestCase):
             "| native-read | unavailable | native-integrated |",
             summary,
         )
+        self.assertIn("worker startup failed: synthetic error", summary)
 
     def test_backend_metadata_is_read_only_and_hashes_regular_file(self):
         with tempfile.TemporaryDirectory() as directory:
