@@ -537,7 +537,10 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 			t.Fatalf("fixed worker did not reach held-capability state before deadline: %v", readErr)
 		}
 		if readErr != nil {
-			_ = helper.Wait()
+			// A malformed frame, poll/read error, or unexpected protocol event
+			// does not imply that the coordinator exited. Stop it before Wait
+			// so this diagnostic failure path remains bounded too.
+			_ = stopAndJoinFailedCoordinator(helper)
 			joined = true
 			stage6RecordParentDeathDiagnostic(helper, target, backendPath)
 			t.Fatalf("private parent-death handshake read failed: %v", readErr)
@@ -591,6 +594,51 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 		t.Fatal("observed Bubblewrap or namespace-init process remained after bounded parent-death cleanup")
 	}
 	stage6PassWithEvidence("parent_death_cleanup", "native-worker-lifecycle", "killing the coordinator after the fixed worker held its read descriptor, without sending read release, caused the observed Bubblewrap process and PID-namespace init to exit and disappear; this is limited to the fixed profile and does not prove arbitrary-descendant cleanup")
+}
+
+func stopAndJoinFailedCoordinator(helper *exec.Cmd) error {
+	if helper == nil || helper.Process == nil {
+		return errors.New("parent-death coordinator process is unavailable")
+	}
+	_ = helper.Process.Kill()
+	return helper.Wait()
+}
+
+func TestStage6StopAndJoinFailedCoordinator(t *testing.T) {
+	const helperEnv = "KOMPOSYN_STAGE6_STOP_COORDINATOR_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		ready := os.NewFile(3, "coordinator-ready")
+		if ready == nil {
+			os.Exit(2)
+		}
+		if _, err := ready.Write([]byte{1}); err != nil {
+			os.Exit(3)
+		}
+		select {}
+	}
+
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatal("could not create coordinator fixture handshake")
+	}
+	defer readPipe.Close()
+	helper := exec.Command(os.Args[0], "-test.run=^TestStage6StopAndJoinFailedCoordinator$")
+	helper.ExtraFiles = []*os.File{writePipe}
+	helper.Stdout, helper.Stderr = io.Discard, io.Discard
+	helper.Env = append(os.Environ(), helperEnv+"=1")
+	if err := helper.Start(); err != nil {
+		_ = writePipe.Close()
+		t.Fatal("could not start coordinator fixture")
+	}
+	_ = writePipe.Close()
+	var ready [1]byte
+	if _, err := io.ReadFull(readPipe, ready[:]); err != nil || ready[0] != 1 {
+		_ = stopAndJoinFailedCoordinator(helper)
+		t.Fatalf("coordinator fixture did not reach its wait state: byte=%v err=%v", ready, err)
+	}
+	if err := stopAndJoinFailedCoordinator(helper); err == nil || helper.ProcessState == nil || helper.ProcessState.Success() {
+		t.Fatalf("failed coordinator was not terminated and reaped: wait=%v state=%v", err, helper.ProcessState)
+	}
 }
 
 func stage6RecordParentDeathDiagnostic(helper *exec.Cmd, target, backendPath string) {
