@@ -37,7 +37,36 @@ const (
 	MaxSuggestedAnswerLabel = 80
 	MaxSuggestedAnswerHelp  = 160
 	MaxUserInputTextBytes   = 2 << 10
+	MaxReadFileInputBytes   = 4 << 10
+	MaxReadFilePathBytes    = 2 << 10
 )
+
+const ReadFileID ID = "read_file"
+
+type ReadFileInput struct {
+	Path string `json:"path"`
+}
+
+var readFileSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048}},"required":["path"],"additionalProperties":false}`)
+
+// ReadFileDefinition describes the bounded exact-file disclosure capability.
+// Every invocation still requires trusted host admission and explicit once approval.
+func ReadFileDefinition() Definition {
+	return Definition{ID: ReadFileID, Description: "Read one exact regular file beneath the explicitly selected root. Each read requires explicit once approval; contents are unclassified, may be sensitive, are sent to this selected provider, and may recur in this conversation. The root grants no access. No listing, writes, rename, deletion, or shell access.", InputSchema: append(json.RawMessage(nil), readFileSchema...), MaxInput: MaxReadFileInputBytes}
+}
+
+// ParseReadFile validates the strict provider input without normalizing its path.
+// The trusted host applies platform-specific canonical path and scope checks.
+func ParseReadFile(raw []byte) (ReadFileInput, error) {
+	var input ReadFileInput
+	if err := decodeStrictObject(raw, MaxReadFileInputBytes, &input); err != nil {
+		return ReadFileInput{}, err
+	}
+	if input.Path == "" || len(input.Path) > MaxReadFilePathBytes || strings.IndexByte(input.Path, 0) >= 0 {
+		return ReadFileInput{}, errors.New("read path is empty or outside its input bound")
+	}
+	return input, nil
+}
 
 // PlanStatus is a status in the current conversation's replaceable plan.
 type PlanStatus string

@@ -2,19 +2,27 @@
 
 This describes the experimental temporary chat and its narrow issue #198
 tool-use slice. The [tool-use phase-one architecture](tool-use-phase-one-architecture.md)
-records its threat model and limits. The executable exposes only the bundled
-`update_plan` and `request_user_input` tools on explicitly supported routes.
-Their in-memory authorization is not an OS isolation boundary.
+records its threat model and limits. The executable exposes `update_plan` and
+`request_user_input` on explicitly supported routes. On Linux,
+`read_file` is additionally registered only when the trusted Bubblewrap host
+and complete retained-read lifecycle are available. It reads one exact regular
+file beneath an explicitly selected in-memory root after target-specific once
+approval; the contents are sent to the selected provider. Root selection grants
+no authority, unknown file content may be sensitive, and the contents may recur
+in that conversation. Auth/settings protected identities remain denied.
+Provider sources, unsupported routes/platforms, mutation, and shell remain
+unavailable. This is not an OS sandbox for arbitrary host code.
 
 The experimental chat sends the user's submitted text, a short system
-instruction, and—on supported routes—the two registered tool definitions to
+instruction, and—on supported routes—the registered tool definitions to
 the selected OpenAI or Anthropic API using the selected credential. OpenAI
 credentials can be an API key or an SIWC OAuth token for ChatGPT plan usage;
 Anthropic remains API-key based. OpenAI OAuth and unknown routes stay
 text-only. Approved `request_user_input` answers and bounded tool results are
-sent to the selected model. The tools do not read workspace files, load
-`AGENTS.md` or skills, run subprocesses, access the network, send MCP requests,
-or write messages to Token Logger. OpenAI Responses requests set `store: false`.
+sent to the selected model. An approved `read_file` result is also sent to the
+selected provider and may recur in valid same-conversation requests. The tools
+do not load `AGENTS.md` or skills, run subprocesses, access the network, send
+MCP requests, or write messages to Token Logger. OpenAI Responses requests set `store: false`.
 Anthropic Messages requests do not create a KompoSyn conversation resource.
 
 API keys and OpenAI OAuth access, refresh, and retained ID tokens are stored as

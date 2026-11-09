@@ -1,11 +1,11 @@
 # Exact-file read implementation plan
 
-**Current status (2026-11-08): disclosure policy accepted; Stages 1–5 are merged through PR #251 (`a61a3dfa4843f309bc533061f7be6e767f9b49b2`). The integrated path remains internal/test-only and `read_file` is not registered or advertised in the shipped executable. Stage 6 native acceptance and separate typed-read enablement review remain outstanding.**
+**Current status (2026-11-10):** disclosure policy is accepted; Stages 1–5 and Stage 6 native feasibility work are merged. A focused production-composition `read_file` integration is now on the review branch, gated on trusted Linux Bubblewrap inspection and the complete retained-read lifecycle. It does not enable filesystem mutation or shell, and does not complete issue #215. Historical stage records below are retained for provenance and may describe the state before this integration.
 This is a new source-grounded plan, not exact recovery or verification of the
 missing local handoff. The maintainer later accepted all six clauses in the
 [explicit acceptance comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902)
 for staged implementation. That supersedes the historical pending-policy
-wording below, but does not mean reads are enabled. Stages 1–5 are now merged;
+wording below. Stages 1–5 are now merged;
 the current issue-to-package mapping is in
 [Issue #215 completion tracking](issue-215-completion-tracking.md).
 

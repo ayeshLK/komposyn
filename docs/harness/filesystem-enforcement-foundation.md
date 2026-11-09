@@ -1,8 +1,9 @@
 # Filesystem enforcement foundation
 
-This document describes a host-side foundation for future reviewed filesystem
-operations. It does not register filesystem tools or make filesystem access
-available to a model. The executable remains text-only for filesystem access.
+This document describes a host-side foundation for reviewed filesystem
+operations. The executable now conditionally registers the exact-file
+`read_file` operation through the retained Linux Bubblewrap worker. It does not
+enable filesystem mutation or make arbitrary filesystem access available.
 
 The later [sandbox direction and implementation gates](sandbox-design-proposal.md)
 record the reviewed object-authority target and future write-includes-deletion

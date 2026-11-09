@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
@@ -95,6 +96,18 @@ type FilesystemReadExecutionInvalidator interface {
 	InvalidateFilesystemReadExecutions(string) error
 }
 
+// FilesystemReadCompositionHost is one trusted host identity for root state,
+// retained admission, execution, publication, and invalidation. Composition
+// cannot pair a trusted status source with a different read executor.
+type FilesystemReadCompositionHost interface {
+	FilesystemReadAdmissionHost
+	FilesystemRootHost
+	FilesystemReadExecutionHost
+	FilesystemReadPublicationGate
+	FilesystemReadAdmissionInvalidator
+	FilesystemReadExecutionInvalidator
+}
+
 type filesystemReadExecutionAuthority struct {
 	runtime *toolRuntime
 	ref     *ReadExecutionReference
@@ -142,6 +155,15 @@ type FilesystemReadAdmissionHost interface {
 	CloseFilesystemReadAdmission(context.Context, FilesystemReadAdmission) error
 }
 
+type filesystemReadAttemptError struct{ err error }
+
+func (e *filesystemReadAttemptError) Error() string {
+	return "retained filesystem read may have started: " + e.err.Error()
+}
+func (e *filesystemReadAttemptError) Unwrap() error { return e.err }
+
+var errFilesystemReadTurnCancelled = errors.New("filesystem read approval cancelled the turn")
+
 // FilesystemReadPublicationGate serializes final sensitive transcript and
 // provider-request commitment with host owner, policy, and selected-root
 // changes. The callback must remain bounded and must not perform provider I/O.
@@ -166,14 +188,15 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 		return permissions.Request{}, errors.New("trusted retained read admission is incomplete")
 	}
 	resourceKey := "disclosure"
-	resourceDescription := "Share this exact file with the selected provider"
+	disclosureDestination := filesystemReadDisclosureDestination(admission.Destination)
+	resourceDescription := "Share this exact file with " + disclosureDestination + ". Its contents are unclassified and may include credentials or sensitive data; if approved, they may recur in this conversation. This approves one read only; another read needs new approval."
 	if admission.Class == "provider_source" {
 		resourceKey = "provider_source_disclosure"
-		resourceDescription = "Share this classified provider source with the selected provider"
+		resourceDescription = "Share this classified provider source with " + disclosureDestination + "; its contents may recur in this conversation. This approves one read only; another read needs new approval."
 	}
 	action := permissions.Requirement{
 		Kind: permissions.RequirementAction, Key: "read", ToolID: string(invocation.ToolID),
-		Description: "Read one exact regular file once", Operation: permissions.OperationRead,
+		Description: "Read this exact regular file once and send its contents to " + disclosureDestination + "; approval does not permit another read", Operation: permissions.OperationRead,
 		ActionKey: filesystemReadActionKey(), SessionAllowed: false,
 	}
 	resource := permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: admission.Target, Operation: permissions.OperationRead}
@@ -189,6 +212,14 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 		RequireOnceKeys:  []string{resourceKey},
 	}
 	return bindAuthorizationRequest(invocation, request)
+}
+
+func filesystemReadDisclosureDestination(destination string) string {
+	parts := strings.SplitN(destination, "/", 4)
+	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+		return destination
+	}
+	return parts[0] + "/" + parts[1] + " using auth profile " + parts[2]
 }
 
 func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tools.Invocation, destination string) (admission FilesystemReadAdmission, preparation FilesystemReadPreparation, request permissions.Request, reference *ReadExecutionReference, err error) {
@@ -222,7 +253,11 @@ func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tool
 	approvalCtx, cancelApproval := context.WithDeadline(ctx, admission.Deadline)
 	defer cancelApproval()
 	choice, redirect, reviewErr := r.approval.Review(approvalCtx, pending)
-	if reviewErr != nil || choice != permissions.ApprovalOnce || redirect != "" || approvalCtx.Err() != nil || ctx.Err() != nil || !r.readAuthorityEpochCurrent(readEpoch) {
+	if choice == permissions.ApprovalCancel || errors.Is(reviewErr, context.Canceled) || ctx.Err() != nil {
+		r.coordinator.CancelConversation(invocation.ConversationID)
+		return admission, nil, request, nil, errFilesystemReadTurnCancelled
+	}
+	if reviewErr != nil || choice != permissions.ApprovalOnce || redirect != "" || approvalCtx.Err() != nil || !r.readAuthorityEpochCurrent(readEpoch) {
 		r.coordinator.CancelConversation(invocation.ConversationID)
 		return admission, nil, request, nil, errors.New("retained read requires an explicit once approval")
 	}
@@ -315,15 +350,15 @@ func (r *toolRuntime) executeFilesystemRead(ctx context.Context, invocation tool
 		if capture != nil {
 			_ = r.discardPrivateReadCapture(capture)
 		}
-		return nil, errors.Join(err, errors.New("retained read did not produce a verified private capture"))
+		return nil, &filesystemReadAttemptError{err: errors.Join(err, errors.New("retained read did not produce a verified private capture"))}
 	}
 	return capture, nil
 }
 
-// ExecuteFilesystemRead is the narrow Stage 4 composition seam. It is not
-// called by model dispatch and read_file remains unregistered; callers must
-// supply the current in-memory conversation identity and host-selected
-// destination, and the user must approve the exact read once.
+// ExecuteFilesystemRead is the narrow Stage 4 composition seam for internal
+// fixtures and host callers. Model dispatch uses the dedicated read_file
+// branch; callers must supply the current in-memory conversation identity and
+// host-selected destination, and the user must approve the exact read once.
 func (c *Chat) ExecuteFilesystemRead(ctx context.Context, invocation tools.Invocation, destination string) (*PrivateReadCapture, error) {
 	if ctx == nil {
 		return nil, context.Canceled

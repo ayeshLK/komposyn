@@ -1043,7 +1043,7 @@ func (u *terminal) runCommand(text string) {
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model, /fs-root, /fs-root clear, /help, /cancel, /exit, /permissions, /plan, /copy, /copy all.\n/fs-root selects an explicit temporary directory; selecting it grants no file access. Filesystem reads remain disabled.\nTools on supported API-key routes: update_plan and request_user_input. Clarification answers are sent to the selected model.\nKeyboard: Up/Down recalls prompts; Ctrl+L clears display; Ctrl+U shows usage; Ctrl+N/P changes model rows; PageUp/PageDown scrolls usage; Ctrl+C copies a selection or cancels; Escape clears selection; Ctrl+T releases mouse capture.\n")
+		u.write("Commands: /model /fs-root /help /cancel /exit /permissions /plan /copy\nAlso: /copy all /fs-root clear\nRoot selection grants lookup only, no access.\nread_file needs once approval; contents may be sensitive, go to provider, and may recur.\nTools: update_plan, request_user_input, read_file if supported. No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
@@ -1148,7 +1148,7 @@ func (u *terminal) clearFilesystemRoot() {
 			if err != nil {
 				u.write("Filesystem root clear failed: " + safeTerminalText(err.Error()) + "\n")
 			} else {
-				u.write("Filesystem root cleared. Filesystem reads remain disabled.\n")
+				u.write("Filesystem lookup root cleared. read_file is unavailable until a root is selected.\n")
 			}
 			u.updateBanner()
 		})

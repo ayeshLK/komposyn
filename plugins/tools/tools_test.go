@@ -101,7 +101,7 @@ func TestRegisteredExposureDoesNotImplyExecutionOrAuthorization(t *testing.T) {
 }
 
 func TestConversationToolSchemasAndBounds(t *testing.T) {
-	for _, definition := range []Definition{UpdatePlanDefinition(), RequestUserInputDefinition()} {
+	for _, definition := range []Definition{UpdatePlanDefinition(), RequestUserInputDefinition(), ReadFileDefinition()} {
 		if definition.MaxInput <= 0 || json.Unmarshal(definition.InputSchema, new(map[string]any)) != nil {
 			t.Fatalf("invalid bundled definition: %+v", definition)
 		}
@@ -137,6 +137,24 @@ func TestConversationToolSchemasAndBounds(t *testing.T) {
 	}
 	if freeText, err := ParseRequestUserInput([]byte(`{"question":"What should I know?","options":[]}`)); err != nil || len(freeText.Options) != 0 {
 		t.Fatalf("free-text-only clarification = %+v, %v", freeText, err)
+	}
+	read, err := ParseReadFile([]byte(`{"path":"/tmp/fixture.txt"}`))
+	if err != nil || read.Path != "/tmp/fixture.txt" {
+		t.Fatalf("valid read input = %+v, %v", read, err)
+	}
+	for _, raw := range []string{
+		`{"path":""}`,
+		`{"path":"/tmp/file","extra":true}`,
+		`{"path":"/tmp/file","path":"/tmp/other"}`,
+		`{"path":"/tmp/file"} {}`,
+		`{"path":null}`,
+	} {
+		if parsed, err := ParseReadFile([]byte(raw)); err == nil {
+			t.Fatalf("invalid read input accepted: %s as %+v", raw, parsed)
+		}
+	}
+	if _, err := ParseReadFile([]byte(`{"path":"` + strings.Repeat("x", MaxReadFilePathBytes+1) + `"}`)); err == nil {
+		t.Fatal("oversized read path accepted")
 	}
 	for _, raw := range []string{
 		`{"question":" ","options":[]}`,

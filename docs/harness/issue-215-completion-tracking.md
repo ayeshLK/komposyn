@@ -1,12 +1,11 @@
 # Issue #215 completion tracking and Stage 6 acceptance contract
 
-Status: reviewed against master `9e58b466132d269746bcd275926f8a9bbb94d086`
-(2026-11-08). This is a tracking and evidence contract, not an enablement
-decision. The six-clause exact-file disclosure policy is accepted, while
-`read_file` remains unregistered and unavailable in shipped chat. Issue #215
-was reopened for completion tracking; the Stage 6 runner, independent-actor
-extension, and held-worker/profile follow-up have merged. Trusted-host native
-acceptance remains pending.
+Status: reviewed against master `dbbeb4a3ebfc434749e11c1d11e35fbb48d2517c`
+(2026-11-10), with production `read_file` integration on this review branch.
+The six-clause exact-file disclosure policy is accepted. The Linux-only
+capability is gated on trusted backend inspection and the complete
+retained-read lifecycle. Issue #215 remains open; mutation and shell gates
+remain separate.
 
 The plan was reconstructed from the current issue, its decision/research
 comments, the merged implementation plan, source, and existing evidence. It is
@@ -21,18 +20,17 @@ checklist remains unfinished. Keep #215 open and preserve historical evidence.
 
 | Stage | State | Evidence and boundary |
 | --- | --- | --- |
-| Policy decision | Accepted | The six clauses in [the maintainer decision](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902) govern exact-file disclosure, same-context replay, logical dispatcher commitment, and retirement. This does not enable a tool. |
+| Policy decision | Accepted | The six clauses in [the maintainer decision](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902) govern exact-file disclosure, same-context replay, logical dispatcher commitment, and retirement. |
 | 1: explicit root lifecycle | Merged | [PR #246](https://github.com/ayeshLK/komposyn/pull/246). In-memory root selection/status/clear; selecting a root grants no authority. |
 | 2: checked authority | Merged | [PR #247](https://github.com/ayeshLK/komposyn/pull/247). Checked grant transitions and runtime-owned once authority; unit evidence only. |
 | 3: retained admission | Merged | [PR #248](https://github.com/ayeshLK/komposyn/pull/248). Exact retained-object admission and owner barriers; no reopen or second once consumer. |
 | 4: worker and private capture | Merged | [PR #250](https://github.com/ayeshLK/komposyn/pull/250). One-attempt fixed worker, private bounded capture after join/descriptor retirement; native integrated acceptance remains open. |
 | 5: publication and continuation | Merged | [PR #251](https://github.com/ayeshLK/komposyn/pull/251), merge `a61a3dfa4843f309bc533061f7be6e767f9b49b2`. Synchronized batch/provider handoff, replay provenance, owner-gated continuation retirement and stale-response tests. |
-| 6: integrated native acceptance | Runner and follow-ups merged; acceptance pending | The Stage 6 runner, independent-actor extension, and held-worker/profile follow-up are merged in [PR #253](https://github.com/ayeshLK/komposyn/pull/253), [PR #254](https://github.com/ayeshLK/komposyn/pull/254), and [PR #255](https://github.com/ayeshLK/komposyn/pull/255). The #255 tested tree is the current master tree. Its exact-head run built and exited cleanly but classified `native_unavailable`: `/usr/bin/bwrap` was UID/GID 65534 and trust validation refused it before probes or worker launch. No native worker/read ran. See the [exact-head issue report](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6720531454). |
-| Typed-read enablement | Not approved | Requires Stage 6 acceptance, owner/launch gates, and a distinct reviewed enablement decision. |
+| 6: integrated native acceptance | Bounded read-profile evidence recorded | Trusted-host reports on issue #215 exercised descriptor-bind and sealed-snapshot modes, each with bounded read cases and fixture inspection. This covers one Linux amd64/Bubblewrap 0.9.0 environment; mutation and shell remain unavailable/not implemented. |
+| Typed-read production integration | Implemented on review branch | `read_file` is registered only with a trusted Linux host, complete read lifecycle, supported provider/auth route, and selected current root. Once approval and Stage 5 publication/replay boundaries remain mandatory. |
 
-Production `cmd/harness` still offers only `update_plan` and
-`request_user_input`. The test-only read composition is not a provider route,
-production enforcer, or tool registration.
+`cmd/harness` now composes `read_file` conditionally; this focused integration
+does not complete issue #215 or enable filesystem mutation.
 
 ### Current launch profile inventory (not native acceptance)
 
@@ -83,8 +81,7 @@ The previous Stage 4 Bubblewrap trust refusal remains unavailable evidence.
 
 The runner is internal research infrastructure in the existing Go module. Its
 only provider is a capturing fake; its owners and target files are disposable
-synthetic fixtures. It sends no live inference, uses no real credential, and
-does not register filesystem tools in `cmd/harness`.
+synthetic fixtures. It sends no live inference and uses no real credential.
 
 ```text
 synthetic owner registrations
@@ -208,5 +205,5 @@ The supported target remains Linux-first. Do not claim macOS/Windows
 enforcement from compile checks. Do not require or claim aggregate cgroup
 quotas without a reviewed and measured provisioning decision. Write
 encompasses delete only after its dedicated profile proves that behavior;
-shell remains separate from write and network authority. Production
-filesystem/shell tools remain unavailable until their separate gates pass.
+shell remains separate from write and network authority. Production filesystem
+mutation and shell remain unavailable until their separate gates pass.

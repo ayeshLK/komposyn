@@ -129,13 +129,10 @@ func newPublicationOAuthChat(t *testing.T, fp *publicationProvider, host *public
 	if err := registry.Register("openai", auth.MethodOAuth, resolver); err != nil {
 		t.Fatal(err)
 	}
-	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
-		return tools.Result{}, nil
-	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+	config := publicationReadRuntimeConfig(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
-	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	}), host)
 	chat := NewChatWithToolRuntime(providers, resolver.store, registry, config)
-	chat.toolRuntime.readPublicationTestMode = true
 	profile, err := resolver.store.Get("profile")
 	if err != nil {
 		t.Fatal(err)
@@ -158,13 +155,10 @@ func TestStage5LaterTurnSensitiveHistoryStillUsesHostPublicationGate(t *testing.
 		t.Fatal(err)
 	}
 	host := &publicationHost{content: []byte(sentinel), root: filepath.Dir(fp.target), target: fp.target}
-	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
-		return tools.Result{}, nil
-	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+	config := publicationReadRuntimeConfig(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
-	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	}), host)
 	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
-	chat.toolRuntime.readPublicationTestMode = true
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -298,6 +292,23 @@ func publicationTarget(t *testing.T, name string) string {
 	return filepath.Join(root, name)
 }
 
+func registerPublicationReadTool(t *testing.T, chat *Chat) {
+	t.Helper()
+	if chat == nil || chat.toolRuntime == nil {
+		t.Fatal("publication fixture has no tool runtime")
+	}
+	if err := chat.toolRuntime.registry.Register(readFileTool{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func publicationReadRuntimeConfig(approval ToolApprovalInteraction, host *publicationHost) ToolRuntimeConfig {
+	clarification := ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+		return ClarificationResponse{}, errors.New("clarification is not part of this fixture")
+	})
+	return BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, host)
+}
+
 type publicationProvider struct {
 	*fakeProvider
 	mu2             sync.Mutex
@@ -308,6 +319,16 @@ type publicationProvider struct {
 	responseStarted chan struct{}
 	releaseResponse chan struct{}
 }
+
+func (p *publicationProvider) RouteCapabilities(method provider.AuthMethod) provider.RouteCapabilities {
+	if method == provider.AuthOAuth || method == provider.AuthAPIKey {
+		return provider.RouteCapabilities{ClientTools: provider.SupportSupported}
+	}
+	return provider.RouteCapabilities{ClientTools: provider.SupportUnknown}
+}
+
+func (*publicationHost) InvalidateFilesystemReadExecutions(string) error { return nil }
+func (*publicationHost) SetFilesystemReadInvalidator(func(string))       {}
 
 func (p *publicationProvider) StreamChat(ctx context.Context, request provider.ChatRequest, delta func(string)) (provider.Result, error) {
 	p.fakeProvider.mu.Lock()
@@ -347,13 +368,12 @@ func TestStage5ReadPublicationAndSameContextReplay(t *testing.T) {
 	}
 	store := auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}
 	host := &publicationHost{content: []byte(sentinel), root: filepath.Dir(fp.target), target: fp.target}
-	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
-		return tools.Result{}, nil
-	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+	var pendingApproval permissions.PendingApproval
+	config := publicationReadRuntimeConfig(ToolApprovalFunc(func(_ context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		pendingApproval = pending
 		return permissions.ApprovalOnce, "", nil
-	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
+	}), host)
 	chat := NewChatWithToolRuntime(providers, store, nil, config)
-	chat.toolRuntime.readPublicationTestMode = true
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -382,6 +402,9 @@ func TestStage5ReadPublicationAndSameContextReplay(t *testing.T) {
 	host.mu.Unlock()
 	if reads != 1 {
 		t.Fatalf("read executions=%d", reads)
+	}
+	if len(pendingApproval.Request.Requirements) != 2 || pendingApproval.Request.Requirements[1].Resource == nil || pendingApproval.Request.Requirements[1].Resource.Target != fp.target || !strings.Contains(pendingApproval.Request.Requirements[0].Description, "send its contents to openai/") || !strings.Contains(pendingApproval.Request.Requirements[0].Description, "using auth profile profile") || !strings.Contains(pendingApproval.Request.Requirements[1].Description, "may include credentials or sensitive data") || !strings.Contains(pendingApproval.Request.Requirements[1].Description, "may recur") || !strings.Contains(pendingApproval.Request.Requirements[1].Description, "one read only") {
+		t.Fatalf("approval omitted exact target/destination/disclosure: %+v", pendingApproval.Request)
 	}
 	if !chat.historySensitive || !strings.Contains(providerMessagesText(chat.history), sentinel) {
 		t.Fatal("committed sensitive continuation missing from in-memory history")
@@ -425,7 +448,7 @@ func TestStage5EmptyReadPublishesAndReplaysInSameContext(t *testing.T) {
 		return permissions.ApprovalOnce, "", nil
 	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
 	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
-	chat.toolRuntime.readPublicationTestMode = true
+	registerPublicationReadTool(t, chat)
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -468,13 +491,105 @@ func TestProductionCatalogDoesNotAdvertiseReadFile(t *testing.T) {
 	selectFirst(t, chat)
 	t.Cleanup(chat.Close)
 	selection := *chat.selected
-	defs := chat.toolRuntime
-	if defs != nil && defs.readPublicationTestMode {
-		t.Fatal("normal chat unexpectedly enabled the test-only read publication mode")
+	if chat.toolRuntime != nil {
+		if _, ok := chat.toolRuntime.registry.Lookup(tools.ReadFileID); ok {
+			t.Fatal("text-only chat unexpectedly registered read_file")
+		}
 	}
 	if selection.ID == "" {
 		t.Fatal("model selection missing")
 	}
+}
+
+func TestFilesystemReadCatalogRequiresCompleteInspectedHost(t *testing.T) {
+	approval := ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	})
+	clarification := ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+		return ClarificationResponse{}, nil
+	})
+	host := &publicationHost{root: t.TempDir()}
+	config := BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, host)
+	if config.Registry == nil || len(config.Registry.Definitions()) != 3 {
+		t.Fatalf("complete inspected host registry=%+v", config.Registry)
+	}
+	definitions := config.Registry.Definitions()
+	if definitions[0].ID != tools.ReadFileID {
+		t.Fatalf("definitions=%+v; read_file should be sorted into the catalog", definitions)
+	}
+	toolRuntime := newToolRuntime(config)
+	providerRoute := &toolLoopProvider{}
+	if got := toolRuntime.definitions(providerRoute, provider.AuthAPIKey); len(got) != 3 {
+		t.Fatalf("supported API-key route definitions=%+v", got)
+	}
+	if got := toolRuntime.definitions(providerRoute, provider.AuthOAuth); len(got) != 0 {
+		t.Fatalf("unknown OAuth route exposed read tool: %+v", got)
+	}
+
+	unsupported := &unavailablePublicationHost{publicationHost: host}
+	config = BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, unsupported)
+	if config.Registry == nil || len(config.Registry.Definitions()) != 2 {
+		t.Fatalf("unavailable backend retained read_file: %+v", config.Registry)
+	}
+}
+
+func TestReadFileAdvertisementRequiresSelectedRootAndApprovalIsExplicit(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		choice        permissions.ApprovalChoice
+		wantProvider  int
+		wantOutcome   tools.Outcome
+		wantReadCount int
+	}{
+		{name: "without root", choice: permissions.ApprovalOnce, wantProvider: 1, wantOutcome: tools.OutcomeNotExecuted},
+		{name: "denied", choice: permissions.ApprovalDeny, wantProvider: 2, wantOutcome: tools.OutcomeNotExecuted},
+		{name: "cancelled", choice: permissions.ApprovalCancel, wantProvider: 1, wantOutcome: tools.OutcomeCancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: publicationTarget(t, "notes.txt")}
+			providers, err := model.NewRegistry(fp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			host := &publicationHost{content: []byte("synthetic fixture"), root: filepath.Dir(fp.target), target: fp.target}
+			approval := ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+				return test.choice, "", nil
+			})
+			chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, publicationReadRuntimeConfig(approval, host))
+			t.Cleanup(chat.Close)
+			if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+				t.Fatal(err)
+			}
+			selectFirst(t, chat)
+			if test.name != "without root" {
+				selectPublicationRoot(t, chat, host, filepath.Dir(fp.target))
+			}
+			turn, _ := chat.Send(context.Background(), "read the fixture", nil)
+			if test.name != "without root" && (len(turn.ToolActivities) == 0 || turn.ToolActivities[0].Outcome != test.wantOutcome) {
+				t.Fatalf("activity=%+v want outcome %s", turn.ToolActivities, test.wantOutcome)
+			}
+			requests := fp.captured()
+			if len(requests) != test.wantProvider {
+				t.Fatalf("provider requests=%d want=%d", len(requests), test.wantProvider)
+			}
+			_, advertised := definitionByID(requests[0].Tools, tools.ReadFileID)
+			if advertised != (test.name != "without root") {
+				t.Fatalf("read_file advertised=%t in first request tools=%+v", advertised, requests[0].Tools)
+			}
+			host.mu.Lock()
+			reads := host.reads
+			host.mu.Unlock()
+			if reads != test.wantReadCount {
+				t.Fatalf("read executions=%d want=%d", reads, test.wantReadCount)
+			}
+		})
+	}
+}
+
+type unavailablePublicationHost struct{ *publicationHost }
+
+func (*unavailablePublicationHost) BackendStatus() (bool, string) {
+	return false, "backend unavailable"
 }
 
 type twoReadProvider struct {
@@ -483,6 +598,13 @@ type twoReadProvider struct {
 	calls    int
 	requests []provider.ChatRequest
 	root     string
+}
+
+func (p *twoReadProvider) RouteCapabilities(method provider.AuthMethod) provider.RouteCapabilities {
+	if method == provider.AuthOAuth || method == provider.AuthAPIKey {
+		return provider.RouteCapabilities{ClientTools: provider.SupportSupported}
+	}
+	return provider.RouteCapabilities{ClientTools: provider.SupportUnknown}
 }
 
 func (p *twoReadProvider) StreamChat(ctx context.Context, request provider.ChatRequest, delta func(string)) (provider.Result, error) {
@@ -539,7 +661,7 @@ func TestStage5InvalidationWhileSiblingApprovalWaitsWithholdsWholeBatch(t *testi
 		return tools.Result{}, nil
 	}), Approval: approval, ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
 	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
-	chat.toolRuntime.readPublicationTestMode = true
+	registerPublicationReadTool(t, chat)
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -603,7 +725,7 @@ func TestStage5LateProviderResponseCannotReinstallRetiredContext(t *testing.T) {
 		return permissions.ApprovalOnce, "", nil
 	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
 	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
-	chat.toolRuntime.readPublicationTestMode = true
+	registerPublicationReadTool(t, chat)
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +792,7 @@ func TestStage5SiblingReadTransactionsCommitAsOneBatch(t *testing.T) {
 		return permissions.ApprovalOnce, "", nil
 	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
 	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
-	chat.toolRuntime.readPublicationTestMode = true
+	registerPublicationReadTool(t, chat)
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -719,7 +841,7 @@ func TestStage5OversizedEncodedReadIsWithheldWithoutPartialDisclosure(t *testing
 		return permissions.ApprovalOnce, "", nil
 	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
 	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
-	chat.toolRuntime.readPublicationTestMode = true
+	registerPublicationReadTool(t, chat)
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
 		t.Fatal(err)
 	}

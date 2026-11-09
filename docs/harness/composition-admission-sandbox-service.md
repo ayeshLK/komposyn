@@ -1,13 +1,13 @@
 # Composition admission and non-exposing sandbox service
 
-**Status:** Stages 3–5 are merged in PRs #248, #250, and #251. The Stage 6
-runner and lifecycle follow-ups are merged in PRs #253–#255, but trusted-host
-native acceptance remains outstanding. The latest attempt classified
-`native_unavailable` because Bubblewrap trust validation refused the selected
-backend before probes or worker startup. Production composition still does
-**not** register or advertise `read_file`. An unexported, package-test-only
-composition exercises retained worker capture, synchronized fake-provider
-publication and same-context replay. No live provider call occurs.
+**Status:** Stages 3–5 and the Stage 6 runner/lifecycle follow-ups are merged.
+Trusted-host Stage 6 evidence is recorded in issue #215 for Linux amd64 with
+Bubblewrap 0.9.0; it does not establish other platforms, mutation, shell, or
+production-provider behavior. The current focused production composition adds
+`read_file` only when the backend inspection and retained-read lifecycle are
+available. It uses the existing once-approval, worker, capture, publication,
+and replay path. Provider-source reads remain unsupported; mutation and shell
+remain unavailable.
 
 ## Composition and ownership
 
@@ -21,10 +21,10 @@ cmd/harness starts
   -> existing text-only + conversation-tool runtime starts
        \
         -> /fs-root selects or clears an in-memory lookup root; no authority
-        -> optional retained-read host is injected, but the tool is absent
-           from the registry and ordinary dispatch remains refused
-        -> tests may enable an unexported Stage 5 fixture seam; fake-provider handoff
-           occurs only after the synchronized publication gate, which takes
+       -> read_file is registered only for a complete trusted host capability;
+          ordinary tool dispatch cannot execute it
+       -> retained worker capture and provider handoff occur only after the
+          synchronized publication gate, which takes
            Service root -> owner-update -> Chat -> runtime authorization locks
            and validates policy/coverage generations before handoff
 ```
@@ -81,8 +81,9 @@ inside the shared runtime/host authority commit gate. Stage 4 retains that
 runtime-issued reference through one execution attempt. The trusted service
 sends only the retained object's descriptor to the fixed worker after bootstrap
 and probes; it does not reopen the path or consume grants. A preparation
-refusal consumes no once grant. Ordinary chat dispatch cannot call this seam
-because `read_file` is not registered. Existing `update_plan` and
+refusal consumes no once grant. Ordinary chat dispatch reaches this seam only
+through the dedicated `read_file` branch; the generic tool enforcer cannot
+invoke filesystem reads. Existing `update_plan` and
 `request_user_input` continue through their current enforcer without requiring
 filesystem coverage or a Linux backend.
 
@@ -163,26 +164,20 @@ text-only behavior.
   cleanup, and existing text-only/auth/settings composition behavior.
 - `cmd/harness --check` was built and run against synthetic auth/settings
   overrides. It reported zero configured profiles and completed successfully.
-- This environment is Linux/amd64, Go 1.26.10, UID 1000. Its `/usr/bin/bwrap`
-  is owned by UID 65534, so the required root-owner trust check rejects it
-  before execution. Native worker/service positive and negative cases were not
-  run. No elevated or unrestricted retry was attempted.
-- Existing `read-broker-study` fixture and native evidence remains separate;
-  it does not become evidence for this composed chat service. Do not carry
-  forward the historical `6gGbUF` pass count.
+- The Stage 6 native study was later run on a trusted Linux/amd64 host with
+  root-owned Bubblewrap 0.9.0 in both descriptor-bind and sealed-snapshot
+  modes. Its exact provenance and per-case evidence are recorded in issue #215.
+  This is feasibility evidence for the fixed worker and fake provider; it is
+  not real inference, cross-platform evidence, mutation evidence, or shell
+  evidence. Do not carry forward the historical `6gGbUF` pass count.
 
-Filesystem read execution remains disabled in ordinary chat even on a trusted
-Bubblewrap host. Stage 4 captures only bounded bytes in an opaque in-memory
-handle after worker join and retirement of operation-owned descriptors. Tests
-discard captures; Stage 5's synchronized result publication/provider
-continuation is implemented in merged PR #251, but its fixture evidence is not
-native enforcement evidence. Provider-source owner integration remains
-unsupported and is refused; Token Logger owner hooks, listing, recursion,
-writes, deletion, shell, and non-Linux enforcement remain absent. The current
-integrated Stage 6 attempt did not pass backend trust: `/usr/bin/bwrap` is owned
-by UID 65534, so the trust check refused it before probes or worker startup.
-The Stage 6 runner is merged, but eligible-host native acceptance is still
-required. No tool is enabled.
+The focused production composition registers `read_file` only when trusted
+backend inspection and the full retained-read lifecycle are available. Stage 4
+captures bounded bytes in an opaque in-memory handle after worker join and
+descriptor retirement; Stage 5 synchronizes result publication and same-context
+provider continuation. Provider-source owner integration remains unsupported
+and is refused. Token Logger is not opened by this composition. Listing,
+recursion, mutation, shell, and non-Linux read enforcement remain unavailable.
 
 ## Validation commands
 
