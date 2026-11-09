@@ -1,9 +1,14 @@
 # Linux sandbox feasibility study (#215)
 
-Status: **research harness only**. No production sandbox service or
+Status: **historical research study**. No production sandbox service or
 model-facing filesystem/process tool is implemented or registered. This study
-does not change authorization, grants, root selection, or runtime dispatch.
-Authority contract A remains the existing enablement gate.
+does not change authorization, grants, root selection, or runtime dispatch. It
+predates the maintainer's approval of mounted-tree/object authority (B) for
+typed reads. Its recommendations below about the read authority contract are
+historical and are superseded by the [accepted read contract](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377)
+and the [current sandbox direction](sandbox-design-proposal.md). That decision
+does not approve B for mutations or shell. The reported unavailable candidate
+runs do not establish enforcement under either A or B.
 
 ## Reproduce
 
@@ -228,9 +233,11 @@ attempted.
 
 ## Integration findings and decisions still open
 
-**Recommendation for the next review:** preserve A as the enablement gate and
-keep every filesystem/process tool unavailable. For the next native study run,
-use a disposable Linux/amd64 host equivalent to Ubuntu 24.04.5, kernel
+**Historical read-authority recommendation (superseded by the later B
+decision):** preserve A as the enablement gate and keep every
+filesystem/process tool unavailable. For the next native study run, use a
+disposable Linux/amd64 host equivalent to
+Ubuntu 24.04.5, kernel
 `7.0.0-38-generic`, with working unprivileged user namespaces, seccomp filter
 support, and root-owned bubblewrap 0.9.0. These are the measured host's
 versions, not proof that this profile runs there and not an approved product
@@ -242,9 +249,10 @@ Codex helper. Revisit a narrow launcher only if native results identify a
 specific missing setup/coordination capability. Treat delegated cgroup v2 as a
 separate resource-control decision, not an assumed product prerequisite.
 
-- **Authority:** keep A as the gate. The bwrap mount namespace and the fixture
-  design are candidates for testing, not proof that A is satisfied. Any move to
-  B needs an explicit maintainer decision and changed user-facing guarantees.
+- **Authority (historical read recommendation):** keep A as the gate. The bwrap
+  mount namespace and the fixture design are candidates for testing, not proof
+  that A is satisfied. Any move to B needs an explicit maintainer decision and
+  changed user-facing guarantees.
 - **Permission meaning:** the target considered by this task is that scoped
   write includes read, create, modify, rename and delete. A writable bind mount
   is a mechanism, not an authorization grant. This study does not change the
@@ -289,11 +297,14 @@ separate resource-control decision, not an assumed product prerequisite.
   are outside this Linux study and remain unavailable. A version or compile
   check is not behavioral evidence.
 
-No root-selection UX, protected-path policy, B contract, production sandbox
-service, shell, filesystem tool, or new permission semantics are approved by
-this study. The next decision is whether to provide a native disposable host
-where the exact test can run, and then review measured A/B outcomes before
-choosing any product contract or minimum supported environment.
+This study itself approved no root-selection UX, protected-path policy, B
+contract, production sandbox service, shell, filesystem tool, or new permission
+semantics. The maintainer later accepted B for typed reads in the decision
+linked above; mutation and shell contracts remain separate. The historical
+next step recorded here was to obtain a native disposable host and review A/B
+outcomes before selecting a product contract; that recommendation is superseded
+for reads. Current native acceptance and enablement gates are tracked in the
+[issue #215 completion plan](issue-215-completion-tracking.md).
 
 ## Validation for this change
 
