@@ -18,6 +18,7 @@ package sandbox
 
 import (
 	"context"
+	"debug/elf"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -271,6 +272,34 @@ func allNativeCasesUnavailable(cases []stage6Case) bool {
 		}
 	}
 	return foundNative
+}
+
+func TestStage6StudyWorkerImageMeetsLaunchValidation(t *testing.T) {
+	executable, err := os.Open("/proc/self/exe")
+	if err != nil {
+		t.Fatalf("study worker image could not be opened: %v", err)
+	}
+	defer executable.Close()
+	var image unix.Stat_t
+	if err := unix.Fstat(int(executable.Fd()), &image); err != nil {
+		t.Fatalf("study worker image identity could not be inspected: %v", err)
+	}
+	if image.Mode&unix.S_IFMT != unix.S_IFREG || image.Size <= 0 || image.Size > 7<<20 {
+		t.Fatalf("study worker image does not meet the fixed regular-file size bound: size=%d", image.Size)
+	}
+	imageELF, err := elf.NewFile(executable)
+	if err != nil {
+		t.Fatalf("stripped study image is not a valid ELF executable: %v", err)
+	}
+	defer imageELF.Close()
+	if imageELF.Type != elf.ET_EXEC && imageELF.Type != elf.ET_DYN {
+		t.Fatalf("study image has unsupported ELF type: %s", imageELF.Type)
+	}
+	for _, program := range imageELF.Progs {
+		if program.Type == elf.PT_INTERP {
+			t.Fatal("study worker image has a dynamic interpreter")
+		}
+	}
 }
 
 func TestStage6ReportClassifiesEveryCase(t *testing.T) {
