@@ -265,6 +265,7 @@ const (
 type ReadEvidence struct {
 	Case               string        `json:"case"`
 	Outcome            ReadOutcome   `json:"outcome"`
+	FailureDetail      string        `json:"failure_detail,omitempty"`
 	Generations        GenerationSet `json:"generations"`
 	Probe              WorkerProbe   `json:"worker_probe,omitempty"`
 	WorkerStarted      bool          `json:"worker_started"`

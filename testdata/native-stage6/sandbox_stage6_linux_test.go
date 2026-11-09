@@ -18,6 +18,7 @@ package sandbox
 
 import (
 	"context"
+	"debug/elf"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +62,7 @@ type stage6Case struct {
 	Status                    string         `json:"status"`
 	EvidenceKind              string         `json:"evidence_kind,omitempty"`
 	Reason                    string         `json:"reason,omitempty"`
+	FailureDiagnostic         string         `json:"failure_diagnostic,omitempty"`
 	LaunchPolicy              map[string]any `json:"launch_policy,omitempty"`
 	WorkerStarted             bool           `json:"worker_started"`
 	WorkerReady               bool           `json:"worker_ready"`
@@ -95,6 +97,42 @@ type stage6Case struct {
 	ObservedProcessesGone     bool           `json:"observed_processes_gone"`
 }
 
+func stage6CaptureReadFailure(caseID string, coordinator readbrokerstudy.HostCoordinator) {
+	if coordinator == nil {
+		return
+	}
+	evidence := coordinator.Evidence()
+	if len(evidence) == 0 {
+		return
+	}
+	last := evidence[len(evidence)-1]
+	stage6Update(caseID, func(item *stage6Case) {
+		item.WorkerStarted = last.WorkerStarted
+		item.WorkerReady = last.WorkerReady
+		item.WorkerJoined = last.WorkerJoined
+		item.CapabilityTransferred = last.CapabilitySent
+		item.CapabilityHeld = last.CapabilityHeld
+		item.ReadStarted = last.ReadStarted
+		item.ReadOutcome = string(last.Outcome)
+		item.ProbePassed = last.Probe.NoNewPrivs && last.Probe.SeccompMode == 2 && last.Probe.SocketCreationDenied && last.Probe.PathOpenDenied && last.Probe.ReadCapabilityInitiallyAbsent && last.Probe.OnlyProtocolDescriptor && last.Probe.EnvironmentCleared
+		item.FailureDiagnostic = boundedStage6Diagnostic(last.FailureDetail)
+	})
+}
+
+func boundedStage6Diagnostic(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\t' {
+			return ' '
+		}
+		return r
+	}, value)
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 768 {
+		value = value[:768]
+	}
+	return value
+}
+
 type stage6Report struct {
 	SchemaVersion int            `json:"schema_version"`
 	SourceCommit  string         `json:"source_commit"`
@@ -108,6 +146,34 @@ type stage6Report struct {
 	Overall       string         `json:"overall_status"`
 	Cases         []stage6Case   `json:"cases"`
 	Limitations   []string       `json:"limitations"`
+}
+
+type stage6BoundedBuffer struct {
+	mu   sync.Mutex
+	data []byte
+	max  int
+}
+
+func (b *stage6BoundedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.max <= 0 {
+		b.max = 4096
+	}
+	remaining := b.max - len(b.data)
+	if remaining > 0 {
+		if remaining > len(data) {
+			remaining = len(data)
+		}
+		b.data = append(b.data, data[:remaining]...)
+	}
+	return len(data), nil
+}
+
+func (b *stage6BoundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
 }
 
 var stage6 = newStage6Report()
@@ -149,7 +215,7 @@ func newStage6Report() stage6Report {
 			item.Reason = "synthetic separate-process actor helper control was not executed"
 		} else if unimplemented {
 			item.EvidenceKind = "not-implemented"
-			item.Reason = "case is not implemented by Stage 6 runner version 5"
+			item.Reason = "case is not implemented by Stage 6 runner version 6"
 		} else if _, workerLifecycle := workerLifecycleCases[id]; workerLifecycle {
 			item.EvidenceKind = "native-worker-lifecycle"
 			item.Reason = "fixed worker parent-death lifecycle case was not executed"
@@ -159,7 +225,7 @@ func newStage6Report() stage6Report {
 		cases = append(cases, item)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "5",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "6",
 		OS: "linux", Architecture: stdruntime.GOARCH, UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: []string{
@@ -208,6 +274,34 @@ func allNativeCasesUnavailable(cases []stage6Case) bool {
 	return foundNative
 }
 
+func TestStage6StudyWorkerImageMeetsLaunchValidation(t *testing.T) {
+	executable, err := os.Open("/proc/self/exe")
+	if err != nil {
+		t.Fatalf("study worker image could not be opened: %v", err)
+	}
+	defer executable.Close()
+	var image unix.Stat_t
+	if err := unix.Fstat(int(executable.Fd()), &image); err != nil {
+		t.Fatalf("study worker image identity could not be inspected: %v", err)
+	}
+	if image.Mode&unix.S_IFMT != unix.S_IFREG || image.Size <= 0 || image.Size > 7<<20 {
+		t.Fatalf("study worker image does not meet the fixed regular-file size bound: size=%d", image.Size)
+	}
+	imageELF, err := elf.NewFile(executable)
+	if err != nil {
+		t.Fatalf("stripped study image is not a valid ELF executable: %v", err)
+	}
+	defer imageELF.Close()
+	if imageELF.Type != elf.ET_EXEC && imageELF.Type != elf.ET_DYN {
+		t.Fatalf("study image has unsupported ELF type: %s", imageELF.Type)
+	}
+	for _, program := range imageELF.Progs {
+		if program.Type == elf.PT_INTERP {
+			t.Fatal("study worker image has a dynamic interpreter")
+		}
+	}
+}
+
 func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	report := newStage6Report()
 	counts := map[string]int{}
@@ -243,6 +337,13 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	}
 	if allNativeCasesUnavailable(report.Cases) {
 		t.Fatal("a measured native case was classified as wholly unavailable")
+	}
+}
+
+func TestStage6DiagnosticIsBoundedAndControlSafe(t *testing.T) {
+	got := boundedStage6Diagnostic("startup\nfailed\x00" + strings.Repeat("x", 900))
+	if strings.ContainsAny(got, "\r\n\x00") || len(got) > 768 || !strings.HasPrefix(got, "startup failed ") {
+		t.Fatalf("bounded diagnostic=%q length=%d", got, len(got))
 	}
 }
 
@@ -394,7 +495,8 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 	}
 	helper := exec.Command(os.Args[0], "-test.run=^TestStage6ParentDeathCoordinatorHelper$")
 	helper.ExtraFiles = []*os.File{writePipe}
-	helper.Stdout, helper.Stderr = io.Discard, io.Discard
+	helperOutput := &stage6BoundedBuffer{max: 4096}
+	helper.Stdout, helper.Stderr = helperOutput, helperOutput
 	helper.Env = []string{
 		"KOMPOSYN_PARENT_DEATH_HELPER=1",
 		"KOMPOSYN_PARENT_DEATH_BWRAP=" + backendPath,
@@ -431,9 +533,16 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 			_ = helper.Process.Kill()
 			_ = helper.Wait()
 			joined = true
+			stage6RecordParentDeathDiagnostic(helper, target, backendPath)
 			t.Fatalf("fixed worker did not reach held-capability state before deadline: %v", readErr)
 		}
 		if readErr != nil {
+			// A malformed frame, poll/read error, or unexpected protocol event
+			// does not imply that the coordinator exited. Stop it before Wait
+			// so this diagnostic failure path remains bounded too.
+			_ = stopAndJoinFailedCoordinator(helper)
+			joined = true
+			stage6RecordParentDeathDiagnostic(helper, target, backendPath)
 			t.Fatalf("private parent-death handshake read failed: %v", readErr)
 		}
 		phases[event.Phase] = true
@@ -485,6 +594,68 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 		t.Fatal("observed Bubblewrap or namespace-init process remained after bounded parent-death cleanup")
 	}
 	stage6PassWithEvidence("parent_death_cleanup", "native-worker-lifecycle", "killing the coordinator after the fixed worker held its read descriptor, without sending read release, caused the observed Bubblewrap process and PID-namespace init to exit and disappear; this is limited to the fixed profile and does not prove arbitrary-descendant cleanup")
+}
+
+func stopAndJoinFailedCoordinator(helper *exec.Cmd) error {
+	if helper == nil || helper.Process == nil {
+		return errors.New("parent-death coordinator process is unavailable")
+	}
+	_ = helper.Process.Kill()
+	return helper.Wait()
+}
+
+func TestStage6StopAndJoinFailedCoordinator(t *testing.T) {
+	const helperEnv = "KOMPOSYN_STAGE6_STOP_COORDINATOR_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		ready := os.NewFile(3, "coordinator-ready")
+		if ready == nil {
+			os.Exit(2)
+		}
+		if _, err := ready.Write([]byte{1}); err != nil {
+			os.Exit(3)
+		}
+		select {}
+	}
+
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatal("could not create coordinator fixture handshake")
+	}
+	defer readPipe.Close()
+	helper := exec.Command(os.Args[0], "-test.run=^TestStage6StopAndJoinFailedCoordinator$")
+	helper.ExtraFiles = []*os.File{writePipe}
+	helper.Stdout, helper.Stderr = io.Discard, io.Discard
+	helper.Env = append(os.Environ(), helperEnv+"=1")
+	if err := helper.Start(); err != nil {
+		_ = writePipe.Close()
+		t.Fatal("could not start coordinator fixture")
+	}
+	_ = writePipe.Close()
+	var ready [1]byte
+	if _, err := io.ReadFull(readPipe, ready[:]); err != nil || ready[0] != 1 {
+		_ = stopAndJoinFailedCoordinator(helper)
+		t.Fatalf("coordinator fixture did not reach its wait state: byte=%v err=%v", ready, err)
+	}
+	if err := stopAndJoinFailedCoordinator(helper); err == nil || helper.ProcessState == nil || helper.ProcessState.Success() {
+		t.Fatalf("failed coordinator was not terminated and reaped: wait=%v state=%v", err, helper.ProcessState)
+	}
+}
+
+func stage6RecordParentDeathDiagnostic(helper *exec.Cmd, target, backendPath string) {
+	var detail string
+	if captured, ok := helper.Stderr.(*stage6BoundedBuffer); ok {
+		detail = captured.String()
+	}
+	for _, privatePath := range []string{filepath.Dir(target), target, backendPath, os.Args[0]} {
+		if privatePath != "" {
+			detail = strings.ReplaceAll(detail, privatePath, "<PRIVATE_PATH>")
+		}
+	}
+	if helper.ProcessState != nil {
+		detail = strings.TrimSpace(detail + " helper_exit_code=" + fmt.Sprint(helper.ProcessState.ExitCode()))
+	}
+	detail = boundedStage6Diagnostic(detail)
+	stage6Update("parent_death_cleanup", func(item *stage6Case) { item.FailureDiagnostic = detail })
 }
 
 const maxParentDeathEventBytes = 4096
@@ -1369,6 +1540,14 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			for _, id := range fixture.reportCases {
 				stage6Update(id, func(item *stage6Case) { item.CleanupConfirmed = true })
 			}
+		}
+	})
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		if impl, ok := fixture.service.impl.(*linuxImplementation); ok {
+			stage6CaptureReadFailure(caseID, impl.session)
 		}
 	})
 	return fixture

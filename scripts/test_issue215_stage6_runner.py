@@ -34,6 +34,12 @@ SPEC.loader.exec_module(RUNNER)
 
 
 class Stage6RunnerTests(unittest.TestCase):
+    def test_stage6_build_strips_non_runtime_sections(self):
+        command = RUNNER.stage6_build_command("/trusted/go", "/tmp/overlay.json", "/tmp/study.test")
+
+        self.assertIn("-ldflags=-s -w", command)
+        self.assertEqual(command[-1], "./internal/harness/sandbox")
+
     def test_summary_keeps_synthetic_and_native_evidence_distinct(self):
         report = {
             "overall_status": "native_unavailable",
@@ -49,6 +55,7 @@ class Stage6RunnerTests(unittest.TestCase):
                     "status": "unavailable",
                     "evidence_kind": "native-integrated",
                     "worker_started": False,
+                    "failure_diagnostic": "worker startup failed: synthetic error",
                 },
             ],
             "limitations": ["native worker did not run"],
@@ -63,6 +70,7 @@ class Stage6RunnerTests(unittest.TestCase):
             "| native-read | unavailable | native-integrated |",
             summary,
         )
+        self.assertIn("worker startup failed: synthetic error", summary)
 
     def test_backend_metadata_is_read_only_and_hashes_regular_file(self):
         with tempfile.TemporaryDirectory() as directory:

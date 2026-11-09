@@ -32,10 +32,21 @@ local toolchain and exact source revision.
 
 The runner refuses root, non-Linux hosts, unsupported architectures, relative
 backend paths, dirty checkouts, and a revision other than the current clean
-`HEAD`. It does not edit the checkout. It builds with `CGO_ENABLED=0`, a
-separate temporary Go build/module cache, then executes the test binary with a
-finite deadline. The existing bounded process-group capture helper terminates
+`HEAD`. It does not edit the checkout. It builds with `CGO_ENABLED=0`,
+`-ldflags=-s -w`, and a separate temporary Go build/module cache, then executes
+the test binary with a finite deadline. The linker flags omit debug and ELF
+symbol sections from this disposable study binary; they do not change runtime
+behavior or raise the worker's existing 7 MiB image ceiling. The stripped
+binary remains statically linked and is still authenticated by the existing
+worker launch checks. The existing bounded process-group capture helper terminates
 and reaps children on timeout; no unrestricted/elevated retry is attempted.
+
+The 2026-11-09 trusted-host run built a 7,952,946-byte test executable, larger
+than the worker's 7,340,032-byte snapshot bound, and setup correctly refused it.
+Rebuilding the same study source with `-s -w` produced a 5,492,898-byte static
+binary. This is the measured reason for stripping only the disposable study
+binary; it is a build-fixture correction, not evidence that the sandbox worker
+started or that a read succeeded.
 
 The Go build uses a private temporary `HOME` and Go/module caches, the public
 Go module proxy with Go authentication disabled, and no host `.netrc`, proxy
@@ -60,9 +71,12 @@ The runner prints a private results directory and a `.tar.gz` archive path.
 The archive contains:
 
 - `manifest.json`: source revision/cleanliness, runner and overlay hashes,
-  host/Go/backend metadata, bounded process status, and overall classification;
+  host/Go/backend metadata, study-binary hash and size, bounded process status,
+  and overall classification;
 - `stage6-report.json`: per-case observations from the test binary when
-  produced;
+  produced, including bounded, path-redacted worker startup diagnostics and
+  the parent-death helper's bounded stderr/exit status when a worker does not
+  reach readiness;
 - bounded build, test and Go-version stdout/stderr logs;
 - `summary.md` and `SHA256SUMS`.
 

@@ -29,6 +29,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -383,6 +384,17 @@ func TestModernDescriptorModeRequiresResolvableSourceAndFallsBackToDataCopy(t *t
 	}
 }
 
+func TestSafeSystemErrorOmitsPathText(t *testing.T) {
+	err := &os.PathError{Op: "open", Path: "/tmp/synthetic-private-path", Err: syscall.EACCES}
+	got := safeSystemError(err)
+	if got != syscall.EACCES.Error() || strings.Contains(got, "/tmp/") {
+		t.Fatalf("safe system error=%q, want errno only", got)
+	}
+	if got := safeSystemError(errors.New("host-specific path diagnostic")); got != "system call failed" {
+		t.Fatalf("unknown system error=%q, want generic classification", got)
+	}
+}
+
 func TestModernDescriptorBindUsesFreshPathBackedDescriptions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "worker")
 	want := []byte("pinned path-backed worker")
@@ -417,6 +429,29 @@ func TestModernDescriptorBindUsesFreshPathBackedDescriptions(t *testing.T) {
 	}
 	_ = first.Close()
 	_ = second.Close()
+}
+
+func TestRunningExecutableCanBeReopenedForDescriptorBind(t *testing.T) {
+	source, err := os.Open("/proc/self/exe")
+	if err != nil {
+		t.Fatalf("running test executable could not be opened: %v", err)
+	}
+	defer source.Close()
+	opened, err := openWorkerMountDescriptor(source, BindModeDescriptor)
+	if err != nil {
+		t.Fatalf("pinned running executable could not be reopened for descriptor binding: %v", err)
+	}
+	defer opened.Close()
+	var sourceStat, openedStat unix.Stat_t
+	if err := unix.Fstat(int(source.Fd()), &sourceStat); err != nil {
+		t.Fatal("pinned executable identity could not be read")
+	}
+	if err := unix.Fstat(int(opened.Fd()), &openedStat); err != nil {
+		t.Fatal("reopened executable identity could not be read")
+	}
+	if sourceStat.Dev != openedStat.Dev || sourceStat.Ino != openedStat.Ino {
+		t.Fatal("descriptor bind reopen did not preserve the running executable identity")
+	}
 }
 
 func TestBubblewrapArgumentsSelectModernMountAndSeparateVerifierFD(t *testing.T) {
