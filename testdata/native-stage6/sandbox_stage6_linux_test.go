@@ -133,6 +133,19 @@ func boundedStage6Diagnostic(value string) string {
 	return value
 }
 
+func stage6RequestedBindMode() readbrokerstudy.BindMode {
+	switch os.Getenv("KOMPOSYN_STAGE6_BIND_MODE") {
+	case "", "auto":
+		return ""
+	case string(readbrokerstudy.BindModeDescriptor):
+		return readbrokerstudy.BindModeDescriptor
+	case string(readbrokerstudy.BindModeFileSnapshot):
+		return readbrokerstudy.BindModeFileSnapshot
+	default:
+		return readbrokerstudy.BindMode("invalid-stage6-bind-mode")
+	}
+}
+
 type stage6Report struct {
 	SchemaVersion int            `json:"schema_version"`
 	SourceCommit  string         `json:"source_commit"`
@@ -215,7 +228,7 @@ func newStage6Report() stage6Report {
 			item.Reason = "synthetic separate-process actor helper control was not executed"
 		} else if unimplemented {
 			item.EvidenceKind = "not-implemented"
-			item.Reason = "case is not implemented by Stage 6 runner version 6"
+			item.Reason = "case is not implemented by Stage 6 runner version 7"
 		} else if _, workerLifecycle := workerLifecycleCases[id]; workerLifecycle {
 			item.EvidenceKind = "native-worker-lifecycle"
 			item.Reason = "fixed worker parent-death lifecycle case was not executed"
@@ -424,7 +437,7 @@ func TestStage6ParentDeathCoordinatorHelper(t *testing.T) {
 	defer pipe.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	if err := readbrokerstudy.RunParentDeathStudyCoordinator(ctx, os.Getenv("KOMPOSYN_PARENT_DEATH_BWRAP"), os.Getenv("KOMPOSYN_PARENT_DEATH_TARGET"), pipe); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	if err := readbrokerstudy.RunParentDeathStudyCoordinatorForStage6(ctx, os.Getenv("KOMPOSYN_PARENT_DEATH_BWRAP"), os.Getenv("KOMPOSYN_PARENT_DEATH_TARGET"), pipe, stage6RequestedBindMode()); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("fixed parent-death worker coordinator failed: %v", err)
 	}
 }
@@ -435,7 +448,7 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 	if backendPath == "" {
 		backendPath = "/usr/bin/bwrap"
 	}
-	inspection := readbrokerstudy.InspectBubblewrap(backendPath)
+	inspection := readbrokerstudy.InspectBubblewrapForStage6(backendPath, stage6RequestedBindMode())
 	stage6Mu.Lock()
 	stage6.Backend = map[string]any{
 		"path": backendPath, "uid": inspection.UID, "mode": inspection.Mode,
@@ -501,6 +514,7 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 		"KOMPOSYN_PARENT_DEATH_HELPER=1",
 		"KOMPOSYN_PARENT_DEATH_BWRAP=" + backendPath,
 		"KOMPOSYN_PARENT_DEATH_TARGET=" + target,
+		"KOMPOSYN_STAGE6_BIND_MODE=" + string(stage6RequestedBindMode()),
 		"TMPDIR=" + os.TempDir(),
 	}
 	if err := helper.Start(); err != nil {
@@ -1347,7 +1361,7 @@ type stage6Fixture struct {
 	reportCases         []string
 }
 
-func newStage6HostServiceWithCapabilityHold(backendPath string) (*Service, error) {
+func newStage6HostService(backendPath string, holdWorker bool) (*Service, error) {
 	registry, err := readbrokerstudy.NewRegistry()
 	if err != nil {
 		return nil, err
@@ -1357,7 +1371,7 @@ func newStage6HostServiceWithCapabilityHold(backendPath string) (*Service, error
 		_ = registry.Close()
 		return nil, err
 	}
-	launcher, err := readbrokerstudy.NewWorkerLauncherWithCapabilityHold(backendPath, workerPath)
+	launcher, err := readbrokerstudy.NewWorkerLauncherForStage6(backendPath, workerPath, stage6RequestedBindMode(), holdWorker)
 	if err != nil {
 		_ = registry.Close()
 		return nil, err
@@ -1379,7 +1393,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	if backendPath == "" {
 		backendPath = "/usr/bin/bwrap"
 	}
-	inspection := readbrokerstudy.InspectBubblewrap(backendPath)
+	inspection := readbrokerstudy.InspectBubblewrapForStage6(backendPath, stage6RequestedBindMode())
 	stage6Mu.Lock()
 	stage6.Backend = map[string]any{
 		"path": backendPath, "uid": inspection.UID, "mode": inspection.Mode,
@@ -1410,13 +1424,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		}
 		t.Skip("trusted native Bubblewrap backend unavailable; no probe or worker launch was attempted")
 	}
-	var service *Service
-	var err error
-	if holdWorker {
-		service, err = newStage6HostServiceWithCapabilityHold(backendPath)
-	} else {
-		service, err = NewHostService(backendPath)
-	}
+	service, err := newStage6HostService(backendPath, holdWorker)
 	if err != nil {
 		stage6Skip(caseID, "trusted backend passed inspection but host service composition was unavailable")
 		t.Skip("host sandbox service could not be composed")
@@ -2553,8 +2561,23 @@ func TestStage6OwnerRotationBeforeHandoffWithholdsCapture(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("provider accepted %d requests; stale capture must not be handed off", len(requests))
 	}
+	for _, request := range requests {
+		encoded, _ := json.Marshal(request.Messages)
+		if strings.Contains(string(encoded), fixture.content) {
+			t.Fatal("invalidated read bytes appeared in a provider request")
+		}
+	}
 	if fixture.chat.Snapshot().Active {
 		t.Fatal("chat remained active after the refused handoff")
+	}
+	historySensitive, historyMessages, toolResults, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(fixture.chat, fixture.content)
+	if historySensitive || historyMessages != 0 || toolResults != 0 || markerFound || !payloadFree {
+		t.Fatalf("retired history retained stale read data: sensitive=%t messages=%d tool_results=%d marker=%t payload_free=%t", historySensitive, historyMessages, toolResults, markerFound, payloadFree)
+	}
+	for _, turn := range fixture.chat.Snapshot().Turns {
+		if strings.Contains(turn.Text, fixture.content) || strings.Contains(turn.Refusal, fixture.content) || strings.Contains(turn.Message, fixture.content) {
+			t.Fatal("invalidated read bytes appeared in a retained turn snapshot")
+		}
 	}
 	impl := fixture.service.impl.(*linuxImplementation)
 	evidence := impl.session.Evidence()
@@ -2564,7 +2587,7 @@ func TestStage6OwnerRotationBeforeHandoffWithholdsCapture(t *testing.T) {
 	stage6Update("pre_handoff_owner_invalidation", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
 		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
-		item.ProviderRequestCount, item.DisclosureWithheld = len(requests), true
+		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = len(requests), true, true
 		item.OnceApprovalCount = fixture.approvals.Load()
 	})
 	stage6Pass("pre_handoff_owner_invalidation", "actual Service owner rotation completed at a deterministic pre-gate checkpoint; no stale capture reached the provider")

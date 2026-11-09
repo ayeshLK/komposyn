@@ -34,6 +34,18 @@ SPEC.loader.exec_module(RUNNER)
 
 
 class Stage6RunnerTests(unittest.TestCase):
+    def test_bind_mode_cli_rejects_unreviewed_values(self):
+        process = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "--bind-mode", "unchecked"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(process.returncode, 2)
+        self.assertIn("invalid choice", process.stderr)
+
     def test_stage6_build_strips_non_runtime_sections(self):
         command = RUNNER.stage6_build_command("/trusted/go", "/tmp/overlay.json", "/tmp/study.test")
 

@@ -339,6 +339,10 @@ func NewWorkerLauncherWithCapabilityHold(bwrapPath, workerPath string) (WorkerLa
 }
 
 func newWorkerLauncher(bwrapPath, workerPath string, holdBeforeRead bool) (WorkerLauncher, error) {
+	return newWorkerLauncherWithBindMode(bwrapPath, workerPath, holdBeforeRead, "")
+}
+
+func newWorkerLauncherWithBindMode(bwrapPath, workerPath string, holdBeforeRead bool, preferredMode BindMode) (WorkerLauncher, error) {
 	if err := validateTrustedExecutable(bwrapPath, true); err != nil {
 		return nil, fmt.Errorf("%w: trusted Bubblewrap validation failed", ErrUnavailable)
 	}
@@ -350,7 +354,7 @@ func newWorkerLauncher(bwrapPath, workerPath string, holdBeforeRead bool) (Worke
 	if err != nil {
 		return nil, fmt.Errorf("%w: running fixed worker could not be opened: %v", ErrUnavailable, err)
 	}
-	mode, err := selectWorkerBindMode(capability, workerFile)
+	mode, err := selectWorkerBindModePreferred(capability, workerFile, preferredMode)
 	if err != nil {
 		_ = workerFile.Close()
 		return nil, fmt.Errorf("%w: no safe mount source is available: %v", ErrUnavailable, err)
@@ -438,6 +442,29 @@ func snapshotCurrentExecutable(workerPath string) (*os.File, error) {
 }
 
 func selectWorkerBindMode(capability BubblewrapCapabilities, source *os.File) (BindMode, error) {
+	return selectWorkerBindModePreferred(capability, source, "")
+}
+
+func selectWorkerBindModePreferred(capability BubblewrapCapabilities, source *os.File, preferred BindMode) (BindMode, error) {
+	if preferred != "" {
+		switch preferred {
+		case BindModeDescriptor:
+			if !slices.Contains(capability.Options, "--ro-bind-fd") {
+				return "", errors.New("requested Bubblewrap descriptor-bind mode is not available")
+			}
+			if !descriptorBindSourcePathCompatible(source) {
+				return "", errors.New("requested Bubblewrap descriptor-bind mode cannot resolve the fixed worker source")
+			}
+			return BindModeDescriptor, nil
+		case BindModeFileSnapshot:
+			if !supportsFileSnapshot(capability.Options) {
+				return "", errors.New("requested Bubblewrap file-snapshot mode is not available")
+			}
+			return BindModeFileSnapshot, nil
+		default:
+			return "", errors.New("requested Bubblewrap bind mode is invalid")
+		}
+	}
 	if capability.BindMode == BindModeDescriptor && descriptorBindSourcePathCompatible(source) {
 		return BindModeDescriptor, nil
 	}

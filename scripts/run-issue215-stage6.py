@@ -35,7 +35,7 @@ import time
 sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
 
-RUNNER_VERSION = "6"
+RUNNER_VERSION = "7"
 DEFAULT_BWRAP = "/usr/bin/bwrap"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 BUILD_TIMEOUT = 300
@@ -212,6 +212,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--revision", help="exact clean HEAD revision to archive (default: HEAD)")
     parser.add_argument("--bwrap", default=DEFAULT_BWRAP, help="absolute trusted Bubblewrap path")
+    parser.add_argument(
+        "--bind-mode",
+        choices=("auto", "ro-bind-fd", "file-snapshot"),
+        default="auto",
+        help="feature-checked worker bind mode (default: automatic selection)",
+    )
     parser.add_argument("--output-root", default="/tmp", help="existing parent for a new private results directory")
     args = parser.parse_args()
 
@@ -236,6 +242,7 @@ def main():
         "backend": backend_metadata(args.bwrap),
         "build": {"status": "not_started"},
         "study": {"status": "not_started"},
+        "requested_bind_mode": args.bind_mode,
         "report": {"status": "not_produced"},
         "classification": "incomplete",
         "limitations": [
@@ -357,6 +364,7 @@ def main():
             "KOMPOSYN_STAGE6_REPORT": str(report_path),
             "KOMPOSYN_STAGE6_SOURCE_COMMIT": requested,
             "KOMPOSYN_STAGE6_BWRAP": args.bwrap,
+            "KOMPOSYN_STAGE6_BIND_MODE": args.bind_mode,
         })
         run_command = [str(executable), "-test.run=^TestStage6", "-test.timeout=120s", "-test.count=1"]
         manifest["study"] = {"status": "running", "command_template": ["<built test binary>", "-test.run=^TestStage6", "-test.timeout=120s", "-test.count=1"], "timeout_seconds": RUN_TIMEOUT, "output_limit_bytes_per_stream": MAX_LOG_BYTES}
