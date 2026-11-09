@@ -47,12 +47,16 @@ The auth and settings stores expose a host-owned protection hook. The shipped
 chat wires those stores to a host sandbox composition before loading their
 contents. The six-clause bounded exact-file disclosure policy is accepted, and
 Stages 1–5 plus the Stage 6 runner/lifecycle implementation are merged. A
-trusted-host Stage 6 attempt reached Bubblewrap 0.9.0 but failed before any
-worker became ready or received a read capability; the report and follow-up
-run records are kept on [issue #215](https://github.com/ayeshLK/komposyn/issues/215).
-Native acceptance and a separate enablement review remain pending; generic
-reads remain unavailable and no filesystem tool is registered. `/fs-root`
-selects an in-memory lookup root; selection grants no access. See the
+trusted-host run for PR #262 head `79794feb766c430d5c2fff735855acdff5077e55`
+measured the descriptor-bind worker and fixed-profile parent-death case on
+Linux amd64 with Bubblewrap 0.9.0. The report remains `stage6_profile_incomplete`:
+mutation and shell are unavailable, and this run does not establish strict
+live-host-path containment. A separate sealed-snapshot mode is under review and
+has no trusted-host evidence yet. Native read acceptance and a separate
+enablement review remain pending; generic reads remain unavailable and no
+filesystem tool is registered. See the [issue #215 evidence and current
+limitations](https://github.com/ayeshLK/komposyn/issues/215). `/fs-root` selects
+an in-memory lookup root; selection grants no access. See the
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
