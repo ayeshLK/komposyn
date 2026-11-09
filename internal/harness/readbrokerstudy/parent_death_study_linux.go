@@ -39,6 +39,16 @@ type ParentDeathStudyEvent struct {
 // kills this coordinator to measure --die-with-parent; no read-release frame
 // is sent.
 func RunParentDeathStudyCoordinator(ctx context.Context, bwrapPath, targetPath string, reportWriter io.Writer) error {
+	return runParentDeathStudyCoordinator(ctx, bwrapPath, targetPath, reportWriter, "")
+}
+
+// RunParentDeathStudyCoordinatorForStage6 allows the disposable native suite
+// to select a feature-detected bind mode and measure that mode's lifecycle.
+func RunParentDeathStudyCoordinatorForStage6(ctx context.Context, bwrapPath, targetPath string, reportWriter io.Writer, mode BindMode) error {
+	return runParentDeathStudyCoordinator(ctx, bwrapPath, targetPath, reportWriter, mode)
+}
+
+func runParentDeathStudyCoordinator(ctx context.Context, bwrapPath, targetPath string, reportWriter io.Writer, mode BindMode) error {
 	if ctx == nil || reportWriter == nil || bwrapPath == "" || targetPath == "" {
 		return errors.New("parent-death study inputs are incomplete")
 	}
@@ -49,7 +59,7 @@ func RunParentDeathStudyCoordinator(ctx context.Context, bwrapPath, targetPath s
 	if err != nil {
 		return errors.New("parent-death study executable is unavailable")
 	}
-	launcher, err := NewWorkerLauncherWithCapabilityHold(bwrapPath, workerPath)
+	launcher, err := newWorkerLauncherWithBindMode(bwrapPath, workerPath, true, mode)
 	if err != nil {
 		return err
 	}

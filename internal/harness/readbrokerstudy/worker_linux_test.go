@@ -384,6 +384,52 @@ func TestModernDescriptorModeRequiresResolvableSourceAndFallsBackToDataCopy(t *t
 	}
 }
 
+func TestStage6PreferredBindModeIsFeatureCheckedWithoutChangingAutomaticSelection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker-source")
+	if err := os.WriteFile(path, []byte("synthetic worker"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	modern := BubblewrapCapabilities{
+		Options: []string{"--ro-bind-fd", "--ro-bind-data", "--perms"}, BindMode: BindModeDescriptor,
+	}
+	if mode, err := selectWorkerBindModePreferred(modern, source, ""); err != nil || mode != BindModeDescriptor {
+		t.Fatalf("automatic mode changed: mode=%q err=%v", mode, err)
+	}
+	if mode, err := selectWorkerBindModePreferred(modern, source, BindModeFileSnapshot); err != nil || mode != BindModeFileSnapshot {
+		t.Fatalf("explicit snapshot mode not selected: mode=%q err=%v", mode, err)
+	}
+	if mode, err := selectWorkerBindModePreferred(modern, source, BindModeDescriptor); err != nil || mode != BindModeDescriptor {
+		t.Fatalf("explicit descriptor mode not selected: mode=%q err=%v", mode, err)
+	}
+	snapshot, err := createSealedWorkerSnapshot(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	if mode, err := selectWorkerBindModePreferred(modern, snapshot, BindModeDescriptor); err == nil || mode != "" {
+		t.Fatalf("descriptor mode accepted a source without a resolvable host path: mode=%q err=%v", mode, err)
+	}
+	if mode, err := selectWorkerBindModePreferred(modern, snapshot, BindModeFileSnapshot); err != nil || mode != BindModeFileSnapshot {
+		t.Fatalf("explicit snapshot mode rejected a sealed image: mode=%q err=%v", mode, err)
+	}
+	withoutPermissions := BubblewrapCapabilities{Options: []string{"--ro-bind-data"}}
+	if mode, err := selectWorkerBindModePreferred(withoutPermissions, source, BindModeFileSnapshot); err == nil || mode != "" {
+		t.Fatalf("snapshot mode without explicit permission support was accepted: mode=%q err=%v", mode, err)
+	}
+	withoutDescriptor := BubblewrapCapabilities{Options: []string{"--ro-bind-data", "--perms"}}
+	if mode, err := selectWorkerBindModePreferred(withoutDescriptor, source, BindModeDescriptor); err == nil || mode != "" {
+		t.Fatalf("descriptor mode without descriptor support was accepted: mode=%q err=%v", mode, err)
+	}
+	if mode, err := selectWorkerBindModePreferred(modern, source, BindMode("unknown")); err == nil || mode != "" {
+		t.Fatalf("unknown explicit mode was accepted: mode=%q err=%v", mode, err)
+	}
+}
+
 func TestSafeSystemErrorOmitsPathText(t *testing.T) {
 	err := &os.PathError{Op: "open", Path: "/tmp/synthetic-private-path", Err: syscall.EACCES}
 	got := safeSystemError(err)

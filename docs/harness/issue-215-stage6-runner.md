@@ -24,6 +24,25 @@ PATH="$go_root/bin:$PATH" python3 -B scripts/run-issue215-stage6.py \
   --output-root /tmp
 ```
 
+By default the study uses feature-detected automatic mode selection. To
+measure a specific supported mode, request it explicitly:
+
+```sh
+PATH="$go_root/bin:$PATH" python3 -B scripts/run-issue215-stage6.py \
+  --revision "$(git rev-parse HEAD)" \
+  --bwrap /usr/bin/bwrap \
+  --bind-mode file-snapshot \
+  --output-root /tmp
+```
+
+`--bind-mode` accepts `auto`, `ro-bind-fd`, or `file-snapshot`. An explicit
+request is still gated by the trusted backend inspection and its bounded
+capability probe; if the selected Bubblewrap lacks a requested feature, the
+case is unavailable and no worker starts. There is no fallback to a different
+mode. This selector is compiled only into the disposable Stage 6 test overlay;
+normal launcher selection and the shipped executable are unchanged. The
+manifest records both the requested mode and the mode actually selected.
+
 Confirm the printed version is Go 1.26.10 or newer before proceeding. If
 `go env GOROOT` resolves to an older base installation, set `go_root` to the
 `GOROOT` of an already-installed compatible toolchain. Do not rely on runner
