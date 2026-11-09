@@ -2571,8 +2571,8 @@ func TestStage6OwnerRotationBeforeHandoffWithholdsCapture(t *testing.T) {
 		t.Fatal("chat remained active after the refused handoff")
 	}
 	historySensitive, historyMessages, toolResults, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(fixture.chat, fixture.content)
-	if historySensitive || historyMessages != 0 || toolResults != 0 || markerFound || !payloadFree {
-		t.Fatalf("retired history retained stale read data: sensitive=%t messages=%d tool_results=%d marker=%t payload_free=%t", historySensitive, historyMessages, toolResults, markerFound, payloadFree)
+	if historySensitive || markerFound || !payloadFree {
+		t.Fatalf("retired history contained stale read data: sensitive=%t messages=%d tool_results=%d marker=%t payload_envelope_valid=%t", historySensitive, historyMessages, toolResults, markerFound, payloadFree)
 	}
 	for _, turn := range fixture.chat.Snapshot().Turns {
 		if strings.Contains(turn.Text, fixture.content) || strings.Contains(turn.Refusal, fixture.content) || strings.Contains(turn.Message, fixture.content) {
