@@ -431,6 +431,29 @@ func TestModernDescriptorBindUsesFreshPathBackedDescriptions(t *testing.T) {
 	_ = second.Close()
 }
 
+func TestRunningExecutableCanBeReopenedForDescriptorBind(t *testing.T) {
+	source, err := os.Open("/proc/self/exe")
+	if err != nil {
+		t.Fatalf("running test executable could not be opened: %v", err)
+	}
+	defer source.Close()
+	opened, err := openWorkerMountDescriptor(source, BindModeDescriptor)
+	if err != nil {
+		t.Fatalf("pinned running executable could not be reopened for descriptor binding: %v", err)
+	}
+	defer opened.Close()
+	var sourceStat, openedStat unix.Stat_t
+	if err := unix.Fstat(int(source.Fd()), &sourceStat); err != nil {
+		t.Fatal("pinned executable identity could not be read")
+	}
+	if err := unix.Fstat(int(opened.Fd()), &openedStat); err != nil {
+		t.Fatal("reopened executable identity could not be read")
+	}
+	if sourceStat.Dev != openedStat.Dev || sourceStat.Ino != openedStat.Ino {
+		t.Fatal("descriptor bind reopen did not preserve the running executable identity")
+	}
+}
+
 func TestBubblewrapArgumentsSelectModernMountAndSeparateVerifierFD(t *testing.T) {
 	modern := strings.Join(EffectiveBubblewrapArguments(BindModeDescriptor), " ")
 	if !strings.Contains(modern, "--ro-bind-fd 5 /worker") || strings.Contains(modern, "/proc/self/fd") {
