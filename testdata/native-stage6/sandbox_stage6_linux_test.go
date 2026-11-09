@@ -466,8 +466,8 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 	}
 	helper := exec.Command(os.Args[0], "-test.run=^TestStage6ParentDeathCoordinatorHelper$")
 	helper.ExtraFiles = []*os.File{writePipe}
-	helper.Stderr = &stage6BoundedBuffer{max: 4096}
-	helper.Stdout = io.Discard
+	helperOutput := &stage6BoundedBuffer{max: 4096}
+	helper.Stdout, helper.Stderr = helperOutput, helperOutput
 	helper.Env = []string{
 		"KOMPOSYN_PARENT_DEATH_HELPER=1",
 		"KOMPOSYN_PARENT_DEATH_BWRAP=" + backendPath,

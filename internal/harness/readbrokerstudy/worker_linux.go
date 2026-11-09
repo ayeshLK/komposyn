@@ -486,7 +486,10 @@ func openWorkerMountDescriptor(source *os.File, mode BindMode) (*os.File, error)
 	if mode == BindModeFileSnapshot {
 		return openSealedWorkerSnapshot(source)
 	}
-	if mode != BindModeDescriptor || !descriptorBindSourcePathCompatible(source) {
+	if mode != BindModeDescriptor {
+		return nil, errors.New("worker descriptor bind mode is unavailable")
+	}
+	if !descriptorBindSourcePathCompatible(source) {
 		return nil, errors.New("descriptor-bind worker source has no stable host pathname")
 	}
 	var expected unix.Stat_t
@@ -496,7 +499,7 @@ func openWorkerMountDescriptor(source *os.File, mode BindMode) (*os.File, error)
 	}
 	fd, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", source.Fd()), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, errors.New("fresh descriptor-bind worker source could not be opened")
+		return nil, fmt.Errorf("fresh descriptor-bind worker source could not be opened (%s)", safeSystemError(err))
 	}
 	file := os.NewFile(uintptr(fd), "readbroker-worker-mount-source")
 	if file == nil {
@@ -515,6 +518,16 @@ func openWorkerMountDescriptor(source *os.File, mode BindMode) (*os.File, error)
 		return nil, errors.New("fresh descriptor-bind source is not at offset zero")
 	}
 	return file, nil
+}
+
+// safeSystemError reports only a fixed errno description, never the path text
+// carried by os.PathError or another host-specific wrapper.
+func safeSystemError(err error) string {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno.Error()
+	}
+	return "system call failed"
 }
 
 // openSealedWorkerSnapshot returns a new read-only open-file description at
@@ -754,14 +767,14 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	if err != nil {
 		_ = parentSocket.Close()
 		_ = childSocket.Close()
-		return nil, fmt.Errorf("%w: worker mount snapshot could not be reopened", ErrUnavailable)
+		return nil, fmt.Errorf("%w: worker mount snapshot could not be reopened: %s", ErrUnavailable, err.Error())
 	}
 	defer mountFile.Close()
 	verificationFile, err := openWorkerMountDescriptor(l.workerFile, l.capability.BindMode)
 	if err != nil {
 		_ = parentSocket.Close()
 		_ = childSocket.Close()
-		return nil, fmt.Errorf("%w: worker verification snapshot could not be reopened", ErrUnavailable)
+		return nil, fmt.Errorf("%w: worker verification snapshot could not be reopened: %s", ErrUnavailable, err.Error())
 	}
 	defer verificationFile.Close()
 	watchdog := time.Duration(workerDeadline)

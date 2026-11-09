@@ -29,6 +29,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -380,6 +381,17 @@ func TestModernDescriptorModeRequiresResolvableSourceAndFallsBackToDataCopy(t *t
 	}
 	if mode, err := selectWorkerBindMode(modernWithoutCopy, snapshot); err == nil || mode != "" {
 		t.Fatalf("unresolvable memfd source did not fail closed: mode=%q err=%v", mode, err)
+	}
+}
+
+func TestSafeSystemErrorOmitsPathText(t *testing.T) {
+	err := &os.PathError{Op: "open", Path: "/tmp/synthetic-private-path", Err: syscall.EACCES}
+	got := safeSystemError(err)
+	if got != syscall.EACCES.Error() || strings.Contains(got, "/tmp/") {
+		t.Fatalf("safe system error=%q, want errno only", got)
+	}
+	if got := safeSystemError(errors.New("host-specific path diagnostic")); got != "system call failed" {
+		t.Fatalf("unknown system error=%q, want generic classification", got)
 	}
 }
 
