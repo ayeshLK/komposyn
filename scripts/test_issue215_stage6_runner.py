@@ -34,6 +34,12 @@ SPEC.loader.exec_module(RUNNER)
 
 
 class Stage6RunnerTests(unittest.TestCase):
+    def test_stage6_build_strips_non_runtime_sections(self):
+        command = RUNNER.stage6_build_command("/trusted/go", "/tmp/overlay.json", "/tmp/study.test")
+
+        self.assertIn("-ldflags=-s -w", command)
+        self.assertEqual(command[-1], "./internal/harness/sandbox")
+
     def test_summary_keeps_synthetic_and_native_evidence_distinct(self):
         report = {
             "overall_status": "native_unavailable",

@@ -121,6 +121,25 @@ def build_go_environment(work, cache_dir, module_cache):
     }
 
 
+def stage6_build_command(go, overlay_path, executable):
+    # The fixed worker snapshot is deliberately capped at 7 MiB. Go's test
+    # binary exceeds that cap when DWARF and the ELF symbol table are retained;
+    # stripping those non-runtime sections keeps this research fixture within
+    # the existing bound without increasing the accepted worker image size.
+    return [
+        go,
+        "test",
+        "-c",
+        "-buildvcs=false",
+        "-tags=komposyn_stage6_study",
+        "-overlay=" + str(overlay_path),
+        "-ldflags=-s -w",
+        "-o",
+        str(executable),
+        "./internal/harness/sandbox",
+    ]
+
+
 def backend_metadata(path):
     metadata = {"path": path, "lstat_status": "unavailable"}
     try:
@@ -322,11 +341,12 @@ def main():
         os.chmod(overlay_path, 0o600)
         manifest["source"]["overlay_mapping_sha256"] = sha256_file(overlay_path)
         executable = build_dir / "stage6-worker.test"
-        build_command = [go, "test", "-c", "-buildvcs=false", "-tags=komposyn_stage6_study", "-overlay=" + str(overlay_path), "-o", str(executable), "./internal/harness/sandbox"]
-        manifest["build"] = {"status": "running", "command_template": ["go", "test", "-c", "-buildvcs=false", "-tags=komposyn_stage6_study", "-overlay=<temporary overlay>", "-o <temporary binary>", "./internal/harness/sandbox"], "cgo_enabled": "0", "timeout_seconds": BUILD_TIMEOUT, "output_limit_bytes_per_stream": MAX_LOG_BYTES}
+        build_command = stage6_build_command(go, overlay_path, executable)
+        manifest["build"] = {"status": "running", "command_template": ["go", "test", "-c", "-buildvcs=false", "-tags=komposyn_stage6_study", "-overlay=<temporary overlay>", "-ldflags=-s -w", "-o <temporary binary>", "./internal/harness/sandbox"], "cgo_enabled": "0", "timeout_seconds": BUILD_TIMEOUT, "output_limit_bytes_per_stream": MAX_LOG_BYTES}
         build = bounded_capture(run_capture, isolated_environment_command(env, build_command), BUILD_TIMEOUT, output / "build.stdout.log", output / "build.stderr.log", source_dir)
         manifest["build"].update(build)
         manifest["build"]["binary_sha256"] = sha256_file(executable) if executable.exists() else None
+        manifest["build"]["binary_size_bytes"] = executable.stat().st_size if executable.exists() else None
         manifest["build"]["status"] = "built" if build.get("exit_code") == 0 and executable.exists() else ("timeout" if build.get("timed_out") else "failed")
         if manifest["build"]["status"] != "built":
             manifest["classification"] = "build_failed_or_timed_out"
