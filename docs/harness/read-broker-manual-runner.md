@@ -21,8 +21,15 @@ then identifies exactly which scenarios were available.
   coreutils/findutils (`tar`, `sha256sum`, `stat`, `date`, `find`, `sort`,
   `xargs`), and Go 1.26.10 or newer.
 - A system-installed Bubblewrap executable at an explicit absolute path. The
-  default is `/usr/bin/bwrap`. Bubblewrap 0.9.0 is supported by feature
-  detection in the merged study; a newer version is not required.
+  default is `/usr/bin/bwrap`. The merged study implements a feature-detected
+  Bubblewrap 0.9.0 compatibility path using `--perms` plus `--ro-bind-data` and
+  a bounded sealed executable snapshot when `--ro-bind-fd` is unavailable. A
+  version string alone does not select that path. This is implementation
+  compatibility, not a product minimum or native enforcement acceptance: no
+  successful integrated Stage 6 run has yet exercised either executable
+  construction mode on an eligible trusted backend. A newer Bubblewrap is not
+  required by the compatibility code, but the full trust, feature and namespace
+  checks still have to pass; unsupported hosts refuse without fallback.
 - The installed Bubblewrap must satisfy the study's existing root-owned,
   non-writable executable trust check, capability probes, and required
   namespace setup. The runner does not weaken those checks, change host
