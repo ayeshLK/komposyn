@@ -4,14 +4,46 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
-## Unreleased
-
-### Bug Fixes
-
-* accept Claude `fallback_credit` usage metadata and automatically recover
-  previously skipped events from unchanged transcripts
-
 ## [0.14.0](https://github.com/ayeshLK/komposyn/compare/v0.13.1...v0.14.0) (2026-11-10)
+
+
+### Experimental release highlights
+
+This release adds conversation-local plans, clarification, and temporary tool
+permissions on OpenAI API-key Responses and Anthropic API-key Messages routes.
+Continue with ChatGPT remains a separate, text-only authorization route;
+discovered models do not guarantee chat or tool compatibility. Terminal updates
+include multiline draft paste, transcript selection/copy, and responsive usage
+layouts.
+
+Linux exact-file reads require trusted Bubblewrap inspection, an explicit
+lookup root, and once-only approval naming the exact target and provider/model/
+profile destination. The worker is bounded to 64 KiB; unsafe, protected,
+truncated, invalid-text, canceled, and stale results are refused or withheld.
+Unregistered file contents may be sensitive and approved contents may recur in
+the valid conversation. Concurrent renames do not preserve strict live pathname
+containment. Native evidence is limited to recorded Linux amd64/Bubblewrap 0.9.0
+profiles; it does not establish cross-platform filesystem enforcement.
+
+**Live OpenAI API-key, Anthropic API-key, and ChatGPT login/inference validation
+is pending until after publication.** Automated fixture results do not verify
+account eligibility, model access, or live service behavior. Authorized account
+operators will validate the published binaries separately.
+
+This is also a Token Logger core release: additive Codex recovery preview,
+transactional apply, and committed-history APIs use SQLite schema **19**.
+Opening a schema-18 database migrates it transactionally after a verified online
+backup; no automatic down-migration exists. Retain that backup and do not use
+an older core against the upgraded database. Event schema and standalone
+protocol-v1 semantics remain unchanged. `komposyn-lg` stays independently
+versioned and is not distributed here.
+
+Chat state and tool permissions remain in memory. Credentials persist as
+plaintext under private file permissions/ACLs. Mutation, shell execution,
+web/image tools, persistent conversations/tasks, MCP, and general plugin loading
+remain unavailable. See the [five-minute walkthrough](https://github.com/ayeshLK/komposyn/blob/v0.14.0/docs/harness/first-use.md)
+and [release overview](https://github.com/ayeshLK/komposyn/blob/v0.14.0/docs/harness/next-release-overview.md)
+for setup, capability limits, and sanitized feedback/private security routes.
 
 
 ### Features
