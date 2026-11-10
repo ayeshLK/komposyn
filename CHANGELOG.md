@@ -11,6 +11,43 @@ publication.
 * accept Claude `fallback_credit` usage metadata and automatically recover
   previously skipped events from unchanged transcripts
 
+## [0.14.0](https://github.com/ayeshLK/komposyn/compare/v0.13.1...v0.14.0) (2026-11-10)
+
+
+### Features
+
+* add provider tool protocol support ([#204](https://github.com/ayeshLK/komposyn/issues/204)) ([9e431c9](https://github.com/ayeshLK/komposyn/commit/9e431c9b0331c783f53101f7d78b852b3e682748))
+* **harness:** add bounded tool runtime loop ([#206](https://github.com/ayeshLK/komposyn/issues/206)) ([6f6425d](https://github.com/ayeshLK/komposyn/commit/6f6425df44503109964ecb5053a2bb8666b55e75))
+* **harness:** add checked read authority lifecycle ([#247](https://github.com/ayeshLK/komposyn/issues/247)) ([5595546](https://github.com/ayeshLK/komposyn/commit/5595546c10b2c8228e31b09cd498cedd44904e2e))
+* **harness:** add conversation-local plan and input tools ([#211](https://github.com/ayeshLK/komposyn/issues/211)) ([67da3a1](https://github.com/ayeshLK/komposyn/commit/67da3a13f8fb5c8221ef8bfdb2a0c8ac6ac3a048))
+* **harness:** add filesystem enforcement foundation ([#212](https://github.com/ayeshLK/komposyn/issues/212)) ([856beb9](https://github.com/ayeshLK/komposyn/commit/856beb9f5e90dfb57ec10278126495edf3ec09a3))
+* **harness:** add in-memory filesystem root lifecycle ([#246](https://github.com/ayeshLK/komposyn/issues/246)) ([9f1391d](https://github.com/ayeshLK/komposyn/commit/9f1391dc3f74ec959cf10885c32b52095dd98b16))
+* **harness:** add retained read admission barriers ([#248](https://github.com/ayeshLK/komposyn/issues/248)) ([4a5c389](https://github.com/ayeshLK/komposyn/commit/4a5c389295c0a830af46df6aee1f39982051a786))
+* **harness:** add tool approval and permissions UI ([#210](https://github.com/ayeshLK/komposyn/issues/210)) ([e42b186](https://github.com/ayeshLK/komposyn/commit/e42b186f114d03a49d83d8e4e868584a763c90a0))
+* **harness:** add tool authorization foundation ([#202](https://github.com/ayeshLK/komposyn/issues/202)) ([acbe54c](https://github.com/ayeshLK/komposyn/commit/acbe54c6c81af456756d14c3235c3d0aaafd1496))
+* **harness:** enable approved exact-file reads ([#264](https://github.com/ayeshLK/komposyn/issues/264)) ([f629cc8](https://github.com/ayeshLK/komposyn/commit/f629cc87ce4bd9344299257b51c70877e7c29d03))
+* **readbrokerstudy:** support Bubblewrap 0.9 snapshots ([#221](https://github.com/ayeshLK/komposyn/issues/221)) ([5fb44dc](https://github.com/ayeshLK/komposyn/commit/5fb44dc7e0c161d6010628eb4017d5c88b33e097))
+* **recovery:** add bounded Codex preview ([#208](https://github.com/ayeshLK/komposyn/issues/208)) ([607b8a2](https://github.com/ayeshLK/komposyn/commit/607b8a20391f998c2769b9fbf332ff7f3bfb20d1))
+* **recovery:** apply reviewed Codex plans transactionally ([#209](https://github.com/ayeshLK/komposyn/issues/209)) ([924c9d4](https://github.com/ayeshLK/komposyn/commit/924c9d499f776366e8dfe89cf81480bfe358be57))
+* **recovery:** inspect committed allocation history ([#214](https://github.com/ayeshLK/komposyn/issues/214)) ([c6d60e4](https://github.com/ayeshLK/komposyn/commit/c6d60e4522581a025fb7708c8288d170f0af8dbe))
+* **research:** prototype SQLite writable object barrier ([#239](https://github.com/ayeshLK/komposyn/issues/239)) ([4bb13c6](https://github.com/ayeshLK/komposyn/commit/4bb13c6e98a956b068268adc9bbc78fb9832ecdf))
+* **sandbox-study:** support verified Bubblewrap compatibility ([#220](https://github.com/ayeshLK/komposyn/issues/220)) ([c95affd](https://github.com/ayeshLK/komposyn/commit/c95affd3ba96d7fa294266dad312426f3d5374ac))
+* **storage:** add effective recovery allocations ([#207](https://github.com/ayeshLK/komposyn/issues/207)) ([b3dbc7f](https://github.com/ayeshLK/komposyn/commit/b3dbc7f0eccead397444f6ce1d094ddfaf55d06c))
+
+
+### Bug Fixes
+
+* **codex:** accept optional reasoning metadata ([#203](https://github.com/ayeshLK/komposyn/issues/203)) ([370892c](https://github.com/ayeshLK/komposyn/commit/370892cf7af3745d9992e22e66d07b001cd9101c))
+* **codex:** ignore token counts without usage info ([#201](https://github.com/ayeshLK/komposyn/issues/201)) ([e3fbf99](https://github.com/ayeshLK/komposyn/commit/e3fbf998efa355253a9d29fa94df66a7ab05fae7))
+* **harness:** classify real-store read controls ([#234](https://github.com/ayeshLK/komposyn/issues/234)) ([2eb062a](https://github.com/ayeshLK/komposyn/commit/2eb062a524701bb8fcfa1dbe6d0d8a81eae8e28d))
+* **harness:** classify revoked read continuation as interrupted ([#266](https://github.com/ayeshLK/komposyn/issues/266)) ([83d5a47](https://github.com/ayeshLK/komposyn/commit/83d5a475c13ec6e5bfb427d2eadcefb70a40174e))
+* **harness:** fit Stage 6 binary within worker bound ([#262](https://github.com/ayeshLK/komposyn/issues/262)) ([9a36a76](https://github.com/ayeshLK/komposyn/commit/9a36a764a6f3d49e9aad3d1c661ee061ca5af2e5))
+* **readbrokerstudy:** address native actor review findings ([13e04dd](https://github.com/ayeshLK/komposyn/commit/13e04ddd4ee68991ebc31cff8522d52b4b990c90))
+* **readbrokerstudy:** bound fixture session cleanup ([770ee54](https://github.com/ayeshLK/komposyn/commit/770ee549f12dbb4f959a6de02ceda2a378d3ec69))
+* **readbrokerstudy:** omit unavailable generation evidence ([00dc9b4](https://github.com/ayeshLK/komposyn/commit/00dc9b488f5272b4ca867e3b28fa2611fcd8e6ef))
+* **readbrokerstudy:** refuse reads under mutable protected locations ([#226](https://github.com/ayeshLK/komposyn/issues/226)) ([d2686a8](https://github.com/ayeshLK/komposyn/commit/d2686a80d406c42fbb1e6e7a4d10e05e2c4005e1))
+* **readbrokerstudy:** repair native baseline failures ([#223](https://github.com/ayeshLK/komposyn/issues/223)) ([c5c6297](https://github.com/ayeshLK/komposyn/commit/c5c629738371c969b0c575259dff4a1311988a68))
+
 ## [0.13.1](https://github.com/ayeshLK/komposyn/compare/v0.13.0...v0.13.1) (2026-10-31)
 
 
