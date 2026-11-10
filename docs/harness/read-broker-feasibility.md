@@ -2,11 +2,11 @@
 
 The `cmd/read-broker-study` command remains isolated research infrastructure
 and registers no filesystem tools. Its fixed Linux broker, worker and
-coordinator are now composed by the experimental chat's host service for
-auth/settings lifecycle protection and fail-closed capability admission. The
-chat never releases a target descriptor: generic reads remain blocked by the
-unknown-root-data gate. Provider-source and Token Logger owner inventories
-remain absent. See [composition admission and sandbox service](composition-admission-sandbox-service.md)
+coordinator also back the conditional `read_file` composition in open PR #264;
+that tool requires a trusted host, a selected root, a supported provider route,
+and explicit once approval. This research command itself remains separate from
+the model-facing tool registry. Provider-source and Token Logger owner
+inventories remain absent. See [composition admission and sandbox service](composition-admission-sandbox-service.md)
 and [protected owner integration](read-broker-owner-integration.md).
 The [owner inventory and admission contract](read-broker-owner-inventory.md)
 audits the store/discovery lifecycles and describes the fail-closed synthetic
@@ -19,7 +19,11 @@ The follow-up native acceptance scenarios for actual auth/settings store calls
 through the study's live Bubblewrap worker are defined in
 [real-store native acceptance](read-broker-real-store-native-acceptance.md).
 Their results are not inferred from the older synthetic `fixtureOwnerWriter`
-cases or the injected-session store tests.
+cases or the injected-session store tests. Prior native runs cover the Stage 6
+study image and its earlier 7 MiB image/8 MiB root limits; PR #264 increases
+those bounds to 14 MiB/16 MiB for the release-shaped chat executable. The new
+release-image tests cover bounded snapshot and descriptor-source construction,
+not a native Bubblewrap launch of that larger image.
 
 ## Ownership and protocol
 
