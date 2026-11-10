@@ -1,7 +1,100 @@
 # Experimental release validation record — #269
 
-Preparation date: 2026-11-10. Publication is **pending**. This record does not
-authorize workflow dispatch, merging, tagging, account login, or inference.
+Prepared on 2026-11-10; [v0.14.0](https://github.com/ayeshLK/komposyn/releases/tag/v0.14.0)
+was published at **2026-11-10T18:22:01Z**. Published assets were independently
+verified on 2026-11-11 (Asia/Colombo). Live provider validation remains
+**unverified**, tracked in [#272](https://github.com/ayeshLK/komposyn/issues/272)
+with @ayeshLK coordinating authorized account operators. This record does not
+authorize account login, credential access, or inference.
+
+## Published release evidence
+
+| Stage | Exact evidence |
+| --- | --- |
+| Preparation | [PR #270](https://github.com/ayeshLK/komposyn/pull/270), merged as `da80cc28995a01a9b46226aa16850a914911452e`; [preparation CI](https://github.com/ayeshLK/komposyn/actions/runs/42866851173) and security passed at reviewed head `2339bba` |
+| Release Please proposal | [Run 42868227358](https://github.com/ayeshLK/komposyn/actions/runs/42868227358) proposed repository-wide 0.14.0; [PR #271](https://github.com/ayeshLK/komposyn/pull/271) reviewed version/changelog/highlights and merged as `46f84ea5923b7bb04b3b530f57cec46d7c291595` |
+| Immutable source tag/draft | [Release Please run 42869893558](https://github.com/ayeshLK/komposyn/actions/runs/42869893558) created `v0.14.0` at that exact merge commit; no manual tag was created or moved |
+| Exact tagged commit | [CI 42869813491](https://github.com/ayeshLK/komposyn/actions/runs/42869813491) and [security 42869813490](https://github.com/ayeshLK/komposyn/actions/runs/42869813490) passed, including race, three OS suites, public standalone CLI compatibility and all six native candidate targets |
+| Publication go/no-go and execution | Maintainer @ayeshLK explicitly dispatched [binary workflow 42871823003](https://github.com/ayeshLK/komposyn/actions/runs/42871823003) with source commit `46f84ea`; all jobs succeeded before automatic publication |
+| Published identity | `v0.14.0`, commit `46f84ea5923b7bb04b3b530f57cec46d7c291595`; latest-release metadata resolves to this version; six archives plus manifest and signature bundle are present |
+
+The full `v0.13.1..v0.14.0` delta is 221 files, 64,708 insertions and
+1,097 deletions. It includes the implementation delta reviewed below, release
+preparation documentation, changelog and version manifest. The tag has the same
+Git tree as tested release-PR head `3671fba`. Comparing accepted native-read
+baseline `91efabd` with the tag finds **no Go source, dependency, script or
+workflow changes**; native evidence applicability and its limitations remain
+as recorded below. This does not convert unavailable native cases into passes.
+
+### Signed native installation matrix
+
+Every row passed both native build/smoke and real signed installation with
+Cosign v2.4.3 in publication workflow 42871823003. The installation scripts
+check first install, reinstall, replacement, version/commit/target metadata,
+help, isolated configuration, uninstall, auth/settings content and access
+protections, and coexistence with `komposyn-lg`.
+
+| Target | Native build/smoke job | Signed installation job |
+| --- | --- | --- |
+| Linux amd64 | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130027052691) | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130030506506) |
+| Linux arm64 | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130027053154) | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130030506561) |
+| macOS amd64 | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130027053125) | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130030507291) |
+| macOS arm64 | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130027052728) | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130030506576) |
+| Windows amd64 | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130027052760) | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130030507176) |
+| Windows arm64 | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130027052706) | [Passed](https://github.com/ayeshLK/komposyn/actions/runs/42871823003/job/130030506716) |
+
+### Independent published-asset verification
+
+All eight assets were downloaded from the published release. Local Cosign
+v3.1.3 returned `Verified OK` for the bundle with the exact required identity
+and issuer; `sha256sum --check checksums.txt` verified all six archives.
+The publication jobs above separately used pinned Cosign v2.4.3. A read-only
+local TUF-cache failure was resolved by selecting a writable cache, without
+changing trust roots, signer identity, issuer, or verification requirements.
+
+```sh
+gh release download v0.14.0 --repo ayeshLK/komposyn --dir /tmp/komposyn-269-published
+cd /tmp/komposyn-269-published
+TUF_ROOT=/tmp/komposyn-269-tuf cosign verify-blob checksums.txt \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity 'https://github.com/ayeshLK/komposyn/.github/workflows/release.yml@refs/heads/master' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+sha256sum --check checksums.txt
+```
+
+| Published asset | SHA-256 |
+| --- | --- |
+| `checksums.txt` | `2ed73661fae96d696f25f45fb3d680fe38713a71ab25a3b0a8b53433d7e969e4` |
+| `checksums.txt.sigstore.json` | `c5769190a32f259a2865f5c2c1f8edcacca22e7425ac4354cf949e050980f55b` |
+| `komposyn_0.14.0_darwin_amd64.tar.gz` | `f99cf326648b89fe7466d70e6bd6703dd1c5c96a84327c8df9a485d8f58cf71a` |
+| `komposyn_0.14.0_darwin_arm64.tar.gz` | `a21086da96bbf80765aef923cc9d28083be596982c317948a1293e365230f227` |
+| `komposyn_0.14.0_linux_amd64.tar.gz` | `eea9a8112a565fe027555621d443145885671eb0b700df61c0a4b389248ada49` |
+| `komposyn_0.14.0_linux_arm64.tar.gz` | `f460deab49873bd81a4fd0c99caa248ffb51661e1ecab4d07042850753c627ab` |
+| `komposyn_0.14.0_windows_amd64.zip` | `f6ad55e5d8c99d82e94dfe3cbda0896d46c3c62b674517fec3ad0dd6f1258788` |
+| `komposyn_0.14.0_windows_arm64.zip` | `bda8a02dd7cf78a6818f9288891913110ac9daba3bb7613022258df07245918b` |
+
+The additional local Linux amd64 run used the published archives and real
+signature verifier:
+
+```sh
+TUF_ROOT=/tmp/komposyn-269-tuf bash scripts/test-release-install-unix.sh \
+  --version 0.14.0 --commit 46f84ea5923b7bb04b3b530f57cec46d7c291595 \
+  --artifacts-dir /tmp/komposyn-269-published
+```
+
+The original fixture failed twice with `ETXTBSY` at its in-place write of a
+synthetic previous executable, after successful first install and reinstall.
+Direct CLI and reduced staging controls did not reproduce it. The fixture now
+seeds that prior file through a fresh inode and rename, avoiding any dependency
+on writing a just-executed inode. The full signed install/reinstall/replacement/
+uninstall and preservation checks then passed. No installer or released binary
+was changed, and no runtime cleanup defect is claimed fixed; the cause of the
+local write-denial was not established. The six hosted gate results above
+used the original released fixture and remain separate evidence.
+
+Logs are retained locally under `/tmp/komposyn-269-evidence/`; durable evidence
+is the exact workflow/job links, release identities and digests recorded here.
+The preparation evidence below retains its original revision and test scope.
 
 ## Candidate and scope
 
@@ -12,9 +105,9 @@ fresh signature verification.
 
 Implementation candidate: remote/local master
 `a3774cf99ca6478057310a02267ca48eccd68069`. Preparation PR: [#270](https://github.com/ayeshLK/komposyn/pull/270).
-This preparation changes Markdown only. Its eventual reviewed merge and Release Please commit must be recorded
-before publication, with final CI attached to that revision. Do not label a
-dirty worktree or the implementation baseline as the final release commit.
+The preparation changed Markdown only. Its reviewed merge, Release Please
+commit and final CI are recorded above. The implementation baseline and dirty
+worktree were not labeled as the final release commit.
 
 Delta review commands:
 
@@ -25,7 +118,8 @@ git diff v0.13.1 a3774cf99ca6478057310a02267ca48eccd68069 -- go.mod go.sum
 git diff v0.13.1 a3774cf99ca6478057310a02267ca48eccd68069 -- plugins/library/token-logger
 ```
 
-The complete delta contains 213 files, 63,981 insertions and 1,058 deletions.
+The implementation delta at this preparation baseline contained 213 files,
+63,981 insertions and 1,058 deletions.
 It includes conversation tools and provider tool protocols; runtime approval,
 permissions and retained-read admission/publication; auth/settings owner
 protection; terminal clipboard/paste/selection; filesystem and sandbox
@@ -94,8 +188,8 @@ the CI run links and candidate identifiers. The implementation baseline's
 passed all three OS tests, race, vulnerability scanning, collector baseline,
 standalone CLI compatibility, and six native candidate release checks.
 [Go security analysis](https://github.com/ayeshLK/komposyn/actions/runs/42847681205)
-also passed. These checks identify the implementation baseline; the final
-preparation/release revision still needs its own required CI.
+also passed. These checks identify the implementation baseline; final preparation and
+tagged-release CI are recorded separately above.
 
 ## Offline acceptance map
 
@@ -168,31 +262,31 @@ these reports as a permanent pass.
 
 The maintainer/release operator owns normal review and merging, Release Please
 dispatch and version/changelog review, source-tag resolution, and final
-publication go/no-go. Record the preparation PR, final CI, Release Please PR,
-tag/commit, binary workflow run, signed manifest digest, six asset digests and
-successful native installer results here before marking publication complete.
+publication go/no-go. Those completed steps and exact signed-artifact evidence
+are recorded above.
 The binary workflow publishes automatically after passing its gates; permission
 to prepare this record does not dispatch it. Same-tag draft recovery remains
 required on failure. Follow [release verification](../release-verification.md).
 
 | Artifact gate | Current evidence |
 | --- | --- |
-| Six native candidate builds/help/config checks | Implementation baseline CI passed; final revision CI pending |
-| Signed release archives and checksum bundle | Next release not built or published |
-| First install/reinstall/replacement/metadata/uninstall | Required six-target signed publication workflow pending |
-| Configuration/data and `komposyn-lg` preservation | Existing fixture/CI coverage; exact signed-release lifecycle pending |
-| Published assets and signature verification | Pending publication; do not infer from source tags or candidate archives |
+| Six native candidate builds/help/config checks | Passed on the exact tagged commit and repeated in publication |
+| Signed release archives and checksum bundle | All six archives, manifest and signature bundle published and verified |
+| First install/reinstall/replacement/metadata/uninstall | All six native signed lifecycle jobs passed |
+| Configuration/data and `komposyn-lg` preservation | Signed lifecycle jobs passed content/access protection and coexistence checks |
+| Published assets and signature verification | Published set downloaded; expected signature identity/issuer and all digests verified |
 
-Live checks are deferred by agreement. The maintainer coordinates an authorized
+Live checks remain unverified by agreement and are owned by @ayeshLK in
+[#272](https://github.com/ayeshLK/komposyn/issues/272). The maintainer coordinates an authorized
 account operator after publication and records the exact released binary,
 version/commit, platform, auth route, date, sanitized result and follow-up link.
 No credentials or billable inference are authorized by this document.
 
 | Route | Login/discovery/stream/follow-up/cancel | Tools and synthetic Linux read | Owner |
 | --- | --- | --- | --- |
-| OpenAI API key | Unverified; await published binary and authorized account | Unverified | Maintainer / authorized account operator |
-| Anthropic API key | Unverified; await published binary and authorized account | Unverified | Maintainer / authorized account operator |
-| ChatGPT sign-in | Unverified; await published binary and eligible authorized account | Unavailable by design; text only | Maintainer / authorized account operator |
+| OpenAI API key | Unverified; published binary available, await authorized account operator | Unverified | @ayeshLK / authorized account operator (#272) |
+| Anthropic API key | Unverified; published binary available, await authorized account operator | Unverified | @ayeshLK / authorized account operator (#272) |
+| ChatGPT sign-in | Unverified; await eligible authorized account operator | Unavailable by design; text only | @ayeshLK / authorized account operator (#272) |
 
 The original unstripped source-build command produced a 19,308,007-byte
 Linux amd64 image, larger than the 14 MiB worker-image bound. Build instructions

@@ -7,14 +7,11 @@ a script does not verify or install a binary: when run, the installer resolves
 a stable binary release and verifies its signed checksum manifest, archive
 digest, contents, and executable metadata before replacement.
 
-As checked on 2026-11-10, the latest published release is
-[v0.13.1](https://github.com/ayeshLK/komposyn/releases/tag/v0.13.1), with six
-platform archives, `checksums.txt`, and `checksums.txt.sigstore.json`. Current
-source adds conversation tools, permissions, conditional Linux file reads, and
-terminal improvements that await the next release. Latest-stable installation
-currently selects v0.13.1; it does not install unreleased source behavior.
-See the [first-use walkthrough](harness/first-use.md) for the upcoming
-experience and its pending live-provider validation.
+[v0.14.0](https://github.com/ayeshLK/komposyn/releases/tag/v0.14.0) provides six
+platform archives, `checksums.txt`, and `checksums.txt.sigstore.json`. It adds
+conversation tools, permissions, conditional Linux file reads, and terminal
+improvements. Live provider validation remains pending. See the
+[first-use walkthrough](harness/first-use.md) for capabilities and limits.
 
 Before announcing a new version, verify its published release, immutable
 installer source tag, all six archives, signed manifest, and native install
@@ -37,11 +34,11 @@ install does not need `jq`.
 For an immutable installer source, download the script from a version tag.
 The script source version and selected binary version are separate: the tag in
 the URL chooses the installer implementation; `--version` chooses the signed
-binary. This example pins the script to v0.13.1 and leaves the binary version
+binary. This example pins the script to v0.14.0 and leaves the binary version
 unselected so it resolves latest stable when run:
 
 ```sh
-installer_version=v0.13.1
+installer_version=v0.14.0
 installer_dir="$(mktemp -d)"
 curl -fsSLo "$installer_dir/install.sh" \
   "https://raw.githubusercontent.com/ayeshLK/komposyn/${installer_version}/scripts/install.sh"
@@ -58,7 +55,7 @@ bash "$installer_dir/install.sh"
 To select a binary version explicitly:
 
 ```sh
-bash "$installer_dir/install.sh" --version v0.13.1
+bash "$installer_dir/install.sh" --version v0.14.0
 ```
 
 To upgrade, rerun the installer. Omit `--version` for latest stable, or pass
@@ -85,7 +82,7 @@ and a directory containing that target archive, `checksums.txt`, and
 `checksums.txt.sigstore.json`:
 
 ```sh
-bash "$installer_dir/install.sh" --version v0.13.1 \
+bash "$installer_dir/install.sh" --version v0.14.0 \
   --artifacts-dir "$HOME/komposyn-release-artifacts"
 ```
 
@@ -97,7 +94,7 @@ they cannot change the accepted release signer identity.
 Uninstall only the `komposyn` executable and its owned install artifacts:
 
 ```sh
-uninstaller_version=v0.13.1
+uninstaller_version=v0.14.0
 uninstaller_dir="$(mktemp -d)"
 curl -fsSLo "$uninstaller_dir/uninstall.sh" \
   "https://raw.githubusercontent.com/ayeshLK/komposyn/${uninstaller_version}/scripts/uninstall.sh"
@@ -119,7 +116,7 @@ Download both the installer and its architecture helper from the same
 immutable source tag before running the installer:
 
 ```powershell
-$installerVersion = 'v0.13.1'
+$installerVersion = 'v0.14.0'
 $scriptDir = Join-Path $env:TEMP ('komposyn-installer-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scriptDir -ErrorAction Stop | Out-Null
 $source = "https://raw.githubusercontent.com/ayeshLK/komposyn/$installerVersion/scripts"
@@ -135,7 +132,7 @@ installer:
 try { & (Join-Path $scriptDir 'install.ps1') } finally { Remove-Item -LiteralPath $scriptDir -Recurse -Force -ErrorAction SilentlyContinue }
 ```
 
-The source script is pinned to `v0.13.1`; `-Version` selects the binary
+The source script is pinned to `v0.14.0`; `-Version` selects the binary
 release. Omit `-Version` to resolve the latest stable binary, or pass
 `-Version vX.Y.Z` to pin it. To upgrade, repeat the download and execution
 steps with the installer source tag you want to use; a downloaded script does
@@ -163,7 +160,7 @@ fixed.
 Uninstall with the PowerShell script from that same source tag:
 
 ```powershell
-$uninstallerVersion = 'v0.13.1'
+$uninstallerVersion = 'v0.14.0'
 $uninstallerDir = Join-Path $env:TEMP ('komposyn-uninstaller-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $uninstallerDir -ErrorAction Stop | Out-Null
 try {

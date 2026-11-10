@@ -10,8 +10,8 @@ and JSONL harness transport are maintained in the
 
 - [Five-minute chat walkthrough](harness/first-use.md) — current source capabilities,
   provider/auth/platform limits, permissions, and synthetic file disclosure.
-- [Next release overview](harness/next-release-overview.md) and
-  [validation record](harness/release-validation.md) — review drafts for #269.
+- [v0.14.0 release overview](harness/next-release-overview.md) and
+  [validation record](harness/release-validation.md) — publication evidence and pending live checks for #269.
 
 - [Experimental temporary chat](harness/README.md) — `komposyn` build, `/model`
   workflow, local configuration, provider/UI boundaries, and acceptance status.

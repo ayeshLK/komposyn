@@ -107,7 +107,11 @@ verify_installed_cli
 verify_preserved_state
 "${installer[@]}"
 verify_installed_cli
-printf 'previous experimental executable\n' >"$install_dir/komposyn"
+# Seed a previous executable without requiring an in-place write to the image
+# just executed by the smoke checks. A retained execution reference can keep
+# that inode write-denied even though replacing its pathname is safe.
+printf 'previous experimental executable\n' >"$install_dir/previous-fixture"
+mv "$install_dir/previous-fixture" "$install_dir/komposyn"
 "${installer[@]}"
 verify_installed_cli
 verify_preserved_state

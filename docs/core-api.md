@@ -50,8 +50,7 @@ module and distinguishes it from command policy.
   after `Store.Open`; none of these history calls reads provider files or
   parses private audit JSON. `Store.Open` may have applied migrations or
   synchronized the catalog before any of these methods is called. The history
-  methods are additive in the current source and are not included in the latest
-  published core release, v0.13.1. See
+  methods are additive and included in the v0.14.0 core release. See
   [Codex historical recovery](codex-historical-recovery-v1.md) for exact
   signatures, bounds, evidence semantics and limitations.
 
