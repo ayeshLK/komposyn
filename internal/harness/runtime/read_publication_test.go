@@ -716,8 +716,15 @@ func TestStage5InvalidationWhileSiblingApprovalWaitsWithholdsWholeBatch(t *testi
 	selectFirst(t, chat)
 	selectPublicationRoot(t, chat, host, root)
 	t.Cleanup(chat.Close)
-	done := make(chan Turn, 1)
-	go func() { turn, _ := chat.Send(context.Background(), "inspect both", nil); done <- turn }()
+	type sendResult struct {
+		turn Turn
+		err  error
+	}
+	done := make(chan sendResult, 1)
+	go func() {
+		turn, err := chat.Send(context.Background(), "inspect both", nil)
+		done <- sendResult{turn: turn, err: err}
+	}()
 	select {
 	case <-waitingB:
 	case <-time.After(3 * time.Second):
@@ -730,10 +737,14 @@ func TestStage5InvalidationWhileSiblingApprovalWaitsWithholdsWholeBatch(t *testi
 		t.Fatal(err)
 	}
 	close(releaseB)
+	var result sendResult
 	select {
-	case <-done:
+	case result = <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("invalidated batch did not stop")
+	}
+	if result.err != nil || result.turn.Outcome != provider.OutcomeInterrupted {
+		t.Fatalf("revoked read batch outcome=%s err=%v; want interrupted without a service error", result.turn.Outcome, result.err)
 	}
 	if got := len(fp.requests); got != 1 {
 		t.Fatalf("stale batch dispatched provider request: %d", got)

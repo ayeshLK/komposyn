@@ -23,6 +23,8 @@ import (
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 )
 
+var errReadContinuationInvalidated = errors.New("read continuation was invalidated before provider handoff")
+
 type providerDispatchResult struct {
 	response provider.Result
 	err      error
@@ -126,7 +128,7 @@ func (c *Chat) commitAndDispatch(ctx context.Context, reservation *providerDispa
 	policyRevision, coverageRevision, ok := runtime.readPublicationRevisions(conversationID, captures)
 	if !ok {
 		reservation.Abort()
-		return nil, 0, false, errors.New("read continuation generations are unavailable")
+		return nil, 0, false, errReadContinuationInvalidated
 	}
 	err := runtime.readPublicationGate.WithFilesystemReadPublicationCurrent(ctx, conversationID, root, rootGeneration, policyRevision, coverageRevision, func() error {
 		var commitErr error
