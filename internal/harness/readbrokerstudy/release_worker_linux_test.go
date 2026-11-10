@@ -18,6 +18,7 @@ package readbrokerstudy
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,7 +86,7 @@ func TestReleaseExecutableFitsWorkerImageAndSnapshotBounds(t *testing.T) {
 	}
 }
 
-func TestStage6OverlayCompiles(t *testing.T) {
+func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	root := moduleRoot(t)
 	work := t.TempDir()
 	overlay := filepath.Join(work, "overlay.json")
@@ -101,6 +102,61 @@ func TestStage6OverlayCompiles(t *testing.T) {
 	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOTOOLCHAIN=local")
 	if result, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("compile Stage 6 study overlay: %v\n%s", err, result)
+	}
+
+	reportPath := filepath.Join(work, "stage6-report.json")
+	runCtx, runCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer runCancel()
+	run := exec.CommandContext(runCtx, output,
+		"-test.run=^(TestStage6SyntheticRuntimeReadForwarding|TestStage6ReadRefusedWithoutRootOrBackend|TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission)$",
+		"-test.timeout=75s", "-test.count=1")
+	run.Env = append(os.Environ(),
+		"KOMPOSYN_STAGE6_REPORT="+reportPath,
+		"KOMPOSYN_STAGE6_SOURCE_COMMIT=synthetic-control-regression",
+		"KOMPOSYN_STAGE6_BWRAP="+filepath.Join(work, "intentionally-absent-bubblewrap"),
+	)
+	run.Dir = root
+	if result, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("run non-native Stage 6 runtime controls: %v\n%s", err, result)
+	}
+	reportData, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read Stage 6 control report: %v", err)
+	}
+	var report struct {
+		RunnerVersion string `json:"runner_version"`
+		Kernel        string `json:"kernel"`
+		Cases         []struct {
+			ID           string `json:"case_id"`
+			Status       string `json:"status"`
+			EvidenceKind string `json:"evidence_kind"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(reportData, &report); err != nil {
+		t.Fatalf("decode Stage 6 control report: %v", err)
+	}
+	if report.RunnerVersion != "7" || report.Kernel == "" {
+		t.Fatalf("Stage 6 report metadata runner_version=%q kernel=%q; want runner 7 and a kernel release", report.RunnerVersion, report.Kernel)
+	}
+	want := map[string]bool{
+		"synthetic_once_authority_flow":        false,
+		"read_refused_without_root_or_backend": false,
+		"incomplete_owner_inventory":           false,
+	}
+	for _, item := range report.Cases {
+		if _, required := want[item.ID]; !required {
+			continue
+		}
+		if item.Status != "measured_pass" || item.EvidenceKind != "synthetic-runtime-composition" {
+			t.Errorf("Stage 6 control %s: status=%q evidence=%q, want measured synthetic pass", item.ID, item.Status, item.EvidenceKind)
+			continue
+		}
+		want[item.ID] = true
+	}
+	for id, passed := range want {
+		if !passed {
+			t.Errorf("Stage 6 synthetic runtime control %s is missing or did not pass", id)
+		}
 	}
 }
 

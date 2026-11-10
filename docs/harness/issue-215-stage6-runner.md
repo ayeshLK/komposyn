@@ -1,8 +1,9 @@
 # Issue #215 Stage 6 integrated runner
 
-This runner is an experimental acceptance fixture. It does not register or
-ship `read_file`, does not connect to a real provider, and uses only temporary
-synthetic auth/settings stores and file contents.
+This runner is an experimental acceptance fixture. It uses a test-only
+`read_file` runtime composition, does not validate native launch of the shipped
+`komposyn` command image, and does not connect to a real provider. It uses only
+temporary synthetic auth/settings stores and file contents.
 
 ## Reproduction
 

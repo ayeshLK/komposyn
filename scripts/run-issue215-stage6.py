@@ -245,7 +245,7 @@ def main():
         "report": {"status": "not_produced"},
         "classification": "incomplete",
         "limitations": [
-            "This Stage 6 profile is research-only and does not register read_file in the shipped executable.",
+            "This Stage 6 profile uses a test-only runtime composition and does not validate native launch of the shipped command image or real-provider integration.",
             "Passing selected cases does not establish mutation, shell, provider-source-owner, or aggregate resource-limit acceptance.",
             "A successful process exit is not itself evidence that native enforcement passed.",
         ],
