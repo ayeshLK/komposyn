@@ -1,9 +1,13 @@
 # Issue #215 Stage 6 integrated runner
 
-This runner is an experimental acceptance fixture. It uses a test-only
-`read_file` runtime composition, does not validate native launch of the shipped
-`komposyn` command image, and does not connect to a real provider. It uses only
-temporary synthetic auth/settings stores and file contents.
+This runner is an experimental acceptance fixture and does not connect to a
+real provider. By default, it uses a test-only `read_file` runtime composition
+and the stripped Stage 6 test binary as the worker. The optional
+`--include-shipped-worker` profile also builds the exact source revision's
+`cmd/harness` executable and launches that executable as the native worker
+through the production bootstrap. Both modes use only temporary synthetic
+auth/settings stores and file contents; neither validates the interactive CLI
+or a real provider.
 
 ## Reproduction
 
@@ -44,6 +48,30 @@ mode. This selector is compiled only into the disposable Stage 6 test overlay;
 normal launcher selection and the shipped executable are unchanged. The
 manifest records both the requested mode and the mode actually selected.
 
+To run the Stage 6 runtime/provider fixtures with the source-built shipped
+executable as the sandbox worker, use the sealed snapshot profile:
+
+```sh
+PATH="$go_root/bin:$PATH" python3 -B scripts/run-issue215-stage6.py \
+  --revision "$(git rev-parse HEAD)" \
+  --bwrap /usr/bin/bwrap \
+  --include-shipped-worker \
+  --bind-mode file-snapshot \
+  --output-root /tmp
+```
+
+This option builds `./cmd/harness` from the same clean source archive, records
+its size and SHA-256, and requires the launcher to verify that digest again on
+the sealed snapshot before Bubblewrap receives it. The exact `cmd/harness`
+binary runs its normal `sandbox.WorkerBootstrap` entrypoint inside Bubblewrap.
+The independent Stage 6 coordinator and fake provider remain the test parent;
+the native profile therefore validates the actual command executable as the
+worker, not normal interactive CLI startup or real-provider integration. The
+option forces `file-snapshot`; descriptor mode is not used for this external
+worker-image test. The fixed parent-death helper uses the Stage 6 test binary,
+so `parent_death_cleanup` is explicitly unavailable in this profile rather
+than being attributed to the shipped image.
+
 Confirm the printed version is Go 1.26.10 or newer before proceeding. If
 `go env GOROOT` resolves to an older base installation, set `go_root` to the
 `GOROOT` of an already-installed compatible toolchain. Do not rely on runner
@@ -54,7 +82,9 @@ The runner refuses root, non-Linux hosts, unsupported architectures, relative
 backend paths, dirty checkouts, and a revision other than the current clean
 `HEAD`. It does not edit the checkout. It builds with `CGO_ENABLED=0`,
 `-ldflags=-s -w`, and a separate temporary Go build/module cache, then executes
-the test binary with a finite deadline. The linker flags omit debug and ELF
+the test binary with a finite deadline. With `--include-shipped-worker`, it
+also builds the release-shaped command image with `CGO_ENABLED=0`, `-trimpath`,
+and stripped ELF sections before the test run. The linker flags omit debug and ELF
 symbol sections from this disposable study binary; the test image remains
 statically linked and is authenticated by the existing worker launch checks.
 The Stage 6 runs recorded below predate PR #264's 14 MiB image ceiling and
@@ -93,7 +123,8 @@ The runner prints a private results directory and a `.tar.gz` archive path.
 The archive contains:
 
 - `manifest.json`: source revision/cleanliness, runner and overlay hashes,
-  host/Go/backend metadata, study-binary hash and size, bounded process status,
+  host/Go/backend metadata, study-binary hash and size, optional
+  `cmd/harness` worker-image hash/size/build status, bounded process status,
   and overall classification;
 - `stage6-report.json`: per-case observations from the test binary when
   produced, including bounded, path-redacted worker startup diagnostics and
@@ -187,6 +218,12 @@ cancellation, aggregate cgroup quotas, mutation, shell, provider-source
 lifecycle/positive authorization, non-Linux enforcement, and production
 readiness remain unproven. A host trust refusal means none of the worker-path
 cases ran.
+
+In `--include-shipped-worker` mode, each native-integrated read case uses the
+exact-digest sealed `cmd/harness` image; the report identifies that worker
+image and its digest without recording its temporary path. Parent-death
+cleanup remains unavailable for that mode, and the runner does not claim that
+the complete production CLI process or provider transport was exercised.
 
 Every case is explicitly classified; unavailable native cases are not
 conflated with cases that this runner revision does not implement. The report

@@ -52,6 +52,27 @@ class Stage6RunnerTests(unittest.TestCase):
         self.assertIn("-ldflags=-s -w", command)
         self.assertEqual(command[-1], "./internal/harness/sandbox")
 
+    def test_shipped_worker_build_is_release_shaped_and_commit_pinned(self):
+        command = RUNNER.shipped_worker_build_command("/trusted/go", "/tmp/komposyn", "a" * 40)
+
+        self.assertEqual(command[1], "build")
+        self.assertIn("-trimpath", command)
+        self.assertIn("-buildvcs=false", command)
+        self.assertIn("-s -w -buildid= -X main.cliVersion=0.0.0-native-study -X main.cliCommit=" + "a" * 40, command)
+        self.assertEqual(command[-1], "./cmd/harness")
+
+    def test_shipped_worker_profile_refuses_descriptor_mode(self):
+        process = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "--include-shipped-worker", "--bind-mode", "ro-bind-fd"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(process.returncode, 2)
+        self.assertIn("requires --bind-mode file-snapshot", process.stderr)
+
     def test_summary_keeps_synthetic_and_native_evidence_distinct(self):
         report = {
             "overall_status": "native_unavailable",
@@ -83,6 +104,17 @@ class Stage6RunnerTests(unittest.TestCase):
             summary,
         )
         self.assertIn("worker startup failed: synthetic error", summary)
+
+    def test_summary_records_requested_shipped_worker_image_separately(self):
+        summary = RUNNER.summarize(
+            {"overall_status": "native_unavailable", "worker_image": {"profile": "cmd-harness-worker-image", "size_bytes": 12, "sha256": "abc"}, "cases": [], "limitations": []},
+            {"exit_code": 0},
+            {"exit_code": 3},
+        )
+
+        self.assertIn("Worker image requested", summary)
+        self.assertIn("SHA-256: `abc`", summary)
+        self.assertNotIn("was launched", summary)
 
     def test_backend_metadata_is_read_only_and_hashes_regular_file(self):
         with tempfile.TemporaryDirectory() as directory:

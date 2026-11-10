@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	stdruntime "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -155,6 +156,7 @@ type stage6Report struct {
 	Kernel        string         `json:"kernel"`
 	UID           int            `json:"uid"`
 	Backend       map[string]any `json:"backend"`
+	WorkerImage   map[string]any `json:"worker_image"`
 	LaunchPolicy  map[string]any `json:"launch_policy"`
 	Overall       string         `json:"overall_status"`
 	Cases         []stage6Case   `json:"cases"`
@@ -237,15 +239,31 @@ func newStage6Report() stage6Report {
 		}
 		cases = append(cases, item)
 	}
-	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "7",
-		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
-		Backend: map[string]any{}, LaunchPolicy: map[string]any{}, Cases: cases,
-		Limitations: []string{
+	workerImage := map[string]any{"profile": "stage6-study-test-binary"}
+	limitations := []string{
+		"Native acceptance remains incomplete until every required case is measured on the final integrated profile.",
+		"Provider-source positive authorization/rotation, mutation, shell, aggregate cgroup quotas, and non-Linux enforcement are not established here.",
+	}
+	if digest := os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256"); digest != "" {
+		sizeBytes, _ := strconv.ParseInt(os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SIZE"), 10, 64)
+		workerImage = map[string]any{
+			"profile": "cmd-harness-worker-image", "sha256": digest,
+			"size_bytes": sizeBytes, "bind_mode": "file-snapshot",
+		}
+		limitations = append(limitations,
+			"The native profile launches the exact source-built cmd/harness executable as the worker, while the coordinator and provider fixture remain the Stage 6 test composition.",
+			"Parent-death cleanup is unavailable in cmd/harness worker-image mode because its helper process uses the Stage 6 test binary; the shipped-image worker lifecycle is not claimed.",
+		)
+	} else {
+		limitations = append(limitations,
 			"This Stage 6 profile uses a test-only runtime composition and does not validate native launch of the shipped command image or real-provider integration.",
-			"Native acceptance remains incomplete until every required case is measured on the final integrated profile.",
-			"Provider-source positive authorization/rotation, mutation, shell, aggregate cgroup quotas, and non-Linux enforcement are not established here.",
-		},
+		)
+	}
+	return stage6Report{
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "8",
+		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
+		Backend: map[string]any{}, WorkerImage: workerImage, LaunchPolicy: map[string]any{}, Cases: cases,
+		Limitations: limitations,
 	}
 }
 
@@ -459,6 +477,10 @@ func TestStage6ParentDeathCoordinatorHelper(t *testing.T) {
 
 func TestStage6ParentDeathCleanup(t *testing.T) {
 	stage6Begin("parent_death_cleanup")
+	if os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE") != "" {
+		stage6Skip("parent_death_cleanup", "cmd/harness worker-image mode does not use the test-binary coordinator in its parent-death helper")
+		t.Skip("cmd/harness worker-image mode does not claim shipped-image parent-death behavior")
+	}
 	backendPath := os.Getenv("KOMPOSYN_STAGE6_BWRAP")
 	if backendPath == "" {
 		backendPath = "/usr/bin/bwrap"
@@ -493,7 +515,7 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 			"required_namespaces":            []string{"mount", "user", "pid", "ipc", "uts", "network"},
 			"network":                        "unshared; no network access",
 			"root_mount":                     "private 8 MiB tmpfs",
-			"worker_mount":                   "one fixed worker image, read-only",
+			"worker_mount":                   stage6WorkerMountPolicy(),
 			"worker_environment":             []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"},
 			"inherited_descriptors":          []string{"fd 3: seccomp filter", "fd 4: local protocol socket", "fd 5: consumed worker source", "fd 6: retained worker verification image"},
 			"target_capability":              "one synthetic read-only file descriptor transferred after worker readiness and held without read release",
@@ -1392,7 +1414,16 @@ func newStage6HostService(backendPath string, holdWorker bool) (*Service, error)
 		_ = registry.Close()
 		return nil, err
 	}
-	launcher, err := readbrokerstudy.NewWorkerLauncherForStage6(backendPath, workerPath, stage6RequestedBindMode(), holdWorker)
+	var launcher readbrokerstudy.WorkerLauncher
+	if imagePath := os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE"); imagePath != "" {
+		if stage6RequestedBindMode() != readbrokerstudy.BindModeFileSnapshot {
+			_ = registry.Close()
+			return nil, errors.New("cmd/harness worker-image profile requires file-snapshot mode")
+		}
+		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6Image(backendPath, imagePath, os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256"), holdWorker)
+	} else {
+		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6(backendPath, workerPath, stage6RequestedBindMode(), holdWorker)
+	}
 	if err != nil {
 		_ = registry.Close()
 		return nil, err
@@ -1402,6 +1433,13 @@ func newStage6HostService(backendPath string, holdWorker bool) (*Service, error)
 		return nil, err
 	}
 	return &Service{impl: impl}, nil
+}
+
+func stage6WorkerMountPolicy() string {
+	if os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256") != "" {
+		return "one exact-digest, sealed snapshot of the source-built cmd/harness executable, read-only"
+	}
+	return "one fixed Stage 6 test binary, read-only"
 }
 
 func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool, beforeHandoff func() error) *stage6Fixture {
@@ -1431,7 +1469,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		"required_namespaces":            []string{"mount", "user", "pid", "ipc", "uts", "network"},
 		"network":                        "unshared; no network access",
 		"root_mount":                     "private 8 MiB tmpfs",
-		"worker_mount":                   "one fixed worker image, read-only",
+		"worker_mount":                   stage6WorkerMountPolicy(),
 		"runtime_mounts":                 []string{},
 		"extra_descriptors":              []string{"fd 3: seccomp filter", "fd 4: local protocol socket", "fd 5: worker mount source (consumed by Bubblewrap)", "fd 6: worker verification image (retained through startup)"},
 		"worker_environment":             []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"},
