@@ -49,15 +49,23 @@ contents. The six-clause bounded exact-file disclosure policy is accepted, and
 Stages 1–5 plus the Stage 6 runner/lifecycle implementation are merged.
 Stage 6 has limited trusted-host evidence, but its full native acceptance gate
 remains incomplete. See the [issue #215 evidence and current limitations](https://github.com/ayeshLK/komposyn/issues/215).
-Native read acceptance and a separate enablement review remain pending; generic
-reads remain unavailable and no filesystem tool is registered. `/fs-root`
-selects an in-memory lookup root; selection grants no access. See the
+The focused `read_file` capability is now wired to the retained Linux worker
+path on explicitly supported client-tool routes when the trusted Bubblewrap
+backend and all lifecycle interfaces are available. It reads one exact regular
+file beneath the selected root after a separate explicit once approval naming
+the provider/model/profile. The bytes are sent to that provider and may recur
+in the same valid conversation; approval does not permit a second read. Root
+selection grants no access. Auth/settings protected identities remain denied;
+provider-source reads, unavailable backends, unsupported routes, mutation, and
+shell remain unavailable. Stage 6 native evidence is limited to the recorded
+Linux amd64/Bubblewrap 0.9.0 environment; it is not production-provider or
+cross-platform acceptance. `/fs-root` selects an in-memory lookup root. See the
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 The current stage audit, complete issue-checklist mapping and Stage 6 evidence
 contract are in the [#215 completion tracking plan](issue-215-completion-tracking.md).
-The integrated test-only runner and reproduction steps are described in the
+The integrated native feasibility runner and reproduction steps are described in the
 [Stage 6 runner guide](issue-215-stage6-runner.md).
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
@@ -79,15 +87,17 @@ unknown-data refusal boundary and staged typed-read path are described in the
 [initial sandbox composition design](initial-sandbox-composition.md). The
 auth/settings lifecycle and pre-consumption admission seam are implemented in
 the [composition admission and sandbox service](composition-admission-sandbox-service.md).
-The unknown-data gate remains closed, and filesystem tools remain unavailable.
+Generic filesystem access remains closed; the only exception is the bounded,
+once-approved exact-file path described above.
 The reviewed #243 native service-fixture result, its provenance, and the
 checkout-safe reproduction runner are recorded in
 [composition native acceptance](read-broker-composition-native-acceptance.md)
 and [`scripts/native-acceptance/`](../../scripts/native-acceptance/README.md).
 The accepted unregistered exact-file policy and implementation stages are
 recorded in the [read implementation plan](read-broker-unregistered-read-implementation-plan.md).
-Acceptance is not tool enablement: the generic-read gate remains closed pending
-integrated native evidence and separate review.
+Generic directory and broad filesystem reads remain unavailable. The
+once-approved exact-file operation is the sole registered filesystem
+capability; its changes still require ordinary review before merge.
 
 ## Local configuration
 
@@ -214,11 +224,12 @@ compatibility guarantee this chat needs. Catalog entries therefore have
 Messages requests report unsupported access without automatic fallback.
 Model names are not used to infer capability or context limits. Both adapters
 send plain text, one system instruction, and streaming. On provider/auth routes
-that explicitly support client tools, the executable registers exactly
+that explicitly support client tools, the executable registers
 `update_plan` and `request_user_input` behind centralized approval. OpenAI
 API-key Responses and Anthropic Messages support these tools. OpenAI OAuth and
-unknown routes remain text-only. No filesystem, process, or network tools are
-available. OpenAI
+unknown routes remain text-only. When the trusted Linux read backend is
+available, supported routes may additionally advertise `read_file` as described
+above. No filesystem mutation, process, or network tools are available. OpenAI
 requests set `store: false`; Anthropic requests use Messages. OpenAI API-key
 requests retain the configured output-token bound and encrypted reasoning
 continuation. The ChatGPT plan route follows the current SIWC preview subset:
@@ -365,8 +376,9 @@ does not roll back completed effects or claim to terminate running work.
 dialogs link to it directly. Tool activity shows awaiting approval,
 authorized, running, and finished states, with the typed outcome and
 truncation status. Tool prompts, plans, grants, and activity exist only in
-memory. The two bundled conversation tools are the only available tools;
-filesystem, project mutation, process, web, and image tools remain unavailable.
+memory. The two bundled conversation tools are always available on supported
+routes; `read_file` is the sole conditional host-backed capability. Filesystem
+mutation, process, web, and image tools remain unavailable.
 
 Escape in the approval dialog explicitly cancels the entire active turn. The
 first keyboard event after a dialog appears is consumed to prevent a composer
@@ -441,17 +453,19 @@ Implementation follows the official [Sign in with ChatGPT open-source flow](http
 and [UI/UX guidance](https://developers.openai.com/siwc/ui-ux-guidelines).
 # Filesystem enforcement foundation
 
-KompoSyn does not register model-facing filesystem tools. The Linux-only
-host-owned primitives remain unavailable for model use because concurrent
-namespace changes can move retained objects outside the selected path scope.
+KompoSyn registers one bounded model-facing filesystem capability: Linux
+`read_file`, gated on trusted Bubblewrap inspection and a complete host-owned
+read lifecycle. It follows the approved opened-object contract; concurrent
+namespace changes mean it does not promise strict live pathname containment.
+Filesystem mutation and shell remain unavailable.
 See the [filesystem enforcement foundation](filesystem-enforcement-foundation.md)
 and [enablement policy and evidence](filesystem-enablement-policy.md) for
 guarantees, counterexamples, protected-path policy proposals, root-selection
 UX proposals, and requirements for any later tool enablement.
 The [Linux sandbox feasibility study](sandbox-feasibility-study.md) is
 disposable research infrastructure only; its native tests are separate from Go
-unit/race tests, and filesystem tools remain unavailable pending native evidence
-for each capability and maintainer review. The
+unit/race tests. Read evidence is limited to the specifically recorded native
+environment; it does not establish mutation or shell enforcement. The
 [sandbox direction and implementation gates](sandbox-design-proposal.md) record
 the later object-authority target and distinguish it from the historical strict
 pathname-containment gate in the earlier policy.

@@ -257,6 +257,15 @@ func (c *Chat) filesystemRootHost() FilesystemRootHost {
 	return c.filesystemRootHostLocked()
 }
 
+func (c *Chat) hasCurrentFilesystemRoot(conversationID string) bool {
+	if c == nil || conversationID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.closed && c.conversationID == conversationID && c.filesystemRoot != "" && c.filesystemRootAck >= c.filesystemRootGen
+}
+
 func (c *Chat) changeFilesystemRootLocked(root string, reason FilesystemRootChangeReason) FilesystemRootTransition {
 	if c.toolRuntime != nil {
 		c.toolRuntime.invalidateReadAuthority()

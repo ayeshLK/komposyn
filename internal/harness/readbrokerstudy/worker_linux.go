@@ -57,7 +57,8 @@ const (
 	backendProbeTimeout          = 2 * time.Second
 	backendHashLimit             = 512 << 20
 	backendProbeOutputLimit      = 64 << 10
-	maxWorkerSnapshotBytes       = 7 << 20
+	maxWorkerSnapshotBytes       = 14 << 20
+	workerRootSizeBytes          = 16 << 20
 	maxSCMRightsFDs              = 253
 )
 
@@ -219,7 +220,7 @@ func effectiveBubblewrapArguments(mode BindMode, holdCapability bool) []string {
 	args := []string{
 		"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		"--hostname", "komposyn-readbroker", "--unshare-net", "--as-pid-1", "--disable-userns", "--cap-drop", "ALL", "--clearenv",
-		"--size", "8388608", "--tmpfs", "/",
+		"--size", fmt.Sprint(workerRootSizeBytes), "--tmpfs", "/",
 	}
 	switch mode {
 	case BindModeDescriptor:

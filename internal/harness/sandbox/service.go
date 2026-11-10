@@ -256,9 +256,9 @@ func (s *Service) BackendStatus() (bool, string) {
 	return s.impl.BackendStatus()
 }
 
-// Prepares reports whether this trusted host service owns pre-dispatch
-// admission for a tool ID. read_file is intentionally not registered; this
-// guard makes accidental future registration fail closed before grant use.
+// Prepares reports that this host owns generic pre-dispatch preparation for a
+// tool ID. read_file uses its dedicated retained-read path; this generic hook
+// intentionally refuses it and cannot execute filesystem operations.
 func (s *Service) Prepares(id tools.ID) bool { return id == tools.ID("read_file") }
 
 func (s *Service) PrepareTool(ctx context.Context, _ tools.Tool, invocation tools.Invocation, _ permissions.Request, _ uint64) (runtime.ToolPreparation, error) {

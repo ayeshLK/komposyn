@@ -505,7 +505,7 @@ func TestBubblewrapArgumentsSelectModernMountAndSeparateVerifierFD(t *testing.T)
 	if !strings.Contains(modern, "--ro-bind-fd 5 /worker") || strings.Contains(modern, "/proc/self/fd") {
 		t.Fatalf("unexpected modern mount arguments: %s", modern)
 	}
-	for _, value := range []string{"--as-pid-1", "--sync-fd 6", "--readbrokerstudy-bootstrap", "--worker-fd 6", "--seccomp-fd 3"} {
+	for _, value := range []string{"--as-pid-1", "--sync-fd 6", "--readbrokerstudy-bootstrap", "--worker-fd 6", "--seccomp-fd 3", "--size 16777216"} {
 		if !strings.Contains(modern, value) {
 			t.Fatalf("modern arguments missing %q: %s", value, modern)
 		}
@@ -514,7 +514,7 @@ func TestBubblewrapArgumentsSelectModernMountAndSeparateVerifierFD(t *testing.T)
 		t.Fatal("mount source and retained verifier descriptors must be distinct")
 	}
 	snapshot := strings.Join(EffectiveBubblewrapArguments(BindModeFileSnapshot), " ")
-	for _, value := range []string{"--perms 0500 --ro-bind-data 5 /worker", "--sync-fd 6", "--worker-mode snapshot"} {
+	for _, value := range []string{"--perms 0500 --ro-bind-data 5 /worker", "--sync-fd 6", "--worker-mode snapshot", "--size 16777216"} {
 		if !strings.Contains(snapshot, value) {
 			t.Fatalf("Bubblewrap 0.9 snapshot arguments missing %q: %s", value, snapshot)
 		}

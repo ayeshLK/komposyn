@@ -1,8 +1,9 @@
 # Issue #215 Stage 6 integrated runner
 
-This runner is an experimental acceptance fixture. It does not register or
-ship `read_file`, does not connect to a real provider, and uses only temporary
-synthetic auth/settings stores and file contents.
+This runner is an experimental acceptance fixture. It uses a test-only
+`read_file` runtime composition, does not validate native launch of the shipped
+`komposyn` command image, and does not connect to a real provider. It uses only
+temporary synthetic auth/settings stores and file contents.
 
 ## Reproduction
 
@@ -54,18 +55,20 @@ backend paths, dirty checkouts, and a revision other than the current clean
 `HEAD`. It does not edit the checkout. It builds with `CGO_ENABLED=0`,
 `-ldflags=-s -w`, and a separate temporary Go build/module cache, then executes
 the test binary with a finite deadline. The linker flags omit debug and ELF
-symbol sections from this disposable study binary; they do not change runtime
-behavior or raise the worker's existing 7 MiB image ceiling. The stripped
-binary remains statically linked and is still authenticated by the existing
-worker launch checks. The existing bounded process-group capture helper terminates
-and reaps children on timeout; no unrestricted/elevated retry is attempted.
+symbol sections from this disposable study binary; the test image remains
+statically linked and is authenticated by the existing worker launch checks.
+The Stage 6 runs recorded below predate PR #264's 14 MiB image ceiling and
+16 MiB worker root. The existing bounded process-group capture helper
+terminates and reaps children on timeout; no unrestricted/elevated retry is
+attempted.
 
 The 2026-11-09 trusted-host run built a 7,952,946-byte test executable, larger
-than the worker's 7,340,032-byte snapshot bound, and setup correctly refused it.
-Rebuilding the same study source with `-s -w` produced a 5,492,898-byte static
-binary. This is the measured reason for stripping only the disposable study
-binary; it is a build-fixture correction, not evidence that the sandbox worker
-started or that a read succeeded.
+than the then-current 7,340,032-byte snapshot bound, and setup correctly
+refused it. Rebuilding the same study source with `-s -w` produced a 5,492,898-
+byte static binary. The runner retained the stripped build. PR #264 later
+raised the bound to 14 MiB and the root tmpfs to 16 MiB so the release-shaped
+chat executable can fit. This historical test-image correction is not native
+evidence for that larger production image or its changed profile.
 
 The Go build uses a private temporary `HOME` and Go/module caches, the public
 Go module proxy with Go authentication disabled, and no host `.netrc`, proxy

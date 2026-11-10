@@ -1,6 +1,6 @@
 # Approved exact-file typed-read profile
 
-**Status:** implementation target approved in [issue #215 decision record](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6623836377). Stages 4–5 implement retained-worker capture and fake-provider publication/replay on the review branch. Native acceptance remains outstanding; `read_file` remains unregistered in production and provider-source owner integration is incomplete. This does not enable model-facing filesystem or shell tools.
+**Status:** exact-file read policy approved. Stages 1–5, Stage 6 native feasibility evidence, and focused production `read_file` integration are implemented on the current review branch. Linux only; production registration requires an inspected trusted Bubblewrap backend and all retained-read lifecycle interfaces. Provider-source reads remain unsupported without a real owner registration. This does not enable mutation or shell tools, and the broader #215 acceptance remains open.
 
 ## Contract
 
@@ -98,4 +98,5 @@ This is a Linux experimental exact-file profile. It does not claim live
 pathname containment, immutable file contents, detection of independent copies
 of sensitive bytes, complete directory-descendant coverage, namespace-wide
 cleanup, production owner/runtime integration, or support for shell/write/delete
-tools. Filesystem and shell tools remain unregistered.
+tools. `read_file` is available only through the trusted retained-read path;
+filesystem mutation and shell tools remain unregistered.

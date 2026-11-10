@@ -139,7 +139,7 @@ func newCommand() *cobra.Command {
 			}
 			approvalBridge := harnessui.NewApprovalBridge()
 			clarificationBridge := harnessui.NewClarificationBridge()
-			toolRuntime := runtime.BundledConversationToolRuntimeConfig(approvalBridge, clarificationBridge)
+			toolRuntime := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approvalBridge, clarificationBridge, hostSandbox)
 			toolRuntime.Preparer = hostSandbox
 			toolRuntime.ReadAdmission = hostSandbox
 			toolRuntime.RootHost = hostSandbox

@@ -1,9 +1,12 @@
 # Filesystem enablement policy and evidence
 
-Status: filesystem tools are unavailable. This record describes the remaining
-security gap after #212, presents proposed policy and root-selection behavior,
-and records native test evidence. No filesystem tool is registered, and no
-policy in this document is silently treated as approved.
+Status (2026-11-10): the approved Linux exact-file `read_file` capability is
+being integrated through the retained Bubblewrap worker, with once approval and
+host-protected auth/settings identities. This does not establish strict live
+host-path containment, and does not enable mutation or shell. The proposals
+below are historical where they conflict with the later object-authority
+decision; see [sandbox direction and implementation gates](sandbox-design-proposal.md)
+and the [current #215 evidence](https://github.com/ayeshLK/komposyn/issues/215).
 
 Issue #215 adds a [disposable Linux sandbox feasibility study](sandbox-feasibility-study.md).
 Its candidate tests were blocked by the surrounding command launcher in the

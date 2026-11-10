@@ -2,11 +2,11 @@
 
 The `cmd/read-broker-study` command remains isolated research infrastructure
 and registers no filesystem tools. Its fixed Linux broker, worker and
-coordinator are now composed by the experimental chat's host service for
-auth/settings lifecycle protection and fail-closed capability admission. The
-chat never releases a target descriptor: generic reads remain blocked by the
-unknown-root-data gate. Provider-source and Token Logger owner inventories
-remain absent. See [composition admission and sandbox service](composition-admission-sandbox-service.md)
+coordinator also back the conditional `read_file` composition in open PR #264;
+that tool requires a trusted host, a selected root, a supported provider route,
+and explicit once approval. This research command itself remains separate from
+the model-facing tool registry. Provider-source and Token Logger owner
+inventories remain absent. See [composition admission and sandbox service](composition-admission-sandbox-service.md)
 and [protected owner integration](read-broker-owner-integration.md).
 The [owner inventory and admission contract](read-broker-owner-inventory.md)
 audits the store/discovery lifecycles and describes the fail-closed synthetic
@@ -19,7 +19,11 @@ The follow-up native acceptance scenarios for actual auth/settings store calls
 through the study's live Bubblewrap worker are defined in
 [real-store native acceptance](read-broker-real-store-native-acceptance.md).
 Their results are not inferred from the older synthetic `fixtureOwnerWriter`
-cases or the injected-session store tests.
+cases or the injected-session store tests. Prior native runs cover the Stage 6
+study image and its earlier 7 MiB image/8 MiB root limits; PR #264 increases
+those bounds to 14 MiB/16 MiB for the release-shaped chat executable. The new
+release-image tests cover bounded snapshot and descriptor-source construction,
+not a native Bubblewrap launch of that larger image.
 
 ## Ownership and protocol
 
@@ -50,8 +54,14 @@ refers to that same device/inode, and validates the running image as a static
 ELF. The worker path is only an identity hint; restrictive mode bits on a
 user-owned pathname is not the trust anchor. The hint is inspected through a
 non-following `O_PATH` handle, so a substituted FIFO or device is rejected
-without opening it for data or blocking for a peer. A 7 MiB image ceiling
-applies to both launch modes.
+without opening it for data or blocking for a peer. A 14 MiB image ceiling
+applies to both launch modes. This accommodates the stripped static
+`cmd/harness` release image (about 12.9 MiB in the tested release-shaped build)
+while keeping worker construction bounded. A regression test builds that
+release-shaped image and validates its sealed snapshot and, when resolvable,
+descriptor-bind source. The private worker root is a 16 MiB tmpfs, leaving at
+least 2 MiB above the maximum accepted image for filesystem metadata. Setups
+that cannot construct the image still fail closed.
 
 When `--ro-bind-fd` is available and the running executable has a resolvable
 host path, the launcher passes independent read-only opens of the running
@@ -85,10 +95,10 @@ bytes the same bounded snapshot; the copied bootstrap additionally hashes
 hash is an integrity check, not an independent authentication stage by itself.
 
 Bubblewrap's copy loop has no intrinsic byte ceiling, so the launcher enforces
-a 7 MiB source bound before passing a descriptor. The 0.9 path temporarily
-stores another copy in Bubblewrap's private setup tmpfs while binding it into
-the 8 MiB worker root; setup failure such as ENOSPC refuses before worker
-readiness. The worker root contains only the executable and receives no host
+a 14 MiB source bound before passing a descriptor. The private 16 MiB root
+provides bounded space for the executable and filesystem metadata; the 0.9
+descriptor-fed copy path refuses before worker readiness if construction
+fails. The worker root contains only the executable and receives no host
 procfs or other runtime filesystem.
 
 Both modes close or consume FD 5, verify/close FD 6, validate/install the
@@ -253,7 +263,7 @@ provider-source owner registrations remain unavailable here. See the
 
 The launcher requests user, mount, PID, IPC, UTS, and network namespaces with
 no optional `try` flags; a new session; dropped capabilities; disabled nested
-user namespaces; an 8 MiB empty tmpfs root; one read-only worker executable
+user namespaces; a 16 MiB empty tmpfs root; one read-only worker executable
 bound either by inode (`--ro-bind-fd`) or from the sealed byte snapshot
 (`--ro-bind-data`); cleared environment; no host home, root, sockets, proc, or
 device mounts; `--die-with-parent`; and `--as-pid-1`. It passes only seccomp FD

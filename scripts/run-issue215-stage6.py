@@ -122,10 +122,9 @@ def build_go_environment(work, cache_dir, module_cache):
 
 
 def stage6_build_command(go, overlay_path, executable):
-    # The fixed worker snapshot is deliberately capped at 7 MiB. Go's test
-    # binary exceeds that cap when DWARF and the ELF symbol table are retained;
-    # stripping those non-runtime sections keeps this research fixture within
-    # the existing bound without increasing the accepted worker image size.
+    # Keep this native study worker static and stripped like release workers.
+    # The runtime worker bound also covers the larger stripped cmd/harness
+    # release image; this test binary does not need debug sections.
     return [
         go,
         "test",
@@ -246,7 +245,7 @@ def main():
         "report": {"status": "not_produced"},
         "classification": "incomplete",
         "limitations": [
-            "This Stage 6 profile is research-only and does not register read_file in the shipped executable.",
+            "This Stage 6 profile uses a test-only runtime composition and does not validate native launch of the shipped command image or real-provider integration.",
             "Passing selected cases does not establish mutation, shell, provider-source-owner, or aggregate resource-limit acceptance.",
             "A successful process exit is not itself evidence that native enforcement passed.",
         ],

@@ -238,15 +238,30 @@ func newStage6Report() stage6Report {
 		cases = append(cases, item)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "6",
-		OS: "linux", Architecture: stdruntime.GOARCH, UID: os.Getuid(), Overall: "stage6_profile_incomplete",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "7",
+		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: []string{
-			"This runner does not enable or register read_file in the shipped executable.",
+			"This Stage 6 profile uses a test-only runtime composition and does not validate native launch of the shipped command image or real-provider integration.",
 			"Native acceptance remains incomplete until every required case is measured on the final integrated profile.",
 			"Provider-source positive authorization/rotation, mutation, shell, aggregate cgroup quotas, and non-Linux enforcement are not established here.",
 		},
 	}
+}
+
+func stage6KernelRelease() string {
+	var name unix.Utsname
+	if err := unix.Uname(&name); err != nil {
+		return ""
+	}
+	value := make([]byte, 0, len(name.Release))
+	for _, character := range name.Release {
+		if character == 0 {
+			break
+		}
+		value = append(value, byte(character))
+	}
+	return string(value)
 }
 
 func TestMain(m *testing.M) {
@@ -1011,6 +1026,12 @@ func (p *stage6Provider) ID() provider.ID { return provider.OpenAI }
 func (p *stage6Provider) AuthMethods() []provider.AuthMethod {
 	return []provider.AuthMethod{provider.AuthAPIKey}
 }
+func (*stage6Provider) RouteCapabilities(method provider.AuthMethod) provider.RouteCapabilities {
+	if method == provider.AuthAPIKey {
+		return provider.RouteCapabilities{ClientTools: provider.SupportSupported, Images: provider.SupportUnsupported}
+	}
+	return provider.RouteCapabilities{ClientTools: provider.SupportUnsupported, Images: provider.SupportUnsupported}
+}
 func (p *stage6Provider) Authenticate(_ context.Context, credential provider.Credential) (provider.AuthResult, error) {
 	if credential.APIKey == "" {
 		return provider.AuthResult{}, errors.New("synthetic provider credential missing")
@@ -1718,12 +1739,17 @@ func TestStage6ReadRefusedWithoutRootOrBackend(t *testing.T) {
 		}
 	})
 	turn, err := chat.Send(ctx, "read the synthetic private fixture", nil)
-	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
-		t.Fatalf("read without root was not refused before continuation: outcome=%s err=%v", turn.Outcome, err)
+	if err != nil || turn.Outcome != provider.OutcomeUnsupported {
+		t.Fatalf("unadvertised read call without a root was not rejected as unsupported: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := base.captured()
 	if len(requests) != 1 {
 		t.Fatalf("provider requests=%d, want only the initial tool-call request", len(requests))
+	}
+	for _, definition := range requests[0].Tools {
+		if definition.ID == tools.ReadFileID {
+			t.Fatal("read_file was advertised without an explicitly selected root")
+		}
 	}
 	for _, request := range requests {
 		encoded, _ := json.Marshal(request.Messages)
@@ -1739,13 +1765,13 @@ func TestStage6ReadRefusedWithoutRootOrBackend(t *testing.T) {
 		t.Fatal("no-root refusal unexpectedly created a worker coordinator")
 	}
 	_, messages, results, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(chat, content)
-	if messages == 0 || results != 1 || markerFound || !payloadFree {
+	if messages != 0 || results != 0 || markerFound || !payloadFree {
 		t.Fatalf("no-root refusal history was not payload-free: messages=%d results=%d marker=%t payload_free=%t", messages, results, markerFound, payloadFree)
 	}
 	stage6Update("read_refused_without_root_or_backend", func(item *stage6Case) {
 		item.EvidenceKind, item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = "synthetic-runtime-composition", len(requests), true, true
 	})
-	stage6PassSynthetic("read_refused_without_root_or_backend", "actual runtime and unavailable host Service refused a provider-requested read before approval, backend worker creation, or continuation disclosure")
+	stage6PassSynthetic("read_refused_without_root_or_backend", "without a selected root the runtime omitted read_file from provider definitions and rejected an unsolicited call as unsupported before approval, worker creation, history retention, or disclosure")
 }
 
 func TestStage6ProviderSourceOwnerRemainsUnsupported(t *testing.T) {
@@ -1904,16 +1930,33 @@ func TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission(t *testing.T) {
 		}
 	}
 	turn, err := chat.Send(ctx, "read the synthetic private fixture", nil)
-	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
-		t.Fatalf("incomplete inventory did not interrupt before continuation: outcome=%s err=%v", turn.Outcome, err)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("incomplete inventory refusal did not permit safe text continuation: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := base.captured()
-	if len(requests) != 1 {
-		t.Fatalf("provider requests=%d, want only the initial tool-call request", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial tool call plus one safe continuation", len(requests))
 	}
-	encoded, _ := json.Marshal(requests[0].Messages)
-	if strings.Contains(string(encoded), content) {
-		t.Fatal("private fixture content reached the provider through incomplete owner coverage")
+	if len(requests[0].Tools) != 1 || requests[0].Tools[0].ID != tools.ReadFileID {
+		t.Fatalf("selected-root request advertised unexpected tools: %+v", requests[0].Tools)
+	}
+	toolResult, found := readResultContent(requests[1], "stage6-read")
+	if !found {
+		t.Fatal("safe continuation omitted the correlated read refusal result")
+	}
+	var refusal struct {
+		Outcome   string `json:"outcome"`
+		Truncated bool   `json:"truncated"`
+		Content   string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(toolResult), &refusal); err != nil || refusal.Outcome != string(tools.OutcomeNotExecuted) || refusal.Truncated || refusal.Content == "" {
+		t.Fatalf("incomplete-inventory result=%q, want bounded not_executed envelope (err=%v)", toolResult, err)
+	}
+	for _, request := range requests {
+		encoded, _ := json.Marshal(request.Messages)
+		if strings.Contains(string(encoded), content) {
+			t.Fatal("private fixture content reached the provider through incomplete owner coverage")
+		}
 	}
 	if approvals.Load() != 0 {
 		t.Fatalf("approval interactions=%d, want inventory refusal before approval", approvals.Load())
@@ -1928,7 +1971,7 @@ func TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission(t *testing.T) {
 	stage6Update("incomplete_owner_inventory", func(item *stage6Case) {
 		item.EvidenceKind, item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = "synthetic-runtime-composition", len(requests), true, true
 	})
-	stage6PassSynthetic("incomplete_owner_inventory", "actual runtime and Service refused admission while required auth/settings owners had no registered routes or identities; no approval, admission, worker, or continuation followed")
+	stage6PassSynthetic("incomplete_owner_inventory", "runtime advertised the selected-root read, but Service refused admission with required auth/settings inventory incomplete; no approval or worker admission occurred, and only a correlated not_executed result reached the safe text continuation")
 }
 
 func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {

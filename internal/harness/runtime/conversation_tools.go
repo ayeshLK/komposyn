@@ -164,6 +164,25 @@ func BundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clar
 	if approval == nil || clarification == nil {
 		return ToolRuntimeConfig{}
 	}
+	return bundledConversationToolRuntimeConfig(approval, clarification, nil, nil)
+}
+
+// BundledConversationToolRuntimeConfigWithFilesystemRead adds the reviewed
+// retained-object read path only when the trusted host reports an inspected
+// backend and implements every lifecycle boundary required by the runtime.
+// A selected root remains lookup scope only; approval is still per invocation.
+func BundledConversationToolRuntimeConfigWithFilesystemRead(approval ToolApprovalInteraction, clarification ToolClarificationInteraction, host FilesystemReadCompositionHost) ToolRuntimeConfig {
+	if approval == nil || clarification == nil || host == nil {
+		return BundledConversationToolRuntimeConfig(approval, clarification)
+	}
+	available, _ := host.BackendStatus()
+	if !available {
+		return BundledConversationToolRuntimeConfig(approval, clarification)
+	}
+	return bundledConversationToolRuntimeConfig(approval, clarification, host, host)
+}
+
+func bundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clarification ToolClarificationInteraction, readHost FilesystemReadAdmissionHost, rootHost FilesystemRootHost) ToolRuntimeConfig {
 	plans := NewConversationPlans()
 	registry := tools.NewRegistry()
 	planTool := &updatePlanTool{plans: conversationPlanUpdater{plans: plans}}
@@ -171,11 +190,16 @@ func BundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clar
 	if registry.Register(planTool) != nil || registry.Register(inputTool) != nil {
 		return ToolRuntimeConfig{}
 	}
+	if readHost != nil && registry.Register(readFileTool{}) != nil {
+		return ToolRuntimeConfig{}
+	}
 	return ToolRuntimeConfig{
 		Registry:      registry,
 		Plans:         plans,
 		Approval:      approval,
 		Clarification: clarification,
+		ReadAdmission: readHost,
+		RootHost:      rootHost,
 		Authorizer: ToolAuthorizerFunc(func(_ context.Context, invocation tools.Invocation) (permissions.Request, error) {
 			if invocation.ConversationID == "" || invocation.ToolID != tools.UpdatePlanID && invocation.ToolID != tools.RequestUserInputID {
 				return permissions.Request{}, errors.New("conversation tool authorization identity is invalid")
@@ -191,6 +215,17 @@ func BundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clar
 		}),
 		Enforcer: bundledConversationEnforcer{},
 	}
+}
+
+type readFileTool struct{}
+
+func (readFileTool) Definition() tools.Definition { return tools.ReadFileDefinition() }
+func (readFileTool) ValidateArguments(raw json.RawMessage) error {
+	_, err := tools.ParseReadFile(raw)
+	return err
+}
+func (readFileTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
+	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "read_dispatch_unavailable"}
 }
 
 func conversationToolActionKey(id tools.ID) string {

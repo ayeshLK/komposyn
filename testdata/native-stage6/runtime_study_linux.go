@@ -17,19 +17,34 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"github.com/ayeshLK/komposyn/internal/harness/permissions"
+	"github.com/ayeshLK/komposyn/plugins/tools"
 )
 
 // EnableNativeReadStudy exposes only the reserved filesystem-read path to the
 // separately built native acceptance test binary. This file is overlaid from
 // testdata and is absent from normal builds and the shipped executable.
 func EnableNativeReadStudy(chat *Chat) error {
-	if chat == nil || chat.toolRuntime == nil || chat.toolRuntime.readAdmission == nil || chat.toolRuntime.readPublicationGate == nil {
+	if chat == nil || chat.toolRuntime == nil || chat.toolRuntime.registry == nil || chat.toolRuntime.readAdmission == nil || chat.toolRuntime.readPublicationGate == nil {
 		return errors.New("native read study composition is incomplete")
 	}
-	chat.toolRuntime.readPublicationTestMode = true
+	if err := chat.toolRuntime.registry.Register(readFileTool{}); err != nil {
+		return errors.New("native read study could not register its dedicated read path")
+	}
+	// Runtime route discovery requires both role boundaries. This fixture-only
+	// authorizer and enforcer reject every generic dispatch; read_file uses the
+	// dedicated checked admission path above and never reaches this enforcer.
+	chat.toolRuntime.authorizer = ToolAuthorizerFunc(func(context.Context, tools.Invocation) (permissions.Request, error) {
+		return permissions.Request{}, errors.New("native read study exposes no generic tool authorization")
+	})
+	chat.toolRuntime.enforcer = ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
+		return tools.Result{}, errors.New("native read study exposes no generic tool execution")
+	})
 	return nil
 }
 
