@@ -62,7 +62,6 @@ func TestReleaseExecutableFitsWorkerImageAndSnapshotBounds(t *testing.T) {
 	if err := validateStaticWorkerFile(image); err != nil {
 		t.Fatalf("release image is not an accepted static worker: %v", err)
 	}
-
 	snapshot, err := createSealedWorkerSnapshot(image)
 	if err != nil {
 		t.Fatalf("release image could not be constructed as a sealed worker snapshot: %v", err)
@@ -135,8 +134,8 @@ func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	if err := json.Unmarshal(reportData, &report); err != nil {
 		t.Fatalf("decode Stage 6 control report: %v", err)
 	}
-	if report.RunnerVersion != "7" || report.Kernel == "" {
-		t.Fatalf("Stage 6 report metadata runner_version=%q kernel=%q; want runner 7 and a kernel release", report.RunnerVersion, report.Kernel)
+	if report.RunnerVersion != "8" || report.Kernel == "" {
+		t.Fatalf("Stage 6 report metadata runner_version=%q kernel=%q; want runner 8 and a kernel release", report.RunnerVersion, report.Kernel)
 	}
 	want := map[string]bool{
 		"synthetic_once_authority_flow":        false,

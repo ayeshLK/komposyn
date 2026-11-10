@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	stdruntime "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -155,6 +156,7 @@ type stage6Report struct {
 	Kernel        string         `json:"kernel"`
 	UID           int            `json:"uid"`
 	Backend       map[string]any `json:"backend"`
+	WorkerImage   map[string]any `json:"worker_image"`
 	LaunchPolicy  map[string]any `json:"launch_policy"`
 	Overall       string         `json:"overall_status"`
 	Cases         []stage6Case   `json:"cases"`
@@ -228,7 +230,7 @@ func newStage6Report() stage6Report {
 			item.Reason = "synthetic separate-process actor helper control was not executed"
 		} else if unimplemented {
 			item.EvidenceKind = "not-implemented"
-			item.Reason = "case is not implemented by Stage 6 runner version 7"
+			item.Reason = "case is not implemented by Stage 6 runner version 8"
 		} else if _, workerLifecycle := workerLifecycleCases[id]; workerLifecycle {
 			item.EvidenceKind = "native-worker-lifecycle"
 			item.Reason = "fixed worker parent-death lifecycle case was not executed"
@@ -237,15 +239,31 @@ func newStage6Report() stage6Report {
 		}
 		cases = append(cases, item)
 	}
-	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "7",
-		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
-		Backend: map[string]any{}, LaunchPolicy: map[string]any{}, Cases: cases,
-		Limitations: []string{
+	workerImage := map[string]any{"profile": "stage6-study-test-binary"}
+	limitations := []string{
+		"Native acceptance remains incomplete until every required case is measured on the final integrated profile.",
+		"Provider-source positive authorization/rotation, mutation, shell, aggregate cgroup quotas, and non-Linux enforcement are not established here.",
+	}
+	if digest := os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256"); digest != "" {
+		sizeBytes, _ := strconv.ParseInt(os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SIZE"), 10, 64)
+		workerImage = map[string]any{
+			"profile": "cmd-harness-worker-image", "sha256": digest,
+			"size_bytes": sizeBytes, "bind_mode": "file-snapshot",
+		}
+		limitations = append(limitations,
+			"The native profile launches the exact source-built cmd/harness executable as the worker, while the coordinator and provider fixture remain the Stage 6 test composition.",
+			"Parent-death cleanup is unavailable in cmd/harness worker-image mode because its helper process uses the Stage 6 test binary; the shipped-image worker lifecycle is not claimed.",
+		)
+	} else {
+		limitations = append(limitations,
 			"This Stage 6 profile uses a test-only runtime composition and does not validate native launch of the shipped command image or real-provider integration.",
-			"Native acceptance remains incomplete until every required case is measured on the final integrated profile.",
-			"Provider-source positive authorization/rotation, mutation, shell, aggregate cgroup quotas, and non-Linux enforcement are not established here.",
-		},
+		)
+	}
+	return stage6Report{
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "8",
+		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
+		Backend: map[string]any{}, WorkerImage: workerImage, LaunchPolicy: map[string]any{}, Cases: cases,
+		Limitations: limitations,
 	}
 }
 
@@ -459,6 +477,10 @@ func TestStage6ParentDeathCoordinatorHelper(t *testing.T) {
 
 func TestStage6ParentDeathCleanup(t *testing.T) {
 	stage6Begin("parent_death_cleanup")
+	if os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE") != "" {
+		stage6Skip("parent_death_cleanup", "cmd/harness worker-image mode does not use the test-binary coordinator in its parent-death helper")
+		t.Skip("cmd/harness worker-image mode does not claim shipped-image parent-death behavior")
+	}
 	backendPath := os.Getenv("KOMPOSYN_STAGE6_BWRAP")
 	if backendPath == "" {
 		backendPath = "/usr/bin/bwrap"
@@ -492,8 +514,8 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 			"effective_bubblewrap_arguments": readbrokerstudy.EffectiveBubblewrapArgumentsWithCapabilityHold(inspection.BindMode),
 			"required_namespaces":            []string{"mount", "user", "pid", "ipc", "uts", "network"},
 			"network":                        "unshared; no network access",
-			"root_mount":                     "private 8 MiB tmpfs",
-			"worker_mount":                   "one fixed worker image, read-only",
+			"root_mount":                     "private 16 MiB tmpfs",
+			"worker_mount":                   stage6WorkerMountPolicy(),
 			"worker_environment":             []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"},
 			"inherited_descriptors":          []string{"fd 3: seccomp filter", "fd 4: local protocol socket", "fd 5: consumed worker source", "fd 6: retained worker verification image"},
 			"target_capability":              "one synthetic read-only file descriptor transferred after worker readiness and held without read release",
@@ -1392,7 +1414,16 @@ func newStage6HostService(backendPath string, holdWorker bool) (*Service, error)
 		_ = registry.Close()
 		return nil, err
 	}
-	launcher, err := readbrokerstudy.NewWorkerLauncherForStage6(backendPath, workerPath, stage6RequestedBindMode(), holdWorker)
+	var launcher readbrokerstudy.WorkerLauncher
+	if imagePath := os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE"); imagePath != "" {
+		if stage6RequestedBindMode() != readbrokerstudy.BindModeFileSnapshot {
+			_ = registry.Close()
+			return nil, errors.New("cmd/harness worker-image profile requires file-snapshot mode")
+		}
+		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6Image(backendPath, imagePath, os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256"), holdWorker)
+	} else {
+		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6(backendPath, workerPath, stage6RequestedBindMode(), holdWorker)
+	}
 	if err != nil {
 		_ = registry.Close()
 		return nil, err
@@ -1402,6 +1433,13 @@ func newStage6HostService(backendPath string, holdWorker bool) (*Service, error)
 		return nil, err
 	}
 	return &Service{impl: impl}, nil
+}
+
+func stage6WorkerMountPolicy() string {
+	if os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256") != "" {
+		return "one exact-digest, sealed snapshot of the source-built cmd/harness executable, read-only"
+	}
+	return "one fixed Stage 6 test binary, read-only"
 }
 
 func newStage6Fixture(t *testing.T, caseID, targetKind string, blockSecond bool, beforeHandoff func() error) *stage6Fixture {
@@ -1430,8 +1468,8 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		"effective_bubblewrap_arguments": effectiveArguments,
 		"required_namespaces":            []string{"mount", "user", "pid", "ipc", "uts", "network"},
 		"network":                        "unshared; no network access",
-		"root_mount":                     "private 8 MiB tmpfs",
-		"worker_mount":                   "one fixed worker image, read-only",
+		"root_mount":                     "private 16 MiB tmpfs",
+		"worker_mount":                   stage6WorkerMountPolicy(),
 		"runtime_mounts":                 []string{},
 		"extra_descriptors":              []string{"fd 3: seccomp filter", "fd 4: local protocol socket", "fd 5: worker mount source (consumed by Bubblewrap)", "fd 6: worker verification image (retained through startup)"},
 		"worker_environment":             []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"},
@@ -2341,7 +2379,7 @@ func TestStage6LaunchProfileAndLimits(t *testing.T) {
 	for _, required := range [][]string{
 		{"--die-with-parent"}, {"--new-session"}, {"--unshare-user"}, {"--unshare-pid"},
 		{"--unshare-ipc"}, {"--unshare-uts"}, {"--unshare-net"}, {"--as-pid-1"},
-		{"--disable-userns"}, {"--cap-drop", "ALL"}, {"--clearenv"}, {"--size", "8388608"},
+		{"--disable-userns"}, {"--cap-drop", "ALL"}, {"--clearenv"}, {"--size", "16777216"},
 		{"--tmpfs", "/"}, {"--sync-fd", "6"}, {"--seccomp-fd"},
 	} {
 		if !hasSequence(required...) {
@@ -2430,12 +2468,21 @@ func TestStage6ProtectedAuthObjectIsWithheld(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	turn, err := fixture.chat.Send(ctx, "request the protected fixture", nil)
-	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
-		t.Fatalf("protected auth refusal did not interrupt before continuation: outcome=%s err=%v", turn.Outcome, err)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("protected auth refusal did not permit safe text continuation: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := fixture.provider.captured()
-	if len(requests) != 1 {
-		t.Fatalf("provider requests=%d, want only the initial request before protected-read refusal", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial request plus safe refusal continuation", len(requests))
+	}
+	toolResult, found := readResultContent(requests[1], "stage6-read")
+	var refusal struct {
+		Outcome   string `json:"outcome"`
+		Truncated bool   `json:"truncated"`
+		Content   string `json:"content"`
+	}
+	if !found || json.Unmarshal([]byte(toolResult), &refusal) != nil || refusal.Outcome != string(tools.OutcomeNotExecuted) || refusal.Truncated || refusal.Content == "" || strings.Contains(refusal.Content, "synthetic-never-real-key") {
+		t.Fatalf("protected auth continuation result=%q found=%t; want a bounded not_executed result without payload", toolResult, found)
 	}
 	for _, request := range requests {
 		encoded, _ := json.Marshal(request.Messages)
@@ -2459,7 +2506,7 @@ func TestStage6ProtectedAuthObjectIsWithheld(t *testing.T) {
 		item.OnceApprovalCount, item.WorkerStarted, item.WorkerJoined = fixture.approvals.Load(), false, false
 		item.StaleDataAbsent = true
 	})
-	stage6Pass("protected_auth_refusal", "registered synthetic auth route refused before approval, worker launch or provider disclosure")
+	stage6Pass("protected_auth_refusal", "registered synthetic auth route refused before approval and worker launch; only a correlated not_executed result reached the fake provider, with no protected bytes disclosed")
 }
 
 func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
@@ -2469,12 +2516,21 @@ func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	turn, err := fixture.chat.Send(ctx, "request the protected fixture", nil)
-	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
-		t.Fatalf("protected settings refusal did not interrupt before continuation: outcome=%s err=%v", turn.Outcome, err)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("protected settings refusal did not permit safe text continuation: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := fixture.provider.captured()
-	if len(requests) != 1 {
-		t.Fatalf("provider requests=%d, want only the initial request before protected-read refusal", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial request plus safe refusal continuation", len(requests))
+	}
+	toolResult, found := readResultContent(requests[1], "stage6-read")
+	var refusal struct {
+		Outcome   string `json:"outcome"`
+		Truncated bool   `json:"truncated"`
+		Content   string `json:"content"`
+	}
+	if !found || json.Unmarshal([]byte(toolResult), &refusal) != nil || refusal.Outcome != string(tools.OutcomeNotExecuted) || refusal.Truncated || refusal.Content == "" || strings.Contains(refusal.Content, "synthetic-settings-marker") {
+		t.Fatalf("protected settings continuation result=%q found=%t; want a bounded not_executed result without payload", toolResult, found)
 	}
 	for _, request := range requests {
 		encoded, _ := json.Marshal(request.Messages)
@@ -2498,7 +2554,7 @@ func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
 		item.OnceApprovalCount, item.WorkerStarted, item.WorkerJoined = fixture.approvals.Load(), false, false
 		item.StaleDataAbsent = true
 	})
-	stage6Pass("protected_settings_refusal", "registered synthetic settings route refused before approval, worker launch or provider disclosure")
+	stage6Pass("protected_settings_refusal", "registered synthetic settings route refused before approval and worker launch; only a correlated not_executed result reached the fake provider, with no protected bytes disclosed")
 }
 
 func TestStage6ClearDuringSecondApprovalWithholdsFirstCapture(t *testing.T) {

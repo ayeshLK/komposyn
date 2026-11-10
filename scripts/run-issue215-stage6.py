@@ -35,7 +35,7 @@ import time
 sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
 
-RUNNER_VERSION = "7"
+RUNNER_VERSION = "8"
 DEFAULT_BWRAP = "/usr/bin/bwrap"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 BUILD_TIMEOUT = 300
@@ -139,6 +139,20 @@ def stage6_build_command(go, overlay_path, executable):
     ]
 
 
+def shipped_worker_build_command(go, executable, commit):
+    return [
+        go,
+        "build",
+        "-trimpath",
+        "-buildvcs=false",
+        "-ldflags",
+        "-s -w -buildid= -X main.cliVersion=0.0.0-native-study -X main.cliCommit=" + commit,
+        "-o",
+        str(executable),
+        "./cmd/harness",
+    ]
+
+
 def backend_metadata(path):
     metadata = {"path": path, "lstat_status": "unavailable"}
     try:
@@ -171,11 +185,24 @@ def summarize(report, build, run):
         f"Build: `{build.get('exit_code')}`; timeout={build.get('timed_out', False)}; cleanup={build.get('cleanup_complete', False)}.",
         f"Study process: `{run.get('exit_code')}`; timeout={run.get('timed_out', False)}; cleanup={run.get('cleanup_complete', False)}.",
         "",
-        "## Cases",
-        "",
-        "| Case | Status | Evidence kind | Worker started | Capability transferred | Capability held | Read started | Read outcome | Disclosure withheld | Cleanup confirmed | Reason | Failure diagnostic |",
-        "|---|---|---|---:|---:|---:|---:|---|---:|---:|---|---|",
     ]
+    worker_image = report.get("worker_image", {})
+    if worker_image.get("profile") == "cmd-harness-worker-image":
+        lines.extend(
+            [
+                "Worker image requested: source-built `cmd/harness`, using the sealed `file-snapshot` profile.",
+                f"Worker image size: `{worker_image.get('size_bytes', 'unavailable')}` bytes; SHA-256: `{worker_image.get('sha256', 'unavailable')}`.",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Cases",
+            "",
+            "| Case | Status | Evidence kind | Worker started | Capability transferred | Capability held | Read started | Read outcome | Disclosure withheld | Cleanup confirmed | Reason | Failure diagnostic |",
+            "|---|---|---|---:|---:|---:|---:|---|---:|---:|---|---|",
+        ]
+    )
     for case in report.get("cases", []):
         reason = str(case.get("reason", "")).replace("|", "\\|").replace("\n", " ")
         diagnostic = str(case.get("failure_diagnostic", "")).replace("|", "\\|").replace("\n", " ")
@@ -217,8 +244,18 @@ def main():
         default="auto",
         help="feature-checked worker bind mode (default: automatic selection)",
     )
+    parser.add_argument(
+        "--include-shipped-worker",
+        action="store_true",
+        help="also build cmd/harness from this exact source and use that executable as the native worker (sealed snapshot mode)",
+    )
     parser.add_argument("--output-root", default="/tmp", help="existing parent for a new private results directory")
     args = parser.parse_args()
+    requested_bind_mode = args.bind_mode
+    if args.include_shipped_worker:
+        if args.bind_mode == "ro-bind-fd":
+            parser.error("--include-shipped-worker currently requires --bind-mode file-snapshot")
+        args.bind_mode = "file-snapshot"
 
     script = Path(__file__).resolve()
     repo = Path(git(script.parent, "rev-parse", "--show-toplevel"))
@@ -240,12 +277,14 @@ def main():
         "go": {"version": None, "status": "not_checked"},
         "backend": backend_metadata(args.bwrap),
         "build": {"status": "not_started"},
+        "worker_image": {"status": "not_requested" if not args.include_shipped_worker else "not_started"},
         "study": {"status": "not_started"},
-        "requested_bind_mode": args.bind_mode,
+        "requested_bind_mode": requested_bind_mode,
+        "effective_bind_mode": args.bind_mode,
         "report": {"status": "not_produced"},
         "classification": "incomplete",
         "limitations": [
-            "This Stage 6 profile uses a test-only runtime composition and does not validate native launch of the shipped command image or real-provider integration.",
+            "This Stage 6 profile uses a test-only runtime/provider composition and does not validate real-provider or interactive-UI integration.",
             "Passing selected cases does not establish mutation, shell, provider-source-owner, or aggregate resource-limit acceptance.",
             "A successful process exit is not itself evidence that native enforcement passed.",
         ],
@@ -358,6 +397,47 @@ def main():
             manifest["classification"] = "build_failed_or_timed_out"
             raise RuntimeError("Stage 6 test binary did not build")
 
+        worker_image = build_dir / "komposyn-native-worker"
+        if args.include_shipped_worker:
+            worker_build_command = shipped_worker_build_command(go, worker_image, requested)
+            manifest["worker_image"].update(
+                {
+                    "status": "running",
+                    "source_commit": requested,
+                    "build_command_template": [
+                        "go", "build", "-trimpath", "-buildvcs=false", "-ldflags",
+                        "-s -w -buildid= -X main.cliVersion=0.0.0-native-study -X main.cliCommit=<source commit>",
+                        "-o", "<private build directory>/komposyn-native-worker", "./cmd/harness",
+                    ],
+                    "cgo_enabled": "0",
+                    "timeout_seconds": BUILD_TIMEOUT,
+                    "output_limit_bytes_per_stream": MAX_LOG_BYTES,
+                }
+            )
+            worker_build = bounded_capture(
+                run_capture,
+                isolated_environment_command(env, worker_build_command),
+                BUILD_TIMEOUT,
+                output / "worker-image-build.stdout.log",
+                output / "worker-image-build.stderr.log",
+                source_dir,
+            )
+            manifest["worker_image"].update(worker_build)
+            if worker_build.get("exit_code") != 0 or worker_build.get("timed_out") or not worker_image.exists():
+                manifest["worker_image"]["status"] = "timeout" if worker_build.get("timed_out") else "failed"
+                manifest["classification"] = "worker_image_build_failed_or_timed_out"
+                raise RuntimeError("source-built cmd/harness worker image did not build")
+            manifest["worker_image"].update(
+                {
+                    "status": "built",
+                    "sha256": sha256_file(worker_image),
+                    "size_bytes": worker_image.stat().st_size,
+                    "bind_mode": "file-snapshot",
+                }
+            )
+        else:
+            manifest["worker_image"]["status"] = "not_requested"
+
         test_env = dict(env)
         test_env.update({
             "KOMPOSYN_STAGE6_REPORT": str(report_path),
@@ -365,6 +445,10 @@ def main():
             "KOMPOSYN_STAGE6_BWRAP": args.bwrap,
             "KOMPOSYN_STAGE6_BIND_MODE": args.bind_mode,
         })
+        if args.include_shipped_worker:
+            test_env["KOMPOSYN_STAGE6_WORKER_IMAGE"] = str(worker_image)
+            test_env["KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256"] = manifest["worker_image"]["sha256"]
+            test_env["KOMPOSYN_STAGE6_WORKER_IMAGE_SIZE"] = str(manifest["worker_image"]["size_bytes"])
         run_command = [str(executable), "-test.run=^TestStage6", "-test.timeout=120s", "-test.count=1"]
         manifest["study"] = {"status": "running", "command_template": ["<built test binary>", "-test.run=^TestStage6", "-test.timeout=120s", "-test.count=1"], "timeout_seconds": RUN_TIMEOUT, "output_limit_bytes_per_stream": MAX_LOG_BYTES}
         run = bounded_capture(run_capture, isolated_environment_command(test_env, run_command), RUN_TIMEOUT, output / "study.stdout.log", output / "study.stderr.log", source_dir)
@@ -378,6 +462,15 @@ def main():
                 report = json.loads(report_data)
                 if report.get("source_commit") != requested or report.get("schema_version") != 1:
                     raise ValueError("structured report provenance or schema mismatch")
+                if args.include_shipped_worker:
+                    image_report = report.get("worker_image", {})
+                    if (
+                        image_report.get("profile") != "cmd-harness-worker-image"
+                        or image_report.get("sha256") != manifest["worker_image"].get("sha256")
+                        or image_report.get("size_bytes") != manifest["worker_image"].get("size_bytes")
+                        or image_report.get("bind_mode") != "file-snapshot"
+                    ):
+                        raise ValueError("cmd/harness worker-image provenance mismatch")
                 manifest["report"] = {"status": "valid", "sha256": sha256_file(report_path), "case_count": len(report.get("cases", []))}
                 manifest["classification"] = report.get("overall_status", "incomplete")
                 (output / "summary.md").write_text(summarize(report, manifest["build"], manifest["study"]), encoding="utf-8")
