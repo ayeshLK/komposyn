@@ -10,7 +10,7 @@ The general KompoSyn harness, plugin runtime, and universal plugin API remain
 future work. Today, KompoSyn delivers the independently useful Token Logger
 component and an experimental temporary text chat that demonstrates bundled
 provider and UI boundaries. The `komposyn` chat CLI is installable from its
-signed release once that release is published; it does not establish a general
+signed releases; it does not establish a general
 plugin platform.
 
 > **Build independently. Compose seamlessly. Evolve openly.**
@@ -68,14 +68,17 @@ the JSONL sidecar transport for `komposyn-lg`.
 `komposyn` is a temporary text chat. It is separate from the production
 [`komposyn-lg` Token Logger CLI](https://github.com/ayeshLK/komposyn-lg#install).
 The broader agent runtime, universal plugin API, projects, sessions, tasks,
-persistent conversations, tool execution, and MCP support are not part of this
-release.
+persistent conversations, filesystem mutation, shell execution, web/image
+tools, and MCP support are unavailable. Current source adds conversation-local
+planning, clarification, temporary permissions, and conditional Linux exact-file
+reads; see the [five-minute walkthrough](docs/harness/first-use.md).
 
-> **Release preparation (checked 2026-10-29):** the latest GitHub release is
-> v0.9.0 and has no binary assets. v0.10.0 and its signed binaries are not
-> published yet. The quick-start scripts can be fetched from `master`, but
-> installation succeeds only after a suitable signed binary release is
-> published.
+> **Release status (checked 2026-11-10):** [v0.13.1](https://github.com/ayeshLK/komposyn/releases/tag/v0.13.1)
+> is the latest published release with signed assets for six platform targets.
+> Planning, clarification, permissions, exact-file reads, and newer terminal
+> improvements are in current source and await the next release. Installing
+> latest stable today installs v0.13.1. Live provider validation of the next
+> experimental release is pending and will be recorded after publication.
 
 ### Linux and macOS
 

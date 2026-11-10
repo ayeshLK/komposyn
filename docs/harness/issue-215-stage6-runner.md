@@ -1,5 +1,14 @@
 # Issue #215 Stage 6 integrated runner
 
+
+**Reviewed milestone status (2026-11-10):** [#215 is closed within read scope](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6771210816).
+The [snapshot report](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6770069844)
+and [descriptor report](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6771185536)
+cover the merged read source tree with distinct worker-image profiles. See the
+[closure record](issue-215-completion-tracking.md) for exact provenance and
+remaining limitations. This update records reviewed issue evidence; it does
+not rerun or newly verify the archives.
+
 This runner is an experimental acceptance fixture and does not connect to a
 real provider. By default, it uses a test-only `read_file` runtime composition
 and the stripped Stage 6 test binary as the worker. The optional
@@ -190,9 +199,9 @@ deadlines. The report contains only booleans, never the local PIDs. This
 demonstrates cleanup for the observed processes in this exact profile; it does
 not prove cleanup of arbitrary descendants, naturally hung workers, production
 coordinator behavior, or every failure mode. If backend trust or pidfd
-observation is unavailable, the case remains unavailable. A trusted-host run
-is required before this lifecycle behavior can be claimed as measured. This
-profile-only fixture does not model runtime grants or approval; it transfers
+observation is unavailable, the case remains unavailable. The reviewed
+descriptor-mode report measured this fixed study profile; the shipped-image
+parent-death case remains unavailable. This profile-only fixture does not model runtime grants or approval; it transfers
 only one synthetic descriptor after worker readiness and deliberately does not
 release it for reading. Its report includes its own exact hold-mode launch
 arguments, separate from the ordinary Stage 6 worker profile.

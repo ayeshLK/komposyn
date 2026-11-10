@@ -8,6 +8,11 @@ and JSONL harness transport are maintained in the
 
 ## Core API and operation
 
+- [Five-minute chat walkthrough](harness/first-use.md) — current source capabilities,
+  provider/auth/platform limits, permissions, and synthetic file disclosure.
+- [Next release overview](harness/next-release-overview.md) and
+  [validation record](harness/release-validation.md) — review drafts for #269.
+
 - [Experimental temporary chat](harness/README.md) — `komposyn` build, `/model`
   workflow, local configuration, provider/UI boundaries, and acceptance status.
 - [Experimental CLI installation](installation.md) — verified install,

@@ -20,9 +20,12 @@ credentials can be an API key or an SIWC OAuth token for ChatGPT plan usage;
 Anthropic remains API-key based. OpenAI OAuth and unknown routes stay
 text-only. Approved `request_user_input` answers and bounded tool results are
 sent to the selected model. An approved `read_file` result is also sent to the
-selected provider and may recur in valid same-conversation requests. The tools
-do not load `AGENTS.md` or skills, run subprocesses, access the network, send
-MCP requests, or write messages to Token Logger. OpenAI Responses requests set `store: false`.
+selected provider and may recur in valid same-conversation requests. The
+conversation tools do not load `AGENTS.md` or skills, run subprocesses,
+access the network, send MCP requests, or write messages to Token Logger.
+`read_file` launches a fixed host-owned sandbox worker, with no arbitrary
+command execution or worker network access. The host sends approved results
+to the selected provider. OpenAI Responses requests set `store: false`.
 Anthropic Messages requests do not create a KompoSyn conversation resource.
 
 API keys and OpenAI OAuth access, refresh, and retained ID tokens are stored as

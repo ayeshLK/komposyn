@@ -26,10 +26,13 @@ experimental temporary-chat executable:
 The standalone CLI lets developers use Token Logger with existing agent tools
 without waiting for a complete harness. The experimental chat remains
 memory-only. Its narrowly scoped [issue #198](https://github.com/ayeshLK/komposyn/issues/198)
-tool-use milestone exposes only the conversation-local `update_plan` and
+tool-use milestone exposes the conversation-local `update_plan` and
 `request_user_input` tools on provider/auth routes that explicitly support
 client tools. Centralized action and exact conversation-resource authorization
-is required. Filesystem, process, web, and image tools remain unavailable.
+is required. The separately reviewed [read-focused milestone](harness/issue-215-completion-tracking.md)
+also enables a conditional Linux exact-file `read_file` capability with trusted
+backend inspection, an explicit root and target-specific once approval.
+Filesystem mutation, process, web, and image tools remain unavailable.
 This milestone does not add projects, sessions, persistent tasks, or
 persistent conversations. The sidecar is a token-logger
 integration contract, not a general KompoSyn plugin protocol. The project does

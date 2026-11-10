@@ -22,12 +22,15 @@ contains and releases a separate experimental temporary-chat executable named
 [release verification](release-verification.md).
 
 Issue #198 tracks a separate experimental tool-use milestone. The temporary
-chat currently enables only the bundled conversation-local `update_plan` and
+chat enables the bundled conversation-local `update_plan` and
 `request_user_input` tools on explicitly supported provider/auth routes. They
 use centralized action and exact conversation-resource authorization and keep
-their state in memory. Filesystem, process, web, and image tools remain
-unavailable. This milestone does not establish a general harness runtime or
-plugin API.
+their state in memory. The separately reviewed Linux `read_file` capability
+requires trusted backend inspection, an explicit root, retained exact-object
+admission and target-specific once approval. Its [read-focused acceptance](harness/issue-215-completion-tracking.md)
+is scoped to the recorded native profiles. Filesystem mutation, process, web,
+and image tools remain unavailable. These milestones do not establish a
+general harness runtime or plugin API.
 
 ```mermaid
 flowchart LR
