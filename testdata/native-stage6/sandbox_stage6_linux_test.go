@@ -230,7 +230,7 @@ func newStage6Report() stage6Report {
 			item.Reason = "synthetic separate-process actor helper control was not executed"
 		} else if unimplemented {
 			item.EvidenceKind = "not-implemented"
-			item.Reason = "case is not implemented by Stage 6 runner version 7"
+			item.Reason = "case is not implemented by Stage 6 runner version 8"
 		} else if _, workerLifecycle := workerLifecycleCases[id]; workerLifecycle {
 			item.EvidenceKind = "native-worker-lifecycle"
 			item.Reason = "fixed worker parent-death lifecycle case was not executed"
