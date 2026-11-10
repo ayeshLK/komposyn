@@ -14,19 +14,28 @@ is required. The selected model, messages, provider continuation data,
 discovery results, and per-request usage exist only in memory and are cleared
 when the process exits.
 
+For a short guided trial, start with the [five-minute walkthrough](first-use.md),
+including the provider/auth/platform table and read-disclosure limits. It
+describes current source awaiting the next release after v0.13.1. Live provider
+validation of that candidate remains pending; fixture tests are not live tests.
+
 ## Build and run
 
 From the repository root, build the executable with its intended name:
 
 ```sh
-go build -o /tmp/komposyn ./cmd/harness
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/komposyn ./cmd/harness
 /tmp/komposyn
 ```
+
+These flags match the static, stripped release profile. An unstripped
+development binary can exceed the Linux worker's 14 MiB image bound and leave
+`read_file` unavailable even on a trusted backend.
 
 To install it in the Go bin directory:
 
 ```sh
-go build -o "$(go env GOPATH)/bin/komposyn" ./cmd/harness
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$(go env GOPATH)/bin/komposyn" ./cmd/harness
 ```
 
 Bare `go install ./cmd/harness` produces a binary named `harness`, so it is
@@ -47,8 +56,9 @@ The auth and settings stores expose a host-owned protection hook. The shipped
 chat wires those stores to a host sandbox composition before loading their
 contents. The six-clause bounded exact-file disclosure policy is accepted, and
 Stages 1–5 plus the Stage 6 runner/lifecycle implementation are merged.
-Stage 6 has limited trusted-host evidence, but its full native acceptance gate
-remains incomplete. See the [issue #215 evidence and current limitations](https://github.com/ayeshLK/komposyn/issues/215).
+The read-focused #215 milestone is closed after reviewed shipped-worker snapshot
+and study-worker descriptor evidence on the recorded Linux amd64/Bubblewrap
+0.9.0 environment. See the [closure and evidence limits](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6771210816).
 The focused `read_file` capability is now wired to the retained Linux worker
 path on explicitly supported client-tool routes when the trusted Bubblewrap
 backend and all lifecycle interfaces are available. It reads one exact regular
@@ -63,10 +73,13 @@ cross-platform acceptance. `/fs-root` selects an in-memory lookup root. See the
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
-The current stage audit, complete issue-checklist mapping and Stage 6 evidence
-contract are in the [#215 completion tracking plan](issue-215-completion-tracking.md).
+The closure disposition, follow-up boundaries and Stage 6 evidence
+contract are in the [#215 closure and acceptance record](issue-215-completion-tracking.md).
 The integrated native feasibility runner and reproduction steps are described in the
 [Stage 6 runner guide](issue-215-stage6-runner.md).
+
+Mutation design is tracked separately in
+[issue #267](https://github.com/ayeshLK/komposyn/issues/267).
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
@@ -103,9 +116,9 @@ capability; its changes still require ordinary review before merge.
 
 The default paths are `~/.komposyn/auth.json` and
 `~/.komposyn/settings.json`. Paths can be overridden with the flags above.
-The auth file remains at schema version 1; this CLI format has not been
-released, so OAuth extends the existing pre-release schema without a version
-bump. It stores API keys and OpenAI OAuth tokens as plaintext JSON under the
+The auth file remains at schema version 1. OAuth uses the existing schema
+without a version bump; older API-key and environment-reference profiles remain
+readable. It stores API keys and OpenAI OAuth tokens as plaintext JSON under the
 same private-file boundary. On Unix the directory is
 restricted to `0700` and files to `0600`; on Windows it applies a protected
 ACL granting access to the current user. Writes use a private temporary file,
@@ -275,7 +288,7 @@ completed effect or promise to stop running work.
 
 ### Conversation-local tools
 
-The experimental executable exposes exactly two tools, and only on routes that
+The experimental executable always offers two conversation tools on routes that
 explicitly support client tools: OpenAI API-key Responses and Anthropic
 Messages. OpenAI OAuth and unknown routes remain text-only. Each tool requires
 the normal action and resource authorization. The resource is the exact opaque
@@ -479,8 +492,9 @@ namespace actors cover selected-root and parent relocation, target replacement,
 a late protected alias, and a moved protected directory child. Those source
 scenarios do not count as native evidence until the selected revision runs with
 a trusted Bubblewrap backend. Protected-owner rotation, mount boundaries, a
-protected-ancestor race, and descendant cleanup remain limited or pending; no
-filesystem tool is enabled. See the [scenario matrix](read-broker-native-actor.md)
+protected-ancestor race, and descendant cleanup remain limited or pending in
+that historical study. Current source separately enables only conditional
+`read_file` under the reviewed Stage 6 boundaries above. See the [scenario matrix](read-broker-native-actor.md)
 and follow the [manual read-broker runner guide](read-broker-manual-runner.md) to produce a
 bounded, checksummed archive from a normal Linux host terminal.
 The [owner inventory and admission note](read-broker-owner-inventory.md)
@@ -489,8 +503,8 @@ synthetic fixture profile does not establish production coverage.
 
 ## Native study prerequisite
 
-The brokered-read study is experimental and does not enable a filesystem tool.
-Its current host profile requires a trusted, system-installed Bubblewrap at the
+The brokered-read study is experimental. Both its native worker and the
+conditional chat read path require a trusted, system-installed Bubblewrap at the
 absolute path `/usr/bin/bwrap`, usable user/mount/PID/IPC/UTS/network namespaces,
 and the worker's seccomp support. The harness validates the executable and its
 path before running probes; it does not search `PATH`, install or upgrade

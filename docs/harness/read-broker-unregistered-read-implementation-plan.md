@@ -1,6 +1,13 @@
 # Exact-file read implementation plan
 
-**Current status (2026-11-10):** disclosure policy is accepted; Stages 1–5 and Stage 6 native feasibility work are merged. A focused production-composition `read_file` integration is now on the review branch, gated on trusted Linux Bubblewrap inspection and the complete retained-read lifecycle. It does not enable filesystem mutation or shell, and does not complete issue #215. Historical stage records below are retained for provenance and may describe the state before this integration.
+**Current status (2026-11-10):** the read-focused [issue #215 is closed](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6771210816).
+Stages 1–5, production `read_file` integration (#264), and the Stage 6 shipped-worker
+runner (#265) are merged. Reviewed native evidence covers the command image in
+snapshot mode and the study image in descriptor mode on the recorded Linux
+amd64/Bubblewrap 0.9.0 environment. See the [closure record and limitations](issue-215-completion-tracking.md).
+Mutation moved to [#267](https://github.com/ayeshLK/komposyn/issues/267);
+mutation and shell remain unavailable. The plan below preserves historical
+baselines and stage proposals, which are not current source audits.
 This is a new source-grounded plan, not exact recovery or verification of the
 missing local handoff. The maintainer later accepted all six clauses in the
 [explicit acceptance comment](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6709361902)

@@ -1,5 +1,11 @@
 # Phase-one acceptance status
 
+This is the historical text-chat milestone record, retained with its original
+evidence and unverified cases. Statements about the then-unreleased auth
+schema or tool foundation describe that milestone, not current release status.
+For current source and release limits, see the [walkthrough](first-use.md) and
+[release validation record](release-validation.md).
+
 Scope source: the latest phase-one decision on [issue #155](https://github.com/ayeshLK/komposyn/issues/155#issuecomment-6395039680). This table records the original text-chat milestone; issue #198 is a separate tool-use milestone.
 Evidence below refers to deterministic tests and source paths in this branch.
 
