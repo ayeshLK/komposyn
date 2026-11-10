@@ -11,8 +11,8 @@ Published baseline: `v0.13.1`, commit
 fresh signature verification.
 
 Implementation candidate: remote/local master
-`a3774cf99ca6478057310a02267ca48eccd68069`. This preparation changes Markdown
-only. Its eventual reviewed merge and Release Please commit must be recorded
+`a3774cf99ca6478057310a02267ca48eccd68069`. Preparation PR: [#270](https://github.com/ayeshLK/komposyn/pull/270).
+This preparation changes Markdown only. Its eventual reviewed merge and Release Please commit must be recorded
 before publication, with final CI attached to that revision. Do not label a
 dirty worktree or the implementation baseline as the final release commit.
 
@@ -66,9 +66,9 @@ failed because its directory was read-only; those setup failures are not passes.
 | `go mod verify` | Passed |
 | `go vet ./...` | Passed |
 | `go test ./...` | Passed |
-| `go test -race ./...` | Pending local completion |
-| `make check` | Pending local completion |
-| `git diff --check` | Passed; review again before submission |
+| `go test -race ./...` | Passed (417 seconds including build; Token Logger tests 332 seconds) |
+| `make check` | Passed; generated no Go formatting changes |
+| `git diff --check` | Passed |
 | Public standalone CLI suite | Passed locally against public CLI `a24e14b9fa729140cb77d6e1caa562ccf92fac47`; base CI passed |
 | Native Linux candidate archive build and artifact smoke | Passed on clean implementation candidate; unsigned `0.0.0-dev` build only |
 | `bash -n scripts/install.sh scripts/uninstall.sh` and `bash scripts/test-installer-unix.sh` | Passed; Cosign mocked in fixtures |
@@ -194,7 +194,13 @@ No credentials or billable inference are authorized by this document.
 | Anthropic API key | Unverified; await published binary and authorized account | Unverified | Maintainer / authorized account operator |
 | ChatGPT sign-in | Unverified; await published binary and eligible authorized account | Unavailable by design; text only | Maintainer / authorized account operator |
 
-No product regression was identified during this documentation audit. The
+The original unstripped source-build command produced a 19,308,007-byte
+Linux amd64 image, larger than the 14 MiB worker-image bound. Build instructions
+now use the static stripped release profile. The exact walkthrough build
+produced a 13,496,482-byte image; `--version` and isolated `--check` passed
+without creating auth/settings files. The source-built native-study image
+above also fits the bound. No product regression was identified during this
+documentation audit. The
 cache setup failure and local backend trust refusal are recorded above rather
 than hidden. Further sanitized startup, authorization, credential-protection,
 or data-preservation blockers must stop publication and receive corrective

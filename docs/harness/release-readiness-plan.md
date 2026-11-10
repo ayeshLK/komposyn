@@ -44,7 +44,7 @@ release gates. The [overview](next-release-overview.md) and
   protections, and the absence of editing, shell, web, and persistent sessions.
 - [x] Correct outdated release-availability and current-status statements.
   Preserve historical evidence with its original revision and limitations.
-- [ ] Verify installation commands, links, and a short first-use walkthrough.
+- [x] Verify installation commands, links, and a short first-use walkthrough.
 
 Acceptance: current user guidance consistently describes shipped behavior,
 authentication/platform differences, prerequisites, and known limitations.
@@ -54,7 +54,7 @@ authentication/platform differences, prerequisites, and known limitations.
 - [ ] Record the exact candidate commit and changes since the previous release.
 - [x] Review Go API, database/migration, and protocol compatibility across the
   complete repository change, including Token Logger core changes.
-- [ ] Run the required checks and review any formatting diff:
+- [x] Run the required checks and review any formatting diff:
 
   ```sh
   go mod verify
@@ -66,7 +66,7 @@ authentication/platform differences, prerequisites, and known limitations.
 
 - [ ] Require successful candidate CI, security checks, and the public
   standalone `komposyn-lg` compatibility suite.
-- [ ] Record offline smoke evidence using isolated configuration, synthetic
+- [x] Record offline smoke evidence using isolated configuration, synthetic
   files, fake credentials, and fixture providers where inference is needed.
 
 | Area | Required coverage before publication |
@@ -85,7 +85,7 @@ authentication/platform differences, prerequisites, and known limitations.
   image, backend, and outstanding limits. Run the relevant native profile on
   the candidate where required to substantiate the advertised read behavior.
   Unit tests and cross-compilation cannot substitute for native enforcement.
-- [ ] Record exact commands, commit, platform, artifact identity, results, and
+- [x] Record exact commands, commit, platform, artifact identity, results, and
   unavailable cases. Keep credentials and sensitive content out of evidence.
 
 Acceptance: required checks pass, advertised enforcement has applicable

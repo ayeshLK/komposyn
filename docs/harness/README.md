@@ -24,14 +24,18 @@ validation of that candidate remains pending; fixture tests are not live tests.
 From the repository root, build the executable with its intended name:
 
 ```sh
-go build -o /tmp/komposyn ./cmd/harness
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/komposyn ./cmd/harness
 /tmp/komposyn
 ```
+
+These flags match the static, stripped release profile. An unstripped
+development binary can exceed the Linux worker's 14 MiB image bound and leave
+`read_file` unavailable even on a trusted backend.
 
 To install it in the Go bin directory:
 
 ```sh
-go build -o "$(go env GOPATH)/bin/komposyn" ./cmd/harness
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$(go env GOPATH)/bin/komposyn" ./cmd/harness
 ```
 
 Bare `go install ./cmd/harness` produces a binary named `harness`, so it is

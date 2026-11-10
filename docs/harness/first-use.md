@@ -13,9 +13,12 @@ account eligibility, model access, or real-provider compatibility.
 Run `komposyn`. For a source build on Linux/macOS, run:
 
 ```sh
-go build -o /tmp/komposyn ./cmd/harness
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/komposyn ./cmd/harness
 /tmp/komposyn
 ```
+
+The stripped build matches the release worker profile. An unstripped development
+binary can exceed the 14 MiB worker image bound and leave reads unavailable.
 
 Open `/model`, choose **Add New Provider**, and add an OpenAI API key,
 **Continue with ChatGPT**, or an Anthropic API key. Saved profiles remain
