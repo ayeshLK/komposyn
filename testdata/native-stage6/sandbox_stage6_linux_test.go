@@ -514,7 +514,7 @@ func TestStage6ParentDeathCleanup(t *testing.T) {
 			"effective_bubblewrap_arguments": readbrokerstudy.EffectiveBubblewrapArgumentsWithCapabilityHold(inspection.BindMode),
 			"required_namespaces":            []string{"mount", "user", "pid", "ipc", "uts", "network"},
 			"network":                        "unshared; no network access",
-			"root_mount":                     "private 8 MiB tmpfs",
+			"root_mount":                     "private 16 MiB tmpfs",
 			"worker_mount":                   stage6WorkerMountPolicy(),
 			"worker_environment":             []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"},
 			"inherited_descriptors":          []string{"fd 3: seccomp filter", "fd 4: local protocol socket", "fd 5: consumed worker source", "fd 6: retained worker verification image"},
@@ -1468,7 +1468,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		"effective_bubblewrap_arguments": effectiveArguments,
 		"required_namespaces":            []string{"mount", "user", "pid", "ipc", "uts", "network"},
 		"network":                        "unshared; no network access",
-		"root_mount":                     "private 8 MiB tmpfs",
+		"root_mount":                     "private 16 MiB tmpfs",
 		"worker_mount":                   stage6WorkerMountPolicy(),
 		"runtime_mounts":                 []string{},
 		"extra_descriptors":              []string{"fd 3: seccomp filter", "fd 4: local protocol socket", "fd 5: worker mount source (consumed by Bubblewrap)", "fd 6: worker verification image (retained through startup)"},
@@ -2379,7 +2379,7 @@ func TestStage6LaunchProfileAndLimits(t *testing.T) {
 	for _, required := range [][]string{
 		{"--die-with-parent"}, {"--new-session"}, {"--unshare-user"}, {"--unshare-pid"},
 		{"--unshare-ipc"}, {"--unshare-uts"}, {"--unshare-net"}, {"--as-pid-1"},
-		{"--disable-userns"}, {"--cap-drop", "ALL"}, {"--clearenv"}, {"--size", "8388608"},
+		{"--disable-userns"}, {"--cap-drop", "ALL"}, {"--clearenv"}, {"--size", "16777216"},
 		{"--tmpfs", "/"}, {"--sync-fd", "6"}, {"--seccomp-fd"},
 	} {
 		if !hasSequence(required...) {
@@ -2468,12 +2468,21 @@ func TestStage6ProtectedAuthObjectIsWithheld(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	turn, err := fixture.chat.Send(ctx, "request the protected fixture", nil)
-	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
-		t.Fatalf("protected auth refusal did not interrupt before continuation: outcome=%s err=%v", turn.Outcome, err)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("protected auth refusal did not permit safe text continuation: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := fixture.provider.captured()
-	if len(requests) != 1 {
-		t.Fatalf("provider requests=%d, want only the initial request before protected-read refusal", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial request plus safe refusal continuation", len(requests))
+	}
+	toolResult, found := readResultContent(requests[1], "stage6-read")
+	var refusal struct {
+		Outcome   string `json:"outcome"`
+		Truncated bool   `json:"truncated"`
+		Content   string `json:"content"`
+	}
+	if !found || json.Unmarshal([]byte(toolResult), &refusal) != nil || refusal.Outcome != string(tools.OutcomeNotExecuted) || refusal.Truncated || refusal.Content == "" || strings.Contains(refusal.Content, "synthetic-never-real-key") {
+		t.Fatalf("protected auth continuation result=%q found=%t; want a bounded not_executed result without payload", toolResult, found)
 	}
 	for _, request := range requests {
 		encoded, _ := json.Marshal(request.Messages)
@@ -2497,7 +2506,7 @@ func TestStage6ProtectedAuthObjectIsWithheld(t *testing.T) {
 		item.OnceApprovalCount, item.WorkerStarted, item.WorkerJoined = fixture.approvals.Load(), false, false
 		item.StaleDataAbsent = true
 	})
-	stage6Pass("protected_auth_refusal", "registered synthetic auth route refused before approval, worker launch or provider disclosure")
+	stage6Pass("protected_auth_refusal", "registered synthetic auth route refused before approval and worker launch; only a correlated not_executed result reached the fake provider, with no protected bytes disclosed")
 }
 
 func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
@@ -2507,12 +2516,21 @@ func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	turn, err := fixture.chat.Send(ctx, "request the protected fixture", nil)
-	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
-		t.Fatalf("protected settings refusal did not interrupt before continuation: outcome=%s err=%v", turn.Outcome, err)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("protected settings refusal did not permit safe text continuation: outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := fixture.provider.captured()
-	if len(requests) != 1 {
-		t.Fatalf("provider requests=%d, want only the initial request before protected-read refusal", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial request plus safe refusal continuation", len(requests))
+	}
+	toolResult, found := readResultContent(requests[1], "stage6-read")
+	var refusal struct {
+		Outcome   string `json:"outcome"`
+		Truncated bool   `json:"truncated"`
+		Content   string `json:"content"`
+	}
+	if !found || json.Unmarshal([]byte(toolResult), &refusal) != nil || refusal.Outcome != string(tools.OutcomeNotExecuted) || refusal.Truncated || refusal.Content == "" || strings.Contains(refusal.Content, "synthetic-settings-marker") {
+		t.Fatalf("protected settings continuation result=%q found=%t; want a bounded not_executed result without payload", toolResult, found)
 	}
 	for _, request := range requests {
 		encoded, _ := json.Marshal(request.Messages)
@@ -2536,7 +2554,7 @@ func TestStage6ProtectedSettingsObjectIsWithheld(t *testing.T) {
 		item.OnceApprovalCount, item.WorkerStarted, item.WorkerJoined = fixture.approvals.Load(), false, false
 		item.StaleDataAbsent = true
 	})
-	stage6Pass("protected_settings_refusal", "registered synthetic settings route refused before approval, worker launch or provider disclosure")
+	stage6Pass("protected_settings_refusal", "registered synthetic settings route refused before approval and worker launch; only a correlated not_executed result reached the fake provider, with no protected bytes disclosed")
 }
 
 func TestStage6ClearDuringSecondApprovalWithholdsFirstCapture(t *testing.T) {
