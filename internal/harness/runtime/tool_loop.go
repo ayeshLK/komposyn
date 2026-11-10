@@ -764,6 +764,10 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 				}
 			}
 			cancelProvider()
+			if errors.Is(commitErr, errReadContinuationInvalidated) {
+				result.message = "Read continuation was invalidated before provider handoff; no continuation request was sent."
+				return finish(provider.Result{}, provider.OutcomeInterrupted, nil)
+			}
 			return finish(provider.Result{}, provider.OutcomeInterrupted, commitErr)
 		}
 		result.history = committedHistory
