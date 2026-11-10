@@ -116,3 +116,17 @@ v0.7.0 remain available; see
 Keep Actions permissions least-privilege and third-party actions pinned to
 immutable commit SHAs. The standalone CLI suite in core CI runs untrusted
 public code without secrets or write permissions.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in GitHub Issues for ayeshLK/komposyn. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default labels: needs-triage, needs-info, ready-for-agent, ready-for-human, and wontfix. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context layout: root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.
