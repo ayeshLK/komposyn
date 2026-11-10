@@ -586,6 +586,54 @@ func TestReadFileAdvertisementRequiresSelectedRootAndApprovalIsExplicit(t *testi
 	}
 }
 
+func TestReadFileApprovalRedirectReachesProviderWithoutReading(t *testing.T) {
+	const instruction = "Please summarize the request without opening a file."
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: publicationTarget(t, "notes.txt")}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &publicationHost{content: []byte("must-not-be-read"), root: filepath.Dir(fp.target), target: fp.target}
+	approval := ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalRedirect, instruction, nil
+	})
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, publicationReadRuntimeConfig(approval, host))
+	t.Cleanup(chat.Close)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+		t.Fatal(err)
+	}
+	selectFirst(t, chat)
+	selectPublicationRoot(t, chat, host, filepath.Dir(fp.target))
+	turn, err := chat.Send(context.Background(), "read this file", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("redirected turn=%+v err=%v", turn, err)
+	}
+	requests := fp.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want original call plus replanning request", len(requests))
+	}
+	last := requests[1].Messages
+	if len(last) == 0 || last[len(last)-1].Role != provider.RoleUser || last[len(last)-1].Text != instruction {
+		t.Fatalf("redirect instruction was not appended as a user message: %#v", last)
+	}
+	if strings.Contains(providerMessagesText(last), "must-not-be-read") {
+		t.Fatal("redirect path disclosed file content")
+	}
+	if len(turn.ToolActivities) == 0 || turn.ToolActivities[0].Outcome != tools.OutcomeNotExecuted {
+		t.Fatalf("redirect activity does not report not-executed: %+v", turn.ToolActivities)
+	}
+	host.mu.Lock()
+	reads := host.reads
+	host.mu.Unlock()
+	if reads != 0 {
+		t.Fatalf("redirect executed a read %d times", reads)
+	}
+	revision, grants := chat.toolRuntime.grants.Snapshot(chat.conversationID)
+	if revision != 0 || len(grants) != 0 || chat.toolRuntime.readAuthorityCount() != 0 {
+		t.Fatalf("redirect changed permission/read authority: revision=%d grants=%d authorities=%d", revision, len(grants), chat.toolRuntime.readAuthorityCount())
+	}
+}
+
 type unavailablePublicationHost struct{ *publicationHost }
 
 func (*unavailablePublicationHost) BackendStatus() (bool, string) {

@@ -164,6 +164,12 @@ func (e *filesystemReadAttemptError) Unwrap() error { return e.err }
 
 var errFilesystemReadTurnCancelled = errors.New("filesystem read approval cancelled the turn")
 
+type filesystemReadRedirectError struct{ instruction string }
+
+func (e *filesystemReadRedirectError) Error() string {
+	return "filesystem read was redirected before execution"
+}
+
 // FilesystemReadPublicationGate serializes final sensitive transcript and
 // provider-request commitment with host owner, policy, and selected-root
 // changes. The callback must remain bounded and must not perform provider I/O.
@@ -256,6 +262,17 @@ func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tool
 	if choice == permissions.ApprovalCancel || errors.Is(reviewErr, context.Canceled) || ctx.Err() != nil {
 		r.coordinator.CancelConversation(invocation.ConversationID)
 		return admission, nil, request, nil, errFilesystemReadTurnCancelled
+	}
+	if reviewErr == nil && choice == permissions.ApprovalRedirect && approvalCtx.Err() == nil && r.readAuthorityEpochCurrent(readEpoch) {
+		bounded, valid := boundedRedirect(redirect)
+		if valid && bounded != "" {
+			response, responseErr := r.respondApproval(pending.ID, choice, bounded, request, true, readEpoch)
+			if responseErr == nil && response.Outcome == permissions.ApprovalRedirected {
+				return admission, nil, request, nil, &filesystemReadRedirectError{instruction: bounded}
+			}
+		}
+		r.coordinator.CancelConversation(invocation.ConversationID)
+		return admission, nil, request, nil, errors.New("retained read redirect response was stale or invalid")
 	}
 	if reviewErr != nil || choice != permissions.ApprovalOnce || redirect != "" || approvalCtx.Err() != nil || !r.readAuthorityEpochCurrent(readEpoch) {
 		r.coordinator.CancelConversation(invocation.ConversationID)
