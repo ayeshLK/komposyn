@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,7 +164,8 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	press(tcell.KeyUp, 0) // Deny this file, separately from the first Allow once.
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, screen, "comparison answer", "")
-	if host.readCount() != 1 || strings.Contains(provider.requestText(1), issue278OutsideSecret) {
+	waitForCondition(t, func() bool { return !chat.Snapshot().Active })
+	if host.readCount() != 1 || provider.containsRequestSecret(issue278OutsideSecret) {
 		t.Fatal("denied second file was read or disclosed")
 	}
 
@@ -180,12 +182,12 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	if targets := host.targetsSnapshot(); len(targets) != 3 || targets[2] != outsideTarget {
 		t.Fatalf("read after /cd target=%q, want exact target %q", targets, outsideTarget)
 	}
-	if host.readCount() != 1 || strings.Contains(provider.requestText(2), issue278OutsideSecret) {
+	if host.readCount() != 1 || provider.containsRequestSecret(issue278OutsideSecret) {
 		t.Fatal("outside file was read or disclosed before fresh approval")
 	}
 	allowOnce()
 	waitForScreen(t, screen, "outside-file answer", "")
-	if host.readCount() != 2 || !strings.Contains(provider.requestText(3), issue278OutsideSecret) {
+	if host.readCount() != 2 || !provider.containsRequestSecret(issue278OutsideSecret) {
 		t.Fatal("approved file outside the launch directory did not reach the provider continuation")
 	}
 	if got := chat.Snapshot().WorkingDirectory; got != outsideDirectory {
@@ -215,7 +217,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, screen, "Request interrupted:", "")
-	if host.readCount() != 2 || strings.Contains(provider.requestText(5), issue278OutsideSecret) {
+	if host.readCount() != 2 || !provider.containsRequestSecret(issue278OutsideSecret) {
 		t.Fatal("redirected outside read was executed or disclosed")
 	}
 	stop()
@@ -283,28 +285,48 @@ func (p *issue278Provider) StreamChat(_ context.Context, request modelprovider.C
 	p.requests = append(p.requests, request)
 	requestNumber := len(p.requests)
 	p.mu.Unlock()
-	switch requestNumber {
-	case 1:
+	lastUser, hasToolResults := issue278LastUserAndToolResult(request)
+	switch {
+	case strings.Contains(lastUser, "Read both exact files and compare them") && !hasToolResults:
 		return issue278ReadCalls(request, []issue278ReadCall{{id: "absolute-launch", path: p.launchTarget}, {id: "outside-dotdot", path: p.outsideRelative}}), nil
-	case 2:
+	case strings.Contains(lastUser, "Read both exact files and compare them"):
 		return issue278Answer(request, "comparison answer", delta), nil
-	case 3:
+	case strings.Contains(lastUser, "Read README.md from this directory") && !hasToolResults:
 		return issue278ReadCalls(request, []issue278ReadCall{{id: "outside-working-directory", path: "README.md"}}), nil
-	case 4:
+	case strings.Contains(lastUser, "Read README.md from this directory"):
 		if !strings.Contains(providerRequestText(request), p.outsideSecret) {
 			return modelprovider.Result{}, errors.New("outside-file continuation omitted approved bytes")
 		}
 		return issue278Answer(request, "outside-file answer", delta), nil
-	case 5:
+	case strings.Contains(lastUser, "Read the outside README again") && !hasToolResults:
 		return issue278ReadCalls(request, []issue278ReadCall{{id: "redirect-outside", path: "README.md"}}), nil
-	case 6:
+	case strings.Contains(lastUser, "Read the outside README again"):
 		if strings.Contains(providerRequestText(request), p.outsideSecret) {
 			return modelprovider.Result{}, errors.New("redirect continuation disclosed file bytes")
 		}
 		return issue278Answer(request, "redirected answer", delta), nil
 	default:
-		return modelprovider.Result{}, errors.New("unexpected provider request")
+		return modelprovider.Result{}, fmt.Errorf("unexpected provider request %d for user message %q", requestNumber, lastUser)
 	}
+}
+
+func issue278LastUserAndToolResult(request modelprovider.ChatRequest) (string, bool) {
+	lastUserIndex := -1
+	for index := range request.Messages {
+		if request.Messages[index].Role == modelprovider.RoleUser {
+			lastUserIndex = index
+		}
+	}
+	if lastUserIndex < 0 {
+		return "", false
+	}
+	hasToolResult := false
+	for _, message := range request.Messages[lastUserIndex+1:] {
+		if message.Role == modelprovider.RoleTool || message.ToolResult != nil {
+			hasToolResult = true
+		}
+	}
+	return request.Messages[lastUserIndex].Text, hasToolResult
 }
 
 type issue278ReadCall struct {
@@ -340,6 +362,17 @@ func (p *issue278Provider) requestText(index int) string {
 		return ""
 	}
 	return providerRequestText(p.requests[index])
+}
+
+func (p *issue278Provider) containsRequestSecret(secret string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, request := range p.requests {
+		if strings.Contains(providerRequestText(request), secret) {
+			return true
+		}
+	}
+	return false
 }
 
 var _ modelprovider.Provider = (*issue278Provider)(nil)

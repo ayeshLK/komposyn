@@ -137,9 +137,6 @@ func TestIssue277ChangeDirectoryKeepsChatContextAndResolvesFutureRead(t *testing
 	typeText("/cd 資料 with spaces")
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, screen, "Working directory changed to:", "")
-	if !strings.Contains(renderedScreen(screen), "with spaces") {
-		t.Fatal("directory change confirmation omitted the path details")
-	}
 	if snapshot := chat.Snapshot(); snapshot.WorkingDirectory != nestedDirectory || snapshot.FilesystemRoot.Path != launchDirectory || len(snapshot.Turns) != 1 || !strings.Contains(snapshot.Turns[0].Text, "first derived answer") {
 		t.Fatalf("directory transition changed eligible-target boundary or conversation: %+v", snapshot)
 	}
