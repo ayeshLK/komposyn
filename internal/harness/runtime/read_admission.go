@@ -214,6 +214,7 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 	request := permissions.Request{
 		ConversationID:   invocation.ConversationID,
 		CallID:           invocation.ProviderCallID,
+		Destination:      admission.Destination,
 		AdmissionBinding: admission.AdmissionBinding,
 		Requirements:     []permissions.Requirement{action, resourceRequirement},
 		RequireOnceKeys:  []string{resourceKey},

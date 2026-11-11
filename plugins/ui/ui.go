@@ -97,9 +97,10 @@ type ApprovalRequirement struct {
 	ConversationAllowed                                               bool
 }
 type ApprovalRequest struct {
-	ID, ToolID, ToolDescription string
-	Requirements                []ApprovalRequirement
-	AllowConversation           bool
+	ID, ToolID, ToolDescription  string
+	Provider, Model, AuthProfile string
+	Requirements                 []ApprovalRequirement
+	AllowConversation            bool
 }
 type ApprovalEvent struct {
 	Request     *ApprovalRequest
