@@ -30,7 +30,21 @@ Implemented in #278: the target path is opened beneath its verified mount root
 and no longer needs to be contained beneath the working directory. Registered
 protected routes, pinned identities, provider-source classification, directory
 coverage, regular-file, size, and exact-object checks remain in force. The
-native runner built commit `418ac64` but refused backend trust before probing:
-`/usr/bin/bwrap` was owned by UID 65534, so worker startup and fixture
-operations were skipped. Native outside-directory evidence is still required;
-this implementation has not claimed native acceptance and #278 remains open.
+native runner initially built commit `418ac64` but refused backend trust before
+probing because `/usr/bin/bwrap` was owned by UID 65534. A later run against
+`89a8fa7fb93aa1bb0defea6bffa5dc9fcccd61e7` completed on Linux amd64 with Go
+1.26.11 and trusted Bubblewrap 0.9.0 (`ro-bind-fd`). It recorded 55 measured
+passes, 6 inconclusive cases, and 1 unavailable case across 62 rows. The
+`outside_working_directory_positive` case returned bytes matching the approved
+object after worker readiness, capability handoff, read, join, and publication;
+direct protected reads, hard-link aliases, and post-capture revocation checks
+also passed. The checksummed archive SHA-256 is
+`bc785b5e566e541ddc4ed581e640c3654ffe1bd3ac48c24a5789a6e3c31df328`.
+
+This is partial native evidence, not full acceptance. The run left 6 cases
+inconclusive and 1 unavailable; it did not provide native cases for unsupported
+lookups or oversized/nonregular targets, and protected-ancestor and
+mount-boundary coverage remains incomplete. #278 remains open until its
+required native positive and negative acceptance cases have conclusive
+evidence. See the [manual read-broker runner guide](../harness/read-broker-manual-runner.md)
+for reproduction and result interpretation.
