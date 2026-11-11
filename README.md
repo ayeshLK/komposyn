@@ -178,7 +178,7 @@ repository's identity.
 
 ## Development
 
-Requires Go 1.26.10 or newer. Run the core checks with:
+Requires Go 1.26.11 or newer. Run the core checks with:
 
 ```sh
 make check

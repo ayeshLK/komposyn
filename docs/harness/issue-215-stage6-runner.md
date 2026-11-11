@@ -21,7 +21,7 @@ or a real provider.
 ## Reproduction
 
 Run from a clean Linux checkout using a regular user, an already-installed Go
-1.26.10 or newer toolchain, and the reviewed absolute Bubblewrap executable.
+1.26.11 or newer toolchain, and the reviewed absolute Bubblewrap executable.
 Put that toolchain first on `PATH`; the runner uses `GOTOOLCHAIN=local` and will
 not download or switch toolchains. If the default `go` launcher selects a
 toolchain from `GOTOOLCHAIN`, resolve its installed `GOROOT` once and verify
@@ -81,7 +81,7 @@ worker-image test. The fixed parent-death helper uses the Stage 6 test binary,
 so `parent_death_cleanup` is explicitly unavailable in this profile rather
 than being attributed to the shipped image.
 
-Confirm the printed version is Go 1.26.10 or newer before proceeding. If
+Confirm the printed version is Go 1.26.11 or newer before proceeding. If
 `go env GOROOT` resolves to an older base installation, set `go_root` to the
 `GOROOT` of an already-installed compatible toolchain. Do not rely on runner
 toolchain auto-download; native execution must remain tied to the verified
