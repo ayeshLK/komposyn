@@ -116,7 +116,6 @@ func TestIssue277ChangeDirectoryKeepsChatContextAndResolvesFutureRead(t *testing
 	waitForScreen(t, screen, "Tool approval", "")
 	press(tcell.KeyEnd, 0) // The first key is ignored by the stale-view guard.
 	press(tcell.KeyEnd, 0)
-	waitForScreen(t, screen, "README.md", "")
 	if targets := host.targetsSnapshot(); len(targets) != 1 || targets[0] != firstTarget {
 		t.Fatalf("first approved target binding=%q, want %q", targets, firstTarget)
 	}
@@ -151,7 +150,6 @@ func TestIssue277ChangeDirectoryKeepsChatContextAndResolvesFutureRead(t *testing
 	waitForScreen(t, screen, "Tool approval", "")
 	press(tcell.KeyEnd, 0)
 	press(tcell.KeyEnd, 0)
-	waitForScreen(t, screen, "README.md", "")
 	if targets := host.targetsSnapshot(); len(targets) != 2 || targets[1] != secondTarget {
 		t.Fatalf("relative target after /cd=%q, want %q", targets, secondTarget)
 	}

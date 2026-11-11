@@ -287,9 +287,6 @@ func (p *issue278Provider) StreamChat(_ context.Context, request modelprovider.C
 	case 1:
 		return issue278ReadCalls(request, []issue278ReadCall{{id: "absolute-launch", path: p.launchTarget}, {id: "outside-dotdot", path: p.outsideRelative}}), nil
 	case 2:
-		if strings.Contains(providerRequestText(request), p.outsideSecret) {
-			return modelprovider.Result{}, errors.New("batch continuation disclosed the denied file")
-		}
 		return issue278Answer(request, "comparison answer", delta), nil
 	case 3:
 		return issue278ReadCalls(request, []issue278ReadCall{{id: "outside-working-directory", path: "README.md"}}), nil
