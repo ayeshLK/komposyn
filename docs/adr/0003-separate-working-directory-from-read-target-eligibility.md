@@ -41,20 +41,22 @@ direct protected reads, hard-link aliases, and post-capture revocation checks
 also passed. The checksummed archive SHA-256 is
 `bc785b5e566e541ddc4ed581e640c3654ffe1bd3ac48c24a5789a6e3c31df328`.
 
-This is partial native evidence, not full acceptance. The run left 6 cases
-inconclusive and 1 unavailable; it did not provide native cases for unsupported
-lookups or oversized/nonregular targets, and protected-ancestor and
-mount-boundary coverage remains incomplete. #278 remains open until its
-required native positive and negative acceptance cases have conclusive
-evidence. See the [manual read-broker runner guide](../harness/read-broker-manual-runner.md)
+At that point this was partial native evidence, not full acceptance. The run
+left 6 cases inconclusive and 1 unavailable; it did not provide native cases
+for unsupported lookups or oversized/nonregular targets, and protected-ancestor
+and mount-boundary coverage remained incomplete. #278 remained open pending
+corrected native positive and negative evidence. The later scoped completion
+run is recorded below and in the [#278 completion comment](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362).
+See the [manual read-broker runner guide](../harness/read-broker-manual-runner.md)
 for reproduction and result interpretation.
 
-The #278 follow-up adds native report rows for unsupported symlink and FIFO
+The #278 follow-up added native report rows for unsupported symlink and FIFO
 lookups, an oversized regular file whose bounded partial result must not be
-published, and the existing post-capture revocation check. These are
-implemented scenarios, not evidence until a trusted-host report records each
-row as a measured pass. Mount-crossing and protected-ancestor transitions
-remain unmeasured; backend trust and lookup guards stay enabled.
+published, and the existing post-capture revocation check. At the time of the
+older reports these were implemented scenarios without conclusive evidence;
+the corrected trusted-host report below now records the scoped rows as measured
+passes. Nested mount transitions and protected-ancestor races remain unmeasured;
+backend trust and lookup guards stay enabled.
 
 Run `08076c58667acd1d73971ee8ca6d1eea46682e89` completed on Linux amd64 with
 Go 1.26.11 and trusted Bubblewrap 0.9.0 (`ro-bind-fd`). Its validated report
@@ -103,3 +105,24 @@ exercise owner write/cleanup lifecycle beyond #278's target-admission change;
 the relevant revocation and actual auth/settings post-capture invalidation
 rows passed. Keep these broader study limits visible, and do not weaken backend
 trust or lookup guards.
+
+## Scoped #278 native completion (2026-11-11)
+
+The corrected trusted run used source commit
+`434542a9d77f202c94182867974afe27bf0b86c6`, which is included in merged
+master through PR #285. On Linux amd64 with Go 1.26.11 and trusted Bubblewrap
+0.9.0 (`ro-bind-fd`), all 66 report rows were classified: 59 measured passes,
+6 inconclusive and 1 unavailable. The archive SHA-256 is
+`7190ef4e90f86716bc20f91e3bb7131a3dd75c8a5c6f86ea2f6e6876081b9b9b`.
+
+The corrected symlink and FIFO rows each show the matching broker refusal
+reason, zero once-grant consumption, no worker startup and no capability
+handoff. Outside-directory and separate-mount positives, oversized
+no-publication, protected direct/alias refusals, target replacement bound to
+the approved object, and post-capture revocation suppression also passed. The
+completion record is the [#278 issue comment](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362); #278 is closed.
+
+This closes the scoped #278 native acceptance requirement. It does not turn the
+broader inconclusive owner-cleanup/protected-ancestor rows or unavailable
+owner-cleanup case into passes, and it does not measure a nested-mount
+transition or establish general sandbox or production readiness.

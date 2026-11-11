@@ -75,8 +75,13 @@ shell remain unavailable. Stage 6 native evidence is limited to the recorded
 Linux amd64/Bubblewrap 0.9.0 environment; it is not production-provider or
 cross-platform acceptance. The launch directory is shown as the working
 directory and is the base for relative read requests; it does not grant read
-permission. Native acceptance for outside-working-directory reads remains
-pending under [issue #278](https://github.com/ayeshLK/komposyn/issues/278). See the
+permission. Scoped native acceptance for outside-working-directory reads is
+complete under [issue #278](https://github.com/ayeshLK/komposyn/issues/278),
+with the trusted run pinned to `434542a9d77f202c94182867974afe27bf0b86c6` and
+archive SHA-256 `7190ef4e90f86716bc20f91e3bb7131a3dd75c8a5c6f86ea2f6e6876081b9b9b`.
+Six broader study cases remain inconclusive and one remains unavailable; this
+does not establish general sandbox or production readiness. See the [#278
+evidence record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362),
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).

@@ -138,6 +138,22 @@ broker-specific refusal details. Under #278's policy, requested targets on anoth
 verified mount are eligible, and lookup is confined beneath that target
 mount's root.
 
+The corrected trusted run for source commit
+`434542a9d77f202c94182867974afe27bf0b86c6` completed on Linux amd64 with Go
+1.26.11 and trusted Bubblewrap 0.9.0 (`ro-bind-fd`). It contains 66 cases: 59
+measured passes, 6 inconclusive and 1 unavailable. Archive SHA-256:
+`7190ef4e90f86716bc20f91e3bb7131a3dd75c8a5c6f86ea2f6e6876081b9b9b`.
+
+The corrected `unsupported_symlink_lookup` and `unsupported_fifo_lookup` rows
+report `target lookup refused by symlink policy` and
+`target lookup refused: not a regular file`, respectively. Both consumed no
+once grant and started no worker or capability handoff. The outside-directory
+and separate-mount reads, oversized no-publication, protected direct and alias
+refusals, target-replacement identity, and post-capture revocation rows passed.
+This completes the scoped #278 native acceptance; see the [completion record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362).
+The broader inconclusive/unavailable owner-cleanup and protected-ancestor
+limits and the unmeasured nested-mount transition remain as described below.
+
 ## Reporting correction
 
 The historical `SensitiveBytesPresentBeforeJoin` field was easy to misread. In
