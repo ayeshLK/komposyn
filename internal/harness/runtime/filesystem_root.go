@@ -134,6 +134,7 @@ func (c *Chat) InitializeWorkingDirectory(ctx context.Context, path string) erro
 	if c.filesystemRoot != canonical {
 		return ErrFilesystemRootStale
 	}
+	c.workingDirectoryOp++
 	c.workingDirectory = canonical
 	return nil
 }

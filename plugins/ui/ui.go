@@ -181,6 +181,7 @@ type Client interface {
 	OpenUsage(context.Context) error
 	RemoveProfile(string, bool) error
 	Select(context.Context, string, bool) error
+	ChangeWorkingDirectory(context.Context, string) error
 	Snapshot() Snapshot
 	Send(context.Context, string, func(string)) (Turn, error)
 	Cancel()

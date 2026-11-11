@@ -573,6 +573,7 @@ func supportedCommands() []command {
 		{name: "/cancel", description: "stop the active reply", action: "cancel"},
 		{name: "/exit", description: "close KompoSyn", action: "exit"},
 		{name: "/permissions", description: "inspect and revoke tool grants for this conversation", action: "permissions"},
+		{name: "/cd", description: "change the working directory for future relative paths", action: "working-directory"},
 		{name: "/plan", description: "show the current conversation plan", action: "plan"},
 		{name: "/copy", description: "copy latest completed reply; /copy all copies visible transcript text", action: "copy"},
 	}
@@ -1062,7 +1063,27 @@ func (u *terminal) runCommand(text string) {
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model /help /cancel /exit /permissions /plan /copy\nAlso: /copy all\nThe launch directory is the working directory for relative paths; it grants no read access.\nFile-reading availability appears in the header. Each read needs once approval.\nTools: update_plan, request_user_input, read_file if supported; no write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
+		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nAlso: /copy all\nThe launch directory is the working directory for relative file requests. Use /cd <path> to change it. Directory selection grants no read permission.\nFile-reading availability appears in the header. Each read needs once approval; contents may be sensitive, go to provider, and may recur.\nTools: update_plan, request_user_input, read_file if supported; no write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
+	case "working-directory":
+		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cd"))
+		if path == "" {
+			u.write("Usage: /cd <path>. The path may be absolute or relative to the current working directory; ~ expands to your home directory.\n")
+			u.input.SetText(trimmed)
+			u.app.SetFocus(u.input)
+			u.updateBanner()
+			return
+		}
+		if err := u.client.ChangeWorkingDirectory(u.ctx, path); err != nil {
+			u.write("Working directory unchanged: " + safeTerminalText(err.Error()) + "\n")
+			u.input.SetText(trimmed)
+			u.app.SetFocus(u.input)
+			u.updateBanner()
+			return
+		}
+		workingDirectory := u.client.Snapshot().WorkingDirectory
+		u.write("Working directory changed to: " + safeTerminalText(workingDirectory) + "\n")
+		u.updateBanner()
+		u.app.SetFocus(u.input)
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")

@@ -175,6 +175,9 @@ func (c Client) RemoveProfile(id string, confirm bool) error {
 func (c Client) Select(ctx context.Context, key string, confirm bool) error {
 	return adaptError(c.Chat.Select(ctx, key, confirm))
 }
+func (c Client) ChangeWorkingDirectory(ctx context.Context, path string) error {
+	return c.Chat.ChangeWorkingDirectory(ctx, path)
+}
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
 	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, Version: c.Version,

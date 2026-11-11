@@ -80,6 +80,14 @@ contract are in the [#215 closure and acceptance record](issue-215-completion-tr
 The integrated native feasibility runner and reproduction steps are described in the
 [Stage 6 runner guide](issue-215-stage6-runner.md).
 
+Use `/cd <path>` in chat to change the working directory for future relative
+file requests. The path may be absolute or relative to the current working
+directory; `~` expands to your home directory. Paths with spaces and Unicode
+are accepted as written. A directory change preserves the current
+conversation and does not grant read permission. This slice retains the
+existing launch-directory read-eligibility boundary until the wider-target
+policy and native acceptance are implemented.
+
 Mutation design is tracked separately in
 [issue #267](https://github.com/ayeshLK/komposyn/issues/267).
 
