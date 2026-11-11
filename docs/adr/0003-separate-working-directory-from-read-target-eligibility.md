@@ -48,3 +48,10 @@ mount-boundary coverage remains incomplete. #278 remains open until its
 required native positive and negative acceptance cases have conclusive
 evidence. See the [manual read-broker runner guide](../harness/read-broker-manual-runner.md)
 for reproduction and result interpretation.
+
+The #278 follow-up adds native report rows for unsupported symlink and FIFO
+lookups, an oversized regular file whose bounded partial result must not be
+published, and the existing post-capture revocation check. These are
+implemented scenarios, not evidence until a trusted-host report records each
+row as a measured pass. Mount-crossing and protected-ancestor transitions
+remain unmeasured; backend trust and lookup guards stay enabled.

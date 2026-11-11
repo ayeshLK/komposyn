@@ -130,6 +130,7 @@ type caseResult struct {
 	BytesMatchTarget               bool                           `json:"bytes_match_target"`
 	BytesMatchApproved             bool                           `json:"bytes_match_approved_object"`
 	ReadEvidencePresent            bool                           `json:"read_evidence_present"`
+	Truncated                      bool                           `json:"truncated"`
 	ReadEvidenceCase               string                         `json:"read_evidence_case,omitempty"`
 	WorkerOutcome                  readbrokerstudy.ReadOutcome    `json:"worker_outcome,omitempty"`
 	WorkerGenerations              *readbrokerstudy.GenerationSet `json:"worker_generations,omitempty"`
@@ -384,6 +385,9 @@ func unavailableCases(reason string) []caseResult {
 	planned := []struct{ name, expected string }{
 		{"ordinary_positive", "explicit once approval reads the opened fixture object"},
 		{"outside_working_directory_positive", "explicit once approval reads one exact target outside the working directory on its mount without changing the selected working directory"},
+		{"unsupported_symlink_lookup", "symlink target is refused before once consumption or worker handoff"},
+		{"unsupported_fifo_lookup", "non-regular FIFO target is refused before once consumption or worker handoff"},
+		{"oversized_target_not_published", "oversized regular target is bounded and no partial bytes are published"},
 		{"protected_direct", "credential object refused before worker capability handoff"},
 		{"provider_source_explicit_once", "registered provider source read only after explicit once approval"},
 		{"protected_existing_hardlink", "existing alias to protected object refused"},
@@ -585,6 +589,28 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	results = append(results, executeCase(session, authorizer, root, "ordinary_positive", ordinary, "ordinary-1", "explicit once approval reads the opened fixture object", readbrokerstudy.ReadSucceeded))
 	results = append(results, executeCase(session, authorizer, root, "outside_working_directory_positive", outsideTarget, "outside-working-directory-1", "explicit once approval reads one exact target outside the working directory on its mount without changing the selected working directory", readbrokerstudy.ReadSucceeded))
 	results = append(results, executeCase(session, authorizer, root, "protected_direct", protected, "credential-1", "credential object is refused before worker capability handoff", readbrokerstudy.ReadRefused))
+
+	// These targets exercise the actual native broker lookup. Unsupported
+	// lookups must stop before authorization is consumed or a worker starts.
+	symlinkTarget := filepath.Join(root, "unsupported-symlink.fixture")
+	if err := os.Symlink(ordinary, symlinkTarget); err != nil {
+		results = append(results, unavailableCase("unsupported_symlink_lookup", "symlink target is refused before once consumption or worker handoff", "host filesystem refused the synthetic symlink fixture"))
+	} else {
+		results = append(results, executeCase(session, authorizer, root, "unsupported_symlink_lookup", symlinkTarget, "unsupported-symlink-1", "symlink target is refused before once consumption or worker handoff", readbrokerstudy.ReadNotExecuted))
+	}
+
+	fifoTarget := filepath.Join(root, "unsupported-fifo.fixture")
+	if err := unix.Mkfifo(fifoTarget, 0o600); err != nil {
+		results = append(results, unavailableCase("unsupported_fifo_lookup", "non-regular FIFO target is refused before once consumption or worker handoff", "host filesystem refused the synthetic FIFO fixture"))
+	} else {
+		results = append(results, executeCase(session, authorizer, root, "unsupported_fifo_lookup", fifoTarget, "unsupported-fifo-1", "non-regular FIFO target is refused before once consumption or worker handoff", readbrokerstudy.ReadNotExecuted))
+	}
+
+	oversizedTarget := filepath.Join(root, "oversized.fixture")
+	if err := writeSyntheticFile(oversizedTarget, readbrokerstudy.MaxReadBytes+1); err != nil {
+		return results, err
+	}
+	results = append(results, executeCase(session, authorizer, root, "oversized_target_not_published", oversizedTarget, "oversized-target-1", "oversized regular target is bounded and no partial bytes are published", readbrokerstudy.ReadPartial))
 
 	providerSource := filepath.Join(root, "provider-source.fixture")
 	if err := os.WriteFile(providerSource, []byte("synthetic provider source\n"), 0o600); err != nil {
@@ -3070,9 +3096,13 @@ func executeCase(session fixtureReadSession, auth *readbrokerstudy.OnceGrantFixt
 
 func executeCaseWithHook(session fixtureReadSession, auth *readbrokerstudy.OnceGrantFixture, root, name, path, invocationID, expected string, expectedOutcome readbrokerstudy.ReadOutcome, hook readbrokerstudy.CheckpointHook) caseResult {
 	_ = auth.ApproveOnce(invocationID)
-	expectedBytes, snapshotErr := os.ReadFile(path)
-	if snapshotErr != nil {
-		return caseResult{Name: name, Status: "fixture_error", Expected: expected, Observed: "synthetic fixture snapshot could not be read", FixtureEffect: "none", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "fixture setup failed before invocation"}
+	var expectedBytes []byte
+	if expectedOutcome == readbrokerstudy.ReadSucceeded {
+		var snapshotErr error
+		expectedBytes, snapshotErr = os.ReadFile(path)
+		if snapshotErr != nil {
+			return caseResult{Name: name, Status: "fixture_error", Expected: expected, Observed: "synthetic fixture snapshot could not be read", FixtureEffect: "none", AuthorityA: "no conclusion", AuthorityB: "no conclusion", Detail: "fixture setup failed before invocation"}
+		}
 	}
 	session.SetCheckpointHook(hook)
 	defer session.SetCheckpointHook(nil)
@@ -3115,11 +3145,15 @@ func executeCaseWithHook(session fixtureReadSession, auth *readbrokerstudy.OnceG
 		} else {
 			stateMatches = stateMatches && ev.CapabilitySent && ev.ReadStarted
 		}
+	case readbrokerstudy.ReadNotExecuted:
+		stateMatches = stateMatches && !ev.WorkerStarted && !ev.CapabilitySent && !ev.ReadStarted && !ev.Published && consumptionCount == 0 && len(result.Bytes) == 0
+	case readbrokerstudy.ReadPartial:
+		stateMatches = stateMatches && result.Truncated && len(result.Bytes) == 0 && ev.WorkerStarted && ev.WorkerReady && ev.WorkerJoined && ev.CapabilitySent && ev.ReadStarted && !ev.Published && consumptionCount == 1
 	}
 	status := "unexpected"
 	if stateMatches {
 		status = "measured_pass"
-	} else if expectedOutcome != readbrokerstudy.ReadRefused && !ev.WorkerStarted {
+	} else if (expectedOutcome == readbrokerstudy.ReadSucceeded || expectedOutcome == readbrokerstudy.ReadPartial) && !ev.WorkerStarted {
 		status = "unavailable"
 	}
 	classification := "inconclusive"
@@ -3131,6 +3165,10 @@ func executeCaseWithHook(session fixtureReadSession, auth *readbrokerstudy.OnceG
 			classification = "protected_rule_enforced"
 		case readbrokerstudy.ReadCancelled:
 			classification = "coordinator_control"
+		case readbrokerstudy.ReadNotExecuted:
+			classification = "lookup_refused_before_worker"
+		case readbrokerstudy.ReadPartial:
+			classification = "bounded_without_publication"
 		}
 	} else if status == "unavailable" {
 		classification = "unavailable"
@@ -3160,13 +3198,17 @@ func executeCaseWithHook(session fixtureReadSession, auth *readbrokerstudy.OnceG
 			} else {
 				effect = "worker completed capture; bytes suppressed before publication"
 			}
+		case readbrokerstudy.ReadNotExecuted:
+			effect = "unsupported lookup refused before authorization consumption and worker launch"
+		case readbrokerstudy.ReadPartial:
+			effect = "worker enforced the byte ceiling; partial bytes were discarded before publication"
 		}
 	}
 	detail := result.Detail
 	if detail == "" {
 		detail = "fixture result bytes and filesystem paths omitted"
 	}
-	row := caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, CapabilityHeld: ev.CapabilityHeld, ReadStarted: ev.ReadStarted, Published: ev.Published, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, OwnerCoverage: &coverageSnapshot, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
+	row := caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, CapabilityHeld: ev.CapabilityHeld, ReadStarted: ev.ReadStarted, Published: ev.Published, Truncated: result.Truncated, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, OwnerCoverage: &coverageSnapshot, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
 	applyReadEvidence(&row, result, ev, ev.Case == invocationID)
 	return row
 }
@@ -3496,6 +3538,24 @@ func studyIdentity(file *os.File) (readbrokerstudy.FileIdentity, error) {
 
 func unavailableActorCase(name, expected, detail string) caseResult {
 	return caseResult{Name: name, Status: "unavailable", Classification: "unavailable", Expected: expected, Observed: "actor transition was not run", FixtureEffect: "none established", AuthorityA: "no conclusion", AuthorityB: "no conclusion", ActorStartState: "not_confirmed", ActorDetail: detail, Detail: detail}
+}
+
+func unavailableCase(name, expected, detail string) caseResult {
+	return caseResult{
+		Name: name, Status: "unavailable", Classification: "unavailable",
+		Expected: expected, Observed: "fixture prerequisite unavailable",
+		FixtureEffect: "no read attempt was made", AuthorityA: "no conclusion",
+		AuthorityB: "no conclusion", Detail: boundText(detail, 512),
+	}
+}
+
+func writeSyntheticFile(path string, size int) error {
+	if size < 0 || size > readbrokerstudy.MaxReadBytes+1 {
+		return errors.New("synthetic file size is outside the study bound")
+	}
+	content := bytes.Repeat([]byte{'x'}, size)
+	defer clear(content)
+	return os.WriteFile(path, content, 0o600)
 }
 
 func pathExists(path string) bool {

@@ -51,7 +51,7 @@ and pin release, it is downgraded to `inconclusive` with
 root for those rows instead of deleting data that a surviving worker may still
 reference. The manual summary prints this retention state.
 
-## Implemented cases
+## Existing real-store cases
 
 | Scenario | Cases and evidence |
 |---|---|
@@ -59,6 +59,33 @@ reference. The manual summary prints this retention state.
 | Active-worker barrier | `real_auth_held_worker_cleanup_pending_blocks_write_then_retry` and `real_settings_cleanup_pending_refuses_then_retries` correlate the held worker descriptor to the empty temp object, store refusal, cleanup request, direct wait, once-grant count, and fresh retry identity. |
 | Registration failure | `real_auth_injected_registration_failure_preserves_destination` is a deterministic owner-hook failure fixture; `real_auth_failure_retry_after_registration` exercises a fresh real store operation with the study adapter. These rows are owner-lifecycle evidence, not independent namespace-race tests. |
 | Publication invalidation | `real_auth_publication_invalidation_after_capture` and `real_settings_publication_invalidation_after_capture` mutate the actual store from the after-capture checkpoint, then check policy generation, worker join, once consumption and publication sink. |
+
+## Native outside-directory admission and refusal cases
+
+The general fixture session includes explicit native rows for the expanded
+#278 target policy. These are separate from auth/settings owner rows and use
+only disposable fixture files:
+
+| Scenario | Case | Required evidence |
+|---|---|---|
+| Unsupported symbolic-link lookup | `unsupported_symlink_lookup` | The actual broker refuses the link before once-grant consumption, worker startup, or descriptor handoff. |
+| Non-regular FIFO target | `unsupported_fifo_lookup` | The actual broker opens non-blockingly, classifies the descriptor as non-regular, then refuses before grant consumption or worker startup. |
+| Oversized regular file | `oversized_target_not_published` | The native worker reaches readiness and reads only to the fixed 64 KiB bound; the truncated result is discarded, no bytes are returned to the caller or published, and the worker is joined. |
+| Post-capture revocation | `revoke_after_capture_before_publish` | The captured result is suppressed after grant-generation change and the worker is joined. |
+
+The symlink and FIFO rows classify pre-worker `ReadNotExecuted` as a
+successful refusal only when no grant was consumed and no worker or target
+descriptor was released. The oversized row is a bounded refusal at the
+disclosure boundary: the worker can observe at most the fixed cap, but a
+truncated response is discarded and is never returned or published. It does
+not claim that the worker avoided reading the first 64 KiB.
+
+These rows must be present in the report and individually measured on a trusted
+supported host before they count as native evidence. Synthetic Go unit tests,
+an unavailable Bubblewrap preflight, or a missing row are not native passes.
+Mount-crossing and protected-ancestor transitions remain separate gaps; do not
+weaken `RESOLVE_NO_XDEV`, protected-directory coverage, or backend trust checks
+to make a fixture pass.
 
 Each native row records worker startup/read/join/publication fields where
 applicable. Results use `measured_pass`, `observed_violation`, `unavailable`,
