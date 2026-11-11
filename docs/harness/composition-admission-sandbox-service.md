@@ -20,7 +20,7 @@ cmd/harness starts
   -> current routes/objects are pinned before Load/ListMetadata/UI exposure
   -> existing text-only + conversation-tool runtime starts
        \
-        -> /fs-root selects or clears an in-memory lookup root; no authority
+        -> launch directory initializes an in-memory lookup boundary; no authority
        -> read_file is registered only for a complete trusted host capability;
           ordinary tool dispatch cannot execute it
        -> retained worker capture and provider handoff occur only after the

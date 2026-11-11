@@ -17,6 +17,7 @@
 package readbrokerstudy
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -74,6 +75,113 @@ func TestExactFileRoutesAndPinnedIdentitiesUseCapturedClassification(t *testing.
 		t.Fatal(err)
 	}
 	assertClassified(t, registry, providerAlias, providerID, ClassProvider)
+}
+
+func TestBrokerCanPrepareAnIndividuallyScopedTargetOutsideWorkingDirectory(t *testing.T) {
+	base := t.TempDir()
+	workingDirectory := filepath.Join(base, "working")
+	outsideDirectory := filepath.Join(base, "outside")
+	if err := os.Mkdir(workingDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outsideDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(outsideDirectory, "notes.txt")
+	want := []byte("synthetic outside-directory content\n")
+	if err := os.WriteFile(target, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	broker := NewBroker(registry)
+	prepared, err := broker.PrepareRead(workingDirectory, target, GenerationSet{Root: 1, Policy: registry.View().Generation})
+	if err != nil {
+		t.Fatalf("prepare exact target outside the working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = prepared.Close() })
+	if prepared.Path() != target || prepared.Identity() != identityAt(t, target) || prepared.Class() != ClassOrdinary {
+		t.Fatalf("outside target was not bound to its exact ordinary object: path=%q identity=%+v class=%q", prepared.Path(), prepared.Identity(), prepared.Class())
+	}
+	opened, err := prepared.DuplicateForWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	got, err := os.ReadFile(fmt.Sprintf("/proc/self/fd/%d", opened.Fd()))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("opened exact outside target=%q err=%v, want %q", got, err, want)
+	}
+}
+
+func TestBrokerKeepsOutsideTargetRouteObjectAndTypeRefusals(t *testing.T) {
+	base := t.TempDir()
+	workingDirectory := filepath.Join(base, "working")
+	outsideDirectory := filepath.Join(base, "outside")
+	if err := os.Mkdir(workingDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outsideDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ordinary := filepath.Join(outsideDirectory, "ordinary.txt")
+	if err := os.WriteFile(ordinary, []byte("synthetic ordinary content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credential := filepath.Join(base, "private", "auth.json")
+	if err := os.Mkdir(filepath.Dir(credential), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credential, []byte("synthetic protected content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credentialAlias := filepath.Join(outsideDirectory, "ordinary-looking.alias")
+	if err := os.Link(credential, credentialAlias); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(outsideDirectory, "ordinary-looking.link")
+	if err := os.Symlink(ordinary, symlink); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(outsideDirectory, "ordinary-looking.fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(OwnerRegistration{Owner: "auth-fixture", Class: ClassCredential, Path: credential}); err != nil {
+		t.Fatal(err)
+	}
+	broker := NewBroker(registry)
+	generation := GenerationSet{Root: 1, Policy: registry.View().Generation}
+	for _, test := range []struct {
+		name string
+		path string
+		want error
+	}{
+		{name: "protected alias outside working directory", path: credentialAlias, want: ErrProtected},
+		{name: "symbolic link outside working directory", path: symlink, want: unix.ELOOP},
+		{name: "fifo outside working directory", path: fifo, want: errReadNotRegular},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prepared, err := broker.PrepareRead(workingDirectory, test.path, generation)
+			if err == nil {
+				_ = prepared.Close()
+				t.Fatal("outside target bypassed an existing read guard")
+			}
+			if !errors.Is(err, test.want) {
+				t.Fatalf("outside target refusal=%v, want %v", err, test.want)
+			}
+		})
+	}
 }
 
 func TestClassifyRouteProtectsReservedAbsentAndDirectoryRoutes(t *testing.T) {

@@ -51,7 +51,7 @@ and pin release, it is downgraded to `inconclusive` with
 root for those rows instead of deleting data that a surviving worker may still
 reference. The manual summary prints this retention state.
 
-## Implemented cases
+## Existing real-store cases
 
 | Scenario | Cases and evidence |
 |---|---|
@@ -60,12 +60,99 @@ reference. The manual summary prints this retention state.
 | Registration failure | `real_auth_injected_registration_failure_preserves_destination` is a deterministic owner-hook failure fixture; `real_auth_failure_retry_after_registration` exercises a fresh real store operation with the study adapter. These rows are owner-lifecycle evidence, not independent namespace-race tests. |
 | Publication invalidation | `real_auth_publication_invalidation_after_capture` and `real_settings_publication_invalidation_after_capture` mutate the actual store from the after-capture checkpoint, then check policy generation, worker join, once consumption and publication sink. |
 
+## Native outside-directory admission and refusal cases
+
+The general fixture session includes explicit native rows for the expanded
+#278 target policy. These are separate from auth/settings owner rows and use
+only disposable fixture files:
+
+| Scenario | Case | Required evidence |
+|---|---|---|
+| Exact target on a distinct mount | `separate_mount_target_positive` | The fixture and target have distinct `statx` mount IDs; the broker reads and publishes the approved target from its own verified mount root. |
+| Unsupported symbolic-link lookup | `unsupported_symlink_lookup` | The actual broker refuses the link before once-grant consumption, worker startup, or descriptor handoff. |
+| Non-regular FIFO target | `unsupported_fifo_lookup` | The actual broker opens non-blockingly, classifies the descriptor as non-regular, then refuses before grant consumption or worker startup. |
+| Oversized regular file | `oversized_target_not_published` | The native worker reaches readiness and reads only to the fixed 64 KiB bound; the truncated result is discarded, no bytes are returned to the caller or published, and the worker is joined. |
+| Post-capture revocation | `revoke_after_capture_before_publish` | The captured result is suppressed after grant-generation change and the worker is joined. |
+
+The symlink and FIFO rows classify pre-worker `ReadNotExecuted` as a
+successful refusal only when no grant was consumed, no worker or target
+descriptor was released, and the detail identifies the matching broker check.
+Cleanup-pending, incomplete-inventory, and generic preparation refusals do not
+count as lookup evidence. The oversized row is a bounded refusal at the
+disclosure boundary: the worker can observe at most the fixed cap, but a
+truncated response is discarded and is never returned or published. It does
+not claim that the worker avoided reading the first 64 KiB.
+
+These rows must be present in the report and individually measured on a trusted
+supported host before they count as native evidence. Synthetic Go unit tests,
+an unavailable Bubblewrap preflight, or a missing row are not native passes.
+The report does not separately stage a nested mount transition or a protected-
+ancestor read race; do not weaken `RESOLVE_NO_XDEV`, protected-directory
+coverage, or backend trust checks to make those fixtures pass.
+
+The separate-mount positive row demonstrates that an explicitly approved
+target can be read from a distinct verified mount. The policy intentionally
+anchors each requested target at its own verified mount root, then constrains
+lookup beneath that root with `RESOLVE_NO_XDEV`. Refusing a request solely
+because its target is on another mount is not part of #278. A protected-ancestor
+read race cannot become eligible while the incomplete-descendant-coverage gate
+refuses same-device targets; retain that refusal.
+
 Each native row records worker startup/read/join/publication fields where
 applicable. Results use `measured_pass`, `observed_violation`, `unavailable`,
 or `inconclusive`; unavailable setup and incomplete observations are not passes.
 The per-case `real_store` fields distinguish route reservation, replacement
 identity, empty-at-registration state, direct join, write ordering, once-grant
 consumption, and stale-publication suppression.
+
+## Recorded native result
+
+The trusted Linux amd64 run for source commit
+`08076c58667acd1d73971ee8ca6d1eea46682e89` used Go 1.26.11 and Bubblewrap
+0.9.0 with `ro-bind-fd`. The validated report contains 58 measured passes, 6
+inconclusive rows, and 1 unavailable row; it has no observed-violation rows.
+The outside-directory read, oversized no-publication, protected alias refusals,
+target-replacement race, and post-capture revocation rows passed. The symlink
+and FIFO rows were reported as passes under the original generic classifier,
+but a review found that their details did not prove the broker lookup ran; do
+not count those two rows as conclusive until the updated reason-specific rows
+are rerun. Archive SHA-256:
+`363c210c4d7d44b3a3fbee9a967cc672176b0054d70f161e5d52d45d856b7d52`.
+
+The report did not include `separate_mount_target_positive`, added after that
+revision. Nested mount transitions and the protected-ancestor read race were
+not separately staged. The inconclusive owner registration and cleanup rows lack
+conclusive worker/write correlation; the protected-ancestor scenario remains
+blocked by the existing fail-closed directory-coverage rule. See ADR-0003 for
+the exact row names and disposition. This run is partial native evidence, not
+full #278 acceptance.
+
+A subsequent run against `ebd5dac166cd169cf80ad1a870ba9bbad033ec1c` measured
+`separate_mount_target_positive` as a pass on the same trusted Linux amd64,
+Go 1.26.11 and Bubblewrap 0.9.0 (`ro-bind-fd`) profile. It recorded 59 measured
+passes, 6 inconclusive rows and 1 unavailable row. Archive SHA-256:
+`113b96181a85ae37d63c9c847a6e9e1710147fb18e048a8bd65334c10f386828`. The
+nested mount transition was not separately staged; this run is still partial
+evidence for the wider study. Its symlink and FIFO rows also need a new run with
+broker-specific refusal details. Under #278's policy, requested targets on another
+verified mount are eligible, and lookup is confined beneath that target
+mount's root.
+
+The corrected trusted run for source commit
+`434542a9d77f202c94182867974afe27bf0b86c6` completed on Linux amd64 with Go
+1.26.11 and trusted Bubblewrap 0.9.0 (`ro-bind-fd`). It contains 66 cases: 59
+measured passes, 6 inconclusive and 1 unavailable. Archive SHA-256:
+`7190ef4e90f86716bc20f91e3bb7131a3dd75c8a5c6f86ea2f6e6876081b9b9b`.
+
+The corrected `unsupported_symlink_lookup` and `unsupported_fifo_lookup` rows
+report `target lookup refused by symlink policy` and
+`target lookup refused: not a regular file`, respectively. Both consumed no
+once grant and started no worker or capability handoff. The outside-directory
+and separate-mount reads, oversized no-publication, protected direct and alias
+refusals, target-replacement identity, and post-capture revocation rows passed.
+This completes the scoped #278 native acceptance; see the [completion record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362).
+The broader inconclusive/unavailable owner-cleanup and protected-ancestor
+limits and the unmeasured nested-mount transition remain as described below.
 
 ## Reporting correction
 

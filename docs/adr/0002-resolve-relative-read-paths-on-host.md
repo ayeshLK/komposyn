@@ -12,10 +12,14 @@ does not change that directory. This supports requests such as "read notes.txt"
 without requiring the model to know the absolute working-directory path, and
 keeps target resolution and authorization with the host rather than the provider.
 
-Target eligibility is governed separately by
+The original containment clause is superseded by
 [ADR-0003](0003-separate-working-directory-from-read-target-eligibility.md).
 
-Implementation is pending; acceptance records the design decision, not shipped
-behavior.
+Implemented by #276 host-side relative-path resolution and #278 exact-target
+admission. The resolved absolute path is the target shown for approval and
+bound to capture and disclosure. An outside-working-directory path is not
+rewritten by navigation.
 
-See [spec #275](https://github.com/ayeshLK/komposyn/issues/275) and implementation tickets [#276](https://github.com/ayeshLK/komposyn/issues/276), [#278](https://github.com/ayeshLK/komposyn/issues/278).
+See [spec #275](https://github.com/ayeshLK/komposyn/issues/275) and implementation
+tickets [#276](https://github.com/ayeshLK/komposyn/issues/276) and
+[#278](https://github.com/ayeshLK/komposyn/issues/278).

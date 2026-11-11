@@ -152,6 +152,36 @@ status. Further signals are ignored while finalization is in progress. Archive
 and checksum-sidecar creation uses exclusive links, and pre-existing files or
 symlinks at either output path are preserved.
 
+The expanded #278 profile also emits `separate_mount_target_positive`,
+`unsupported_symlink_lookup`, `unsupported_fifo_lookup`, and
+`oversized_target_not_published`. Count the lookup rows as passes only when
+they show zero once consumption and no worker or target-capability handoff.
+They must also report the matching broker reason: symlink policy for
+`unsupported_symlink_lookup`, and non-regular target for
+`unsupported_fifo_lookup`. Generic setup, cleanup-pending, or incomplete-
+inventory refusals are not passes.
+The oversized row must show the worker joined, `truncated: true`, no returned
+bytes, and no publication. Review `revoke_after_capture_before_publish` for
+worker join and suppressed publication. The separate-mount row must show
+distinct `statx` mount IDs and a successful read of the exact target. It does
+not separately stage a nested mount transition. #278 allows a requested target
+on another mount: the broker anchors lookup at that target's verified mount
+root and uses `RESOLVE_NO_XDEV` beneath it. Protected-ancestor relocation
+remains blocked by the fail-closed directory-coverage rule; the moved-descendant
+refusal is reported separately.
+
+The reviewed scoped #278 completion run is pinned to
+`434542a9d77f202c94182867974afe27bf0b86c6` and recorded in the [issue
+completion comment](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362).
+Its archive SHA-256 is
+`7190ef4e90f86716bc20f91e3bb7131a3dd75c8a5c6f86ea2f6e6876081b9b9b`; the
+trusted Linux amd64/Bubblewrap 0.9.0 (`ro-bind-fd`) report has 59 measured
+passes, 6 inconclusive rows and 1 unavailable row. The scoped positive,
+protected-refusal, corrected symlink/FIFO, oversized and revocation cases
+passed. The remaining inconclusive/unavailable rows are broader
+protected-ancestor and owner-cleanup study limits; this result does not claim
+general sandbox or production readiness. #278 is closed.
+
 Run disposable regression checks for detached pipe holders, output bounds,
 preflight classification, sidecar collisions, and interruption finalization:
 

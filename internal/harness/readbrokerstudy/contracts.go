@@ -31,9 +31,21 @@ const (
 	MaxPolicyLocations = 256
 )
 
+const (
+	// LookupRefusalSymlink is the sanitized reason for a refused symlink or
+	// magic-link lookup in the native study.
+	LookupRefusalSymlink = "target lookup refused by symlink policy"
+	// LookupRefusalMountBoundary is the sanitized reason for a refused
+	// mount-crossing lookup in the native study.
+	LookupRefusalMountBoundary = "target lookup refused at mount boundary"
+	// LookupRefusalNonRegular is the sanitized reason for a target that is not
+	// a regular file.
+	LookupRefusalNonRegular = "target lookup refused: not a regular file"
+)
+
 var (
 	ErrInvalidPath       = errors.New("read fixture path must be clean and absolute")
-	ErrOutOfScope        = errors.New("read fixture target is outside the selected root")
+	ErrOutOfScope        = errors.New("read target escapes its verified mount root")
 	ErrProtected         = errors.New("registered protected resource is unavailable to generic reads")
 	ErrDirectoryCoverage = errors.New("read scope overlaps a registered protected directory with incomplete descendant identity coverage")
 	ErrPolicyChanged     = errors.New("protected policy changed during read preparation")
@@ -112,8 +124,9 @@ type PreparedRead interface {
 }
 
 // AdmissionRequest is trusted host context for one exact-file lookup. Root is
-// the explicitly selected lookup root; Destination identifies the selected
-// provider/model/profile binding for consent. Neither field grants access.
+// the captured working directory and mount-scope anchor; it does not constrain
+// target containment or grant access. Destination identifies the selected
+// provider/model/profile binding for consent.
 type AdmissionRequest struct {
 	ConversationID string
 	TurnID         string

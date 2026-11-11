@@ -60,9 +60,13 @@ func newCommand() *cobra.Command {
 		Use:     "komposyn",
 		Version: fmt.Sprintf("version=%s commit=%s target=%s/%s", cliVersion, cliCommit, goruntime.GOOS, goruntime.GOARCH),
 		Short:   "Start a temporary text chat with an OpenAI or Anthropic model",
-		Long:    "KompoSyn runs a local experimental chat. Use /model to add a provider profile, discover models, and select one. Messages and model selection exist only until exit; credentials and UI settings are stored locally.",
+		Long:    "KompoSyn runs a local experimental chat from the launch directory. Use /model to add a provider profile, discover models, and select one. Messages, working directory, and model selection exist only until exit; credentials and UI settings are stored locally.",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) (runErr error) {
+			workingDirectory, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve launch working directory: %w", err)
+			}
 			hostSandbox, err := sandbox.NewHostService("/usr/bin/bwrap")
 			if err != nil {
 				return err
@@ -144,6 +148,11 @@ func newCommand() *cobra.Command {
 			toolRuntime.ReadAdmission = hostSandbox
 			toolRuntime.RootHost = hostSandbox
 			chat := runtime.NewChatWithToolRuntime(registry, profileStore, authRegistry, toolRuntime)
+			if err := chat.InitializeWorkingDirectory(cmd.Context(), workingDirectory); err != nil {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				return errors.Join(fmt.Errorf("initialize launch working directory: %w", err), chat.CloseContext(shutdownCtx), oauthManager.Close(shutdownCtx), closeSandbox(shutdownCtx))
+			}
 			runErr = frontend.Run(cmd.Context(), harnessui.Client{Chat: chat, ProfileStore: profileStore, Version: cliVersion, Approval: approvalBridge, Clarification: clarificationBridge})
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()

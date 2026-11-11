@@ -1227,6 +1227,26 @@ func TestDirectoryCoverageIsSpecificPreAuthorizationRefusal(t *testing.T) {
 	}
 }
 
+func TestBrokerLookupRefusalsKeepSanitizedReasons(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		detail string
+	}{
+		{name: "symlink", err: errSymlinkLookupRefused, detail: LookupRefusalSymlink},
+		{name: "mount boundary", err: errMountBoundaryRefused, detail: LookupRefusalMountBoundary},
+		{name: "non-regular file", err: errReadNotRegular, detail: LookupRefusalNonRegular},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := refusalFor(test.err)
+			if result.Outcome != ReadNotExecuted || result.Detail != test.detail || len(result.Bytes) != 0 {
+				t.Fatalf("lookup refusal=%+v, want sanitized reason %q", result, test.detail)
+			}
+		})
+	}
+}
+
 func TestUnresolvedCleanupInvalidatesReadAlreadyWaitingForAuthorization(t *testing.T) {
 	root := t.TempDir()
 	targetA := filepath.Join(root, "read-a.fixture")

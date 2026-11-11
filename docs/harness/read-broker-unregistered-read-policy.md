@@ -1,11 +1,12 @@
 # Policy decision: unregistered exact-file reads
 
-**Decision recorded; policy accepted for staged implementation.** The
-current service refuses generic reads because it cannot prove complete
-protected-data coverage for an arbitrary selected root. This note preserves the
-originally proposed policy alternative and its evidence. Acceptance authorizes
-staged implementation; it does not open the gate, enable a filesystem tool, or
-authorize production dispatch.
+**Historical decision; revised by #278.** The initial policy allowed generic
+reads only beneath a selected lookup root. The current policy uses the working
+directory only for relative-path resolution: an individually approved exact
+target may be outside it. The broker opens the target beneath its verified
+mount root and retains no-symlink, no-magic-link, no-mount-crossing-within-that-
+mount, regular-file, protected-route/identity, and directory-coverage checks.
+This note keeps the original decision and evidence for historical context.
 
 For the complete disclosure/replay decision and staged handoff, see the
 [implementation plan](read-broker-unregistered-read-implementation-plan.md).
@@ -42,7 +43,11 @@ list, or machine-wide scan is not a third safe answer. A manual per-file
 declaration could help the user understand a file's origin, but cannot prove
 its bytes contain no other sensitive data.
 
-## Accepted semantics
+## Original #215 accepted semantics
+
+Issue #278 supersedes the selected-root containment clauses below while
+retaining the protected-object, exact-approval, lifecycle, and
+unsupported-backend rules.
 
 These policy details are accepted; enforcement remains staged and incomplete.
 

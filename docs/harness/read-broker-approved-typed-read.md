@@ -5,7 +5,7 @@
 ## Contract
 
 Authority follows the object and the requested route captured for one
-invocation. A prepared read binds the selected root generation, canonical
+invocation. A prepared read binds the working-directory generation, canonical
 requested route, opened regular-file identity, resource classification,
 policy/grant revisions, and one once-authorization receipt. It does not bind
 continuous containment beneath a live host pathname or a stable content
@@ -19,25 +19,29 @@ snapshot.
 | Provider source | A registered provider-source identity or requested provider-source route is classified as provider data and requires explicit per-invocation approval bound to the actual identity and route. An ordinary receipt never authorizes it. |
 | Owner registration/rotation | A new authoritative registration or rotation advances policy generation and invalidates affected prepared/active work. Before an owner writes sensitive bytes into a new/replacement object, it registers and pins that object, waits for affected workers to terminate and join, then writes through the same pinned object. Incomplete cleanup blocks the write and affected admission. Old pins remain through registry shutdown. |
 | Directory registration | A directory pin is not a descendant inventory. Keep `DirectoryCoverageIncomplete` refusals. Do not widen the exact-file profile by removing this gate. |
-| Other invalidation | Revocation, root changes, policy revisions, cancellation, and shutdown retain their existing release/publication barriers. A stale result is suppressed; an already completed read is not rolled back. No once grant is restored or replayed. |
+| Other invalidation | Revocation, working-directory changes, policy revisions, cancellation, and shutdown retain their existing release/publication barriers. A stale result is suppressed; an already completed read is not rolled back. No once grant is restored or replayed. |
 | Content and disclosure | Identity/path enforcement cannot recognize independent copies of sensitive bytes or freeze in-place content. A successful read can be disclosed to the selected provider under its explicit approval. |
 
 ## Route and preparation semantics
 
-The request route is the clean absolute target supplied to the fixture
-coordinator under the explicitly selected root. `openat2` performs a
-component-constrained, no-symlink, no-mount-crossing lookup and opens the
-object. The requested route is retained as authorization context; the opened
-descriptor and `(device, inode, type)` identify the prepared object.
+The request route is the clean absolute target supplied by the host. The
+working directory supplies relative-path context and a generation for
+invalidation; it does not contain the target. The broker verifies the target's
+mount root and uses `openat2` for a component-constrained, no-symlink,
+no-magic-link, no-mount-crossing lookup within that mount. The requested route
+is retained as authorization context; the opened descriptor and `(device,
+inode, type)` identify the prepared object.
 
 At preparation:
 
-1. Verify that root and route are canonical, absolute, and component-contained.
+1. Verify that the working directory and route are canonical absolute paths,
+   and that the working directory is still available for this generation.
 2. Refuse a requested route that matches a registered protected exact-file
    location or lies beneath a registered protected directory. A new request
    through the protected route is denied even if the location is absent at
    registration and later contains another object.
-3. Open the route beneath the captured root and reject non-regular files.
+3. Open the route beneath its verified mount root, independent of working
+   directory containment, and reject non-regular files.
 4. Classify registered identities first. Protected credential/settings/database
    identities are denied through aliases and renames. Provider identities and
    provider routes retain the provider class and once-approval requirement.

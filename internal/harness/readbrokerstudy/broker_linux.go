@@ -30,9 +30,10 @@ import (
 )
 
 var (
-	errInvalidReadPath = errors.New("read broker requires clean absolute paths")
-	errReadOutOfScope  = errors.New("read target is outside the selected root")
-	errReadNotRegular  = errors.New("read target is not a regular file")
+	errInvalidReadPath      = errors.New("read broker requires clean absolute paths")
+	errReadNotRegular       = errors.New("read target is not a regular file")
+	errSymlinkLookupRefused = errors.New("read broker refused a symlink lookup")
+	errMountBoundaryRefused = errors.New("read broker refused a mount-boundary lookup")
 )
 
 type broker struct {
@@ -67,10 +68,6 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !filepath.IsAbs(target) || filepath.Clean(target) != target || strings.ContainsRune(target, '\x00') {
 		return nil, errInvalidReadPath
 	}
-	relative, err := filepath.Rel(root, target)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || !filepath.IsLocal(relative) {
-		return nil, errReadOutOfScope
-	}
 	view := b.registry.View()
 	if generation.Policy != view.Generation {
 		return nil, ErrPolicyChanged
@@ -91,12 +88,20 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 		return nil, mapPrepareError(err)
 	}
 	defer unix.Close(rootFD)
-	parentRelative, leaf := filepath.Split(relative)
-	parentRelative = strings.TrimSuffix(parentRelative, string(filepath.Separator))
+	targetParentPath := filepath.Dir(target)
+	targetMountRoot, targetMountRootPath, err := openTargetMountRoot(targetParentPath)
+	if err != nil {
+		return nil, mapPrepareError(err)
+	}
+	defer targetMountRoot.Close()
+	parentRelative, err := filepath.Rel(targetMountRootPath, targetParentPath)
+	if err != nil || parentRelative == ".." || strings.HasPrefix(parentRelative, ".."+string(filepath.Separator)) || !filepath.IsLocal(parentRelative) {
+		return nil, ErrOutOfScope
+	}
 	if parentRelative == "" {
 		parentRelative = "."
 	}
-	parentFD, err := unix.Openat2(rootFD, parentRelative, &unix.OpenHow{
+	parentFD, err := unix.Openat2(int(targetMountRoot.Fd()), parentRelative, &unix.OpenHow{
 		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
 		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV,
 	})
@@ -109,7 +114,7 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 			_ = unix.Close(parentFD)
 		}
 	}()
-	fileFD, err := unix.Openat2(parentFD, leaf, &unix.OpenHow{
+	fileFD, err := unix.Openat2(parentFD, filepath.Base(target), &unix.OpenHow{
 		Flags:   unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK,
 		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV,
 	})
@@ -153,6 +158,63 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 		file: file, parent: parent, path: target, identity: id, class: class, generation: generation,
 		digest: requestDigest(root, target, id, class, generation),
 	}, nil
+}
+
+func mountIDForFD(fd int) (uint64, error) {
+	var stat unix.Statx_t
+	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &stat); err != nil {
+		return 0, err
+	}
+	if stat.Mask&unix.STATX_MNT_ID == 0 || stat.Mnt_id == 0 {
+		return 0, ErrUnavailable
+	}
+	return stat.Mnt_id, nil
+}
+
+func openTargetMountRoot(targetParent string) (*os.File, string, error) {
+	currentFD, err := openAbsolute(targetParent, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
+	if err != nil {
+		return nil, "", err
+	}
+	currentMountID, err := mountIDForFD(currentFD)
+	if err != nil {
+		_ = unix.Close(currentFD)
+		return nil, "", fmt.Errorf("inspect target mount: %w", ErrUnavailable)
+	}
+	currentPath := targetParent
+	for depth := 0; depth < 256; depth++ {
+		parentFD, err := unix.Openat(currentFD, "..", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			_ = unix.Close(currentFD)
+			return nil, "", err
+		}
+		parentMountID, err := mountIDForFD(parentFD)
+		if err != nil {
+			_ = unix.Close(parentFD)
+			_ = unix.Close(currentFD)
+			return nil, "", fmt.Errorf("inspect target mount ancestry: %w", ErrUnavailable)
+		}
+		var currentStat, parentStat unix.Stat_t
+		if err := unix.Fstat(currentFD, &currentStat); err != nil {
+			_ = unix.Close(parentFD)
+			_ = unix.Close(currentFD)
+			return nil, "", err
+		}
+		if err := unix.Fstat(parentFD, &parentStat); err != nil {
+			_ = unix.Close(parentFD)
+			_ = unix.Close(currentFD)
+			return nil, "", err
+		}
+		if parentMountID != currentMountID || identityFromStat(&currentStat) == identityFromStat(&parentStat) {
+			_ = unix.Close(parentFD)
+			return os.NewFile(uintptr(currentFD), "target-mount-root"), currentPath, nil
+		}
+		_ = unix.Close(currentFD)
+		currentFD = parentFD
+		currentPath = filepath.Dir(currentPath)
+	}
+	_ = unix.Close(currentFD)
+	return nil, "", errors.New("target mount ancestry exceeded its bound")
 }
 
 func (b *broker) Revalidate(capability PreparedRead) error {
@@ -297,7 +359,11 @@ func ReceiptMatches(prepared PreparedRead, receipt AuthorizationReceipt) bool {
 
 func mapPrepareError(err error) error {
 	switch {
-	case errors.Is(err, unix.EXDEV), errors.Is(err, unix.ELOOP), errors.Is(err, unix.ENOENT), errors.Is(err, unix.ENOTDIR):
+	case errors.Is(err, unix.ELOOP):
+		return fmt.Errorf("%w: %w", errSymlinkLookupRefused, err)
+	case errors.Is(err, unix.EXDEV):
+		return fmt.Errorf("%w: %w", errMountBoundaryRefused, err)
+	case errors.Is(err, unix.ENOENT), errors.Is(err, unix.ENOTDIR):
 		return fmt.Errorf("read target refused: %w", err)
 	default:
 		return err
