@@ -170,7 +170,13 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 		t.Fatal("second file was read or disclosed before its separate approval")
 	}
 	allowOnce()
-	waitForScreen(t, screen, "comparison answer", "")
+	if err := waitForVisibleAnswer(screen, chat, "comparison answer"); err != nil {
+		provider.mu.Lock()
+		requestCount := len(provider.requests)
+		lastRequestHasSecrets := requestCount > 0 && strings.Contains(providerRequestText(provider.requests[requestCount-1]), issue278LaunchSecret) && strings.Contains(providerRequestText(provider.requests[requestCount-1]), issue278OutsideSecret)
+		provider.mu.Unlock()
+		t.Fatalf("comparison answer did not reach visible transcript: %v; snapshot=%+v; provider requests=%d; final request contains both approved file contents=%t; screen=%q", err, chat.Snapshot(), requestCount, lastRequestHasSecrets, renderedScreen(screen))
+	}
 	if host.readCount() != 2 || !provider.containsRequestSecret(issue278LaunchSecret) || !provider.containsRequestSecret(issue278OutsideSecret) {
 		t.Fatal("approved absolute and .. targets did not reach the provider continuation")
 	}
@@ -280,6 +286,17 @@ func assertOutsideNotice(t *testing.T, recorder *issue278ApprovalRecorder, want 
 	if got != want {
 		t.Fatalf("outside-working-directory approval notice=%t, want %t: %+v", got, want, request.Requirements)
 	}
+}
+
+func waitForVisibleAnswer(screen *synchronizedSimulation, chat *harnessruntime.Chat, answer string) error {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(renderedScreen(screen), answer) {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for %q", answer)
 }
 
 func showOutsideNoticeOnScreen(t *testing.T, screen *synchronizedSimulation, _ string) {
