@@ -26,7 +26,7 @@ import (
 
 func TestApprovalBridgeCorrelatesExplicitChoiceAndDoesNotWiden(t *testing.T) {
 	bridge := NewApprovalBridge()
-	pending := permissions.PendingApproval{ID: "opaque", Request: permissions.Request{ConversationID: "conversation", Requirements: []permissions.Requirement{{Kind: permissions.RequirementAction, ToolID: "fixture", Operation: permissions.OperationWrite, SessionAllowed: true}, {Kind: permissions.RequirementResource, ToolID: "fixture", Operation: permissions.OperationWrite, SessionAllowed: true, Resource: &permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: "/tmp/exact"}}}}, Decision: permissions.Decision{Missing: []permissions.Requirement{{Kind: permissions.RequirementAction, ToolID: "fixture", Operation: permissions.OperationWrite, SessionAllowed: true}, {Kind: permissions.RequirementResource, ToolID: "fixture", Operation: permissions.OperationWrite, SessionAllowed: true, Resource: &permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: "/tmp/exact"}}}}}
+	pending := permissions.PendingApproval{ID: "opaque", Request: permissions.Request{ConversationID: "conversation", Destination: "openai/fixture-model/profile-one/version", Requirements: []permissions.Requirement{{Kind: permissions.RequirementAction, ToolID: "fixture", Operation: permissions.OperationWrite, SessionAllowed: true}, {Kind: permissions.RequirementResource, ToolID: "fixture", Operation: permissions.OperationWrite, SessionAllowed: true, Resource: &permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: "/tmp/exact"}}}}, Decision: permissions.Decision{Missing: []permissions.Requirement{{Kind: permissions.RequirementAction, ToolID: "fixture", Operation: permissions.OperationWrite, SessionAllowed: true}, {Kind: permissions.RequirementResource, ToolID: "fixture", Operation: permissions.OperationWrite, SessionAllowed: true, Resource: &permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: "/tmp/exact"}}}}}
 	result := make(chan struct {
 		choice   permissions.ApprovalChoice
 		redirect string
@@ -46,7 +46,7 @@ func TestApprovalBridgeCorrelatesExplicitChoiceAndDoesNotWiden(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("approval event not delivered")
 	}
-	if event.Request == nil || event.Request.ID != "opaque" || len(event.Request.Requirements) != 2 || event.Request.Requirements[1].ResourceScope != "/tmp/exact" || !event.Request.AllowConversation {
+	if event.Request == nil || event.Request.ID != "opaque" || len(event.Request.Requirements) != 2 || event.Request.Requirements[1].ResourceScope != "/tmp/exact" || !event.Request.AllowConversation || event.Request.Provider != "openai" || event.Request.Model != "fixture-model" || event.Request.AuthProfile != "profile-one" {
 		t.Fatalf("detached request lost requirements: %+v", event.Request)
 	}
 	if err := bridge.Respond(ui.ApprovalResponse{ID: "wrong", Choice: ui.ApprovalOnce}); err == nil {

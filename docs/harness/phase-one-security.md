@@ -12,6 +12,9 @@ navigation. The native broker keeps no-symlink, exact-object and mount-scope
 checks. Starting in a directory grants no read permission, unknown file
 content may be sensitive, and the contents may recur in that conversation.
 Auth/settings protected identities remain denied.
+`/cd <path>` updates only the in-memory base for future relative reads; it does
+not change the process directory, authentication/settings paths, conversation
+history, or file-read permission.
 Provider sources, unsupported routes/platforms, mutation, and shell remain
 unavailable. This is not an OS sandbox for arbitrary host code.
 

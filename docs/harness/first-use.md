@@ -89,6 +89,14 @@ exact target, operation, and provider/model/profile destination before choosing
 **Allow once**. Each read needs its own approval; no directory-wide or
 conversation-long read grant is offered.
 
+Use `/cd <path>` to change the base for later relative requests. Paths can be
+absolute or relative to the current working directory, may contain spaces or
+Unicode, and accept `~` as home-directory shorthand. Invalid paths leave the
+current directory and command draft intact. A directory change keeps the
+conversation and does not add file permission. The current read-eligibility
+policy still restricts reads to the launch directory until the separately
+reviewed wider-target policy is available.
+
 The worker reads one retained regular file with a 64 KiB bound. Protected
 auth/settings objects and aliases, unsupported provider-source access, unsafe
 objects, incomplete protection coverage, and unavailable backends refuse the

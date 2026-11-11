@@ -97,9 +97,10 @@ type ApprovalRequirement struct {
 	ConversationAllowed                                               bool
 }
 type ApprovalRequest struct {
-	ID, ToolID, ToolDescription string
-	Requirements                []ApprovalRequirement
-	AllowConversation           bool
+	ID, ToolID, ToolDescription  string
+	Provider, Model, AuthProfile string
+	Requirements                 []ApprovalRequirement
+	AllowConversation            bool
 }
 type ApprovalEvent struct {
 	Request     *ApprovalRequest
@@ -180,6 +181,7 @@ type Client interface {
 	OpenUsage(context.Context) error
 	RemoveProfile(string, bool) error
 	Select(context.Context, string, bool) error
+	ChangeWorkingDirectory(context.Context, string) error
 	Snapshot() Snapshot
 	Send(context.Context, string, func(string)) (Turn, error)
 	Cancel()

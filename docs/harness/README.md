@@ -80,6 +80,14 @@ contract are in the [#215 closure and acceptance record](issue-215-completion-tr
 The integrated native feasibility runner and reproduction steps are described in the
 [Stage 6 runner guide](issue-215-stage6-runner.md).
 
+Use `/cd <path>` in chat to change the working directory for future relative
+file requests. The path may be absolute or relative to the current working
+directory; `~` expands to your home directory. Paths with spaces and Unicode
+are accepted as written. A directory change preserves the current
+conversation and does not grant read permission. This slice retains the
+existing launch-directory read-eligibility boundary until the wider-target
+policy and native acceptance are implemented.
+
 Mutation design is tracked separately in
 [issue #267](https://github.com/ayeshLK/komposyn/issues/267).
 
@@ -378,38 +386,34 @@ selection, press **Ctrl+T** to release mouse capture, select text, and use the
 terminal's Copy action (often Ctrl+Shift+C on Linux). Press Ctrl+T again to
 restore UI mouse controls.
 
-When an injected tool runtime needs approval, KompoSyn shows every missing
-action and resource requirement together. Choose **Allow once**, **Allow for
-conversation** when offered, **Deny**, or **Do something else** with an
-instruction for replanning. **Cancel turn** and Escape stop the turn without a
-provider continuation. The dialog does not pre-approve; a keyboard choice must
-be made after it appears. Read access warns that retrieved data is returned to
-the selected model. Use `/permissions` to inspect or revoke temporary grants;
-OAuth permission metadata is separate. Revocation blocks future dispatch but
-does not roll back completed effects or claim to terminate running work.
-`/permissions` remains available during a turn, and approval and clarification
-dialogs link to it directly. Tool activity shows awaiting approval,
-authorized, running, and finished states, with the typed outcome and
-truncation status. A successful private capture is labeled as private until
-continuation commitment; a later message-only handoff update identifies that
-the contents were sent to the selected provider and may recur in this
-conversation. Refusal, cancellation, and uncertain outcomes have separate
-messages. Cancellation and revocation do not claim to recall data already sent.
-Activity includes no raw file contents. The chat header reports file-reading
-availability from the selected provider/authentication route, the inspected
-backend, and the current working directory. It explains when no model is
-selected, route support is absent or unverified, the backend is unavailable,
-or the working directory is unavailable. Availability does not promise that
-every requested target is eligible; each read still passes host admission and
-exact-target checks and requires a fresh once approval. Tool
-prompts, plans, grants, and activity exist only in memory. The two bundled
-conversation tools are always available on supported routes; `read_file` is
-the sole conditional host-backed capability. Filesystem mutation, process,
-web, and image tools remain unavailable.
+When an injected tool runtime needs approval, KompoSyn places a focused panel
+over the conversation and shows every missing action and resource requirement.
+For a file read, the scrollable details show the complete exact target, the
+provider/model/authentication profile destination, one-read scope, sensitive
+content warning, and that approved content may recur in this conversation.
+The chat remains visible behind the panel. Tab moves between the details and
+the vertical action list, so every choice remains reachable on narrow
+terminals. Allow is not focused by default; it requires moving to the actions
+and explicitly choosing **Allow once**. Choose **Deny**, **Cancel turn**, or
+**Do something else** with an instruction to redirect the model. Each new read
+still needs its own once approval. Escape in the main approval panel cancels
+the turn; Escape from the redirect form returns to approval with the draft
+preserved. If the request expires while a subview is open, KompoSyn returns to
+chat and does not reopen it from stale callbacks.
 
-Escape in the approval dialog explicitly cancels the entire active turn. The
-first keyboard event after a dialog appears is consumed to prevent a composer
-key already in flight from accepting an option.
+`/permissions` remains available during a turn to inspect or revoke temporary
+grants; OAuth permission metadata is separate. Returning from that view restores
+approval only while its request remains active. Revocation blocks future
+dispatch but does not roll back completed effects or claim to terminate
+running work. Tool activity shows awaiting approval, authorized, running, and
+finished states, with the typed outcome and truncation status. Tool prompts,
+plans, grants, and activity exist only in memory. The two bundled conversation
+tools are always available on supported routes; `read_file` is the sole
+conditional host-backed capability. Filesystem mutation, process, web, and
+image tools remain unavailable.
+
+The first keyboard event after a dialog appears is consumed to prevent a
+composer key already in flight from accepting an option.
 
 ### Token usage
 
