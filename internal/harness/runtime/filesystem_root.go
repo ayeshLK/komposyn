@@ -115,9 +115,9 @@ func CanonicalFilesystemRoot(ctx context.Context, path string) (string, error) {
 	return resolved, nil
 }
 
-// InitializeWorkingDirectory records the launch directory for this chat run.
-// During the initial rollout the same path remains the existing exact-read
-// eligibility boundary; it grants no read permission by itself.
+// InitializeWorkingDirectory records the launch directory as relative-path
+// context. Read-target eligibility is determined separately by host admission
+// policy; the working directory grants no read permission by itself.
 func (c *Chat) InitializeWorkingDirectory(ctx context.Context, path string) error {
 	canonical, err := CanonicalFilesystemRoot(ctx, path)
 	if err != nil {
