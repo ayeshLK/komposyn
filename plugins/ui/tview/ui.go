@@ -1822,6 +1822,7 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 	u.permissionsFromClarification = false
 	u.approvalRedirectVisible = false
 	u.approvalGuard.Store(true)
+	filesystemRead := isFilesystemReadApproval(request)
 	var details strings.Builder
 	fmt.Fprintf(&details, "Tool: %s\n%s\n\nRequested requirements:\n", safeTerminalText(request.ToolID), safeTerminalText(request.ToolDescription))
 	if request.Provider != "" || request.Model != "" || request.AuthProfile != "" {
@@ -1834,21 +1835,27 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 		} else if item.ResourceScope != "" {
 			fmt.Fprintf(&details, "   Scope: %s %s\n", safeTerminalText(item.ResourceKind), safeTerminalText(item.ResourceScope))
 		}
-		if item.Operation == "read" {
+		if filesystemRead && item.Operation == "read" {
 			details.WriteString("   Read permission includes returning retrieved data to the selected model.\n")
 		}
 	}
 	view := tv.NewTextView().SetScrollable(true).SetDynamicColors(false).SetText(safeTerminalText(details.String()))
-	view.SetBorder(true).SetTitle(" Review read approval · scroll details ")
+	viewTitle := " Review approval · scroll details "
+	allowLabel, denyLabel := "Allow once · authorize this action", "Deny this action"
+	if filesystemRead {
+		viewTitle = " Review read approval · scroll details "
+		allowLabel, denyLabel = "Allow once · share this exact file", "Deny this read"
+	}
+	view.SetBorder(true).SetTitle(viewTitle)
 	actions := tv.NewList().ShowSecondaryText(false)
 	addAction := func(label string, choice ui.ApprovalChoice) {
 		actions.AddItem(tv.Escape(label), "", 0, func() { u.answerApproval(choice, "") })
 	}
-	addAction("Allow once · share this exact file", ui.ApprovalOnce)
+	addAction(allowLabel, ui.ApprovalOnce)
 	if request.AllowConversation {
 		addAction("Allow for conversation", ui.ApprovalConversation)
 	}
-	addAction("Deny this read", ui.ApprovalDeny)
+	addAction(denyLabel, ui.ApprovalDeny)
 	addAction("Cancel turn", ui.ApprovalCancel)
 	actions.AddItem("Do something else · redirect the request", "", 0, func() { u.redirectApproval() })
 	actions.AddItem("/permissions · inspect or revoke grants", "", 0, func() { u.openPermissions(true, false) })
@@ -1880,6 +1887,18 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 	overlay := tv.NewGrid().SetRows(-1, -5, -1).SetColumns(-1, -8, -1).AddItem(panel, 1, 1, 1, 1, 0, 0, true)
 	pages := tv.NewPages().AddPage("chat", u.layout, true, true).AddPage("approval", overlay, true, true)
 	u.app.SetRoot(pages, true).SetFocus(view)
+}
+
+func isFilesystemReadApproval(request *ui.ApprovalRequest) bool {
+	if request == nil || request.ToolID != "read_file" {
+		return false
+	}
+	for _, requirement := range request.Requirements {
+		if requirement.ResourceKind == "filesystem" && requirement.Operation == "read" {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *terminal) answerApproval(choice ui.ApprovalChoice, redirect string) {

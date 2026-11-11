@@ -39,6 +39,8 @@ import (
 const (
 	issue278LaunchSecret   = "issue278-launch-secret"
 	issue278OutsideSecret  = "issue278-outside-secret"
+	issue278DeniedSecret   = "issue278-denied-secret"
+	issue278AfterCDSecret  = "issue278-after-cd-secret"
 	issue278RedirectPrompt = "Compare names only."
 )
 
@@ -57,10 +59,18 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	outsideDirectory = canonicalReadFixtureDirectory(t, outsideDirectory)
 	launchTarget := filepath.Join(launchDirectory, "launch-secret.txt")
 	outsideTarget := filepath.Join(outsideDirectory, "README.md")
+	deniedTarget := filepath.Join(outsideDirectory, "denied.txt")
+	afterCDTarget := filepath.Join(outsideDirectory, "after-cd.txt")
 	if err := os.WriteFile(launchTarget, []byte(issue278LaunchSecret), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(outsideTarget, []byte(issue278OutsideSecret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deniedTarget, []byte(issue278DeniedSecret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(afterCDTarget, []byte(issue278AfterCDSecret), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -68,7 +78,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	if err := store.AddAPIKey("fixture-profile", "openai", "Fixture", "synthetic-key", nil); err != nil {
 		t.Fatal(err)
 	}
-	provider := &issue278Provider{outsideSecret: issue278OutsideSecret, launchTarget: launchTarget, outsideRelative: "../../outside/README.md"}
+	provider := &issue278Provider{outsideSecret: issue278OutsideSecret, deniedSecret: issue278DeniedSecret, afterCDSecret: issue278AfterCDSecret, launchTarget: launchTarget, outsideRelative: "../../outside/README.md", deniedRelative: "../../outside/denied.txt"}
 	providers, err := model.NewRegistry(provider)
 	if err != nil {
 		t.Fatal(err)
@@ -152,20 +162,40 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 
 	waitForScreen(t, screen, "Tool approval", "")
 	assertOutsideNotice(t, recorder, true)
+	showOutsideNoticeOnScreen(t, screen, press)
 	if targets := host.targetsSnapshot(); len(targets) != 2 || targets[1] != outsideTarget {
 		t.Fatalf("second ..-resolved approval target=%q, want %q", targets, outsideTarget)
 	}
-	if host.readCount() != 1 || strings.Contains(provider.requestText(0), issue278LaunchSecret) || strings.Contains(provider.requestText(0), issue278OutsideSecret) {
-		t.Fatal("second file was read early or file bytes were disclosed before batch completion")
+	if host.readCount() != 1 || provider.containsRequestSecret(issue278OutsideSecret) {
+		t.Fatal("second file was read or disclosed before its separate approval")
+	}
+	allowOnce()
+	waitForScreen(t, screen, "comparison answer", "")
+	if host.readCount() != 2 || !provider.containsRequestSecret(issue278LaunchSecret) || !provider.containsRequestSecret(issue278OutsideSecret) {
+		t.Fatal("approved absolute and .. targets did not reach the provider continuation")
+	}
+	if got := chat.Snapshot().WorkingDirectory; got != nestedDirectory {
+		t.Fatalf("successful outside-current-directory read changed working directory to %q", got)
+	}
+
+	typeText("Read denied.txt")
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, screen, "Tool approval", "")
+	assertOutsideNotice(t, recorder, true)
+	if targets := host.targetsSnapshot(); len(targets) != 3 || targets[2] != deniedTarget {
+		t.Fatalf("denial target=%q, want exact target %q", targets, deniedTarget)
+	}
+	if host.readCount() != 2 || provider.containsRequestSecret(issue278DeniedSecret) {
+		t.Fatal("denied target was read or disclosed before approval")
 	}
 	press(tcell.KeyEnd, 0)
 	press(tcell.KeyEnd, 0)
 	press(tcell.KeyTab, 0)
-	press(tcell.KeyUp, 0) // Deny this file, separately from the first Allow once.
+	press(tcell.KeyUp, 0)
 	press(tcell.KeyEnter, 0)
 	waitForCondition(t, func() bool { return !chat.Snapshot().Active })
-	if host.readCount() != 1 || provider.containsRequestSecret(issue278OutsideSecret) {
-		t.Fatal("denied second file was read or disclosed")
+	if host.readCount() != 2 || provider.containsRequestSecret(issue278DeniedSecret) {
+		t.Fatal("denied target was read or disclosed")
 	}
 
 	typeText("/cd " + outsideDirectory)
@@ -174,20 +204,20 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	if got := chat.Snapshot().WorkingDirectory; got != outsideDirectory {
 		t.Fatalf("working directory after /cd=%q, want %q", got, outsideDirectory)
 	}
-	typeText("Read README.md from this directory")
+	typeText("Read after-cd.txt from this directory")
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, screen, "Tool approval", "")
 	assertOutsideNotice(t, recorder, false)
-	if targets := host.targetsSnapshot(); len(targets) != 3 || targets[2] != outsideTarget {
-		t.Fatalf("read after /cd target=%q, want exact target %q", targets, outsideTarget)
+	if targets := host.targetsSnapshot(); len(targets) != 4 || targets[3] != afterCDTarget {
+		t.Fatalf("read after /cd target=%q, want exact target %q", targets, afterCDTarget)
 	}
-	if host.readCount() != 1 || provider.containsRequestSecret(issue278OutsideSecret) {
-		t.Fatal("outside file was read or disclosed before fresh approval")
+	if host.readCount() != 2 || provider.containsRequestSecret(issue278AfterCDSecret) {
+		t.Fatal("after-/cd file was read or disclosed before fresh approval")
 	}
 	allowOnce()
 	waitForScreen(t, screen, "outside-file answer", "")
-	if host.readCount() != 2 || !provider.containsRequestSecret(issue278OutsideSecret) {
-		t.Fatal("approved file outside the launch directory did not reach the provider continuation")
+	if host.readCount() != 3 || !provider.containsRequestSecret(issue278AfterCDSecret) {
+		t.Fatal("approved after-/cd file did not reach the provider continuation")
 	}
 	if got := chat.Snapshot().WorkingDirectory; got != outsideDirectory {
 		t.Fatalf("reading outside the launch directory changed working directory to %q", got)
@@ -196,7 +226,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, screen, "Tool approval", "")
 	assertOutsideNotice(t, recorder, false)
-	if targets := host.targetsSnapshot(); len(targets) != 4 || targets[3] != outsideTarget {
+	if targets := host.targetsSnapshot(); len(targets) != 5 || targets[4] != outsideTarget {
 		t.Fatalf("redirected read target=%q, want exact target %q", targets, outsideTarget)
 	}
 	press(tcell.KeyEnd, 0)
@@ -216,7 +246,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, screen, "Request interrupted:", "")
-	if host.readCount() != 2 || !provider.containsRequestSecret(issue278OutsideSecret) {
+	if host.readCount() != 3 {
 		t.Fatal("redirected outside read was executed or disclosed")
 	}
 	stop()
@@ -252,12 +282,25 @@ func assertOutsideNotice(t *testing.T, recorder *issue278ApprovalRecorder, want 
 	}
 }
 
+func showOutsideNoticeOnScreen(t *testing.T, screen *synchronizedSimulation, press func(tcell.Key, rune)) {
+	t.Helper()
+	press(tcell.KeyEnd, 0)
+	press(tcell.KeyEnd, 0)
+	for range 5 {
+		press(tcell.KeyUp, 0)
+	}
+	waitForScreen(t, screen, "outside the working directory", "")
+}
+
 type issue278Provider struct {
 	mu              sync.Mutex
 	requests        []modelprovider.ChatRequest
 	outsideSecret   string
+	deniedSecret    string
+	afterCDSecret   string
 	launchTarget    string
 	outsideRelative string
+	deniedRelative  string
 }
 
 func (*issue278Provider) ID() modelprovider.ID { return modelprovider.OpenAI }
@@ -289,19 +332,25 @@ func (p *issue278Provider) StreamChat(_ context.Context, request modelprovider.C
 	case strings.Contains(lastUser, "Read both exact files and compare them") && !hasToolResults:
 		return issue278ReadCalls(request, []issue278ReadCall{{id: "absolute-launch", path: p.launchTarget}, {id: "outside-dotdot", path: p.outsideRelative}}), nil
 	case strings.Contains(lastUser, "Read both exact files and compare them"):
+		text := providerRequestText(request)
+		if !strings.Contains(text, issue278LaunchSecret) || !strings.Contains(text, p.outsideSecret) {
+			return modelprovider.Result{}, errors.New("approved absolute and .. file contents are missing from continuation")
+		}
 		return issue278Answer(request, "comparison answer", delta), nil
-	case strings.Contains(lastUser, "Read README.md from this directory") && !hasToolResults:
-		return issue278ReadCalls(request, []issue278ReadCall{{id: "outside-working-directory", path: "README.md"}}), nil
-	case strings.Contains(lastUser, "Read README.md from this directory"):
-		if !strings.Contains(providerRequestText(request), p.outsideSecret) {
-			return modelprovider.Result{}, errors.New("outside-file continuation omitted approved bytes")
+	case strings.Contains(lastUser, "Read denied.txt") && !hasToolResults:
+		return issue278ReadCalls(request, []issue278ReadCall{{id: "denied-outside", path: p.deniedRelative}}), nil
+	case strings.Contains(lastUser, "Read after-cd.txt from this directory") && !hasToolResults:
+		return issue278ReadCalls(request, []issue278ReadCall{{id: "after-cd-file", path: "after-cd.txt"}}), nil
+	case strings.Contains(lastUser, "Read after-cd.txt from this directory"):
+		if !strings.Contains(providerRequestText(request), p.afterCDSecret) {
+			return modelprovider.Result{}, errors.New("approved after-/cd file contents are missing from continuation")
 		}
 		return issue278Answer(request, "outside-file answer", delta), nil
 	case strings.Contains(lastUser, "Read the outside README again") && !hasToolResults:
 		return issue278ReadCalls(request, []issue278ReadCall{{id: "redirect-outside", path: "README.md"}}), nil
 	case strings.Contains(lastUser, "Read the outside README again"):
-		if strings.Contains(providerRequestText(request), p.outsideSecret) {
-			return modelprovider.Result{}, errors.New("redirect continuation disclosed file bytes")
+		if strings.Contains(providerRequestText(request), p.deniedSecret) {
+			return modelprovider.Result{}, errors.New("redirect continuation disclosed denied file bytes")
 		}
 		return issue278Answer(request, "redirected answer", delta), nil
 	default:
