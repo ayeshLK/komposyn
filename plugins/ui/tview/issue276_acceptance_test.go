@@ -206,6 +206,7 @@ type issue276ReadHost struct {
 	conversation string
 	rootGen      uint64
 	reads        int
+	targets      []string
 }
 
 type issue276Preparation struct {
@@ -241,9 +242,13 @@ func (h *issue276ReadHost) AdmitFilesystemRead(_ context.Context, invocation too
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	relative, err := filepath.Rel(h.root, arguments.Path)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || arguments.Path != filepath.Join(h.root, "README.md") || invocation.ConversationID != h.conversation {
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || invocation.ConversationID != h.conversation {
 		return harnessruntime.FilesystemReadAdmission{}, errors.New("fixture read target is outside the launch directory")
 	}
+	if info, err := os.Stat(arguments.Path); err != nil || !info.Mode().IsRegular() {
+		return harnessruntime.FilesystemReadAdmission{}, errors.New("fixture read target is unavailable")
+	}
+	h.targets = append(h.targets, arguments.Path)
 	return harnessruntime.FilesystemReadAdmission{Reference: new(struct{}), ServiceID: "issue276-fixture", ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID, Root: h.root, Deadline: time.Now().Add(time.Minute), AdmissionBinding: "issue276-admission", Target: arguments.Path, Class: "ordinary", Identity: "fixture-object", RootGeneration: h.rootGen, PolicyRevision: 1, CoverageRevision: 1, Destination: destination}, nil
 }
 func (h *issue276ReadHost) PrepareAdmittedFilesystemRead(_ context.Context, admission harnessruntime.FilesystemReadAdmission, _ uint64) (harnessruntime.FilesystemReadPreparation, error) {
@@ -291,6 +296,12 @@ func (h *issue276ReadHost) readCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.reads
+}
+
+func (h *issue276ReadHost) targetsSnapshot() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.targets...)
 }
 
 var _ harnessruntime.FilesystemReadCompositionHost = (*issue276ReadHost)(nil)

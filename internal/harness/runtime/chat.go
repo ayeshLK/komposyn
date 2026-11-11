@@ -108,6 +108,7 @@ type Chat struct {
 	filesystemRootGen     uint64
 	filesystemRootAck     uint64
 	filesystemRootOp      uint64
+	workingDirectoryOp    uint64
 	filesystemRootEvent   *FilesystemRootTransition
 	closed                bool
 }

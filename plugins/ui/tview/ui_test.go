@@ -50,6 +50,7 @@ type clientStub struct {
 	toolGrants             []ui.ToolGrant
 	plan                   []ui.PlanStep
 	workingDirectory       string
+	workingDirectoryHook   func(context.Context, string) error
 	revoked                []string
 	cleared                int
 }
@@ -144,6 +145,17 @@ func (c *clientStub) Select(_ context.Context, key string, _ bool) error {
 			return nil
 		}
 	}
+	return nil
+}
+func (c *clientStub) ChangeWorkingDirectory(ctx context.Context, path string) error {
+	if c.workingDirectoryHook != nil {
+		if err := c.workingDirectoryHook(ctx, path); err != nil {
+			return err
+		}
+	}
+	c.mu.Lock()
+	c.workingDirectory = path
+	c.mu.Unlock()
 	return nil
 }
 func (c *clientStub) Snapshot() ui.Snapshot {
@@ -1184,7 +1196,7 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 		t.Fatalf("/m suggestions = %+v", u.commandItems)
 	}
 	u.refreshCommandSuggestions("/")
-	if len(u.commandItems) != 7 {
+	if len(u.commandItems) != 8 {
 		t.Fatalf("root slash suggestions = %+v", u.commandItems)
 	}
 	u.commandList.SetCurrentItem(1)
