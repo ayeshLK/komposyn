@@ -20,7 +20,8 @@ Continue with ChatGPT remains a separate, text-only authorization route.
 Discovered model names do not guarantee chat or tool compatibility.
 
 Linux hosts that pass trusted Bubblewrap inspection can additionally offer
-`read_file`. `/fs-root` selects a lookup root without granting access. Each
+`read_file`. The launch directory is displayed as the working directory and
+supplies the base for relative read paths; it grants no read permission. Each
 read requires explicit once approval for an exact retained file and the
 displayed provider/model/profile destination. The worker is bounded to 64 KiB;
 protected objects, incomplete owner coverage, unsupported sources, and unsafe

@@ -294,12 +294,12 @@ func TestReadApprovalConversationJourney(t *testing.T) {
 			if len(requests) == 0 {
 				t.Fatal("fake provider received no request")
 			}
-			if strings.Contains(providerRequestText(requests[0]), approvalFixtureSecret) {
+			if strings.Contains(approvalProviderRequestText(requests[0]), approvalFixtureSecret) {
 				t.Fatal("private bytes reached the provider before approval")
 			}
 			if mode != "approve" && mode != "fresh" {
 				for _, request := range requests {
-					if strings.Contains(providerRequestText(request), approvalFixtureSecret) {
+					if strings.Contains(approvalProviderRequestText(request), approvalFixtureSecret) {
 						t.Fatalf("%s disclosed unapproved bytes", mode)
 					}
 				}
@@ -308,11 +308,11 @@ func TestReadApprovalConversationJourney(t *testing.T) {
 			reads := host.reads
 			host.mu.Unlock()
 			if mode == "approve" {
-				if reads != 1 || len(requests) != 3 || !strings.Contains(providerRequestText(requests[1]), approvalFixtureSecret) || !strings.Contains(providerRequestText(requests[2]), approvalFixtureSecret) {
+				if reads != 1 || len(requests) != 3 || !strings.Contains(approvalProviderRequestText(requests[1]), approvalFixtureSecret) || !strings.Contains(approvalProviderRequestText(requests[2]), approvalFixtureSecret) {
 					t.Fatalf("approved journey: reads=%d requests=%d", reads, len(requests))
 				}
 			} else if mode == "fresh" {
-				if reads != 2 || len(requests) != 4 || !strings.Contains(providerRequestText(requests[1]), approvalFixtureSecret) || !strings.Contains(providerRequestText(requests[3]), approvalFixtureSecret) {
+				if reads != 2 || len(requests) != 4 || !strings.Contains(approvalProviderRequestText(requests[1]), approvalFixtureSecret) || !strings.Contains(approvalProviderRequestText(requests[3]), approvalFixtureSecret) {
 					t.Fatalf("fresh-approval journey: reads=%d requests=%d", reads, len(requests))
 				}
 			} else if reads != 0 {
@@ -328,7 +328,7 @@ func TestReadApprovalConversationJourney(t *testing.T) {
 	}
 }
 
-func providerRequestText(request provider.ChatRequest) string {
+func approvalProviderRequestText(request provider.ChatRequest) string {
 	b, _ := json.Marshal(request.Messages)
 	return string(b)
 }

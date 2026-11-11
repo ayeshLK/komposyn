@@ -80,10 +80,11 @@ and successful host inspection and owner registration. KompoSyn does not
 search PATH, weaken isolation, or repair host security settings. Missing or
 refused prerequisites leave reads unavailable while chat remains usable.
 
-Create a disposable directory and a UTF-8 file containing only synthetic text
-with your usual editor. Open `/fs-root` and select that absolute directory.
-Selection sets an in-memory lookup root; it grants no read permission.
-Ask the model to read the synthetic file. If a read is proposed, inspect the
+Start KompoSyn from a disposable directory containing a UTF-8 file with only
+synthetic text. The launch directory appears in the chat header and supplies
+the base for relative file requests. Starting in that directory grants no read
+permission. Ask the model to read the synthetic file by its relative path. If
+a read is proposed, inspect the
 exact target, operation, and provider/model/profile destination before choosing
 **Allow once**. Each read needs its own approval; no directory-wide or
 conversation-long read grant is offered.

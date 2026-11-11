@@ -163,6 +163,7 @@ func (e *filesystemReadAttemptError) Error() string {
 func (e *filesystemReadAttemptError) Unwrap() error { return e.err }
 
 var errFilesystemReadTurnCancelled = errors.New("filesystem read approval cancelled the turn")
+var errFilesystemReadRefused = errors.New("filesystem read was refused by the user")
 
 type filesystemReadRedirectError struct{ instruction string }
 
@@ -274,6 +275,10 @@ func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tool
 		}
 		r.coordinator.CancelConversation(invocation.ConversationID)
 		return admission, nil, request, nil, errors.New("retained read redirect response was stale or invalid")
+	}
+	if reviewErr == nil && choice == permissions.ApprovalDeny && redirect == "" {
+		r.coordinator.CancelConversation(invocation.ConversationID)
+		return admission, nil, request, nil, errFilesystemReadRefused
 	}
 	if reviewErr != nil || choice != permissions.ApprovalOnce || redirect != "" || approvalCtx.Err() != nil || !r.readAuthorityEpochCurrent(readEpoch) {
 		r.coordinator.CancelConversation(invocation.ConversationID)

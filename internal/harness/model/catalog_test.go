@@ -62,6 +62,11 @@ func TestDiscoveryKeepsProfilesSeparateAndPartialFailuresVisible(t *testing.T) {
 	if d.Models[0].Key() == d.Models[1].Key() || d.Models[0].ID != d.Models[1].ID {
 		t.Fatalf("profile identity collided: %+v", d.Models)
 	}
+	for _, discovered := range d.Models {
+		if discovered.AuthMethod != p.AuthAPIKey {
+			t.Fatalf("discovered model auth method = %q, want %q", discovered.AuthMethod, p.AuthAPIKey)
+		}
+	}
 }
 
 func TestOAuthTokenRotationDoesNotChangeProfileVersion(t *testing.T) {
