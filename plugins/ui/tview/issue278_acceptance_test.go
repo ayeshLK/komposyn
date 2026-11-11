@@ -162,7 +162,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 
 	waitForScreen(t, screen, "Tool approval", "")
 	assertOutsideNotice(t, recorder, true)
-	showOutsideNoticeOnScreen(t, screen, press)
+	showOutsideNoticeOnScreen(t, screen, outsideTarget)
 	if targets := host.targetsSnapshot(); len(targets) != 2 || targets[1] != outsideTarget {
 		t.Fatalf("second ..-resolved approval target=%q, want %q", targets, outsideTarget)
 	}
@@ -282,13 +282,8 @@ func assertOutsideNotice(t *testing.T, recorder *issue278ApprovalRecorder, want 
 	}
 }
 
-func showOutsideNoticeOnScreen(t *testing.T, screen *synchronizedSimulation, press func(tcell.Key, rune)) {
+func showOutsideNoticeOnScreen(t *testing.T, screen *synchronizedSimulation, _ string) {
 	t.Helper()
-	press(tcell.KeyEnd, 0)
-	press(tcell.KeyEnd, 0)
-	for range 5 {
-		press(tcell.KeyUp, 0)
-	}
 	waitForScreen(t, screen, "outside the working directory", "")
 }
 

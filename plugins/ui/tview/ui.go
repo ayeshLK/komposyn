@@ -1824,7 +1824,11 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 	u.approvalGuard.Store(true)
 	filesystemRead := isFilesystemReadApproval(request)
 	var details strings.Builder
-	fmt.Fprintf(&details, "Tool: %s\n%s\n\nRequested requirements:\n", safeTerminalText(request.ToolID), safeTerminalText(request.ToolDescription))
+	fmt.Fprintf(&details, "Tool: %s\n%s\n\n", safeTerminalText(request.ToolID), safeTerminalText(request.ToolDescription))
+	if filesystemRead && hasOutsideWorkingDirectoryNotice(request) {
+		details.WriteString("NOTICE: This exact target is outside the working directory.\n\n")
+	}
+	details.WriteString("Requested requirements:\n")
 	if request.Provider != "" || request.Model != "" || request.AuthProfile != "" {
 		fmt.Fprintf(&details, "Provider destination: %s · model %s · authentication profile %s\n\n", safeTerminalText(request.Provider), safeTerminalText(request.Model), safeTerminalText(request.AuthProfile))
 	}
@@ -1895,6 +1899,15 @@ func isFilesystemReadApproval(request *ui.ApprovalRequest) bool {
 	}
 	for _, requirement := range request.Requirements {
 		if requirement.ResourceKind == "filesystem" && requirement.Operation == "read" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOutsideWorkingDirectoryNotice(request *ui.ApprovalRequest) bool {
+	for _, requirement := range request.Requirements {
+		if strings.Contains(requirement.Description, "outside the working directory") {
 			return true
 		}
 	}

@@ -78,6 +78,8 @@ func TestConversationToolApprovalUsesGenericLabels(t *testing.T) {
 	waitForScreen(t, screen, "Tool approval", "")
 	waitForScreen(t, screen, "Review approval", "")
 	waitForScreen(t, screen, "Allow once · authorize this action", "")
+	waitForScreen(t, screen, "Deny this action", "")
+	waitForScreen(t, screen, "Cancel turn", "")
 	if strings.Contains(renderedScreen(screen), "share this exact file") || strings.Contains(renderedScreen(screen), "Deny this read") {
 		t.Fatal("non-read approval showed filesystem-specific labels")
 	}
