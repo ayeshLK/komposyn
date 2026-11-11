@@ -222,3 +222,49 @@ func TestRetainedReadDeadlineBoundsApprovalWait(t *testing.T) {
 		t.Fatalf("expired approval progressed or leaked: prepared=%d closed=%d grants=%d", host.prepared, host.closed, len(grants))
 	}
 }
+
+func TestRelativeFilesystemReadResolvesAgainstWorkingDirectory(t *testing.T) {
+	workingDirectory := filepath.Join(t.TempDir(), "project")
+	invocation := tools.Invocation{
+		ToolID:    tools.ID("read_file"),
+		Arguments: json.RawMessage(`{"path":"docs/README.md"}`),
+	}
+
+	resolved, err := resolveFilesystemReadInvocation(invocation, workingDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var arguments struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(resolved.Arguments, &arguments); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(workingDirectory, "docs", "README.md")
+	if arguments.Path != want {
+		t.Fatalf("resolved path = %q, want %q", arguments.Path, want)
+	}
+}
+
+func TestRelativeFilesystemReadKeepsAbsoluteTargetAndRejectsMissingWorkingDirectory(t *testing.T) {
+	absolute := filepath.Join(t.TempDir(), "README.md")
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{absolute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ToolID: tools.ID("read_file"), Arguments: arguments}
+	resolved, err := resolveFilesystemReadInvocation(invocation, "")
+	if err != nil {
+		t.Fatalf("absolute path needs no working directory: %v", err)
+	}
+	if string(resolved.Arguments) != string(arguments) {
+		t.Fatalf("absolute path arguments changed: got %s, want %s", resolved.Arguments, arguments)
+	}
+
+	invocation.Arguments = json.RawMessage(`{"path":"README.md"}`)
+	if _, err := resolveFilesystemReadInvocation(invocation, ""); err == nil {
+		t.Fatal("relative path without a working directory unexpectedly resolved")
+	}
+}

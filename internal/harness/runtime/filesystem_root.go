@@ -115,6 +115,29 @@ func CanonicalFilesystemRoot(ctx context.Context, path string) (string, error) {
 	return resolved, nil
 }
 
+// InitializeWorkingDirectory records the launch directory for this chat run.
+// During the initial rollout the same path remains the existing exact-read
+// eligibility boundary; it grants no read permission by itself.
+func (c *Chat) InitializeWorkingDirectory(ctx context.Context, path string) error {
+	canonical, err := CanonicalFilesystemRoot(ctx, path)
+	if err != nil {
+		return err
+	}
+	if err := c.SelectFilesystemRoot(ctx, canonical); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return ErrFilesystemRootClosed
+	}
+	if c.filesystemRoot != canonical {
+		return ErrFilesystemRootStale
+	}
+	c.workingDirectory = canonical
+	return nil
+}
+
 // SelectFilesystemRoot explicitly selects one existing directory for the
 // current in-memory conversation. It does not grant permission or retain a
 // filesystem descriptor. A newer root operation or conversation reset
@@ -291,6 +314,14 @@ func (c *Chat) clearFilesystemRootLocked(reason FilesystemRootChangeReason, forc
 		return nil
 	}
 	event := c.changeFilesystemRootLocked("", reason)
+	return &event
+}
+
+func (c *Chat) refreshFilesystemRootLocked(reason FilesystemRootChangeReason) *FilesystemRootTransition {
+	if c.filesystemRoot == "" {
+		return nil
+	}
+	event := c.changeFilesystemRootLocked(c.filesystemRoot, reason)
 	return &event
 }
 

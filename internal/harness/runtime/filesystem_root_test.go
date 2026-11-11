@@ -218,7 +218,7 @@ func TestFilesystemRootLifecycleResetAndCanceledModelChange(t *testing.T) {
 	chat := newFilesystemRootTestChat(t, host)
 	selectFirst(t, chat)
 	root := t.TempDir()
-	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
 	beforeFirstTurn := chat.Snapshot().FilesystemRoot
@@ -227,11 +227,8 @@ func TestFilesystemRootLifecycleResetAndCanceledModelChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	afterFirstChange := chat.Snapshot().FilesystemRoot
-	if afterFirstChange.Selected || afterFirstChange.Path != "" || afterFirstChange.Generation <= beforeFirstTurn.Generation {
-		t.Fatalf("pre-turn model change retained root: %+v", afterFirstChange)
-	}
-	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
-		t.Fatal(err)
+	if !afterFirstChange.Selected || afterFirstChange.Path != beforeFirstTurn.Path || afterFirstChange.Generation <= beforeFirstTurn.Generation || chat.Snapshot().WorkingDirectory != root {
+		t.Fatalf("pre-turn model change did not retain and refresh root: %+v", afterFirstChange)
 	}
 	if _, err := chat.Send(context.Background(), "synthetic message", nil); err != nil {
 		t.Fatal(err)
@@ -247,8 +244,8 @@ func TestFilesystemRootLifecycleResetAndCanceledModelChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := chat.Snapshot().FilesystemRoot
-	if after.Selected || after.Path != "" || after.Generation <= before.Generation {
-		t.Fatalf("confirmed model change retained root: %+v", after)
+	if !after.Selected || after.Path != before.Path || after.Generation <= before.Generation {
+		t.Fatalf("confirmed model change did not retain and refresh root: %+v", after)
 	}
 	transitions := host.transitionsSnapshot()
 	if got := transitions[len(transitions)-1].Reason; got != FilesystemRootModelChanged {
@@ -262,12 +259,12 @@ func TestFilesystemRootLifecycleResetAndCanceledModelChange(t *testing.T) {
 	}
 }
 
-func TestFilesystemRootClearsOnSelectedProfileReplacement(t *testing.T) {
+func TestWorkingDirectorySurvivesSelectedProfileReplacement(t *testing.T) {
 	host := &filesystemRootHostFixture{}
 	chat := newFilesystemRootTestChat(t, host)
 	selectFirst(t, chat)
 	root := t.TempDir()
-	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
 	before := chat.Snapshot().FilesystemRoot
@@ -275,17 +272,14 @@ func TestFilesystemRootClearsOnSelectedProfileReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := chat.Snapshot().FilesystemRoot
-	if after.Selected || after.Generation <= before.Generation {
-		t.Fatalf("pre-turn selected profile replacement retained root: before=%+v after=%+v", before, after)
+	if !after.Selected || after.Path != before.Path || after.Generation <= before.Generation {
+		t.Fatalf("pre-turn selected profile replacement did not retain working directory: before=%+v after=%+v", before, after)
 	}
 	if transitions := host.transitionsSnapshot(); transitions[len(transitions)-1].Reason != FilesystemRootProfileChanged {
 		t.Fatalf("profile replacement transition=%+v", transitions[len(transitions)-1])
 	}
 
 	selectFirst(t, chat)
-	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := chat.Send(context.Background(), "synthetic message", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -299,8 +293,24 @@ func TestFilesystemRootClearsOnSelectedProfileReplacement(t *testing.T) {
 	if err := chat.ReplaceProfile(context.Background(), "profile", "Updated again", "another-synthetic-key", nil, true); err != nil {
 		t.Fatal(err)
 	}
-	if after := chat.Snapshot().FilesystemRoot; after.Selected || after.Generation <= before.Generation {
-		t.Fatalf("confirmed post-turn profile replacement retained root: before=%+v after=%+v", before, after)
+	if after := chat.Snapshot().FilesystemRoot; !after.Selected || after.Path != before.Path || after.Generation <= before.Generation {
+		t.Fatalf("confirmed post-turn profile replacement did not retain working directory: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestLaunchWorkingDirectoryIsVisibleAndDoesNotGrantReadPermission(t *testing.T) {
+	host := &filesystemRootHostFixture{}
+	chat := newFilesystemRootTestChat(t, host)
+	workingDirectory := t.TempDir()
+	if err := chat.InitializeWorkingDirectory(context.Background(), workingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := chat.Snapshot()
+	if snapshot.WorkingDirectory != workingDirectory || !snapshot.FilesystemRoot.Selected || snapshot.FilesystemRoot.Path != workingDirectory {
+		t.Fatalf("launch directory was not initialized: %+v", snapshot)
+	}
+	if len(chat.ToolGrants()) != 0 {
+		t.Fatal("initializing the working directory granted file access")
 	}
 }
 
