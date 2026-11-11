@@ -1,8 +1,11 @@
-# Next experimental release: review draft
+# Experimental v0.14.0 release overview
 
-Prepared for [issue #269](https://github.com/ayeshLK/komposyn/issues/269),
-against published baseline **v0.13.1**. Release Please must propose the next
-repository-wide version; this draft does not assign one or announce publication.
+[v0.14.0](https://github.com/ayeshLK/komposyn/releases/tag/v0.14.0) was published
+from `46f84ea5923b7bb04b3b530f57cec46d7c291595` after the reviewed Release Please
+lifecycle and all six signed installation gates. Prepared for
+[issue #269](https://github.com/ayeshLK/komposyn/issues/269), against baseline
+**v0.13.1**. Live provider validation remains explicitly unverified in
+[follow-up #272](https://github.com/ayeshLK/komposyn/issues/272).
 The [validation record](release-validation.md) separates local, CI, native,
 artifact, and pending live evidence.
 
@@ -59,10 +62,10 @@ to v0.13.1.
 ## Experimental limits and data handling
 
 Live OpenAI API-key, Anthropic API-key, and ChatGPT login/inference validation
-is **pending until after publication**. Fixtures do not prove real account
+remains **pending after publication**. Fixtures do not prove real account
 eligibility, current service behavior, or model access. No live credentials or
-billable requests were used for preparation. The maintainer will coordinate
-authorized checks against the published binaries and record unavailable routes
+billable requests were used for preparation or this publication verification.
+The maintainer will coordinate authorized checks against the published binaries and record unavailable routes
 explicitly in the validation record. This deferral does not waive automated,
 native, security, compatibility, or signed installer gates.
 
@@ -90,14 +93,19 @@ Do not include credentials, private paths, transcripts, or raw databases.
 Use [private security reporting](../../SECURITY.md#reporting-a-vulnerability)
 for suspected vulnerabilities or sensitive disclosure.
 
-## Publication gate
+## Completed publication gate
 
-Merge reviewed preparation, dispatch Release Please from `master`, review its
-complete repository-wide version/changelog PR, and merge normally. Dispatch
-Release Please again to create the immutable source tag and draft release.
-Resolve the exact tagged commit and obtain the final publication go/no-go
-**before** dispatching binary publication, which publishes automatically when
-its gates pass. Require signed manifests, all six archives, native installation
-lifecycle checks, and published asset verification. Follow
-[release verification](../release-verification.md), including same-tag draft
-recovery; never create/move tags or bypass failed gates.
+Preparation [#270](https://github.com/ayeshLK/komposyn/pull/270) and version/
+changelog [#271](https://github.com/ayeshLK/komposyn/pull/271) merged through
+normal review. Release Please created the immutable source tag and draft.
+The maintainer dispatched binary publication for the exact tagged commit after
+the final go/no-go. All six native builds and signed installation lifecycle
+checks passed before automatic publication; the published assets were then
+independently verified.
+
+The completed workflow and artifact identities are recorded in the
+[validation record](release-validation.md). The existing manual lifecycle and
+same-tag recovery rules remain in [release verification](../release-verification.md).
+Post-publication live checks are owned by @ayeshLK in
+[#272](https://github.com/ayeshLK/komposyn/issues/272); no live verification is
+implied by successful publication.

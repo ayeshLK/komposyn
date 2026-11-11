@@ -73,12 +73,10 @@ tools, and MCP support are unavailable. Current source adds conversation-local
 planning, clarification, temporary permissions, and conditional Linux exact-file
 reads; see the [five-minute walkthrough](docs/harness/first-use.md).
 
-> **Release status (checked 2026-11-10):** [v0.13.1](https://github.com/ayeshLK/komposyn/releases/tag/v0.13.1)
-> is the latest published release with signed assets for six platform targets.
-> Planning, clarification, permissions, exact-file reads, and newer terminal
-> improvements are in current source and await the next release. Installing
-> latest stable today installs v0.13.1. Live provider validation of the next
-> experimental release is pending and will be recorded after publication.
+> **Experimental release:** [v0.14.0](https://github.com/ayeshLK/komposyn/releases/tag/v0.14.0)
+> includes conversation-local planning, clarification, permissions, conditional
+> Linux exact-file reads, and terminal improvements. Live provider validation
+> remains pending; see the [release validation record](docs/harness/release-validation.md).
 
 ### Linux and macOS
 

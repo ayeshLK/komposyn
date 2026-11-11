@@ -22,10 +22,13 @@ The initial audit used remote master
 `a3774cf99ca6478057310a02267ca48eccd68069`, with `v0.13.1` as the published
 baseline. Refresh these references when choosing the final candidate. Prior
 focused harness tests are supporting evidence, not final-candidate validation.
-This plan records preparation and publication steps; it does not dispatch them.
-The [validation record](release-validation.md) tracks exact evidence and pending
-release gates. The [overview](next-release-overview.md) and
-[first-use walkthrough](first-use.md) are ready for review.
+Publication completed as v0.14.0 at commit
+`46f84ea5923b7bb04b3b530f57cec46d7c291595`. This checklist records completed
+preparation/publication and explicitly deferred live checks; it does not
+authorize account access or inference.
+The [validation record](release-validation.md) tracks completed publication evidence and
+pending live checks. The [overview](next-release-overview.md) and
+[first-use walkthrough](first-use.md) describe the published release.
 
 ## 1. Reconcile documentation
 
@@ -51,7 +54,7 @@ authentication/platform differences, prerequisites, and known limitations.
 
 ## 2. Validate the candidate
 
-- [ ] Record the exact candidate commit and changes since the previous release.
+- [x] Record the exact candidate commit and changes since the previous release.
 - [x] Review Go API, database/migration, and protocol compatibility across the
   complete repository change, including Token Logger core changes.
 - [x] Run the required checks and review any formatting diff:
@@ -64,7 +67,7 @@ authentication/platform differences, prerequisites, and known limitations.
   make check
   ```
 
-- [ ] Require successful candidate CI, security checks, and the public
+- [x] Require successful candidate CI, security checks, and the public
   standalone `komposyn-lg` compatibility suite.
 - [x] Record offline smoke evidence using isolated configuration, synthetic
   files, fake credentials, and fixture providers where inference is needed.
@@ -115,34 +118,39 @@ machine, what is unavailable, and how to report problems safely.
 
 Follow [release verification and publication](../release-verification.md).
 
-- [ ] Merge reviewed preparation changes and choose the final candidate.
-- [ ] Dispatch Release Please from `master` to prepare/update its release PR.
-- [ ] Review version, changelog, compatibility, and final CI; merge normally.
-- [ ] Dispatch Release Please again from `master` to create its immutable tag
+- [x] Merge reviewed preparation changes and choose the final candidate.
+- [x] Dispatch Release Please from `master` to prepare/update its release PR.
+- [x] Review version, changelog, compatibility, and final CI; merge normally.
+- [x] Dispatch Release Please again from `master` to create its immutable tag
   and draft release. Never create or move tags manually.
-- [ ] Resolve the full tagged commit and review the final go/no-go before
+- [x] Resolve the full tagged commit and review the final go/no-go before
   dispatching binary publication: that workflow publishes automatically when
   its required gates pass.
-- [ ] Dispatch binary publication with the exact version and tagged commit.
-- [ ] Require all six native build and signed installation lifecycle checks,
+- [x] Dispatch binary publication with the exact version and tagged commit.
+- [x] Require all six native build and signed installation lifecycle checks,
   the complete archive set, signed checksums, and artifact metadata checks.
-- [ ] Verify the published release, asset links, installation instructions,
+- [x] Verify the published release, asset links, installation instructions,
   and preservation of configuration and the separate `komposyn-lg` binary.
 
 If a draft release build fails, follow the documented same-tag retry process;
 do not move tags or automatically replace mismatched assets.
 
-## 5. Validate live flows after publication
+## 5. Live validation follow-up after publication
+
+These account-dependent checks are owned by @ayeshLK in
+[follow-up #272](https://github.com/ayeshLK/komposyn/issues/272). All three
+routes remain explicitly unverified; unavailable accounts/authorization do not
+count as passes or block this completed experimental publication.
 
 - [ ] Using the published binaries, record OpenAI API-key, Anthropic API-key,
   and ChatGPT login/discovery/streaming results as accounts are available.
 - [ ] Exercise conversation tools on supported API-key routes. On a supported
   Linux host, use a synthetic non-sensitive file for approved file disclosure.
-- [ ] Keep account login and any billable inference under explicit operator
+- [x] Keep account login and any billable inference under explicit operator
   authorization; this plan does not initiate provider requests.
-- [ ] Record exact release, platform, route, and sanitized outcomes. Leave
+- [x] Record exact release, platform, route, and sanitized outcomes. Leave
   unavailable cases unverified rather than inferring success.
-- [ ] Publish sanitized known issues and validation updates. Route security
+- [x] Publish sanitized known issues and validation updates. Route security
   findings privately; prioritize regressions for the next corrective release.
 
 Acceptance: live results are traceable to the published artifacts and improve

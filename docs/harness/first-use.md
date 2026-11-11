@@ -1,12 +1,11 @@
 # Five minutes with the experimental chat
 
-This walkthrough describes current source for the next release after v0.13.1.
-The latest stable installer still selects v0.13.1 (checked 2026-11-10), which
-does not contain the new tools. Use a source build until the next signed
-release is published; follow the [installation guide](../installation.md)
-for binaries. This is experimental software. Live login and inference for the
-next release remain **unverified**; automated fixture tests do not establish
-account eligibility, model access, or real-provider compatibility.
+This walkthrough describes the experimental v0.14.0 release. Use the
+[installation guide](../installation.md) for signed binaries, or build from
+source below. Live login and inference remain **unverified**; automated fixture
+tests do not establish account eligibility, model access, or real-provider
+compatibility. See the [validation record](release-validation.md) for exact
+candidate, native, artifact, and pending live evidence.
 
 ## 1. Start and choose a model
 
