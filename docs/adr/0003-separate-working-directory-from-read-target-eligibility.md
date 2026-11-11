@@ -75,8 +75,24 @@ case remains fail-closed because incomplete descendant coverage prevents any
 eligible same-device read. The moved-descendant refusal passed separately.
 Owner lifecycle cleanup rows still lack conclusive native observations.
 
-After that run, the study added `separate_mount_target_positive` to verify an
-explicitly approved target on a distinct mount. It still needs a trusted-host
-run. This positive row does not prove nested mount-crossing refusal. #278 stays
-open until mount-boundary evidence and the applicable inconclusive
-race/cleanup scope are reviewed; do not weaken backend trust or lookup guards.
+The next run used source commit `ebd5dac166cd169cf80ad1a870ba9bbad033ec1c`
+and completed on the same trusted Linux amd64/Bubblewrap 0.9.0 descriptor-bind
+profile. It recorded 59 measured passes, 6 inconclusive cases and 1 unavailable
+case. `separate_mount_target_positive` passed with worker readiness, exact
+approved bytes, publication, and join. Archive SHA-256:
+`113b96181a85ae37d63c9c847a6e9e1710147fb18e048a8bd65334c10f386828`.
+
+This confirms an exact approved target on a distinct mount is readable. The
+broker anchors each target at its verified mount root and applies
+`RESOLVE_NO_XDEV` beneath that root; a cross-mount refusal is not the policy for
+a separately requested target on another mount. A nested mount transition was
+not separately staged in the native fixture.
+
+The protected-ancestor actor row remains inconclusive because
+`DirectoryCoverageIncomplete` refuses the target before an eligible read can
+start; the moved-descendant refusal passed separately. The owner registration
+and cleanup rows remain inconclusive or unavailable as listed above. They
+exercise owner write/cleanup lifecycle beyond #278's target-admission change;
+the relevant revocation and actual auth/settings post-capture invalidation
+rows passed. Keep these broader study limits visible, and do not weaken backend
+trust or lookup guards.

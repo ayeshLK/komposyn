@@ -84,16 +84,17 @@ not claim that the worker avoided reading the first 64 KiB.
 These rows must be present in the report and individually measured on a trusted
 supported host before they count as native evidence. Synthetic Go unit tests,
 an unavailable Bubblewrap preflight, or a missing row are not native passes.
-Mount-crossing and protected-ancestor transitions remain separate gaps; do not
-weaken `RESOLVE_NO_XDEV`, protected-directory coverage, or backend trust checks
-to make a fixture pass.
+The report does not separately stage a nested mount transition or a protected-
+ancestor read race; do not weaken `RESOLVE_NO_XDEV`, protected-directory
+coverage, or backend trust checks to make those fixtures pass.
 
-The separate-mount positive row is not a nested mount-crossing refusal test.
-It demonstrates that an explicitly approved target can be read from a distinct
-verified mount. A future crossing test must stage a nested mount in a bounded
-isolated fixture and confirm the no-crossing refusal without weakening lookup
-guards; if the host cannot safely construct that fixture, report it as
-unavailable.
+The separate-mount positive row demonstrates that an explicitly approved
+target can be read from a distinct verified mount. The policy intentionally
+anchors each requested target at its own verified mount root, then constrains
+lookup beneath that root with `RESOLVE_NO_XDEV`. Refusing a request solely
+because its target is on another mount is not part of #278. A protected-ancestor
+read race cannot become eligible while the incomplete-descendant-coverage gate
+refuses same-device targets; retain that refusal.
 
 Each native row records worker startup/read/join/publication fields where
 applicable. Results use `measured_pass`, `observed_violation`, `unavailable`,
@@ -114,12 +115,22 @@ rows passed. Archive SHA-256:
 `363c210c4d7d44b3a3fbee9a967cc672176b0054d70f161e5d52d45d856b7d52`.
 
 The report did not include `separate_mount_target_positive`, added after that
-revision. Nested mount-crossing and the protected-ancestor transition also
-remain unmeasured. The inconclusive owner registration and cleanup rows lack
+revision. Nested mount transitions and the protected-ancestor read race were
+not separately staged. The inconclusive owner registration and cleanup rows lack
 conclusive worker/write correlation; the protected-ancestor scenario remains
 blocked by the existing fail-closed directory-coverage rule. See ADR-0003 for
 the exact row names and disposition. This run is partial native evidence, not
 full #278 acceptance.
+
+A subsequent run against `ebd5dac166cd169cf80ad1a870ba9bbad033ec1c` measured
+`separate_mount_target_positive` as a pass on the same trusted Linux amd64,
+Go 1.26.11 and Bubblewrap 0.9.0 (`ro-bind-fd`) profile. It recorded 59 measured
+passes, 6 inconclusive rows and 1 unavailable row. Archive SHA-256:
+`113b96181a85ae37d63c9c847a6e9e1710147fb18e048a8bd65334c10f386828`. The
+nested mount transition was not separately staged; this run is still partial
+evidence for the wider study. Under #278's policy, requested targets on another
+verified mount are eligible, and lookup is confined beneath that target
+mount's root.
 
 ## Reporting correction
 

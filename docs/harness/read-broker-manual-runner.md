@@ -160,8 +160,11 @@ The oversized row must show the worker joined, `truncated: true`, no returned
 bytes, and no publication. Review `revoke_after_capture_before_publish` for
 worker join and suppressed publication. The separate-mount row must show
 distinct `statx` mount IDs and a successful read of the exact target. It does
-not establish nested mount-crossing refusal or protected-ancestor behavior;
-both remain separate native evidence gaps.
+not separately stage a nested mount transition. #278 allows a requested target
+on another mount: the broker anchors lookup at that target's verified mount
+root and uses `RESOLVE_NO_XDEV` beneath it. Protected-ancestor relocation
+remains blocked by the fail-closed directory-coverage rule; the moved-descendant
+refusal is reported separately.
 
 Run disposable regression checks for detached pipe holders, output bounds,
 preflight classification, sidecar collisions, and interruption finalization:
