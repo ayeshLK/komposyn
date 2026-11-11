@@ -974,7 +974,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 			return notExecuted("filesystem read enforcement is unavailable")
 		}
 		update("awaiting approval")
-		capture, err := r.executeFilesystemRead(ctx, invocation, destination)
+		capture, err := r.executeFilesystemRead(ctx, invocation, destination, workingDirectory)
 		if err != nil || capture == nil {
 			if errors.Is(err, errFilesystemReadRefused) {
 				activity.Outcome = tools.OutcomeDeclined

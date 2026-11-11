@@ -24,7 +24,7 @@ import (
 )
 
 func TestChangeWorkingDirectoryResolvesAbsoluteAndRelativePathsWithoutRetiringContext(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalFilesystemRootFixture(t, t.TempDir())
 	chat := newFilesystemRootTestChat(t, &filesystemRootHostFixture{available: true})
 	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
 		t.Fatal(err)
@@ -34,6 +34,7 @@ func TestChangeWorkingDirectoryResolvesAbsoluteAndRelativePathsWithoutRetiringCo
 	if err := os.Mkdir(child, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	child = canonicalFilesystemRootFixture(t, child)
 	chat.mu.Lock()
 	chat.history = []provider.Message{{Role: provider.RoleUser, Text: "authorized file context"}}
 	chat.historySensitive = true
@@ -60,7 +61,7 @@ func TestChangeWorkingDirectoryResolvesAbsoluteAndRelativePathsWithoutRetiringCo
 }
 
 func TestChangeWorkingDirectorySupportsHomeAndPreservesStateOnInvalidPath(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalFilesystemRootFixture(t, t.TempDir())
 	chat := newFilesystemRootTestChat(t, nil)
 	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
 		t.Fatal(err)
@@ -92,7 +93,7 @@ func TestChangeWorkingDirectorySupportsHomeAndPreservesStateOnInvalidPath(t *tes
 
 func TestChangeWorkingDirectoryRequiresAnIdleTurnAndRejectsMissingArgument(t *testing.T) {
 	chat := newFilesystemRootTestChat(t, nil)
-	root := t.TempDir()
+	root := canonicalFilesystemRootFixture(t, t.TempDir())
 	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}

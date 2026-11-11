@@ -191,14 +191,14 @@ func filesystemReadActionKey() string {
 	return hex.EncodeToString(digest[:])
 }
 
-func buildFilesystemReadRequest(invocation tools.Invocation, admission FilesystemReadAdmission) (permissions.Request, error) {
+func buildFilesystemReadRequest(invocation tools.Invocation, admission FilesystemReadAdmission, workingDirectory string) (permissions.Request, error) {
 	if invocation.ToolID != tools.ID("read_file") || invocation.ConversationID == "" || invocation.ProviderCallID == "" || admission.Reference == nil || admission.AdmissionBinding == "" || admission.Target == "" || admission.Destination == "" || admission.Deadline.IsZero() || !time.Now().Before(admission.Deadline) {
 		return permissions.Request{}, errors.New("trusted retained read admission is incomplete")
 	}
 	resourceKey := "disclosure"
 	disclosureDestination := filesystemReadDisclosureDestination(admission.Destination)
 	resourceDescription := "Share this exact file with " + disclosureDestination + ". Its contents are unclassified and may include credentials or sensitive data; if approved, they may recur in this conversation. This approves one read only; another read needs new approval."
-	targetIsOutsideWorkingDirectory := targetOutsideWorkingDirectory(admission.Root, admission.Target)
+	targetIsOutsideWorkingDirectory := targetOutsideWorkingDirectory(workingDirectory, admission.Target)
 	if admission.Class == "provider_source" {
 		resourceKey = "provider_source_disclosure"
 		resourceDescription = "Share this classified provider source with " + disclosureDestination + "; its contents may recur in this conversation. This approves one read only; another read needs new approval."
@@ -240,7 +240,7 @@ func filesystemReadDisclosureDestination(destination string) string {
 	return parts[0] + "/" + parts[1] + " using auth profile " + parts[2]
 }
 
-func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tools.Invocation, destination string) (admission FilesystemReadAdmission, preparation FilesystemReadPreparation, request permissions.Request, reference *ReadExecutionReference, err error) {
+func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tools.Invocation, destination, workingDirectory string) (admission FilesystemReadAdmission, preparation FilesystemReadPreparation, request permissions.Request, reference *ReadExecutionReference, err error) {
 	if ctx == nil || r == nil || r.readAdmission == nil || r.approval == nil || !validToolCall(providerCallFor(invocation)) {
 		return admission, nil, request, nil, errors.New("retained read approval is unavailable")
 	}
@@ -255,7 +255,7 @@ func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tool
 			err = errors.Join(err, r.readAdmission.CloseFilesystemReadAdmission(ctx, admission))
 		}
 	}()
-	request, err = buildFilesystemReadRequest(invocation, admission)
+	request, err = buildFilesystemReadRequest(invocation, admission, workingDirectory)
 	if err != nil {
 		return admission, nil, request, nil, err
 	}
@@ -311,7 +311,7 @@ func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tool
 	}
 	admissionOpen = false // preparation now owns retirement of the same record
 
-	preparedRequest, bindErr := buildFilesystemReadRequest(invocation, preparation.Metadata())
+	preparedRequest, bindErr := buildFilesystemReadRequest(invocation, preparation.Metadata(), workingDirectory)
 	if bindErr != nil || !sameAuthorizationBinding(request, preparedRequest) {
 		return admission, preparation, request, nil, errors.New("retained read authorization binding changed during preparation")
 	}
@@ -345,8 +345,8 @@ func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tool
 // validateFilesystemReadApproval preserves the Stage 3 assertion fixture:
 // checked approval and once consumption occur, but authority is immediately
 // retired without launching a worker or capturing bytes.
-func (r *toolRuntime) validateFilesystemReadApproval(ctx context.Context, invocation tools.Invocation, destination string) (err error) {
-	_, preparation, _, reference, err := r.approveFilesystemRead(ctx, invocation, destination)
+func (r *toolRuntime) validateFilesystemReadApproval(ctx context.Context, invocation tools.Invocation, destination, workingDirectory string) (err error) {
+	_, preparation, _, reference, err := r.approveFilesystemRead(ctx, invocation, destination, workingDirectory)
 	if preparation != nil {
 		defer func() { err = errors.Join(err, preparation.Close(ctx)) }()
 	}
@@ -360,11 +360,11 @@ func (r *toolRuntime) validateFilesystemReadApproval(ctx context.Context, invoca
 // connected to generic tool dispatch or registration. Approval and once
 // consumption are identical to Stage 3; only the fixed trusted host executor
 // may consume the retained preparation and the opaque runtime reference.
-func (r *toolRuntime) executeFilesystemRead(ctx context.Context, invocation tools.Invocation, destination string) (*PrivateReadCapture, error) {
+func (r *toolRuntime) executeFilesystemRead(ctx context.Context, invocation tools.Invocation, destination, workingDirectory string) (*PrivateReadCapture, error) {
 	if ctx == nil {
 		return nil, context.Canceled
 	}
-	admission, preparation, request, reference, err := r.approveFilesystemRead(ctx, invocation, destination)
+	admission, preparation, request, reference, err := r.approveFilesystemRead(ctx, invocation, destination, workingDirectory)
 	if err != nil {
 		if preparation != nil {
 			err = errors.Join(err, preparation.Close(ctx))
@@ -398,6 +398,7 @@ func (c *Chat) ExecuteFilesystemRead(ctx context.Context, invocation tools.Invoc
 	}
 	c.mu.Lock()
 	runtime := c.toolRuntime
+	workingDirectory := c.workingDirectory
 	current := !c.closed && (invocation.ConversationID == "" || invocation.ConversationID == c.conversationID)
 	if current {
 		invocation.ConversationID = c.conversationID
@@ -406,7 +407,7 @@ func (c *Chat) ExecuteFilesystemRead(ctx context.Context, invocation tools.Invoc
 	if !current || runtime == nil {
 		return nil, errors.New("retained read execution is unavailable for this conversation")
 	}
-	return runtime.executeFilesystemRead(ctx, invocation, destination)
+	return runtime.executeFilesystemRead(ctx, invocation, destination, workingDirectory)
 }
 
 // DiscardPrivateReadCapture explicitly retires a Stage 4 private result. No

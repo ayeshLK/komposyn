@@ -177,7 +177,7 @@ func TestFilesystemRootClearAndInvalidationFailureRetry(t *testing.T) {
 	if len(host.transitionsSnapshot()) != 0 {
 		t.Fatal("clearing an empty root emitted an invalidation")
 	}
-	root := t.TempDir()
+	root := canonicalFilesystemRootFixture(t, t.TempDir())
 	canonicalRoot := canonicalFilesystemRootFixture(t, root)
 	fail := true
 	host.invalidate = func(ctx context.Context, _ FilesystemRootTransition) error {
@@ -217,7 +217,7 @@ func TestFilesystemRootLifecycleResetAndCanceledModelChange(t *testing.T) {
 	host := &filesystemRootHostFixture{}
 	chat := newFilesystemRootTestChat(t, host)
 	selectFirst(t, chat)
-	root := t.TempDir()
+	root := canonicalFilesystemRootFixture(t, t.TempDir())
 	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestWorkingDirectorySurvivesSelectedProfileReplacement(t *testing.T) {
 func TestLaunchWorkingDirectoryIsVisibleAndDoesNotGrantReadPermission(t *testing.T) {
 	host := &filesystemRootHostFixture{}
 	chat := newFilesystemRootTestChat(t, host)
-	workingDirectory := t.TempDir()
+	workingDirectory := canonicalFilesystemRootFixture(t, t.TempDir())
 	if err := chat.InitializeWorkingDirectory(context.Background(), workingDirectory); err != nil {
 		t.Fatal(err)
 	}

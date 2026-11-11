@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -98,7 +99,7 @@ func TestRetainedReadApprovalUsesCheckedRuntimeTransactionsAndNeverDispatches(t 
 		}),
 	})
 	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
-	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "openai/gpt-test/profile-revision"); err != nil {
+	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "openai/gpt-test/profile-revision", root); err != nil {
 		t.Fatalf("checked read approval: %v", err)
 	}
 	revision, grants := runtime.grants.Snapshot(invocation.ConversationID)
@@ -130,7 +131,7 @@ func TestRetainedReadPreparationRefusalDoesNotConsumeOnceGrant(t *testing.T) {
 		}),
 	})
 	invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
-	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile"); err == nil {
+	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile", root); err == nil {
 		t.Fatal("preparation refusal unexpectedly succeeded")
 	}
 	revision, grants := runtime.grants.Snapshot("c")
@@ -174,7 +175,7 @@ func TestRetainedReadNonApprovalChoicesDoNotPrepareOrConsume(t *testing.T) {
 				t.Fatal(err)
 			}
 			invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
-			if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile"); err == nil {
+			if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile", root); err == nil {
 				t.Fatal("non-approval choice unexpectedly authorized retained read")
 			}
 			revision, grants := runtime.grants.Snapshot("c")
@@ -210,7 +211,7 @@ func TestRetainedReadDeadlineBoundsApprovalWait(t *testing.T) {
 		}),
 	})
 	invocation := tools.Invocation{ConversationID: "c", TurnID: "t", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
-	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile"); err == nil {
+	if err := runtime.validateFilesystemReadApproval(context.Background(), invocation, "provider/model/profile", root); err == nil {
 		t.Fatal("approval wait exceeded the host admission deadline")
 	}
 	select {
@@ -286,7 +287,7 @@ func TestFilesystemReadApprovalClearlyIdentifiesOutsideWorkingDirectoryTarget(t 
 		CoverageRevision: 9, Destination: "openai/gpt-test/profile-revision",
 	}
 	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
-	request, err := buildFilesystemReadRequest(invocation, admission)
+	request, err := buildFilesystemReadRequest(invocation, admission, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +318,7 @@ func TestOutsideProviderSourceApprovalKeepsWorkingDirectoryNotice(t *testing.T) 
 		CoverageRevision: 9, Destination: "openai/gpt-test/profile-revision",
 	}
 	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
-	request, err := buildFilesystemReadRequest(invocation, admission)
+	request, err := buildFilesystemReadRequest(invocation, admission, workingDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,5 +328,49 @@ func TestOutsideProviderSourceApprovalKeepsWorkingDirectoryNotice(t *testing.T) 
 	description := strings.ToLower(request.Requirements[1].Description)
 	if !strings.Contains(description, "outside the working directory") || !strings.Contains(description, "classified provider source") {
 		t.Fatalf("provider-source approval omitted its location or sensitivity notice: %q", description)
+	}
+}
+
+func TestFilesystemReadApprovalNoticeUsesCurrentWorkingDirectoryAfterNavigation(t *testing.T) {
+	launchDirectory := t.TempDir()
+	nestedWorkingDirectory := filepath.Join(launchDirectory, "nested")
+	if err := os.Mkdir(nestedWorkingDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outsideWorkingDirectory := t.TempDir()
+	cases := []struct {
+		name    string
+		cwd     string
+		target  string
+		outside bool
+	}{
+		{name: "target outside current directory but inside launch root", cwd: nestedWorkingDirectory, target: filepath.Join(launchDirectory, "launch-file.txt"), outside: true},
+		{name: "target inside current directory but outside launch root", cwd: outsideWorkingDirectory, target: filepath.Join(outsideWorkingDirectory, "file.txt"), outside: false},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			arguments, err := json.Marshal(struct {
+				Path string `json:"path"`
+			}{test.target})
+			if err != nil {
+				t.Fatal(err)
+			}
+			admission := FilesystemReadAdmission{
+				Reference: new(struct{}), ServiceID: "host-service", ConversationID: "conversation", Root: launchDirectory,
+				Deadline: time.Now().Add(time.Minute), AdmissionBinding: "canonical-admission-digest", Target: test.target,
+				Class: "ordinary", Identity: "1:2:32768", RootGeneration: 4, PolicyRevision: 7,
+				CoverageRevision: 9, Destination: "openai/gpt-test/profile-revision",
+			}
+			invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
+			request, err := buildFilesystemReadRequest(invocation, admission, test.cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			description := strings.ToLower(request.Requirements[1].Description)
+			gotOutside := strings.Contains(description, "outside the working directory")
+			if gotOutside != test.outside {
+				t.Fatalf("outside-directory notice=%t, want %t: %q", gotOutside, test.outside, description)
+			}
+		})
 	}
 }

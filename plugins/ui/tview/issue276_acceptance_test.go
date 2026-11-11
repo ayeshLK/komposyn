@@ -37,7 +37,7 @@ import (
 const issue276PrivateFixture = "issue276-private-read-fixture"
 
 func TestIssue276LaunchRelativeReadJourneyThroughTerminalRuntimeAndProvider(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalReadFixtureDirectory(t, t.TempDir())
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte(issue276PrivateFixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -212,6 +212,7 @@ type issue276ReadHost struct {
 	rootGen      uint64
 	reads        int
 	targets      []string
+	allowOutside bool
 }
 
 type issue276Preparation struct {
@@ -247,7 +248,8 @@ func (h *issue276ReadHost) AdmitFilesystemRead(_ context.Context, invocation too
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	relative, err := filepath.Rel(h.root, arguments.Path)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || invocation.ConversationID != h.conversation {
+	outsideRoot := err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	if invocation.ConversationID != h.conversation || (outsideRoot && !h.allowOutside) {
 		return harnessruntime.FilesystemReadAdmission{}, errors.New("fixture read target is outside the launch directory")
 	}
 	if info, err := os.Stat(arguments.Path); err != nil || !info.Mode().IsRegular() {
@@ -311,3 +313,12 @@ func (h *issue276ReadHost) targetsSnapshot() []string {
 
 var _ harnessruntime.FilesystemReadCompositionHost = (*issue276ReadHost)(nil)
 var _ modelprovider.Provider = (*issue276Provider)(nil)
+
+func canonicalReadFixtureDirectory(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := harnessruntime.CanonicalFilesystemRoot(context.Background(), path)
+	if err != nil {
+		t.Fatalf("canonicalize fixture directory %q: %v", path, err)
+	}
+	return canonical
+}

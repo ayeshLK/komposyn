@@ -41,11 +41,12 @@ const (
 )
 
 func TestIssue277ChangeDirectoryKeepsChatContextAndResolvesFutureRead(t *testing.T) {
-	launchDirectory := t.TempDir()
+	launchDirectory := canonicalReadFixtureDirectory(t, t.TempDir())
 	nestedDirectory := filepath.Join(launchDirectory, "資料 with spaces")
 	if err := os.Mkdir(nestedDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	nestedDirectory = canonicalReadFixtureDirectory(t, nestedDirectory)
 	if err := os.WriteFile(filepath.Join(launchDirectory, "README.md"), []byte(issue277FirstFixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
