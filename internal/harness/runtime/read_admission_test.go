@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,5 +267,36 @@ func TestRelativeFilesystemReadKeepsAbsoluteTargetAndRejectsMissingWorkingDirect
 	invocation.Arguments = json.RawMessage(`{"path":"README.md"}`)
 	if _, err := resolveFilesystemReadInvocation(invocation, ""); err == nil {
 		t.Fatal("relative path without a working directory unexpectedly resolved")
+	}
+}
+
+func TestFilesystemReadApprovalClearlyIdentifiesOutsideWorkingDirectoryTarget(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{outside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := FilesystemReadAdmission{
+		Reference: new(struct{}), ServiceID: "host-service", ConversationID: "conversation", Root: root,
+		Deadline: time.Now().Add(time.Minute), AdmissionBinding: "canonical-admission-digest", Target: outside,
+		Class: "ordinary", Identity: "1:2:32768", RootGeneration: 4, PolicyRevision: 7,
+		CoverageRevision: 9, Destination: "openai/gpt-test/profile-revision",
+	}
+	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
+	request, err := buildFilesystemReadRequest(invocation, admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Requirements) != 2 || request.Requirements[1].Resource == nil || request.Requirements[1].Resource.Target != outside {
+		t.Fatalf("approval did not bind the exact outside target: %+v", request.Requirements)
+	}
+	if !strings.Contains(request.Requirements[1].Description, "outside the working directory") {
+		t.Fatalf("approval did not identify outside-working-directory target: %q", request.Requirements[1].Description)
+	}
+	if request.Requirements[1].SessionAllowed || len(request.RequireOnceKeys) != 1 || request.RequireOnceKeys[0] != request.Requirements[1].Key {
+		t.Fatalf("outside target approval is not individual once approval: %+v", request)
 	}
 }

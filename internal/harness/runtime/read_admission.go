@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -197,6 +198,9 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 	resourceKey := "disclosure"
 	disclosureDestination := filesystemReadDisclosureDestination(admission.Destination)
 	resourceDescription := "Share this exact file with " + disclosureDestination + ". Its contents are unclassified and may include credentials or sensitive data; if approved, they may recur in this conversation. This approves one read only; another read needs new approval."
+	if targetOutsideWorkingDirectory(admission.Root, admission.Target) {
+		resourceDescription = "This exact target is outside the working directory. " + resourceDescription
+	}
 	if admission.Class == "provider_source" {
 		resourceKey = "provider_source_disclosure"
 		resourceDescription = "Share this classified provider source with " + disclosureDestination + "; its contents may recur in this conversation. This approves one read only; another read needs new approval."
@@ -219,6 +223,11 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 		RequireOnceKeys:  []string{resourceKey},
 	}
 	return bindAuthorizationRequest(invocation, request)
+}
+
+func targetOutsideWorkingDirectory(workingDirectory, target string) bool {
+	relative, err := filepath.Rel(workingDirectory, target)
+	return err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func filesystemReadDisclosureDestination(destination string) string {

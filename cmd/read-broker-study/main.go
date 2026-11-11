@@ -383,6 +383,7 @@ func run() error {
 func unavailableCases(reason string) []caseResult {
 	planned := []struct{ name, expected string }{
 		{"ordinary_positive", "explicit once approval reads the opened fixture object"},
+		{"outside_working_directory_positive", "explicit once approval reads one exact target outside the working directory on its mount without changing the selected working directory"},
 		{"protected_direct", "credential object refused before worker capability handoff"},
 		{"provider_source_explicit_once", "registered provider source read only after explicit once approval"},
 		{"protected_existing_hardlink", "existing alias to protected object refused"},
@@ -512,7 +513,15 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	}
 	protected := filepath.Join(protectedDir, "credential.fixture")
 	ordinary := filepath.Join(root, "ordinary.fixture")
+	outsideDirectory := filepath.Join(base, "outside-working-directory")
+	outsideTarget := filepath.Join(outsideDirectory, "outside.fixture")
+	if err := os.Mkdir(outsideDirectory, 0o700); err != nil {
+		return results, err
+	}
 	if err := os.WriteFile(ordinary, []byte("fixture-only-ordinary-content\n"), 0o600); err != nil {
+		return results, err
+	}
+	if err := os.WriteFile(outsideTarget, []byte("fixture-only-outside-working-directory-content\n"), 0o600); err != nil {
 		return results, err
 	}
 	if err := os.WriteFile(protected, []byte("fixture-only-protected-content\n"), 0o600); err != nil {
@@ -574,6 +583,7 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 
 	results = make([]caseResult, 0, 24)
 	results = append(results, executeCase(session, authorizer, root, "ordinary_positive", ordinary, "ordinary-1", "explicit once approval reads the opened fixture object", readbrokerstudy.ReadSucceeded))
+	results = append(results, executeCase(session, authorizer, root, "outside_working_directory_positive", outsideTarget, "outside-working-directory-1", "explicit once approval reads one exact target outside the working directory on its mount without changing the selected working directory", readbrokerstudy.ReadSucceeded))
 	results = append(results, executeCase(session, authorizer, root, "protected_direct", protected, "credential-1", "credential object is refused before worker capability handoff", readbrokerstudy.ReadRefused))
 
 	providerSource := filepath.Join(root, "provider-source.fixture")
