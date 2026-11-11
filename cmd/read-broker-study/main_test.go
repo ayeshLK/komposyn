@@ -1063,7 +1063,7 @@ func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *t
 
 func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testing.T) {
 	planned := []string{
-		"ordinary_positive", "protected_direct", "provider_source_explicit_once",
+		"ordinary_positive", "outside_working_directory_positive", "protected_direct", "provider_source_explicit_once",
 		"protected_existing_hardlink", "protected_late_hardlink",
 		"protected_object_renamed_into_ordinary_tree", "protected_location_replaced_before_open",
 		"ordinary_object_moved_into_protected_location", "cancel_before_release",

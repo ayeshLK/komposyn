@@ -121,7 +121,7 @@ func (c Client) Discover(ctx context.Context) (ui.Discovery, error) {
 	d := c.Chat.Discover(ctx)
 	out := ui.Discovery{Models: []ui.Model{}, Failures: []ui.Failure{}}
 	for _, m := range d.Models {
-		out.Models = append(out.Models, ui.Model{Key: m.Key(), Provider: string(m.Provider), ProfileID: m.ProfileID, ProfileLabel: m.ProfileLabel, ID: m.ID, DisplayName: m.DisplayName, Compatibility: m.Compatibility, Reason: m.Reason})
+		out.Models = append(out.Models, ui.Model{Key: m.Key(), Provider: string(m.Provider), ProfileID: m.ProfileID, ProfileLabel: m.ProfileLabel, ID: m.ID, DisplayName: m.DisplayName, AuthMethod: string(m.AuthMethod), Compatibility: m.Compatibility, Reason: m.Reason})
 	}
 	for _, f := range d.Failures {
 		out.Failures = append(out.Failures, ui.Failure{ProfileID: f.ProfileID, Provider: f.Provider, Label: f.Label, Message: f.Message, Outcome: f.Outcome})
@@ -175,17 +175,14 @@ func (c Client) RemoveProfile(id string, confirm bool) error {
 func (c Client) Select(ctx context.Context, key string, confirm bool) error {
 	return adaptError(c.Chat.Select(ctx, key, confirm))
 }
-func (c Client) SelectFilesystemRoot(ctx context.Context, path string) error {
-	return c.Chat.SelectFilesystemRoot(ctx, path)
-}
-func (c Client) ClearFilesystemRoot(ctx context.Context) error {
-	return c.Chat.ClearFilesystemRoot(ctx)
+func (c Client) ChangeWorkingDirectory(ctx context.Context, path string) error {
+	return c.Chat.ChangeWorkingDirectory(ctx, path)
 }
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
-	root := s.FilesystemRoot
 	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, Version: c.Version,
-		FilesystemRoot: ui.FilesystemRootStatus{Path: root.Path, Generation: root.Generation, Selected: root.Selected, BackendAvailable: root.BackendAvailable, BackendStatus: root.BackendStatus, InvalidationPending: root.InvalidationPending}}
+		FilesystemReadAvailability: ui.FilesystemReadAvailability{Available: s.FilesystemReadAvailability.Available, State: s.FilesystemReadAvailability.State, Reason: s.FilesystemReadAvailability.Reason},
+		WorkingDirectory:           s.WorkingDirectory}
 	for _, step := range s.Plan {
 		out.Plan = append(out.Plan, ui.PlanStep{Step: step.Step, Status: string(step.Status)})
 	}
@@ -243,7 +240,7 @@ func Load(id string, plugins []ui.Plugin) (ui.Plugin, error) {
 	return nil, errors.New("configured UI plugin is unavailable")
 }
 func convertModel(m model.Model) *ui.Model {
-	return &ui.Model{Key: m.Key(), Provider: string(m.Provider), ProfileID: m.ProfileID, ProfileLabel: m.ProfileLabel, ID: m.ID, DisplayName: m.DisplayName, Compatibility: m.Compatibility, Reason: m.Reason}
+	return &ui.Model{Key: m.Key(), Provider: string(m.Provider), ProfileID: m.ProfileID, ProfileLabel: m.ProfileLabel, ID: m.ID, DisplayName: m.DisplayName, AuthMethod: string(m.AuthMethod), Compatibility: m.Compatibility, Reason: m.Reason}
 }
 
 func convertPermissions(permissions []auth.Permission) []ui.Permission {

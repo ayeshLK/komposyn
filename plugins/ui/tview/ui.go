@@ -169,6 +169,10 @@ type terminal struct {
 	credentialOp                 *credentialOperation
 	approvalRequest              *ui.ApprovalRequest
 	approvalGuard                atomic.Bool
+	approvalDismissed            map[string]struct{}
+	approvalRedirectVisible      bool
+	approvalRedirectDraftID      string
+	approvalRedirectDraft        string
 	clarificationRequest         *ui.ClarificationRequest
 	clarificationGuard           atomic.Bool
 	clarificationStatus          *tv.TextView
@@ -180,6 +184,7 @@ type terminal struct {
 	permissionsFromApproval      bool
 	permissionsFromClarification bool
 	permissionsVisible           bool
+	permissionsLoadGeneration    uint64
 	planPane                     *tv.TextView
 	planSnapshot                 string
 }
@@ -224,13 +229,13 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
 	u.planPane = tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
 	u.planPane.SetBorder(true).SetTitle(" Plan · this conversation only ")
-	u.footer = tv.NewTextView().SetText("/fs-root · /copy reply · /copy all · drag/double/triple select · Ctrl+T terminal select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
+	u.footer = tv.NewTextView().SetText("/copy reply · /copy all · drag/double/triple select · Ctrl+T terminal select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
 	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 3, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
@@ -305,6 +310,10 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 			if event.Key() == tcell.KeyEscape {
 				if u.permissionsVisible {
 					u.returnPermissionView()
+					return nil
+				}
+				if u.approvalRedirectVisible {
+					u.returnToApproval(u.approvalRedirectDraftID)
 					return nil
 				}
 				u.answerApproval(ui.ApprovalCancel, "")
@@ -564,7 +573,7 @@ func supportedCommands() []command {
 		{name: "/cancel", description: "stop the active reply", action: "cancel"},
 		{name: "/exit", description: "close KompoSyn", action: "exit"},
 		{name: "/permissions", description: "inspect and revoke tool grants for this conversation", action: "permissions"},
-		{name: "/fs-root", description: "select, inspect, or clear the temporary filesystem root", action: "filesystem-root"},
+		{name: "/cd", description: "change the working directory for future relative paths", action: "working-directory"},
 		{name: "/plan", description: "show the current conversation plan", action: "plan"},
 		{name: "/copy", description: "copy latest completed reply; /copy all copies visible transcript text", action: "copy"},
 	}
@@ -671,7 +680,26 @@ func (u *terminal) updateBanner() {
 	if version == "" {
 		version = "dev"
 	}
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]", tv.Escape(version), tv.Escape(modelName)))
+	workingDirectory := snapshot.WorkingDirectory
+	if workingDirectory == "" {
+		workingDirectory = "unavailable"
+	}
+	readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(readStatus)))
+}
+
+func renderFilesystemReadAvailability(status ui.FilesystemReadAvailability) string {
+	if status.Available {
+		reason := status.Reason
+		if reason == "" {
+			reason = "Exact-file reads still require explicit once approval."
+		}
+		return "File reading available · " + safeTerminalText(reason)
+	}
+	if status.Reason == "" {
+		return "File reading unavailable · availability has not been inspected."
+	}
+	return "File reading unavailable · " + safeTerminalText(status.Reason)
 }
 
 func renderPlan(steps []ui.PlanStep) string {
@@ -1032,18 +1060,30 @@ func (u *terminal) runCommand(text string) {
 		u.openPermissions(false, false)
 	case "plan":
 		u.showPlan()
-	case "filesystem-root":
-		if trimmed == "/fs-root clear" {
-			u.clearFilesystemRoot()
-		} else if trimmed == "/fs-root" {
-			u.showFilesystemRoot()
-		} else {
-			u.write("Use /fs-root to select and inspect a root, or /fs-root clear to remove it.\n")
-		}
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model /fs-root /help /cancel /exit /permissions /plan /copy\nAlso: /copy all /fs-root clear\nRoot selection grants lookup only, no access.\nread_file needs once approval; contents may be sensitive, go to provider, and may recur.\nTools: update_plan, request_user_input, read_file if supported. No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
+		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nAlso: /copy all\nThe launch directory is the working directory for relative file requests. Use /cd <path> to change it. Directory selection grants no read permission.\nFile-reading availability appears in the header. Each read needs once approval; contents may be sensitive, go to provider, and may recur.\nTools: update_plan, request_user_input, read_file if supported; no write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
+	case "working-directory":
+		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cd"))
+		if path == "" {
+			u.write("Usage: /cd <path>. The path may be absolute or relative to the current working directory; ~ expands to your home directory.\n")
+			u.input.SetText(trimmed)
+			u.app.SetFocus(u.input)
+			u.updateBanner()
+			return
+		}
+		if err := u.client.ChangeWorkingDirectory(u.ctx, path); err != nil {
+			u.write("Working directory unchanged: " + safeTerminalText(err.Error()) + "\n")
+			u.input.SetText(trimmed)
+			u.app.SetFocus(u.input)
+			u.updateBanner()
+			return
+		}
+		workingDirectory := u.client.Snapshot().WorkingDirectory
+		u.write("Working directory changed to: " + safeTerminalText(workingDirectory) + "\n")
+		u.updateBanner()
+		u.app.SetFocus(u.input)
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
@@ -1051,108 +1091,6 @@ func (u *terminal) runCommand(text string) {
 		u.stop()
 	}
 	u.input.SetText("")
-}
-
-func renderFilesystemRootStatus(status ui.FilesystemRootStatus) string {
-	root := "none selected"
-	if status.Selected {
-		root = safeTerminalText(status.Path)
-	}
-	backend := "unavailable"
-	if status.BackendAvailable {
-		backend = "candidate inspection passed; worker enforcement has not been established"
-	}
-	detail := safeTerminalText(status.BackendStatus)
-	if detail == "" {
-		detail = "No sandbox backend status is available."
-	}
-	var text strings.Builder
-	fmt.Fprintf(&text, "Selected root: %s\nBackend: %s\n%s\nRead capability: disabled. Root selection grants no access.\n", root, backend, detail)
-	if status.InvalidationPending {
-		text.WriteString("Root change cleanup/invalidation is pending; filesystem work must remain unavailable.\n")
-	}
-	return text.String()
-}
-
-func (u *terminal) showFilesystemRoot() {
-	status := tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
-	status.SetBorder(true).SetTitle(" Filesystem root · temporary, no permission grant ")
-	path := tv.NewInputField().SetLabel("Absolute directory: ").SetFieldWidth(0)
-	form := tv.NewForm().SetButtonsAlign(tv.AlignCenter).AddFormItem(path)
-	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(status, 0, 1, true).AddItem(form, 3, 0, false)
-	layout.SetBorder(true).SetTitle(" /fs-root ")
-	refresh := func(message string) {
-		text := renderFilesystemRootStatus(u.client.Snapshot().FilesystemRoot)
-		if message != "" {
-			text += "\n" + safeTerminalText(message)
-		}
-		status.SetText(text)
-	}
-	refresh("")
-	selectRoot := func() {
-		selectedPath := path.GetText()
-		if selectedPath == "" {
-			refresh("Enter an absolute directory path.")
-			return
-		}
-		u.launch(func() {
-			err := u.client.SelectFilesystemRoot(u.ctx, selectedPath)
-			u.queue(func() {
-				if err != nil {
-					refresh("Root selection failed: " + err.Error())
-					return
-				}
-				refresh("Selected root updated. No filesystem permission was granted.")
-				u.updateBanner()
-			})
-		})
-	}
-	path.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEnter {
-			selectRoot()
-		}
-	})
-	form.AddButton("Select", selectRoot)
-	form.AddButton("Clear", func() {
-		u.launch(func() {
-			err := u.client.ClearFilesystemRoot(u.ctx)
-			u.queue(func() {
-				if err != nil {
-					refresh("Root clear failed: " + err.Error())
-					return
-				}
-				refresh("Root cleared. No filesystem permission was changed.")
-				u.updateBanner()
-			})
-		})
-	})
-	form.AddButton("Back", func() { u.returnToChat() })
-	status.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyTab {
-			u.app.SetFocus(path)
-			return nil
-		}
-		if event.Key() == tcell.KeyEscape {
-			u.returnToChat()
-			return nil
-		}
-		return event
-	})
-	u.app.SetRoot(layout, true).SetFocus(path)
-}
-
-func (u *terminal) clearFilesystemRoot() {
-	u.launch(func() {
-		err := u.client.ClearFilesystemRoot(u.ctx)
-		u.queue(func() {
-			if err != nil {
-				u.write("Filesystem root clear failed: " + safeTerminalText(err.Error()) + "\n")
-			} else {
-				u.write("Filesystem lookup root cleared. read_file is unavailable until a root is selected.\n")
-			}
-			u.updateBanner()
-		})
-	})
 }
 
 func (u *terminal) openPicker() {
@@ -1737,9 +1675,11 @@ func (u *terminal) confirmSelection(m ui.Model) {
 }
 
 func (u *terminal) returnToChat() {
+	u.permissionsLoadGeneration++
 	u.permissionsVisible = false
 	u.permissionsFromApproval = false
 	u.permissionsFromClarification = false
+	u.approvalRedirectVisible = false
 	u.chatRootActive.Store(true)
 	u.app.SetRoot(u.layout, true).SetFocus(u.input)
 }
@@ -1798,10 +1738,20 @@ func (u *terminal) clarificationEventsLoop() {
 }
 
 func (u *terminal) dismissApproval(id string) {
+	if id == "" {
+		return
+	}
+	if u.approvalDismissed == nil {
+		u.approvalDismissed = make(map[string]struct{})
+	}
+	u.approvalDismissed[id] = struct{}{}
 	if u.approvalRequest == nil || u.approvalRequest.ID != id {
 		return
 	}
 	u.approvalRequest = nil
+	u.approvalRedirectVisible = false
+	u.approvalRedirectDraftID = ""
+	u.approvalRedirectDraft = ""
 	if !u.permissionsVisible {
 		u.returnToChat()
 	} else {
@@ -1828,7 +1778,7 @@ func (u *terminal) activityLoop() {
 			}
 			current := make(map[string]bool, len(activities))
 			for _, activity := range activities {
-				key := activity.CallID + "\x00" + activity.Phase + "\x00" + activity.Outcome + fmt.Sprint(activity.Truncated)
+				key := activity.CallID + "\x00" + activity.Phase + "\x00" + activity.Outcome + "\x00" + activity.Message + fmt.Sprint(activity.Truncated)
 				current[key] = true
 				if u.activitySeen == nil {
 					u.activitySeen = map[string]bool{}
@@ -1863,47 +1813,105 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 	if request == nil || u.closing.Load() {
 		return
 	}
+	if _, dismissed := u.approvalDismissed[request.ID]; dismissed {
+		return
+	}
 	u.approvalRequest = request
 	u.permissionsVisible = false
 	u.permissionsFromApproval = false
 	u.permissionsFromClarification = false
+	u.approvalRedirectVisible = false
 	u.approvalGuard.Store(true)
+	filesystemRead := isFilesystemReadApproval(request)
 	var details strings.Builder
-	fmt.Fprintf(&details, "Tool: %s\n%s\n\nRequested requirements:\n", safeTerminalText(request.ToolID), safeTerminalText(request.ToolDescription))
+	fmt.Fprintf(&details, "Tool: %s\n%s\n\n", safeTerminalText(request.ToolID), safeTerminalText(request.ToolDescription))
+	if filesystemRead && hasOutsideWorkingDirectoryNotice(request) {
+		details.WriteString("NOTICE: This exact target is outside the working directory.\n\n")
+	}
+	details.WriteString("Requested requirements:\n")
+	if request.Provider != "" || request.Model != "" || request.AuthProfile != "" {
+		fmt.Fprintf(&details, "Provider destination: %s · model %s · authentication profile %s\n\n", safeTerminalText(request.Provider), safeTerminalText(request.Model), safeTerminalText(request.AuthProfile))
+	}
 	for i, item := range request.Requirements {
-		fmt.Fprintf(&details, "%d. %s · %s · %s\n   Scope: %s %s\n", i+1, safeTerminalText(item.Kind), safeTerminalText(item.Operation), safeTerminalText(item.Description), safeTerminalText(item.ResourceKind), safeTerminalText(item.ResourceScope))
-		if item.Operation == "read" {
+		fmt.Fprintf(&details, "%d. %s · %s\n   %s\n", i+1, safeTerminalText(item.Kind), safeTerminalText(item.Operation), safeTerminalText(item.Description))
+		if item.ResourceKind == "filesystem" && item.Operation == "read" {
+			fmt.Fprintf(&details, "   Exact target: %s\n", safeTerminalText(item.ResourceScope))
+		} else if item.ResourceScope != "" {
+			fmt.Fprintf(&details, "   Scope: %s %s\n", safeTerminalText(item.ResourceKind), safeTerminalText(item.ResourceScope))
+		}
+		if filesystemRead && item.Operation == "read" {
 			details.WriteString("   Read permission includes returning retrieved data to the selected model.\n")
 		}
 	}
 	view := tv.NewTextView().SetScrollable(true).SetDynamicColors(false).SetText(safeTerminalText(details.String()))
-	view.SetBorder(true).SetTitle(" Review requested access · scroll for full scope ")
-	form := tv.NewForm().SetButtonsAlign(tv.AlignCenter)
-	form.AddButton("Allow once", func() { u.answerApproval(ui.ApprovalOnce, "") })
-	if request.AllowConversation {
-		form.AddButton("Allow for conversation", func() { u.answerApproval(ui.ApprovalConversation, "") })
+	viewTitle := " Review approval · scroll details "
+	allowLabel, denyLabel := "Allow once · authorize this action", "Deny this action"
+	if filesystemRead {
+		viewTitle = " Review read approval · scroll details "
+		allowLabel, denyLabel = "Allow once · share this exact file", "Deny this read"
 	}
-	form.AddButton("Deny", func() { u.answerApproval(ui.ApprovalDeny, "") })
-	form.AddButton("Cancel turn", func() { u.answerApproval(ui.ApprovalCancel, "") })
-	form.AddButton("Do something else", func() { u.redirectApproval() })
-	form.AddButton("/permissions", func() { u.openPermissions(true, false) })
+	view.SetBorder(true).SetTitle(viewTitle)
+	actions := tv.NewList().ShowSecondaryText(false)
+	addAction := func(label string, choice ui.ApprovalChoice) {
+		actions.AddItem(tv.Escape(label), "", 0, func() { u.answerApproval(choice, "") })
+	}
+	addAction(allowLabel, ui.ApprovalOnce)
+	if request.AllowConversation {
+		addAction("Allow for conversation", ui.ApprovalConversation)
+	}
+	addAction(denyLabel, ui.ApprovalDeny)
+	addAction("Cancel turn", ui.ApprovalCancel)
+	actions.AddItem("Do something else · redirect the request", "", 0, func() { u.redirectApproval() })
+	actions.AddItem("/permissions · inspect or revoke grants", "", 0, func() { u.openPermissions(true, false) })
+	// Focus the safe cancellation choice if the user enters the action list.
+	// Allow always requires an additional deliberate navigation step.
+	cancelIndex := 2
+	if request.AllowConversation {
+		cancelIndex++
+	}
+	actions.SetCurrentItem(cancelIndex)
 	view.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyTab {
-			u.app.SetFocus(form)
+		switch event.Key() {
+		case tcell.KeyTab, tcell.KeyBacktab:
+			u.app.SetFocus(actions)
 			return nil
 		}
 		return event
 	})
-	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEscape {
-			u.answerApproval(ui.ApprovalCancel, "")
+	actions.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyTab, tcell.KeyBacktab:
+			u.app.SetFocus(view)
 			return nil
 		}
 		return event
 	})
-	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true).AddItem(form, 3, 0, false)
-	layout.SetBorder(true).SetTitle(" Tool approval · Escape cancels the entire turn ")
-	u.app.SetRoot(layout, true).SetFocus(view)
+	panel := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true).AddItem(actions, 7, 0, true)
+	panel.SetBorder(true).SetTitle(" Tool approval · Tab to actions · Esc cancels turn ")
+	overlay := tv.NewGrid().SetRows(-1, -5, -1).SetColumns(-1, -8, -1).AddItem(panel, 1, 1, 1, 1, 0, 0, true)
+	pages := tv.NewPages().AddPage("chat", u.layout, true, true).AddPage("approval", overlay, true, true)
+	u.app.SetRoot(pages, true).SetFocus(view)
+}
+
+func isFilesystemReadApproval(request *ui.ApprovalRequest) bool {
+	if request == nil || request.ToolID != "read_file" {
+		return false
+	}
+	for _, requirement := range request.Requirements {
+		if requirement.ResourceKind == "filesystem" && requirement.Operation == "read" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOutsideWorkingDirectoryNotice(request *ui.ApprovalRequest) bool {
+	for _, requirement := range request.Requirements {
+		if strings.Contains(requirement.Description, "outside the working directory") {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *terminal) answerApproval(choice ui.ApprovalChoice, redirect string) {
@@ -1911,11 +1919,18 @@ func (u *terminal) answerApproval(choice ui.ApprovalChoice, redirect string) {
 	if request == nil {
 		return
 	}
+	if u.approvalDismissed == nil {
+		u.approvalDismissed = make(map[string]struct{})
+	}
+	u.approvalDismissed[request.ID] = struct{}{}
 	err := u.client.RespondApproval(ui.ApprovalResponse{ID: request.ID, Choice: choice, RedirectText: redirect})
 	if err != nil {
 		u.writeAsync("Approval is no longer current; no permission was granted.\n")
 	}
 	u.approvalRequest = nil
+	u.approvalRedirectVisible = false
+	u.approvalRedirectDraftID = ""
+	u.approvalRedirectDraft = ""
 	u.returnToChat()
 }
 
@@ -2052,35 +2067,65 @@ func (u *terminal) dismissClarification(id string) {
 
 func (u *terminal) redirectApproval() {
 	request := u.approvalRequest
-	if request == nil {
+	if request == nil || u.closing.Load() {
 		return
 	}
-	form := tv.NewForm().AddInputField("Instruction for replanning: ", "", 40, nil, nil)
+	if u.approvalRedirectDraftID != request.ID {
+		u.approvalRedirectDraftID = request.ID
+		u.approvalRedirectDraft = ""
+	}
+	form := tv.NewForm().AddInputField("Instruction for replanning: ", u.approvalRedirectDraft, 40, nil, nil)
+	field := form.GetFormItem(0).(*tv.InputField)
+	field.SetChangedFunc(func(text string) {
+		if u.approvalRequest != nil && u.approvalRequest.ID == request.ID {
+			u.approvalRedirectDraftID = request.ID
+			u.approvalRedirectDraft = text
+		}
+	})
 	form.AddButton("Send instruction", func() {
-		field := form.GetFormItem(0).(*tv.InputField)
+		if u.approvalRequest == nil || u.approvalRequest.ID != request.ID {
+			return
+		}
 		instruction := strings.TrimSpace(field.GetText())
 		if instruction != "" {
 			u.answerApproval(ui.ApprovalRedirect, instruction)
 		}
 	})
-	form.AddButton("Back", func() { u.showApproval(request) })
+	form.AddButton("Back", func() { u.returnToApproval(request.ID) })
 	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEscape {
-			u.showApproval(request)
+			u.approvalRedirectDraft = field.GetText()
+			u.returnToApproval(request.ID)
 			return nil
 		}
 		return event
 	})
 	form.SetBorder(true).SetTitle(" Original tool call will be rejected; replacement is checked again ")
+	u.approvalRedirectVisible = true
 	u.app.SetRoot(form, true).SetFocus(form)
+}
+
+func (u *terminal) returnToApproval(id string) {
+	request := u.approvalRequest
+	if request == nil || request.ID != id {
+		u.returnToChat()
+		return
+	}
+	u.showApproval(request)
 }
 
 func (u *terminal) openPermissions(fromApproval, fromClarification bool) {
 	u.permissionsFromApproval = fromApproval
 	u.permissionsFromClarification = fromClarification
+	u.permissionsVisible = true
+	u.permissionsLoadGeneration++
+	generation := u.permissionsLoadGeneration
 	u.launch(func() {
 		grants, err := u.client.Permissions(u.ctx)
 		u.queue(func() {
+			if generation != u.permissionsLoadGeneration || !u.permissionsVisible {
+				return
+			}
 			if err != nil {
 				u.showMessage("Tool permissions", safeTerminalText(err.Error()), func() { u.returnPermissionView() })
 				return
@@ -2091,6 +2136,7 @@ func (u *terminal) openPermissions(fromApproval, fromClarification bool) {
 	})
 }
 func (u *terminal) returnPermissionView() {
+	u.permissionsLoadGeneration++
 	u.permissionsVisible = false
 	if u.permissionsFromApproval && u.approvalRequest != nil {
 		u.permissionsFromApproval = false
@@ -2116,10 +2162,14 @@ func (u *terminal) showPermissions() {
 		g := grant
 		summary := fmt.Sprintf("%s · %s · %s", safeTerminalText(g.Action), safeTerminalText(g.Operation), safeTerminalText(g.Lifetime))
 		list.AddItem(tv.Escape(safeTerminalText(g.ToolID)+" · "+safeTerminalText(g.ID)), tv.Escape(summary), 'r', func() {
+			generation := u.permissionsLoadGeneration
 			u.launch(func() {
 				err := u.client.RevokePermission(u.ctx, g.ID)
 				grants, readErr := u.client.Permissions(u.ctx)
 				u.queue(func() {
+					if generation != u.permissionsLoadGeneration || !u.permissionsVisible {
+						return
+					}
 					if err != nil && !errors.Is(err, context.Canceled) {
 						u.write("Grant is already revoked or unavailable.\n")
 					}
@@ -2146,10 +2196,14 @@ func (u *terminal) showPermissions() {
 	list.SetChangedFunc(func(index int, _ string, _ string, _ rune) { showDetails(index) })
 	showDetails(0)
 	form := tv.NewForm().AddButton("Clear all", func() {
+		generation := u.permissionsLoadGeneration
 		u.launch(func() {
 			count, err := u.client.ClearPermissions(u.ctx)
 			grants, _ := u.client.Permissions(u.ctx)
 			u.queue(func() {
+				if generation != u.permissionsLoadGeneration || !u.permissionsVisible {
+					return
+				}
 				if err == nil {
 					u.write(fmt.Sprintf("Cleared %d conversation tool grant(s).\n", count))
 				}
