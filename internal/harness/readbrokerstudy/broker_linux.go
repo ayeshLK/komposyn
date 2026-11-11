@@ -30,8 +30,10 @@ import (
 )
 
 var (
-	errInvalidReadPath = errors.New("read broker requires clean absolute paths")
-	errReadNotRegular  = errors.New("read target is not a regular file")
+	errInvalidReadPath      = errors.New("read broker requires clean absolute paths")
+	errReadNotRegular       = errors.New("read target is not a regular file")
+	errSymlinkLookupRefused = errors.New("read broker refused a symlink lookup")
+	errMountBoundaryRefused = errors.New("read broker refused a mount-boundary lookup")
 )
 
 type broker struct {
@@ -357,7 +359,11 @@ func ReceiptMatches(prepared PreparedRead, receipt AuthorizationReceipt) bool {
 
 func mapPrepareError(err error) error {
 	switch {
-	case errors.Is(err, unix.EXDEV), errors.Is(err, unix.ELOOP), errors.Is(err, unix.ENOENT), errors.Is(err, unix.ENOTDIR):
+	case errors.Is(err, unix.ELOOP):
+		return fmt.Errorf("%w: %w", errSymlinkLookupRefused, err)
+	case errors.Is(err, unix.EXDEV):
+		return fmt.Errorf("%w: %w", errMountBoundaryRefused, err)
+	case errors.Is(err, unix.ENOENT), errors.Is(err, unix.ENOTDIR):
 		return fmt.Errorf("read target refused: %w", err)
 	default:
 		return err

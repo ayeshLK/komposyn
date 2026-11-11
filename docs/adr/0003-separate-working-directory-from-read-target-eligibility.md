@@ -82,6 +82,13 @@ case. `separate_mount_target_positive` passed with worker readiness, exact
 approved bytes, publication, and join. Archive SHA-256:
 `113b96181a85ae37d63c9c847a6e9e1710147fb18e048a8bd65334c10f386828`.
 
+A subsequent review found that the symlink and FIFO rows used generic
+preparation-refusal details. Although they were reported as `measured_pass`,
+that detail did not prove the broker lookup itself produced the refusal; an
+unrelated cleanup or inventory refusal could have produced the same report.
+The rows are not counted as conclusive until rerun with broker-specific
+refusal reasons.
+
 This confirms an exact approved target on a distinct mount is readable. The
 broker anchors each target at its verified mount root and applies
 `RESOLVE_NO_XDEV` beneath that root; a cross-mount refusal is not the policy for

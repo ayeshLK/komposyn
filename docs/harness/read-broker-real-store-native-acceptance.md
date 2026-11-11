@@ -75,8 +75,10 @@ only disposable fixture files:
 | Post-capture revocation | `revoke_after_capture_before_publish` | The captured result is suppressed after grant-generation change and the worker is joined. |
 
 The symlink and FIFO rows classify pre-worker `ReadNotExecuted` as a
-successful refusal only when no grant was consumed and no worker or target
-descriptor was released. The oversized row is a bounded refusal at the
+successful refusal only when no grant was consumed, no worker or target
+descriptor was released, and the detail identifies the matching broker check.
+Cleanup-pending, incomplete-inventory, and generic preparation refusals do not
+count as lookup evidence. The oversized row is a bounded refusal at the
 disclosure boundary: the worker can observe at most the fixed cap, but a
 truncated response is discarded and is never returned or published. It does
 not claim that the worker avoided reading the first 64 KiB.
@@ -109,9 +111,12 @@ The trusted Linux amd64 run for source commit
 `08076c58667acd1d73971ee8ca6d1eea46682e89` used Go 1.26.11 and Bubblewrap
 0.9.0 with `ro-bind-fd`. The validated report contains 58 measured passes, 6
 inconclusive rows, and 1 unavailable row; it has no observed-violation rows.
-The outside-directory read, both unsupported lookups, oversized no-publication,
-protected alias refusals, target-replacement race, and post-capture revocation
-rows passed. Archive SHA-256:
+The outside-directory read, oversized no-publication, protected alias refusals,
+target-replacement race, and post-capture revocation rows passed. The symlink
+and FIFO rows were reported as passes under the original generic classifier,
+but a review found that their details did not prove the broker lookup ran; do
+not count those two rows as conclusive until the updated reason-specific rows
+are rerun. Archive SHA-256:
 `363c210c4d7d44b3a3fbee9a967cc672176b0054d70f161e5d52d45d856b7d52`.
 
 The report did not include `separate_mount_target_positive`, added after that
@@ -128,7 +133,8 @@ Go 1.26.11 and Bubblewrap 0.9.0 (`ro-bind-fd`) profile. It recorded 59 measured
 passes, 6 inconclusive rows and 1 unavailable row. Archive SHA-256:
 `113b96181a85ae37d63c9c847a6e9e1710147fb18e048a8bd65334c10f386828`. The
 nested mount transition was not separately staged; this run is still partial
-evidence for the wider study. Under #278's policy, requested targets on another
+evidence for the wider study. Its symlink and FIFO rows also need a new run with
+broker-specific refusal details. Under #278's policy, requested targets on another
 verified mount are eligible, and lookup is confined beneath that target
 mount's root.
 

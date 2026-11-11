@@ -3172,7 +3172,7 @@ func executeCaseWithHook(session fixtureReadSession, auth *readbrokerstudy.OnceG
 			stateMatches = stateMatches && ev.CapabilitySent && ev.ReadStarted
 		}
 	case readbrokerstudy.ReadNotExecuted:
-		stateMatches = stateMatches && !ev.WorkerStarted && !ev.CapabilitySent && !ev.ReadStarted && !ev.Published && consumptionCount == 0 && len(result.Bytes) == 0
+		stateMatches = stateMatches && !ev.WorkerStarted && !ev.CapabilitySent && !ev.ReadStarted && !ev.Published && consumptionCount == 0 && len(result.Bytes) == 0 && lookupRefusalMatches(name, result.Detail)
 	case readbrokerstudy.ReadPartial:
 		stateMatches = stateMatches && result.Truncated && len(result.Bytes) == 0 && ev.WorkerStarted && ev.WorkerReady && ev.WorkerJoined && ev.CapabilitySent && ev.ReadStarted && !ev.Published && consumptionCount == 1
 	}
@@ -3237,6 +3237,17 @@ func executeCaseWithHook(session fixtureReadSession, auth *readbrokerstudy.OnceG
 	row := caseResult{Name: name, Status: status, Classification: classification, Expected: expected, Observed: string(result.Outcome), WorkerStarted: ev.WorkerStarted, WorkerReady: ev.WorkerReady, WorkerJoinConfirmed: ev.WorkerJoined, CapabilitySent: ev.CapabilitySent, CapabilityHeld: ev.CapabilityHeld, ReadStarted: ev.ReadStarted, Published: ev.Published, Truncated: result.Truncated, BytesMatchTarget: bytesMatch, BytesMatchApproved: bytesMatch, OnceGrantConsumptions: consumptionCount, GenerationsBefore: &generationsBefore, GenerationsAfter: &generationsAfter, WorkerProbe: ev.Probe, OwnerCoverage: &coverageSnapshot, FixtureEffect: effect, AuthorityA: a, AuthorityB: b, Detail: boundText(detail, 768)}
 	applyReadEvidence(&row, result, ev, ev.Case == invocationID)
 	return row
+}
+
+func lookupRefusalMatches(name, detail string) bool {
+	switch name {
+	case "unsupported_symlink_lookup":
+		return detail == readbrokerstudy.LookupRefusalSymlink
+	case "unsupported_fifo_lookup":
+		return detail == readbrokerstudy.LookupRefusalNonRegular
+	default:
+		return true
+	}
 }
 
 func executeNativeActorRaceCase(session readbrokerstudy.FixtureSession, auth *readbrokerstudy.OnceGrantFixture, executable, fixtureRoot, selectedRoot, target, name, invocationID, expected string, action readbrokerstudy.NativeActorAction, actorSource, actorTarget, expectedClassification string, verifyFixture func() bool, effect string) caseResult {

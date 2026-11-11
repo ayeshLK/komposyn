@@ -156,6 +156,10 @@ The expanded #278 profile also emits `separate_mount_target_positive`,
 `unsupported_symlink_lookup`, `unsupported_fifo_lookup`, and
 `oversized_target_not_published`. Count the lookup rows as passes only when
 they show zero once consumption and no worker or target-capability handoff.
+They must also report the matching broker reason: symlink policy for
+`unsupported_symlink_lookup`, and non-regular target for
+`unsupported_fifo_lookup`. Generic setup, cleanup-pending, or incomplete-
+inventory refusals are not passes.
 The oversized row must show the worker joined, `truncated: true`, no returned
 bytes, and no publication. Review `revoke_after_capture_before_publish` for
 worker join and suppressed publication. The separate-mount row must show

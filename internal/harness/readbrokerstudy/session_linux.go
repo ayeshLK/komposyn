@@ -841,6 +841,12 @@ func runCheckpoint(hook CheckpointHook, checkpoint Checkpoint) error {
 
 func refusalFor(err error) WorkerResult {
 	switch {
+	case errors.Is(err, errSymlinkLookupRefused):
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: LookupRefusalSymlink}
+	case errors.Is(err, errMountBoundaryRefused):
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: LookupRefusalMountBoundary}
+	case errors.Is(err, errReadNotRegular):
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: LookupRefusalNonRegular}
 	case errors.Is(err, ErrProtected):
 		return WorkerResult{Outcome: ReadRefused, Detail: ErrProtected.Error()}
 	case errors.Is(err, ErrDirectoryCoverage):

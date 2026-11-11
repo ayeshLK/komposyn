@@ -31,6 +31,18 @@ const (
 	MaxPolicyLocations = 256
 )
 
+const (
+	// LookupRefusalSymlink is the sanitized reason for a refused symlink or
+	// magic-link lookup in the native study.
+	LookupRefusalSymlink = "target lookup refused by symlink policy"
+	// LookupRefusalMountBoundary is the sanitized reason for a refused
+	// mount-crossing lookup in the native study.
+	LookupRefusalMountBoundary = "target lookup refused at mount boundary"
+	// LookupRefusalNonRegular is the sanitized reason for a target that is not
+	// a regular file.
+	LookupRefusalNonRegular = "target lookup refused: not a regular file"
+)
+
 var (
 	ErrInvalidPath       = errors.New("read fixture path must be clean and absolute")
 	ErrOutOfScope        = errors.New("read target escapes its verified mount root")

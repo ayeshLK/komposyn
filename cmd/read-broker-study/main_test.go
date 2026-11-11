@@ -1130,6 +1130,57 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 	}
 }
 
+func TestUnsupportedLookupPassRequiresBrokerSpecificRefusal(t *testing.T) {
+	tests := []struct {
+		name   string
+		detail string
+		want   bool
+	}{
+		{name: "unsupported_symlink_lookup", detail: readbrokerstudy.LookupRefusalSymlink, want: true},
+		{name: "unsupported_symlink_lookup", detail: readbrokerstudy.ErrCleanupPending.Error()},
+		{name: "unsupported_symlink_lookup", detail: readbrokerstudy.ErrInventoryIncomplete.Error()},
+		{name: "unsupported_symlink_lookup", detail: "read preparation or policy validation refused"},
+		{name: "unsupported_fifo_lookup", detail: readbrokerstudy.LookupRefusalNonRegular, want: true},
+		{name: "unsupported_fifo_lookup", detail: readbrokerstudy.ErrCleanupPending.Error()},
+		{name: "unsupported_fifo_lookup", detail: readbrokerstudy.ErrInventoryIncomplete.Error()},
+		{name: "unsupported_fifo_lookup", detail: "read preparation or policy validation refused"},
+	}
+	for _, test := range tests {
+		t.Run(test.name+"/"+test.detail, func(t *testing.T) {
+			if got := lookupRefusalMatches(test.name, test.detail); got != test.want {
+				t.Fatalf("lookupRefusalMatches(%q, %q)=%t, want %t", test.name, test.detail, got, test.want)
+			}
+		})
+	}
+}
+
+type fixedReadResultSession struct {
+	fixtureReadSession
+	result readbrokerstudy.WorkerResult
+}
+
+func (s fixedReadResultSession) Read(context.Context, string, string, string) (readbrokerstudy.WorkerResult, error) {
+	return s.result, nil
+}
+
+func TestUnsupportedLookupCannotPassOnAdmissionRefusal(t *testing.T) {
+	for _, name := range []string{"unsupported_symlink_lookup", "unsupported_fifo_lookup"} {
+		for _, detail := range []string{readbrokerstudy.ErrCleanupPending.Error(), readbrokerstudy.ErrInventoryIncomplete.Error()} {
+			t.Run(name+"/"+detail, func(t *testing.T) {
+				fixture, _ := newInjectedProviderFixture(t, nil)
+				wrapped := fixedReadResultSession{
+					fixtureReadSession: fixture.session,
+					result:             readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadNotExecuted, Detail: detail},
+				}
+				row := executeCase(wrapped, fixture.authorizer, fixture.root, name, fixture.ordinary, "unrelated-refusal", "broker lookup must refuse the unsupported target", readbrokerstudy.ReadNotExecuted)
+				if row.Status == "measured_pass" {
+					t.Fatalf("admission refusal masqueraded as broker lookup evidence: %+v", row)
+				}
+			})
+		}
+	}
+}
+
 func TestRealStoreReportEvidenceIsExplicitAndSanitized(t *testing.T) {
 	identity := readbrokerstudy.FileIdentity{Device: 1, Inode: 2, Type: 3}
 	row := caseResult{
