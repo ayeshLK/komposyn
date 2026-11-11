@@ -56,6 +56,7 @@ type LoginAttempt struct {
 type DisconnectResult struct{ RemoteRevocationConfirmed, LocalRegistrationRemoved, LocalTokensRemoved bool }
 type Model struct {
 	Key, Provider, ProfileID, ProfileLabel, ID, DisplayName string
+	AuthMethod                                              string
 	Compatibility                                           modelprovider.Compatibility
 	Reason                                                  string
 }
@@ -96,9 +97,10 @@ type ApprovalRequirement struct {
 	ConversationAllowed                                               bool
 }
 type ApprovalRequest struct {
-	ID, ToolID, ToolDescription string
-	Requirements                []ApprovalRequirement
-	AllowConversation           bool
+	ID, ToolID, ToolDescription  string
+	Provider, Model, AuthProfile string
+	Requirements                 []ApprovalRequirement
+	AllowConversation            bool
 }
 type ApprovalEvent struct {
 	Request     *ApprovalRequest
@@ -150,15 +152,21 @@ type ModelUsage struct {
 	Input, Output          MetricUsage
 	CachedRead, CacheWrite MetricUsage
 }
+type FilesystemReadAvailability struct {
+	Available bool
+	State     string
+	Reason    string
+}
 type Snapshot struct {
-	Selected         *Model
-	Turns            []Turn
-	Usage            []ModelUsage
-	Active           bool
-	ToolActivities   []ToolActivity
-	Plan             []PlanStep
-	WorkingDirectory string
-	Version          string
+	Selected                   *Model
+	Turns                      []Turn
+	Usage                      []ModelUsage
+	Active                     bool
+	ToolActivities             []ToolActivity
+	Plan                       []PlanStep
+	FilesystemReadAvailability FilesystemReadAvailability
+	WorkingDirectory           string
+	Version                    string
 }
 
 type Client interface {

@@ -112,6 +112,9 @@ func TestIssue277ChangeDirectoryKeepsChatContextAndResolvesFutureRead(t *testing
 	typeText("Read README.md and explain it")
 	press(tcell.KeyEnter, 0)
 	firstTarget := filepath.Join(launchDirectory, "README.md")
+	waitForScreen(t, screen, "Tool approval", "")
+	press(tcell.KeyEnd, 0) // The first key is ignored by the stale-view guard.
+	press(tcell.KeyEnd, 0)
 	waitForScreen(t, screen, "README.md", "")
 	if targets := host.targetsSnapshot(); len(targets) != 1 || targets[0] != firstTarget {
 		t.Fatalf("first approved target binding=%q, want %q", targets, firstTarget)
@@ -120,8 +123,9 @@ func TestIssue277ChangeDirectoryKeepsChatContextAndResolvesFutureRead(t *testing
 		t.Fatal("first file was read or disclosed before approval")
 	}
 	approveRead := func() {
-		press(tcell.KeyTab, 0) // Ignore a stale acceptance key from the prior view.
-		press(tcell.KeyTab, 0) // Focus Allow once.
+		press(tcell.KeyTab, 0) // Focus the action list; cancellation is selected by default.
+		press(tcell.KeyUp, 0)
+		press(tcell.KeyUp, 0) // Move deliberately to Allow once.
 		press(tcell.KeyEnter, 0)
 	}
 	approveRead()
@@ -144,6 +148,8 @@ func TestIssue277ChangeDirectoryKeepsChatContextAndResolvesFutureRead(t *testing
 	press(tcell.KeyEnter, 0)
 	secondTarget := filepath.Join(nestedDirectory, "README.md")
 	waitForScreen(t, screen, "Tool approval", "")
+	press(tcell.KeyEnd, 0)
+	press(tcell.KeyEnd, 0)
 	waitForScreen(t, screen, "README.md", "")
 	if targets := host.targetsSnapshot(); len(targets) != 2 || targets[1] != secondTarget {
 		t.Fatalf("relative target after /cd=%q, want %q", targets, secondTarget)

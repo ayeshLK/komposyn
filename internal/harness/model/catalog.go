@@ -75,6 +75,7 @@ type ProfileStore interface {
 }
 type Model struct {
 	Provider                                 provider.ID
+	AuthMethod                               provider.AuthMethod
 	ProfileID, ProfileLabel, ID, DisplayName string
 	Compatibility                            provider.Compatibility
 	Reason                                   string
@@ -143,7 +144,7 @@ func (c Catalog) Discover(ctx context.Context) Discovery {
 					continue
 				}
 				seen[m.ID] = true
-				out = append(out, Model{Provider: plug.ID(), ProfileID: p.ID, ProfileLabel: p.Label, ID: m.ID, DisplayName: m.DisplayName, Compatibility: m.Compatibility, Reason: m.Reason, ProfileVersion: version})
+				out = append(out, Model{Provider: plug.ID(), AuthMethod: cred.Method, ProfileID: p.ID, ProfileLabel: p.Label, ID: m.ID, DisplayName: m.DisplayName, Compatibility: m.Compatibility, Reason: m.Reason, ProfileVersion: version})
 			}
 			ch <- item{models: out}
 		}()

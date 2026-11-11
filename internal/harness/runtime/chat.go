@@ -54,14 +54,20 @@ type Turn struct {
 	At                 time.Time
 }
 type Snapshot struct {
-	Selected         *model.Model
-	Turns            []Turn
-	Usage            []ModelUsage
-	Active           bool
-	ToolActivities   []ToolActivity
-	Plan             []tools.PlanStep
-	FilesystemRoot   FilesystemRootStatus
-	WorkingDirectory string
+	Selected                   *model.Model
+	Turns                      []Turn
+	Usage                      []ModelUsage
+	Active                     bool
+	ToolActivities             []ToolActivity
+	Plan                       []tools.PlanStep
+	FilesystemRoot             FilesystemRootStatus
+	FilesystemReadAvailability FilesystemReadAvailability
+	WorkingDirectory           string
+}
+type FilesystemReadAvailability struct {
+	Available bool
+	State     string
+	Reason    string
 }
 type UsageMetric struct {
 	Tokens  int64
@@ -457,9 +463,61 @@ func (c *Chat) Snapshot() Snapshot {
 	rootPath, rootGeneration, rootAck := c.filesystemRoot, c.filesystemRootGen, c.filesystemRootAck
 	workingDirectory := c.workingDirectory
 	rootHost := c.filesystemRootHostLocked()
+	toolRuntime := c.toolRuntime
+	providers := c.catalog.Providers
 	active := c.active
 	c.mu.Unlock()
-	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan, FilesystemRoot: filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost), WorkingDirectory: workingDirectory}
+	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan,
+		FilesystemRoot:             filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost),
+		FilesystemReadAvailability: filesystemReadAvailability(selected, providers, toolRuntime, workingDirectory, rootGeneration, rootAck, rootHost),
+		WorkingDirectory:           workingDirectory}
+}
+
+func filesystemReadAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, workingDirectory string, generation, acknowledged uint64, host FilesystemRootHost) FilesystemReadAvailability {
+	if selected == nil {
+		return FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."}
+	}
+	if selected.AuthMethod == "" || providers == nil {
+		return FilesystemReadAvailability{State: "unknown_route", Reason: "The selected provider/authentication route is not known; refresh models and select a supported route."}
+	}
+	plug, ok := providers.Get(selected.Provider)
+	if !ok {
+		return FilesystemReadAvailability{State: "unknown_route", Reason: "The selected provider route is unavailable; refresh models and select an available model."}
+	}
+	support := provider.CapabilitiesFor(plug, selected.AuthMethod).ClientTools
+	if support != provider.SupportSupported {
+		reason := "The selected provider/authentication route does not explicitly support client tools; choose a supported model and route."
+		state := "unsupported_route"
+		if support == provider.SupportUnknown {
+			state = "unknown_route"
+			reason = "Support for client tools on the selected provider/authentication route is unverified; choose a route that explicitly supports client tools."
+		}
+		return FilesystemReadAvailability{State: state, Reason: reason}
+	}
+	if host == nil {
+		return FilesystemReadAvailability{State: "backend_unavailable", Reason: "No trusted file-read backend is configured. Use a supported Linux setup with an inspected Bubblewrap worker, then restart KompoSyn."}
+	}
+	available, detail := host.BackendStatus()
+	if !available {
+		reason := "The inspected file-read backend is unavailable. Use a supported Linux setup with a trusted Bubblewrap worker, then restart KompoSyn."
+		if detail != "" {
+			reason = "The inspected file-read backend is unavailable: " + detail + ". Use a supported Linux setup with a trusted Bubblewrap worker, then restart KompoSyn."
+		}
+		return FilesystemReadAvailability{State: "backend_unavailable", Reason: reason}
+	}
+	if runtime == nil || runtime.readAdmission == nil {
+		return FilesystemReadAvailability{State: "enforcement_unavailable", Reason: "The inspected backend is not connected to the host read-enforcement path; restart with the supported KompoSyn composition."}
+	}
+	if _, ok := runtime.registry.Lookup(tools.ReadFileID); !ok {
+		return FilesystemReadAvailability{State: "enforcement_unavailable", Reason: "The host read-enforcement path is not fully configured; restart with the supported KompoSyn composition."}
+	}
+	if acknowledged < generation {
+		return FilesystemReadAvailability{State: "cleanup_pending", Reason: "Filesystem authority cleanup is pending; wait for cleanup to finish before reading files."}
+	}
+	if workingDirectory == "" {
+		return FilesystemReadAvailability{State: "working_directory_unavailable", Reason: "The working directory is unavailable. Restart KompoSyn from an existing directory before requesting a file; choosing a directory does not grant read permission."}
+	}
+	return FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads are available on this route after explicit once approval; contents are sent to the selected provider."}
 }
 
 func (c *Chat) recordUsageLocked(providerID provider.ID, modelID string, usage provider.Usage) {

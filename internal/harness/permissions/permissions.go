@@ -98,6 +98,9 @@ type Requirement struct {
 type Request struct {
 	ConversationID string
 	CallID         string
+	// Destination is a host-selected provider/model/profile identity for safe
+	// approval display. It carries no credential values and is not persisted.
+	Destination string
 	// Binding is an opaque digest of the immutable invocation and captured
 	// authorization context. It is not a substitute for re-preparing that
 	// context immediately before dispatch.

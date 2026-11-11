@@ -102,7 +102,9 @@ func TestIssue276LaunchRelativeReadJourneyThroughTerminalRuntimeAndProvider(t *t
 		t.Fatal("private file was read before the explicit approval")
 	}
 	press(tcell.KeyTab, 0) // first key is intentionally ignored by the stale-view guard
-	press(tcell.KeyTab, 0) // focus Allow once
+	press(tcell.KeyTab, 0) // focus the safe Cancel turn action
+	press(tcell.KeyUp, 0)
+	press(tcell.KeyUp, 0) // explicitly move to Allow once
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, screen, "derived answer", "")
 	if host.readCount() != 1 {

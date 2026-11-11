@@ -45,10 +45,13 @@ type clientStub struct {
 	loginCanceled          []string
 	approvalEvents         chan ui.ApprovalEvent
 	approvalResponses      chan ui.ApprovalResponse
+	permissionsHook        func(context.Context) ([]ui.ToolGrant, error)
 	clarificationEvents    chan ui.ClarificationEvent
 	clarificationResponses chan ui.ClarificationResponse
 	toolGrants             []ui.ToolGrant
 	plan                   []ui.PlanStep
+	toolActivities         []ui.ToolActivity
+	readAvailability       ui.FilesystemReadAvailability
 	workingDirectory       string
 	workingDirectoryHook   func(context.Context, string) error
 	revoked                []string
@@ -162,7 +165,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), WorkingDirectory: c.workingDirectory}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), ToolActivities: append([]ui.ToolActivity(nil), c.toolActivities...), FilesystemReadAvailability: c.readAvailability, WorkingDirectory: c.workingDirectory}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -193,7 +196,10 @@ func (c *clientStub) RespondClarification(response ui.ClarificationResponse) err
 	}
 	return nil
 }
-func (c *clientStub) Permissions(context.Context) ([]ui.ToolGrant, error) {
+func (c *clientStub) Permissions(ctx context.Context) ([]ui.ToolGrant, error) {
+	if c.permissionsHook != nil {
+		return c.permissionsHook(ctx)
+	}
 	return append([]ui.ToolGrant(nil), c.toolGrants...), nil
 }
 func (c *clientStub) RevokePermission(_ context.Context, id string) error {
@@ -236,6 +242,9 @@ func TestApprovalDialogRequiresExplicitChoiceAndEscapeCancelsTurn(t *testing.T) 
 	default:
 	}
 	press(tcell.KeyTab, 0)
+	for range 3 {
+		press(tcell.KeyUp, 0)
+	}
 	press(tcell.KeyEnter, 0)
 	select {
 	case response := <-responses:
@@ -255,6 +264,198 @@ func TestApprovalDialogRequiresExplicitChoiceAndEscapeCancelsTurn(t *testing.T) 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Escape did not cancel the turn")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestApprovalRedirectEscapeReturnsToApprovalWithDraft(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(72, 22)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	responses := make(chan ui.ApprovalResponse, 1)
+	events := make(chan ui.ApprovalEvent, 2)
+	client := &clientStub{approvalEvents: events, approvalResponses: responses}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	longTarget := "/tmp/" + strings.Repeat("very-long-directory/", 10) + "private-report.txt"
+	events <- ui.ApprovalEvent{Request: &ui.ApprovalRequest{
+		ID: "pending-redirect", ToolID: "read_file", ToolDescription: "Read one file once",
+		Provider: "openai", Model: "fixture-model", AuthProfile: "personal",
+		Requirements: []ui.ApprovalRequirement{
+			{Kind: "action", Operation: "read", Description: "Send contents to openai/fixture-model using auth profile personal"},
+			{Kind: "resource", Operation: "read", ResourceKind: "filesystem", ResourceScope: longTarget, Description: "Sensitive data may recur in this conversation. One read only."},
+		},
+	}}
+	waitForScreen(t, safe, "Tool approval", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(30 * time.Millisecond)
+	}
+	// Enter the permissions subview and return while the approval remains live.
+	press(tcell.KeyRune, 'x')
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyDown, 0)
+	press(tcell.KeyDown, 0)
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "/permissions · revoking prevents future dispatch only", "")
+	press(tcell.KeyEscape, 0)
+	waitForScreen(t, safe, "Tool approval", "/permissions · revoking prevents future dispatch only")
+	select {
+	case response := <-responses:
+		t.Fatalf("permissions navigation answered approval: %+v", response)
+	default:
+	}
+	press(tcell.KeyHome, 0)
+	press(tcell.KeyHome, 0) // The first key after returning is guarded against stale input.
+	press(tcell.KeyEnd, 0)
+	waitForScreen(t, safe, "private-", "")
+	waitForScreen(t, safe, "report.txt", "")
+	// Move deliberately from the detail pane to the redirect action.
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyDown, 0)
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "Original tool call will be rejected", "")
+	for _, r := range "Use the sibling summary instead" {
+		press(tcell.KeyRune, r)
+	}
+	press(tcell.KeyEscape, 0)
+	waitForScreen(t, safe, "Tool approval", "")
+	select {
+	case response := <-responses:
+		t.Fatalf("Escape from redirect subview answered approval: %+v", response)
+	default:
+	}
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyTab, 0) // Ignore the stale acceptance key that opened the approval again.
+	press(tcell.KeyDown, 0)
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "Use the sibling summary instead", "")
+	press(tcell.KeyEscape, 0)
+	waitForScreen(t, safe, "Tool approval", "")
+	press(tcell.KeyEscape, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "pending-redirect" || response.Choice != ui.ApprovalCancel {
+			t.Fatalf("main approval Escape response = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Escape at the main approval panel did not cancel the turn")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestDismissedApprovalCannotReturnFromRedirectOrReopen(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(72, 22)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	responses := make(chan ui.ApprovalResponse, 1)
+	events := make(chan ui.ApprovalEvent, 4)
+	client := &clientStub{approvalEvents: events, approvalResponses: responses}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	request := &ui.ApprovalRequest{ID: "dismissed-request", ToolID: "read_file", Requirements: []ui.ApprovalRequirement{{Kind: "resource", Operation: "read", ResourceKind: "filesystem", ResourceScope: "/tmp/report.txt"}}}
+	events <- ui.ApprovalEvent{Request: request}
+	waitForScreen(t, safe, "Tool approval", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	press(tcell.KeyRune, 'x') // Consume the guard for a key already in flight.
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyDown, 0)
+	press(tcell.KeyEnter, 0)
+	waitForScreen(t, safe, "Original tool call will be rejected", "")
+	for _, r := range "keep this draft" {
+		press(tcell.KeyRune, r)
+	}
+	events <- ui.ApprovalEvent{DismissedID: request.ID}
+	waitForScreen(t, safe, "KompoSyn is ready", "Tool approval")
+	events <- ui.ApprovalEvent{Request: request}
+	time.Sleep(100 * time.Millisecond)
+	waitForScreen(t, safe, "KompoSyn is ready", "Tool approval")
+	select {
+	case response := <-responses:
+		t.Fatalf("dismissal or stale callback answered approval: %+v", response)
+	default:
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop")
+	}
+}
+
+func TestApprovalPermissionsSubviewEscPreservesActiveRequestAndIgnoresLateLoad(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(72, 22)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	responses := make(chan ui.ApprovalResponse, 1)
+	events := make(chan ui.ApprovalEvent, 2)
+	permissionsStarted := make(chan struct{})
+	releasePermissions := make(chan struct{})
+	client := &clientStub{
+		approvalEvents: events, approvalResponses: responses,
+		permissionsHook: func(ctx context.Context) ([]ui.ToolGrant, error) {
+			close(permissionsStarted)
+			select {
+			case <-releasePermissions:
+				return nil, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "No model selected", "")
+	events <- ui.ApprovalEvent{Request: &ui.ApprovalRequest{ID: "permissions-request", ToolID: "read_file", Requirements: []ui.ApprovalRequirement{{Kind: "resource", Operation: "read", ResourceKind: "filesystem", ResourceScope: "/tmp/report.txt"}}}}
+	waitForScreen(t, safe, "Tool approval", "")
+	press := func(key tcell.Key, r rune) {
+		screen.InjectKey(key, r, tcell.ModNone)
+		time.Sleep(25 * time.Millisecond)
+	}
+	press(tcell.KeyRune, 'x')
+	press(tcell.KeyTab, 0)
+	press(tcell.KeyDown, 0)
+	press(tcell.KeyDown, 0)
+	press(tcell.KeyEnter, 0)
+	select {
+	case <-permissionsStarted:
+	case <-time.After(time.Second):
+		t.Fatal("permissions subview did not start loading")
+	}
+	press(tcell.KeyEscape, 0)
+	waitForScreen(t, safe, "Tool approval", "")
+	close(releasePermissions)
+	time.Sleep(100 * time.Millisecond)
+	waitForScreen(t, safe, "Tool approval", "/permissions · revoking prevents future dispatch only")
+	press(tcell.KeyEscape, 0)
+	select {
+	case response := <-responses:
+		if response.ID != "permissions-request" || response.Choice != ui.ApprovalCancel {
+			t.Fatalf("approval Escape after permissions subview = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active approval was not canceled from its main panel")
 	}
 	cancel()
 	select {
@@ -576,6 +777,40 @@ func TestDismissedApprovalReturnsToChatAfterLeavingPermissions(t *testing.T) {
 	if u.approvalRequest != nil || !u.chatRootActive.Load() || app.GetFocus() != input {
 		t.Fatalf("dismissal left stale approval root: approval=%+v chatActive=%t focus=%T", u.approvalRequest, u.chatRootActive.Load(), app.GetFocus())
 	}
+}
+
+func TestDisclosureMetadataUpdateAppearsInTerminalActivity(t *testing.T) {
+	activity := ui.ToolActivity{CallID: "read-1", ToolID: "read_file", Phase: "finished", Outcome: "succeeded", Message: "Read completed; content is private until continuation commitment."}
+	client := &clientStub{toolActivities: []ui.ToolActivity{activity}}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 24)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	ctx, cancel := context.WithCancel(context.Background())
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, output: newTranscriptView(), input: newComposerInput()}
+	u.header = tv.NewTextView()
+	u.body = tv.NewFlex().AddItem(u.output, 0, 1, false)
+	u.composer = tv.NewFlex().AddItem(u.input, 1, 0, true)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
+	u.app.SetScreen(safeScreen).SetRoot(u.layout, true)
+	done := make(chan error, 1)
+	go func() {
+		err := u.app.Run()
+		u.runReturned.Store(true)
+		done <- err
+	}()
+	u.launch(u.activityLoop)
+	waitForScreen(t, safeScreen, "private until continuation commitment", "")
+	client.mu.Lock()
+	client.toolActivities[0].Message = "Read completed and was disclosed at provider handoff; replay is limited to this conversation context."
+	client.mu.Unlock()
+	waitForScreen(t, safeScreen, "disclosed at provider handoff", "")
+	u.stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal did not stop after activity update")
+	}
+	cancel()
 }
 
 func TestPickerInteractionOnSimulationScreen(t *testing.T) {
@@ -1385,18 +1620,19 @@ func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
 }
 
 func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
-	client := &clientStub{version: "0.11.0"}
+	client := &clientStub{version: "0.11.0", readAvailability: ui.FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."}}
 	model := ui.Model{Key: "selected", ID: "model-y", DisplayName: "Model Y"}
 	u := &terminal{client: client, header: tv.NewTextView(), body: tv.NewFlex(), usagePane: tv.NewTextView(), usageCompact: tv.NewTextView(), composer: tv.NewFlex(), input: newComposerInput()}
 	u.body.AddItem(tv.NewTextView(), 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.composer.AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
 	u.updateBanner()
-	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") {
+	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") || !strings.Contains(got, "File reading unavailable") || !strings.Contains(got, "/model") {
 		t.Fatalf("initial banner = %q", got)
 	}
 	client.selected = &model
+	client.readAvailability = ui.FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads require explicit once approval."}
 	u.updateBanner()
-	if got := u.header.GetText(true); !strings.Contains(got, "Model Y") {
+	if got := u.header.GetText(true); !strings.Contains(got, "Model Y") || !strings.Contains(got, "File reading available") || !strings.Contains(got, "explicit once approval") {
 		t.Fatalf("selected model missing from banner: %q", got)
 	}
 	u.setTerminalWidth(usageWideThreshold)
