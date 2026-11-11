@@ -17,6 +17,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
@@ -48,6 +49,9 @@ func (b *ApprovalBridge) Events() <-chan ui.ApprovalEvent { return b.events }
 
 func (b *ApprovalBridge) Review(ctx context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 	request := ui.ApprovalRequest{ID: pending.ID}
+	if destination := strings.Split(pending.Request.Destination, "/"); len(destination) == 4 {
+		request.Provider, request.Model, request.AuthProfile = destination[0], destination[1], destination[2]
+	}
 	allowConversation := len(pending.Decision.Missing) > 0
 	for _, req := range pending.Request.Requirements {
 		if !req.SessionAllowed || req.Operation == permissions.OperationDelete {

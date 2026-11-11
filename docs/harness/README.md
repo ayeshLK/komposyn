@@ -376,26 +376,34 @@ selection, press **Ctrl+T** to release mouse capture, select text, and use the
 terminal's Copy action (often Ctrl+Shift+C on Linux). Press Ctrl+T again to
 restore UI mouse controls.
 
-When an injected tool runtime needs approval, KompoSyn shows every missing
-action and resource requirement together. Choose **Allow once**, **Allow for
-conversation** when offered, **Deny**, or **Do something else** with an
-instruction for replanning. **Cancel turn** and Escape stop the turn without a
-provider continuation. The dialog does not pre-approve; a keyboard choice must
-be made after it appears. Read access warns that retrieved data is returned to
-the selected model. Use `/permissions` to inspect or revoke temporary grants;
-OAuth permission metadata is separate. Revocation blocks future dispatch but
-does not roll back completed effects or claim to terminate running work.
-`/permissions` remains available during a turn, and approval and clarification
-dialogs link to it directly. Tool activity shows awaiting approval,
-authorized, running, and finished states, with the typed outcome and
-truncation status. Tool prompts, plans, grants, and activity exist only in
-memory. The two bundled conversation tools are always available on supported
-routes; `read_file` is the sole conditional host-backed capability. Filesystem
-mutation, process, web, and image tools remain unavailable.
+When an injected tool runtime needs approval, KompoSyn places a focused panel
+over the conversation and shows every missing action and resource requirement.
+For a file read, the scrollable details show the complete exact target, the
+provider/model/authentication profile destination, one-read scope, sensitive
+content warning, and that approved content may recur in this conversation.
+The chat remains visible behind the panel. Tab moves between the details and
+the vertical action list, so every choice remains reachable on narrow
+terminals. Allow is not focused by default; it requires moving to the actions
+and explicitly choosing **Allow once**. Choose **Deny**, **Cancel turn**, or
+**Do something else** with an instruction to redirect the model. Each new read
+still needs its own once approval. Escape in the main approval panel cancels
+the turn; Escape from the redirect form returns to approval with the draft
+preserved. If the request expires while a subview is open, KompoSyn returns to
+chat and does not reopen it from stale callbacks.
 
-Escape in the approval dialog explicitly cancels the entire active turn. The
-first keyboard event after a dialog appears is consumed to prevent a composer
-key already in flight from accepting an option.
+`/permissions` remains available during a turn to inspect or revoke temporary
+grants; OAuth permission metadata is separate. Returning from that view restores
+approval only while its request remains active. Revocation blocks future
+dispatch but does not roll back completed effects or claim to terminate
+running work. Tool activity shows awaiting approval, authorized, running, and
+finished states, with the typed outcome and truncation status. Tool prompts,
+plans, grants, and activity exist only in memory. The two bundled conversation
+tools are always available on supported routes; `read_file` is the sole
+conditional host-backed capability. Filesystem mutation, process, web, and
+image tools remain unavailable.
+
+The first keyboard event after a dialog appears is consumed to prevent a
+composer key already in flight from accepting an option.
 
 ### Token usage
 
