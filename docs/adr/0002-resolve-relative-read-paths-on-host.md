@@ -19,4 +19,3 @@ Implemented by #276 host-side relative-path resolution and #278 exact-target
 admission. The resolved absolute path is the target shown for approval and
 bound to capture and disclosure. An outside-working-directory path is not
 rewritten by navigation.
-

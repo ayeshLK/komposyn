@@ -61,17 +61,22 @@ and study-worker descriptor evidence on the recorded Linux amd64/Bubblewrap
 0.9.0 environment. See the [closure and evidence limits](https://github.com/ayeshLK/komposyn/issues/215#issuecomment-6771210816).
 The focused `read_file` capability is now wired to the retained Linux worker
 path on explicitly supported client-tool routes when the trusted Bubblewrap
-backend and all lifecycle interfaces are available. It reads one exact regular
-file beneath the launch directory after a separate explicit once approval naming
-the provider/model/profile. The bytes are sent to that provider and may recur
-in the same valid conversation; approval does not permit a second read. Root
-selection grants no access. Auth/settings protected identities remain denied;
+backend and all lifecycle interfaces are available. Relative read requests are
+resolved against the working directory. Individually approved exact targets may
+be outside it when host eligibility checks permit; the approval shows the
+resolved target and provider destination and identifies outside targets. Each
+read requires a separate explicit once approval naming the provider/model/profile.
+The bytes are sent to that provider and may recur in the same valid conversation;
+approval does not permit a second read. Choosing or changing the working
+directory grants no read access.
+Auth/settings protected identities remain denied;
 provider-source reads, unavailable backends, unsupported routes, mutation, and
 shell remain unavailable. Stage 6 native evidence is limited to the recorded
 Linux amd64/Bubblewrap 0.9.0 environment; it is not production-provider or
 cross-platform acceptance. The launch directory is shown as the working
 directory and is the base for relative read requests; it does not grant read
-permission. See the
+permission. Native acceptance for outside-working-directory reads remains
+pending under [issue #278](https://github.com/ayeshLK/komposyn/issues/278). See the
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
@@ -84,9 +89,10 @@ Use `/cd <path>` in chat to change the working directory for future relative
 file requests. The path may be absolute or relative to the current working
 directory; `~` expands to your home directory. Paths with spaces and Unicode
 are accepted as written. A directory change preserves the current
-conversation and does not grant read permission. This slice retains the
-existing launch-directory read-eligibility boundary until the wider-target
-policy and native acceptance are implemented.
+conversation and does not grant read permission. The working directory only
+provides relative-path context; it does not set the read-eligibility boundary.
+Outside targets still pass the host's protected-object, mount, file-type, size
+and exact-object checks, and the trusted backend must be available.
 
 Mutation design is tracked separately in
 [issue #267](https://github.com/ayeshLK/komposyn/issues/267).
