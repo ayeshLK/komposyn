@@ -6,14 +6,15 @@ records its threat model and limits. The executable exposes `update_plan` and
 `request_user_input` on explicitly supported routes. On Linux,
 `read_file` is additionally registered only when the trusted Bubblewrap host
 and complete retained-read lifecycle are available. It reads one exact regular
-file beneath the launch directory after target-specific once approval; relative
-requests are resolved by the host. Starting in a directory grants no read
-permission, unknown file content may be sensitive, and the contents may recur
-in that conversation. Auth/settings protected identities remain denied.
+file after target-specific once approval; relative requests are resolved by the
+host, and eligible targets outside the working directory do not require
+navigation. The native broker keeps no-symlink, exact-object and mount-scope
+checks. Starting in a directory grants no read permission, unknown file
+content may be sensitive, and the contents may recur in that conversation.
+Auth/settings protected identities remain denied.
 `/cd <path>` updates only the in-memory base for future relative reads; it does
 not change the process directory, authentication/settings paths, conversation
-history, or file-read permission. The current selected launch-directory
-eligibility boundary remains in force until the reviewed wider-target change.
+history, or file-read permission.
 Provider sources, unsupported routes/platforms, mutation, and shell remain
 unavailable. This is not an OS sandbox for arbitrary host code.
 
