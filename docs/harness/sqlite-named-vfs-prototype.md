@@ -98,7 +98,7 @@ go run ./cmd/sqlite-vfs-study --commit "$(git rev-parse HEAD)" \
   > /tmp/komposyn-sqlite-named-vfs-report.json
 ```
 
-The command requires Linux and Go 1.26.10 or newer. It uses synthetic,
+The command requires Linux and Go 1.26.11 or newer. It uses synthetic,
 temporary database files and emits sanitized JSON to stdout. Context-aware
 SQLite queries are bounded by a 30-second context. SQLite's online-backup call
 is synchronous and has no context parameter; the probe limits it to a one-page
