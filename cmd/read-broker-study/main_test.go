@@ -1063,7 +1063,9 @@ func TestCaseReadEvidenceSerializationPreservesSuccessAndUnexpectedActivity(t *t
 
 func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testing.T) {
 	planned := []string{
-		"ordinary_positive", "outside_working_directory_positive", "protected_direct", "provider_source_explicit_once",
+		"ordinary_positive", "outside_working_directory_positive", "separate_mount_target_positive",
+		"unsupported_symlink_lookup", "unsupported_fifo_lookup", "oversized_target_not_published",
+		"protected_direct", "provider_source_explicit_once",
 		"protected_existing_hardlink", "protected_late_hardlink",
 		"protected_object_renamed_into_ordinary_tree", "protected_location_replaced_before_open",
 		"ordinary_object_moved_into_protected_location", "cancel_before_release",
@@ -1125,6 +1127,57 @@ func TestUnavailableReportPreservesBaselineAndNativeActorCaseInventory(t *testin
 	}
 	if _, present := fields["generations_before"]; present {
 		t.Fatal("unavailable scenario serialized an unmeasured generation snapshot")
+	}
+}
+
+func TestUnsupportedLookupPassRequiresBrokerSpecificRefusal(t *testing.T) {
+	tests := []struct {
+		name   string
+		detail string
+		want   bool
+	}{
+		{name: "unsupported_symlink_lookup", detail: readbrokerstudy.LookupRefusalSymlink, want: true},
+		{name: "unsupported_symlink_lookup", detail: readbrokerstudy.ErrCleanupPending.Error()},
+		{name: "unsupported_symlink_lookup", detail: readbrokerstudy.ErrInventoryIncomplete.Error()},
+		{name: "unsupported_symlink_lookup", detail: "read preparation or policy validation refused"},
+		{name: "unsupported_fifo_lookup", detail: readbrokerstudy.LookupRefusalNonRegular, want: true},
+		{name: "unsupported_fifo_lookup", detail: readbrokerstudy.ErrCleanupPending.Error()},
+		{name: "unsupported_fifo_lookup", detail: readbrokerstudy.ErrInventoryIncomplete.Error()},
+		{name: "unsupported_fifo_lookup", detail: "read preparation or policy validation refused"},
+	}
+	for _, test := range tests {
+		t.Run(test.name+"/"+test.detail, func(t *testing.T) {
+			if got := lookupRefusalMatches(test.name, test.detail); got != test.want {
+				t.Fatalf("lookupRefusalMatches(%q, %q)=%t, want %t", test.name, test.detail, got, test.want)
+			}
+		})
+	}
+}
+
+type fixedReadResultSession struct {
+	fixtureReadSession
+	result readbrokerstudy.WorkerResult
+}
+
+func (s fixedReadResultSession) Read(context.Context, string, string, string) (readbrokerstudy.WorkerResult, error) {
+	return s.result, nil
+}
+
+func TestUnsupportedLookupCannotPassOnAdmissionRefusal(t *testing.T) {
+	for _, name := range []string{"unsupported_symlink_lookup", "unsupported_fifo_lookup"} {
+		for _, detail := range []string{readbrokerstudy.ErrCleanupPending.Error(), readbrokerstudy.ErrInventoryIncomplete.Error()} {
+			t.Run(name+"/"+detail, func(t *testing.T) {
+				fixture, _ := newInjectedProviderFixture(t, nil)
+				wrapped := fixedReadResultSession{
+					fixtureReadSession: fixture.session,
+					result:             readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadNotExecuted, Detail: detail},
+				}
+				row := executeCase(wrapped, fixture.authorizer, fixture.root, name, fixture.ordinary, "unrelated-refusal", "broker lookup must refuse the unsupported target", readbrokerstudy.ReadNotExecuted)
+				if row.Status == "measured_pass" {
+					t.Fatalf("admission refusal masqueraded as broker lookup evidence: %+v", row)
+				}
+			})
+		}
 	}
 }
 

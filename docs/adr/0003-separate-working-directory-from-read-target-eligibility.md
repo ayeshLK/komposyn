@@ -48,3 +48,58 @@ mount-boundary coverage remains incomplete. #278 remains open until its
 required native positive and negative acceptance cases have conclusive
 evidence. See the [manual read-broker runner guide](../harness/read-broker-manual-runner.md)
 for reproduction and result interpretation.
+
+The #278 follow-up adds native report rows for unsupported symlink and FIFO
+lookups, an oversized regular file whose bounded partial result must not be
+published, and the existing post-capture revocation check. These are
+implemented scenarios, not evidence until a trusted-host report records each
+row as a measured pass. Mount-crossing and protected-ancestor transitions
+remain unmeasured; backend trust and lookup guards stay enabled.
+
+Run `08076c58667acd1d73971ee8ca6d1eea46682e89` completed on Linux amd64 with
+Go 1.26.11 and trusted Bubblewrap 0.9.0 (`ro-bind-fd`). Its validated report
+contains 58 measured passes, 6 inconclusive cases and 1 unavailable case, with
+no observed-violation rows. The outside-working-directory positive, symlink
+and FIFO pre-worker refusals, oversized no-publication case, protected aliases,
+stale/revoked publication, and target-replacement actor case passed. Archive
+SHA-256: `363c210c4d7d44b3a3fbee9a967cc672176b0054d70f161e5d52d45d856b7d52`.
+
+The inconclusive cases are `actor_protected_ancestor_relocation`,
+`owner_registration_before_release`,
+`owner_registration_while_capability_held`,
+`real_auth_held_worker_cleanup_pending_blocks_write_then_retry`,
+`real_settings_cleanup_pending_refuses_then_retries`, and
+`owner_incomplete_cleanup_blocks_write_native`;
+`owner_incomplete_cleanup_blocks_write` is unavailable. The protected-ancestor
+case remains fail-closed because incomplete descendant coverage prevents any
+eligible same-device read. The moved-descendant refusal passed separately.
+Owner lifecycle cleanup rows still lack conclusive native observations.
+
+The next run used source commit `ebd5dac166cd169cf80ad1a870ba9bbad033ec1c`
+and completed on the same trusted Linux amd64/Bubblewrap 0.9.0 descriptor-bind
+profile. It recorded 59 measured passes, 6 inconclusive cases and 1 unavailable
+case. `separate_mount_target_positive` passed with worker readiness, exact
+approved bytes, publication, and join. Archive SHA-256:
+`113b96181a85ae37d63c9c847a6e9e1710147fb18e048a8bd65334c10f386828`.
+
+A subsequent review found that the symlink and FIFO rows used generic
+preparation-refusal details. Although they were reported as `measured_pass`,
+that detail did not prove the broker lookup itself produced the refusal; an
+unrelated cleanup or inventory refusal could have produced the same report.
+The rows are not counted as conclusive until rerun with broker-specific
+refusal reasons.
+
+This confirms an exact approved target on a distinct mount is readable. The
+broker anchors each target at its verified mount root and applies
+`RESOLVE_NO_XDEV` beneath that root; a cross-mount refusal is not the policy for
+a separately requested target on another mount. A nested mount transition was
+not separately staged in the native fixture.
+
+The protected-ancestor actor row remains inconclusive because
+`DirectoryCoverageIncomplete` refuses the target before an eligible read can
+start; the moved-descendant refusal passed separately. The owner registration
+and cleanup rows remain inconclusive or unavailable as listed above. They
+exercise owner write/cleanup lifecycle beyond #278's target-admission change;
+the relevant revocation and actual auth/settings post-capture invalidation
+rows passed. Keep these broader study limits visible, and do not weaken backend
+trust or lookup guards.
