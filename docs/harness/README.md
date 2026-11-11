@@ -388,10 +388,22 @@ does not roll back completed effects or claim to terminate running work.
 `/permissions` remains available during a turn, and approval and clarification
 dialogs link to it directly. Tool activity shows awaiting approval,
 authorized, running, and finished states, with the typed outcome and
-truncation status. Tool prompts, plans, grants, and activity exist only in
-memory. The two bundled conversation tools are always available on supported
-routes; `read_file` is the sole conditional host-backed capability. Filesystem
-mutation, process, web, and image tools remain unavailable.
+truncation status. A successful private capture is labeled as private until
+continuation commitment; a later message-only handoff update identifies that
+the contents were sent to the selected provider and may recur in this
+conversation. Refusal, cancellation, and uncertain outcomes have separate
+messages. Cancellation and revocation do not claim to recall data already sent.
+Activity includes no raw file contents. The chat header reports file-reading
+availability from the selected provider/authentication route, the inspected
+backend, and the selected lookup directory. It explains when no model is
+selected, route support is absent or unverified, the backend is unavailable,
+or a lookup directory is still required. Availability does not promise that
+every requested target is eligible; each read still passes host admission and
+exact-target checks and requires a fresh once approval. Tool
+prompts, plans, grants, and activity exist only in memory. The two bundled
+conversation tools are always available on supported routes; `read_file` is
+the sole conditional host-backed capability. Filesystem mutation, process,
+web, and image tools remain unavailable.
 
 Escape in the approval dialog explicitly cancels the entire active turn. The
 first keyboard event after a dialog appears is consumed to prevent a composer

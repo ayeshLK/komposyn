@@ -230,7 +230,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.commands = supportedCommands()
 	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 2, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
@@ -671,7 +671,22 @@ func (u *terminal) updateBanner() {
 	if version == "" {
 		version = "dev"
 	}
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]", tv.Escape(version), tv.Escape(modelName)))
+	readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readStatus)))
+}
+
+func renderFilesystemReadAvailability(status ui.FilesystemReadAvailability) string {
+	if status.Available {
+		reason := status.Reason
+		if reason == "" {
+			reason = "Exact-file reads still require explicit once approval."
+		}
+		return "File reading available · " + safeTerminalText(reason)
+	}
+	if status.Reason == "" {
+		return "File reading unavailable · availability has not been inspected."
+	}
+	return "File reading unavailable · " + safeTerminalText(status.Reason)
 }
 
 func renderPlan(steps []ui.PlanStep) string {
@@ -1043,7 +1058,7 @@ func (u *terminal) runCommand(text string) {
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model /fs-root /help /cancel /exit /permissions /plan /copy\nAlso: /copy all /fs-root clear\nRoot selection grants lookup only, no access.\nread_file needs once approval; contents may be sensitive, go to provider, and may recur.\nTools: update_plan, request_user_input, read_file if supported. No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
+		u.write("Commands: /model /fs-root /help /cancel /exit /permissions /plan /copy\nAlso: /copy all /fs-root clear\nRoot selection grants lookup only, no access.\nread_file needs once approval; contents may be sensitive, go to the selected provider, and may recur in this conversation.\nTools: update_plan, request_user_input, read_file if supported. No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
@@ -1828,7 +1843,7 @@ func (u *terminal) activityLoop() {
 			}
 			current := make(map[string]bool, len(activities))
 			for _, activity := range activities {
-				key := activity.CallID + "\x00" + activity.Phase + "\x00" + activity.Outcome + fmt.Sprint(activity.Truncated)
+				key := activity.CallID + "\x00" + activity.Phase + "\x00" + activity.Outcome + "\x00" + activity.Message + fmt.Sprint(activity.Truncated)
 				current[key] = true
 				if u.activitySeen == nil {
 					u.activitySeen = map[string]bool{}

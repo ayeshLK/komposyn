@@ -501,6 +501,95 @@ func TestProductionCatalogDoesNotAdvertiseReadFile(t *testing.T) {
 	}
 }
 
+func TestFilesystemReadAvailabilityTracksModelRouteBackendAndRoot(t *testing.T) {
+	t.Run("no model selected", func(t *testing.T) {
+		chat, _ := makeChat(t, &fakeProvider{id: provider.OpenAI})
+		defer chat.Close()
+		if got := chat.Snapshot().FilesystemReadAvailability.State; got != "no_model" {
+			t.Fatalf("availability state=%q, want no_model", got)
+		}
+		if got := chat.Snapshot().FilesystemReadAvailability.Reason; !strings.Contains(got, "/model") {
+			t.Fatalf("no-model recovery guidance=%q", got)
+		}
+	})
+
+	t.Run("unsupported provider route", func(t *testing.T) {
+		fp := &unsupportedPublicationProvider{publicationProvider: &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}}}
+		chat := newAvailabilityChat(t, fp, &publicationHost{root: t.TempDir()})
+		defer chat.Close()
+		if got := chat.Snapshot().FilesystemReadAvailability.State; got != "unsupported_route" {
+			t.Fatalf("availability state=%q, want unsupported_route", got)
+		}
+		if got := chat.Snapshot().FilesystemReadAvailability.Reason; !strings.Contains(got, "route") {
+			t.Fatalf("route recovery guidance=%q", got)
+		}
+	})
+
+	t.Run("backend unavailable", func(t *testing.T) {
+		host := &unavailablePublicationHost{publicationHost: &publicationHost{root: t.TempDir()}}
+		chat := newAvailabilityChat(t, &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}}, host)
+		defer chat.Close()
+		if got := chat.Snapshot().FilesystemReadAvailability.State; got != "backend_unavailable" {
+			t.Fatalf("availability state=%q, want backend_unavailable", got)
+		}
+		if got := chat.Snapshot().FilesystemReadAvailability.Reason; !strings.Contains(got, "backend unavailable") {
+			t.Fatalf("backend detail was not exposed: %q", got)
+		}
+	})
+
+	t.Run("root needed then available", func(t *testing.T) {
+		fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}}
+		root := t.TempDir()
+		host := &publicationHost{root: root}
+		chat := newAvailabilityChat(t, fp, host)
+		defer chat.Close()
+		if got := chat.Snapshot().FilesystemReadAvailability.State; got != "root_required" {
+			t.Fatalf("availability state=%q, want root_required", got)
+		}
+		selectPublicationRoot(t, chat, host, root)
+		status := chat.Snapshot().FilesystemReadAvailability
+		if status.State != "available" || !status.Available {
+			t.Fatalf("availability after selected root=%+v", status)
+		}
+	})
+}
+
+type unsupportedPublicationProvider struct{ *publicationProvider }
+
+func (*unsupportedPublicationProvider) RouteCapabilities(provider.AuthMethod) provider.RouteCapabilities {
+	return provider.RouteCapabilities{ClientTools: provider.SupportUnsupported}
+}
+
+func newAvailabilityChat(t *testing.T, plug provider.Provider, host FilesystemReadCompositionHost) *Chat {
+	t.Helper()
+	providers, err := model.NewRegistry(plug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval := ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	})
+	clarification := ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+		return ClarificationResponse{}, nil
+	})
+	config := BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, host)
+	if config.RootHost == nil {
+		config.RootHost = host
+	}
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "availability-profile", string(plug.ID()), "Fixture", "synthetic-only", nil); err != nil {
+		t.Fatal(err)
+	}
+	discovery := chat.Discover(context.Background())
+	if len(discovery.Models) == 0 {
+		t.Fatalf("discovered models=%+v", discovery.Models)
+	}
+	if err := chat.Select(context.Background(), discovery.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	return chat
+}
+
 func TestFilesystemReadCatalogRequiresCompleteInspectedHost(t *testing.T) {
 	approval := ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
@@ -542,7 +631,7 @@ func TestReadFileAdvertisementRequiresSelectedRootAndApprovalIsExplicit(t *testi
 		wantReadCount int
 	}{
 		{name: "without root", choice: permissions.ApprovalOnce, wantProvider: 1, wantOutcome: tools.OutcomeNotExecuted},
-		{name: "denied", choice: permissions.ApprovalDeny, wantProvider: 2, wantOutcome: tools.OutcomeNotExecuted},
+		{name: "denied", choice: permissions.ApprovalDeny, wantProvider: 2, wantOutcome: tools.OutcomeDeclined},
 		{name: "cancelled", choice: permissions.ApprovalCancel, wantProvider: 1, wantOutcome: tools.OutcomeCancelled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -567,6 +656,9 @@ func TestReadFileAdvertisementRequiresSelectedRootAndApprovalIsExplicit(t *testi
 			turn, _ := chat.Send(context.Background(), "read the fixture", nil)
 			if test.name != "without root" && (len(turn.ToolActivities) == 0 || turn.ToolActivities[0].Outcome != test.wantOutcome) {
 				t.Fatalf("activity=%+v want outcome %s", turn.ToolActivities, test.wantOutcome)
+			}
+			if test.name == "denied" && !strings.Contains(turn.ToolActivities[0].Message, "refused") {
+				t.Fatalf("explicit denial was not described as a refusal: %+v", turn.ToolActivities[0])
 			}
 			requests := fp.captured()
 			if len(requests) != test.wantProvider {
@@ -845,9 +937,11 @@ func TestStage5SiblingReadTransactionsCommitAsOneBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := &publicationHost{content: []byte(sentinel), root: root}
+	approvalCount := 0
 	config := ToolRuntimeConfig{Registry: tools.NewRegistry(), Authorizer: &fixtureAuthorizer{}, Enforcer: ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
 		return tools.Result{}, nil
 	}), Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approvalCount++
 		return permissions.ApprovalOnce, "", nil
 	}), ReadAdmission: host, RootHost: host, Grants: permissions.NewMemoryStore()}
 	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
@@ -878,6 +972,14 @@ func TestStage5SiblingReadTransactionsCommitAsOneBatch(t *testing.T) {
 	host.mu.Unlock()
 	if reads != 2 {
 		t.Fatalf("read executions=%d", reads)
+	}
+	if approvalCount != 2 {
+		t.Fatalf("distinct reads received %d approvals; want one explicit once approval per target", approvalCount)
+	}
+	for _, activity := range turn.ToolActivities {
+		if strings.Contains(activity.Message, sentinel) {
+			t.Fatal("raw file contents appeared in activity metadata")
+		}
 	}
 	if chat.toolRuntime.readAuthorityCount() != 0 {
 		t.Fatal("per-execution authority survived tool-loop retirement")

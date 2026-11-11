@@ -49,7 +49,9 @@ type clientStub struct {
 	clarificationResponses chan ui.ClarificationResponse
 	toolGrants             []ui.ToolGrant
 	plan                   []ui.PlanStep
+	toolActivities         []ui.ToolActivity
 	filesystemRoot         ui.FilesystemRootStatus
+	readAvailability       ui.FilesystemReadAvailability
 	rootSelections         []string
 	rootClears             int
 	rootSelectionHook      func(context.Context, string) error
@@ -154,7 +156,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), FilesystemRoot: c.filesystemRoot}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), ToolActivities: append([]ui.ToolActivity(nil), c.toolActivities...), FilesystemRoot: c.filesystemRoot, FilesystemReadAvailability: c.readAvailability}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -595,6 +597,40 @@ func TestDismissedApprovalReturnsToChatAfterLeavingPermissions(t *testing.T) {
 	if u.approvalRequest != nil || !u.chatRootActive.Load() || app.GetFocus() != input {
 		t.Fatalf("dismissal left stale approval root: approval=%+v chatActive=%t focus=%T", u.approvalRequest, u.chatRootActive.Load(), app.GetFocus())
 	}
+}
+
+func TestDisclosureMetadataUpdateAppearsInTerminalActivity(t *testing.T) {
+	activity := ui.ToolActivity{CallID: "read-1", ToolID: "read_file", Phase: "finished", Outcome: "succeeded", Message: "Read completed; content is private until continuation commitment."}
+	client := &clientStub{toolActivities: []ui.ToolActivity{activity}}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 24)
+	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+	ctx, cancel := context.WithCancel(context.Background())
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, output: newTranscriptView(), input: newComposerInput()}
+	u.header = tv.NewTextView()
+	u.body = tv.NewFlex().AddItem(u.output, 0, 1, false)
+	u.composer = tv.NewFlex().AddItem(u.input, 1, 0, true)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
+	u.app.SetScreen(safeScreen).SetRoot(u.layout, true)
+	done := make(chan error, 1)
+	go func() {
+		err := u.app.Run()
+		u.runReturned.Store(true)
+		done <- err
+	}()
+	u.launch(u.activityLoop)
+	waitForScreen(t, safeScreen, "private until continuation commitment", "")
+	client.mu.Lock()
+	client.toolActivities[0].Message = "Read completed and was disclosed at provider handoff; replay is limited to this conversation context."
+	client.mu.Unlock()
+	waitForScreen(t, safeScreen, "disclosed at provider handoff", "")
+	u.stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal did not stop after activity update")
+	}
+	cancel()
 }
 
 func TestPickerInteractionOnSimulationScreen(t *testing.T) {
@@ -1468,18 +1504,19 @@ func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
 }
 
 func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
-	client := &clientStub{version: "0.11.0"}
+	client := &clientStub{version: "0.11.0", readAvailability: ui.FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."}}
 	model := ui.Model{Key: "selected", ID: "model-y", DisplayName: "Model Y"}
 	u := &terminal{client: client, header: tv.NewTextView(), body: tv.NewFlex(), usagePane: tv.NewTextView(), usageCompact: tv.NewTextView(), composer: tv.NewFlex(), input: newComposerInput()}
 	u.body.AddItem(tv.NewTextView(), 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.composer.AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
 	u.updateBanner()
-	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") {
+	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") || !strings.Contains(got, "File reading unavailable") || !strings.Contains(got, "/model") {
 		t.Fatalf("initial banner = %q", got)
 	}
 	client.selected = &model
+	client.readAvailability = ui.FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads require explicit once approval."}
 	u.updateBanner()
-	if got := u.header.GetText(true); !strings.Contains(got, "Model Y") {
+	if got := u.header.GetText(true); !strings.Contains(got, "Model Y") || !strings.Contains(got, "File reading available") || !strings.Contains(got, "explicit once approval") {
 		t.Fatalf("selected model missing from banner: %q", got)
 	}
 	u.setTerminalWidth(usageWideThreshold)

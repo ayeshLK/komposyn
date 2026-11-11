@@ -117,6 +117,79 @@ func TestIssue164AdapterForwardsLoginCompletion(t *testing.T) {
 	}
 }
 
+func TestIssue280FileReadAvailabilityFollowsRuntimeRouteAndBackend(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		support    modelprovider.Support
+		wantState  string
+		wantReason string
+	}{
+		{name: "supported route without inspected backend", support: modelprovider.SupportSupported, wantState: "backend_unavailable", wantReason: "No trusted file-read backend is configured"},
+		{name: "unverified route", support: modelprovider.SupportUnknown, wantState: "unknown_route", wantReason: "unverified"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := auth.Store{Path: t.TempDir() + "/auth.json"}
+			if err := store.AddAPIKey("fixture", "openai", "Fixture", "synthetic-key", nil); err != nil {
+				t.Fatal(err)
+			}
+			provider := &acceptanceProvider{clientTools: test.support}
+			client := newAcceptanceClient(t, store, provider, &acceptanceCoordinator{store: store, mode: "success"})
+			discovery, err := client.Discover(context.Background())
+			if err != nil || len(discovery.Models) != 1 || discovery.Models[0].AuthMethod != string(modelprovider.AuthAPIKey) {
+				t.Fatalf("route discovery=%+v err=%v", discovery, err)
+			}
+			if err := client.Select(context.Background(), discovery.Models[0].Key, false); err != nil {
+				t.Fatal(err)
+			}
+			status := client.Snapshot().FilesystemReadAvailability
+			if status.State != test.wantState || !strings.Contains(status.Reason, test.wantReason) {
+				t.Fatalf("read availability=%+v", status)
+			}
+			u, screen, press, _ := startAcceptanceTerminal(t, client)
+			dispatch := make(chan struct{})
+			u.app.QueueUpdateDraw(func() {
+				u.header = tv.NewTextView().SetDynamicColors(true)
+				u.planPane = tv.NewTextView()
+				u.usagePane = tv.NewTextView()
+				u.usageCompact = tv.NewTextView()
+				u.body = tv.NewFlex().AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
+				u.composer = tv.NewFlex().AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
+				u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 2, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
+				u.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+					if event.Key() == tcell.KeyEnter {
+						u.submit()
+						return nil
+					}
+					return event
+				})
+				u.updateBanner()
+				u.returnToChat()
+				close(dispatch)
+			})
+			select {
+			case <-dispatch:
+			case <-time.After(2 * time.Second):
+				t.Fatal("chat view did not open")
+			}
+			waitForScreen(t, screen, "File reading unavailable", "")
+			if !strings.Contains(u.header.GetText(true), test.wantReason) {
+				t.Fatalf("header omitted recovery reason: %q", u.header.GetText(true))
+			}
+			if test.support == modelprovider.SupportSupported {
+				for _, r := range "hello from the simulated terminal" {
+					press(tcell.KeyRune, r)
+				}
+				press(tcell.KeyEnter, 0)
+				waitForScreen(t, screen, "response", "")
+				if provider.chatCalls.Load() != 1 {
+					t.Fatalf("fake provider calls=%d, want 1", provider.chatCalls.Load())
+				}
+			}
+			u.stop()
+		})
+	}
+}
+
 func TestIssue164ReturningLoginAndStaleCompletionKeepTheRightView(t *testing.T) {
 	t.Run("reconnect preserves identity and chat", func(t *testing.T) {
 		store := auth.Store{Path: t.TempDir() + "/auth.json"}
@@ -292,7 +365,10 @@ func TestIssue164ConfirmedDisconnectAndRemoveThroughUIAdapter(t *testing.T) {
 	}
 }
 
-type acceptanceProvider struct{ chatCalls atomic.Int32 }
+type acceptanceProvider struct {
+	chatCalls   atomic.Int32
+	clientTools modelprovider.Support
+}
 
 func (*acceptanceProvider) ID() modelprovider.ID { return modelprovider.OpenAI }
 func (*acceptanceProvider) AuthMethods() []modelprovider.AuthMethod {
@@ -300,6 +376,16 @@ func (*acceptanceProvider) AuthMethods() []modelprovider.AuthMethod {
 }
 func (*acceptanceProvider) Authenticate(context.Context, modelprovider.Credential) (modelprovider.AuthResult, error) {
 	return modelprovider.AuthResult{Provider: modelprovider.OpenAI}, nil
+}
+func (p *acceptanceProvider) RouteCapabilities(method modelprovider.AuthMethod) modelprovider.RouteCapabilities {
+	if method != modelprovider.AuthAPIKey {
+		return modelprovider.RouteCapabilities{ClientTools: modelprovider.SupportUnsupported}
+	}
+	support := p.clientTools
+	if support == "" {
+		support = modelprovider.SupportSupported
+	}
+	return modelprovider.RouteCapabilities{ClientTools: support}
 }
 func (*acceptanceProvider) ListModels(_ context.Context, credential modelprovider.Credential) ([]modelprovider.Model, error) {
 	if credential.APIKey == "" && credential.AccessToken == "" {

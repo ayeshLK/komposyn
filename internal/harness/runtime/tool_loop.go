@@ -966,6 +966,12 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		update("awaiting approval")
 		capture, err := r.executeFilesystemRead(ctx, invocation, destination)
 		if err != nil || capture == nil {
+			if errors.Is(err, errFilesystemReadRefused) {
+				activity.Outcome = tools.OutcomeDeclined
+				activity.Message = "Read refused by the user; no file contents were captured or disclosed."
+				update("finished")
+				return fixedToolResult(call.CallID, tools.OutcomeDeclined, activity.Message, maxBytes), activity, "", false, nil
+			}
 			var redirected *filesystemReadRedirectError
 			if errors.As(err, &redirected) {
 				activity.Outcome = tools.OutcomeNotExecuted

@@ -56,6 +56,7 @@ type LoginAttempt struct {
 type DisconnectResult struct{ RemoteRevocationConfirmed, LocalRegistrationRemoved, LocalTokensRemoved bool }
 type Model struct {
 	Key, Provider, ProfileID, ProfileLabel, ID, DisplayName string
+	AuthMethod                                              string
 	Compatibility                                           modelprovider.Compatibility
 	Reason                                                  string
 }
@@ -158,15 +159,21 @@ type FilesystemRootStatus struct {
 	BackendStatus       string
 	InvalidationPending bool
 }
+type FilesystemReadAvailability struct {
+	Available bool
+	State     string
+	Reason    string
+}
 type Snapshot struct {
-	Selected       *Model
-	Turns          []Turn
-	Usage          []ModelUsage
-	Active         bool
-	ToolActivities []ToolActivity
-	Plan           []PlanStep
-	FilesystemRoot FilesystemRootStatus
-	Version        string
+	Selected                   *Model
+	Turns                      []Turn
+	Usage                      []ModelUsage
+	Active                     bool
+	ToolActivities             []ToolActivity
+	Plan                       []PlanStep
+	FilesystemRoot             FilesystemRootStatus
+	FilesystemReadAvailability FilesystemReadAvailability
+	Version                    string
 }
 
 type Client interface {
