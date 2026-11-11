@@ -31,7 +31,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.10
+          go-version: 1.26.11
           cache: true
 
       - name: Verify formatting
@@ -73,7 +73,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.10
+          go-version: 1.26.11
           cache: false
 
       - name: Check out public standalone CLI
@@ -111,7 +111,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.10
+          go-version: 1.26.11
           cache: true
 
       - name: "Compare candidate behavior with merged #141"
@@ -131,7 +131,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.10
+          go-version: 1.26.11
           cache: true
 
       - name: Race tests
@@ -173,7 +173,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.10
+          go-version: 1.26.11
           cache: true
 
       - name: Install pinned Cosign natively on Windows ARM64

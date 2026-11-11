@@ -368,12 +368,12 @@ def main():
             pass
         if version_result.get("exit_code") != 0:
             raise RuntimeError("Go version query failed")
-        manifest["go"]["required_minimum"] = "go1.26.10"
+        manifest["go"]["required_minimum"] = "go1.26.11"
         version_match = re.search(r"\bgo(\d+)\.(\d+)(?:\.(\d+))?\b", manifest["go"]["version"])
         version_tuple = tuple(int(part or 0) for part in version_match.groups()) if version_match else (0, 0, 0)
-        if version_tuple < (1, 26, 10):
+        if version_tuple < (1, 26, 11):
             manifest["go"]["status"] = "unsupported_version"
-            raise RuntimeError("Go 1.26.10 or newer is required")
+            raise RuntimeError("Go 1.26.11 or newer is required")
 
         overlay = {
             "Replace": {
