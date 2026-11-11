@@ -175,17 +175,10 @@ func (c Client) RemoveProfile(id string, confirm bool) error {
 func (c Client) Select(ctx context.Context, key string, confirm bool) error {
 	return adaptError(c.Chat.Select(ctx, key, confirm))
 }
-func (c Client) SelectFilesystemRoot(ctx context.Context, path string) error {
-	return c.Chat.SelectFilesystemRoot(ctx, path)
-}
-func (c Client) ClearFilesystemRoot(ctx context.Context) error {
-	return c.Chat.ClearFilesystemRoot(ctx)
-}
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
-	root := s.FilesystemRoot
 	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, Version: c.Version,
-		FilesystemRoot: ui.FilesystemRootStatus{Path: root.Path, Generation: root.Generation, Selected: root.Selected, BackendAvailable: root.BackendAvailable, BackendStatus: root.BackendStatus, InvalidationPending: root.InvalidationPending}}
+		WorkingDirectory: s.WorkingDirectory}
 	for _, step := range s.Plan {
 		out.Plan = append(out.Plan, ui.PlanStep{Step: step.Step, Status: string(step.Status)})
 	}

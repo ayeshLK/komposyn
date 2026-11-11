@@ -54,13 +54,14 @@ type Turn struct {
 	At                 time.Time
 }
 type Snapshot struct {
-	Selected       *model.Model
-	Turns          []Turn
-	Usage          []ModelUsage
-	Active         bool
-	ToolActivities []ToolActivity
-	Plan           []tools.PlanStep
-	FilesystemRoot FilesystemRootStatus
+	Selected         *model.Model
+	Turns            []Turn
+	Usage            []ModelUsage
+	Active           bool
+	ToolActivities   []ToolActivity
+	Plan             []tools.PlanStep
+	FilesystemRoot   FilesystemRootStatus
+	WorkingDirectory string
 }
 type UsageMetric struct {
 	Tokens  int64
@@ -103,6 +104,7 @@ type Chat struct {
 	toolCallIDs           map[string]struct{}
 	activeToolActivities  []ToolActivity
 	filesystemRoot        string
+	workingDirectory      string
 	filesystemRootGen     uint64
 	filesystemRootAck     uint64
 	filesystemRootOp      uint64
@@ -318,7 +320,7 @@ func (c *Chat) StartLogin(ctx context.Context, providerID string, method auth.Me
 		if result.Err == nil && !c.closed {
 			c.discovery = nil
 			if c.selected != nil && c.selected.ProfileID == profileID {
-				rootEvent = c.clearFilesystemRootLocked(FilesystemRootProfileChanged, true)
+				rootEvent = c.refreshFilesystemRootLocked(FilesystemRootProfileChanged)
 			}
 		}
 		c.credentialBusy = false
@@ -452,10 +454,11 @@ func (c *Chat) Snapshot() Snapshot {
 		plan = c.toolRuntime.plans.Snapshot(c.conversationID)
 	}
 	rootPath, rootGeneration, rootAck := c.filesystemRoot, c.filesystemRootGen, c.filesystemRootAck
+	workingDirectory := c.workingDirectory
 	rootHost := c.filesystemRootHostLocked()
 	active := c.active
 	c.mu.Unlock()
-	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan, FilesystemRoot: filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost)}
+	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan, FilesystemRoot: filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost), WorkingDirectory: workingDirectory}
 }
 
 func (c *Chat) recordUsageLocked(providerID provider.ID, modelID string, usage provider.Usage) {
@@ -576,7 +579,7 @@ func (c *Chat) ReplaceProfile(ctx context.Context, id, label, key string, route 
 		if len(c.turns) > 0 {
 			rootEvent = c.clearConversationLocked(FilesystemRootProfileChanged)
 		} else {
-			rootEvent = c.clearFilesystemRootLocked(FilesystemRootProfileChanged, true)
+			rootEvent = c.refreshFilesystemRootLocked(FilesystemRootProfileChanged)
 		}
 		c.selected = nil
 	}
@@ -664,7 +667,7 @@ func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error 
 	if len(c.turns) > 0 {
 		rootEvent = c.clearConversationLocked(FilesystemRootModelChanged)
 	} else {
-		rootEvent = c.clearFilesystemRootLocked(FilesystemRootModelChanged, true)
+		rootEvent = c.refreshFilesystemRootLocked(FilesystemRootModelChanged)
 	}
 	c.selected = &selected
 	rootHost := c.filesystemRootHostLocked()
@@ -676,7 +679,11 @@ func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error 
 }
 func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *FilesystemRootTransition {
 	oldID := c.conversationID
-	rootEvent := c.clearFilesystemRootLocked(reason, true)
+	retainedRoot := c.filesystemRoot
+	var rootEvent *FilesystemRootTransition
+	if retainedRoot == "" {
+		rootEvent = c.clearFilesystemRootLocked(reason, true)
+	}
 	c.history = nil
 	c.historySensitive = false
 	c.historyDestination = ""
@@ -687,7 +694,9 @@ func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *Files
 		c.toolRuntime.plans.Close(oldID)
 	}
 	c.conversationID, c.conversationIDErr = newConversationID()
-	if rootEvent != nil {
+	if retainedRoot != "" {
+		rootEvent = c.refreshFilesystemRootLocked(reason)
+	} else if rootEvent != nil {
 		rootEvent.ConversationID = oldID
 	}
 	return rootEvent
