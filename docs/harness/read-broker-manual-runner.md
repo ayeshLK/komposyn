@@ -19,7 +19,7 @@ then identifies exactly which scenarios were available.
 
 - Linux amd64 or arm64, a regular (non-root) user, Git, Bash, Python 3, GNU
   coreutils/findutils (`tar`, `sha256sum`, `stat`, `date`, `find`, `sort`,
-  `xargs`), and Go 1.26.10 or newer.
+  `xargs`), and Go 1.26.11 or newer.
 - A system-installed Bubblewrap executable at an explicit absolute path. The
   default is `/usr/bin/bwrap`. The merged study implements a feature-detected
   Bubblewrap 0.9.0 compatibility path using `--perms` plus `--ro-bind-data` and

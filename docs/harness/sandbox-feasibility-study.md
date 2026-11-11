@@ -12,7 +12,7 @@ runs do not establish enforcement under either A or B.
 
 ## Reproduce
 
-Build on Linux/amd64 or Linux/arm64 with Go 1.26.10 or newer. Native study
+Build on Linux/amd64 or Linux/arm64 with Go 1.26.11 or newer. Native study
 execution additionally needs a root-owned, non-group/world-writable system
 bubblewrap executable and functioning user namespaces/seccomp. The arm64
 command and test package cross-compile; no arm64 host execution was performed.

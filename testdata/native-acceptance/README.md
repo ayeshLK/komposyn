@@ -1,6 +1,6 @@
 # Native acceptance of the #243 sandbox composition
 
-Run as your normal Ubuntu/Linux user, without sudo or host security changes. Requires Go 1.26.10+, Git, Python 3.12+ (Python 3.11.8+ with tar extraction filters also works), and a trusted system Bubblewrap with the required namespace/seccomp capabilities.
+Run as your normal Ubuntu/Linux user, without sudo or host security changes. Requires Go 1.26.11+, Git, Python 3.12+ (Python 3.11.8+ with tar extraction filters also works), and a trusted system Bubblewrap with the required namespace/seccomp capabilities.
 
 The hash-pinned runner and test overlay are kept together in
 `testdata/native-acceptance/`:

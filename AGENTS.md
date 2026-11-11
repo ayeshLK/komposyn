@@ -83,7 +83,7 @@ declaration.
 
 ## Development and validation
 
-Requires Go 1.26.10 or newer. Run focused checks while iterating and, before
+Requires Go 1.26.11 or newer. Run focused checks while iterating and, before
 submitting, run:
 
 ```sh

@@ -38,7 +38,7 @@ proposing broader platform architecture.
 
 ## Development and validation
 
-Requires Go 1.26.10 or newer. The normal gate is:
+Requires Go 1.26.11 or newer. The normal gate is:
 
 ```sh
 make check

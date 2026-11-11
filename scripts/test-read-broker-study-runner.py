@@ -199,7 +199,7 @@ class OutputReservationTests(unittest.TestCase):
             fake_go = bindir / "go"
             fake_go.write_text(
                 "#!/bin/sh\n"
-                "if [ \"$1\" = version ]; then echo 'go version go1.26.10 linux/amd64'; exit 0; fi\n"
+                "if [ \"$1\" = version ]; then echo 'go version go1.26.11 linux/amd64'; exit 0; fi\n"
                 f"printf started > {str(marker)!r}\n"
                 "trap '' TERM\n"
                 "while :; do sleep 1; done\n"
@@ -253,7 +253,7 @@ class OutputReservationTests(unittest.TestCase):
                 f"#!{sys.executable}\n"
                 "import os, signal, sys, time\n"
                 "if sys.argv[1] == 'version':\n"
-                "    print('go version go1.26.10 linux/amd64')\n"
+                "    print('go version go1.26.11 linux/amd64')\n"
                 "    raise SystemExit(0)\n"
                 f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"

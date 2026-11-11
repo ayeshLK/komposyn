@@ -2,7 +2,7 @@
 
 ## Local setup
 
-Install Go 1.26.10 or newer, clone the repository, and work from a feature
+Install Go 1.26.11 or newer, clone the repository, and work from a feature
 branch. This is the root module `github.com/ayeshLK/komposyn`.
 
 ## Useful commands
