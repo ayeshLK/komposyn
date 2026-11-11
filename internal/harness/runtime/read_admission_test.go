@@ -300,3 +300,32 @@ func TestFilesystemReadApprovalClearlyIdentifiesOutsideWorkingDirectoryTarget(t 
 		t.Fatalf("outside target approval is not individual once approval: %+v", request)
 	}
 }
+
+func TestOutsideProviderSourceApprovalKeepsWorkingDirectoryNotice(t *testing.T) {
+	workingDirectory := t.TempDir()
+	target := filepath.Join(t.TempDir(), "provider-source.jsonl")
+	arguments, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := FilesystemReadAdmission{
+		Reference: new(struct{}), ServiceID: "host-service", ConversationID: "conversation", Root: workingDirectory,
+		Deadline: time.Now().Add(time.Minute), AdmissionBinding: "canonical-admission-digest", Target: target,
+		Class: "provider_source", Identity: "1:2:32768", RootGeneration: 4, PolicyRevision: 7,
+		CoverageRevision: 9, Destination: "openai/gpt-test/profile-revision",
+	}
+	invocation := tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ID("read_file"), Arguments: arguments}
+	request, err := buildFilesystemReadRequest(invocation, admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Requirements) != 2 || request.Requirements[1].Resource == nil || request.Requirements[1].Resource.Target != target {
+		t.Fatalf("approval did not bind exact provider-source target: %+v", request.Requirements)
+	}
+	description := strings.ToLower(request.Requirements[1].Description)
+	if !strings.Contains(description, "outside the working directory") || !strings.Contains(description, "classified provider source") {
+		t.Fatalf("provider-source approval omitted its location or sensitivity notice: %q", description)
+	}
+}

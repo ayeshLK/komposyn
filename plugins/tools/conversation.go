@@ -52,7 +52,7 @@ var readFileSchema = json.RawMessage(`{"type":"object","properties":{"path":{"ty
 // ReadFileDefinition describes the bounded exact-file disclosure capability.
 // Every invocation still requires trusted host admission and explicit once approval.
 func ReadFileDefinition() Definition {
-	return Definition{ID: ReadFileID, Description: "Read one exact regular file beneath the current working directory; relative paths are resolved from that directory. Each read requires explicit once approval; contents are unclassified, may be sensitive, are sent to this selected provider, and may recur in this conversation. The working directory grants no read permission. No listing, writes, rename, deletion, or shell access.", InputSchema: append(json.RawMessage(nil), readFileSchema...), MaxInput: MaxReadFileInputBytes}
+	return Definition{ID: ReadFileID, Description: "Read one exact regular file. Relative paths are resolved against the current working directory. Separately approved exact targets may be outside the working directory when host eligibility checks allow. Each read requires explicit once approval; contents are unclassified, may be sensitive, are sent to this selected provider, and may recur in this conversation. The working directory grants no read permission. No listing, writes, rename, deletion, or shell access.", InputSchema: append(json.RawMessage(nil), readFileSchema...), MaxInput: MaxReadFileInputBytes}
 }
 
 // ParseReadFile validates the strict provider input without normalizing its path.

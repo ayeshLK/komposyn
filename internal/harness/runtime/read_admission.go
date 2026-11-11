@@ -198,12 +198,13 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 	resourceKey := "disclosure"
 	disclosureDestination := filesystemReadDisclosureDestination(admission.Destination)
 	resourceDescription := "Share this exact file with " + disclosureDestination + ". Its contents are unclassified and may include credentials or sensitive data; if approved, they may recur in this conversation. This approves one read only; another read needs new approval."
-	if targetOutsideWorkingDirectory(admission.Root, admission.Target) {
-		resourceDescription = "This exact target is outside the working directory. " + resourceDescription
-	}
+	targetIsOutsideWorkingDirectory := targetOutsideWorkingDirectory(admission.Root, admission.Target)
 	if admission.Class == "provider_source" {
 		resourceKey = "provider_source_disclosure"
 		resourceDescription = "Share this classified provider source with " + disclosureDestination + "; its contents may recur in this conversation. This approves one read only; another read needs new approval."
+	}
+	if targetIsOutsideWorkingDirectory {
+		resourceDescription = "This exact target is outside the working directory. " + resourceDescription
 	}
 	action := permissions.Requirement{
 		Kind: permissions.RequirementAction, Key: "read", ToolID: string(invocation.ToolID),

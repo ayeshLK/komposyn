@@ -168,3 +168,16 @@ func TestConversationToolSchemasAndBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestReadFileDescriptionSeparatesResolutionContextFromReadEligibility(t *testing.T) {
+	description := strings.ToLower(ReadFileDefinition().Description)
+	for _, phrase := range []string{
+		"relative paths are resolved against the current working directory",
+		"separately approved exact targets may be outside the working directory",
+		"explicit once approval",
+	} {
+		if !strings.Contains(description, phrase) {
+			t.Errorf("read_file description %q does not contain %q", description, phrase)
+		}
+	}
+}

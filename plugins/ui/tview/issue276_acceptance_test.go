@@ -164,6 +164,9 @@ func (p *issue276Provider) StreamChat(_ context.Context, request modelprovider.C
 	p.requests = append(p.requests, request)
 	requestNumber := len(p.requests)
 	p.mu.Unlock()
+	if instructions := strings.ToLower(request.Instructions); !strings.Contains(instructions, "relative paths are resolved against the working directory") || !strings.Contains(instructions, "separately approved exact targets may be outside the working directory") {
+		return modelprovider.Result{}, errors.New("provider instructions do not describe outside-working-directory reads")
+	}
 	if requestNumber == 1 {
 		args := json.RawMessage(`{"path":"README.md"}`)
 		encodedArgs, _ := json.Marshal(string(args))
