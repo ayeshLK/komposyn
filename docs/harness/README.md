@@ -62,14 +62,16 @@ and study-worker descriptor evidence on the recorded Linux amd64/Bubblewrap
 The focused `read_file` capability is now wired to the retained Linux worker
 path on explicitly supported client-tool routes when the trusted Bubblewrap
 backend and all lifecycle interfaces are available. It reads one exact regular
-file beneath the selected root after a separate explicit once approval naming
+file beneath the launch directory after a separate explicit once approval naming
 the provider/model/profile. The bytes are sent to that provider and may recur
 in the same valid conversation; approval does not permit a second read. Root
 selection grants no access. Auth/settings protected identities remain denied;
 provider-source reads, unavailable backends, unsupported routes, mutation, and
 shell remain unavailable. Stage 6 native evidence is limited to the recorded
 Linux amd64/Bubblewrap 0.9.0 environment; it is not production-provider or
-cross-platform acceptance. `/fs-root` selects an in-memory lookup root. See the
+cross-platform acceptance. The launch directory is shown as the working
+directory and is the base for relative read requests; it does not grant read
+permission. See the
 [composition admission and sandbox service](composition-admission-sandbox-service.md),
 [protected owner integration boundary](read-broker-owner-integration.md), and
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
@@ -395,9 +397,9 @@ conversation. Refusal, cancellation, and uncertain outcomes have separate
 messages. Cancellation and revocation do not claim to recall data already sent.
 Activity includes no raw file contents. The chat header reports file-reading
 availability from the selected provider/authentication route, the inspected
-backend, and the selected lookup directory. It explains when no model is
+backend, and the current working directory. It explains when no model is
 selected, route support is absent or unverified, the backend is unavailable,
-or a lookup directory is still required. Availability does not promise that
+or the working directory is unavailable. Availability does not promise that
 every requested target is eligible; each read still passes host admission and
 exact-target checks and requires a fresh once approval. Tool
 prompts, plans, grants, and activity exist only in memory. The two bundled

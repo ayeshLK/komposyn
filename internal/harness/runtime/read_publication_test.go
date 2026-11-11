@@ -543,10 +543,13 @@ func TestFilesystemReadAvailabilityTracksModelRouteBackendAndRoot(t *testing.T) 
 		host := &publicationHost{root: root}
 		chat := newAvailabilityChat(t, fp, host)
 		defer chat.Close()
-		if got := chat.Snapshot().FilesystemReadAvailability.State; got != "root_required" {
-			t.Fatalf("availability state=%q, want root_required", got)
+		if got := chat.Snapshot().FilesystemReadAvailability.State; got != "working_directory_unavailable" {
+			t.Fatalf("availability state=%q, want working_directory_unavailable", got)
 		}
-		selectPublicationRoot(t, chat, host, root)
+		host.root = root
+		if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
+			t.Fatalf("initialize working directory: %v", err)
+		}
 		status := chat.Snapshot().FilesystemReadAvailability
 		if status.State != "available" || !status.Available {
 			t.Fatalf("availability after selected root=%+v", status)

@@ -151,14 +151,6 @@ type ModelUsage struct {
 	Input, Output          MetricUsage
 	CachedRead, CacheWrite MetricUsage
 }
-type FilesystemRootStatus struct {
-	Path                string
-	Generation          uint64
-	Selected            bool
-	BackendAvailable    bool
-	BackendStatus       string
-	InvalidationPending bool
-}
 type FilesystemReadAvailability struct {
 	Available bool
 	State     string
@@ -171,8 +163,8 @@ type Snapshot struct {
 	Active                     bool
 	ToolActivities             []ToolActivity
 	Plan                       []PlanStep
-	FilesystemRoot             FilesystemRootStatus
 	FilesystemReadAvailability FilesystemReadAvailability
+	WorkingDirectory           string
 	Version                    string
 }
 
@@ -188,8 +180,6 @@ type Client interface {
 	OpenUsage(context.Context) error
 	RemoveProfile(string, bool) error
 	Select(context.Context, string, bool) error
-	SelectFilesystemRoot(context.Context, string) error
-	ClearFilesystemRoot(context.Context) error
 	Snapshot() Snapshot
 	Send(context.Context, string, func(string)) (Turn, error)
 	Cancel()

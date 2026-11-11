@@ -62,6 +62,7 @@ type Snapshot struct {
 	Plan                       []tools.PlanStep
 	FilesystemRoot             FilesystemRootStatus
 	FilesystemReadAvailability FilesystemReadAvailability
+	WorkingDirectory           string
 }
 type FilesystemReadAvailability struct {
 	Available bool
@@ -109,6 +110,7 @@ type Chat struct {
 	toolCallIDs           map[string]struct{}
 	activeToolActivities  []ToolActivity
 	filesystemRoot        string
+	workingDirectory      string
 	filesystemRootGen     uint64
 	filesystemRootAck     uint64
 	filesystemRootOp      uint64
@@ -324,7 +326,7 @@ func (c *Chat) StartLogin(ctx context.Context, providerID string, method auth.Me
 		if result.Err == nil && !c.closed {
 			c.discovery = nil
 			if c.selected != nil && c.selected.ProfileID == profileID {
-				rootEvent = c.clearFilesystemRootLocked(FilesystemRootProfileChanged, true)
+				rootEvent = c.refreshFilesystemRootLocked(FilesystemRootProfileChanged)
 			}
 		}
 		c.credentialBusy = false
@@ -458,6 +460,7 @@ func (c *Chat) Snapshot() Snapshot {
 		plan = c.toolRuntime.plans.Snapshot(c.conversationID)
 	}
 	rootPath, rootGeneration, rootAck := c.filesystemRoot, c.filesystemRootGen, c.filesystemRootAck
+	workingDirectory := c.workingDirectory
 	rootHost := c.filesystemRootHostLocked()
 	toolRuntime := c.toolRuntime
 	providers := c.catalog.Providers
@@ -465,10 +468,11 @@ func (c *Chat) Snapshot() Snapshot {
 	c.mu.Unlock()
 	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan,
 		FilesystemRoot:             filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost),
-		FilesystemReadAvailability: filesystemReadAvailability(selected, providers, toolRuntime, rootPath, rootGeneration, rootAck, rootHost)}
+		FilesystemReadAvailability: filesystemReadAvailability(selected, providers, toolRuntime, workingDirectory, rootGeneration, rootAck, rootHost),
+		WorkingDirectory:           workingDirectory}
 }
 
-func filesystemReadAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, root string, generation, acknowledged uint64, host FilesystemRootHost) FilesystemReadAvailability {
+func filesystemReadAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, workingDirectory string, generation, acknowledged uint64, host FilesystemRootHost) FilesystemReadAvailability {
 	if selected == nil {
 		return FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."}
 	}
@@ -509,8 +513,8 @@ func filesystemReadAvailability(selected *model.Model, providers *model.Registry
 	if acknowledged < generation {
 		return FilesystemReadAvailability{State: "cleanup_pending", Reason: "Filesystem authority cleanup is pending; wait for cleanup to finish before reading files."}
 	}
-	if root == "" {
-		return FilesystemReadAvailability{State: "root_required", Reason: "Select a lookup directory with /fs-root before requesting a file. This selection grants no read permission."}
+	if workingDirectory == "" {
+		return FilesystemReadAvailability{State: "working_directory_unavailable", Reason: "The working directory is unavailable. Restart KompoSyn from an existing directory before requesting a file; choosing a directory does not grant read permission."}
 	}
 	return FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads are available on this route after explicit once approval; contents are sent to the selected provider."}
 }
@@ -633,7 +637,7 @@ func (c *Chat) ReplaceProfile(ctx context.Context, id, label, key string, route 
 		if len(c.turns) > 0 {
 			rootEvent = c.clearConversationLocked(FilesystemRootProfileChanged)
 		} else {
-			rootEvent = c.clearFilesystemRootLocked(FilesystemRootProfileChanged, true)
+			rootEvent = c.refreshFilesystemRootLocked(FilesystemRootProfileChanged)
 		}
 		c.selected = nil
 	}
@@ -721,7 +725,7 @@ func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error 
 	if len(c.turns) > 0 {
 		rootEvent = c.clearConversationLocked(FilesystemRootModelChanged)
 	} else {
-		rootEvent = c.clearFilesystemRootLocked(FilesystemRootModelChanged, true)
+		rootEvent = c.refreshFilesystemRootLocked(FilesystemRootModelChanged)
 	}
 	c.selected = &selected
 	rootHost := c.filesystemRootHostLocked()
@@ -733,7 +737,11 @@ func (c *Chat) Select(ctx context.Context, key string, confirmReset bool) error 
 }
 func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *FilesystemRootTransition {
 	oldID := c.conversationID
-	rootEvent := c.clearFilesystemRootLocked(reason, true)
+	retainedRoot := c.filesystemRoot
+	var rootEvent *FilesystemRootTransition
+	if retainedRoot == "" {
+		rootEvent = c.clearFilesystemRootLocked(reason, true)
+	}
 	c.history = nil
 	c.historySensitive = false
 	c.historyDestination = ""
@@ -744,7 +752,9 @@ func (c *Chat) clearConversationLocked(reason FilesystemRootChangeReason) *Files
 		c.toolRuntime.plans.Close(oldID)
 	}
 	c.conversationID, c.conversationIDErr = newConversationID()
-	if rootEvent != nil {
+	if retainedRoot != "" {
+		rootEvent = c.refreshFilesystemRootLocked(reason)
+	} else if rootEvent != nil {
 		rootEvent.ConversationID = oldID
 	}
 	return rootEvent

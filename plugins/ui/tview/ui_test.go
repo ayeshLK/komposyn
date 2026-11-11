@@ -50,12 +50,8 @@ type clientStub struct {
 	toolGrants             []ui.ToolGrant
 	plan                   []ui.PlanStep
 	toolActivities         []ui.ToolActivity
-	filesystemRoot         ui.FilesystemRootStatus
 	readAvailability       ui.FilesystemReadAvailability
-	rootSelections         []string
-	rootClears             int
-	rootSelectionHook      func(context.Context, string) error
-	rootClearHook          func(context.Context) error
+	workingDirectory       string
 	revoked                []string
 	cleared                int
 }
@@ -156,7 +152,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), ToolActivities: append([]ui.ToolActivity(nil), c.toolActivities...), FilesystemRoot: c.filesystemRoot, FilesystemReadAvailability: c.readAvailability}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), ToolActivities: append([]ui.ToolActivity(nil), c.toolActivities...), FilesystemReadAvailability: c.readAvailability, WorkingDirectory: c.workingDirectory}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -200,33 +196,6 @@ func (c *clientStub) ClearPermissions(context.Context) (int, error) {
 	c.cleared += count
 	return count, nil
 }
-func (c *clientStub) SelectFilesystemRoot(ctx context.Context, path string) error {
-	c.mu.Lock()
-	c.rootSelections = append(c.rootSelections, path)
-	hook := c.rootSelectionHook
-	if hook == nil {
-		c.filesystemRoot = ui.FilesystemRootStatus{Path: path, Selected: true}
-	}
-	c.mu.Unlock()
-	if hook != nil {
-		return hook(ctx, path)
-	}
-	return nil
-}
-func (c *clientStub) ClearFilesystemRoot(ctx context.Context) error {
-	c.mu.Lock()
-	c.rootClears++
-	hook := c.rootClearHook
-	if hook == nil {
-		c.filesystemRoot = ui.FilesystemRootStatus{}
-	}
-	c.mu.Unlock()
-	if hook != nil {
-		return hook(ctx)
-	}
-	return nil
-}
-
 func TestApprovalDialogRequiresExplicitChoiceAndEscapeCancelsTurn(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(100, 30)
@@ -790,7 +759,7 @@ func TestSlashSuggestionsKeyboardWorkflowDoesNotSubmitCommands(t *testing.T) {
 	press(tcell.KeyDown, 0) // highlight /help
 	press(tcell.KeyTab, 0)  // complete, do not submit
 	press(tcell.KeyEnter, 0)
-	waitForScreen(t, safeScreen, "Commands: /model", "")
+	waitForScreen(t, safeScreen, "launch directory is the working directory", "")
 	select {
 	case got := <-sent:
 		t.Fatalf("slash command was sent to provider as %q", got)
@@ -1251,7 +1220,7 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 		t.Fatalf("/m suggestions = %+v", u.commandItems)
 	}
 	u.refreshCommandSuggestions("/")
-	if len(u.commandItems) != 8 {
+	if len(u.commandItems) != 7 {
 		t.Fatalf("root slash suggestions = %+v", u.commandItems)
 	}
 	u.commandList.SetCurrentItem(1)
@@ -1277,84 +1246,6 @@ func TestSlashCommandSuggestionsFilterCompleteSelectAndDismiss(t *testing.T) {
 	}
 }
 
-func TestFilesystemRootStatusIsExplicitAndTerminalSafe(t *testing.T) {
-	status := renderFilesystemRootStatus(ui.FilesystemRootStatus{
-		Selected:            true,
-		Path:                "/tmp/review root\x1b[31m",
-		BackendAvailable:    true,
-		BackendStatus:       "inspection passed\x00; worker not started",
-		InvalidationPending: true,
-	})
-	for _, expected := range []string{
-		"Selected root: /tmp/review root\\x1b[31m",
-		"candidate inspection passed; worker enforcement has not been established",
-		"inspection passed\\x00; worker not started",
-		"Read capability: disabled. Root selection grants no access.",
-		"invalidation is pending",
-	} {
-		if !strings.Contains(status, expected) {
-			t.Errorf("root status %q does not contain %q", status, expected)
-		}
-	}
-	if strings.Contains(status, "\x1b") || strings.Contains(status, "\x00") {
-		t.Fatalf("root status contains raw terminal control: %q", status)
-	}
-	if got := renderFilesystemRootStatus(ui.FilesystemRootStatus{}); !strings.Contains(got, "Selected root: none selected") || !strings.Contains(got, "Backend: unavailable") {
-		t.Fatalf("empty root/backend status=%q", got)
-	}
-}
-
-func TestFilesystemRootDialogPassesAbsolutePathWithSpaces(t *testing.T) {
-	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.SetSize(100, 32)
-	safe := &synchronizedSimulation{SimulationScreen: screen}
-	client := &clientStub{}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
-	waitForScreen(t, safe, "No model selected", "")
-	press := func(key tcell.Key, r rune) {
-		screen.InjectKey(key, r, tcell.ModNone)
-		time.Sleep(25 * time.Millisecond)
-	}
-	for _, r := range "/fs-root" {
-		press(tcell.KeyRune, r)
-	}
-	press(tcell.KeyEnter, 0)
-	waitForScreen(t, safe, "Filesystem root", "")
-	waitForScreen(t, safe, "Read capability: disabled", "")
-	selectedPath := "/tmp/komposyn-root with spaces"
-	for _, r := range selectedPath {
-		press(tcell.KeyRune, r)
-	}
-	press(tcell.KeyTab, 0)
-	press(tcell.KeyEnter, 0)
-	deadline := time.After(2 * time.Second)
-	for {
-		client.mu.Lock()
-		got := append([]string(nil), client.rootSelections...)
-		client.mu.Unlock()
-		if len(got) > 0 {
-			if len(got) != 1 || got[0] != selectedPath {
-				t.Fatalf("selected root path=%q, want %q", got, selectedPath)
-			}
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("filesystem root dialog did not submit the explicit path")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("filesystem root UI did not stop")
-	}
-}
-
 func TestUsageRenderingPreservesUnknownPartialAndCompactCounts(t *testing.T) {
 	items := []ui.ModelUsage{{Provider: "openai", ModelID: "model-a",
 		Input:  ui.MetricUsage{Tokens: 1234, Known: true, Partial: true},
@@ -1364,6 +1255,20 @@ func TestUsageRenderingPreservesUnknownPartialAndCompactCounts(t *testing.T) {
 		t.Fatalf("compact usage = %q", compact)
 	}
 
+}
+
+func TestWorkingDirectoryIsVisibleAndFilesystemRootCommandIsRemoved(t *testing.T) {
+	client := &clientStub{workingDirectory: "/tmp/komposyn project"}
+	u := &terminal{client: client, header: tv.NewTextView()}
+	u.updateBanner()
+	if got := u.header.GetText(false); !strings.Contains(got, "Working directory: /tmp/komposyn project") {
+		t.Fatalf("header does not identify working directory: %q", got)
+	}
+	for _, item := range supportedCommands() {
+		if item.name == "/fs-root" {
+			t.Fatal("obsolete filesystem root command remains available")
+		}
+	}
 }
 
 func TestCompactCountUsesIntegerRounding(t *testing.T) {

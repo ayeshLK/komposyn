@@ -224,13 +224,13 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.header = tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
 	u.planPane = tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
 	u.planPane.SetBorder(true).SetTitle(" Plan · this conversation only ")
-	u.footer = tv.NewTextView().SetText("/fs-root · /copy reply · /copy all · drag/double/triple select · Ctrl+T terminal select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
+	u.footer = tv.NewTextView().SetText("/copy reply · /copy all · drag/double/triple select · Ctrl+T terminal select · ↑/↓ history · Tab focus · Ctrl+U usage · Ctrl+N/P models · PgUp/Dn scroll · Ctrl+L clear · Ctrl+C cancel")
 	u.commandList = tv.NewList().ShowSecondaryText(false)
 	u.usageCompact = tv.NewTextView().SetScrollable(true)
 	u.commands = supportedCommands()
 	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 2, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 3, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
@@ -564,7 +564,6 @@ func supportedCommands() []command {
 		{name: "/cancel", description: "stop the active reply", action: "cancel"},
 		{name: "/exit", description: "close KompoSyn", action: "exit"},
 		{name: "/permissions", description: "inspect and revoke tool grants for this conversation", action: "permissions"},
-		{name: "/fs-root", description: "select, inspect, or clear the temporary filesystem root", action: "filesystem-root"},
 		{name: "/plan", description: "show the current conversation plan", action: "plan"},
 		{name: "/copy", description: "copy latest completed reply; /copy all copies visible transcript text", action: "copy"},
 	}
@@ -671,8 +670,12 @@ func (u *terminal) updateBanner() {
 	if version == "" {
 		version = "dev"
 	}
+	workingDirectory := snapshot.WorkingDirectory
+	if workingDirectory == "" {
+		workingDirectory = "unavailable"
+	}
 	readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readStatus)))
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(readStatus)))
 }
 
 func renderFilesystemReadAvailability(status ui.FilesystemReadAvailability) string {
@@ -1047,18 +1050,10 @@ func (u *terminal) runCommand(text string) {
 		u.openPermissions(false, false)
 	case "plan":
 		u.showPlan()
-	case "filesystem-root":
-		if trimmed == "/fs-root clear" {
-			u.clearFilesystemRoot()
-		} else if trimmed == "/fs-root" {
-			u.showFilesystemRoot()
-		} else {
-			u.write("Use /fs-root to select and inspect a root, or /fs-root clear to remove it.\n")
-		}
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model /fs-root /help /cancel /exit /permissions /plan /copy\nAlso: /copy all /fs-root clear\nRoot selection grants lookup only, no access.\nread_file needs once approval; contents may be sensitive, go to the selected provider, and may recur in this conversation.\nTools: update_plan, request_user_input, read_file if supported. No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
+		u.write("Commands: /model /help /cancel /exit /permissions /plan /copy\nAlso: /copy all\nThe launch directory is the working directory for relative paths; it grants no read access.\nFile-reading availability appears in the header. Each read needs once approval.\nTools: update_plan, request_user_input, read_file if supported; no write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
 	case "cancel":
 		u.client.Cancel()
 		u.write("Cancellation requested.\n")
@@ -1066,108 +1061,6 @@ func (u *terminal) runCommand(text string) {
 		u.stop()
 	}
 	u.input.SetText("")
-}
-
-func renderFilesystemRootStatus(status ui.FilesystemRootStatus) string {
-	root := "none selected"
-	if status.Selected {
-		root = safeTerminalText(status.Path)
-	}
-	backend := "unavailable"
-	if status.BackendAvailable {
-		backend = "candidate inspection passed; worker enforcement has not been established"
-	}
-	detail := safeTerminalText(status.BackendStatus)
-	if detail == "" {
-		detail = "No sandbox backend status is available."
-	}
-	var text strings.Builder
-	fmt.Fprintf(&text, "Selected root: %s\nBackend: %s\n%s\nRead capability: disabled. Root selection grants no access.\n", root, backend, detail)
-	if status.InvalidationPending {
-		text.WriteString("Root change cleanup/invalidation is pending; filesystem work must remain unavailable.\n")
-	}
-	return text.String()
-}
-
-func (u *terminal) showFilesystemRoot() {
-	status := tv.NewTextView().SetScrollable(true).SetDynamicColors(false)
-	status.SetBorder(true).SetTitle(" Filesystem root · temporary, no permission grant ")
-	path := tv.NewInputField().SetLabel("Absolute directory: ").SetFieldWidth(0)
-	form := tv.NewForm().SetButtonsAlign(tv.AlignCenter).AddFormItem(path)
-	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(status, 0, 1, true).AddItem(form, 3, 0, false)
-	layout.SetBorder(true).SetTitle(" /fs-root ")
-	refresh := func(message string) {
-		text := renderFilesystemRootStatus(u.client.Snapshot().FilesystemRoot)
-		if message != "" {
-			text += "\n" + safeTerminalText(message)
-		}
-		status.SetText(text)
-	}
-	refresh("")
-	selectRoot := func() {
-		selectedPath := path.GetText()
-		if selectedPath == "" {
-			refresh("Enter an absolute directory path.")
-			return
-		}
-		u.launch(func() {
-			err := u.client.SelectFilesystemRoot(u.ctx, selectedPath)
-			u.queue(func() {
-				if err != nil {
-					refresh("Root selection failed: " + err.Error())
-					return
-				}
-				refresh("Selected root updated. No filesystem permission was granted.")
-				u.updateBanner()
-			})
-		})
-	}
-	path.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEnter {
-			selectRoot()
-		}
-	})
-	form.AddButton("Select", selectRoot)
-	form.AddButton("Clear", func() {
-		u.launch(func() {
-			err := u.client.ClearFilesystemRoot(u.ctx)
-			u.queue(func() {
-				if err != nil {
-					refresh("Root clear failed: " + err.Error())
-					return
-				}
-				refresh("Root cleared. No filesystem permission was changed.")
-				u.updateBanner()
-			})
-		})
-	})
-	form.AddButton("Back", func() { u.returnToChat() })
-	status.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyTab {
-			u.app.SetFocus(path)
-			return nil
-		}
-		if event.Key() == tcell.KeyEscape {
-			u.returnToChat()
-			return nil
-		}
-		return event
-	})
-	u.app.SetRoot(layout, true).SetFocus(path)
-}
-
-func (u *terminal) clearFilesystemRoot() {
-	u.launch(func() {
-		err := u.client.ClearFilesystemRoot(u.ctx)
-		u.queue(func() {
-			if err != nil {
-				u.write("Filesystem root clear failed: " + safeTerminalText(err.Error()) + "\n")
-			} else {
-				u.write("Filesystem lookup root cleared. read_file is unavailable until a root is selected.\n")
-			}
-			u.updateBanner()
-		})
-	})
 }
 
 func (u *terminal) openPicker() {
