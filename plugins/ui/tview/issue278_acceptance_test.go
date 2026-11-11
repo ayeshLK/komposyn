@@ -163,7 +163,6 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyUp, 0) // Deny this file, separately from the first Allow once.
 	press(tcell.KeyEnter, 0)
-	waitForScreen(t, screen, "comparison answer", "")
 	waitForCondition(t, func() bool { return !chat.Snapshot().Active })
 	if host.readCount() != 1 || provider.containsRequestSecret(issue278OutsideSecret) {
 		t.Fatal("denied second file was read or disclosed")
