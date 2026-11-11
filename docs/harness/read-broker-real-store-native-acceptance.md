@@ -68,6 +68,7 @@ only disposable fixture files:
 
 | Scenario | Case | Required evidence |
 |---|---|---|
+| Exact target on a distinct mount | `separate_mount_target_positive` | The fixture and target have distinct `statx` mount IDs; the broker reads and publishes the approved target from its own verified mount root. |
 | Unsupported symbolic-link lookup | `unsupported_symlink_lookup` | The actual broker refuses the link before once-grant consumption, worker startup, or descriptor handoff. |
 | Non-regular FIFO target | `unsupported_fifo_lookup` | The actual broker opens non-blockingly, classifies the descriptor as non-regular, then refuses before grant consumption or worker startup. |
 | Oversized regular file | `oversized_target_not_published` | The native worker reaches readiness and reads only to the fixed 64 KiB bound; the truncated result is discarded, no bytes are returned to the caller or published, and the worker is joined. |
@@ -87,12 +88,38 @@ Mount-crossing and protected-ancestor transitions remain separate gaps; do not
 weaken `RESOLVE_NO_XDEV`, protected-directory coverage, or backend trust checks
 to make a fixture pass.
 
+The separate-mount positive row is not a nested mount-crossing refusal test.
+It demonstrates that an explicitly approved target can be read from a distinct
+verified mount. A future crossing test must stage a nested mount in a bounded
+isolated fixture and confirm the no-crossing refusal without weakening lookup
+guards; if the host cannot safely construct that fixture, report it as
+unavailable.
+
 Each native row records worker startup/read/join/publication fields where
 applicable. Results use `measured_pass`, `observed_violation`, `unavailable`,
 or `inconclusive`; unavailable setup and incomplete observations are not passes.
 The per-case `real_store` fields distinguish route reservation, replacement
 identity, empty-at-registration state, direct join, write ordering, once-grant
 consumption, and stale-publication suppression.
+
+## Recorded native result
+
+The trusted Linux amd64 run for source commit
+`08076c58667acd1d73971ee8ca6d1eea46682e89` used Go 1.26.11 and Bubblewrap
+0.9.0 with `ro-bind-fd`. The validated report contains 58 measured passes, 6
+inconclusive rows, and 1 unavailable row; it has no observed-violation rows.
+The outside-directory read, both unsupported lookups, oversized no-publication,
+protected alias refusals, target-replacement race, and post-capture revocation
+rows passed. Archive SHA-256:
+`363c210c4d7d44b3a3fbee9a967cc672176b0054d70f161e5d52d45d856b7d52`.
+
+The report did not include `separate_mount_target_positive`, added after that
+revision. Nested mount-crossing and the protected-ancestor transition also
+remain unmeasured. The inconclusive owner registration and cleanup rows lack
+conclusive worker/write correlation; the protected-ancestor scenario remains
+blocked by the existing fail-closed directory-coverage rule. See ADR-0003 for
+the exact row names and disposition. This run is partial native evidence, not
+full #278 acceptance.
 
 ## Reporting correction
 

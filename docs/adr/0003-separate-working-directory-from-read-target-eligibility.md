@@ -55,3 +55,28 @@ published, and the existing post-capture revocation check. These are
 implemented scenarios, not evidence until a trusted-host report records each
 row as a measured pass. Mount-crossing and protected-ancestor transitions
 remain unmeasured; backend trust and lookup guards stay enabled.
+
+Run `08076c58667acd1d73971ee8ca6d1eea46682e89` completed on Linux amd64 with
+Go 1.26.11 and trusted Bubblewrap 0.9.0 (`ro-bind-fd`). Its validated report
+contains 58 measured passes, 6 inconclusive cases and 1 unavailable case, with
+no observed-violation rows. The outside-working-directory positive, symlink
+and FIFO pre-worker refusals, oversized no-publication case, protected aliases,
+stale/revoked publication, and target-replacement actor case passed. Archive
+SHA-256: `363c210c4d7d44b3a3fbee9a967cc672176b0054d70f161e5d52d45d856b7d52`.
+
+The inconclusive cases are `actor_protected_ancestor_relocation`,
+`owner_registration_before_release`,
+`owner_registration_while_capability_held`,
+`real_auth_held_worker_cleanup_pending_blocks_write_then_retry`,
+`real_settings_cleanup_pending_refuses_then_retries`, and
+`owner_incomplete_cleanup_blocks_write_native`;
+`owner_incomplete_cleanup_blocks_write` is unavailable. The protected-ancestor
+case remains fail-closed because incomplete descendant coverage prevents any
+eligible same-device read. The moved-descendant refusal passed separately.
+Owner lifecycle cleanup rows still lack conclusive native observations.
+
+After that run, the study added `separate_mount_target_positive` to verify an
+explicitly approved target on a distinct mount. It still needs a trusted-host
+run. This positive row does not prove nested mount-crossing refusal. #278 stays
+open until mount-boundary evidence and the applicable inconclusive
+race/cleanup scope are reviewed; do not weaken backend trust or lookup guards.

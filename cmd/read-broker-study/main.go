@@ -357,7 +357,7 @@ func run() error {
 			"ordinary late-alias behavior and fresh direct protected-route refusal are separate actor cases; neither implies continuous path containment",
 			"production owner registration, credential rotation, and cleanup integration are not implemented",
 			"registered protected-ancestor relocation/replacement while a sandboxed read remains eligible; current same-device descendant coverage refuses before worker setup",
-			"mount-boundary behavior and recursive-child relocation",
+			"nested mount-crossing refusal and recursive-child relocation; a separate-mount positive target row does not establish cross-mount refusal",
 			"native abnormal-lifecycle rows require a trusted backend plus pidfd and child-subreaper support; unavailable rows are not passes",
 			"arbitrary namespace-descendant cleanup beyond the fixed thread-only worker topology",
 			"natural worker hang or kernel cleanup failure; the shutdown and owner pending interval is deterministic termination-request fault injection",
@@ -385,6 +385,7 @@ func unavailableCases(reason string) []caseResult {
 	planned := []struct{ name, expected string }{
 		{"ordinary_positive", "explicit once approval reads the opened fixture object"},
 		{"outside_working_directory_positive", "explicit once approval reads one exact target outside the working directory on its mount without changing the selected working directory"},
+		{"separate_mount_target_positive", "explicit once approval reads an exact target on a distinct mount without crossing out of that target mount"},
 		{"unsupported_symlink_lookup", "symlink target is refused before once consumption or worker handoff"},
 		{"unsupported_fifo_lookup", "non-regular FIFO target is refused before once consumption or worker handoff"},
 		{"oversized_target_not_published", "oversized regular target is bounded and no partial bytes are published"},
@@ -502,9 +503,13 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 		return results, err
 	}
 	retainFixtureRoot := false
+	retainedFixtureDirs := make([]string, 0, 1)
 	defer func() {
 		if !retainFixtureRoot {
 			_ = os.RemoveAll(base)
+			for _, dir := range retainedFixtureDirs {
+				_ = os.RemoveAll(dir)
+			}
 		}
 	}()
 	root := filepath.Join(base, "root")
@@ -588,6 +593,27 @@ func runFixtures(bwrap string) (results []caseResult, runErr error) {
 	results = make([]caseResult, 0, 24)
 	results = append(results, executeCase(session, authorizer, root, "ordinary_positive", ordinary, "ordinary-1", "explicit once approval reads the opened fixture object", readbrokerstudy.ReadSucceeded))
 	results = append(results, executeCase(session, authorizer, root, "outside_working_directory_positive", outsideTarget, "outside-working-directory-1", "explicit once approval reads one exact target outside the working directory on its mount without changing the selected working directory", readbrokerstudy.ReadSucceeded))
+
+	// A separate mount is an eligible target mount; lookup remains anchored at
+	// its own verified mount root and does not traverse across a mount boundary.
+	separateMountDir, mountErr := os.MkdirTemp("/dev/shm", "komposyn-readbroker-target-")
+	if mountErr != nil {
+		results = append(results, unavailableCase("separate_mount_target_positive", "explicit once approval reads an exact target on a distinct mount without crossing out of that target mount", "a writable separate synthetic mount fixture was unavailable"))
+	} else {
+		retainedFixtureDirs = append(retainedFixtureDirs, separateMountDir)
+		rootMountID, rootMountErr := mountIDForPath(root)
+		targetMountID, targetMountErr := mountIDForPath(separateMountDir)
+		if rootMountErr != nil || targetMountErr != nil || rootMountID == targetMountID {
+			results = append(results, unavailableCase("separate_mount_target_positive", "explicit once approval reads an exact target on a distinct mount without crossing out of that target mount", "the host did not expose a distinct verified mount for the synthetic fixture"))
+		} else {
+			separateMountTarget := filepath.Join(separateMountDir, "separate-mount.fixture")
+			if err := os.WriteFile(separateMountTarget, []byte("fixture-only-separate-mount-content\n"), 0o600); err != nil {
+				results = append(results, unavailableCase("separate_mount_target_positive", "explicit once approval reads an exact target on a distinct mount without crossing out of that target mount", "the synthetic separate-mount target could not be created"))
+			} else {
+				results = append(results, executeCase(session, authorizer, root, "separate_mount_target_positive", separateMountTarget, "separate-mount-1", "explicit once approval reads an exact target on a distinct mount without crossing out of that target mount", readbrokerstudy.ReadSucceeded))
+			}
+		}
+	}
 	results = append(results, executeCase(session, authorizer, root, "protected_direct", protected, "credential-1", "credential object is refused before worker capability handoff", readbrokerstudy.ReadRefused))
 
 	// These targets exercise the actual native broker lookup. Unsupported
@@ -3556,6 +3582,22 @@ func writeSyntheticFile(path string, size int) error {
 	content := bytes.Repeat([]byte{'x'}, size)
 	defer clear(content)
 	return os.WriteFile(path, content, 0o600)
+}
+
+func mountIDForPath(path string) (uint64, error) {
+	fd, err := unix.Open(path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer unix.Close(fd)
+	var stat unix.Statx_t
+	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &stat); err != nil {
+		return 0, err
+	}
+	if stat.Mask&unix.STATX_MNT_ID == 0 || stat.Mnt_id == 0 {
+		return 0, readbrokerstudy.ErrUnavailable
+	}
+	return stat.Mnt_id, nil
 }
 
 func pathExists(path string) bool {

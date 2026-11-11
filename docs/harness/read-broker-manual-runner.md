@@ -152,14 +152,16 @@ status. Further signals are ignored while finalization is in progress. Archive
 and checksum-sidecar creation uses exclusive links, and pre-existing files or
 symlinks at either output path are preserved.
 
-The expanded #278 profile also emits `unsupported_symlink_lookup`,
-`unsupported_fifo_lookup`, and `oversized_target_not_published`. Count the
-lookup rows as passes only when they show zero once consumption and no worker
-or target-capability handoff. The oversized row must show the worker joined,
-`truncated: true`, no returned bytes, and no publication. Review the existing
-`revoke_after_capture_before_publish` row for worker join and suppressed
-publication. These rows do not establish mount-crossing or protected-ancestor
-behavior, which remains a separate native evidence gap.
+The expanded #278 profile also emits `separate_mount_target_positive`,
+`unsupported_symlink_lookup`, `unsupported_fifo_lookup`, and
+`oversized_target_not_published`. Count the lookup rows as passes only when
+they show zero once consumption and no worker or target-capability handoff.
+The oversized row must show the worker joined, `truncated: true`, no returned
+bytes, and no publication. Review `revoke_after_capture_before_publish` for
+worker join and suppressed publication. The separate-mount row must show
+distinct `statx` mount IDs and a successful read of the exact target. It does
+not establish nested mount-crossing refusal or protected-ancestor behavior;
+both remain separate native evidence gaps.
 
 Run disposable regression checks for detached pipe holders, output bounds,
 preflight classification, sidecar collisions, and interruption finalization:
