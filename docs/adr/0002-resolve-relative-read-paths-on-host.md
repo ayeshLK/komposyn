@@ -19,3 +19,7 @@ Implemented by #276 host-side relative-path resolution and #278 exact-target
 admission. The resolved absolute path is the target shown for approval and
 bound to capture and disclosure. An outside-working-directory path is not
 rewritten by navigation.
+
+See [spec #275](https://github.com/ayeshLK/komposyn/issues/275) and implementation
+tickets [#276](https://github.com/ayeshLK/komposyn/issues/276) and
+[#278](https://github.com/ayeshLK/komposyn/issues/278).

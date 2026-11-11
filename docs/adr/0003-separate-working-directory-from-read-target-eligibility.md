@@ -126,3 +126,6 @@ This closes the scoped #278 native acceptance requirement. It does not turn the
 broader inconclusive owner-cleanup/protected-ancestor rows or unavailable
 owner-cleanup case into passes, and it does not measure a nested-mount
 transition or establish general sandbox or production readiness.
+
+See [spec #275](https://github.com/ayeshLK/komposyn/issues/275) and implementation
+ticket [#278](https://github.com/ayeshLK/komposyn/issues/278).
