@@ -23,7 +23,7 @@ Image support requires its own content-format evidence.
 | Provider route | Inventory | Capability evidence | Status and remaining work |
 |---|---|---|---|
 | OpenAI API key | Implemented; listed by `openai.Plugin.AuthMethods` | Responses tool declaration, tool-call parsing, native continuation, and protocol tests in `plugins/model-provider/openai/` | Supported for `update_plan` and `request_user_input`; `read_file` is conditional on host prerequisites below. Continue live provider validation. |
-| OpenAI ChatGPT OAuth (SIWC) | Implemented; listed by `openai.Plugin.AuthMethods` | `RouteCapabilities(AuthOAuth)` returns `SupportUnknown`. The OAuth adapter now encodes `additional_tools` and its fixture covers declaration, streamed calls, result correlation, and continuation; see [the protocol assessment](openai-chatgpt-oauth-tool-protocol.md). | Adapter protocol shape is fixture-covered, but runtime exposure and live account/model compatibility remain unverified. Keep text-only and fail closed until route-specific live evidence verifies the full tool cycle. Unknown support is not a provider restriction. |
+| OpenAI ChatGPT OAuth (SIWC) | Implemented; listed by `openai.Plugin.AuthMethods` | `RouteCapabilities(AuthOAuth)` returns `SupportUnknown`. A private OAuth protocol implementation encodes `additional_tools`; its fixture covers declaration, streamed calls, result correlation, and continuation; see [the protocol assessment](openai-chatgpt-oauth-tool-protocol.md). Public `Plugin.StreamChat` rejects OAuth tool-bearing requests before network dispatch. | Protocol shape is established by official docs and fixture, while live account/model compatibility and public runtime exposure remain unverified. Keep text-only and fail closed until route-specific live evidence verifies the full tool cycle. Unknown support is not a provider restriction. |
 | Anthropic API key | Implemented; listed by `anthropic.Plugin.AuthMethods` | Messages tool declaration, `tool_use` parsing, result continuation, and protocol tests in `plugins/model-provider/anthropic/` | Supported for `update_plan` and `request_user_input`; `read_file` is conditional on host prerequisites below. Continue live provider validation. |
 | Anthropic subscription / OAuth | No authentication integration or selectable route exists in the bundled adapter; `AuthMethods` returns only `AuthAPIKey` | No adapter or route evidence | Unimplemented. Do not create or imply a selectable profile. No claim is made that Anthropic prohibits such integration. |
 
@@ -66,8 +66,9 @@ The runtime snapshot carries availability for all three capabilities through
 the UI client contract. Reasons distinguish an unknown or unsupported provider
 route from missing host backend, missing authorization/enforcement composition,
 and a capability not registered in the current build. A route that supports
-tool protocol is not thereby authorized to execute tools. The UI shows the
-reason and a recovery action where one is known. Unknown provider support stays
+tool protocol is not thereby authorized to execute tools. The compact header
+shows a concise availability reason, and `/help` shows the full sanitized
+reason and recovery guidance where one is known. Unknown provider support stays
 unavailable; the runtime does not switch routes or billing methods.
 
 Availability text is safe for display and excludes credential values, account
