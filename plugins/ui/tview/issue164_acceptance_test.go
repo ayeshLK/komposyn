@@ -154,7 +154,7 @@ func TestIssue280FileReadAvailabilityFollowsRuntimeRouteAndBackend(t *testing.T)
 				u.usageCompact = tv.NewTextView()
 				u.body = tv.NewFlex().AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 				u.composer = tv.NewFlex().AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
-				u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 3, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
+				u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 4, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
 				u.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 					if event.Key() == tcell.KeyEnter {
 						u.submit()

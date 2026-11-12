@@ -181,6 +181,8 @@ func (c Client) ChangeWorkingDirectory(ctx context.Context, path string) error {
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
 	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, Version: c.Version,
+		UpdatePlanAvailability:     ui.CapabilityAvailability{Available: s.UpdatePlanAvailability.Available, State: s.UpdatePlanAvailability.State, Reason: s.UpdatePlanAvailability.Reason},
+		RequestInputAvailability:   ui.CapabilityAvailability{Available: s.RequestInputAvailability.Available, State: s.RequestInputAvailability.State, Reason: s.RequestInputAvailability.Reason},
 		FilesystemReadAvailability: ui.FilesystemReadAvailability{Available: s.FilesystemReadAvailability.Available, State: s.FilesystemReadAvailability.State, Reason: s.FilesystemReadAvailability.Reason},
 		WorkingDirectory:           s.WorkingDirectory}
 	for _, step := range s.Plan {
