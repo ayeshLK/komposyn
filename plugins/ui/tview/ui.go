@@ -417,8 +417,17 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.app.SetAfterDrawFunc(func(screen tcell.Screen) {
 		u.restoreSelectionSnapshot(screen)
 		if u.followingTranscript && !u.output.HasSelection() {
-			u.transcriptScrollRow = u.maxTranscriptScroll()
-			u.output.SetOffset(u.transcriptScrollRow, 0)
+			target := u.maxTranscriptScroll()
+			u.transcriptScrollRow = target
+			current, _ := u.output.GetOffset()
+			if current != target {
+				u.app.QueueUpdateDraw(func() {
+					if u.followingTranscript && !u.output.HasSelection() {
+						u.transcriptScrollRow = u.maxTranscriptScroll()
+						u.output.SetOffset(u.transcriptScrollRow, 0)
+					}
+				})
+			}
 		}
 		readyOnce.Do(func() { close(ready) })
 	})
