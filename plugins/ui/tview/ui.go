@@ -417,17 +417,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.app.SetAfterDrawFunc(func(screen tcell.Screen) {
 		u.restoreSelectionSnapshot(screen)
 		if u.followingTranscript && !u.output.HasSelection() {
-			target := u.maxTranscriptScroll()
-			u.transcriptScrollRow = target
-			current, _ := u.output.GetOffset()
-			if current != target {
-				u.app.QueueUpdateDraw(func() {
-					if u.followingTranscript && !u.output.HasSelection() {
-						u.transcriptScrollRow = u.maxTranscriptScroll()
-						u.output.SetOffset(u.transcriptScrollRow, 0)
-					}
-				})
-			}
+			u.transcriptScrollRow = u.maxTranscriptScroll()
 		}
 		readyOnce.Do(func() { close(ready) })
 	})
@@ -1148,6 +1138,10 @@ func (u *terminal) submit() {
 				// Reconcile the final result after queued deltas so the completed
 				// answer remains visible even if a platform dropped a stream redraw.
 				u.renderTranscript()
+				if u.followingTranscript && !u.output.HasSelection() {
+					u.transcriptScrollRow = u.maxTranscriptScroll()
+					u.output.SetOffset(u.transcriptScrollRow, 0)
+				}
 			})
 		}
 		if turn.Outcome == modelprovider.OutcomeCompleted && err == nil {
@@ -1919,6 +1913,9 @@ func (u *terminal) activityLoop() {
 		case <-ticker.C:
 			snapshot := u.client.Snapshot()
 			activities := snapshot.ToolActivities
+			if len(snapshot.Turns) > 0 {
+				activities = append(activities, snapshot.Turns[len(snapshot.Turns)-1].ToolActivities...)
+			}
 			planText := renderPlan(snapshot.Plan)
 			if planText != lastPlan {
 				lastPlan = planText
