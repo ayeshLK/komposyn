@@ -2,10 +2,11 @@
 
 This walkthrough describes the experimental v0.14.0 release. Use the
 [installation guide](../installation.md) for signed binaries, or build from
-source below. Live login and inference remain **unverified**; automated fixture
-tests do not establish account eligibility, model access, or real-provider
-compatibility. See the [validation record](release-validation.md) for exact
-candidate, native, artifact, and pending live evidence.
+source below. Live ChatGPT OAuth tool evidence currently covers one account
+and model only; denial behavior and other accounts/models remain unverified.
+Automated fixture tests do not establish account eligibility or real-provider
+compatibility. See the [capability matrix](capability-availability.md) and
+[protocol assessment](openai-chatgpt-oauth-tool-protocol.md) for scope and limits.
 
 ## 1. Start and choose a model
 
@@ -30,14 +31,16 @@ requests do not switch your account or billing route automatically.
 | --- | --- | --- | --- |
 | OpenAI API key or explicit key environment reference | Responses | Planning and clarification | Conditional Linux backend |
 | Anthropic API key or explicit key environment reference | Messages | Planning and clarification | Conditional Linux backend |
-| Continue with ChatGPT | Responses, separate plan authorization | Unavailable; text only | Unavailable |
+| Continue with ChatGPT | Responses, separate plan authorization | `update_plan` and `request_user_input` for eligible `gpt-6-sol` profiles; live verified on one account | Conditional trusted Linux backend; live exact-file verified on one host |
 | Unknown/unsupported route | No compatibility guarantee | Unavailable | Unavailable |
 
 Ordinary chat and supported conversation tools work on Linux, macOS, and
 Windows without a read backend. Native read evidence is limited to recorded
 Linux amd64/Bubblewrap 0.9.0 profiles; arm64 builds and macOS/Windows tests do
-not establish filesystem enforcement. All live routes above are pending
-post-publication checks. ChatGPT login must grant plan-usage permission before
+not establish filesystem enforcement. The ChatGPT OAuth live results are
+limited to one account/model and one trusted Linux host; API-key, Anthropic,
+denial, and broader platform checks remain pending. ChatGPT login must grant
+plan-usage permission before
 discovery or inference; a successful identity login alone is insufficient.
 
 ## 2. Exchange text and try a plan

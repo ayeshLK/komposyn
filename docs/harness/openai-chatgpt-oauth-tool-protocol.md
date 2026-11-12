@@ -34,7 +34,7 @@ successful text response alone does not establish tool support for a model.
 | Provider-native continuation | Documented HTTP behavior; fixture covered | SIWC says not to use `previous_response_id` over HTTP and to send required history in `input`; the function calling guide shows replaying the assistant response and tool output. KompoSyn retains/replays native assistant output items and sends the correlated result. |
 | OAuth request differences | Documented | Set `store:false`, `stream:true`; omit `max_output_tokens`; use `additional_tools` for client function definitions on this route. Current API-key requests retain top-level `tools`, `max_output_tokens`, and `include: ["reasoning.encrypted_content"]`. The OAuth adapter does not send these API-key-only fields. |
 | Model-specific tool support | Verified for `gpt-6-sol` on one tested account; other accounts and models remain unverified | Runtime can select only models returned in the selected OAuth profile's account-specific catalog. The live cycle below exercised `gpt-6-sol` on one account; the same model ID on other accounts has not been separately live-verified. SIWC documentation requires a model available to the signed-in account but does not provide a compatibility guarantee for every account/model. |
-| Live ChatGPT OAuth round trip | Verified for `gpt-6-sol` on one tested account and route | A bounded synthetic live cycle exercised `update_plan` and `request_user_input`, each approved with Allow once, followed by correlated result submission and a follow-up. Live denial/cancellation and silent-fallback checks were not performed; the bounded request budget was consumed, so those checks remain open under #294. Automated runtime fixtures are separate evidence and do not establish these live outcomes. Exact-file reading was also not exercised; see the separate read gate below. |
+| Live ChatGPT OAuth round trip | Operator-reported for `gpt-6-sol` on one tested account and route | The 2026-11-12 synthetic live cycle exercised `update_plan` and `request_user_input`, each approved with Allow once, followed by correlated result submission and a follow-up. A 2026-11-13 follow-up exercised exact-file reading and cancellation on a trusted Linux host. Denial was not tested. Automated runtime fixtures remain separate evidence. |
 
 The SIWC limitations separately list unsupported built-in tools including
 image generation, file search, Code Interpreter, native computer use, hosted
@@ -103,26 +103,47 @@ route, and model, in addition to the fixture evidence above. Other accounts
 with the same model ID have not been separately live-verified, and this does
 not establish support for every OpenAI OAuth model.
 
-Both live tool approvals were Allow once: one each for `update_plan` and
-`request_user_input`. Live denial/cancellation behavior and silent-fallback
-behavior were not checked. The five-request budget was consumed by the bounded
-cycle, so those live checks remain open under issue #294. Automated runtime
-fixtures provide separate implementation evidence; they are not live checks.
+Both live tool approvals in the initial cycle were Allow once: one each for
+`update_plan` and `request_user_input`. The follow-up cancellation check passed.
+Denial remains untested. No fallback was observed during the allowed and
+canceled flows; denial's no-fallback behavior remains open under issue #294.
+Automated runtime fixtures provide separate implementation evidence; they are
+not live checks.
 
-The exact-file `read_file` journey was not attempted. The UI reported the
-trusted file-read backend unavailable. Host inspection showed that the
-installed Bubblewrap executable did not satisfy KompoSyn's root-owned,
-non-writable trusted-executable prerequisite, so the worker was not admitted.
-No file was opened or disclosed. To finish exact-file acceptance, run the live test on a
-supported Linux setup with a trusted root-owned Bubblewrap executable and the
-complete KompoSyn worker/enforcement composition, then repeat the once-approved
-synthetic-file cycle. Until then `read_file` remains unavailable on this
-route for this evidence record, and issue #294 stays open.
+The first run did not attempt the exact-file `read_file` journey: the UI
+reported the trusted file-read backend unavailable, and the Bubblewrap
+executable on that host did not satisfy KompoSyn's root-owned, non-writable
+prerequisite. No file was opened or disclosed in that run.
 
-Native backend evidence is separate from this provider result. The earlier
-reviewed #215/#278 Linux amd64/Bubblewrap 0.9.0 evidence covers the unchanged
-read-enforcement path, but this run did not exercise that worker with OAuth.
-It therefore does not satisfy the live `read_file` criterion.
+## Follow-up live verification (2026-11-13)
+
+The operator reports completing the allowed planning and clarification cycle,
+the exact-file `read_file` journey, and cancellation on a supported Linux host.
+The test used the same selected ChatGPT OAuth profile and public model
+`gpt-6-sol`; the exact-file operation displayed that destination and received
+an explicit once approval. The synthetic marker was returned, and the
+follow-up remained on the selected profile. Cancellation stopped the turn.
+The operator did not test denial, so denial behavior remains open under #294.
+No account identifier, credential, raw conversation, or non-synthetic file
+content was retained.
+
+Reported environment and artifact identity:
+
+- Source commit: `837ad5f185ec997e8762b3e1c52f9d62ea5a7f4c`
+- Binary SHA-256: `99d8d5f1601cc19b6910269b074079ecb17306e9dd9de0b3dd1a4c7ae45d72a0`
+- Platform: Linux `7.0.0-42-generic`, `x86_64`
+- Bubblewrap: `0.9.0`, `/usr/bin/bwrap`, `root:root`, mode `0755`
+
+This follow-up supplies operator-reported live-provider and trusted-backend
+evidence for the allowed exact-file journey and cancellation. No fallback was
+observed in the reported allowed/canceled flows. Denial and its no-fallback
+outcome remain unverified, so issue #294 stays open.
+
+Native backend evidence remains separate from this provider result. The earlier
+reviewed #215/#278 Linux amd64/Bubblewrap 0.9.0 evidence covers native
+read-enforcement scenarios. The follow-up above additionally exercises the
+live OAuth `read_file` composition on one reported host; neither result
+establishes other accounts, models, platforms, or backend profiles.
 
 ## Sources
 
