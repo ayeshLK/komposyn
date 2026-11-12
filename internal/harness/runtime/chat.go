@@ -61,14 +61,18 @@ type Snapshot struct {
 	ToolActivities             []ToolActivity
 	Plan                       []tools.PlanStep
 	FilesystemRoot             FilesystemRootStatus
+	UpdatePlanAvailability     CapabilityAvailability
+	RequestInputAvailability   CapabilityAvailability
 	FilesystemReadAvailability FilesystemReadAvailability
 	WorkingDirectory           string
 }
-type FilesystemReadAvailability struct {
+type CapabilityAvailability struct {
 	Available bool
 	State     string
 	Reason    string
 }
+
+type FilesystemReadAvailability = CapabilityAvailability
 type UsageMetric struct {
 	Tokens  int64
 	Known   bool
@@ -469,8 +473,37 @@ func (c *Chat) Snapshot() Snapshot {
 	c.mu.Unlock()
 	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan,
 		FilesystemRoot:             filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost),
+		UpdatePlanAvailability:     conversationToolAvailability(selected, providers, toolRuntime, tools.UpdatePlanID),
+		RequestInputAvailability:   conversationToolAvailability(selected, providers, toolRuntime, tools.RequestUserInputID),
 		FilesystemReadAvailability: filesystemReadAvailability(selected, providers, toolRuntime, workingDirectory, rootGeneration, rootAck, rootHost),
 		WorkingDirectory:           workingDirectory}
+}
+
+func conversationToolAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, id tools.ID) CapabilityAvailability {
+	if selected == nil {
+		return CapabilityAvailability{State: "no_model", Reason: "Select a model with /model to check conversation-tool support."}
+	}
+	if selected.AuthMethod == "" || providers == nil {
+		return CapabilityAvailability{State: "unknown_route", Reason: "Support for conversation tools on the selected provider/authentication route is unverified; refresh models and select a verified route."}
+	}
+	plug, ok := providers.Get(selected.Provider)
+	if !ok {
+		return CapabilityAvailability{State: "unknown_route", Reason: "The selected provider route is unavailable; refresh models and select an available model."}
+	}
+	support := provider.CapabilitiesFor(plug, selected.AuthMethod).ClientTools
+	if support != provider.SupportSupported {
+		if support == provider.SupportUnknown {
+			return CapabilityAvailability{State: "unknown_route", Reason: "Support for conversation tools on the selected provider/authentication route is unverified; choose a route that explicitly supports client tools."}
+		}
+		return CapabilityAvailability{State: "unsupported_route", Reason: "The selected provider/authentication route does not support client tools; choose a route that explicitly supports them."}
+	}
+	if runtime == nil || runtime.authorizer == nil || runtime.enforcer == nil {
+		return CapabilityAvailability{State: "enforcement_unavailable", Reason: "This route supports client tools, but host authorization and execution are not fully configured; restart with the supported KompoSyn composition."}
+	}
+	if _, ok := runtime.registry.Lookup(id); !ok {
+		return CapabilityAvailability{State: "not_implemented", Reason: "This route supports client tools, but this conversation capability is not registered in this build."}
+	}
+	return CapabilityAvailability{Available: true, State: "available", Reason: "Available on the selected route. Each action still requires the normal authorization and approval."}
 }
 
 func filesystemReadAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, workingDirectory string, generation, acknowledged uint64, host FilesystemRootHost) FilesystemReadAvailability {
@@ -497,13 +530,9 @@ func filesystemReadAvailability(selected *model.Model, providers *model.Registry
 	if host == nil {
 		return FilesystemReadAvailability{State: "backend_unavailable", Reason: "No trusted file-read backend is configured. Use a supported Linux setup with an inspected Bubblewrap worker, then restart KompoSyn."}
 	}
-	available, detail := host.BackendStatus()
+	available, _ := host.BackendStatus()
 	if !available {
-		reason := "The inspected file-read backend is unavailable. Use a supported Linux setup with a trusted Bubblewrap worker, then restart KompoSyn."
-		if detail != "" {
-			reason = "The inspected file-read backend is unavailable: " + detail + ". Use a supported Linux setup with a trusted Bubblewrap worker, then restart KompoSyn."
-		}
-		return FilesystemReadAvailability{State: "backend_unavailable", Reason: reason}
+		return FilesystemReadAvailability{State: "backend_unavailable", Reason: "The inspected file-read backend is unavailable. Use a supported Linux setup with a trusted Bubblewrap worker, then restart KompoSyn."}
 	}
 	if runtime == nil || runtime.readAdmission == nil {
 		return FilesystemReadAvailability{State: "enforcement_unavailable", Reason: "The inspected backend is not connected to the host read-enforcement path; restart with the supported KompoSyn composition."}

@@ -28,34 +28,36 @@ import (
 )
 
 type clientStub struct {
-	mu                     sync.Mutex
-	selected               *ui.Model
-	turns                  []ui.Turn
-	usage                  []ui.ModelUsage
-	version                string
-	selectedCh             chan struct{}
-	selectCalls            int
-	profiles               []ui.Profile
-	addHook                func(context.Context, string, string, string, string, map[string]string) error
-	replaceHook            func(context.Context, string, string, string, map[string]string, bool) error
-	snapshotHook           func() ui.Snapshot
-	sendHook               func(context.Context, string, func(string)) (ui.Turn, error)
-	methods                map[string][]string
-	loginHook              func(context.Context, string) (ui.LoginAttempt, error)
-	loginCanceled          []string
-	approvalEvents         chan ui.ApprovalEvent
-	approvalResponses      chan ui.ApprovalResponse
-	permissionsHook        func(context.Context) ([]ui.ToolGrant, error)
-	clarificationEvents    chan ui.ClarificationEvent
-	clarificationResponses chan ui.ClarificationResponse
-	toolGrants             []ui.ToolGrant
-	plan                   []ui.PlanStep
-	toolActivities         []ui.ToolActivity
-	readAvailability       ui.FilesystemReadAvailability
-	workingDirectory       string
-	workingDirectoryHook   func(context.Context, string) error
-	revoked                []string
-	cleared                int
+	mu                       sync.Mutex
+	selected                 *ui.Model
+	turns                    []ui.Turn
+	usage                    []ui.ModelUsage
+	version                  string
+	selectedCh               chan struct{}
+	selectCalls              int
+	profiles                 []ui.Profile
+	addHook                  func(context.Context, string, string, string, string, map[string]string) error
+	replaceHook              func(context.Context, string, string, string, map[string]string, bool) error
+	snapshotHook             func() ui.Snapshot
+	sendHook                 func(context.Context, string, func(string)) (ui.Turn, error)
+	methods                  map[string][]string
+	loginHook                func(context.Context, string) (ui.LoginAttempt, error)
+	loginCanceled            []string
+	approvalEvents           chan ui.ApprovalEvent
+	approvalResponses        chan ui.ApprovalResponse
+	permissionsHook          func(context.Context) ([]ui.ToolGrant, error)
+	clarificationEvents      chan ui.ClarificationEvent
+	clarificationResponses   chan ui.ClarificationResponse
+	toolGrants               []ui.ToolGrant
+	plan                     []ui.PlanStep
+	toolActivities           []ui.ToolActivity
+	updatePlanAvailability   ui.CapabilityAvailability
+	requestInputAvailability ui.CapabilityAvailability
+	readAvailability         ui.FilesystemReadAvailability
+	workingDirectory         string
+	workingDirectoryHook     func(context.Context, string) error
+	revoked                  []string
+	cleared                  int
 }
 
 // synchronizedSimulation protects the returned cell slice from tview's render
@@ -165,7 +167,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), ToolActivities: append([]ui.ToolActivity(nil), c.toolActivities...), FilesystemReadAvailability: c.readAvailability, WorkingDirectory: c.workingDirectory}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), ToolActivities: append([]ui.ToolActivity(nil), c.toolActivities...), UpdatePlanAvailability: c.updatePlanAvailability, RequestInputAvailability: c.requestInputAvailability, FilesystemReadAvailability: c.readAvailability, WorkingDirectory: c.workingDirectory}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -1620,13 +1622,13 @@ func TestClearTranscriptDoesNotClearDraftOrResurrectBufferedText(t *testing.T) {
 }
 
 func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
-	client := &clientStub{version: "0.11.0", readAvailability: ui.FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."}}
+	client := &clientStub{version: "0.11.0", readAvailability: ui.FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."}, updatePlanAvailability: ui.CapabilityAvailability{State: "unknown_route", Reason: "Tool protocol support is unverified."}, requestInputAvailability: ui.CapabilityAvailability{State: "enforcement_unavailable", Reason: "Host authorization is not configured."}}
 	model := ui.Model{Key: "selected", ID: "model-y", DisplayName: "Model Y"}
 	u := &terminal{client: client, header: tv.NewTextView(), body: tv.NewFlex(), usagePane: tv.NewTextView(), usageCompact: tv.NewTextView(), composer: tv.NewFlex(), input: newComposerInput()}
 	u.body.AddItem(tv.NewTextView(), 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.composer.AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
 	u.updateBanner()
-	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") || !strings.Contains(got, "File reading unavailable") || !strings.Contains(got, "/model") {
+	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") || !strings.Contains(got, "File reading unavailable") || !strings.Contains(got, "/model") || !strings.Contains(got, "update_plan unavailable · Tool protocol support is unverified") || !strings.Contains(got, "request_user_input unavailable · Host authorization is not configured") {
 		t.Fatalf("initial banner = %q", got)
 	}
 	client.selected = &model

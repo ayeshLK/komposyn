@@ -235,7 +235,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.commands = supportedCommands()
 	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 3, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 4, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
@@ -685,7 +685,21 @@ func (u *terminal) updateBanner() {
 		workingDirectory = "unavailable"
 	}
 	readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(readStatus)))
+	planStatus := renderCapabilityAvailability("update_plan", snapshot.UpdatePlanAvailability)
+	inputStatus := renderCapabilityAvailability("request_user_input", snapshot.RequestInputAvailability)
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s · %s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readStatus), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(planStatus), tv.Escape(inputStatus)))
+}
+
+func renderCapabilityAvailability(name string, status ui.CapabilityAvailability) string {
+	label := "unavailable"
+	if status.Available {
+		label = "available"
+	}
+	reason := status.Reason
+	if reason == "" {
+		reason = "availability has not been inspected."
+	}
+	return name + " " + label + " · " + safeTerminalText(reason)
 }
 
 func renderFilesystemReadAvailability(status ui.FilesystemReadAvailability) string {
