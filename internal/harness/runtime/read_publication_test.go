@@ -31,6 +31,8 @@ import (
 	"github.com/ayeshLK/komposyn/internal/harness/model"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
+	"github.com/ayeshLK/komposyn/plugins/model-provider/anthropic"
+	"github.com/ayeshLK/komposyn/plugins/model-provider/openai"
 	"github.com/ayeshLK/komposyn/plugins/tools"
 )
 
@@ -532,8 +534,8 @@ func TestFilesystemReadAvailabilityTracksModelRouteBackendAndRoot(t *testing.T) 
 		if got := chat.Snapshot().FilesystemReadAvailability.State; got != "backend_unavailable" {
 			t.Fatalf("availability state=%q, want backend_unavailable", got)
 		}
-		if got := chat.Snapshot().FilesystemReadAvailability.Reason; !strings.Contains(got, "backend unavailable") {
-			t.Fatalf("backend detail was not exposed: %q", got)
+		if got := chat.Snapshot().FilesystemReadAvailability.Reason; !strings.Contains(got, "backend is unavailable") || strings.Contains(got, host.root) {
+			t.Fatalf("safe backend recovery reason=%q", got)
 		}
 	})
 
@@ -555,6 +557,46 @@ func TestFilesystemReadAvailabilityTracksModelRouteBackendAndRoot(t *testing.T) 
 			t.Fatalf("availability after selected root=%+v", status)
 		}
 	})
+}
+
+func TestCapabilityAvailabilityExplainsRealProviderRoutes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		auth       provider.AuthMethod
+		plug       provider.Provider
+		wantState  string
+		wantReason string
+	}{
+		{"OpenAI API key", provider.AuthAPIKey, openai.Plugin{}, "available", "authorization and approval"},
+		{"OpenAI ChatGPT", provider.AuthOAuth, openai.Plugin{}, "unknown_route", "unverified"},
+		{"Anthropic API key", provider.AuthAPIKey, anthropic.Plugin{}, "available", "authorization and approval"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			registry, err := model.NewRegistry(test.plug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := BundledConversationToolRuntimeConfig(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+				return permissions.ApprovalOnce, "", nil
+			}), ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+				return ClarificationResponse{}, nil
+			}))
+			chat := NewChatWithToolRuntime(registry, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+			defer chat.Close()
+			chat.mu.Lock()
+			chat.selected = &model.Model{Provider: test.plug.ID(), AuthMethod: test.auth, ID: "fixture-model"}
+			chat.mu.Unlock()
+			snapshot := chat.Snapshot()
+			for name, got := range map[string]CapabilityAvailability{"update_plan": snapshot.UpdatePlanAvailability, "request_user_input": snapshot.RequestInputAvailability} {
+				if got.State != test.wantState || !strings.Contains(got.Reason, test.wantReason) {
+					t.Errorf("%s availability=%+v; want state %q and reason containing %q", name, got, test.wantState, test.wantReason)
+				}
+			}
+			if test.auth == provider.AuthOAuth && (snapshot.UpdatePlanAvailability.Available || snapshot.RequestInputAvailability.Available) {
+				t.Fatal("unverified route advertised a capability")
+			}
+		})
+	}
 }
 
 type unsupportedPublicationProvider struct{ *publicationProvider }

@@ -235,7 +235,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.commands = supportedCommands()
 	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 3, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 4, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
@@ -676,6 +676,9 @@ func (u *terminal) updateBanner() {
 			modelName = snapshot.Selected.ID
 		}
 	}
+	if u.terminalWidth > 0 {
+		modelName = compactHeaderPath(modelName, u.terminalWidth-24)
+	}
 	version := snapshot.Version
 	if version == "" {
 		version = "dev"
@@ -684,8 +687,117 @@ func (u *terminal) updateBanner() {
 	if workingDirectory == "" {
 		workingDirectory = "unavailable"
 	}
-	readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(readStatus)))
+	readLabel := "File reading unavailable"
+	if snapshot.FilesystemReadAvailability.Available {
+		readLabel = "File reading available · once approval required"
+	} else if reason := compactAvailabilityReason(snapshot.FilesystemReadAvailability.State, snapshot.FilesystemReadAvailability.Reason); reason != "" {
+		readLabel += " · " + reason
+	}
+	toolStatus := renderToolAvailability(snapshot.UpdatePlanAvailability, snapshot.RequestInputAvailability, u.terminalWidth)
+	if u.terminalWidth > 0 {
+		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
+	}
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(toolStatus)))
+}
+
+func renderToolAvailability(plan, input ui.CapabilityAvailability, terminalWidth int) string {
+	if terminalWidth <= 0 || terminalWidth > 72 {
+		if plan.State == input.State && plan.Available == input.Available && plan.Reason == input.Reason {
+			return renderCapabilityState("update_plan/request_user_input", plan)
+		}
+		return renderCapabilityState("update_plan", plan) + " · " + renderCapabilityState("request_user_input", input)
+	}
+	planDetail := compactHeaderCapabilityDetail(plan)
+	inputDetail := compactHeaderCapabilityDetail(input)
+	if plan.State == input.State && plan.Available == input.Available && plan.Reason == input.Reason {
+		return "Plan/input: " + planDetail
+	}
+	planLabel, inputLabel := "Plan: ", "Input: "
+	return planLabel + planDetail + " · " + inputLabel + inputDetail
+}
+
+func compactHeaderCapabilityDetail(status ui.CapabilityAvailability) string {
+	if status.Available {
+		return "available"
+	}
+	switch status.State {
+	case "unknown_route":
+		return "route unverified"
+	case "backend_unavailable":
+		return "backend unavailable"
+	case "enforcement_unavailable":
+		return "auth unavailable"
+	case "unsupported_route":
+		return "route unsupported"
+	case "cleanup_pending":
+		return "cleanup pending"
+	case "working_directory_unavailable":
+		return "no working dir"
+	case "no_model":
+		return "no model"
+	case "not_implemented":
+		return "not in build"
+	}
+	return "unavailable"
+}
+
+func renderCapabilityState(name string, status ui.CapabilityAvailability) string {
+	state := "unavailable"
+	if status.Available {
+		state = "available"
+	} else if reason := compactAvailabilityReason(status.State, status.Reason); reason != "" {
+		state += " · " + reason
+	}
+	return name + " " + state
+}
+
+func compactAvailabilityReason(state, reason string) string {
+	if reason == "" {
+		return ""
+	}
+	switch state {
+	case "unknown_route":
+		return "route unverified"
+	case "backend_unavailable":
+		return "backend unavailable"
+	case "enforcement_unavailable":
+		return "host authorization unavailable"
+	case "unsupported_route":
+		return "route unsupported"
+	case "cleanup_pending":
+		return "wait for cleanup"
+	case "working_directory_unavailable":
+		return "working directory unavailable; /cd"
+	case "no_model":
+		return "select model; /model"
+	case "not_implemented":
+		return "not in this build; /help"
+	default:
+		return "see /help"
+	}
+}
+
+func compactHeaderPath(path string, maxRunes int) string {
+	if maxRunes < 5 || len([]rune(path)) <= maxRunes {
+		return path
+	}
+	runes := []rune(path)
+	keep := maxRunes - 1
+	left := keep / 2
+	right := keep - left
+	return string(runes[:left]) + "…" + string(runes[len(runes)-right:])
+}
+
+func renderCapabilityAvailability(name string, status ui.CapabilityAvailability) string {
+	label := "unavailable"
+	if status.Available {
+		label = "available"
+	}
+	reason := status.Reason
+	if reason == "" {
+		reason = "availability has not been inspected."
+	}
+	return name + " " + label + " · " + safeTerminalText(reason)
 }
 
 func renderFilesystemReadAvailability(status ui.FilesystemReadAvailability) string {
@@ -894,6 +1006,7 @@ func (u *terminal) toggleUsage() {
 func (u *terminal) setTerminalWidth(width int) {
 	wide := width >= usageWideThreshold
 	u.terminalWidth = width
+	u.updateBanner()
 	if u.body == nil || u.usagePane == nil {
 		return
 	}
@@ -1004,7 +1117,29 @@ func (u *terminal) submit() {
 	u.input.SetText("")
 	u.writeUser(text)
 	u.launch(func() {
-		turn, err := u.client.Send(u.ctx, text, func(delta string) { u.writeAssistantAsync(delta) })
+		var streamedMu sync.Mutex
+		var streamed strings.Builder
+		turn, err := u.client.Send(u.ctx, text, func(delta string) {
+			streamedMu.Lock()
+			streamed.WriteString(delta)
+			streamedMu.Unlock()
+			u.writeAssistantAsync(delta)
+		})
+		streamedMu.Lock()
+		streamedText := streamed.String()
+		streamedMu.Unlock()
+		if turn.Text != "" {
+			u.queue(func() {
+				if streamedText == "" {
+					u.appendOutput(turn.Text, true)
+				} else if strings.HasPrefix(turn.Text, streamedText) {
+					u.appendOutput(strings.TrimPrefix(turn.Text, streamedText), true)
+				}
+				// Reconcile the final result after queued deltas so the completed
+				// answer remains visible even if a platform dropped a stream redraw.
+				u.renderTranscript()
+			})
+		}
 		if turn.Outcome == modelprovider.OutcomeCompleted && err == nil {
 			completed := turn.Text
 			if completed == "" {
@@ -1063,7 +1198,11 @@ func (u *terminal) runCommand(text string) {
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nAlso: /copy all\nThe launch directory is the working directory for relative file requests. Use /cd <path> to change it. Directory selection grants no read permission.\nFile-reading availability appears in the header. Each read needs once approval; contents may be sensitive, go to provider, and may recur.\nTools: update_plan, request_user_input, read_file if supported; no write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
+		snapshot := u.client.Snapshot()
+		readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
+		planStatus := renderCapabilityAvailability("update_plan", snapshot.UpdatePlanAvailability)
+		inputStatus := renderCapabilityAvailability("request_user_input", snapshot.RequestInputAvailability)
+		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nFile reading: " + readStatus + " Each read needs once approval; approved contents may be sent to the provider and may recur.\nTool availability: " + planStatus + "; " + inputStatus + ". No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\nThe launch directory is the working directory for relative file requests. Use /cd <path>; selecting a directory grants no read permission.\n")
 	case "working-directory":
 		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cd"))
 		if path == "" {

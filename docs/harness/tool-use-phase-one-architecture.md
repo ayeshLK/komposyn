@@ -233,8 +233,10 @@ terms can change.
 Official provider documentation describes OpenAI Responses function calling
 and image inputs, and Anthropic Messages client tools and image blocks. Current
 KompoSyn model catalogs report identifiers/display names, not per-model tool
-or image capability. Its OpenAI OAuth route uses a separately constrained
-Responses subset and has no verified tool/image evidence in this repository.
+or image capability. OpenAI OAuth official documentation and the adapter's
+HTTP/SSE fixture establish the documented client-tool protocol shape. Live
+OAuth model/account compatibility and public runtime exposure remain
+unverified; image support also remains unverified.
 Therefore no capability is inferred from catalog presence, provider name, or
 model name. Until route/model-specific evidence is recorded and tested, keep
 that route's tool/image definitions hidden. References: [OpenAI function
@@ -259,14 +261,23 @@ These are not implied by approval of the issue's conceptual semantics:
    a separate search credential but gives KompoSyn less control over each
    network action; an independent backend needs its own service and credential
    decision. Do not let this deferral become an indefinite roadmap item.
-3. **Provider capability policy:** tool implementations are KompoSyn
-   capabilities offered to a model; model quality is not a compatibility gate.
+3. **Provider capability policy:** KompoSyn capabilities must have parity across
+   model providers and supported subscription or authentication methods unless
+   a provider imposes a restriction. API-key billing and subscription billing
+   are not reasons to offer different KompoSyn capabilities. Tool
+   implementations are KompoSyn capabilities offered to a model; model quality
+   is not a compatibility gate.
    Verify that each provider API/auth route supports tool definitions, tool
    calls, and native continuation before exposing client tools on that route.
    Check individual model IDs only where the provider documents model-specific
    differences or the API rejects a supported operation. Unknown route support
-   means tools remain unavailable on that route. Images require their own
-   content-format support check.
+   means tools remain unavailable on that route until verified, but is an
+   implementation or verification gap to resolve, not evidence of a provider
+   restriction. Any provider restriction must have supporting evidence and an
+   explicit scope. Shared host authorization, approval and enforcement
+   requirements still apply across all routes. Images require their own
+   content-format support check. This policy does not claim that unimplemented
+   authentication integrations or unverified routes already support tools.
 4. **Bounds for the runtime integration:** one active user turn; serial tool
    calls; at most 8 tool invocations and 4 provider requests per turn; at most
    256 KiB of serialized tool-result content per invocation and 1 MiB total

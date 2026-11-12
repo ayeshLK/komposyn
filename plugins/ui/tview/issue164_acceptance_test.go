@@ -123,9 +123,10 @@ func TestIssue280FileReadAvailabilityFollowsRuntimeRouteAndBackend(t *testing.T)
 		support    modelprovider.Support
 		wantState  string
 		wantReason string
+		wantHeader string
 	}{
-		{name: "supported route without inspected backend", support: modelprovider.SupportSupported, wantState: "backend_unavailable", wantReason: "No trusted file-read backend is configured"},
-		{name: "unverified route", support: modelprovider.SupportUnknown, wantState: "unknown_route", wantReason: "unverified"},
+		{name: "supported route without inspected backend", support: modelprovider.SupportSupported, wantState: "backend_unavailable", wantReason: "No trusted file-read backend is configured", wantHeader: "backend unavailable"},
+		{name: "unverified route", support: modelprovider.SupportUnknown, wantState: "unknown_route", wantReason: "unverified", wantHeader: "route unverified"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := auth.Store{Path: t.TempDir() + "/auth.json"}
@@ -154,7 +155,7 @@ func TestIssue280FileReadAvailabilityFollowsRuntimeRouteAndBackend(t *testing.T)
 				u.usageCompact = tv.NewTextView()
 				u.body = tv.NewFlex().AddItem(u.output, 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 				u.composer = tv.NewFlex().AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
-				u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 3, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
+				u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 4, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
 				u.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 					if event.Key() == tcell.KeyEnter {
 						u.submit()
@@ -172,8 +173,23 @@ func TestIssue280FileReadAvailabilityFollowsRuntimeRouteAndBackend(t *testing.T)
 				t.Fatal("chat view did not open")
 			}
 			waitForScreen(t, screen, "File reading unavailable", "")
-			if !strings.Contains(u.header.GetText(true), test.wantReason) {
-				t.Fatalf("header omitted recovery reason: %q", u.header.GetText(true))
+			if !strings.Contains(u.header.GetText(true), "File reading unavailable") || !strings.Contains(u.header.GetText(true), test.wantHeader) {
+				t.Fatalf("header omitted concise availability reason: %q", u.header.GetText(true))
+			}
+			dispatch = make(chan struct{})
+			u.commands = supportedCommands()
+			u.app.QueueUpdateDraw(func() {
+				u.runCommand("/help")
+				close(dispatch)
+			})
+			select {
+			case <-dispatch:
+			case <-time.After(2 * time.Second):
+				t.Fatal("help command did not render")
+			}
+			waitForScreen(t, screen, test.wantReason, "")
+			if !strings.Contains(u.transcript[len(u.transcript)-1].text, test.wantReason) {
+				t.Fatalf("help omitted recovery reason: %+v", u.transcript)
 			}
 			if test.support == modelprovider.SupportSupported {
 				for _, r := range "hello from the simulated terminal" {

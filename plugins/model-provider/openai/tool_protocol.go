@@ -21,7 +21,7 @@ import (
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 )
 
-func toolRequestDiagnostic(in provider.ChatRequest, method provider.AuthMethod) provider.DiagnosticCode {
+func toolRequestDiagnostic(in provider.ChatRequest) provider.DiagnosticCode {
 	hasResults := false
 	for _, message := range in.Messages {
 		if message.Role == provider.RoleTool {
@@ -33,9 +33,6 @@ func toolRequestDiagnostic(in provider.ChatRequest, method provider.AuthMethod) 
 	}
 	if len(in.Tools) == 0 || provider.ValidateToolDefinitions(in.Tools) != nil {
 		return provider.DiagnosticToolProtocolInvalid
-	}
-	if provider.CapabilitiesFor(Plugin{}, method).ClientTools != provider.SupportSupported {
-		return provider.DiagnosticToolProtocolRouteUnsupported
 	}
 	return ""
 }

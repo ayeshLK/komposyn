@@ -152,11 +152,12 @@ type ModelUsage struct {
 	Input, Output          MetricUsage
 	CachedRead, CacheWrite MetricUsage
 }
-type FilesystemReadAvailability struct {
+type CapabilityAvailability struct {
 	Available bool
 	State     string
 	Reason    string
 }
+type FilesystemReadAvailability = CapabilityAvailability
 type Snapshot struct {
 	Selected                   *Model
 	Turns                      []Turn
@@ -164,6 +165,8 @@ type Snapshot struct {
 	Active                     bool
 	ToolActivities             []ToolActivity
 	Plan                       []PlanStep
+	UpdatePlanAvailability     CapabilityAvailability
+	RequestInputAvailability   CapabilityAvailability
 	FilesystemReadAvailability FilesystemReadAvailability
 	WorkingDirectory           string
 	Version                    string

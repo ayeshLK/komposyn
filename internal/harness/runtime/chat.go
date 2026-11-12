@@ -61,14 +61,18 @@ type Snapshot struct {
 	ToolActivities             []ToolActivity
 	Plan                       []tools.PlanStep
 	FilesystemRoot             FilesystemRootStatus
+	UpdatePlanAvailability     CapabilityAvailability
+	RequestInputAvailability   CapabilityAvailability
 	FilesystemReadAvailability FilesystemReadAvailability
 	WorkingDirectory           string
 }
-type FilesystemReadAvailability struct {
+type CapabilityAvailability struct {
 	Available bool
 	State     string
 	Reason    string
 }
+
+type FilesystemReadAvailability = CapabilityAvailability
 type UsageMetric struct {
 	Tokens  int64
 	Known   bool
@@ -469,41 +473,43 @@ func (c *Chat) Snapshot() Snapshot {
 	c.mu.Unlock()
 	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan,
 		FilesystemRoot:             filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost),
+		UpdatePlanAvailability:     conversationToolAvailability(selected, providers, toolRuntime, tools.UpdatePlanID),
+		RequestInputAvailability:   conversationToolAvailability(selected, providers, toolRuntime, tools.RequestUserInputID),
 		FilesystemReadAvailability: filesystemReadAvailability(selected, providers, toolRuntime, workingDirectory, rootGeneration, rootAck, rootHost),
 		WorkingDirectory:           workingDirectory}
+}
+
+func conversationToolAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, id tools.ID) CapabilityAvailability {
+	if selected == nil {
+		return CapabilityAvailability{State: "no_model", Reason: "Select a model with /model to check conversation-tool support."}
+	}
+	support, routeState, routeReason := selectedRouteToolSupport(selected, providers)
+	if support != provider.SupportSupported {
+		return CapabilityAvailability{State: routeState, Reason: routeReason}
+	}
+	if runtime == nil || runtime.authorizer == nil || runtime.enforcer == nil {
+		return CapabilityAvailability{State: "enforcement_unavailable", Reason: "This route supports client tools, but host authorization and execution are not fully configured; restart with the supported KompoSyn composition."}
+	}
+	if _, ok := runtime.registry.Lookup(id); !ok {
+		return CapabilityAvailability{State: "not_implemented", Reason: "This route supports client tools, but this conversation capability is not registered in this build."}
+	}
+	return CapabilityAvailability{Available: true, State: "available", Reason: "Available on the selected route. Each action still requires the normal authorization and approval."}
 }
 
 func filesystemReadAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, workingDirectory string, generation, acknowledged uint64, host FilesystemRootHost) FilesystemReadAvailability {
 	if selected == nil {
 		return FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."}
 	}
-	if selected.AuthMethod == "" || providers == nil {
-		return FilesystemReadAvailability{State: "unknown_route", Reason: "The selected provider/authentication route is not known; refresh models and select a supported route."}
-	}
-	plug, ok := providers.Get(selected.Provider)
-	if !ok {
-		return FilesystemReadAvailability{State: "unknown_route", Reason: "The selected provider route is unavailable; refresh models and select an available model."}
-	}
-	support := provider.CapabilitiesFor(plug, selected.AuthMethod).ClientTools
+	support, routeState, routeReason := selectedRouteToolSupport(selected, providers)
 	if support != provider.SupportSupported {
-		reason := "The selected provider/authentication route does not explicitly support client tools; choose a supported model and route."
-		state := "unsupported_route"
-		if support == provider.SupportUnknown {
-			state = "unknown_route"
-			reason = "Support for client tools on the selected provider/authentication route is unverified; choose a route that explicitly supports client tools."
-		}
-		return FilesystemReadAvailability{State: state, Reason: reason}
+		return FilesystemReadAvailability{State: routeState, Reason: routeReason}
 	}
 	if host == nil {
 		return FilesystemReadAvailability{State: "backend_unavailable", Reason: "No trusted file-read backend is configured. Use a supported Linux setup with an inspected Bubblewrap worker, then restart KompoSyn."}
 	}
-	available, detail := host.BackendStatus()
+	available, _ := host.BackendStatus()
 	if !available {
-		reason := "The inspected file-read backend is unavailable. Use a supported Linux setup with a trusted Bubblewrap worker, then restart KompoSyn."
-		if detail != "" {
-			reason = "The inspected file-read backend is unavailable: " + detail + ". Use a supported Linux setup with a trusted Bubblewrap worker, then restart KompoSyn."
-		}
-		return FilesystemReadAvailability{State: "backend_unavailable", Reason: reason}
+		return FilesystemReadAvailability{State: "backend_unavailable", Reason: "The inspected file-read backend is unavailable. Use a supported Linux setup with a trusted Bubblewrap worker, then restart KompoSyn."}
 	}
 	if runtime == nil || runtime.readAdmission == nil {
 		return FilesystemReadAvailability{State: "enforcement_unavailable", Reason: "The inspected backend is not connected to the host read-enforcement path; restart with the supported KompoSyn composition."}
@@ -518,6 +524,24 @@ func filesystemReadAvailability(selected *model.Model, providers *model.Registry
 		return FilesystemReadAvailability{State: "working_directory_unavailable", Reason: "The working directory is unavailable. Restart KompoSyn from an existing directory before requesting a file; choosing a directory does not grant read permission."}
 	}
 	return FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads are available on this route after explicit once approval; contents are sent to the selected provider."}
+}
+
+func selectedRouteToolSupport(selected *model.Model, providers *model.Registry) (provider.Support, string, string) {
+	if selected.AuthMethod == "" || providers == nil {
+		return provider.SupportUnknown, "unknown_route", "Support for client tools on the selected provider/authentication route is unverified; choose a route that explicitly supports client tools."
+	}
+	plug, ok := providers.Get(selected.Provider)
+	if !ok {
+		return provider.SupportUnknown, "unknown_route", "The selected provider route is unavailable; refresh models and select an available model."
+	}
+	support := provider.CapabilitiesFor(plug, selected.AuthMethod).ClientTools
+	if support == provider.SupportUnknown {
+		return support, "unknown_route", "Support for client tools on the selected provider/authentication route is unverified; choose a route that explicitly supports client tools."
+	}
+	if support != provider.SupportSupported {
+		return support, "unsupported_route", "The selected provider/authentication route does not support client tools; choose a route that explicitly supports them."
+	}
+	return support, "", ""
 }
 
 func (c *Chat) recordUsageLocked(providerID provider.ID, modelID string, usage provider.Usage) {

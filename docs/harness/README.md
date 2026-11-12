@@ -19,6 +19,11 @@ including the provider/auth/platform table and read-disclosure limits. It
 describes experimental v0.14.0. Live provider validation remains pending;
 fixture tests are not live tests.
 
+The dated [capability availability matrix](capability-availability.md)
+records route/authentication evidence, remaining verification, and the runtime
+reasons shown when a capability is unavailable. Unknown support remains
+unverified rather than being treated as a provider restriction.
+
 ## Build and run
 
 From the repository root, build the executable with its intended name:

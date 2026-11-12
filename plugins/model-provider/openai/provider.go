@@ -130,17 +130,38 @@ func (p Plugin) list(ctx context.Context, c provider.Credential) ([]provider.Mod
 
 func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
 	method := credentialMethod(in.Credential)
+	hasToolResult := false
+	for _, message := range in.Messages {
+		if message.Role == provider.RoleTool {
+			hasToolResult = true
+			break
+		}
+	}
+	if method == provider.AuthOAuth && (len(in.Tools) > 0 || hasToolResult) {
+		return toolProtocolUnsupported(provider.DiagnosticToolProtocolRouteUnsupported), nil
+	}
+	return p.streamChatProtocol(ctx, in, delta)
+}
+
+// streamChatProtocol implements the Responses wire protocol for fixture coverage.
+// Public dispatch remains gated by StreamChat until OAuth route support is verified.
+func (p Plugin) streamChatProtocol(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
+	method := credentialMethod(in.Credential)
 	if in.ModelID == "" || (method == provider.AuthAPIKey && in.MaxOutput <= 0) || (method != provider.AuthAPIKey && method != provider.AuthOAuth) {
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 	}
-	if diagnostic := toolRequestDiagnostic(in, method); diagnostic != "" {
+	if diagnostic := toolRequestDiagnostic(in); diagnostic != "" {
 		return toolProtocolUnsupported(diagnostic), nil
 	}
 	input := make([]json.RawMessage, 0, len(in.Messages))
+	additionalToolsInsertAt := -1
 	if err := validateToolHistory(in.Messages); err != nil {
 		return toolProtocolUnsupported(provider.DiagnosticToolProtocolInvalid), nil
 	}
 	for _, m := range in.Messages {
+		if additionalToolsInsertAt < 0 && m.Role != provider.RoleUser {
+			additionalToolsInsertAt = len(input)
+		}
 		switch m.Role {
 		case provider.RoleUser:
 			b, _ := json.Marshal(map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": m.Text}}})
@@ -177,7 +198,24 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 				"parameters": definition.InputSchema,
 			})
 		}
-		payload["tools"] = definitions
+		if method == provider.AuthOAuth {
+			additional, err := json.Marshal(map[string]any{"type": "additional_tools", "role": "developer", "tools": definitions})
+			if err != nil {
+				return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
+			}
+			// Keep the declaration before the first assistant/tool continuation item.
+			// Its position determines when these tools become available to the model.
+			insertAt := additionalToolsInsertAt
+			if insertAt < 0 {
+				insertAt = len(input)
+			}
+			input = append(input, nil)
+			copy(input[insertAt+1:], input[insertAt:])
+			input[insertAt] = additional
+			payload["input"] = input
+		} else {
+			payload["tools"] = definitions
+		}
 	}
 	if method == provider.AuthAPIKey {
 		payload["max_output_tokens"] = in.MaxOutput
