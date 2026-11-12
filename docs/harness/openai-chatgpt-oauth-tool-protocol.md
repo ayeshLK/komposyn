@@ -35,7 +35,7 @@ successful text response alone does not establish tool support for a model.
 | Provider-native continuation | Documented HTTP behavior; fixture covered | SIWC says not to use `previous_response_id` over HTTP and to send required history in `input`; the function calling guide shows replaying the assistant response and tool output. KompoSyn retains/replays native assistant output items and sends the correlated result. |
 | OAuth request differences | Documented | Set `store:false`, `stream:true`; omit `max_output_tokens`; use `additional_tools` for client function definitions on this route. Current API-key requests retain top-level `tools`, `max_output_tokens`, and `include: ["reasoning.encrypted_content"]`. The OAuth adapter does not send these API-key-only fields. |
 | Model-specific tool support | Unverified by this assessment | SIWC instructs clients to use models available to the signed-in account, but the reviewed documentation does not establish per-model support for KompoSyn's exact function set. No model was tested live. |
-| Live ChatGPT OAuth round trip | Unverified | No account access or live request was authorized or attempted. Fixtures validate adapter behavior against documented shapes only. |
+| Live ChatGPT OAuth round trip | Unverified | An operator authorized a budget of up to five requests with synthetic content. Zero requests were attempted because no app session or already-authorized eligible test account/model was available in the execution environment. Fixtures validate adapter behavior against documented shapes only. |
 
 The SIWC limitations separately list unsupported built-in tools including
 image generation, file search, Code Interpreter, native computer use, hosted

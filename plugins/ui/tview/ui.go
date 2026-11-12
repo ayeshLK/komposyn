@@ -415,10 +415,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	u.app.SetAfterDrawFunc(func(screen tcell.Screen) {
-		u.restoreSelectionSnapshot(screen)
-		if u.followingTranscript && !u.output.HasSelection() {
-			u.transcriptScrollRow = u.maxTranscriptScroll()
-		}
+		u.afterDraw(screen)
 		readyOnce.Do(func() { close(ready) })
 	})
 	go func() {
@@ -447,6 +444,18 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		return fmt.Errorf("run terminal UI: %w", err)
 	}
 	return nil
+}
+
+func (u *terminal) afterDraw(screen tcell.Screen) {
+	u.restoreSelectionSnapshot(screen)
+	if u.followingTranscript && !u.output.HasSelection() {
+		target := u.maxTranscriptScroll()
+		u.transcriptScrollRow = target
+		current, _ := u.output.GetOffset()
+		if current != target {
+			u.output.SetOffset(target, 0)
+		}
+	}
 }
 
 func (u *terminal) writeUser(text string) {

@@ -111,6 +111,61 @@ func TestTranscriptKeyboardNavigationPausesAndResumesFollowing(t *testing.T) {
 	}
 }
 
+func TestAfterDrawCorrectsTranscriptOffsetWithoutBlockingInput(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(40, 8)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	view := newTranscriptView()
+	view.SetText(strings.Repeat("line\n", 30), false)
+	root := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true)
+	app := tv.NewApplication().SetScreen(safe)
+	u := &terminal{app: app, output: view, followingTranscript: true}
+	app.SetAfterDrawFunc(u.afterDraw)
+	input := make(chan struct{}, 1)
+	app.SetInputCapture(func(*tcell.EventKey) *tcell.EventKey {
+		select {
+		case input <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	done := make(chan error, 1)
+	go func() { done <- app.SetRoot(root, true).SetFocus(view).Run() }()
+	defer func() {
+		app.Stop()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("terminal did not stop after an offset mismatch")
+		}
+	}()
+	waitForScreen(t, safe, "line", "")
+
+	corrected := make(chan struct{})
+	go func() {
+		app.QueueUpdateDraw(func() {
+			view.SetOffset(0, 0)
+		})
+		close(corrected)
+	}()
+	select {
+	case <-corrected:
+	case <-time.After(3 * time.Second):
+		t.Fatal("draw blocked while correcting a transcript offset mismatch")
+	}
+	wantOffset := u.maxTranscriptScroll()
+	gotOffset, _ := view.GetOffset()
+	if gotOffset != wantOffset {
+		t.Fatalf("corrected offset=%d, want bottom offset %d", gotOffset, wantOffset)
+	}
+	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
+	select {
+	case <-input:
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal stopped responding to input after offset correction")
+	}
+}
+
 func TestClipboardQueueSerializesAndKeepsNewestPendingWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
