@@ -313,7 +313,6 @@ func TestOpenAIOAuthExactFileReadUsesTrustedHostAndContinues(t *testing.T) {
 	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
-	selectPublicationRoot(t, chat, host, root)
 	stored, err := store.Get(profile.ID)
 	if err != nil {
 		t.Fatal(err)

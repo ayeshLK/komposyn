@@ -104,7 +104,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	go func() { finished <- (Plugin{screen: screen}).Run(ctx, client) }()
 	press := func(key tcell.Key, r rune) {
 		simulation.InjectKey(key, r, tcell.ModNone)
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	typeText := func(text string) {
 		for _, r := range text {
