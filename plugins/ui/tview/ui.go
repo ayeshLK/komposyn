@@ -676,6 +676,9 @@ func (u *terminal) updateBanner() {
 			modelName = snapshot.Selected.ID
 		}
 	}
+	if u.terminalWidth > 0 {
+		modelName = compactHeaderPath(modelName, u.terminalWidth-24)
+	}
 	version := snapshot.Version
 	if version == "" {
 		version = "dev"
@@ -684,10 +687,35 @@ func (u *terminal) updateBanner() {
 	if workingDirectory == "" {
 		workingDirectory = "unavailable"
 	}
-	readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
-	planStatus := renderCapabilityAvailability("update_plan", snapshot.UpdatePlanAvailability)
-	inputStatus := renderCapabilityAvailability("request_user_input", snapshot.RequestInputAvailability)
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s · %s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readStatus), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(planStatus), tv.Escape(inputStatus)))
+	readLabel := "File reading unavailable"
+	if snapshot.FilesystemReadAvailability.Available {
+		readLabel = "File reading available · once approval required"
+	}
+	planStatus := renderCapabilityState("update_plan", snapshot.UpdatePlanAvailability)
+	inputStatus := renderCapabilityState("request_user_input", snapshot.RequestInputAvailability)
+	if u.terminalWidth > 0 {
+		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
+	}
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s · %s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(planStatus), tv.Escape(inputStatus)))
+}
+
+func renderCapabilityState(name string, status ui.CapabilityAvailability) string {
+	state := "unavailable"
+	if status.Available {
+		state = "available"
+	}
+	return name + " " + state
+}
+
+func compactHeaderPath(path string, maxRunes int) string {
+	if maxRunes < 5 || len([]rune(path)) <= maxRunes {
+		return path
+	}
+	runes := []rune(path)
+	keep := maxRunes - 1
+	left := keep / 2
+	right := keep - left
+	return string(runes[:left]) + "…" + string(runes[len(runes)-right:])
 }
 
 func renderCapabilityAvailability(name string, status ui.CapabilityAvailability) string {
@@ -908,6 +936,7 @@ func (u *terminal) toggleUsage() {
 func (u *terminal) setTerminalWidth(width int) {
 	wide := width >= usageWideThreshold
 	u.terminalWidth = width
+	u.updateBanner()
 	if u.body == nil || u.usagePane == nil {
 		return
 	}
@@ -1077,7 +1106,11 @@ func (u *terminal) runCommand(text string) {
 	case "picker":
 		u.openPicker()
 	case "help":
-		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nAlso: /copy all\nThe launch directory is the working directory for relative file requests. Use /cd <path> to change it. Directory selection grants no read permission.\nFile-reading availability appears in the header. Each read needs once approval; contents may be sensitive, go to provider, and may recur.\nTools: update_plan, request_user_input, read_file if supported; no write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\n")
+		snapshot := u.client.Snapshot()
+		readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
+		planStatus := renderCapabilityAvailability("update_plan", snapshot.UpdatePlanAvailability)
+		inputStatus := renderCapabilityAvailability("request_user_input", snapshot.RequestInputAvailability)
+		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nFile reading: " + readStatus + " Each read needs once approval; approved contents may be sent to the provider and may recur.\nTool availability: " + planStatus + "; " + inputStatus + ". No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\nThe launch directory is the working directory for relative file requests. Use /cd <path>; selecting a directory grants no read permission.\n")
 	case "working-directory":
 		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cd"))
 		if path == "" {
