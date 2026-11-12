@@ -17,6 +17,7 @@ package tview
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -116,10 +117,15 @@ func TestAfterDrawCorrectsTranscriptOffsetWithoutBlockingInput(t *testing.T) {
 	screen.SetSize(40, 8)
 	safe := &synchronizedSimulation{SimulationScreen: screen}
 	view := newTranscriptView()
-	view.SetText(strings.Repeat("line\n", 30), false)
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line-%02d", i)
+	}
+	view.SetText(strings.Join(lines, "\n"), false)
 	root := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true)
 	app := tv.NewApplication().SetScreen(safe)
 	u := &terminal{app: app, output: view, followingTranscript: true}
+	u.chatRootActive.Store(true)
 	app.SetAfterDrawFunc(u.afterDraw)
 	input := make(chan struct{}, 1)
 	app.SetInputCapture(func(*tcell.EventKey) *tcell.EventKey {
@@ -139,7 +145,7 @@ func TestAfterDrawCorrectsTranscriptOffsetWithoutBlockingInput(t *testing.T) {
 			t.Error("terminal did not stop after an offset mismatch")
 		}
 	}()
-	waitForScreen(t, safe, "line", "")
+	waitForScreen(t, safe, "line-29", "line-00")
 
 	corrected := make(chan struct{})
 	go func() {
@@ -158,6 +164,7 @@ func TestAfterDrawCorrectsTranscriptOffsetWithoutBlockingInput(t *testing.T) {
 	if gotOffset != wantOffset {
 		t.Fatalf("corrected offset=%d, want bottom offset %d", gotOffset, wantOffset)
 	}
+	waitForScreen(t, safe, "line-29", "line-00")
 	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
 	select {
 	case <-input:
