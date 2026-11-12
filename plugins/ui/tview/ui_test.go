@@ -815,6 +815,21 @@ func TestDisclosureMetadataUpdateAppearsInTerminalActivity(t *testing.T) {
 	cancel()
 }
 
+func TestToolActivityUpdateDoesNotPushCompletedAnswerDown(t *testing.T) {
+	u := &terminal{output: newTranscriptView(), followingTranscript: true}
+	u.setToolActivity("read-1", "Tool read_file · awaiting approval\n")
+	u.appendMessage("comparison answer", true)
+	u.setToolActivity("read-1", "Tool read_file · finished · succeeded\n")
+
+	got := u.output.GetText(true)
+	if strings.Count(got, "Tool read_file") != 1 {
+		t.Fatalf("updated tool activity was duplicated in transcript: %q", got)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), "comparison answer") {
+		t.Fatalf("late tool activity update displaced completed answer: %q", got)
+	}
+}
+
 func TestPickerInteractionOnSimulationScreen(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(100, 32)

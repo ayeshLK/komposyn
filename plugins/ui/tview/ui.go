@@ -50,9 +50,10 @@ type entry struct {
 type command struct{ name, description, action string }
 
 type outputPart struct {
-	text      string
-	assistant bool
-	message   bool
+	text       string
+	assistant  bool
+	message    bool
+	activityID string
 }
 
 type transcriptView struct {
@@ -595,6 +596,31 @@ func (u *terminal) writeAsync(s string) {
 
 func (u *terminal) writeAssistantAsync(s string) {
 	u.queue(func() { u.appendOutput(s, true) })
+}
+
+func (u *terminal) writeToolActivity(callID, line string) {
+	u.queue(func() { u.setToolActivity(callID, line) })
+}
+
+func (u *terminal) setToolActivity(callID, line string) {
+	for index := len(u.transcript) - 1; index >= 0; index-- {
+		if u.transcript[index].activityID == callID {
+			u.transcript[index].text = line
+			u.renderTranscript()
+			return
+		}
+	}
+	index := len(u.transcript)
+	for candidate := len(u.transcript) - 1; candidate >= 0; candidate-- {
+		if u.transcript[candidate].assistant && u.transcript[candidate].message {
+			index = candidate
+			break
+		}
+	}
+	u.transcript = append(u.transcript, outputPart{})
+	copy(u.transcript[index+1:], u.transcript[index:])
+	u.transcript[index] = outputPart{text: line, activityID: callID}
+	u.renderTranscript()
 }
 
 func (u *terminal) clearTranscript() {
@@ -1194,6 +1220,9 @@ func (u *terminal) submit() {
 				u.renderTranscript()
 				u.transcriptNeedsScroll = true
 			})
+		}
+		for _, activity := range turn.ToolActivities {
+			u.writeToolActivity(toolActivityOutputID(turn.RequestID, activity.CallID), formatToolActivity(activity))
 		}
 		u.writeAsync("\n")
 		if turn.Outcome == modelprovider.OutcomeRefused {
@@ -1955,8 +1984,13 @@ func (u *terminal) activityLoop() {
 		case <-ticker.C:
 			snapshot := u.client.Snapshot()
 			activities := snapshot.ToolActivities
-			if len(snapshot.Turns) > 0 {
-				activities = append(activities, snapshot.Turns[len(snapshot.Turns)-1].ToolActivities...)
+			scope := "snapshot"
+			if snapshot.Active {
+				activities = nil
+			} else if len(snapshot.Turns) > 0 {
+				turn := snapshot.Turns[len(snapshot.Turns)-1]
+				activities = turn.ToolActivities
+				scope = turn.RequestID
 			}
 			planText := renderPlan(snapshot.Plan)
 			if planText != lastPlan {
@@ -1966,7 +2000,8 @@ func (u *terminal) activityLoop() {
 			}
 			current := make(map[string]bool, len(activities))
 			for _, activity := range activities {
-				key := activity.CallID + "\x00" + activity.Phase + "\x00" + activity.Outcome + "\x00" + activity.Message + fmt.Sprint(activity.Truncated)
+				outputID := toolActivityOutputID(scope, activity.CallID)
+				key := outputID + "\x00" + activity.Phase + "\x00" + activity.Outcome + "\x00" + activity.Message + fmt.Sprint(activity.Truncated)
 				current[key] = true
 				if u.activitySeen == nil {
 					u.activitySeen = map[string]bool{}
@@ -1975,18 +2010,7 @@ func (u *terminal) activityLoop() {
 					continue
 				}
 				u.activitySeen[key] = true
-				line := fmt.Sprintf("\nTool %s · %s", safeTerminalText(activity.ToolID), safeTerminalText(activity.Phase))
-				if activity.Outcome != "" {
-					line += " · " + safeTerminalText(activity.Outcome)
-				}
-				if activity.Message != "" {
-					line += " · " + safeTerminalText(activity.Message)
-				}
-				if activity.Truncated {
-					line += " · result truncated"
-				}
-				line += "\n"
-				u.writeAsync(line)
+				u.writeToolActivity(outputID, formatToolActivity(activity))
 			}
 			for key := range u.activitySeen {
 				if !current[key] {
@@ -1995,6 +2019,24 @@ func (u *terminal) activityLoop() {
 			}
 		}
 	}
+}
+
+func toolActivityOutputID(scope, callID string) string {
+	return scope + "\x00" + callID
+}
+
+func formatToolActivity(activity ui.ToolActivity) string {
+	line := fmt.Sprintf("\nTool %s · %s", safeTerminalText(activity.ToolID), safeTerminalText(activity.Phase))
+	if activity.Outcome != "" {
+		line += " · " + safeTerminalText(activity.Outcome)
+	}
+	if activity.Message != "" {
+		line += " · " + safeTerminalText(activity.Message)
+	}
+	if activity.Truncated {
+		line += " · result truncated"
+	}
+	return line + "\n"
 }
 
 func (u *terminal) showApproval(request *ui.ApprovalRequest) {
