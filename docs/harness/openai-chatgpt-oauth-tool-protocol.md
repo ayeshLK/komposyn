@@ -66,17 +66,19 @@ exercise a protocol shape from official documentation; they do not assert
 that OpenAI accepted it or that the public route is available. At the source
 commit tested, public `Plugin.StreamChat` rejected OAuth tool-bearing requests
 before network dispatch while `RouteCapabilities(AuthOAuth)` remained
-`SupportUnknown`. A temporary test build locally removed those two gates to
-exercise the candidate implementation against the live account; those local
-changes were not committed or installed.
+`SupportUnknown`. Issue #293 adds model-aware capability checks: only
+`gpt-6-sol` can advertise and send client tools on OAuth. Route-level OAuth
+remains unknown, and unknown OAuth model IDs are rejected before network
+dispatch. Runtime and adapter fixtures cover this model-scoped gate; the live
+evidence below was gathered separately.
 
 The adapter's protocol implementation encodes client function
 definitions in a developer `additional_tools` input item, keeps them available
 on the continuation request, and replays Responses-native assistant items
 plus `function_call_output` values in full HTTP input history. Public OAuth
-dispatch in the normal source remains fail-closed until #293 incorporates the
-verified route behavior. Keep authorization, execution, and result production
-in the existing host runtime. API-key request encoding remains unchanged.
+dispatch is allowed only for model ID `gpt-6-sol`; all other OAuth model IDs
+remain fail-closed. Keep authorization, execution, and result production in the
+existing host runtime. API-key request encoding remains unchanged.
 
 ## Live verification (2026-11-12)
 

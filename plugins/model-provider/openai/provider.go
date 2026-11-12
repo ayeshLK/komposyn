@@ -53,6 +53,14 @@ func (Plugin) RouteCapabilities(method provider.AuthMethod) provider.RouteCapabi
 	}
 }
 
+func (Plugin) ModelRouteCapabilities(method provider.AuthMethod, modelID string) provider.RouteCapabilities {
+	capabilities := (Plugin{}).RouteCapabilities(method)
+	if method == provider.AuthOAuth && modelID == "gpt-6-sol" {
+		capabilities.ClientTools = provider.SupportSupported
+	}
+	return capabilities
+}
+
 func (p Plugin) Authenticate(ctx context.Context, c provider.Credential) (provider.AuthResult, error) {
 	method := credentialMethod(c)
 	if (method == provider.AuthAPIKey && strings.TrimSpace(c.APIKey) == "") ||
@@ -137,14 +145,14 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			break
 		}
 	}
-	if method == provider.AuthOAuth && (len(in.Tools) > 0 || hasToolResult) {
+	if method == provider.AuthOAuth && (len(in.Tools) > 0 || hasToolResult) && provider.CapabilitiesForModel(Plugin{}, method, in.ModelID).ClientTools != provider.SupportSupported {
 		return toolProtocolUnsupported(provider.DiagnosticToolProtocolRouteUnsupported), nil
 	}
 	return p.streamChatProtocol(ctx, in, delta)
 }
 
-// streamChatProtocol implements the Responses wire protocol for fixture coverage.
-// Public dispatch remains gated by StreamChat until OAuth route support is verified.
+// streamChatProtocol implements the Responses wire protocol for API-key and
+// explicitly verified OAuth models.
 func (p Plugin) streamChatProtocol(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
 	method := credentialMethod(in.Credential)
 	if in.ModelID == "" || (method == provider.AuthAPIKey && in.MaxOutput <= 0) || (method != provider.AuthAPIKey && method != provider.AuthOAuth) {

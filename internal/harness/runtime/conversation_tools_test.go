@@ -17,6 +17,9 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +28,7 @@ import (
 	"github.com/ayeshLK/komposyn/internal/harness/model"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	p "github.com/ayeshLK/komposyn/plugins/model-provider"
+	openaiadapter "github.com/ayeshLK/komposyn/plugins/model-provider/openai"
 	"github.com/ayeshLK/komposyn/plugins/tools"
 )
 
@@ -121,6 +125,165 @@ func TestBundledConversationToolsAuthorizeExecuteAndContinue(t *testing.T) {
 	if plan := chat.Snapshot().Plan; len(plan) != 0 {
 		t.Fatalf("confirmed conversation reset retained plan: %+v", plan)
 	}
+}
+
+func TestVerifiedOpenAIOAuthModelRunsPlanAndClarificationThroughRuntime(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber := len(requests) + 1
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token-1" {
+			t.Errorf("request %d authorization=%q", requestNumber, got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests = append(requests, body)
+		if body["model"] != "gpt-6-sol" || body["store"] != false || body["stream"] != true {
+			t.Errorf("request %d route fields=%v", requestNumber, body)
+		}
+		if _, exists := body["tools"]; exists {
+			t.Errorf("request %d used API-key tools field: %v", requestNumber, body)
+		}
+		if _, exists := body["max_output_tokens"]; exists {
+			t.Errorf("request %d used unsupported API-key output bound: %v", requestNumber, body)
+		}
+		input, ok := body["input"].([]any)
+		if !ok || len(input) < 2 {
+			t.Errorf("request %d omitted Responses input/additional_tools: %v", requestNumber, body)
+		}
+		if !containsAdditionalTools(input, string(tools.UpdatePlanID), string(tools.RequestUserInputID)) {
+			t.Errorf("request %d did not carry both client tool definitions: %v", requestNumber, input)
+		}
+		var callID, toolID, arguments string
+		switch requestNumber {
+		case 1:
+			callID, toolID, arguments = "plan-call", string(tools.UpdatePlanID), `{"plan":[{"step":"verify route","status":"completed"}]}`
+		case 2:
+			if !containsFunctionOutput(input, "plan-call") {
+				t.Error("plan result was not correlated in the provider continuation")
+			}
+			callID, toolID, arguments = "input-call", string(tools.RequestUserInputID), `{"question":"Which format?","options":[{"label":"JSON","description":"structured"}]}`
+		case 3:
+			if !containsFunctionOutput(input, "input-call") {
+				t.Error("clarification answer was not correlated in the provider continuation")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"finished\"}\n\n")
+			fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"finished\"}]}]}}\n\n")
+			return
+		default:
+			t.Errorf("unexpected provider request %d", requestNumber)
+			return
+		}
+		writeFunctionCallSSE(w, "item-"+callID, callID, toolID, arguments)
+	}))
+	defer server.Close()
+
+	store := auth.Store{Path: t.TempDir() + "/auth.json"}
+	hostID, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := auth.NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := auth.Profile{ID: "profile", Provider: "openai", Label: "ChatGPT fixture", Revision: revision, Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "fixture-client", Issuer: "https://auth.openai.com", Subject: "fixture-subject", HostID: hostID, IDToken: "fixture-id", AccessToken: "stored-access", RefreshToken: "stored-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(time.Hour)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	providers, err := model.NewRegistry(openaiadapter.Plugin{BaseURL: server.URL, Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvers := auth.NewRegistry()
+	if err := resolvers.Register("openai", auth.MethodOAuth, &rotatingOAuthResolver{store: store}); err != nil {
+		t.Fatal(err)
+	}
+	var approvals []permissions.PendingApproval
+	config := BundledConversationToolRuntimeConfig(
+		ToolApprovalFunc(func(_ context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			approvals = append(approvals, pending)
+			return permissions.ApprovalOnce, "", nil
+		}),
+		ToolClarificationFunc(func(_ context.Context, request ClarificationRequest) (ClarificationResponse, error) {
+			if request.Question != "Which format?" || len(request.Options) != 1 || request.Options[0].Label != "JSON" {
+				t.Errorf("clarification request=%+v", request)
+			}
+			return ClarificationResponse{ID: request.ID, ConversationID: request.ConversationID, Outcome: ClarificationAnswered, Answer: "JSON"}, nil
+		}),
+	)
+	chat := NewChatWithToolRuntime(providers, store, resolvers, config)
+	t.Cleanup(chat.Close)
+	selected := model.Model{Provider: p.OpenAI, AuthMethod: p.AuthOAuth, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "gpt-6-sol", DisplayName: "GPT-6-Sol", Compatibility: p.CompatibilityUnknown, ProfileVersion: model.ProfileVersion(profile, "")}
+	chat.mu.Lock()
+	chat.selected = &selected
+	chat.mu.Unlock()
+
+	turn, err := chat.Send(context.Background(), "Plan this synthetic check and ask me which format to use.", nil)
+	if err != nil || turn.Outcome != p.OutcomeCompleted || turn.Text != "finished" || len(requests) != 3 {
+		t.Fatalf("turn=%+v requests=%d err=%v", turn, len(requests), err)
+	}
+	if len(approvals) != 2 {
+		t.Fatalf("approval count=%d; want one for each action", len(approvals))
+	}
+	for i, expected := range []tools.ID{tools.UpdatePlanID, tools.RequestUserInputID} {
+		if len(approvals[i].Request.Requirements) != 2 || approvals[i].Request.Requirements[0].ToolID != string(expected) {
+			t.Errorf("approval %d did not bind expected tool %q: %+v", i, expected, approvals[i].Request)
+		}
+	}
+	plan := chat.Snapshot().Plan
+	if len(plan) != 1 || plan[0].Step != "verify route" || plan[0].Status != tools.PlanCompleted {
+		t.Fatalf("plan snapshot=%+v", plan)
+	}
+}
+
+func writeFunctionCallSSE(w http.ResponseWriter, itemID, callID, toolID, arguments string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	item := fmt.Sprintf(`{"type":"function_call","id":%q,"call_id":%q,"name":%q,"arguments":%q,"status":"completed"}`, itemID, callID, toolID, arguments)
+	fmt.Fprintf(w, "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":%q,\"call_id\":%q,\"name\":%q}}\n\n", itemID, callID, toolID)
+	fmt.Fprintf(w, "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":%q,\"delta\":%q}\n\n", itemID, arguments)
+	fmt.Fprintf(w, "event: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":%q,\"arguments\":%q}\n\n", itemID, arguments)
+	fmt.Fprintf(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":%s}\n\n", item)
+	fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[%s]}}\n\n", item)
+}
+
+func containsAdditionalTools(input []any, toolIDs ...string) bool {
+	for _, item := range input {
+		entry, ok := item.(map[string]any)
+		if !ok || entry["type"] != "additional_tools" {
+			continue
+		}
+		definitions, ok := entry["tools"].([]any)
+		if !ok {
+			return false
+		}
+		found := map[string]bool{}
+		for _, definition := range definitions {
+			object, ok := definition.(map[string]any)
+			if ok {
+				found[fmt.Sprint(object["name"])] = true
+			}
+		}
+		for _, id := range toolIDs {
+			if !found[id] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func containsFunctionOutput(input []any, callID string) bool {
+	for _, item := range input {
+		object, ok := item.(map[string]any)
+		if ok && object["type"] == "function_call_output" && object["call_id"] == callID {
+			return true
+		}
+	}
+	return false
 }
 
 func TestUpdatePlanToolClearsExistingPlanWithEmptyArray(t *testing.T) {
@@ -311,14 +474,14 @@ func TestBundledToolsAreAdvertisedOnlyOnExplicitlySupportedRoutes(t *testing.T) 
 	})
 	runtime := newToolRuntime(BundledConversationToolRuntimeConfig(approval, clarification))
 	provider := &toolLoopProvider{}
-	if definitions := runtime.definitions(provider, p.AuthAPIKey); len(definitions) != 2 {
+	if definitions := runtime.definitions(provider, p.AuthAPIKey, "fixture-model"); len(definitions) != 2 {
 		t.Fatalf("supported API-key route definitions=%+v", definitions)
 	}
-	if definitions := runtime.definitions(provider, p.AuthOAuth); len(definitions) != 0 {
+	if definitions := runtime.definitions(provider, p.AuthOAuth, "fixture-model"); len(definitions) != 0 {
 		t.Fatalf("unknown OAuth route exposed tools: %+v", definitions)
 	}
 	provider.routeSupport = p.SupportUnsupported
-	if definitions := runtime.definitions(provider, p.AuthAPIKey); len(definitions) != 0 {
+	if definitions := runtime.definitions(provider, p.AuthAPIKey, "fixture-model"); len(definitions) != 0 {
 		t.Fatalf("unsupported API-key route exposed tools: %+v", definitions)
 	}
 }
