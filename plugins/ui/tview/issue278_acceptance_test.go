@@ -251,7 +251,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	waitForScreen(t, screen, issue278RedirectPrompt, "")
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyEnter, 0)
-	waitForScreen(t, screen, "Request interrupted:", "")
+	waitForCondition(t, func() bool { return !chat.Snapshot().Active })
 	if host.readCount() != 3 {
 		t.Fatal("redirected outside read was executed or disclosed")
 	}
