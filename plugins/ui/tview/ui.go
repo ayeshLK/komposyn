@@ -455,9 +455,8 @@ func (u *terminal) afterDraw(screen tcell.Screen) {
 			u.output.SetOffset(target, 0)
 		}
 		if u.chatRootActive.Load() {
-			// AfterDraw runs before screen.Show, so repaint the transcript even
-			// when its numeric offset already matches. Earlier queued changes may
-			// otherwise leave the previous viewport in the screen buffer.
+			// AfterDraw runs before screen.Show, so repaint the transcript area
+			// even when its numeric offset already matches the current viewport.
 			u.output.Draw(screen)
 		}
 	}
@@ -1160,10 +1159,6 @@ func (u *terminal) submit() {
 				// Reconcile the final result after queued deltas so the completed
 				// answer remains visible even if a platform dropped a stream redraw.
 				u.renderTranscript()
-				if u.followingTranscript && !u.output.HasSelection() {
-					u.transcriptScrollRow = u.maxTranscriptScroll()
-					u.output.SetOffset(u.transcriptScrollRow, 0)
-				}
 			})
 		}
 		if turn.Outcome == modelprovider.OutcomeCompleted && err == nil {
@@ -1171,7 +1166,13 @@ func (u *terminal) submit() {
 			if completed == "" {
 				completed = ""
 			}
-			u.queue(func() { u.latestCompletedReply = completed })
+			u.queue(func() {
+				u.latestCompletedReply = completed
+				u.followingTranscript = true
+				u.renderTranscript()
+				u.transcriptScrollRow = u.maxTranscriptScroll()
+				u.output.SetOffset(u.transcriptScrollRow, 0)
+			})
 		}
 		u.writeAsync("\n")
 		if turn.Outcome == modelprovider.OutcomeRefused {

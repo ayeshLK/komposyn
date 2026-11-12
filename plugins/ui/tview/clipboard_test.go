@@ -121,7 +121,7 @@ func TestAfterDrawCorrectsTranscriptOffsetWithoutBlockingInput(t *testing.T) {
 	for i := range lines {
 		lines[i] = fmt.Sprintf("line-%02d", i)
 	}
-	view.SetText(strings.Join(lines, "\n"), false)
+	view.SetText(strings.Join(lines, "\n"), true)
 	root := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true)
 	app := tv.NewApplication().SetScreen(safe)
 	u := &terminal{app: app, output: view, followingTranscript: true}
