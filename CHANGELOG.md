@@ -4,6 +4,18 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
+## [0.15.0](https://github.com/ayeshLK/komposyn/compare/v0.14.0...v0.15.0) (2026-11-11)
+
+
+### Features
+
+* **harness:** improve temporary chat file reads ([#284](https://github.com/ayeshLK/komposyn/issues/284)) ([eb9357d](https://github.com/ayeshLK/komposyn/commit/eb9357d70f1974d4447b4f435905270b7f2a98ff))
+
+
+### Bug Fixes
+
+* update Go toolchain to 1.26.11 ([#283](https://github.com/ayeshLK/komposyn/issues/283)) ([e0f3820](https://github.com/ayeshLK/komposyn/commit/e0f3820b04e3d2a79ee31c076612afbaf5f49f1e))
+
 ## [0.14.0](https://github.com/ayeshLK/komposyn/compare/v0.13.1...v0.14.0) (2026-11-10)
 
 
