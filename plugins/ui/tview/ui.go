@@ -693,22 +693,52 @@ func (u *terminal) updateBanner() {
 	} else if reason := compactAvailabilityReason(snapshot.FilesystemReadAvailability.State, snapshot.FilesystemReadAvailability.Reason); reason != "" {
 		readLabel += " · " + reason
 	}
-	planStatus := renderCapabilityState("update_plan", snapshot.UpdatePlanAvailability)
-	inputStatus := renderCapabilityState("request_user_input", snapshot.RequestInputAvailability)
-	if snapshot.UpdatePlanAvailability.State == snapshot.RequestInputAvailability.State &&
-		snapshot.UpdatePlanAvailability.Available == snapshot.RequestInputAvailability.Available &&
-		snapshot.UpdatePlanAvailability.Reason == snapshot.RequestInputAvailability.Reason {
-		planStatus = renderCapabilityState("update_plan/request_user_input", snapshot.UpdatePlanAvailability)
-		inputStatus = ""
-	}
+	toolStatus := renderToolAvailability(snapshot.UpdatePlanAvailability, snapshot.RequestInputAvailability, u.terminalWidth)
 	if u.terminalWidth > 0 {
 		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
 	}
-	toolStatus := planStatus
-	if inputStatus != "" {
-		toolStatus += " · " + inputStatus
-	}
 	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(toolStatus)))
+}
+
+func renderToolAvailability(plan, input ui.CapabilityAvailability, terminalWidth int) string {
+	if terminalWidth <= 0 || terminalWidth > 72 {
+		if plan.State == input.State && plan.Available == input.Available && plan.Reason == input.Reason {
+			return renderCapabilityState("update_plan/request_user_input", plan)
+		}
+		return renderCapabilityState("update_plan", plan) + " · " + renderCapabilityState("request_user_input", input)
+	}
+	planDetail := compactHeaderCapabilityDetail(plan)
+	inputDetail := compactHeaderCapabilityDetail(input)
+	if plan.State == input.State && plan.Available == input.Available && plan.Reason == input.Reason {
+		return "Plan/input: " + planDetail
+	}
+	planLabel, inputLabel := "Plan: ", "Input: "
+	return planLabel + planDetail + " · " + inputLabel + inputDetail
+}
+
+func compactHeaderCapabilityDetail(status ui.CapabilityAvailability) string {
+	if status.Available {
+		return "available"
+	}
+	switch status.State {
+	case "unknown_route":
+		return "route unverified"
+	case "backend_unavailable":
+		return "backend unavailable"
+	case "enforcement_unavailable":
+		return "auth unavailable"
+	case "unsupported_route":
+		return "route unsupported"
+	case "cleanup_pending":
+		return "cleanup pending"
+	case "working_directory_unavailable":
+		return "no working dir"
+	case "no_model":
+		return "no model"
+	case "not_implemented":
+		return "not in build"
+	}
+	return "unavailable"
 }
 
 func renderCapabilityState(name string, status ui.CapabilityAvailability) string {

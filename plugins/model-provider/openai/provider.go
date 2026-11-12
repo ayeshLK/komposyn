@@ -154,10 +154,14 @@ func (p Plugin) streamChatProtocol(ctx context.Context, in provider.ChatRequest,
 		return toolProtocolUnsupported(diagnostic), nil
 	}
 	input := make([]json.RawMessage, 0, len(in.Messages))
+	additionalToolsInsertAt := -1
 	if err := validateToolHistory(in.Messages); err != nil {
 		return toolProtocolUnsupported(provider.DiagnosticToolProtocolInvalid), nil
 	}
 	for _, m := range in.Messages {
+		if additionalToolsInsertAt < 0 && m.Role != provider.RoleUser {
+			additionalToolsInsertAt = len(input)
+		}
 		switch m.Role {
 		case provider.RoleUser:
 			b, _ := json.Marshal(map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": m.Text}}})
@@ -199,7 +203,15 @@ func (p Plugin) streamChatProtocol(ctx context.Context, in provider.ChatRequest,
 			if err != nil {
 				return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 			}
-			input = append(input, additional)
+			// Keep the declaration before the first assistant/tool continuation item.
+			// Its position determines when these tools become available to the model.
+			insertAt := additionalToolsInsertAt
+			if insertAt < 0 {
+				insertAt = len(input)
+			}
+			input = append(input, nil)
+			copy(input[insertAt+1:], input[insertAt:])
+			input[insertAt] = additional
 			payload["input"] = input
 		} else {
 			payload["tools"] = definitions

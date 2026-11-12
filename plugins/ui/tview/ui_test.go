@@ -1658,6 +1658,33 @@ func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
 	}
 }
 
+func TestNarrowBannerKeepsCapabilityReasonVisible(t *testing.T) {
+	status := ui.CapabilityAvailability{State: "unknown_route", Reason: "Tool protocol support is unverified."}
+	client := &clientStub{updatePlanAvailability: status, requestInputAvailability: status}
+	u := &terminal{client: client, header: tv.NewTextView().SetDynamicColors(true), terminalWidth: 50}
+	u.updateBanner()
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(50, 4)
+	u.header.SetRect(0, 0, 50, 4)
+	u.header.Draw(screen)
+	screen.Show()
+	cells, width, _ := screen.GetContents()
+	var lastRow strings.Builder
+	for x := 0; x < width; x++ {
+		cell := cells[3*width+x]
+		if len(cell.Runes) > 0 {
+			lastRow.WriteString(string(cell.Runes))
+		}
+	}
+	if got := lastRow.String(); !strings.Contains(got, "route unverified") {
+		t.Fatalf("capability reason is clipped from narrow rendered header row: %q", got)
+	}
+}
+
 func TestHelpShowsFullAvailabilityReasons(t *testing.T) {
 	client := &clientStub{
 		readAvailability:         ui.FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."},

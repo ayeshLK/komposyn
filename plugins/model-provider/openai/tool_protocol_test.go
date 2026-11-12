@@ -109,9 +109,9 @@ func TestOAuthFunctionCallUsesAdditionalToolsAndContinues(t *testing.T) {
 			t.Fatalf("request %d used top-level tools", i)
 		}
 		input := request["input"].([]any)
-		additional, ok := input[len(input)-1].(map[string]any)
+		additional, ok := input[1].(map[string]any)
 		if !ok || additional["type"] != "additional_tools" || additional["role"] != "developer" {
-			t.Fatalf("request %d missing additional_tools input item: %v", i, input)
+			t.Fatalf("request %d additional_tools was not kept at the stable position before continuation items: %v", i, input)
 		}
 		toolDefs := additional["tools"].([]any)
 		if len(toolDefs) != 1 || toolDefs[0].(map[string]any)["name"] != "lookup" {
@@ -119,7 +119,11 @@ func TestOAuthFunctionCallUsesAdditionalToolsAndContinues(t *testing.T) {
 		}
 	}
 	secondInput := requests[1]["input"].([]any)
-	toolResult, ok := secondInput[2].(map[string]any)
+	call, ok := secondInput[2].(map[string]any)
+	if !ok || call["type"] != "function_call" || call["call_id"] != "call-1" {
+		t.Fatalf("assistant call did not follow additional_tools: %v", secondInput)
+	}
+	toolResult, ok := secondInput[3].(map[string]any)
 	if !ok || toolResult["type"] != "function_call_output" || toolResult["call_id"] != "call-1" || toolResult["output"] != "fixture result" {
 		t.Fatalf("tool result was not correlated: %v", secondInput)
 	}
