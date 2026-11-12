@@ -244,6 +244,11 @@ func TestVerifiedOpenAIOAuthModelRunsPlanAndClarificationThroughRuntime(t *testi
 func TestOpenAIOAuthExactFileReadUsesTrustedHostAndContinues(t *testing.T) {
 	const sentinel = "synthetic-private-file-content"
 	root := t.TempDir()
+	canonicalRoot, err := CanonicalFilesystemRoot(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root = canonicalRoot
 	target := filepath.Join(root, "notes.txt")
 	if err := os.WriteFile(target, []byte(sentinel), 0o600); err != nil {
 		t.Fatal(err)
