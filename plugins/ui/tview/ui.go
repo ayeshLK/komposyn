@@ -121,6 +121,9 @@ type terminal struct {
 	clipboard                    *clipboardQueue
 	followingTranscript          bool
 	transcriptScrollRow          int
+	transcriptNeedsScroll        bool
+	lastScreenWidth              int
+	lastScreenHeight             int
 	selectionDragging            atomic.Bool
 	chatRootActive               atomic.Bool
 	selectionMoved               atomic.Bool
@@ -245,7 +248,13 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		u.screenMu.Lock()
 		u.screen = screen
 		u.screenMu.Unlock()
-		width, _ := screen.Size()
+		width, height := screen.Size()
+		if width != u.lastScreenWidth || height != u.lastScreenHeight {
+			u.lastScreenWidth, u.lastScreenHeight = width, height
+			if u.followingTranscript {
+				u.transcriptNeedsScroll = true
+			}
+		}
 		u.setTerminalWidth(width)
 		return false
 	})
@@ -415,10 +424,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	u.app.SetAfterDrawFunc(func(screen tcell.Screen) {
-		u.restoreSelectionSnapshot(screen)
-		if u.followingTranscript && !u.output.HasSelection() {
-			u.transcriptScrollRow = u.maxTranscriptScroll()
-		}
+		u.afterDraw(screen)
 		readyOnce.Do(func() { close(ready) })
 	})
 	go func() {
@@ -437,8 +443,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		width, _ := p.screen.Size()
 		u.setTerminalWidth(width)
 	}
-	u.chatRootActive.Store(true)
-	err := u.app.SetRoot(u.layout, true).EnableMouse(true).SetFocus(u.input).Run()
+	err := u.setRoot(u.layout, true).EnableMouse(true).SetFocus(u.input).Run()
 	u.runReturned.Store(true)
 	close(u.done)
 	u.stop()
@@ -449,7 +454,44 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	return nil
 }
 
+func (u *terminal) afterDraw(screen tcell.Screen) {
+	u.restoreSelectionSnapshot(screen)
+	if !u.followingTranscript || u.output.HasSelection() || !u.chatRootActive.Load() {
+		return
+	}
+	if u.transcriptNeedsScroll {
+		u.scrollTranscriptToEnd()
+		u.transcriptNeedsScroll = false
+	}
+	u.output.Draw(screen)
+}
+
+func (u *terminal) scrollTranscriptToEnd() {
+	handler := u.output.TextArea.InputHandler()
+	setFocus := func(tv.Primitive) {}
+	for range len(u.output.GetText(true)) + 1 {
+		before, _ := u.output.GetOffset()
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModAlt), setFocus)
+		after, _ := u.output.GetOffset()
+		if after == before {
+			break
+		}
+	}
+	for range max(0, u.output.innerHeight()-1) {
+		handler(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModAlt), setFocus)
+	}
+	u.transcriptScrollRow, _ = u.output.GetOffset()
+}
+
+func (u *terminal) setRoot(root tv.Primitive, fullscreen bool) *tv.Application {
+	u.chatRootActive.Store(root == u.layout)
+	return u.app.SetRoot(root, fullscreen)
+}
+
 func (u *terminal) writeUser(text string) {
+	// A newly submitted turn should follow its prompt and resulting activity,
+	// even if modal navigation temporarily paused transcript following.
+	u.followingTranscript = true
 	u.appendMessage(text, false)
 }
 
@@ -499,6 +541,7 @@ func (u *terminal) renderTranscript() {
 		_, start, end = u.output.GetSelection()
 	}
 	u.output.setContent(newText, preserve, u.followingTranscript, u.transcriptScrollRow)
+	u.transcriptNeedsScroll = !preserve && u.followingTranscript
 	if preserve {
 		u.selectionSnapshot = true
 		u.selectionNeedsRestore = true
@@ -864,7 +907,7 @@ func (u *terminal) showPlan() {
 	})
 	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(view, 0, 1, true).AddItem(form, 3, 0, false)
 	layout.SetBorder(true).SetTitle(" /plan ")
-	u.app.SetRoot(layout, true).SetFocus(view)
+	u.setRoot(layout, true).SetFocus(view)
 }
 
 func (u *terminal) updateUsage() {
@@ -1145,7 +1188,12 @@ func (u *terminal) submit() {
 			if completed == "" {
 				completed = ""
 			}
-			u.queue(func() { u.latestCompletedReply = completed })
+			u.queue(func() {
+				u.latestCompletedReply = completed
+				u.followingTranscript = true
+				u.renderTranscript()
+				u.transcriptNeedsScroll = true
+			})
 		}
 		u.writeAsync("\n")
 		if turn.Outcome == modelprovider.OutcomeRefused {
@@ -1233,7 +1281,6 @@ func (u *terminal) runCommand(text string) {
 }
 
 func (u *terminal) openPicker() {
-	u.chatRootActive.Store(false)
 	u.pickerInput = tv.NewInputField().SetLabel("Filter models and actions: ").SetFieldWidth(0).SetText(u.pickerQuery).SetChangedFunc(func(v string) { u.pickerQuery = v; u.rebuildPicker() })
 	u.picker = tv.NewList().ShowSecondaryText(true)
 	u.modelList = tv.NewList().ShowSecondaryText(true)
@@ -1294,7 +1341,7 @@ func (u *terminal) openPicker() {
 		return event
 	})
 	u.rebuildPicker()
-	u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+	u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 	u.refreshModels()
 }
 
@@ -1407,13 +1454,13 @@ func (u *terminal) addProvider() {
 				}
 				u.addAPIKeyProvider(providerID)
 			})
-			u.app.SetRoot(modal, true)
+			u.setRoot(modal, true)
 			return
 		}
 		u.addAPIKeyProvider(providerID)
 	})
-	form.AddButton("Cancel", func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
-	u.app.SetRoot(form, true).SetFocus(form.GetFormItem(0))
+	form.AddButton("Cancel", func() { u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+	u.setRoot(form, true).SetFocus(form.GetFormItem(0))
 }
 
 func (u *terminal) addAPIKeyProvider(providerID string) {
@@ -1458,10 +1505,10 @@ func (u *terminal) addAPIKeyProvider(providerID string) {
 				}
 				u.cancelCredentialOperation(op)
 				if err != nil {
-					u.showMessage("Provider was not saved", err.Error(), func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+					u.showMessage("Provider was not saved", err.Error(), func() { u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
 					return
 				}
-				u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+				u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 				u.writePickerNotice("Saved profile " + id + ". Choose a discovered model explicitly.")
 				u.refreshModels()
 			})
@@ -1470,9 +1517,9 @@ func (u *terminal) addAPIKeyProvider(providerID string) {
 	form.AddButton("Cancel", func() {
 		u.cancelCredentialOperation(u.credentialOp)
 		key.SetText("")
-		u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+		u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 	})
-	u.app.SetRoot(form, true).SetFocus(label)
+	u.setRoot(form, true).SetFocus(label)
 }
 
 func (u *terminal) startOpenAILogin(profileID string) {
@@ -1480,17 +1527,17 @@ func (u *terminal) startOpenAILogin(profileID string) {
 	attempt, err := u.client.StartLogin(op.ctx, "openai", "oauth", profileID)
 	if err != nil {
 		u.cancelCredentialOperation(op)
-		u.showMessage("Could not start ChatGPT sign-in", err.Error(), func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+		u.showMessage("Could not start ChatGPT sign-in", err.Error(), func() { u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
 		return
 	}
 	op.loginID = attempt.ID
 	baseText := "OpenAI will ask you to authorize eligible inference to use your ChatGPT plan. Sign-in alone does not guarantee eligibility. KompoSyn will return here after sign-in; no chat prompt is sent during setup."
 	modal := tv.NewModal().SetText(baseText).AddButtons([]string{"Cancel sign-in"}).SetDoneFunc(func(_ int, _ string) {
 		u.cancelCredentialOperation(op)
-		u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+		u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 		u.writePickerNotice("ChatGPT sign-in canceled.")
 	})
-	u.app.SetRoot(modal, true)
+	u.setRoot(modal, true)
 	u.launch(func() {
 		for event := range attempt.Events {
 			message := event.Message
@@ -1509,10 +1556,10 @@ func (u *terminal) startOpenAILogin(profileID string) {
 			}
 			u.cancelCredentialOperation(op)
 			if result.Err != nil {
-				u.showMessage("ChatGPT sign-in did not complete", result.Err.Error(), func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+				u.showMessage("ChatGPT sign-in did not complete", result.Err.Error(), func() { u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
 				return
 			}
-			u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+			u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 			u.writePickerNotice("Sign-in completed for " + result.Account + ". Review the profile's connection and permission status, then choose a model explicitly.")
 			u.refreshModels()
 		})
@@ -1528,7 +1575,7 @@ func (u *terminal) manageProviders() {
 				return
 			}
 			if len(profiles) == 0 {
-				u.showMessage("No providers configured", "Use Add New Provider to connect an account.", func() { u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
+				u.showMessage("No providers configured", "Use Add New Provider to connect an account.", func() { u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
 				return
 			}
 			list := tv.NewList().ShowSecondaryText(true)
@@ -1543,12 +1590,12 @@ func (u *terminal) manageProviders() {
 			}
 			list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 				if event.Key() == tcell.KeyEscape {
-					u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+					u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 					return nil
 				}
 				return event
 			})
-			u.app.SetRoot(list, true)
+			u.setRoot(list, true)
 		})
 	})
 }
@@ -1567,7 +1614,7 @@ func (u *terminal) manageProfile(p ui.Profile) {
 			u.manageProviders()
 		}
 	})
-	u.app.SetRoot(modal, true)
+	u.setRoot(modal, true)
 }
 
 func (u *terminal) manageOAuthProfile(p ui.Profile) {
@@ -1594,7 +1641,7 @@ func (u *terminal) manageOAuthProfile(p ui.Profile) {
 			u.manageProviders()
 		}
 	})
-	u.app.SetRoot(modal, true)
+	u.setRoot(modal, true)
 }
 
 func (u *terminal) disconnectOAuth(p ui.Profile, remove bool) {
@@ -1621,7 +1668,7 @@ func (u *terminal) disconnectOAuth(p ui.Profile, remove bool) {
 						u.queue(func() { u.finishOAuthDisconnect(op, p, confirmedResult, confirmedErr, remove) })
 					})
 				})
-				u.app.SetRoot(modal, true)
+				u.setRoot(modal, true)
 				return
 			}
 			u.finishOAuthDisconnect(op, p, result, err, remove)
@@ -1635,7 +1682,7 @@ func (u *terminal) finishOAuthDisconnect(op *credentialOperation, p ui.Profile, 
 	}
 	u.cancelCredentialOperation(op)
 	if result.LocalTokensRemoved {
-		u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+		u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 		message := "ChatGPT tokens were removed locally."
 		if remove {
 			message = "The local ChatGPT registration and tokens were removed."
@@ -1683,7 +1730,7 @@ func (u *terminal) replaceProfile(p ui.Profile) {
 					u.showMessage("Credential was not replaced", err.Error(), func() { u.manageProviders() })
 					return
 				}
-				u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+				u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 				u.writePickerNotice("Credential replaced. Select a model again.")
 				u.refreshModels()
 			})
@@ -1694,7 +1741,7 @@ func (u *terminal) replaceProfile(p ui.Profile) {
 		key.SetText("")
 		u.manageProviders()
 	})
-	u.app.SetRoot(form, true)
+	u.setRoot(form, true)
 }
 func (u *terminal) confirmReplace(p ui.Profile, label, key string, op *credentialOperation) {
 	modal := tv.NewModal().SetText("This profile is used by the current conversation. Replace it and clear chat history?").AddButtons([]string{"Replace and start fresh", "Cancel"}).SetDoneFunc(func(i int, _ string) {
@@ -1716,13 +1763,13 @@ func (u *terminal) confirmReplace(p ui.Profile, label, key string, op *credentia
 					u.showMessage("Credential was not replaced", err.Error(), func() { u.manageProviders() })
 					return
 				}
-				u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+				u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 				u.writePickerNotice("Credential replaced. Choose a model for the new chat.")
 				u.refreshModels()
 			})
 		})
 	})
-	u.app.SetRoot(modal, true)
+	u.setRoot(modal, true)
 }
 func (u *terminal) confirmRemove(p ui.Profile) {
 	modal := tv.NewModal().SetText("Remove local profile " + p.Label + "? The upstream API key remains active.").AddButtons([]string{"Remove", "Cancel"}).SetDoneFunc(func(i int, _ string) {
@@ -1741,13 +1788,13 @@ func (u *terminal) confirmRemove(p ui.Profile) {
 					u.showMessage("Profile was not removed", err.Error(), func() { u.manageProviders() })
 					return
 				}
-				u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+				u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 				u.writePickerNotice("Profile removed locally.")
 				u.refreshModels()
 			})
 		})
 	})
-	u.app.SetRoot(modal, true)
+	u.setRoot(modal, true)
 }
 func (u *terminal) confirmRemoveAndReset(p ui.Profile) {
 	modal := tv.NewModal().SetText("Removing this selected profile will also clear the current chat. Continue?").AddButtons([]string{"Remove and start fresh", "Cancel"}).SetDoneFunc(func(i int, _ string) {
@@ -1762,13 +1809,13 @@ func (u *terminal) confirmRemoveAndReset(p ui.Profile) {
 					u.showMessage("Profile was not removed", err.Error(), func() { u.manageProviders() })
 					return
 				}
-				u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+				u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 				u.writePickerNotice("Profile removed. Choose a model for a new chat.")
 				u.refreshModels()
 			})
 		})
 	})
-	u.app.SetRoot(modal, true)
+	u.setRoot(modal, true)
 }
 
 func (u *terminal) selectModel(m ui.Model) {
@@ -1793,7 +1840,7 @@ func (u *terminal) selectModel(m ui.Model) {
 func (u *terminal) confirmSelection(m ui.Model) {
 	modal := tv.NewModal().SetText("Changing provider/model/profile starts a fresh in-memory conversation. Continue?").AddButtons([]string{"Start fresh", "Cancel"}).SetDoneFunc(func(i int, _ string) {
 		if i != 0 {
-			u.app.SetRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
+			u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput)
 			return
 		}
 		u.launch(func() {
@@ -1810,7 +1857,7 @@ func (u *terminal) confirmSelection(m ui.Model) {
 			})
 		})
 	})
-	u.app.SetRoot(modal, true)
+	u.setRoot(modal, true)
 }
 
 func (u *terminal) returnToChat() {
@@ -1819,8 +1866,7 @@ func (u *terminal) returnToChat() {
 	u.permissionsFromApproval = false
 	u.permissionsFromClarification = false
 	u.approvalRedirectVisible = false
-	u.chatRootActive.Store(true)
-	u.app.SetRoot(u.layout, true).SetFocus(u.input)
+	u.setRoot(u.layout, true).SetFocus(u.input)
 }
 func (u *terminal) writePickerNotice(s string) {
 	if u.pickerStatus != nil {
@@ -1829,7 +1875,7 @@ func (u *terminal) writePickerNotice(s string) {
 }
 func (u *terminal) showMessage(title, message string, done func()) {
 	modal := tv.NewModal().SetText(title + "\n" + message).AddButtons([]string{"OK"}).SetDoneFunc(func(int, string) { done() })
-	u.app.SetRoot(modal, true)
+	u.setRoot(modal, true)
 }
 
 func (u *terminal) approvalEventsLoop() {
@@ -1909,6 +1955,9 @@ func (u *terminal) activityLoop() {
 		case <-ticker.C:
 			snapshot := u.client.Snapshot()
 			activities := snapshot.ToolActivities
+			if len(snapshot.Turns) > 0 {
+				activities = append(activities, snapshot.Turns[len(snapshot.Turns)-1].ToolActivities...)
+			}
 			planText := renderPlan(snapshot.Plan)
 			if planText != lastPlan {
 				lastPlan = planText
@@ -1982,7 +2031,7 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 			details.WriteString("   Read permission includes returning retrieved data to the selected model.\n")
 		}
 	}
-	view := tv.NewTextView().SetScrollable(true).SetDynamicColors(false).SetText(safeTerminalText(details.String()))
+	view := tv.NewTextView().SetScrollable(true).SetWrap(true).SetWordWrap(false).SetDynamicColors(false).SetText(safeTerminalText(details.String()))
 	viewTitle := " Review approval · scroll details "
 	allowLabel, denyLabel := "Allow once · authorize this action", "Deny this action"
 	if filesystemRead {
@@ -2029,7 +2078,7 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 	panel.SetBorder(true).SetTitle(" Tool approval · Tab to actions · Esc cancels turn ")
 	overlay := tv.NewGrid().SetRows(-1, -5, -1).SetColumns(-1, -8, -1).AddItem(panel, 1, 1, 1, 1, 0, 0, true)
 	pages := tv.NewPages().AddPage("chat", u.layout, true, true).AddPage("approval", overlay, true, true)
-	u.app.SetRoot(pages, true).SetFocus(view)
+	u.setRoot(pages, true).SetFocus(view)
 }
 
 func isFilesystemReadApproval(request *ui.ApprovalRequest) bool {
@@ -2160,7 +2209,7 @@ func (u *terminal) showClarification(request *ui.ClarificationRequest) {
 	}
 	layout.AddItem(u.clarificationStatus, 1, 0, false).AddItem(form, 3, 0, false)
 	layout.SetBorder(true).SetTitle(" User input · Escape cancels the entire turn ")
-	u.app.SetRoot(layout, true).SetFocus(answer)
+	u.setRoot(layout, true).SetFocus(answer)
 }
 
 func (u *terminal) answerClarification(choice ui.ClarificationChoice, answer string) {
@@ -2241,7 +2290,7 @@ func (u *terminal) redirectApproval() {
 	})
 	form.SetBorder(true).SetTitle(" Original tool call will be rejected; replacement is checked again ")
 	u.approvalRedirectVisible = true
-	u.app.SetRoot(form, true).SetFocus(form)
+	u.setRoot(form, true).SetFocus(form)
 }
 
 func (u *terminal) returnToApproval(id string) {
@@ -2407,7 +2456,7 @@ func (u *terminal) showPermissions() {
 	})
 	layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(list, 8, 0, true).AddItem(details, 0, 1, false).AddItem(form, 3, 0, false)
 	layout.SetBorder(true).SetTitle(" /permissions · revoking prevents future dispatch only ")
-	u.app.SetRoot(layout, true).SetFocus(list)
+	u.setRoot(layout, true).SetFocus(list)
 }
 
 func safeTerminalText(text string) string {

@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
@@ -223,7 +224,7 @@ func TestReadApprovalConversationJourney(t *testing.T) {
 			waitForScreen(t, safe, "Provider destination: openai", "")
 			press(tcell.KeyEnd, 0) // first key is guarded against stale composer input.
 			press(tcell.KeyEnd, 0)
-			waitForScreen(t, safe, "private report.txt", "")
+			waitForExactTarget(t, safe, path)
 			if mode == "cancel" {
 				press(tcell.KeyEscape, 0)
 			} else {
@@ -326,6 +327,69 @@ func TestReadApprovalConversationJourney(t *testing.T) {
 			}
 		})
 	}
+}
+
+func waitForExactTarget(t *testing.T, screen *synchronizedSimulation, target string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	targetWithoutSpaces := strings.ReplaceAll(filepath.Clean(target), " ", "")
+	for time.Now().Before(deadline) {
+		visible := strings.NewReplacer("\\\\", "\\").Replace(approvalDetailsOnScreen(screen))
+		visibleWithoutWhitespace := strings.Join(strings.Fields(visible), "")
+		if strings.Contains(visibleWithoutWhitespace, targetWithoutSpaces) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	visible := strings.NewReplacer("\\\\", "\\").Replace(approvalDetailsOnScreen(screen))
+	visibleWithoutWhitespace := strings.Join(strings.Fields(visible), "")
+	if !strings.Contains(visibleWithoutWhitespace, targetWithoutSpaces) {
+		t.Fatalf("screen did not show the exact target %q across line wrapping: %q", target, visible)
+	}
+}
+
+func approvalDetailsOnScreen(screen *synchronizedSimulation) string {
+	cells, width, height := screen.GetContents()
+	rows := make([]string, height)
+	for y := range height {
+		var row strings.Builder
+		for x := 0; x < width; x++ {
+			cell := cells[y*width+x]
+			if len(cell.Runes) > 0 {
+				row.WriteString(string(cell.Runes))
+			} else {
+				row.WriteRune(' ')
+			}
+		}
+		rows[y] = row.String()
+	}
+	for titleRow, row := range rows {
+		title := strings.Index(row, "Review read approval")
+		if title < 0 {
+			continue
+		}
+		leftByte := strings.LastIndex(row[:title], "╔")
+		rightOffset := strings.Index(row[title:], "╗")
+		if leftByte < 0 || rightOffset < 0 {
+			continue
+		}
+		rightByte := title + rightOffset
+		left := utf8.RuneCountInString(row[:leftByte])
+		right := utf8.RuneCountInString(row[:rightByte])
+		var details strings.Builder
+		for y := titleRow + 1; y < height; y++ {
+			line := []rune(rows[y])
+			if strings.Contains(string(line[left:right+1]), "╚") {
+				break
+			}
+			if right > left+1 {
+				details.WriteString(string(line[left+1 : right]))
+				details.WriteRune(' ')
+			}
+		}
+		return strings.Join(strings.Fields(details.String()), " ")
+	}
+	return ""
 }
 
 func approvalProviderRequestText(request provider.ChatRequest) string {

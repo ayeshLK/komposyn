@@ -2,8 +2,11 @@
 
 **Research checked:** 2026-11-12. The OpenAI documentation pages below do not
 show a publication or last-updated date in the rendered content; this date is
-the date they were checked. No account was accessed and no live inference was
-performed.
+the date they were checked. For this verification attempt, an operator
+authorized up to five live requests using synthetic content. No app session or
+already-authorized test account/configuration was available in the execution
+environment, so no account was accessed and zero live provider requests were
+sent. No credential material or auth-store contents were inspected.
 
 ## Route and scope
 
@@ -32,7 +35,7 @@ successful text response alone does not establish tool support for a model.
 | Provider-native continuation | Documented HTTP behavior; fixture covered | SIWC says not to use `previous_response_id` over HTTP and to send required history in `input`; the function calling guide shows replaying the assistant response and tool output. KompoSyn retains/replays native assistant output items and sends the correlated result. |
 | OAuth request differences | Documented | Set `store:false`, `stream:true`; omit `max_output_tokens`; use `additional_tools` for client function definitions on this route. Current API-key requests retain top-level `tools`, `max_output_tokens`, and `include: ["reasoning.encrypted_content"]`. The OAuth adapter does not send these API-key-only fields. |
 | Model-specific tool support | Unverified by this assessment | SIWC instructs clients to use models available to the signed-in account, but the reviewed documentation does not establish per-model support for KompoSyn's exact function set. No model was tested live. |
-| Live ChatGPT OAuth round trip | Unverified | No account access or live request was authorized or attempted. Fixtures validate adapter behavior against documented shapes only. |
+| Live ChatGPT OAuth round trip | Unverified | An operator authorized a budget of up to five requests with synthetic content. Zero requests were attempted because no app session or already-authorized eligible test account/model was available in the execution environment. Fixtures validate adapter behavior against documented shapes only. |
 
 The SIWC limitations separately list unsupported built-in tools including
 image generation, file search, Code Interpreter, native computer use, hosted
@@ -75,13 +78,20 @@ existing host runtime. API-key request encoding remains unchanged.
 ## Live verification still required
 
 Before changing OAuth `ClientTools` from unknown or exposing definitions in
-the runtime, an operator must authorize the live validation and agree to the
-request budget under issue #272's process. Validate a complete call/result/
-continuation journey using an eligible account and an account-available model,
-recording route, model, date, and outcomes without credentials, private paths,
-or conversation content. Record any provider rejection with its exact route,
-model/account scope and sanitized error code. If access is unavailable, the
-gate stays unresolved and the capability stays unknown.
+the runtime, live validation must use the already-authorized app account/config
+and stay within its agreed request budget under issue #272's process. The
+authorization for this attempt allowed at most five requests with synthetic
+content, but this environment exposed no authorized app session or test
+account/config. No login flow was started, and zero live provider requests
+were sent. The concrete prerequisite is an operator-provided app session with
+an already-authorized eligible account and an account-available model.
+
+When that prerequisite is available, validate a complete call/result/
+continuation journey and record route, public model identifier, date, and
+sanitized outcomes without credentials, private paths, or conversation
+content. Record any provider rejection with its exact route/model scope and
+sanitized error code. Until then, the verification gate stays unresolved and
+the capability stays unknown.
 
 ## Sources
 
