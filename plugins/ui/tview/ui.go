@@ -459,6 +459,9 @@ func (u *terminal) afterDraw(screen tcell.Screen) {
 }
 
 func (u *terminal) writeUser(text string) {
+	// A newly submitted turn should follow its prompt and resulting activity,
+	// even if modal navigation temporarily paused transcript following.
+	u.followingTranscript = true
 	u.appendMessage(text, false)
 }
 
