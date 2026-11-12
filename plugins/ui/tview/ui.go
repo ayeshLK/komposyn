@@ -418,6 +418,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		u.restoreSelectionSnapshot(screen)
 		if u.followingTranscript && !u.output.HasSelection() {
 			u.transcriptScrollRow = u.maxTranscriptScroll()
+			u.output.SetOffset(u.transcriptScrollRow, 0)
 		}
 		readyOnce.Do(func() { close(ready) })
 	})
@@ -1982,7 +1983,7 @@ func (u *terminal) showApproval(request *ui.ApprovalRequest) {
 			details.WriteString("   Read permission includes returning retrieved data to the selected model.\n")
 		}
 	}
-	view := tv.NewTextView().SetScrollable(true).SetDynamicColors(false).SetText(safeTerminalText(details.String()))
+	view := tv.NewTextView().SetScrollable(true).SetWrap(true).SetWordWrap(false).SetDynamicColors(false).SetText(safeTerminalText(details.String()))
 	viewTitle := " Review approval · scroll details "
 	allowLabel, denyLabel := "Allow once · authorize this action", "Deny this action"
 	if filesystemRead {
