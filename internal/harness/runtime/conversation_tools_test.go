@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -239,6 +241,103 @@ func TestVerifiedOpenAIOAuthModelRunsPlanAndClarificationThroughRuntime(t *testi
 	}
 }
 
+func TestOpenAIOAuthExactFileReadUsesTrustedHostAndContinues(t *testing.T) {
+	const sentinel = "synthetic-private-file-content"
+	root := t.TempDir()
+	target := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(target, []byte(sentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := &publicationHost{content: []byte(sentinel), root: root, target: target}
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer access-token-1" {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests = append(requests, body)
+		if body["model"] != "gpt-6-sol" || body["store"] != false || body["stream"] != true {
+			t.Errorf("request route fields=%v", body)
+		}
+		input, _ := body["input"].([]any)
+		if !containsAdditionalTools(input, "read_file") {
+			t.Errorf("read_file definition missing: %v", input)
+		}
+		if len(requests) == 1 {
+			writeFunctionCallSSE(w, "item-read-1", "read-1", "read_file", `{"path":"notes.txt"}`)
+			return
+		}
+		if !containsFunctionOutput(input, "read-1") || !strings.Contains(fmt.Sprint(input), sentinel) {
+			t.Errorf("approved read was not correlated in continuation: %v", input)
+		}
+		if output := functionOutput(input, "read-1"); len(output) == 0 || len(output) > MaxToolResultBytes {
+			t.Errorf("continuation output size=%d; want a non-empty bounded result", len(output))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"summarized\"}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"summarized\"}]}]}}\n\n")
+	}))
+	defer server.Close()
+
+	store := auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	hostID, err := store.EnsureHostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := auth.NewOAuthRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := auth.Profile{ID: "profile", Provider: "openai", Label: "ChatGPT fixture", Revision: revision, Auth: auth.AuthConfig{Type: "oauth", OAuth: &auth.OAuthCredential{ClientID: "fixture-client", Issuer: "https://auth.openai.com", Subject: "fixture-subject", HostID: hostID, IDToken: "synthetic-id", AccessToken: "stored-access", RefreshToken: "stored-refresh", TokenType: "Bearer", Scopes: []string{"chatgpt.tokens.use.direct"}, ExpiresAt: time.Now().Add(time.Hour)}}}
+	if err := store.AddOAuth(profile); err != nil {
+		t.Fatal(err)
+	}
+	providers, err := model.NewRegistry(openaiadapter.Plugin{BaseURL: server.URL, Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvers := auth.NewRegistry()
+	if err := resolvers.Register("openai", auth.MethodOAuth, &rotatingOAuthResolver{store: store}); err != nil {
+		t.Fatal(err)
+	}
+	var approved permissions.PendingApproval
+	config := publicationReadRuntimeConfig(ToolApprovalFunc(func(_ context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approved = pending
+		return permissions.ApprovalOnce, "", nil
+	}), host)
+	chat := NewChatWithToolRuntime(providers, store, resolvers, config)
+	t.Cleanup(chat.Close)
+	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	selectPublicationRoot(t, chat, host, root)
+	stored, err := store.Get(profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := model.Model{Provider: p.OpenAI, AuthMethod: p.AuthOAuth, ProfileID: profile.ID, ProfileLabel: profile.Label, ID: "gpt-6-sol", Compatibility: p.CompatibilityUnknown, ProfileVersion: model.ProfileVersion(stored, "publication-fixture-token")}
+	chat.mu.Lock()
+	chat.selected = &selected
+	chat.mu.Unlock()
+	turn, err := chat.Send(context.Background(), "Read notes.txt and summarize it", nil)
+	if err != nil || turn.Outcome != p.OutcomeCompleted || turn.Text != "summarized" || len(requests) != 2 {
+		t.Fatalf("turn=%+v requests=%d err=%v", turn, len(requests), err)
+	}
+	if len(approved.Request.Requirements) != 2 || approved.Request.Requirements[1].Resource == nil || approved.Request.Requirements[1].Resource.Target != target {
+		t.Fatalf("approval did not bind resolved exact target %q: %+v", target, approved.Request)
+	}
+	destination := "openai/gpt-6-sol using auth profile profile"
+	if !strings.Contains(approved.Request.Requirements[0].Description, destination) {
+		t.Fatalf("approval omitted exact provider destination %q: %+v", destination, approved.Request.Requirements)
+	}
+	if host.reads != 1 || !strings.Contains(fmt.Sprint(requests[1]["input"]), sentinel) {
+		t.Fatalf("host reads=%d; continuation did not receive approved bounded content", host.reads)
+	}
+}
+
 func writeFunctionCallSSE(w http.ResponseWriter, itemID, callID, toolID, arguments string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	item := fmt.Sprintf(`{"type":"function_call","id":%q,"call_id":%q,"name":%q,"arguments":%q,"status":"completed"}`, itemID, callID, toolID, arguments)
@@ -284,6 +383,17 @@ func containsFunctionOutput(input []any, callID string) bool {
 		}
 	}
 	return false
+}
+
+func functionOutput(input []any, callID string) string {
+	for _, item := range input {
+		object, ok := item.(map[string]any)
+		if ok && object["type"] == "function_call_output" && object["call_id"] == callID {
+			output, _ := object["output"].(string)
+			return output
+		}
+	}
+	return ""
 }
 
 func TestUpdatePlanToolClearsExistingPlanWithEmptyArray(t *testing.T) {

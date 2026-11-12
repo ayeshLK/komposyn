@@ -47,18 +47,10 @@ func (Plugin) RouteCapabilities(method provider.AuthMethod) provider.RouteCapabi
 	case provider.AuthAPIKey:
 		return provider.RouteCapabilities{ClientTools: provider.SupportSupported, Images: provider.SupportUnsupported}
 	case provider.AuthOAuth:
-		return provider.RouteCapabilities{ClientTools: provider.SupportUnknown, Images: provider.SupportUnknown}
+		return provider.RouteCapabilities{ClientTools: provider.SupportSupported, Images: provider.SupportUnknown}
 	default:
 		return provider.RouteCapabilities{ClientTools: provider.SupportUnsupported, Images: provider.SupportUnsupported}
 	}
-}
-
-func (Plugin) ModelRouteCapabilities(method provider.AuthMethod, modelID string) provider.RouteCapabilities {
-	capabilities := (Plugin{}).RouteCapabilities(method)
-	if method == provider.AuthOAuth && modelID == "gpt-6-sol" {
-		capabilities.ClientTools = provider.SupportSupported
-	}
-	return capabilities
 }
 
 func (p Plugin) Authenticate(ctx context.Context, c provider.Credential) (provider.AuthResult, error) {
@@ -145,14 +137,14 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			break
 		}
 	}
-	if method == provider.AuthOAuth && (len(in.Tools) > 0 || hasToolResult) && provider.CapabilitiesForModel(Plugin{}, method, in.ModelID).ClientTools != provider.SupportSupported {
+	if method == provider.AuthOAuth && (len(in.Tools) > 0 || hasToolResult) && (Plugin{}).RouteCapabilities(method).ClientTools != provider.SupportSupported {
 		return toolProtocolUnsupported(provider.DiagnosticToolProtocolRouteUnsupported), nil
 	}
 	return p.streamChatProtocol(ctx, in, delta)
 }
 
 // streamChatProtocol implements the Responses wire protocol for API-key and
-// explicitly verified OAuth models.
+// account-listed OAuth models on the documented SIWC route.
 func (p Plugin) streamChatProtocol(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
 	method := credentialMethod(in.Credential)
 	if in.ModelID == "" || (method == provider.AuthAPIKey && in.MaxOutput <= 0) || (method != provider.AuthAPIKey && method != provider.AuthOAuth) {

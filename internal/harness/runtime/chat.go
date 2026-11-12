@@ -58,6 +58,7 @@ type Snapshot struct {
 	Turns                      []Turn
 	Usage                      []ModelUsage
 	Active                     bool
+	ActiveRequestID            string
 	ToolActivities             []ToolActivity
 	Plan                       []tools.PlanStep
 	FilesystemRoot             FilesystemRootStatus
@@ -113,6 +114,7 @@ type Chat struct {
 	conversationIDErr     error
 	toolCallIDs           map[string]struct{}
 	activeToolActivities  []ToolActivity
+	activeRequestID       string
 	filesystemRoot        string
 	workingDirectory      string
 	filesystemRootGen     uint64
@@ -470,8 +472,9 @@ func (c *Chat) Snapshot() Snapshot {
 	toolRuntime := c.toolRuntime
 	providers := c.catalog.Providers
 	active := c.active
+	activeRequestID := c.activeRequestID
 	c.mu.Unlock()
-	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ToolActivities: activities, Plan: plan,
+	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ActiveRequestID: activeRequestID, ToolActivities: activities, Plan: plan,
 		FilesystemRoot:             filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost),
 		UpdatePlanAvailability:     conversationToolAvailability(selected, providers, toolRuntime, tools.UpdatePlanID),
 		RequestInputAvailability:   conversationToolAvailability(selected, providers, toolRuntime, tools.RequestUserInputID),
@@ -833,6 +836,8 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	generation := c.sequence.Add(1)
 	c.generation = generation
 	c.active = true
+	requestID := fmt.Sprintf("chat-%d", generation)
+	c.activeRequestID = requestID
 	activeDone := make(chan struct{})
 	c.activeDone = activeDone
 	c.activeToolActivities = nil
@@ -849,7 +854,6 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	historyDestination := c.historyDestination
 	history := cloneMessages(c.history)
 	history = append(history, provider.Message{Role: provider.RoleUser, Text: prompt})
-	requestID := fmt.Sprintf("chat-%d", generation)
 	conversationID, conversationIDErr := c.conversationID, c.conversationIDErr
 	c.mu.Unlock()
 	defer func() {
@@ -857,6 +861,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		c.mu.Lock()
 		if c.generation == generation {
 			c.active = false
+			c.activeRequestID = ""
 			c.activeProfile = ""
 			c.cancel = nil
 			if c.activeDone == activeDone {
@@ -871,6 +876,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		c.mu.Lock()
 		if c.generation == generation {
 			c.active = false
+			c.activeRequestID = ""
 			c.activeProfile = ""
 			c.cancel = nil
 		}
@@ -916,6 +922,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		c.mu.Lock()
 		if c.generation == generation && c.active && c.selected != nil && *c.selected == selection && ctx.Err() == nil {
 			c.active = false
+			c.activeRequestID = ""
 			c.activeProfile = ""
 			c.cancel = nil
 			c.turns = append(c.turns, turn)
@@ -962,7 +969,9 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	turn.Refusal = result.Refusal
 	turn.Outcome = result.Outcome
 	turn.Usage = result.Usage
-	turn.RequestID = result.RequestID
+	// RequestID is the stable KompoSyn request identity used to correlate the
+	// entire tool loop, including phases emitted by multiple provider calls.
+	turn.RequestID = requestID
 	turn.ProviderCode = result.ProviderCode
 	turn.DiagnosticCode = result.DiagnosticCode
 	if result.Outcome != provider.OutcomeCompleted && result.ProviderCode != "" {
@@ -979,6 +988,9 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		}
 	}
 	turn.ToolActivities = append([]ToolActivity(nil), loop.activities...)
+	for index := range turn.ToolActivities {
+		turn.ToolActivities[index].RequestID = requestID
+	}
 	if loop.message != "" && turn.Message == "" {
 		turn.Message = loop.message
 	}
@@ -995,6 +1007,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 			defer finalGate.readAuthorityMu.Unlock()
 		}
 		c.active = false
+		c.activeRequestID = ""
 		c.activeProfile = ""
 		c.cancel = nil
 		keepSensitiveHistory := true
@@ -1065,6 +1078,7 @@ func (c *Chat) finishRetiredSensitiveTurn(generation uint64, turn *Turn) Turn {
 		return *turn
 	}
 	c.active = false
+	c.activeRequestID = ""
 	c.activeProfile = ""
 	c.cancel = nil
 	if c.historySensitive {
@@ -1083,6 +1097,7 @@ func (c *Chat) updateToolActivity(generation uint64, activity ToolActivity) {
 	if c.generation != generation || !c.active {
 		return
 	}
+	activity.RequestID = c.activeRequestID
 	c.activeToolActivities = append(c.activeToolActivities, activity)
 }
 

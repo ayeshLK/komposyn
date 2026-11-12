@@ -265,9 +265,10 @@ Model names are not used to infer capability or context limits. Both adapters
 send plain text, one system instruction, and streaming. On provider/auth routes
 that explicitly support client tools, the executable registers
 `update_plan` and `request_user_input` behind centralized approval. OpenAI
-API-key Responses and Anthropic Messages support these tools. OpenAI ChatGPT
-OAuth exposes them only for the model-specific verified ID `gpt-6-sol`; other
-OAuth model IDs and unknown routes remain text-only. When the trusted Linux read backend is
+API-key Responses, Anthropic Messages, and the documented OpenAI ChatGPT OAuth
+Responses route support these tools. Runtime can select only OAuth models
+returned by that account's catalog; the live cycle below covers one account
+and model. When the trusted Linux read backend is
 available, supported routes may additionally advertise `read_file` as described
 above. No filesystem mutation, process, or network tools are available. OpenAI
 requests set `store: false`; Anthropic requests use Messages. OpenAI API-key
@@ -317,8 +318,8 @@ completed effect or promise to stop running work.
 
 The experimental executable offers two conversation tools on routes that
 explicitly support client tools: OpenAI API-key Responses, Anthropic Messages,
-and OpenAI ChatGPT OAuth for model ID `gpt-6-sol`. Other OAuth model IDs and
-unknown routes remain text-only. Each tool requires
+and OpenAI ChatGPT OAuth Responses. OAuth model availability still comes from
+the selected account's catalog. Each tool requires
 the normal action and resource authorization. The resource is the exact opaque
 ID of the current conversation, with once or current-conversation approval;
 these grants cannot authorize filesystem, process, or network access. The

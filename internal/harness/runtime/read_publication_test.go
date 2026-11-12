@@ -569,8 +569,8 @@ func TestCapabilityAvailabilityExplainsRealProviderRoutes(t *testing.T) {
 		wantReason string
 	}{
 		{"OpenAI API key", provider.AuthAPIKey, openai.Plugin{}, "fixture-model", "available", "authorization and approval"},
-		{"OpenAI ChatGPT unverified model", provider.AuthOAuth, openai.Plugin{}, "gpt-6-astra", "unknown_route", "unverified"},
-		{"OpenAI ChatGPT verified model", provider.AuthOAuth, openai.Plugin{}, "gpt-6-sol", "available", "authorization and approval"},
+		{"OpenAI ChatGPT OAuth route", provider.AuthOAuth, openai.Plugin{}, "gpt-6-astra", "available", "authorization and approval"},
+		{"OpenAI ChatGPT OAuth tested model", provider.AuthOAuth, openai.Plugin{}, "gpt-6-sol", "available", "authorization and approval"},
 		{"Anthropic API key", provider.AuthAPIKey, anthropic.Plugin{}, "fixture-model", "available", "authorization and approval"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

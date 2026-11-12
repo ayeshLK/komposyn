@@ -54,6 +54,7 @@ type outputPart struct {
 	assistant  bool
 	message    bool
 	activityID string
+	turnID     string
 }
 
 type transcriptView struct {
@@ -610,16 +611,24 @@ func (u *terminal) setToolActivity(callID, line string) {
 			return
 		}
 	}
-	index := len(u.transcript)
+	requestID, _, _ := strings.Cut(callID, "\x00")
+	anchor := -1
 	for candidate := len(u.transcript) - 1; candidate >= 0; candidate-- {
-		if u.transcript[candidate].assistant && u.transcript[candidate].message {
-			index = candidate
+		if u.transcript[candidate].turnID == requestID && !u.transcript[candidate].assistant && u.transcript[candidate].message {
+			anchor = candidate
 			break
 		}
 	}
+	if anchor < 0 {
+		return
+	}
+	index := anchor + 1
+	for index < len(u.transcript) && u.transcript[index].turnID == requestID && u.transcript[index].activityID != "" {
+		index++
+	}
 	u.transcript = append(u.transcript, outputPart{})
 	copy(u.transcript[index+1:], u.transcript[index:])
-	u.transcript[index] = outputPart{text: line, activityID: callID}
+	u.transcript[index] = outputPart{text: line, activityID: callID, turnID: requestID}
 	u.renderTranscript()
 }
 
@@ -1197,6 +1206,14 @@ func (u *terminal) submit() {
 		streamedMu.Lock()
 		streamedText := streamed.String()
 		streamedMu.Unlock()
+		u.queue(func() {
+			for index := len(u.transcript) - 1; index >= 0; index-- {
+				if !u.transcript[index].assistant && u.transcript[index].message && u.transcript[index].turnID == "" {
+					u.transcript[index].turnID = turn.RequestID
+					break
+				}
+			}
+		})
 		if turn.Text != "" {
 			u.queue(func() {
 				if streamedText == "" {
@@ -1984,9 +2001,19 @@ func (u *terminal) activityLoop() {
 		case <-ticker.C:
 			snapshot := u.client.Snapshot()
 			activities := snapshot.ToolActivities
-			scope := "snapshot"
+			scope := snapshot.ActiveRequestID
 			if snapshot.Active {
-				activities = nil
+				if scope != "" {
+					requestID := scope
+					u.queue(func() {
+						for index := len(u.transcript) - 1; index >= 0; index-- {
+							if !u.transcript[index].assistant && u.transcript[index].message && u.transcript[index].turnID == "" {
+								u.transcript[index].turnID = requestID
+								break
+							}
+						}
+					})
+				}
 			} else if len(snapshot.Turns) > 0 {
 				turn := snapshot.Turns[len(snapshot.Turns)-1]
 				activities = turn.ToolActivities
@@ -2000,7 +2027,14 @@ func (u *terminal) activityLoop() {
 			}
 			current := make(map[string]bool, len(activities))
 			for _, activity := range activities {
-				outputID := toolActivityOutputID(scope, activity.CallID)
+				activityScope := activity.RequestID
+				if activityScope == "" {
+					activityScope = scope
+				}
+				if activityScope == "" {
+					activityScope = "snapshot"
+				}
+				outputID := toolActivityOutputID(activityScope, activity.CallID)
 				key := outputID + "\x00" + activity.Phase + "\x00" + activity.Outcome + "\x00" + activity.Message + fmt.Sprint(activity.Truncated)
 				current[key] = true
 				if u.activitySeen == nil {

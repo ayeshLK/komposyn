@@ -237,12 +237,12 @@ Official provider documentation describes OpenAI Responses function calling
 and image inputs, and Anthropic Messages client tools and image blocks. Current
 KompoSyn model catalogs report identifiers/display names, not per-model tool
 or image capability. OpenAI OAuth official documentation and the adapter's
-HTTP/SSE fixture establish the documented client-tool protocol shape. Live
-OAuth model/account compatibility and public runtime exposure remain
-unverified; image support also remains unverified.
-Therefore no capability is inferred from catalog presence, provider name, or
-model name. Until route/model-specific evidence is recorded and tested, keep
-that route's tool/image definitions hidden. References: [OpenAI function
+HTTP/SSE fixture establish the documented client-tool protocol shape; the
+account-specific catalog controls model availability, and live runtime
+evidence covers one account/model. Image support remains unverified.
+Therefore no capability is inferred from a model name. Until route-level
+protocol evidence is recorded and tested, keep that route's definitions
+hidden. References: [OpenAI function
 calling](https://developers.openai.com/api/docs/guides/function-calling),
 [OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision),
 [Anthropic client tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview),

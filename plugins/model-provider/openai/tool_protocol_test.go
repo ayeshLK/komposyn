@@ -55,17 +55,16 @@ func TestResponsesFunctionCallProtocolAndContinuation(t *testing.T) {
 		t.Fatalf("tool definitions not sent: %v", request)
 	}
 
-	if got := (Plugin{}).RouteCapabilities(p.AuthOAuth).ClientTools; got != p.SupportUnknown {
+	if got := (Plugin{}).RouteCapabilities(p.AuthOAuth).ClientTools; got != p.SupportSupported {
 		t.Fatalf("OAuth tool capability=%q", got)
 	}
 }
 
 func TestOAuthFunctionCallUsesAdditionalToolsAndContinues(t *testing.T) {
-	if got := p.CapabilitiesForModel(Plugin{}, p.AuthOAuth, "gpt-6-sol").ClientTools; got != p.SupportSupported {
-		t.Fatalf("verified OAuth model capability=%q", got)
-	}
-	if got := p.CapabilitiesForModel(Plugin{}, p.AuthOAuth, "gpt-6-astra").ClientTools; got != p.SupportUnknown {
-		t.Fatalf("unverified OAuth model capability=%q", got)
+	for _, modelID := range []string{"gpt-6-sol", "gpt-6-astra", "account-listed-model"} {
+		if got := p.CapabilitiesForModel(Plugin{}, p.AuthOAuth, modelID).ClientTools; got != p.SupportSupported {
+			t.Fatalf("OAuth model %q inherited route capability=%q", modelID, got)
+		}
 	}
 	var requests []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -132,20 +131,19 @@ func TestOAuthFunctionCallUsesAdditionalToolsAndContinues(t *testing.T) {
 	}
 }
 
-func TestPublicOAuthToolRequestDoesNotDispatchNetworkRequest(t *testing.T) {
+func TestPublicOAuthToolRequestDispatchesForAccountListedModel(t *testing.T) {
 	dispatched := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		dispatched = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n")
 	}))
 	defer server.Close()
-	definition := chattools.Definition{ID: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)}
-	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}}, nil)
-	if err != nil || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != p.DiagnosticToolProtocolRouteUnsupported || dispatched {
-		t.Fatalf("result=%+v err=%v dispatched=%v", result, err, dispatched)
-	}
-	result, err = (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "gpt-6-astra", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}, {Role: p.RoleAssistant, Native: []json.RawMessage{json.RawMessage(`{"type":"function_call","id":"item-1","call_id":"call-1","name":"lookup","arguments":"{}","status":"completed"}`)}}, {Role: p.RoleTool, ToolResult: &p.ToolResult{CallID: "call-1", Content: "fixture result"}}}}, nil)
-	if err != nil || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != p.DiagnosticToolProtocolRouteUnsupported || dispatched {
-		t.Fatalf("unknown-model continuation result=%+v err=%v dispatched=%v", result, err, dispatched)
+	definition := chattools.Definition{ID: "lookup", Description: "Look up a value", InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"],"additionalProperties":false}`), MaxInput: 32}
+	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "account-listed-model", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}}, nil)
+	if err != nil || result.Outcome != p.OutcomeCompleted || dispatched != true {
+		t.Fatalf("account-listed route result=%+v err=%v dispatched=%v", result, err, dispatched)
 	}
 }
 

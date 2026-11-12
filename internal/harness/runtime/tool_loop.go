@@ -246,6 +246,7 @@ func (r *toolRuntime) pendingPreparationCleanupCount() int {
 }
 
 type ToolActivity struct {
+	RequestID string
 	CallID    string
 	ToolID    tools.ID
 	Phase     string

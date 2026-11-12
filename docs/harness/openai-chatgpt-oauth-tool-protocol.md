@@ -33,7 +33,7 @@ successful text response alone does not establish tool support for a model.
 | Correlated result submission | Documented Responses protocol; fixture covered | Function calling documentation defines `function_call_output` correlated by `call_id`, followed by another Responses request. |
 | Provider-native continuation | Documented HTTP behavior; fixture covered | SIWC says not to use `previous_response_id` over HTTP and to send required history in `input`; the function calling guide shows replaying the assistant response and tool output. KompoSyn retains/replays native assistant output items and sends the correlated result. |
 | OAuth request differences | Documented | Set `store:false`, `stream:true`; omit `max_output_tokens`; use `additional_tools` for client function definitions on this route. Current API-key requests retain top-level `tools`, `max_output_tokens`, and `include: ["reasoning.encrypted_content"]`. The OAuth adapter does not send these API-key-only fields. |
-| Model-specific tool support | Verified for `gpt-6-sol` on one tested account; other accounts and models remain unverified | Runtime can select only models returned in the selected OAuth profile's account-specific catalog. The live cycle below exercised `gpt-6-sol` on one account; the same model ID on other accounts has not been separately live-verified. SIWC documentation requires a model available to the signed-in account but does not provide a compatibility guarantee for every account/model. |
+| Live account/model evidence | The tool round trip is live-verified for `gpt-6-sol` on one account; other accounts and model IDs have not been live-tested | Runtime can select only models returned in the selected OAuth profile's account-specific catalog. This evidence scope does not create a model allowlist; SIWC protocol support is evaluated at the route level unless the provider documents a model-specific difference or rejects the operation. |
 | Live ChatGPT OAuth round trip | Operator-reported for `gpt-6-sol` on one tested account and route | The 2026-11-12 synthetic live cycle exercised `update_plan` and `request_user_input`, each approved with Allow once, followed by correlated result submission and a follow-up. A 2026-11-13 follow-up exercised exact-file reading and cancellation on a trusted Linux host. Denial was not tested. Automated runtime fixtures remain separate evidence. |
 
 The SIWC limitations separately list unsupported built-in tools including
@@ -66,19 +66,20 @@ exercise a protocol shape from official documentation; they do not assert
 that OpenAI accepted it or that the public route is available. At the source
 commit tested, public `Plugin.StreamChat` rejected OAuth tool-bearing requests
 before network dispatch while `RouteCapabilities(AuthOAuth)` remained
-`SupportUnknown`. Issue #293 adds model-aware capability checks: only
-`gpt-6-sol` can advertise and send client tools on OAuth. Route-level OAuth
-remains unknown, and unknown OAuth model IDs are rejected before network
-dispatch. Runtime and adapter fixtures cover this model-scoped gate; the live
-evidence below was gathered separately.
+`SupportUnknown`. The documented SIWC route supports client tools; route-level
+capability now reflects that protocol evidence. The account-specific model
+catalog controls availability, not tool capability. Runtime and adapter
+fixtures cover declaration, calls, and continuation; the live evidence below
+covers one account/model only.
 
 The adapter's protocol implementation encodes client function
 definitions in a developer `additional_tools` input item, keeps them available
 on the continuation request, and replays Responses-native assistant items
 plus `function_call_output` values in full HTTP input history. Public OAuth
-dispatch is allowed only for model ID `gpt-6-sol`; all other OAuth model IDs
-remain fail-closed. Keep authorization, execution, and result production in the
-existing host runtime. API-key request encoding remains unchanged.
+dispatch is allowed for models available through the OAuth profile's account
+catalog. No model-specific restriction is documented. Keep authorization,
+execution, and result production in the existing host runtime. API-key request
+encoding remains unchanged.
 
 ## Live verification (2026-11-12)
 

@@ -60,6 +60,13 @@ type clientStub struct {
 	cleared                  int
 }
 
+type liveActivityClient struct {
+	*clientStub
+	snapshot func() ui.Snapshot
+}
+
+func (c *liveActivityClient) Snapshot() ui.Snapshot { return c.snapshot() }
+
 // synchronizedSimulation protects the returned cell slice from tview's render
 // goroutine while the test inspects a snapshot of the simulated screen.
 type synchronizedSimulation struct {
@@ -782,8 +789,11 @@ func TestDismissedApprovalReturnsToChatAfterLeavingPermissions(t *testing.T) {
 }
 
 func TestDisclosureMetadataUpdateAppearsInTerminalActivity(t *testing.T) {
-	activity := ui.ToolActivity{CallID: "read-1", ToolID: "read_file", Phase: "finished", Outcome: "succeeded", Message: "Read completed; content is private until continuation commitment."}
+	activity := ui.ToolActivity{RequestID: "request-disclosure", CallID: "read-1", ToolID: "read_file", Phase: "finished", Outcome: "succeeded", Message: "Read completed; content is private until continuation commitment."}
 	client := &clientStub{toolActivities: []ui.ToolActivity{activity}}
+	client.snapshotHook = func() ui.Snapshot {
+		return ui.Snapshot{Active: true, ActiveRequestID: "request-disclosure", ToolActivities: []ui.ToolActivity{activity}}
+	}
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(100, 24)
 	safeScreen := &synchronizedSimulation{SimulationScreen: screen}
@@ -794,6 +804,8 @@ func TestDisclosureMetadataUpdateAppearsInTerminalActivity(t *testing.T) {
 	u.composer = tv.NewFlex().AddItem(u.input, 1, 0, true)
 	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
 	u.app.SetScreen(safeScreen).SetRoot(u.layout, true)
+	u.writeUser("Read fixture")
+	u.transcript[len(u.transcript)-1].turnID = "request-disclosure"
 	done := make(chan error, 1)
 	go func() {
 		err := u.app.Run()
@@ -817,9 +829,11 @@ func TestDisclosureMetadataUpdateAppearsInTerminalActivity(t *testing.T) {
 
 func TestToolActivityUpdateDoesNotPushCompletedAnswerDown(t *testing.T) {
 	u := &terminal{output: newTranscriptView(), followingTranscript: true}
-	u.setToolActivity("read-1", "Tool read_file · awaiting approval\n")
+	u.appendMessage("Read file", false)
+	u.transcript[len(u.transcript)-1].turnID = "request-1"
+	u.setToolActivity(toolActivityOutputID("request-1", "read-1"), "Tool read_file · awaiting approval\n")
 	u.appendMessage("comparison answer", true)
-	u.setToolActivity("read-1", "Tool read_file · finished · succeeded\n")
+	u.setToolActivity(toolActivityOutputID("request-1", "read-1"), "Tool read_file · finished · succeeded\n")
 
 	got := u.output.GetText(true)
 	if strings.Count(got, "Tool read_file") != 1 {
@@ -827,6 +841,87 @@ func TestToolActivityUpdateDoesNotPushCompletedAnswerDown(t *testing.T) {
 	}
 	if !strings.HasSuffix(strings.TrimSpace(got), "comparison answer") {
 		t.Fatalf("late tool activity update displaced completed answer: %q", got)
+	}
+}
+
+func TestSecondTurnActivityStaysAfterItsPromptWhenThereIsNoAnswer(t *testing.T) {
+	u := &terminal{output: newTranscriptView(), followingTranscript: true}
+	u.appendMessage("first prompt", false)
+	u.transcript[len(u.transcript)-1].turnID = "request-1"
+	u.appendMessage("first answer", true)
+	u.appendMessage("second prompt", false)
+	u.transcript[len(u.transcript)-1].turnID = "request-2"
+	u.setToolActivity(toolActivityOutputID("request-2", "call-2"), "Tool read_file · finished · not_executed\n")
+	got := u.output.GetText(true)
+	firstAnswer := strings.Index(got, "first answer")
+	secondPrompt := strings.Index(got, "second prompt")
+	activity := strings.Index(got, "Tool read_file · finished · not_executed")
+	if firstAnswer < 0 || secondPrompt < 0 || activity < 0 || !(firstAnswer < secondPrompt && secondPrompt < activity) {
+		t.Fatalf("second-turn activity was not scoped after its own prompt: %q", got)
+	}
+}
+
+func TestActiveToolActivityUpdatesBeforeSendCompletes(t *testing.T) {
+	selected := &ui.Model{Key: "fixture", Provider: "openai", ID: "fixture-model", ProfileLabel: "Fixture"}
+	var mu sync.Mutex
+	phase := "running"
+	client := &liveActivityClient{clientStub: &clientStub{selected: selected}}
+	client.snapshot = func() ui.Snapshot {
+		mu.Lock()
+		defer mu.Unlock()
+		return ui.Snapshot{Selected: selected, Active: true, ActiveRequestID: "request-live", ToolActivities: []ui.ToolActivity{{RequestID: "request-live", CallID: "call-live", ToolID: "read_file", Phase: phase}}}
+	}
+	started, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	client.sendHook = func(_ context.Context, _ string, _ func(string)) (ui.Turn, error) {
+		close(started)
+		<-release
+		close(returned)
+		return ui.Turn{RequestID: "request-live", Outcome: modelprovider.OutcomeCompleted, Text: "answer"}, nil
+	}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 28)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	u := &terminal{app: tv.NewApplication(), client: client, ctx: ctx, cancel: cancel, output: newTranscriptView(), input: newComposerInput(), followingTranscript: true}
+	u.header = tv.NewTextView()
+	u.body = tv.NewFlex().AddItem(u.output, 0, 1, false)
+	u.composer = tv.NewFlex().AddItem(u.input, 1, 0, true)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 1, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 1, 0, true)
+	u.writeUser("Read notes.txt")
+	u.transcript[len(u.transcript)-1].turnID = "request-live"
+	u.app.SetScreen(safe).SetRoot(u.layout, true)
+	done := make(chan error, 1)
+	go func() { done <- u.app.Run() }()
+	u.launch(u.activityLoop)
+	go func() { _, _ = client.Send(ctx, "Read notes.txt", nil) }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not start")
+	}
+	waitForScreen(t, safe, "Tool read_file · running", "")
+	mu.Lock()
+	phase = "finished"
+	mu.Unlock()
+	waitForScreen(t, safe, "Tool read_file · finished", "")
+	select {
+	case <-returned:
+		t.Fatal("Send returned before the activity was observed")
+	default:
+	}
+	close(release)
+	u.writeAssistantAsync("answer")
+	waitForScreen(t, safe, "answer", "")
+	u.stop()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal did not stop")
 	}
 }
 

@@ -23,14 +23,14 @@ Image support requires its own content-format evidence.
 | Provider route | Inventory | Capability evidence | Status and remaining work |
 |---|---|---|---|
 | OpenAI API key | Implemented; listed by `openai.Plugin.AuthMethods` | Responses tool declaration, tool-call parsing, native continuation, and protocol tests in `plugins/model-provider/openai/` | Supported for `update_plan` and `request_user_input`; `read_file` is conditional on host prerequisites below. Continue live provider validation. |
-| OpenAI ChatGPT OAuth (SIWC) | Implemented; listed by `openai.Plugin.AuthMethods` | Route-level `RouteCapabilities(AuthOAuth)` remains `SupportUnknown`; model-level `ModelRouteCapabilities(AuthOAuth, "gpt-6-sol")` enables client tools. Runtime can select only models returned in the selected OAuth profile's account-specific catalog. Fixtures cover declaration, streamed calls, result correlation, and continuation. Operator-reported live plan/input, exact-file read, and cancellation results for public model `gpt-6-sol` are recorded in the [protocol assessment](openai-chatgpt-oauth-tool-protocol.md). | Only `gpt-6-sol` is eligible to advertise/send tools on OAuth, when it appears in the selected profile's catalog. Live evidence covers one account and one Linux host; other accounts/models remain unverified. The reported exact-file read used trusted root-owned Bubblewrap 0.9.0. Denial and its no-fallback outcome remain open under #294. |
+| OpenAI ChatGPT OAuth (SIWC) | Implemented; listed by `openai.Plugin.AuthMethods` | Route-level `RouteCapabilities(AuthOAuth)` enables client tools based on the documented SIWC protocol; the account-specific model catalog controls which model can be selected. Fixtures cover declaration, streamed calls, result correlation, and continuation. Operator-reported live plan/input, exact-file read, and cancellation results for public model `gpt-6-sol` are recorded in the [protocol assessment](openai-chatgpt-oauth-tool-protocol.md). | Any model returned in the selected profile's catalog may use the documented OAuth tool protocol; the live evidence covers one account and model, so other account/model combinations are not live-verified. The reported exact-file read used trusted root-owned Bubblewrap 0.9.0. Denial and its no-fallback outcome remain open under #294. |
 | Anthropic API key | Implemented; listed by `anthropic.Plugin.AuthMethods` | Messages tool declaration, `tool_use` parsing, result continuation, and protocol tests in `plugins/model-provider/anthropic/` | Supported for `update_plan` and `request_user_input`; `read_file` is conditional on host prerequisites below. Continue live provider validation. |
 | Anthropic subscription / OAuth | No authentication integration or selectable route exists in the bundled adapter; `AuthMethods` returns only `AuthAPIKey` | No adapter or route evidence | Unimplemented. Do not create or imply a selectable profile. No claim is made that Anthropic prohibits such integration. |
 
 The app only offers authentication methods returned by the registered provider.
 An unavailable integration is documented here rather than represented as a
-profile a user can select. OpenAI OAuth's unknown capability is distinct from
-Anthropic's absent subscription integration.
+profile a user can select. OpenAI OAuth has route-level protocol evidence;
+Anthropic subscription remains an absent integration.
 
 ## Capability matrix
 
@@ -42,9 +42,9 @@ filesystem access.
 
 | Capability | OpenAI API key | OpenAI ChatGPT OAuth | Anthropic API key | Anthropic subscription / OAuth |
 |---|---|---|---|---|
-| `update_plan` | Supported; runtime authorization and approval required | Eligible only when `gpt-6-sol` is in the selected profile's account-specific catalog; runtime authorization and approval required. Live Allow once observed on one account. Other model IDs and other accounts with this model ID remain unverified. | Supported; runtime authorization and approval required | Unimplemented route |
-| `request_user_input` | Supported; runtime authorization and approval required | Eligible only when `gpt-6-sol` is in the selected profile's account-specific catalog; runtime authorization and approval required. Live Allow once observed on one account. Other model IDs and other accounts with this model ID remain unverified. | Supported; runtime authorization and approval required | Unimplemented route |
-| `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: `gpt-6-sol` in the selected profile's account-specific catalog plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one Linux host; other accounts and environments remain unverified. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
+| `update_plan` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
+| `request_user_input` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
+| `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 
 The conditional read path requires inspected trusted Bubblewrap, the complete
 retained-read lifecycle and host enforcement, an available working directory,

@@ -78,6 +78,7 @@ type Turn struct {
 }
 
 type ToolActivity struct {
+	RequestID                               string
 	CallID, ToolID, Phase, Outcome, Message string
 	Truncated                               bool
 }
@@ -163,6 +164,7 @@ type Snapshot struct {
 	Turns                      []Turn
 	Usage                      []ModelUsage
 	Active                     bool
+	ActiveRequestID            string
 	ToolActivities             []ToolActivity
 	Plan                       []PlanStep
 	UpdatePlanAvailability     CapabilityAvailability
