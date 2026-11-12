@@ -126,6 +126,7 @@ func TestAfterDrawCorrectsTranscriptOffsetWithoutBlockingInput(t *testing.T) {
 	app := tv.NewApplication().SetScreen(safe)
 	u := &terminal{app: app, output: view, followingTranscript: true}
 	u.chatRootActive.Store(true)
+	u.transcriptNeedsScroll = true
 	app.SetAfterDrawFunc(u.afterDraw)
 	input := make(chan struct{}, 1)
 	app.SetInputCapture(func(*tcell.EventKey) *tcell.EventKey {
@@ -151,6 +152,7 @@ func TestAfterDrawCorrectsTranscriptOffsetWithoutBlockingInput(t *testing.T) {
 	go func() {
 		app.QueueUpdateDraw(func() {
 			view.SetOffset(0, 0)
+			u.transcriptNeedsScroll = true
 		})
 		close(corrected)
 	}()

@@ -121,6 +121,9 @@ type terminal struct {
 	clipboard                    *clipboardQueue
 	followingTranscript          bool
 	transcriptScrollRow          int
+	transcriptNeedsScroll        bool
+	lastScreenWidth              int
+	lastScreenHeight             int
 	selectionDragging            atomic.Bool
 	chatRootActive               atomic.Bool
 	selectionMoved               atomic.Bool
@@ -245,7 +248,13 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 		u.screenMu.Lock()
 		u.screen = screen
 		u.screenMu.Unlock()
-		width, _ := screen.Size()
+		width, height := screen.Size()
+		if width != u.lastScreenWidth || height != u.lastScreenHeight {
+			u.lastScreenWidth, u.lastScreenHeight = width, height
+			if u.followingTranscript {
+				u.transcriptNeedsScroll = true
+			}
+		}
 		u.setTerminalWidth(width)
 		return false
 	})
@@ -447,19 +456,31 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 
 func (u *terminal) afterDraw(screen tcell.Screen) {
 	u.restoreSelectionSnapshot(screen)
-	if u.followingTranscript && !u.output.HasSelection() {
-		target := u.maxTranscriptScroll()
-		u.transcriptScrollRow = target
-		current, _ := u.output.GetOffset()
-		if current != target {
-			u.output.SetOffset(target, 0)
-		}
-		if u.chatRootActive.Load() {
-			// AfterDraw runs before screen.Show, so repaint the transcript area
-			// even when its numeric offset already matches the current viewport.
-			u.output.Draw(screen)
+	if !u.followingTranscript || u.output.HasSelection() || !u.chatRootActive.Load() {
+		return
+	}
+	if u.transcriptNeedsScroll {
+		u.scrollTranscriptToEnd()
+		u.transcriptNeedsScroll = false
+	}
+	u.output.Draw(screen)
+}
+
+func (u *terminal) scrollTranscriptToEnd() {
+	handler := u.output.TextArea.InputHandler()
+	setFocus := func(tv.Primitive) {}
+	for range len(u.output.GetText(true)) + 1 {
+		before, _ := u.output.GetOffset()
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModAlt), setFocus)
+		after, _ := u.output.GetOffset()
+		if after == before {
+			break
 		}
 	}
+	for range max(0, u.output.innerHeight()-1) {
+		handler(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModAlt), setFocus)
+	}
+	u.transcriptScrollRow, _ = u.output.GetOffset()
 }
 
 func (u *terminal) setRoot(root tv.Primitive, fullscreen bool) *tv.Application {
@@ -520,6 +541,7 @@ func (u *terminal) renderTranscript() {
 		_, start, end = u.output.GetSelection()
 	}
 	u.output.setContent(newText, preserve, u.followingTranscript, u.transcriptScrollRow)
+	u.transcriptNeedsScroll = !preserve && u.followingTranscript
 	if preserve {
 		u.selectionSnapshot = true
 		u.selectionNeedsRestore = true
@@ -1170,8 +1192,7 @@ func (u *terminal) submit() {
 				u.latestCompletedReply = completed
 				u.followingTranscript = true
 				u.renderTranscript()
-				u.transcriptScrollRow = u.maxTranscriptScroll()
-				u.output.SetOffset(u.transcriptScrollRow, 0)
+				u.transcriptNeedsScroll = true
 			})
 		}
 		u.writeAsync("\n")
