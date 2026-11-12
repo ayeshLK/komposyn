@@ -433,6 +433,7 @@ func TestClipboardFailureFallbackDoesNotRaceScreenRedraw(t *testing.T) {
 	}
 	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 	waitForScreen(t, safe, "copy me", "")
+	waitForScreen(t, safe, "Response completed and added to follow-up context.", "")
 	for _, r := range "/copy" {
 		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
 	}
