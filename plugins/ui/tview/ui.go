@@ -453,9 +453,12 @@ func (u *terminal) afterDraw(screen tcell.Screen) {
 		current, _ := u.output.GetOffset()
 		if current != target {
 			u.output.SetOffset(target, 0)
-			if u.chatRootActive.Load() {
-				u.output.Draw(screen)
-			}
+		}
+		if u.chatRootActive.Load() {
+			// AfterDraw runs before screen.Show, so repaint the transcript even
+			// when its numeric offset already matches. Earlier queued changes may
+			// otherwise leave the previous viewport in the screen buffer.
+			u.output.Draw(screen)
 		}
 	}
 }
