@@ -1117,7 +1117,29 @@ func (u *terminal) submit() {
 	u.input.SetText("")
 	u.writeUser(text)
 	u.launch(func() {
-		turn, err := u.client.Send(u.ctx, text, func(delta string) { u.writeAssistantAsync(delta) })
+		var streamedMu sync.Mutex
+		var streamed strings.Builder
+		turn, err := u.client.Send(u.ctx, text, func(delta string) {
+			streamedMu.Lock()
+			streamed.WriteString(delta)
+			streamedMu.Unlock()
+			u.writeAssistantAsync(delta)
+		})
+		streamedMu.Lock()
+		streamedText := streamed.String()
+		streamedMu.Unlock()
+		if turn.Text != "" {
+			u.queue(func() {
+				if streamedText == "" {
+					u.appendOutput(turn.Text, true)
+				} else if strings.HasPrefix(turn.Text, streamedText) {
+					u.appendOutput(strings.TrimPrefix(turn.Text, streamedText), true)
+				}
+				// Reconcile the final result after queued deltas so the completed
+				// answer remains visible even if a platform dropped a stream redraw.
+				u.renderTranscript()
+			})
+		}
 		if turn.Outcome == modelprovider.OutcomeCompleted && err == nil {
 			completed := turn.Text
 			if completed == "" {
