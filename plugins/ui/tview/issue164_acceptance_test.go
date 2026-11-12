@@ -123,9 +123,10 @@ func TestIssue280FileReadAvailabilityFollowsRuntimeRouteAndBackend(t *testing.T)
 		support    modelprovider.Support
 		wantState  string
 		wantReason string
+		wantHeader string
 	}{
-		{name: "supported route without inspected backend", support: modelprovider.SupportSupported, wantState: "backend_unavailable", wantReason: "No trusted file-read backend is configured"},
-		{name: "unverified route", support: modelprovider.SupportUnknown, wantState: "unknown_route", wantReason: "unverified"},
+		{name: "supported route without inspected backend", support: modelprovider.SupportSupported, wantState: "backend_unavailable", wantReason: "No trusted file-read backend is configured", wantHeader: "backend unavailable"},
+		{name: "unverified route", support: modelprovider.SupportUnknown, wantState: "unknown_route", wantReason: "unverified", wantHeader: "route unverified"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := auth.Store{Path: t.TempDir() + "/auth.json"}
@@ -172,8 +173,8 @@ func TestIssue280FileReadAvailabilityFollowsRuntimeRouteAndBackend(t *testing.T)
 				t.Fatal("chat view did not open")
 			}
 			waitForScreen(t, screen, "File reading unavailable", "")
-			if !strings.Contains(u.header.GetText(true), "File reading unavailable") {
-				t.Fatalf("header omitted compact availability state: %q", u.header.GetText(true))
+			if !strings.Contains(u.header.GetText(true), "File reading unavailable") || !strings.Contains(u.header.GetText(true), test.wantHeader) {
+				t.Fatalf("header omitted concise availability reason: %q", u.header.GetText(true))
 			}
 			dispatch = make(chan struct{})
 			u.commands = supportedCommands()

@@ -233,8 +233,10 @@ terms can change.
 Official provider documentation describes OpenAI Responses function calling
 and image inputs, and Anthropic Messages client tools and image blocks. Current
 KompoSyn model catalogs report identifiers/display names, not per-model tool
-or image capability. Its OpenAI OAuth route uses a separately constrained
-Responses subset and has no verified tool/image evidence in this repository.
+or image capability. OpenAI OAuth official documentation and the adapter's
+HTTP/SSE fixture establish the documented client-tool protocol shape. Live
+OAuth model/account compatibility and public runtime exposure remain
+unverified; image support also remains unverified.
 Therefore no capability is inferred from catalog presence, provider name, or
 model name. Until route/model-specific evidence is recorded and tested, keep
 that route's tool/image definitions hidden. References: [OpenAI function

@@ -130,6 +130,23 @@ func (p Plugin) list(ctx context.Context, c provider.Credential) ([]provider.Mod
 
 func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
 	method := credentialMethod(in.Credential)
+	hasToolResult := false
+	for _, message := range in.Messages {
+		if message.Role == provider.RoleTool {
+			hasToolResult = true
+			break
+		}
+	}
+	if method == provider.AuthOAuth && (len(in.Tools) > 0 || hasToolResult) {
+		return toolProtocolUnsupported(provider.DiagnosticToolProtocolRouteUnsupported), nil
+	}
+	return p.streamChatProtocol(ctx, in, delta)
+}
+
+// streamChatProtocol implements the Responses wire protocol for fixture coverage.
+// Public dispatch remains gated by StreamChat until OAuth route support is verified.
+func (p Plugin) streamChatProtocol(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
+	method := credentialMethod(in.Credential)
 	if in.ModelID == "" || (method == provider.AuthAPIKey && in.MaxOutput <= 0) || (method != provider.AuthAPIKey && method != provider.AuthOAuth) {
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 	}

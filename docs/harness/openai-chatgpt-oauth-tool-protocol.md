@@ -51,7 +51,7 @@ compatibility evidence.
 
 ## Fixture contract and adapter seam
 
-The executable fixture at `plugins/model-provider/openai/tool_protocol_test.go`
+The executable private protocol fixture at `plugins/model-provider/openai/tool_protocol_test.go`
 uses the existing OpenAI adapter HTTP/SSE seam. It covers OAuth bearer auth,
 `additional_tools` placement, streaming function-call argument assembly,
 call ID correlation, a `function_call_output`, and a second response. It also
@@ -59,15 +59,18 @@ checks OAuth request flags and confirms `max_output_tokens` and top-level
 `tools` are absent. The negative fixture supplies a non-completed/incomplete
 function call and asserts it yields no dispatchable call. These fixtures
 exercise a protocol shape from official documentation; they do not assert
-that OpenAI accepted it.
+that OpenAI accepted it or that the public route is available. Public
+`Plugin.StreamChat` rejects OAuth tool-bearing requests before network dispatch
+while `RouteCapabilities(AuthOAuth)` remains `SupportUnknown`. The private
+protocol implementation exists to exercise the adapter fixture.
 
-The smallest integration change is the adapter's bounded OAuth encoding:
-place client function definitions in a developer `additional_tools` input
-item, keep them available on the continuation request, and continue replaying
-Responses-native assistant items plus `function_call_output` values in full
-HTTP input history. Keep authorization, execution, and result production in
-the existing host runtime. Do not enable tools by changing the OAuth
-capability declaration alone. API-key request encoding remains unchanged.
+The adapter's private protocol implementation encodes client function
+definitions in a developer `additional_tools` input item, keeps them available
+on the continuation request, and replays Responses-native assistant items
+plus `function_call_output` values in full HTTP input history. Public OAuth
+dispatch remains text-only until route-specific live evidence verifies the
+full tool cycle. Keep authorization, execution, and result production in the
+existing host runtime. API-key request encoding remains unchanged.
 
 ## Live verification still required
 

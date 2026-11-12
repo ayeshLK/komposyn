@@ -690,21 +690,61 @@ func (u *terminal) updateBanner() {
 	readLabel := "File reading unavailable"
 	if snapshot.FilesystemReadAvailability.Available {
 		readLabel = "File reading available · once approval required"
+	} else if reason := compactAvailabilityReason(snapshot.FilesystemReadAvailability.State, snapshot.FilesystemReadAvailability.Reason); reason != "" {
+		readLabel += " · " + reason
 	}
 	planStatus := renderCapabilityState("update_plan", snapshot.UpdatePlanAvailability)
 	inputStatus := renderCapabilityState("request_user_input", snapshot.RequestInputAvailability)
+	if snapshot.UpdatePlanAvailability.State == snapshot.RequestInputAvailability.State &&
+		snapshot.UpdatePlanAvailability.Available == snapshot.RequestInputAvailability.Available &&
+		snapshot.UpdatePlanAvailability.Reason == snapshot.RequestInputAvailability.Reason {
+		planStatus = renderCapabilityState("update_plan/request_user_input", snapshot.UpdatePlanAvailability)
+		inputStatus = ""
+	}
 	if u.terminalWidth > 0 {
 		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
 	}
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s · %s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(planStatus), tv.Escape(inputStatus)))
+	toolStatus := planStatus
+	if inputStatus != "" {
+		toolStatus += " · " + inputStatus
+	}
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(toolStatus)))
 }
 
 func renderCapabilityState(name string, status ui.CapabilityAvailability) string {
 	state := "unavailable"
 	if status.Available {
 		state = "available"
+	} else if reason := compactAvailabilityReason(status.State, status.Reason); reason != "" {
+		state += " · " + reason
 	}
 	return name + " " + state
+}
+
+func compactAvailabilityReason(state, reason string) string {
+	if reason == "" {
+		return ""
+	}
+	switch state {
+	case "unknown_route":
+		return "route unverified"
+	case "backend_unavailable":
+		return "backend unavailable"
+	case "enforcement_unavailable":
+		return "host authorization unavailable"
+	case "unsupported_route":
+		return "route unsupported"
+	case "cleanup_pending":
+		return "wait for cleanup"
+	case "working_directory_unavailable":
+		return "working directory unavailable; /cd"
+	case "no_model":
+		return "select model; /model"
+	case "not_implemented":
+		return "not in this build; /help"
+	default:
+		return "see /help"
+	}
 }
 
 func compactHeaderPath(path string, maxRunes int) string {
