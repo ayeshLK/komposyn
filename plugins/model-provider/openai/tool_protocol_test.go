@@ -61,8 +61,11 @@ func TestResponsesFunctionCallProtocolAndContinuation(t *testing.T) {
 }
 
 func TestOAuthFunctionCallUsesAdditionalToolsAndContinues(t *testing.T) {
-	if got := (Plugin{}).RouteCapabilities(p.AuthOAuth).ClientTools; got != p.SupportUnknown {
-		t.Fatalf("OAuth capability declaration changed to %q", got)
+	if got := p.CapabilitiesForModel(Plugin{}, p.AuthOAuth, "gpt-6-sol").ClientTools; got != p.SupportSupported {
+		t.Fatalf("verified OAuth model capability=%q", got)
+	}
+	if got := p.CapabilitiesForModel(Plugin{}, p.AuthOAuth, "gpt-6-astra").ClientTools; got != p.SupportUnknown {
+		t.Fatalf("unverified OAuth model capability=%q", got)
 	}
 	var requests []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -90,11 +93,11 @@ func TestOAuthFunctionCallUsesAdditionalToolsAndContinues(t *testing.T) {
 	definition := chattools.Definition{ID: "lookup", Description: "Look up a value", InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`), MaxInput: 32}
 	plugin := Plugin{BaseURL: server.URL, Client: server.Client()}
 	credential := p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}
-	first, err := plugin.streamChatProtocol(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: credential, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}}, nil)
+	first, err := plugin.StreamChat(context.Background(), p.ChatRequest{ModelID: "gpt-6-sol", Credential: credential, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}}, nil)
 	if err != nil || first.Outcome != p.OutcomeCompleted || first.Completion != p.CompletionToolCalls || len(first.ToolCalls) != 1 || first.ToolCalls[0].CallID != "call-1" || string(first.ToolCalls[0].Arguments) != `{"q":"hello"}` {
 		t.Fatalf("first=%+v err=%v", first, err)
 	}
-	second, err := plugin.streamChatProtocol(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: credential, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}, {Role: p.RoleAssistant, Native: first.Native}, {Role: p.RoleTool, ToolResult: &p.ToolResult{CallID: "call-1", Content: "fixture result"}}}, Tools: []chattools.Definition{definition}}, nil)
+	second, err := plugin.StreamChat(context.Background(), p.ChatRequest{ModelID: "gpt-6-sol", Credential: credential, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}, {Role: p.RoleAssistant, Native: first.Native}, {Role: p.RoleTool, ToolResult: &p.ToolResult{CallID: "call-1", Content: "fixture result"}}}, Tools: []chattools.Definition{definition}}, nil)
 	if err != nil || second.Outcome != p.OutcomeCompleted || second.Text != "done" || len(requests) != 2 {
 		t.Fatalf("second=%+v requests=%d err=%v", second, len(requests), err)
 	}
@@ -139,6 +142,10 @@ func TestPublicOAuthToolRequestDoesNotDispatchNetworkRequest(t *testing.T) {
 	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}}, nil)
 	if err != nil || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != p.DiagnosticToolProtocolRouteUnsupported || dispatched {
 		t.Fatalf("result=%+v err=%v dispatched=%v", result, err, dispatched)
+	}
+	result, err = (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "gpt-6-astra", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}, {Role: p.RoleAssistant, Native: []json.RawMessage{json.RawMessage(`{"type":"function_call","id":"item-1","call_id":"call-1","name":"lookup","arguments":"{}","status":"completed"}`)}}, {Role: p.RoleTool, ToolResult: &p.ToolResult{CallID: "call-1", Content: "fixture result"}}}}, nil)
+	if err != nil || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != p.DiagnosticToolProtocolRouteUnsupported || dispatched {
+		t.Fatalf("unknown-model continuation result=%+v err=%v dispatched=%v", result, err, dispatched)
 	}
 }
 

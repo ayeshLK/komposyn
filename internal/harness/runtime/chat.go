@@ -534,7 +534,7 @@ func selectedRouteToolSupport(selected *model.Model, providers *model.Registry) 
 	if !ok {
 		return provider.SupportUnknown, "unknown_route", "The selected provider route is unavailable; refresh models and select an available model."
 	}
-	support := provider.CapabilitiesFor(plug, selected.AuthMethod).ClientTools
+	support := provider.CapabilitiesForModel(plug, selected.AuthMethod, selected.ID).ClientTools
 	if support == provider.SupportUnknown {
 		return support, "unknown_route", "Support for client tools on the selected provider/authentication route is unverified; choose a route that explicitly supports client tools."
 	}
