@@ -60,14 +60,68 @@ func TestResponsesFunctionCallProtocolAndContinuation(t *testing.T) {
 	}
 }
 
-func TestOAuthToolRequestIsRejectedBeforeNetwork(t *testing.T) {
-	called := false
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+func TestOAuthFunctionCallUsesAdditionalToolsAndContinues(t *testing.T) {
+	if got := (Plugin{}).RouteCapabilities(p.AuthOAuth).ClientTools; got != p.SupportUnknown {
+		t.Fatalf("OAuth capability declaration changed to %q", got)
+	}
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fixture-token" {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		requests = append(requests, request)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requests) == 1 {
+			fmt.Fprint(w, "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call-1\",\"name\":\"lookup\"}}\n\n")
+			fmt.Fprint(w, "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"item-1\",\"delta\":\"{\\\"q\\\":\\\"hello\\\"}\"}\n\n")
+			fmt.Fprint(w, "event: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"item-1\",\"arguments\":\"{\\\"q\\\":\\\"hello\\\"}\"}\n\n")
+			fmt.Fprint(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"hello\\\"}\",\"status\":\"completed\"}}\n\n")
+			fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"hello\\\"}\",\"status\":\"completed\"}]}}\n\n")
+			return
+		}
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}]}}\n\n")
+	}))
 	defer server.Close()
-	definition := chattools.Definition{ID: "lookup", Description: "Look up a value", InputSchema: json.RawMessage(`{"type":"object"}`), MaxInput: 32}
-	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture"}, Messages: []p.Message{{Role: p.RoleUser, Text: "hi"}}, Tools: []chattools.Definition{definition}}, nil)
-	if err != nil || called || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != p.DiagnosticToolProtocolRouteUnsupported {
-		t.Fatalf("result=%+v called=%v err=%v", result, called, err)
+	definition := chattools.Definition{ID: "lookup", Description: "Look up a value", InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`), MaxInput: 32}
+	plugin := Plugin{BaseURL: server.URL, Client: server.Client()}
+	credential := p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}
+	first, err := plugin.StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: credential, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}}, nil)
+	if err != nil || first.Outcome != p.OutcomeCompleted || first.Completion != p.CompletionToolCalls || len(first.ToolCalls) != 1 || first.ToolCalls[0].CallID != "call-1" || string(first.ToolCalls[0].Arguments) != `{"q":"hello"}` {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	second, err := plugin.StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: credential, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}, {Role: p.RoleAssistant, Native: first.Native}, {Role: p.RoleTool, ToolResult: &p.ToolResult{CallID: "call-1", Content: "fixture result"}}}, Tools: []chattools.Definition{definition}}, nil)
+	if err != nil || second.Outcome != p.OutcomeCompleted || second.Text != "done" || len(requests) != 2 {
+		t.Fatalf("second=%+v requests=%d err=%v", second, len(requests), err)
+	}
+	for i, request := range requests {
+		if request["store"] != false || request["stream"] != true {
+			t.Fatalf("request %d did not use SIWC request flags: %v", i, request)
+		}
+		if _, exists := request["max_output_tokens"]; exists {
+			t.Fatalf("request %d included unsupported max_output_tokens", i)
+		}
+		if _, exists := request["tools"]; exists {
+			t.Fatalf("request %d used top-level tools", i)
+		}
+		input := request["input"].([]any)
+		additional, ok := input[len(input)-1].(map[string]any)
+		if !ok || additional["type"] != "additional_tools" || additional["role"] != "developer" {
+			t.Fatalf("request %d missing additional_tools input item: %v", i, input)
+		}
+		toolDefs := additional["tools"].([]any)
+		if len(toolDefs) != 1 || toolDefs[0].(map[string]any)["name"] != "lookup" {
+			t.Fatalf("request %d tool definitions=%v", i, toolDefs)
+		}
+	}
+	secondInput := requests[1]["input"].([]any)
+	toolResult, ok := secondInput[2].(map[string]any)
+	if !ok || toolResult["type"] != "function_call_output" || toolResult["call_id"] != "call-1" || toolResult["output"] != "fixture result" {
+		t.Fatalf("tool result was not correlated: %v", secondInput)
 	}
 }
 
@@ -81,5 +135,36 @@ func TestConflictingCompletedStatusClearsToolDispatchData(t *testing.T) {
 	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{APIKey: "fixture"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}, MaxOutput: 32}, nil)
 	if err != nil || result.Outcome != p.OutcomeUnsupported || result.DiagnosticCode != p.DiagnosticOpenAICompletedStatusInProgress || result.Completion != "" || len(result.ToolCalls) != 0 {
 		t.Fatalf("rejected response retained dispatch data: result=%+v err=%v", result, err)
+	}
+}
+
+func TestOAuthIncompleteFunctionCallIsNotDispatchable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call-1\",\"name\":\"lookup\"}}\n\n")
+		fmt.Fprint(w, "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"item-1\",\"delta\":\"{\\\"q\\\":\"}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\",\"output\":[{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\",\"status\":\"incomplete\"}]}}\n\n")
+	}))
+	defer server.Close()
+	definition := chattools.Definition{ID: "lookup", Description: "Look up a value", InputSchema: json.RawMessage(`{"type":"object"}`), MaxInput: 32}
+	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}}, nil)
+	if err != nil || result.Outcome != p.OutcomeUnsupported || result.Completion != "" || len(result.ToolCalls) != 0 {
+		t.Fatalf("incomplete call was dispatchable: result=%+v err=%v", result, err)
+	}
+}
+
+func TestOAuthMalformedFunctionCallIsNotDispatchable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","id":"item-1","call_id":"call-1","name":"lookup","arguments":"not-json","status":"completed"}]}}
+
+`)
+	}))
+	defer server.Close()
+	definition := chattools.Definition{ID: "lookup", Description: "Look up a value", InputSchema: json.RawMessage(`{"type":"object"}`), MaxInput: 32}
+	result, err := (Plugin{BaseURL: server.URL, Client: server.Client()}).StreamChat(context.Background(), p.ChatRequest{ModelID: "fixture", Credential: p.Credential{Method: p.AuthOAuth, AccessToken: "fixture-token"}, Messages: []p.Message{{Role: p.RoleUser, Text: "find"}}, Tools: []chattools.Definition{definition}}, nil)
+	if err != nil || result.Outcome != p.OutcomeUnsupported || result.Completion != "" || len(result.ToolCalls) != 0 {
+		t.Fatalf("malformed call was dispatchable: result=%+v err=%v", result, err)
 	}
 }

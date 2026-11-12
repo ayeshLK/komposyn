@@ -133,7 +133,7 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 	if in.ModelID == "" || (method == provider.AuthAPIKey && in.MaxOutput <= 0) || (method != provider.AuthAPIKey && method != provider.AuthOAuth) {
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
 	}
-	if diagnostic := toolRequestDiagnostic(in, method); diagnostic != "" {
+	if diagnostic := toolRequestDiagnostic(in); diagnostic != "" {
 		return toolProtocolUnsupported(diagnostic), nil
 	}
 	input := make([]json.RawMessage, 0, len(in.Messages))
@@ -177,7 +177,16 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 				"parameters": definition.InputSchema,
 			})
 		}
-		payload["tools"] = definitions
+		if method == provider.AuthOAuth {
+			additional, err := json.Marshal(map[string]any{"type": "additional_tools", "role": "developer", "tools": definitions})
+			if err != nil {
+				return provider.Result{}, &provider.Error{Outcome: provider.OutcomeUnsupported}
+			}
+			input = append(input, additional)
+			payload["input"] = input
+		} else {
+			payload["tools"] = definitions
+		}
 	}
 	if method == provider.AuthAPIKey {
 		payload["max_output_tokens"] = in.MaxOutput
