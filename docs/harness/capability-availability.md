@@ -23,7 +23,7 @@ Image support requires its own content-format evidence.
 | Provider route | Inventory | Capability evidence | Status and remaining work |
 |---|---|---|---|
 | OpenAI API key | Implemented; listed by `openai.Plugin.AuthMethods` | Responses tool declaration, tool-call parsing, native continuation, and protocol tests in `plugins/model-provider/openai/` | Supported for `update_plan` and `request_user_input`; `read_file` is conditional on host prerequisites below. Continue live provider validation. |
-| OpenAI ChatGPT OAuth (SIWC) | Implemented; listed by `openai.Plugin.AuthMethods` | Route-level `RouteCapabilities(AuthOAuth)` remains `SupportUnknown`; model-level `ModelRouteCapabilities(AuthOAuth, "gpt-6-sol")` enables client tools. The OAuth adapter encodes `additional_tools`; fixtures cover declaration, streamed calls, result correlation, and continuation. A synthetic live plan/input cycle for public model `gpt-6-sol` ran on 2026-11-12; see [the protocol assessment](openai-chatgpt-oauth-tool-protocol.md). | Only `gpt-6-sol` advertises/sends tools on OAuth. Other catalog models remain unverified and text-only. Exact-file live acceptance remains open under #294 because the trusted host worker was unavailable. Unverified support is not a provider restriction. |
+| OpenAI ChatGPT OAuth (SIWC) | Implemented; listed by `openai.Plugin.AuthMethods` | Route-level `RouteCapabilities(AuthOAuth)` remains `SupportUnknown`; model-level `ModelRouteCapabilities(AuthOAuth, "gpt-6-sol")` enables client tools. Runtime can select only models returned in the selected OAuth profile's account-specific catalog. The OAuth adapter encodes `additional_tools`; fixtures cover declaration, streamed calls, result correlation, and continuation. A synthetic live plan/input cycle for public model `gpt-6-sol` ran on one account on 2026-11-12; see [the protocol assessment](openai-chatgpt-oauth-tool-protocol.md). | For an OAuth profile, only `gpt-6-sol` is eligible to advertise/send tools, and only when that model appears in the selected profile's catalog. The live result covers one account; other accounts with the same model ID have not been separately live-verified. Other catalog models remain unverified; do not infer their support or a provider restriction. Exact-file live acceptance remains open under #294 because Bubblewrap failed the trusted root-owned/non-writable check. Live denial/cancellation and silent-fallback behavior also remain open under #294 because the bounded live request budget was consumed. |
 | Anthropic API key | Implemented; listed by `anthropic.Plugin.AuthMethods` | Messages tool declaration, `tool_use` parsing, result continuation, and protocol tests in `plugins/model-provider/anthropic/` | Supported for `update_plan` and `request_user_input`; `read_file` is conditional on host prerequisites below. Continue live provider validation. |
 | Anthropic subscription / OAuth | No authentication integration or selectable route exists in the bundled adapter; `AuthMethods` returns only `AuthAPIKey` | No adapter or route evidence | Unimplemented. Do not create or imply a selectable profile. No claim is made that Anthropic prohibits such integration. |
 
@@ -42,9 +42,9 @@ filesystem access.
 
 | Capability | OpenAI API key | OpenAI ChatGPT OAuth | Anthropic API key | Anthropic subscription / OAuth |
 |---|---|---|---|---|
-| `update_plan` | Supported; runtime authorization and approval required | Available only for `gpt-6-sol`; runtime authorization and approval required. Other model IDs remain unknown/unavailable. | Supported; runtime authorization and approval required | Unimplemented route |
-| `request_user_input` | Supported; runtime authorization and approval required | Available only for `gpt-6-sol`; runtime authorization and approval required. Other model IDs remain unknown/unavailable. | Supported; runtime authorization and approval required | Unimplemented route |
-| `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: `gpt-6-sol` plus trusted Linux backend and complete host enforcement; live exact-file journey not tested and trusted backend prerequisites were unavailable | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
+| `update_plan` | Supported; runtime authorization and approval required | Eligible only when `gpt-6-sol` is in the selected profile's account-specific catalog; runtime authorization and approval required. Live Allow once observed on one account. Other model IDs and other accounts with this model ID remain unverified. | Supported; runtime authorization and approval required | Unimplemented route |
+| `request_user_input` | Supported; runtime authorization and approval required | Eligible only when `gpt-6-sol` is in the selected profile's account-specific catalog; runtime authorization and approval required. Live Allow once observed on one account. Other model IDs and other accounts with this model ID remain unverified. | Supported; runtime authorization and approval required | Unimplemented route |
+| `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: `gpt-6-sol` in the selected profile's account-specific catalog plus trusted Linux backend and complete host enforcement. Exact-file live journey is untested because Bubblewrap failed the trusted root-owned/non-writable check. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 
 The conditional read path requires inspected trusted Bubblewrap, the complete
 retained-read lifecycle and host enforcement, an available working directory,
@@ -88,9 +88,14 @@ approval, and sandbox enforcement remain authoritative at dispatch time.
   `plugins/ui/tview/ui.go`.
 - Live ChatGPT OAuth plan and clarification tool behavior was verified on
   public model `gpt-6-sol` for one account on 2026-11-12 using synthetic
-  content and a temporary development build. Normal runtime support is now
-  model-scoped to `gpt-6-sol`; other catalog models and the exact-file OAuth journey
-  remain unverified; #294 requires a supported trusted Linux worker for that
-  read test. No Anthropic subscription integration is implemented. Any future
-  route must retain explicit capability declarations and tests before it is
-  selectable.
+  content and a temporary development build. Model selection is limited to the
+  selected OAuth profile's account-specific catalog; other accounts with that
+  model ID have not been separately live-verified. The only live approvals were
+  Allow once for `update_plan` and `request_user_input`. Live denial/cancellation
+  and silent-fallback checks were not performed because the bounded request
+  budget was consumed; they remain open under #294. Automated runtime fixtures
+  are separate evidence. The exact-file OAuth journey remains untested because
+  Bubblewrap failed the trusted root-owned/non-writable check; #294 requires a
+  supported trusted Linux worker for that read test. No Anthropic subscription
+  integration is implemented. Any future route must retain explicit capability
+  declarations and tests before it is selectable.
