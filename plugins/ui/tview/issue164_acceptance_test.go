@@ -172,8 +172,23 @@ func TestIssue280FileReadAvailabilityFollowsRuntimeRouteAndBackend(t *testing.T)
 				t.Fatal("chat view did not open")
 			}
 			waitForScreen(t, screen, "File reading unavailable", "")
-			if !strings.Contains(u.header.GetText(true), test.wantReason) {
-				t.Fatalf("header omitted recovery reason: %q", u.header.GetText(true))
+			if !strings.Contains(u.header.GetText(true), "File reading unavailable") {
+				t.Fatalf("header omitted compact availability state: %q", u.header.GetText(true))
+			}
+			dispatch = make(chan struct{})
+			u.commands = supportedCommands()
+			u.app.QueueUpdateDraw(func() {
+				u.runCommand("/help")
+				close(dispatch)
+			})
+			select {
+			case <-dispatch:
+			case <-time.After(2 * time.Second):
+				t.Fatal("help command did not render")
+			}
+			waitForScreen(t, screen, test.wantReason, "")
+			if !strings.Contains(u.transcript[len(u.transcript)-1].text, test.wantReason) {
+				t.Fatalf("help omitted recovery reason: %+v", u.transcript)
 			}
 			if test.support == modelprovider.SupportSupported {
 				for _, r := range "hello from the simulated terminal" {

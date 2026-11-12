@@ -1628,13 +1628,16 @@ func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
 	u.body.AddItem(tv.NewTextView(), 0, 1, false).AddItem(u.usagePane, 0, 0, false)
 	u.composer.AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 1, 0, true)
 	u.updateBanner()
-	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") || !strings.Contains(got, "File reading unavailable") || !strings.Contains(got, "/model") || !strings.Contains(got, "update_plan unavailable · Tool protocol support is unverified") || !strings.Contains(got, "request_user_input unavailable · Host authorization is not configured") {
+	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") || !strings.Contains(got, "File reading unavailable") || !strings.Contains(got, "update_plan unavailable") || !strings.Contains(got, "request_user_input unavailable") {
 		t.Fatalf("initial banner = %q", got)
+	}
+	if got := compactHeaderPath("/tmp/long-working-directory/launch/nested", 24); len([]rune(got)) > 24 || !strings.Contains(got, "…") {
+		t.Fatalf("compact working directory = %q", got)
 	}
 	client.selected = &model
 	client.readAvailability = ui.FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads require explicit once approval."}
 	u.updateBanner()
-	if got := u.header.GetText(true); !strings.Contains(got, "Model Y") || !strings.Contains(got, "File reading available") || !strings.Contains(got, "explicit once approval") {
+	if got := u.header.GetText(true); !strings.Contains(got, "Model Y") || !strings.Contains(got, "File reading available") || !strings.Contains(got, "once approval required") {
 		t.Fatalf("selected model missing from banner: %q", got)
 	}
 	u.setTerminalWidth(usageWideThreshold)
@@ -1652,6 +1655,22 @@ func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
 	u.toggleUsage()
 	if u.compactUsageShown {
 		t.Fatal("narrow usage control did not collapse the compact pane")
+	}
+}
+
+func TestHelpShowsFullAvailabilityReasons(t *testing.T) {
+	client := &clientStub{
+		readAvailability:         ui.FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."},
+		updatePlanAvailability:   ui.CapabilityAvailability{State: "unknown_route", Reason: "Tool protocol support is unverified."},
+		requestInputAvailability: ui.CapabilityAvailability{State: "enforcement_unavailable", Reason: "Host authorization is not configured."},
+	}
+	u := &terminal{client: client, output: newTranscriptView(), input: newComposerInput(), commands: supportedCommands()}
+	u.runCommand("/help")
+	got := u.transcript[0].text
+	for _, reason := range []string{"Select a model with /model to check file-reading support.", "Tool protocol support is unverified.", "Host authorization is not configured."} {
+		if !strings.Contains(got, reason) {
+			t.Errorf("help missing availability reason %q: %q", reason, got)
+		}
 	}
 }
 
