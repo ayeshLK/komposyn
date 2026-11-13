@@ -7,6 +7,13 @@ and can be tested and understood before they are composed into a larger
 platform. This lets the project learn from working components without
 pretending that the eventual harness architecture is already settled.
 
+The current invitation is to developers willing to try the experimental
+terminal experience and influence its direction. The
+[guided trial](harness/first-use.md) makes the present scope concrete: text,
+a temporary plan, and explicit approval. Whether that inspectability and
+modularity are useful is a hypothesis to evaluate through voluntary feedback,
+not evidence of a mature coding assistant.
+
 ## Available now
 
 This repository currently provides KompoSyn Token Logger Core and an
@@ -20,7 +27,8 @@ experimental temporary-chat executable:
 - An experimental, memory-only temporary chat with bundled OpenAI and
   Anthropic provider adapters lives in this module. Its `komposyn` binary is
   packaged and released from this repository under the Release Please version;
-  see the [harness guide](harness/README.md) and
+  see the [harness guide](harness/README.md),
+  [versioned trial evidence](harness/first-use-evidence.md), and
   [installation instructions](installation.md).
 
 The standalone CLI lets developers use Token Logger with existing agent tools
@@ -31,7 +39,8 @@ tool-use milestone exposes the conversation-local `update_plan` and
 client tools. Centralized action and exact conversation-resource authorization
 is required. The separately reviewed [read-focused milestone](harness/issue-215-completion-tracking.md)
 also enables a conditional Linux exact-file `read_file` capability with trusted
-backend inspection, an explicit root and target-specific once approval.
+backend inspection and target-specific once approval. Selecting a working
+directory changes relative-path resolution without granting file access.
 Filesystem mutation, process, web, and image tools remain unavailable.
 This milestone does not add projects, sessions, persistent tasks, or
 persistent conversations. The sidecar is a token-logger

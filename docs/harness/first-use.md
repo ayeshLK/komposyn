@@ -1,18 +1,27 @@
 # Five minutes with the experimental chat
 
-This walkthrough describes the current experimental chat behavior. The
-historical v0.14.0 release kept the ChatGPT OAuth route text-only, without
-conversation tools or exact-file reads. API-key routes already supported
-conditional Linux exact-file reads. These release limits are preserved as
-history. Use the
-[installation guide](../installation.md) for signed binaries, or build from
-source below. Live ChatGPT OAuth planning, clarification, exact-file read,
-cancellation, and denial have been operator-verified for one account/model on
-one trusted Linux host. Other accounts/models and broader platform coverage
-remain unverified.
-Automated fixture tests do not establish account eligibility or real-provider
-compatibility. See the [capability matrix](capability-availability.md) and
-[protocol assessment](openai-chatgpt-oauth-tool-protocol.md) for scope and limits.
+Try a text exchange, a temporary plan, and an explicit tool approval. You need
+an interactive terminal, an installed `komposyn`, network access, and an
+eligible provider account. The basic trial does not need a workspace,
+Bubblewrap, or file access. Allow about five minutes after installation and
+provider sign-in; account setup can take longer.
+
+These instructions target released **v0.16.0** (commit
+`82edf9621d2fb5768338e23af51e57dac7e6e47e`). Start with the
+[installation guide](../installation.md), then return here. This is an
+experimental terminal experience, with in-memory conversations rather than a
+mature coding assistant. Editing, shell commands, and web tools are unavailable.
+
+![Staged v0.16.0 terminal demonstration: text exchange, update_plan approval, and a three-step temporary plan. Synthetic ChatGPT OAuth profile on Linux amd64; no provider contacted.](demo/first-use.png)
+
+The [demo and verification record](first-use-evidence.md) identifies the staged
+capture and actual checks separately. The numbered instructions below are the
+text equivalent: choose a route, exchange text, approve `update_plan`, and
+inspect the resulting plan. A real model's wording and tool choices can differ.
+Prior operator-reported ChatGPT OAuth live checks cover one account/model on
+one trusted Linux host using source builds; they do not establish a fresh
+v0.16.0 release trial. Current-release live validation remains pending. See the
+[capability matrix](capability-availability.md) for route evidence and gaps.
 
 ## 1. Start and choose a model
 
@@ -25,6 +34,12 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/komposyn ./cmd/harness
 
 The stripped build matches the release worker profile. An unstripped development
 binary can exceed the 14 MiB worker image bound and leave reads unavailable.
+
+Before connecting, note that validated API keys and OAuth tokens persist as
+**plaintext** in a private local auth file, protected by Unix permissions or
+the Windows current-user ACL. Conversations, plans, tool grants, and selection
+stay in memory. Submitted text and approved tool results go to the selected
+provider. Use synthetic content throughout this trial.
 
 Open `/model`, choose **Add New Provider**, and add an OpenAI API key,
 **Continue with ChatGPT**, or an Anthropic API key. Saved profiles remain
@@ -51,17 +66,26 @@ a successful identity login alone is insufficient.
 
 ## 2. Exchange text and try a plan
 
-Submit a small, non-sensitive question. Text streams into the transcript;
-submit a follow-up after completion. Only one request runs at a time. Ctrl+C
+Submit: “Compare two sorting algorithms in one sentence.” Text streams into
+the transcript; submit a follow-up after completion. Only one request runs at a time. Ctrl+C
 or `/cancel` cancels it; Enter while busy preserves the draft. Failed or
 canceled partial replies remain visible but are not automatically reused as
 completed conversation context. Changing provider, profile, or model after
 messages asks for confirmation and clears the conversation if confirmed.
 
-On an API-key route, try: “Use update_plan to propose three steps for comparing
-two sorting algorithms. Do not access files.” Tool use depends on the selected
+On any supported route above, try: “Use update_plan to propose three steps
+for comparing two sorting algorithms. Do not access files.” Tool use depends on the selected
 model. Each plan update replaces the whole temporary plan; `/plan` opens it.
 An empty plan clears it. Plans are not saved tasks.
+
+For this trial, inspect the `update_plan` approval and its current-conversation
+scope, then explicitly choose **Allow once**. Allow is not focused by default:
+Tab moves from details to actions; move to Allow once and press Enter. The
+first key after the dialog appears is consumed to avoid accidental acceptance.
+Success means the plan appears and `/plan` shows its steps. If the model replies
+with prose instead, ask it to use `update_plan`; prose alone does not exercise
+tool approval. If the route or model rejects the request, record the outcome
+without switching billing routes to conceal it.
 
 The approval dialog lists action and resource requirements. Choose **Allow
 once**, **Allow for conversation** when offered, **Deny**, **Do something
@@ -94,8 +118,20 @@ synthetic text. The launch directory appears in the chat header and supplies
 the base for relative file requests. Starting in that directory grants no read
 permission. Ask the model to read the synthetic file by its relative path. If
 a read is proposed, inspect the
-exact target, operation, and provider/model/profile destination before choosing
-**Allow once**. Each read needs its own approval; no directory-wide or
+three disclosure facts before choosing
+**Allow once**:
+
+- **Read target:** the complete resolved exact file, including any outside-working-directory notice.
+- **Read approval:** this single read, with its sensitive-data warning; each new read needs approval.
+- **Provider destination:** the selected provider, model, and authentication profile receiving the contents.
+
+For example, create only a disposable `trial.txt` containing
+`KOMPOSYN_SYNTHETIC_TRIAL`, and ask: “Read trial.txt with read_file and repeat
+its marker.” Verify the displayed destination before approving. You can choose
+Deny or Cancel turn instead. Success requires the tool result and follow-up,
+not a model guessing the marker. Do not use a real configuration or project file.
+
+Each read needs its own approval; no directory-wide or
 conversation-long read grant is offered.
 
 Use `/cd <path>` to change the base for later relative requests. Paths can be

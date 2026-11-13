@@ -1,22 +1,26 @@
 # KompoSyn documentation
 
-This repository documents the reusable `github.com/ayeshLK/komposyn` module
-and an experimental temporary chat. This repository releases the experimental
-`komposyn` binary; the production `komposyn-lg` executable, user configuration,
-and JSONL harness transport are maintained in the
-[standalone CLI repository](https://github.com/ayeshLK/komposyn-lg).
+Start with the experimental `komposyn` terminal experience: exchange text,
+inspect a tool approval, and help shape the direction toward an agent harness.
+For production token reports, use the separate
+[`komposyn-lg` CLI](https://github.com/ayeshLK/komposyn-lg); library integrators
+can jump to [Token Logger core](#project-and-token-logger-core).
 
-## Core API and operation
+## Try the terminal experience
 
-- [Five-minute chat walkthrough](harness/first-use.md) — current source capabilities,
-  provider/auth/platform limits, permissions, and synthetic file disclosure.
-- [v0.14.0 release overview](harness/next-release-overview.md) and
-  [validation record](harness/release-validation.md) — publication evidence and pending live checks for #269.
-
-- [Experimental temporary chat](harness/README.md) — `komposyn` build, `/model`
-  workflow, local configuration, provider/UI boundaries, and acceptance status.
-- [Experimental CLI installation](installation.md) — verified install,
-  pinning, upgrades, removal, and platform prerequisites.
+- [Five-minute guided trial](harness/first-use.md) — provider selection,
+  text, a temporary plan, approval, feedback, and optional synthetic Linux reads.
+- [Demonstration and verification](harness/first-use-evidence.md) — staged actual-UI
+  capture, v0.16.0 installation checks, scoped prior source-build live evidence,
+  and pending signed-binary live validation.
+- [Experimental CLI installation](installation.md) — prerequisites, verified
+  install, pinning, upgrades, removal, and PATH setup.
+- [Harness guide](harness/README.md) — source build, controls, local
+  configuration, provider/UI boundaries, and implementation evidence.
+- [Capability availability](harness/capability-availability.md) — supported routes,
+  authentication, platform conditions, and live-verification limits.
+- [Chat data handling](harness/phase-one-security.md) — what persists and what
+  goes to the selected provider.
 
 ## Project and Token Logger core
 
@@ -55,6 +59,8 @@ and JSONL harness transport are maintained in the
 
 ## Contributing and releases
 
+- [Content plan and review](devrel-content-plan.md) — prepared visitor journey,
+  pending publication rollout, and manual biweekly review checklist.
 - [Development](contributing/development.md) and
   [testing](contributing/testing.md) — local checks and regression coverage.
 - [Pull requests](contributing/pull-requests.md) — evidence and review guidance.

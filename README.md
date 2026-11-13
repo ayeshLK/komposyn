@@ -1,196 +1,148 @@
 # KompoSyn
 
-KompoSyn is an open-source project exploring how independent, useful
-components can grow into a modular, composable harness for AI agent workflows.
-We are taking a component-first, or “plugin-first,” approach: solve real
-problems with components that work on their own, learn from their use, and
-compose them when the shared architecture is clear.
+KompoSyn is an experimental terminal experience evolving toward a modular
+agent harness. It is for developers who want to try an early implementation,
+inspect tool approvals, and help shape what comes next.
 
-The general KompoSyn harness, plugin runtime, and universal plugin API remain
-future work. Today, KompoSyn delivers the independently useful Token Logger
-component and an experimental temporary text chat that demonstrates bundled
-provider and UI boundaries. The `komposyn` chat CLI is installable from its
-signed releases; it does not establish a general
-plugin platform.
+Today you can exchange text with OpenAI or Anthropic, build a temporary plan,
+and answer model clarification questions. You choose the provider and model
+and inspect proposed tool actions before approving them. Conditional Linux
+file reads let you try disclosing one exact synthetic file. This is an early
+experiment with in-memory conversations; expect gaps and bring feedback.
 
-> **Build independently. Compose seamlessly. Evolve openly.**
+**Start with the [five-minute guided trial](docs/harness/first-use.md).** It
+covers installation, provider selection, a text exchange, and a plan approval.
+For local token usage and cost reports, go directly to
+[Token Logger](#token-logger).
 
-## The first component: Token Logger
+## See the experience
 
-Token Logger gives developers a local view of token usage across supported AI
-coding tools, projects, and sessions. It reads provider-owned usage records,
-normalizes them into a shared event model, and produces usage and cost reports.
-Its reusable library lives in this repository as the Go module
-`github.com/ayeshLK/komposyn`; the independently versioned
-[`komposyn-lg` CLI](https://github.com/ayeshLK/komposyn-lg) makes the component
-useful with existing tools before a broader harness is built.
+<details>
+<summary>View staged terminal demo</summary>
 
-The production CLI's versioned JSONL sidecar is an integration contract for
-Token Logger, not a general KompoSyn plugin protocol. This module includes the
-experimental `cmd/harness/` entrypoint and its repository-versioned binary
-release path. That path does not replace or distribute the production
-`komposyn-lg` executable.
+![Staged v0.16.0 terminal UI: text exchange, update_plan approval, and temporary plan. Synthetic ChatGPT OAuth profile on Linux amd64; no provider contacted.](docs/harness/demo/first-use.png)
 
-## Principles and open questions
+</details>
 
-KompoSyn favors clear component boundaries, useful independent releases,
-composable contracts, open standards, and community feedback. Open standards
-are a foundation, not a limit on meaningful innovation; extensions should
-address real requirements and preserve clear compatibility semantics. Token
-Logger adopts OpenTelemetry conventions where they fit and documents the
-current gaps in its [alignment audit](docs/otel-alignment.md); it does not
-claim OpenTelemetry conformance or interoperability.
+This illustration captures the actual bundled UI with synthetic replies and
+tool events. It is staged, not a live provider session. The
+[text walkthrough](docs/harness/first-use.md) gives equivalent actions;
+the [verification record](docs/harness/first-use-evidence.md) separates the
+capture from installation checks and prior source-build live evidence.
+A fresh v0.16.0 signed-binary live trial remains pending.
 
-We do not yet know whether every future component should have a standalone
-CLI, what a shared plugin API should contain, or how a future harness should
-discover, trust, and distribute components. These decisions should follow
-working components and real developer needs, rather than a rule imposed for
-consistency. See the [project vision](docs/vision.md),
-[architecture](docs/architecture.md), and the founding
-[issue #41](https://github.com/ayeshLK/komposyn/issues/41) for context.
+## Try it
 
-## This repository
-
-KompoSyn Core contains the reusable Token Logger library: domain models,
-SQLite persistence and migrations, provider adapters, collection, pricing,
-diagnostics, and report behavior. It reads provider-owned local data without
-capturing prompts, responses, or credentials. The experimental chat sends
-submitted text to the selected provider, stores API keys and ChatGPT OAuth
-tokens in a private plaintext configuration file, and keeps chat state only in
-memory. This
-repository prepares signed `komposyn` binaries for the experimental
-temporary chat. The standalone CLI repository owns production command
-behavior, settings, consent, data-directory selection, process lifecycle, and
-the JSONL sidecar transport for `komposyn-lg`.
-
-## Try the experimental `komposyn` chat
-
-`komposyn` is a temporary text chat. It is separate from the production
-[`komposyn-lg` Token Logger CLI](https://github.com/ayeshLK/komposyn-lg#install).
-The broader agent runtime, universal plugin API, projects, sessions, tasks,
-persistent conversations, filesystem mutation, shell execution, web/image
-tools, and MCP support are unavailable. Current source adds conversation-local
-planning, clarification, temporary permissions, and conditional Linux exact-file
-reads; see the [five-minute walkthrough](docs/harness/first-use.md).
-
-> **Experimental release:** [v0.14.0](https://github.com/ayeshLK/komposyn/releases/tag/v0.14.0)
-> includes conversation-local planning, clarification, permissions, conditional
-> Linux exact-file reads, and terminal improvements. Live provider validation
-> remains pending; see the [release validation record](docs/harness/release-validation.md).
+Before connecting, know that submitted text and approved tool results go to
+the selected provider. Conversations, plans, selection, tool grants, and usage
+stay in memory. Validated API keys and OAuth tokens persist as **plaintext**
+in a private local auth file; UI settings also persist. See
+[chat data handling](docs/harness/phase-one-security.md).
 
 ### Linux and macOS
 
-Requires Bash, `curl`, `jq`, `tar`, `sha256sum` or `shasum`, and Cosign v2.4.3
-on `PATH`. See the [Cosign installation guide](https://docs.sigstore.dev/cosign/system_config/installation/)
-for supported setup options.
+With Bash, `curl`, `jq`, `tar`, `sha256sum` or `shasum`, and
+[Cosign v2.4.3](https://docs.sigstore.dev/cosign/system_config/installation/)
+on `PATH`, install the latest stable signed binary:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/install.sh | bash
 ```
 
-The script resolves the latest stable binary release. The default install
-location is `~/.local/bin`; the installer does not change `PATH`. If needed,
-add `export PATH="$HOME/.local/bin:$PATH"` to your shell startup file and open
-a new terminal. See the [installation guide](docs/installation.md) for pinned
-versions, manual script review, custom directories, PATH details, signature
-verification, and troubleshooting.
+This runs the installer from the moving `master` branch. It defaults to
+`~/.local/bin` and leaves `PATH` unchanged; add that directory to your shell's
+`PATH` if needed. For setup, immutable script downloads, version pinning, and
+signature verification, see the [installation guide](docs/installation.md#linux-and-macos).
 
-### Windows (PowerShell)
+### Windows
 
-Requires Windows PowerShell 5.1 or PowerShell 7 and Cosign v2.4.3 on `PATH`.
-See the [Cosign installation guide](https://docs.sigstore.dev/cosign/system_config/installation/).
-The command downloads the installer and architecture helper from the same
-current `master` ref into one temporary directory before running the installer:
+Follow the [Windows installation guide](docs/installation.md#windows).
+It requires PowerShell 5.1 or 7 and Cosign v2.4.3, and covers `PATH` setup.
 
-```powershell
-$d = Join-Path $env:TEMP ([guid]::NewGuid()); New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; try { Invoke-WebRequest -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/install.ps1' -OutFile (Join-Path $d 'install.ps1'); Invoke-WebRequest -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/windows-architecture.ps1' -OutFile (Join-Path $d 'windows-architecture.ps1'); & (Join-Path $d 'install.ps1') } finally { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }
-```
+### Start the chat
 
-This fetches the installer and architecture helper from the same current
-`master` ref. The installer resolves the latest stable binary release. Its
-default location is `%LOCALAPPDATA%\Komposyn\bin`; it does not change `PATH`.
-See the [Windows PATH instructions](docs/installation.md#windows) and open a
-new terminal after adding the directory.
+1. Check and launch it in an interactive terminal:
 
-### Check your installation
+   ```sh
+   komposyn --version
+   komposyn --help
+   komposyn
+   ```
 
-```sh
-komposyn --version
-komposyn --help
-```
+2. Open `/model`, add an OpenAI API key, **Continue with ChatGPT**, or an
+   Anthropic API key, then explicitly choose a model. Network access and an
+   eligible provider account are required; ChatGPT plan authorization is
+   separate from API-key billing.
+3. Follow the [guided trial](docs/harness/first-use.md#2-exchange-text-and-try-a-plan)
+   to exchange text, request `update_plan`, inspect the approval, and open
+   `/plan`. The basic trial needs no workspace or file-access backend.
 
-For custom directories, manual verification, and troubleshooting, see the
-[installation guide](docs/installation.md).
+The walkthrough targets released
+[v0.16.0](https://github.com/ayeshLK/komposyn/releases/tag/v0.16.0).
+Prior live ChatGPT OAuth checks cover one account/model on one Linux host
+using source builds. Other live routes and broader platforms remain
+unverified; consult the [capability matrix](docs/harness/capability-availability.md).
+For build instructions, see the [harness guide](docs/harness/README.md).
+For upgrades and removal, see [installation](docs/installation.md); uninstalling
+preserves auth/settings and separate Token Logger data.
 
-## First chat
+## Capabilities and limits
 
-```sh
-komposyn
-```
+Bundled OpenAI Responses and Anthropic Messages adapters support text chat
+and conversation-local `update_plan` and `request_user_input` on explicitly
+supported routes. `/permissions` lets you inspect and revoke temporary grants.
+The [harness guide](docs/harness/README.md) explains controls and lifecycle.
 
-In the chat, open `/model`, add an OpenAI provider (API key or Continue with
-ChatGPT) or an Anthropic provider (API key), then explicitly choose a model.
-Login and model discovery do not send a chat inference request. Submitted chat
-messages go to the selected provider. The selected model and chat context stay
-in memory. Validated auth profiles and UI settings persist locally; auth
-credentials are stored as plaintext in a private configuration file. See
-[temporary chat security](docs/harness/phase-one-security.md) and the
-[harness guide](docs/harness/README.md).
+`read_file` is optional and conditional on Linux with a trusted
+`/usr/bin/bwrap`, usable namespaces/seccomp, and successful host inspection.
+Each **Read approval** permits one read and shows the exact **Read target**
+and **Provider destination**; selecting a working directory grants no read access.
+Use only synthetic content for the [optional file trial](docs/harness/first-use.md#4-optionally-disclose-one-synthetic-linux-file).
+Native evidence remains limited to recorded Linux amd64/Bubblewrap profiles.
 
-## Upgrade
+File mutation, shell execution, web/image tools, MCP, persistent conversations,
+projects, sessions, and persistent tasks are unavailable. Provider and UI
+contracts are experimental and role-specific, with implementations explicitly
+bundled in the executable. General third-party plugin loading, a universal
+plugin API, and a marketplace are proposed direction, not current features.
 
-Rerun the same install command above to install the latest stable binary. On
-Windows, close a running chat first. Upgrading replaces the `komposyn`
-executable and preserves auth/settings, the separate `komposyn-lg` executable,
-Token Logger data, and backups.
+## Token Logger
 
-## Uninstall
+Token Logger is independently useful today: it reads supported provider-owned
+local usage records and produces token usage and cost reports across tools,
+projects, and sessions without capturing prompts, responses, or credentials.
 
-Uninstall removes only the `komposyn` executable and preserves
-`~/.komposyn/auth.json`, `~/.komposyn/settings.json` (or the corresponding
-Windows home paths), `komposyn-lg`, and Token Logger data and backups.
+- **Use the production CLI:** install and operate
+  [`komposyn-lg`](https://github.com/ayeshLK/komposyn-lg#install) from its
+  separately maintained repository.
+- **Integrate the Go library:** this repository owns the single module
+  `github.com/ayeshLK/komposyn`; start with the [core API](docs/core-api.md)
+  and [operation and data guides](docs/README.md#project-and-token-logger-core).
 
-**Linux and macOS:**
+Core owns the models, SQLite storage/migrations, adapters, collection, pricing,
+diagnostics, and reports. The production CLI owns settings, consent,
+data-directory selection, process lifecycle, and JSONL transport. Its sidecar
+is a Token Logger integration contract. It does not define a general plugin
+protocol. This repository releases experimental `komposyn` binaries under its
+repository-wide version; `komposyn-lg` remains independently versioned.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/uninstall.sh | bash
-```
+## Shape what comes next
 
-**Windows (PowerShell):**
+KompoSyn builds useful components before composing them into a broader agent
+harness. The current chat explores provider/UI boundaries and explicit tool
+authority; the eventual runtime, plugin lifecycle, distribution, and trust
+model remain open. Read the [vision](docs/vision.md) and
+[architecture](docs/architecture.md) to propose a concrete next step.
 
-```powershell
-$d = Join-Path $env:TEMP ([guid]::NewGuid()); New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; try { Invoke-WebRequest -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/uninstall.ps1' -OutFile (Join-Path $d 'uninstall.ps1'); & (Join-Path $d 'uninstall.ps1') } finally { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }
-```
+After trying it, [open a feedback issue](https://github.com/ayeshLK/komposyn/issues/new)
+with your version, OS/architecture, provider/auth route, expected and observed
+behavior, and where the trial became unclear. Remove credentials, prompts,
+responses, private paths, and account identifiers. Voluntary feedback helps
+us test whether the experience is useful; there is no trial telemetry.
 
-For a custom install directory, see the [installation guide](docs/installation.md)
-for the matching install and uninstall options. Install or upgrade the
-production Token Logger CLI using the
-[standalone instructions](https://github.com/ayeshLK/komposyn-lg#install); its
-executable and data are separate from `komposyn`.
+For contributions, start with [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[documentation index](docs/README.md). For vulnerabilities or sensitive-data
+exposure, use [private security reporting](SECURITY.md#reporting-a-vulnerability).
+Do not post sensitive findings in public issues.
 
-The historical combined [v0.7.0 release](https://github.com/ayeshLK/komposyn/releases/tag/v0.7.0)
-and earlier tags remain available. Their historical artifact layout and
-verification instructions are in
-[historical combined release verification](docs/historical-combined-releases.md).
-New experimental `komposyn` archives use this repository's manual release
-workflow identity; `komposyn-lg` artifacts continue to use the standalone
-repository's identity.
-
-## Development
-
-Requires Go 1.26.11 or newer. Run the core checks with:
-
-```sh
-make check
-go test -race ./...
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md), the [development guide](docs/contributing/development.md),
-and [the documentation index](docs/README.md). Production CLI command
-behavior, settings, and protocol transport belong in
-[ayeshLK/komposyn-lg](https://github.com/ayeshLK/komposyn-lg); reusable API,
-provider, storage, migration, pricing, diagnostics, reports, and the
-experimental chat and its release artifacts belong here.
-
-The project is licensed under Apache-2.0. See [LICENSE](LICENSE) and
-[NOTICE](NOTICE).
+Apache-2.0 licensed; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
