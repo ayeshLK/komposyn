@@ -39,12 +39,29 @@ stay in memory. Validated API keys and OAuth tokens persist as **plaintext**
 in a private local auth file; UI settings also persist. See
 [chat data handling](docs/harness/phase-one-security.md).
 
-1. [Install the signed experimental `komposyn` binary](docs/installation.md)
-   for Linux, macOS, or Windows. Unix installers need Bash, `curl`, `tar`,
-   `sha256sum` or `shasum`, and Cosign v2.4.3 on `PATH`; resolving latest also
-   needs `jq`. Windows needs PowerShell 5.1 or 7 and Cosign v2.4.3. Installers
-   leave `PATH` setup to you; the guide covers that and signature verification.
-2. Check and launch it in an interactive terminal:
+### Linux and macOS
+
+With Bash, `curl`, `jq`, `tar`, `sha256sum` or `shasum`, and
+[Cosign v2.4.3](https://docs.sigstore.dev/cosign/system_config/installation/)
+on `PATH`, install the latest stable signed binary:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/install.sh | bash
+```
+
+This runs the installer from the moving `master` branch. It defaults to
+`~/.local/bin` and leaves `PATH` unchanged; add that directory to your shell's
+`PATH` if needed. For setup, immutable script downloads, version pinning, and
+signature verification, see the [installation guide](docs/installation.md#linux-and-macos).
+
+### Windows
+
+Follow the [Windows installation guide](docs/installation.md#windows).
+It requires PowerShell 5.1 or 7 and Cosign v2.4.3, and covers `PATH` setup.
+
+### Start the chat
+
+1. Check and launch it in an interactive terminal:
 
    ```sh
    komposyn --version
@@ -52,11 +69,11 @@ in a private local auth file; UI settings also persist. See
    komposyn
    ```
 
-3. Open `/model`, add an OpenAI API key, **Continue with ChatGPT**, or an
+2. Open `/model`, add an OpenAI API key, **Continue with ChatGPT**, or an
    Anthropic API key, then explicitly choose a model. Network access and an
    eligible provider account are required; ChatGPT plan authorization is
    separate from API-key billing.
-4. Follow the [guided trial](docs/harness/first-use.md#2-exchange-text-and-try-a-plan)
+3. Follow the [guided trial](docs/harness/first-use.md#2-exchange-text-and-try-a-plan)
    to exchange text, request `update_plan`, inspect the approval, and open
    `/plan`. The basic trial needs no workspace or file-access backend.
 

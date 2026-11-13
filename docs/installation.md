@@ -2,8 +2,8 @@
 
 `komposyn` is the experimental in-memory text chat in this repository. It is
 separate from the production `komposyn-lg` executable. Installer scripts can
-be fetched from the moving `master` branch; the examples below use an immutable
-source tag. Fetching a script does not verify or install a binary: when run, the installer resolves
+be fetched from the moving `master` branch or an immutable source tag.
+Fetching a script does not verify or install a binary: when run, the installer resolves
 a stable binary release and verifies its signed checksum manifest, archive
 digest, contents, and executable metadata before replacement.
 
@@ -32,6 +32,23 @@ Requirements: Bash, `curl`, `tar`, `sha256sum` or `shasum`, and Cosign v2.4.3
 on `PATH`. See the [Cosign installation guide](https://docs.sigstore.dev/cosign/system_config/installation/).
 `jq` is also required when resolving the latest stable release. A version-pinned
 install does not need `jq`.
+
+To install the latest stable signed binary in one step:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ayeshLK/komposyn/master/scripts/install.sh | bash
+```
+
+This downloads and runs the installer from the moving `master` branch and
+resolves the latest stable binary release when run. The default install
+directory is `~/.local/bin`; the installer leaves your shell's `PATH` unchanged.
+If needed, add this line to your Bash or Zsh startup file and open a new terminal:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Download, review, and pin the installer
 
 For an immutable installer source, download the script from a version tag.
 The script source version and selected binary version are separate: the tag in
@@ -71,13 +88,8 @@ The default install directory is `~/.local/bin`. To choose another directory:
 bash "$installer_dir/install.sh" --install-dir "$HOME/bin/komposyn"
 ```
 
-The installer cannot modify the parent shell's `PATH`. Add the selected
-directory to your shell startup file, then open a new terminal. For example,
-for the default directory in Bash or Zsh:
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
+Add a custom install directory to your shell startup file's `PATH` as well,
+then open a new terminal.
 
 For local fixture or release-candidate testing, provide an explicit version
 and a directory containing that target archive, `checksums.txt`, and
