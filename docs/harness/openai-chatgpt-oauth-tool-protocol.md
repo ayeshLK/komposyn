@@ -44,14 +44,13 @@ current client functions are ordinary host-executed function calls, not these
 built-in or programmatic tools. No broader restriction is inferred from those
 items.
 
-The official docs do not state that all tools work for every eligible model or
-account, nor do they document a specific restriction on KompoSyn's ordinary
-client functions. The live result establishes compatibility only for the
-tested route, account, and model; it does not justify a provider restriction
-or a claim that every catalog model supports tools. The normal runtime
-declaration remains **unknown** until implementation #293 incorporates the
-verified route behavior without exposing unverified capabilities. Exact-file
-live acceptance remains incomplete under #294.
+The official docs do not document a model-specific restriction on KompoSyn's
+ordinary client functions. The normal runtime declares route-level client-tool
+support based on the SIWC protocol evidence; the selected OAuth profile's
+account catalog determines model availability. The live result covers one
+route, account, and model. It does not establish a separate capability
+difference across accounts or models, and no such restriction is inferred.
+Denial and its no-fallback outcome remain open under #294.
 
 ## Fixture contract and adapter seam
 
@@ -66,10 +65,9 @@ exercise a protocol shape from official documentation; they do not assert
 that OpenAI accepted it or that the public route is available. At the source
 commit tested, public `Plugin.StreamChat` rejected OAuth tool-bearing requests
 before network dispatch while `RouteCapabilities(AuthOAuth)` remained
-`SupportUnknown`. The documented SIWC route supports client tools; route-level
-capability now reflects that protocol evidence. The account-specific model
-catalog controls availability, not tool capability. Runtime and adapter
-fixtures cover declaration, calls, and continuation; the live evidence below
+`SupportUnknown`. The current adapter reflects documented SIWC route support;
+the account-specific model catalog controls model availability. Runtime and
+adapter fixtures cover declaration, calls, and continuation; live evidence
 covers one account/model only.
 
 The adapter's protocol implementation encodes client function

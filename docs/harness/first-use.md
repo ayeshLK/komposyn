@@ -31,7 +31,7 @@ requests do not switch your account or billing route automatically.
 | --- | --- | --- | --- |
 | OpenAI API key or explicit key environment reference | Responses | Planning and clarification | Conditional Linux backend |
 | Anthropic API key or explicit key environment reference | Messages | Planning and clarification | Conditional Linux backend |
-| Continue with ChatGPT | Responses, separate plan authorization | `update_plan` and `request_user_input` for eligible `gpt-6-sol` profiles; live verified on one account | Conditional trusted Linux backend; live exact-file verified on one host |
+| Continue with ChatGPT | Responses, separate plan authorization | `update_plan` and `request_user_input` for models in the selected profile's account catalog; live verified on one account/model | Conditional trusted Linux backend; live exact-file verified on one host |
 | Unknown/unsupported route | No compatibility guarantee | Unavailable | Unavailable |
 
 Ordinary chat and supported conversation tools work on Linux, macOS, and
