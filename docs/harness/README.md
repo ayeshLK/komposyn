@@ -1,9 +1,16 @@
 # Experimental temporary chat
 
-This repository contains a small, experimental `komposyn` chat under
-`plugins/model-provider/`, `plugins/ui/`, and `internal/harness/`. It proves
-the OpenAI and Anthropic provider boundary and a replaceable UI client. It is
-not a general plugin runtime, agent workflow engine, or stable public API.
+`komposyn` is an experimental terminal experience for developers trying an
+early agent-harness direction and contributing feedback. Exchange text, ask
+for a temporary plan, and inspect explicit tool approvals. Start with the
+[five-minute guided trial](first-use.md), or use the
+[installation guide](../installation.md) for signed binaries.
+
+This repository bundles OpenAI and Anthropic adapters under
+`plugins/model-provider/`, a role-specific UI contract under `plugins/ui/`,
+and in-memory coordination under `internal/harness/`. These experimental
+boundaries support replacing the UI and composing provider adapters; they do
+not provide general plugin loading or a stable universal plugin API.
 
 The workflow is: start KompoSyn, open `/model`, add an OpenAI API key or
 choose **Continue with ChatGPT**, or add an Anthropic API key; choose a

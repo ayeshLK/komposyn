@@ -1,9 +1,9 @@
 # Install the experimental `komposyn` CLI
 
 `komposyn` is the experimental in-memory text chat in this repository. It is
-separate from the production `komposyn-lg` executable. The README quick-start
-commands fetch the installer scripts from the moving `master` branch. Fetching
-a script does not verify or install a binary: when run, the installer resolves
+separate from the production `komposyn-lg` executable. Installer scripts can
+be fetched from the moving `master` branch; the examples below use an immutable
+source tag. Fetching a script does not verify or install a binary: when run, the installer resolves
 a stable binary release and verifies its signed checksum manifest, archive
 digest, contents, and executable metadata before replacement.
 

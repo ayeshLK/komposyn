@@ -4,6 +4,27 @@ Contributions to KompoSyn Core are provided under Apache-2.0; see [LICENSE](LICE
 and [NOTICE](NOTICE). Read [AGENTS.md](AGENTS.md) and [SECURITY.md](SECURITY.md)
 before changing storage, migrations, provider handling, or security behavior.
 
+## Start with a trial or a focused change
+
+Developers trying the early terminal experience can begin with the
+[five-minute trial](docs/harness/first-use.md). Report confusing onboarding,
+provider/tool outcomes, or a concrete feature need through
+[GitHub Issues](https://github.com/ayeshLK/komposyn/issues/new). Include
+version/commit, OS/architecture, provider/auth route, expected behavior, and
+sanitized observations. Remove credentials, prompts, responses, private paths,
+and account identifiers. Use [private security reporting](SECURITY.md#reporting-a-vulnerability)
+for vulnerabilities or sensitive-data exposure.
+
+Contributions can improve the bundled provider adapters, terminal UI,
+approval experience, documentation, or independently useful Token Logger.
+Explain the user problem and the boundary affected before proposing a broader
+runtime. Read the [trial evidence](docs/harness/first-use-evidence.md) so staged
+UI captures, source-build live checks, released behavior, and proposals stay
+distinct. User-facing behavior changes require corresponding documentation
+updates in the same change; the manual
+[biweekly content review](docs/devrel-content-plan.md#ongoing-documentation-review)
+catches remaining drift.
+
 ## Ownership
 
 This repository owns the reusable `github.com/ayeshLK/komposyn` Go module:
