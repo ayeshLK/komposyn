@@ -1,6 +1,6 @@
 # Temporary chat capability availability
 
-Evidence reviewed 2026-11-12. This matrix describes the bundled temporary
+Evidence reviewed 2026-11-13. This matrix describes the bundled temporary
 chat routes and its current three capabilities. “Supported” describes the
 provider protocol implementation and fixture-backed contract; it does not
 grant permission to execute a tool. Runtime availability also requires the
@@ -23,7 +23,7 @@ Image support requires its own content-format evidence.
 | Provider route | Inventory | Capability evidence | Status and remaining work |
 |---|---|---|---|
 | OpenAI API key | Implemented; listed by `openai.Plugin.AuthMethods` | Responses tool declaration, tool-call parsing, native continuation, and protocol tests in `plugins/model-provider/openai/` | Supported for `update_plan` and `request_user_input`; `read_file` is conditional on host prerequisites below. Continue live provider validation. |
-| OpenAI ChatGPT OAuth (SIWC) | Implemented; listed by `openai.Plugin.AuthMethods` | Route-level `RouteCapabilities(AuthOAuth)` enables client tools based on the documented SIWC protocol; the account-specific model catalog controls which model can be selected. Fixtures cover declaration, streamed calls, result correlation, and continuation. Operator-reported live plan/input, exact-file read, and cancellation results for public model `gpt-6-sol` are recorded in the [protocol assessment](openai-chatgpt-oauth-tool-protocol.md). | Any model returned in the selected profile's catalog may use the documented OAuth tool protocol; the live evidence covers one account and model, so other account/model combinations are not live-verified. The reported exact-file read used trusted root-owned Bubblewrap 0.9.0. Denial and its no-fallback outcome remain open under #294. |
+| OpenAI ChatGPT OAuth (SIWC) | Implemented; listed by `openai.Plugin.AuthMethods` | Route-level `RouteCapabilities(AuthOAuth)` enables client tools based on the documented SIWC protocol; the account-specific model catalog controls which model can be selected. Fixtures cover declaration, streamed calls, result correlation, and continuation. Operator-reported live plan/input, exact-file read, cancellation, and denial results for public model `gpt-6-sol` are recorded in the [protocol assessment](openai-chatgpt-oauth-tool-protocol.md). | Any model returned in the selected profile's catalog may use the documented OAuth tool protocol; the live evidence covers one account and model, so other account/model combinations are not live-verified. The reported exact-file allow and deny used trusted root-owned Bubblewrap 0.9.0; no fallback was observed. Evidence remains limited to one account, model, and host. |
 | Anthropic API key | Implemented; listed by `anthropic.Plugin.AuthMethods` | Messages tool declaration, `tool_use` parsing, result continuation, and protocol tests in `plugins/model-provider/anthropic/` | Supported for `update_plan` and `request_user_input`; `read_file` is conditional on host prerequisites below. Continue live provider validation. |
 | Anthropic subscription / OAuth | No authentication integration or selectable route exists in the bundled adapter; `AuthMethods` returns only `AuthAPIKey` | No adapter or route evidence | Unimplemented. Do not create or imply a selectable profile. No claim is made that Anthropic prohibits such integration. |
 
@@ -91,11 +91,11 @@ approval, and sandbox enforcement remain authoritative at dispatch time.
   content and a temporary development build. Model selection is limited to the
   selected OAuth profile's account-specific catalog; other accounts with that
   model ID have not been separately live-verified. The only live approvals were
-  Allow once for `update_plan` and `request_user_input`. A follow-up operator
-  report records an Allow once exact-file read and a canceled turn on Linux
-  amd64 with Bubblewrap 0.9.0. No fallback was observed in those allowed and
-  canceled flows. Denial and its no-fallback behavior remain open under #294.
-  Automated runtime fixtures are separate evidence. Live coverage remains
-  limited to one account, model, and host. No Anthropic subscription integration
+  Allow once for `update_plan` and `request_user_input`. Follow-up operator
+  reports record an Allow once exact-file read, a canceled turn, and a denied
+  exact-file request on Linux amd64 with Bubblewrap 0.9.0. The denied read was
+  not executed or disclosed, and no fallback was observed in allowed, canceled,
+  or denied flows. Automated runtime fixtures are separate evidence. Live
+  coverage remains limited to one account, model, and host. No Anthropic subscription integration
   is implemented. Any future route must retain explicit capability declarations
   and tests before it is selectable.

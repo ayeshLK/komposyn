@@ -2,10 +2,12 @@
 
 Prepared on 2026-11-10; [v0.14.0](https://github.com/ayeshLK/komposyn/releases/tag/v0.14.0)
 was published at **2026-11-10T18:22:01Z**. Published assets were independently
-verified on 2026-11-11 (Asia/Colombo). Live provider validation remains
-**unverified**, tracked in [#272](https://github.com/ayeshLK/komposyn/issues/272)
-with @ayeshLK coordinating authorized account operators. This record does not
-authorize account login, credential access, or inference.
+verified on 2026-11-11 (Asia/Colombo). Live provider validation was
+**unverified at publication** and tracked in [#272](https://github.com/ayeshLK/komposyn/issues/272).
+Subsequent source-build verification for PR #297 is summarized below and in
+[#294](https://github.com/ayeshLK/komposyn/issues/294); it does not validate the
+published v0.14.0 binary. This record does not authorize account login,
+credential access, or inference.
 
 ## Published release evidence
 
@@ -276,17 +278,16 @@ required on failure. Follow [release verification](../release-verification.md).
 | Configuration/data and `komposyn-lg` preservation | Signed lifecycle jobs passed content/access protection and coexistence checks |
 | Published assets and signature verification | Published set downloaded; expected signature identity/issuer and all digests verified |
 
-Live checks remain unverified by agreement and are owned by @ayeshLK in
-[#272](https://github.com/ayeshLK/komposyn/issues/272). The maintainer coordinates an authorized
-account operator after publication and records the exact released binary,
-version/commit, platform, auth route, date, sanitized result and follow-up link.
-No credentials or billable inference are authorized by this document.
+The published v0.14.0 binary's live checks remain unverified and are tracked
+in [#272](https://github.com/ayeshLK/komposyn/issues/272). The later source-build
+results below cover one account/model/host and are recorded in #294. No
+credentials or billable inference are authorized by this release record.
 
 | Route | Login/discovery/stream/follow-up/cancel | Tools and synthetic Linux read | Owner |
 | --- | --- | --- | --- |
 | OpenAI API key | Unverified; published binary available, await authorized account operator | Unverified | @ayeshLK / authorized account operator (#272) |
 | Anthropic API key | Unverified; published binary available, await authorized account operator | Unverified | @ayeshLK / authorized account operator (#272) |
-| ChatGPT sign-in | Source-built PR binary live-tested on one account/model; published binary remains unverified | Planning, clarification, cancellation, and exact-file read reported passed on one account/model/host; denial remains unverified | @ayeshLK / authorized account operator (#272) |
+| ChatGPT sign-in | Source-built PR #297 binary live-tested on one account/model; published v0.14.0 binary remains unverified | Planning, clarification, cancellation, exact-file allow, and denial reported passed on one account/model/host, with no fallback on denial | @ayeshLK / authorized account operator (#294) |
 
 The original unstripped source-build command produced a 19,308,007-byte
 Linux amd64 image, larger than the 14 MiB worker-image bound. Build instructions

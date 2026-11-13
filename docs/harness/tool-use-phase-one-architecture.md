@@ -5,8 +5,9 @@ approval/permission controls, provider continuation, and two conversation-local
 tools are implemented. `cmd/harness` exposes `update_plan` and
 `request_user_input` on supported API-key routes and the documented ChatGPT
 OAuth route for models in the selected profile's account catalog. Live
-verification covers one account/model; denial and broader live account/model
-coverage remain open. This does not
+verification covers one account/model; synthetic exact-file allow, denial, and
+cancellation with no fallback were operator-verified on one trusted Linux host.
+Broader live account/model coverage remains open. This does not
 enable filesystem/project mutation, process execution, web access, or image
 tools, and it does not claim OS isolation for trusted in-process code.
 Conditional exact-file `read_file` is a separate Linux-only capability that
@@ -331,8 +332,9 @@ stale responses, cross-conversation rejection, and deletion's once-only rule.
 Provider tool-call encoding and continuation are supported for OpenAI API-key
 Responses and Anthropic Messages. The later verified OpenAI ChatGPT OAuth
 route also supports these tools for models in the selected profile's account
-catalog; live verification covers one account/model, with denial behavior
-still pending. The tool surface includes the two conversation-local tools
+catalog; live verification covers one account/model, including a reported
+synthetic exact-file denial with no fallback on one trusted Linux host. The tool
+surface includes the two conversation-local tools
 above and conditional exact-file `read_file` on the trusted Linux composition.
 See the [capability matrix](capability-availability.md) and [read
 policy](read-broker-unregistered-read-policy.md) for current route, host, and
