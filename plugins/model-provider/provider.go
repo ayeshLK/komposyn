@@ -140,11 +140,26 @@ type RouteCapabilityProvider interface {
 	RouteCapabilities(AuthMethod) RouteCapabilities
 }
 
+// ModelRouteCapabilityProvider reports protocol support that varies by model
+// within an authentication route. Providers should implement this only when
+// the evidence supports a narrower model-scoped declaration; other models
+// remain governed by their route-level capability.
+type ModelRouteCapabilityProvider interface {
+	ModelRouteCapabilities(AuthMethod, string) RouteCapabilities
+}
+
 func CapabilitiesFor(p Provider, method AuthMethod) RouteCapabilities {
 	if capabilities, ok := p.(RouteCapabilityProvider); ok {
 		return capabilities.RouteCapabilities(method)
 	}
 	return RouteCapabilities{ClientTools: SupportUnknown, Images: SupportUnknown}
+}
+
+func CapabilitiesForModel(p Provider, method AuthMethod, modelID string) RouteCapabilities {
+	if capabilities, ok := p.(ModelRouteCapabilityProvider); ok {
+		return capabilities.ModelRouteCapabilities(method, modelID)
+	}
+	return CapabilitiesFor(p, method)
 }
 
 type Usage struct {

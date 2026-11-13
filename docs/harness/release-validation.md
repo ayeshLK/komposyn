@@ -286,7 +286,7 @@ No credentials or billable inference are authorized by this document.
 | --- | --- | --- | --- |
 | OpenAI API key | Unverified; published binary available, await authorized account operator | Unverified | @ayeshLK / authorized account operator (#272) |
 | Anthropic API key | Unverified; published binary available, await authorized account operator | Unverified | @ayeshLK / authorized account operator (#272) |
-| ChatGPT sign-in | Unverified; await eligible authorized account operator | Unavailable by design; text only | @ayeshLK / authorized account operator (#272) |
+| ChatGPT sign-in | Source-built PR binary live-tested on one account/model; published binary remains unverified | Planning, clarification, cancellation, and exact-file read reported passed on one account/model/host; denial remains unverified | @ayeshLK / authorized account operator (#272) |
 
 The original unstripped source-build command produced a 19,308,007-byte
 Linux amd64 image, larger than the 14 MiB worker-image bound. Build instructions

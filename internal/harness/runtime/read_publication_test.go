@@ -564,12 +564,14 @@ func TestCapabilityAvailabilityExplainsRealProviderRoutes(t *testing.T) {
 		name       string
 		auth       provider.AuthMethod
 		plug       provider.Provider
+		modelID    string
 		wantState  string
 		wantReason string
 	}{
-		{"OpenAI API key", provider.AuthAPIKey, openai.Plugin{}, "available", "authorization and approval"},
-		{"OpenAI ChatGPT", provider.AuthOAuth, openai.Plugin{}, "unknown_route", "unverified"},
-		{"Anthropic API key", provider.AuthAPIKey, anthropic.Plugin{}, "available", "authorization and approval"},
+		{"OpenAI API key", provider.AuthAPIKey, openai.Plugin{}, "fixture-model", "available", "authorization and approval"},
+		{"OpenAI ChatGPT OAuth route", provider.AuthOAuth, openai.Plugin{}, "gpt-6-astra", "available", "authorization and approval"},
+		{"OpenAI ChatGPT OAuth tested model", provider.AuthOAuth, openai.Plugin{}, "gpt-6-sol", "available", "authorization and approval"},
+		{"Anthropic API key", provider.AuthAPIKey, anthropic.Plugin{}, "fixture-model", "available", "authorization and approval"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			registry, err := model.NewRegistry(test.plug)
@@ -584,7 +586,7 @@ func TestCapabilityAvailabilityExplainsRealProviderRoutes(t *testing.T) {
 			chat := NewChatWithToolRuntime(registry, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
 			defer chat.Close()
 			chat.mu.Lock()
-			chat.selected = &model.Model{Provider: test.plug.ID(), AuthMethod: test.auth, ID: "fixture-model"}
+			chat.selected = &model.Model{Provider: test.plug.ID(), AuthMethod: test.auth, ID: test.modelID}
 			chat.mu.Unlock()
 			snapshot := chat.Snapshot()
 			for name, got := range map[string]CapabilityAvailability{"update_plan": snapshot.UpdatePlanAvailability, "request_user_input": snapshot.RequestInputAvailability} {
@@ -592,8 +594,15 @@ func TestCapabilityAvailabilityExplainsRealProviderRoutes(t *testing.T) {
 					t.Errorf("%s availability=%+v; want state %q and reason containing %q", name, got, test.wantState, test.wantReason)
 				}
 			}
-			if test.auth == provider.AuthOAuth && (snapshot.UpdatePlanAvailability.Available || snapshot.RequestInputAvailability.Available) {
-				t.Fatal("unverified route advertised a capability")
+			definitions := chat.toolRuntime.definitions(test.plug, test.auth, test.modelID)
+			if test.wantState == "available" && len(definitions) != 2 {
+				t.Fatalf("verified route registered %d tools; want plan and input", len(definitions))
+			}
+			if test.wantState != "available" && len(definitions) != 0 {
+				t.Fatalf("unverified route advertised tools: %+v", definitions)
+			}
+			if test.auth == provider.AuthOAuth && test.modelID == "gpt-6-sol" && snapshot.FilesystemReadAvailability.State != "backend_unavailable" {
+				t.Fatalf("read capability should remain conditional on the trusted host backend: %+v", snapshot.FilesystemReadAvailability)
 			}
 		})
 	}
@@ -653,10 +662,10 @@ func TestFilesystemReadCatalogRequiresCompleteInspectedHost(t *testing.T) {
 	}
 	toolRuntime := newToolRuntime(config)
 	providerRoute := &toolLoopProvider{}
-	if got := toolRuntime.definitions(providerRoute, provider.AuthAPIKey); len(got) != 3 {
+	if got := toolRuntime.definitions(providerRoute, provider.AuthAPIKey, "fixture-model"); len(got) != 3 {
 		t.Fatalf("supported API-key route definitions=%+v", got)
 	}
-	if got := toolRuntime.definitions(providerRoute, provider.AuthOAuth); len(got) != 0 {
+	if got := toolRuntime.definitions(providerRoute, provider.AuthOAuth, "fixture-model"); len(got) != 0 {
 		t.Fatalf("unknown OAuth route exposed read tool: %+v", got)
 	}
 

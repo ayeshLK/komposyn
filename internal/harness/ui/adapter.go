@@ -180,7 +180,7 @@ func (c Client) ChangeWorkingDirectory(ctx context.Context, path string) error {
 }
 func (c Client) Snapshot() ui.Snapshot {
 	s := c.Chat.Snapshot()
-	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, Version: c.Version,
+	out := ui.Snapshot{Turns: make([]ui.Turn, 0, len(s.Turns)), Usage: make([]ui.ModelUsage, 0, len(s.Usage)), Active: s.Active, ActiveRequestID: s.ActiveRequestID, Version: c.Version,
 		UpdatePlanAvailability:     ui.CapabilityAvailability{Available: s.UpdatePlanAvailability.Available, State: s.UpdatePlanAvailability.State, Reason: s.UpdatePlanAvailability.Reason},
 		RequestInputAvailability:   ui.CapabilityAvailability{Available: s.RequestInputAvailability.Available, State: s.RequestInputAvailability.State, Reason: s.RequestInputAvailability.Reason},
 		FilesystemReadAvailability: ui.FilesystemReadAvailability{Available: s.FilesystemReadAvailability.Available, State: s.FilesystemReadAvailability.State, Reason: s.FilesystemReadAvailability.Reason},
@@ -219,7 +219,7 @@ func (c Client) Send(ctx context.Context, text string, delta func(string)) (ui.T
 	return turn, err
 }
 func convertActivity(activity runtime.ToolActivity) ui.ToolActivity {
-	return ui.ToolActivity{CallID: activity.CallID, ToolID: string(activity.ToolID), Phase: activity.Phase, Outcome: string(activity.Outcome), Message: activity.Message, Truncated: activity.Truncated}
+	return ui.ToolActivity{RequestID: activity.RequestID, CallID: activity.CallID, ToolID: string(activity.ToolID), Phase: activity.Phase, Outcome: string(activity.Outcome), Message: activity.Message, Truncated: activity.Truncated}
 }
 func (c Client) Cancel() { c.Chat.Cancel() }
 

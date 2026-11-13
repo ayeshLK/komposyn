@@ -2,11 +2,10 @@
 
 **Research checked:** 2026-11-12. The OpenAI documentation pages below do not
 show a publication or last-updated date in the rendered content; this date is
-the date they were checked. For this verification attempt, an operator
-authorized up to five live requests using synthetic content. No app session or
-already-authorized test account/configuration was available in the execution
-environment, so no account was accessed and zero live provider requests were
-sent. No credential material or auth-store contents were inspected.
+the date they were checked. The operator authorized up to five live requests
+with synthetic content. A later bounded verification used the existing
+ChatGPT OAuth profile; see [live evidence](#live-verification-2026-11-12).
+No credential material or auth-store contents were inspected or recorded.
 
 ## Route and scope
 
@@ -34,8 +33,8 @@ successful text response alone does not establish tool support for a model.
 | Correlated result submission | Documented Responses protocol; fixture covered | Function calling documentation defines `function_call_output` correlated by `call_id`, followed by another Responses request. |
 | Provider-native continuation | Documented HTTP behavior; fixture covered | SIWC says not to use `previous_response_id` over HTTP and to send required history in `input`; the function calling guide shows replaying the assistant response and tool output. KompoSyn retains/replays native assistant output items and sends the correlated result. |
 | OAuth request differences | Documented | Set `store:false`, `stream:true`; omit `max_output_tokens`; use `additional_tools` for client function definitions on this route. Current API-key requests retain top-level `tools`, `max_output_tokens`, and `include: ["reasoning.encrypted_content"]`. The OAuth adapter does not send these API-key-only fields. |
-| Model-specific tool support | Unverified by this assessment | SIWC instructs clients to use models available to the signed-in account, but the reviewed documentation does not establish per-model support for KompoSyn's exact function set. No model was tested live. |
-| Live ChatGPT OAuth round trip | Unverified | An operator authorized a budget of up to five requests with synthetic content. Zero requests were attempted because no app session or already-authorized eligible test account/model was available in the execution environment. Fixtures validate adapter behavior against documented shapes only. |
+| Live account/model evidence | The tool round trip is live-verified for `gpt-6-sol` on one account; other accounts and model IDs have not been live-tested | Runtime can select only models returned in the selected OAuth profile's account-specific catalog. This evidence scope does not create a model allowlist; SIWC protocol support is evaluated at the route level unless the provider documents a model-specific difference or rejects the operation. |
+| Live ChatGPT OAuth round trip | Operator-reported for `gpt-6-sol` on one tested account and route | The 2026-11-12 synthetic live cycle exercised `update_plan` and `request_user_input`, each approved with Allow once, followed by correlated result submission and a follow-up. A 2026-11-13 follow-up exercised exact-file reading and cancellation on a trusted Linux host. Denial was not tested. Automated runtime fixtures remain separate evidence. |
 
 The SIWC limitations separately list unsupported built-in tools including
 image generation, file search, Code Interpreter, native computer use, hosted
@@ -45,16 +44,17 @@ current client functions are ordinary host-executed function calls, not these
 built-in or programmatic tools. No broader restriction is inferred from those
 items.
 
-The official docs do not state that all tools work for every eligible model or
-account, nor do they document a specific restriction on KompoSyn's ordinary
-client functions. Therefore provider capability remains **unverified** in the
-runtime declaration, not provider-restricted. This assessment establishes the
-wire protocol and a candidate adapter route only. It is not live provider
-compatibility evidence.
+The official docs do not document a model-specific restriction on KompoSyn's
+ordinary client functions. The normal runtime declares route-level client-tool
+support based on the SIWC protocol evidence; the selected OAuth profile's
+account catalog determines model availability. The live result covers one
+route, account, and model. It does not establish a separate capability
+difference across accounts or models, and no such restriction is inferred.
+Denial and its no-fallback outcome remain open under #294.
 
 ## Fixture contract and adapter seam
 
-The executable private protocol fixture at `plugins/model-provider/openai/tool_protocol_test.go`
+The executable protocol fixture at `plugins/model-provider/openai/tool_protocol_test.go`
 uses the existing OpenAI adapter HTTP/SSE seam. It covers OAuth bearer auth,
 `additional_tools` placement, streaming function-call argument assembly,
 call ID correlation, a `function_call_output`, and a second response. It also
@@ -62,36 +62,87 @@ checks OAuth request flags and confirms `max_output_tokens` and top-level
 `tools` are absent. The negative fixture supplies a non-completed/incomplete
 function call and asserts it yields no dispatchable call. These fixtures
 exercise a protocol shape from official documentation; they do not assert
-that OpenAI accepted it or that the public route is available. Public
-`Plugin.StreamChat` rejects OAuth tool-bearing requests before network dispatch
-while `RouteCapabilities(AuthOAuth)` remains `SupportUnknown`. The private
-protocol implementation exists to exercise the adapter fixture.
+that OpenAI accepted it or that the public route is available. At the source
+commit tested, public `Plugin.StreamChat` rejected OAuth tool-bearing requests
+before network dispatch while `RouteCapabilities(AuthOAuth)` remained
+`SupportUnknown`. The current adapter reflects documented SIWC route support;
+the account-specific model catalog controls model availability. Runtime and
+adapter fixtures cover declaration, calls, and continuation; live evidence
+covers one account/model only.
 
-The adapter's private protocol implementation encodes client function
+The adapter's protocol implementation encodes client function
 definitions in a developer `additional_tools` input item, keeps them available
 on the continuation request, and replays Responses-native assistant items
 plus `function_call_output` values in full HTTP input history. Public OAuth
-dispatch remains text-only until route-specific live evidence verifies the
-full tool cycle. Keep authorization, execution, and result production in the
-existing host runtime. API-key request encoding remains unchanged.
+dispatch is allowed for models available through the OAuth profile's account
+catalog. No model-specific restriction is documented. Keep authorization,
+execution, and result production in the existing host runtime. API-key request
+encoding remains unchanged.
 
-## Live verification still required
+## Live verification (2026-11-12)
 
-Before changing OAuth `ClientTools` from unknown or exposing definitions in
-the runtime, live validation must use the already-authorized app account/config
-and stay within its agreed request budget under issue #272's process. The
-authorization for this attempt allowed at most five requests with synthetic
-content, but this environment exposed no authorized app session or test
-account/config. No login flow was started, and zero live provider requests
-were sent. The concrete prerequisite is an operator-provided app session with
-an already-authorized eligible account and an account-available model.
+The operator's existing ChatGPT OAuth profile was used without reading or
+copying its credential data. The test ran on Linux amd64 with a temporary
+development binary built from source commit
+`27bbaac7cbb4d41773a053e5456a78bbe5ac0bc9`; its SHA-256 was
+`6874018aa08b554bedfe057a678ba781dbe6fb74f080e3d489a515c7ee8e50a9`. For the
+test only, a local uncommitted patch declared OAuth client tools supported and
+removed the adapter's pre-network rejection. The normal installed binary and
+source branch were not changed by that patch.
 
-When that prerequisite is available, validate a complete call/result/
-continuation journey and record route, public model identifier, date, and
-sanitized outcomes without credentials, private paths, or conversation
-content. Record any provider rejection with its exact route/model scope and
-sanitized error code. Until then, the verification gate stays unresolved and
-the capability stays unknown.
+The selected OAuth profile's account-specific model catalog request succeeded.
+Runtime can select only models returned in that catalog. On public model ID `gpt-6-sol`,
+KompoSyn sent tool definitions and received `update_plan` and
+`request_user_input` calls. Each action was approved once; a synthetic answer
+was submitted, and the model returned a completed follow-up. The cycle stayed
+within the authorized ceiling of five provider requests. The app's UI verified
+the observed tool outcomes; no raw prompt, response, account identifier, or
+credential was retained as evidence. This is live evidence for one account,
+route, and model, in addition to the fixture evidence above. Other accounts
+with the same model ID have not been separately live-verified, and this does
+not establish support for every OpenAI OAuth model.
+
+Both live tool approvals in the initial cycle were Allow once: one each for
+`update_plan` and `request_user_input`. The follow-up cancellation check passed.
+Denial remains untested. No fallback was observed during the allowed and
+canceled flows; denial's no-fallback behavior remains open under issue #294.
+Automated runtime fixtures provide separate implementation evidence; they are
+not live checks.
+
+The first run did not attempt the exact-file `read_file` journey: the UI
+reported the trusted file-read backend unavailable, and the Bubblewrap
+executable on that host did not satisfy KompoSyn's root-owned, non-writable
+prerequisite. No file was opened or disclosed in that run.
+
+## Follow-up live verification (2026-11-13)
+
+The operator reports completing the allowed planning and clarification cycle,
+the exact-file `read_file` journey, and cancellation on a supported Linux host.
+The test used the same selected ChatGPT OAuth profile and public model
+`gpt-6-sol`; the exact-file operation displayed that destination and received
+an explicit once approval. The synthetic marker was returned, and the
+follow-up remained on the selected profile. Cancellation stopped the turn.
+The operator did not test denial, so denial behavior remains open under #294.
+No account identifier, credential, raw conversation, or non-synthetic file
+content was retained.
+
+Reported environment and artifact identity:
+
+- Source commit: `837ad5f185ec997e8762b3e1c52f9d62ea5a7f4c`
+- Binary SHA-256: `99d8d5f1601cc19b6910269b074079ecb17306e9dd9de0b3dd1a4c7ae45d72a0`
+- Platform: Linux `7.0.0-42-generic`, `x86_64`
+- Bubblewrap: `0.9.0`, `/usr/bin/bwrap`, `root:root`, mode `0755`
+
+This follow-up supplies operator-reported live-provider and trusted-backend
+evidence for the allowed exact-file journey and cancellation. No fallback was
+observed in the reported allowed/canceled flows. Denial and its no-fallback
+outcome remain unverified, so issue #294 stays open.
+
+Native backend evidence remains separate from this provider result. The earlier
+reviewed #215/#278 Linux amd64/Bubblewrap 0.9.0 evidence covers native
+read-enforcement scenarios. The follow-up above additionally exercises the
+live OAuth `read_file` composition on one reported host; neither result
+establishes other accounts, models, platforms, or backend profiles.
 
 ## Sources
 

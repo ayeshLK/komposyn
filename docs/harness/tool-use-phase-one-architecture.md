@@ -3,7 +3,10 @@
 Status: the contracts, evaluator, in-memory grant store, bounded runtime,
 approval/permission controls, provider continuation, and two conversation-local
 tools are implemented. `cmd/harness` exposes `update_plan` and
-`request_user_input` only on explicitly supported API-key routes. This does not
+`request_user_input` on supported API-key routes and the documented ChatGPT
+OAuth route for models in the selected profile's account catalog. Live
+verification covers one account/model; denial and broader live account/model
+coverage remain open. This does not
 enable filesystem/project mutation, process execution, web access, or image
 tools, and it does not claim OS isolation for trusted in-process code.
 Injected test/review adapters exercise the runtime boundary; they do not
@@ -234,12 +237,12 @@ Official provider documentation describes OpenAI Responses function calling
 and image inputs, and Anthropic Messages client tools and image blocks. Current
 KompoSyn model catalogs report identifiers/display names, not per-model tool
 or image capability. OpenAI OAuth official documentation and the adapter's
-HTTP/SSE fixture establish the documented client-tool protocol shape. Live
-OAuth model/account compatibility and public runtime exposure remain
-unverified; image support also remains unverified.
-Therefore no capability is inferred from catalog presence, provider name, or
-model name. Until route/model-specific evidence is recorded and tested, keep
-that route's tool/image definitions hidden. References: [OpenAI function
+HTTP/SSE fixture establish the documented client-tool protocol shape; the
+account-specific catalog controls model availability, and live runtime
+evidence covers one account/model. Image support remains unverified.
+Therefore no capability is inferred from a model name. Until route-level
+protocol evidence is recorded and tested, keep that route's definitions
+hidden. References: [OpenAI function
 calling](https://developers.openai.com/api/docs/guides/function-calling),
 [OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision),
 [Anthropic client tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview),

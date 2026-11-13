@@ -246,6 +246,7 @@ func (r *toolRuntime) pendingPreparationCleanupCount() int {
 }
 
 type ToolActivity struct {
+	RequestID string
 	CallID    string
 	ToolID    tools.ID
 	Phase     string
@@ -363,8 +364,8 @@ func clonePermissionRules(rules []permissions.Rule) []permissions.Rule {
 	return cloned
 }
 
-func (r *toolRuntime) definitions(p provider.Provider, method provider.AuthMethod) []tools.Definition {
-	if r == nil || r.authorizer == nil || r.enforcer == nil || provider.CapabilitiesFor(p, method).ClientTools != provider.SupportSupported {
+func (r *toolRuntime) definitions(p provider.Provider, method provider.AuthMethod, modelID string) []tools.Definition {
+	if r == nil || r.authorizer == nil || r.enforcer == nil || provider.CapabilitiesForModel(p, method, modelID).ClientTools != provider.SupportSupported {
 		return nil
 	}
 	return r.registry.Definitions()
@@ -668,7 +669,7 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 	}
 	definitions := []tools.Definition(nil)
 	if conversationIDErr == nil && conversationID != "" && runtime != nil {
-		definitions = runtime.definitions(plug, credential.Method)
+		definitions = runtime.definitions(plug, credential.Method, selection.ID)
 		if !c.hasCurrentFilesystemRoot(conversationID) {
 			definitions = withoutToolDefinition(definitions, tools.ReadFileID)
 		}

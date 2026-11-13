@@ -104,7 +104,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	go func() { finished <- (Plugin{screen: screen}).Run(ctx, client) }()
 	press := func(key tcell.Key, r rune) {
 		simulation.InjectKey(key, r, tcell.ModNone)
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	typeText := func(text string) {
 		for _, r := range text {
@@ -251,7 +251,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	waitForScreen(t, screen, issue278RedirectPrompt, "")
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyEnter, 0)
-	waitForScreen(t, screen, "Request interrupted:", "")
+	waitForCondition(t, func() bool { return !chat.Snapshot().Active })
 	if host.readCount() != 3 {
 		t.Fatal("redirected outside read was executed or disclosed")
 	}

@@ -47,7 +47,7 @@ func (Plugin) RouteCapabilities(method provider.AuthMethod) provider.RouteCapabi
 	case provider.AuthAPIKey:
 		return provider.RouteCapabilities{ClientTools: provider.SupportSupported, Images: provider.SupportUnsupported}
 	case provider.AuthOAuth:
-		return provider.RouteCapabilities{ClientTools: provider.SupportUnknown, Images: provider.SupportUnknown}
+		return provider.RouteCapabilities{ClientTools: provider.SupportSupported, Images: provider.SupportUnknown}
 	default:
 		return provider.RouteCapabilities{ClientTools: provider.SupportUnsupported, Images: provider.SupportUnsupported}
 	}
@@ -137,14 +137,14 @@ func (p Plugin) StreamChat(ctx context.Context, in provider.ChatRequest, delta f
 			break
 		}
 	}
-	if method == provider.AuthOAuth && (len(in.Tools) > 0 || hasToolResult) {
+	if method == provider.AuthOAuth && (len(in.Tools) > 0 || hasToolResult) && (Plugin{}).RouteCapabilities(method).ClientTools != provider.SupportSupported {
 		return toolProtocolUnsupported(provider.DiagnosticToolProtocolRouteUnsupported), nil
 	}
 	return p.streamChatProtocol(ctx, in, delta)
 }
 
-// streamChatProtocol implements the Responses wire protocol for fixture coverage.
-// Public dispatch remains gated by StreamChat until OAuth route support is verified.
+// streamChatProtocol implements the Responses wire protocol for API-key and
+// account-listed OAuth models on the documented SIWC route.
 func (p Plugin) streamChatProtocol(ctx context.Context, in provider.ChatRequest, delta func(string)) (provider.Result, error) {
 	method := credentialMethod(in.Credential)
 	if in.ModelID == "" || (method == provider.AuthAPIKey && in.MaxOutput <= 0) || (method != provider.AuthAPIKey && method != provider.AuthOAuth) {
