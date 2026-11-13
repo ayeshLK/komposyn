@@ -1,6 +1,8 @@
 # Five minutes with the experimental chat
 
-This walkthrough describes the experimental v0.14.0 release. Use the
+This walkthrough describes the current experimental chat behavior. The
+historical v0.14.0 release did not expose ChatGPT OAuth tools or exact-file
+reads; those limitations are preserved as release history. Use the
 [installation guide](../installation.md) for signed binaries, or build from
 source below. Live ChatGPT OAuth tool evidence currently covers one account
 and model only; denial behavior and other accounts/models remain unverified.
@@ -96,9 +98,11 @@ Use `/cd <path>` to change the base for later relative requests. Paths can be
 absolute or relative to the current working directory, may contain spaces or
 Unicode, and accept `~` as home-directory shorthand. Invalid paths leave the
 current directory and command draft intact. A directory change keeps the
-conversation and does not add file permission. The current read-eligibility
-policy still restricts reads to the launch directory until the separately
-reviewed wider-target policy is available.
+conversation and does not add file permission. Relative paths use the current
+working directory as context. An individually approved exact target may be
+outside that directory when host eligibility checks permit it. See the
+[capability matrix](capability-availability.md) for current route and backend
+conditions.
 
 The worker reads one retained regular file with a 64 KiB bound. Protected
 auth/settings objects and aliases, unsupported provider-source access, unsafe

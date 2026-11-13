@@ -9,6 +9,11 @@ verification covers one account/model; denial and broader live account/model
 coverage remain open. This does not
 enable filesystem/project mutation, process execution, web access, or image
 tools, and it does not claim OS isolation for trusted in-process code.
+Conditional exact-file `read_file` is a separate Linux-only capability that
+requires the trusted retained-read composition and per-target once approval;
+it does not make filesystem/project mutation available. The historical
+“two conversation-local tools” count refers to `update_plan` and
+`request_user_input`, not the later read capability.
 Injected test/review adapters exercise the runtime boundary; they do not
 constitute a production enforcement backend.
 
@@ -324,6 +329,12 @@ consumption, and a coordinator for one combined pending approval bound to the
 request and grant revision. Focused tests exercise these contracts, including
 stale responses, cross-conversation rejection, and deletion's once-only rule.
 Provider tool-call encoding and continuation are supported for OpenAI API-key
-Responses and Anthropic Messages. OpenAI OAuth remains unknown and receives no
-tool definitions. The tool surface remains exactly the two bundled tools
-above; shell, filesystem/project mutation, web, and image tools are deferred.
+Responses and Anthropic Messages. The later verified OpenAI ChatGPT OAuth
+route also supports these tools for models in the selected profile's account
+catalog; live verification covers one account/model, with denial behavior
+still pending. The tool surface includes the two conversation-local tools
+above and conditional exact-file `read_file` on the trusted Linux composition.
+See the [capability matrix](capability-availability.md) and [read
+policy](read-broker-unregistered-read-policy.md) for current route, host, and
+approval requirements. Shell, filesystem/project mutation, web, and image
+tools remain unavailable.

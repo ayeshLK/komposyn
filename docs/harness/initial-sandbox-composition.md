@@ -1,15 +1,27 @@
 # Initial sandbox composition and coverage contract
 
-**Status:** design proposal for [issue #215](https://github.com/ayeshLK/komposyn/issues/215).
-This document does not wire a sandbox into `cmd/harness`, enable filesystem
-tools, or establish production owner coverage. It is based on source at
-`990732888c33c7f6980427e934da6cc1adb6db0e` (merged PR #241).
+**Status:** historical design proposal for [issue #215](https://github.com/ayeshLK/komposyn/issues/215), based on source at
+`990732888c33c7f6980427e934da6cc1adb6db0e` (merged PR #241). Its
+recommendation to keep reads unavailable and its source audit below describe
+that revision; later work superseded the read-admission recommendation.
+Unless a passage links to later work, its source audit, status and
+recommendations are a snapshot of that revision, not current behavior.
+Current `cmd/harness` conditionally wires exact-file `read_file` on the
+trusted Linux composition, and the documented ChatGPT OAuth route exposes
+client tools for catalog-listed models. Reads still require the runtime's
+host checks and an exact-target **Allow once** approval; this does not grant
+general filesystem access. See the [capability matrix](capability-availability.md),
+[accepted unregistered-read policy](read-broker-unregistered-read-policy.md),
+and [composition admission implementation](composition-admission-sandbox-service.md).
 
 The subsequent implementation of the auth/settings composition, runtime
 pre-consumption seam and non-exposing Linux service is documented in
 [composition admission and sandbox service](composition-admission-sandbox-service.md).
-This proposal records the historical design and current unknown-data refusal
-boundary; implementation has not enabled generic reads.
+The proposal and its recommendations remain useful historical design context;
+they do not describe current shipped capability availability. In particular,
+the accepted policy permits once-approved disclosure of an otherwise
+unregistered exact file while preserving mandatory protections for registered
+auth/settings objects and classified provider sources.
 
 ## Recommendation
 
