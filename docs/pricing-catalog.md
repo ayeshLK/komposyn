@@ -1,7 +1,7 @@
 # Pricing catalog maintenance
 
 The library ships a small offline public API list-price catalog at
-`plugins/library/token-logger/pricing-catalog.json`. It is data, not a live
+`plugins/token-logger/pricing-catalog.json`. It is data, not a live
 provider feed. Its coverage is deliberately narrow: exact model IDs, token
 categories, and observed billing context only. Normal startup, import, and
 reporting never fetch pricing pages.

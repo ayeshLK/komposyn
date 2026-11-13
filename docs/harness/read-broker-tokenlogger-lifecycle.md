@@ -16,7 +16,7 @@ The current storage boundary cannot establish the required registration-before-
 write guarantee. `Open` and `OpenWithOptions` eventually call `sql.Open("sqlite",
 dsn)`, then `configure` changes journal mode to WAL, migrations and pricing
 initialization write through the connection, and `Store.Close` only calls
-`db.Close` (`plugins/library/token-logger/storage.go`). The `database/sql`
+`db.Close` (`plugins/token-logger/storage.go`). The `database/sql`
 handle is limited to one connection per Store, not one connection across Stores
 or processes. Callers supply the database path; `OpenOptions.BackupPath` can
 select a backup destination, while an empty value creates a generated backup
@@ -241,7 +241,7 @@ Logger broker coverage marked unsupported.
 Run the committed, synthetic-only lifecycle probe from the repository root:
 
 ```sh
-go test -run '^TestReadBrokerLifecycleProbe$' -count=1 -v ./plugins/library/token-logger
+go test -run '^TestReadBrokerLifecycleProbe$' -count=1 -v ./plugins/token-logger
 ```
 
 `TestReadBrokerLifecycleProbe` creates all DBs under `t.TempDir`, prints each

@@ -1,9 +1,39 @@
 # Token Logger core API
 
 The root Go module remains `github.com/ayeshLK/komposyn`; the reusable core is
-the `plugins/library/token-logger` package. It has no dependency on the CLI.
+the `plugins/token-logger` package. It has no dependency on the CLI.
 This document records the supported adapter surface for the current pre-1.0
 module and distinguishes it from command policy.
+
+## Package-path migration
+
+This is an intentional pre-1.0 source compatibility break. Replace imports of
+`github.com/ayeshLK/komposyn/plugins/library/token-logger` with:
+
+```go
+import tokenlogger "github.com/ayeshLK/komposyn/plugins/token-logger"
+```
+
+The package name remains `tokenlogger`. The old path is removed without a
+compatibility package. Exported declarations and behavior are unchanged;
+existing databases, schema version, data directories, and stored records do
+not require migration because of this move.
+
+Applications that inject the deprecated exported `Version` variable must also
+change their linker target to
+`github.com/ayeshLK/komposyn/plugins/token-logger.Version`. For example:
+
+```sh
+go build -ldflags "-X github.com/ayeshLK/komposyn/plugins/token-logger.Version=${core_version}" ./your-command
+```
+
+Upgrade the module dependency to a tagged core release containing the new
+path, and update imports and linker flags together. CLI releases pinned to
+older core versions remain unaffected. The standalone `komposyn-lg` migration
+is a separate follow-up; core's candidate-replacement CLI compatibility check
+is expected to fail until its default branch migrates. The check stays enabled.
+See the [relocation decision](adr/0004-relocate-token-logger-package.md) and
+[consumer investigation and CLI handoff](token-logger-package-relocation.md).
 
 ## Supported core surface
 

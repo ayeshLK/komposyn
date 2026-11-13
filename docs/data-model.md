@@ -73,7 +73,7 @@ token range. The final event estimate rounds once to the nearest microunit,
 with half values rounded away from zero. Migration 5 preserves legacy rules and
 adds bundled-catalog identity and source provenance.
 
-The bundled, offline catalog is `plugins/library/token-logger/pricing-catalog.json`.
+The bundled, offline catalog is `plugins/token-logger/pricing-catalog.json`.
 Catalog entries carry a stable ID, model, token category, exact rate, currency,
 effective interval, official source URL, review date, and assumptions. Startup
 sync is idempotent and only inserts bundled IDs; it never replaces custom rules.

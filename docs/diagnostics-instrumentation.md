@@ -166,7 +166,7 @@ parser-error polling. The baseline disables only the new persisted evidence
 seam; ingestion, cursor checks, and legacy behavior remain identical. Run with:
 
 ```sh
-go test ./plugins/library/token-logger -run '^$' \
+go test ./plugins/token-logger -run '^$' \
   -bench '^BenchmarkDiagnosticEvidencePersistenceOverhead$' -benchmem -benchtime=100x -count=3
 ```
 

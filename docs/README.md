@@ -72,6 +72,8 @@ can jump to [Token Logger core](#project-and-token-logger-core).
   v0.7.0-and-earlier CLI artifact provenance and signer verification.
 - [Standalone CLI compatibility and coordinated security](standalone-compatibility-security.md)
   — cross-repository review, dependency, and private-release procedures.
+- [Token Logger package relocation](token-logger-package-relocation.md) —
+  import-path migration decision, consumer evidence, and standalone CLI handoff.
 
 For production `komposyn-lg` installation, commands, settings, or protocol-v1
 transport, use the

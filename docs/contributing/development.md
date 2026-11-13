@@ -19,7 +19,7 @@ make check
 Focused library tests can be run while iterating:
 
 ```sh
-go test ./plugins/library/token-logger -run TestName
+go test ./plugins/token-logger -run TestName
 ```
 
 The CI vulnerability check uses govulncheck v1.1.4 and fails for reachable

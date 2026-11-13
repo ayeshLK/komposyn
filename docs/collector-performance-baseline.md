@@ -10,7 +10,7 @@ Fixtures and databases are generated under Go's temporary test directory.
 From the core repository root:
 
 ```sh
-go test ./plugins/library/token-logger -run '^$' \
+go test ./plugins/token-logger -run '^$' \
   -bench '^BenchmarkCollectorGeneratedBaselines$' -benchtime=10x -count=5
 ```
 
@@ -32,7 +32,7 @@ each; and two files with 100 events each.
 For scaling through 10,000 events, run:
 
 ```sh
-go test ./plugins/library/token-logger -run '^$' \
+go test ./plugins/token-logger -run '^$' \
   -bench '^BenchmarkCollectorGeneratedHistoryScale$' -benchtime=1x -count=3
 ```
 
@@ -174,10 +174,21 @@ The collector acquisition candidate is based on merged baseline
 `0943bc8d3ef63eef98e907c856211af6d93424a7` and implemented at
 `55ec3e177cfd7840877ada2fe07bc1e7dbb4fd86`. Before and candidate runs used
 Go 1.26.9 on the same Linux amd64 host (Intel Core i7-10510U); each sample ran
-ten operations, repeated five times. Reproduce both sides with:
+ten operations, repeated five times. Both pinned revisions predate the
+Token Logger package relocation, so reproduce those historical measurements
+from either historical checkout with:
 
 ```sh
 go test ./plugins/library/token-logger -run '^$' \
+  -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' \
+  -benchtime=10x -count=5
+```
+
+To run the equivalent benchmark from the current checkout, use the relocated
+package path:
+
+```sh
+go test ./plugins/token-logger -run '^$' \
   -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' \
   -benchtime=10x -count=5
 ```

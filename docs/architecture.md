@@ -46,7 +46,7 @@ flowchart LR
 
 ## Component boundaries
 
-- `plugins/library/token-logger/` contains the domain model, SQLite store,
+- `plugins/token-logger/` contains the domain model, SQLite store,
   numbered migrations, provider adapters, collector, pricing, diagnostics,
   and reporting.
 - The standalone `komposyn-lg` repository contains production command dispatch, interactive setup,
