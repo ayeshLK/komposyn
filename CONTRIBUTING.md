@@ -23,7 +23,9 @@ UI captures, source-build live checks, released behavior, and proposals stay
 distinct. User-facing behavior changes require corresponding documentation
 updates in the same change; the manual
 [biweekly content review](docs/devrel-content-plan.md#ongoing-documentation-review)
-catches remaining drift.
+catches remaining drift. Use the [manual review procedure and reusable issue
+body](docs/contributing/documentation-review.md) to record evidence and assign
+the next review.
 
 ## Ownership
 
