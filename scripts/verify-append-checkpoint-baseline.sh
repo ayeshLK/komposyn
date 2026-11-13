@@ -19,7 +19,7 @@ if ! git -C "$repository_root" cat-file -e "$baseline_commit^{commit}" 2>/dev/nu
 fi
 
 git -C "$repository_root" worktree add --detach "$baseline_worktree" "$baseline_commit"
-cp "$repository_root/plugins/library/token-logger/streaming_baseline_oracle_test.go" \
+cp "$repository_root/plugins/token-logger/streaming_baseline_oracle_test.go" \
 	"$baseline_worktree/plugins/library/token-logger/streaming_baseline_oracle_test.go"
 
 (
@@ -32,7 +32,7 @@ cp "$repository_root/plugins/library/token-logger/streaming_baseline_oracle_test
 	cd "$repository_root"
 	KOMPOSYN_STREAMING_ORACLE_OUTPUT="$candidate_output" \
 	KOMPOSYN_STREAMING_ORACLE_ROOT="$temporary_root/fixtures" \
-		go test ./plugins/library/token-logger -run '^TestStreamingBaselineOracle$' -count=1
+		go test ./plugins/token-logger -run '^TestStreamingBaselineOracle$' -count=1
 )
 
 if ! diff -u "$baseline_output" "$candidate_output"; then

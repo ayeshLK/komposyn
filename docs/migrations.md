@@ -84,9 +84,9 @@ and does not describe this SQLite migration range.
 When a schema change is required:
 
 1. Increment `CurrentSchemaVersion` in
-   `plugins/library/token-logger/schema.go`.
+   `plugins/token-logger/schema.go`.
 2. Add one immutable migration statement and an ordered application block in
-   `plugins/library/token-logger/migrations.go` and `storage.go`.
+   `plugins/token-logger/migrations.go` and `storage.go`.
 3. Use a transaction and record the new version only after the change succeeds.
 4. Add tests for a fresh database, upgrade from the immediately previous
    version, rollback/failure behavior where relevant, and preservation of

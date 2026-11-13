@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	tokenlogger "github.com/ayeshLK/komposyn/plugins/library/token-logger"
+	tokenlogger "github.com/ayeshLK/komposyn/plugins/token-logger"
 )
 
 // This contract test deliberately uses only the package's exported API. It

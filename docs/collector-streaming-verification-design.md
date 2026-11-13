@@ -186,8 +186,8 @@ changed-source cost before merge.
 Reproduction commands (run from the module root):
 
 ```sh
-go test ./plugins/library/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' -benchtime=10x -count=5
-go test ./plugins/library/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedHistoryScale$' -benchtime=1x -count=3
+go test ./plugins/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' -benchtime=10x -count=5
+go test ./plugins/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedHistoryScale$' -benchtime=1x -count=3
 ```
 
 Local validation for the implementation: `go mod verify`, `go vet ./...`,

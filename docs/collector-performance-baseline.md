@@ -10,7 +10,7 @@ Fixtures and databases are generated under Go's temporary test directory.
 From the core repository root:
 
 ```sh
-go test ./plugins/library/token-logger -run '^$' \
+go test ./plugins/token-logger -run '^$' \
   -bench '^BenchmarkCollectorGeneratedBaselines$' -benchtime=10x -count=5
 ```
 
@@ -32,7 +32,7 @@ each; and two files with 100 events each.
 For scaling through 10,000 events, run:
 
 ```sh
-go test ./plugins/library/token-logger -run '^$' \
+go test ./plugins/token-logger -run '^$' \
   -bench '^BenchmarkCollectorGeneratedHistoryScale$' -benchtime=1x -count=3
 ```
 
@@ -177,7 +177,7 @@ Go 1.26.9 on the same Linux amd64 host (Intel Core i7-10510U); each sample ran
 ten operations, repeated five times. Reproduce both sides with:
 
 ```sh
-go test ./plugins/library/token-logger -run '^$' \
+go test ./plugins/token-logger -run '^$' \
   -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' \
   -benchtime=10x -count=5
 ```

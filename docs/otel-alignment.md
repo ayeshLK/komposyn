@@ -6,10 +6,10 @@ metrics, or export OTLP. Its JSONL `harness` sidecar accepts KompoSyn
 `UsageEvent` records, not OpenTelemetry telemetry. Similar field names alone
 do not make these formats interoperable.
 
-This audit compares the current [library event model](../plugins/library/token-logger/tokenlogger.go),
-[Codex adapter](../plugins/library/token-logger/codex.go),
-[Claude Code adapter](../plugins/library/token-logger/claude.go),
-[SQLite schema](../plugins/library/token-logger/migrations.go), and
+This audit compares the current [library event model](../plugins/token-logger/tokenlogger.go),
+[Codex adapter](../plugins/token-logger/codex.go),
+[Claude Code adapter](../plugins/token-logger/claude.go),
+[SQLite schema](../plugins/token-logger/migrations.go), and
 [sidecar contract](https://github.com/ayeshLK/komposyn-lg/blob/master/docs/HARNESS_PROTOCOL.md) with the OpenTelemetry GenAI
 [client-inference conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/6fd0d763a092db245a54104fc1124031eb3c51d2/docs/gen-ai/client-inference.md)
 at revision `6fd0d763a092db245a54104fc1124031eb3c51d2` (2026-10-09).
