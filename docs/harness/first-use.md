@@ -1,9 +1,15 @@
 # Five minutes with the experimental chat
 
-This walkthrough describes the experimental v0.14.0 release. Use the
+This walkthrough describes the current experimental chat behavior. The
+historical v0.14.0 release kept the ChatGPT OAuth route text-only, without
+conversation tools or exact-file reads. API-key routes already supported
+conditional Linux exact-file reads. These release limits are preserved as
+history. Use the
 [installation guide](../installation.md) for signed binaries, or build from
-source below. Live ChatGPT OAuth tool evidence currently covers one account
-and model only; denial behavior and other accounts/models remain unverified.
+source below. Live ChatGPT OAuth planning, clarification, exact-file read,
+cancellation, and denial have been operator-verified for one account/model on
+one trusted Linux host. Other accounts/models and broader platform coverage
+remain unverified.
 Automated fixture tests do not establish account eligibility or real-provider
 compatibility. See the [capability matrix](capability-availability.md) and
 [protocol assessment](openai-chatgpt-oauth-tool-protocol.md) for scope and limits.
@@ -38,10 +44,10 @@ Ordinary chat and supported conversation tools work on Linux, macOS, and
 Windows without a read backend. Native read evidence is limited to recorded
 Linux amd64/Bubblewrap 0.9.0 profiles; arm64 builds and macOS/Windows tests do
 not establish filesystem enforcement. The ChatGPT OAuth live results are
-limited to one account/model and one trusted Linux host; API-key, Anthropic,
-denial, and broader platform checks remain pending. ChatGPT login must grant
-plan-usage permission before
-discovery or inference; a successful identity login alone is insufficient.
+limited to one account/model and one trusted Linux host. API-key and
+Anthropic live provider checks and broader platform checks remain pending.
+ChatGPT login must grant plan-usage permission before discovery or inference;
+a successful identity login alone is insufficient.
 
 ## 2. Exchange text and try a plan
 
@@ -96,9 +102,11 @@ Use `/cd <path>` to change the base for later relative requests. Paths can be
 absolute or relative to the current working directory, may contain spaces or
 Unicode, and accept `~` as home-directory shorthand. Invalid paths leave the
 current directory and command draft intact. A directory change keeps the
-conversation and does not add file permission. The current read-eligibility
-policy still restricts reads to the launch directory until the separately
-reviewed wider-target policy is available.
+conversation and does not add file permission. Relative paths use the current
+working directory as context. An individually approved exact target may be
+outside that directory when host eligibility checks permit it. See the
+[capability matrix](capability-availability.md) for current route and backend
+conditions.
 
 The worker reads one retained regular file with a 64 KiB bound. Protected
 auth/settings objects and aliases, unsupported provider-source access, unsafe

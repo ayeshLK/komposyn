@@ -3,8 +3,9 @@
 **Research checked:** 2026-11-12. The OpenAI documentation pages below do not
 show a publication or last-updated date in the rendered content; this date is
 the date they were checked. The operator authorized up to five live requests
-with synthetic content. A later bounded verification used the existing
-ChatGPT OAuth profile; see [live evidence](#live-verification-2026-11-12).
+with synthetic content. Later bounded verifications used the existing
+ChatGPT OAuth profile; see [live evidence](#live-verification-2026-11-12) and
+[denial follow-up](#denial-follow-up-live-verification-2026-11-13).
 No credential material or auth-store contents were inspected or recorded.
 
 ## Route and scope
@@ -34,7 +35,7 @@ successful text response alone does not establish tool support for a model.
 | Provider-native continuation | Documented HTTP behavior; fixture covered | SIWC says not to use `previous_response_id` over HTTP and to send required history in `input`; the function calling guide shows replaying the assistant response and tool output. KompoSyn retains/replays native assistant output items and sends the correlated result. |
 | OAuth request differences | Documented | Set `store:false`, `stream:true`; omit `max_output_tokens`; use `additional_tools` for client function definitions on this route. Current API-key requests retain top-level `tools`, `max_output_tokens`, and `include: ["reasoning.encrypted_content"]`. The OAuth adapter does not send these API-key-only fields. |
 | Live account/model evidence | The tool round trip is live-verified for `gpt-6-sol` on one account; other accounts and model IDs have not been live-tested | Runtime can select only models returned in the selected OAuth profile's account-specific catalog. This evidence scope does not create a model allowlist; SIWC protocol support is evaluated at the route level unless the provider documents a model-specific difference or rejects the operation. |
-| Live ChatGPT OAuth round trip | Operator-reported for `gpt-6-sol` on one tested account and route | The 2026-11-12 synthetic live cycle exercised `update_plan` and `request_user_input`, each approved with Allow once, followed by correlated result submission and a follow-up. A 2026-11-13 follow-up exercised exact-file reading and cancellation on a trusted Linux host. Denial was not tested. Automated runtime fixtures remain separate evidence. |
+| Live ChatGPT OAuth round trip | Operator-reported for `gpt-6-sol` on one tested account and route | The 2026-11-12 synthetic live cycle exercised `update_plan` and `request_user_input`, each approved with Allow once, followed by correlated result submission and a follow-up. A 2026-11-13 follow-up exercised exact-file reading and cancellation on a trusted Linux host. Denial was not tested in that follow-up; a later same-day denial result is recorded below. Automated runtime fixtures remain separate evidence. |
 
 The SIWC limitations separately list unsupported built-in tools including
 image generation, file search, Code Interpreter, native computer use, hosted
@@ -49,8 +50,9 @@ ordinary client functions. The normal runtime declares route-level client-tool
 support based on the SIWC protocol evidence; the selected OAuth profile's
 account catalog determines model availability. The live result covers one
 route, account, and model. It does not establish a separate capability
-difference across accounts or models, and no such restriction is inferred.
-Denial and its no-fallback outcome remain open under #294.
+difference across accounts or models, and no such restriction is inferred. A
+later denial follow-up is recorded below; broader account/model coverage remains
+unverified.
 
 ## Fixture contract and adapter seam
 
@@ -104,8 +106,8 @@ not establish support for every OpenAI OAuth model.
 
 Both live tool approvals in the initial cycle were Allow once: one each for
 `update_plan` and `request_user_input`. The follow-up cancellation check passed.
-Denial remains untested. No fallback was observed during the allowed and
-canceled flows; denial's no-fallback behavior remains open under issue #294.
+At this point denial had not yet been tested. No fallback was observed during
+the allowed and canceled flows; a later denial result is recorded below.
 Automated runtime fixtures provide separate implementation evidence; they are
 not live checks.
 
@@ -122,9 +124,9 @@ The test used the same selected ChatGPT OAuth profile and public model
 `gpt-6-sol`; the exact-file operation displayed that destination and received
 an explicit once approval. The synthetic marker was returned, and the
 follow-up remained on the selected profile. Cancellation stopped the turn.
-The operator did not test denial, so denial behavior remains open under #294.
-No account identifier, credential, raw conversation, or non-synthetic file
-content was retained.
+This follow-up did not test denial; a later same-day denial result is recorded
+below. No account identifier, credential, raw conversation, or non-synthetic
+file content was retained.
 
 Reported environment and artifact identity:
 
@@ -135,14 +137,30 @@ Reported environment and artifact identity:
 
 This follow-up supplies operator-reported live-provider and trusted-backend
 evidence for the allowed exact-file journey and cancellation. No fallback was
-observed in the reported allowed/canceled flows. Denial and its no-fallback
-outcome remain unverified, so issue #294 stays open.
+observed in the reported allowed/canceled flows.
 
 Native backend evidence remains separate from this provider result. The earlier
 reviewed #215/#278 Linux amd64/Bubblewrap 0.9.0 evidence covers native
 read-enforcement scenarios. The follow-up above additionally exercises the
 live OAuth `read_file` composition on one reported host; neither result
 establishes other accounts, models, platforms, or backend profiles.
+
+## Denial follow-up live verification (2026-11-13)
+
+The operator reports choosing **Deny** for a synthetic exact-file request using
+source-built PR #297. The file was not read or disclosed; the request stayed on
+the selected ChatGPT OAuth profile with no provider, profile, authentication,
+or billing fallback. This is operator-reported evidence for the same tested
+account/model and trusted Linux host described above, not broader compatibility
+evidence.
+
+Reported build and host identity:
+
+- Source commit: `13b01e4f16912aeb3c05feb9f3b9f05cbfd15c18`
+- Binary SHA-256: `70cd7ca8ee9697be193b060e413743e1457fabb20662d9d5e48f2925fd177eb5`
+- Platform: Linux `7.0.0-42-generic`, `x86_64`
+- Route/model: ChatGPT OAuth / public model `gpt-6-sol`
+- Backend: `/usr/bin/bwrap`, Bubblewrap `0.9.0`, `root:root`, mode `0755`
 
 ## Sources
 

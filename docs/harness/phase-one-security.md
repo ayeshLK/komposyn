@@ -22,7 +22,11 @@ The experimental chat sends the user's submitted text, a short system
 instruction, and—on supported routes—the registered tool definitions to
 the selected OpenAI or Anthropic API using the selected credential. OpenAI
 credentials can be an API key or an SIWC OAuth token for ChatGPT plan usage;
-Anthropic remains API-key based. OpenAI OAuth and unknown routes stay
+Anthropic remains API-key based. The documented ChatGPT OAuth route supports
+client tools for models in the selected profile's account catalog. Live
+coverage is limited to one account/model. Synthetic exact-file allow and deny,
+cancellation, and no-fallback outcomes were operator-verified on one trusted
+Linux host; other accounts/models remain unverified. Unknown routes stay
 text-only. Approved `request_user_input` answers and bounded tool results are
 sent to the selected model. An approved `read_file` result is also sent to the
 selected provider and may recur in valid same-conversation requests. The
