@@ -1477,22 +1477,17 @@ func (u *terminal) refreshModels() {
 }
 
 func (u *terminal) addProvider() {
-	providerID := "openai"
-	form := tv.NewForm()
-	form.SetButtonActivatedStyle(tcell.StyleDefault.Foreground(tcell.ColorYellow).Bold(true))
-	form.SetBorder(true).SetTitle(" Add New Provider ")
-	form.AddDropDown("Provider", []string{"openai", "anthropic"}, 0, func(value string, _ int) { providerID = value })
-	form.AddButton("Continue", func() {
+	choose := func(providerID string) {
 		methods := u.client.AuthMethods(providerID)
-		if len(methods) > 1 {
-			options := make([]string, 0, len(methods))
-			for _, method := range methods {
-				if method == "oauth" {
-					options = append(options, "Continue with ChatGPT")
-				} else if method == "api_key" {
-					options = append(options, "API key")
-				}
+		options := make([]string, 0, len(methods))
+		for _, method := range methods {
+			if method == "oauth" && providerID == "openai" {
+				options = append(options, "Continue with ChatGPT")
+			} else if method == "api_key" {
+				options = append(options, "API key")
 			}
+		}
+		if len(options) > 1 {
 			modal := tv.NewModal().SetText("Choose an authentication method for " + providerID + ".").AddButtons(options).SetDoneFunc(func(_ int, label string) {
 				if label == "Continue with ChatGPT" {
 					u.startOpenAILogin("")
@@ -1504,9 +1499,15 @@ func (u *terminal) addProvider() {
 			return
 		}
 		u.addAPIKeyProvider(providerID)
-	})
-	form.AddButton("Cancel", func() { u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput) })
-	u.setRoot(form, true).SetFocus(form.GetFormItem(0))
+	}
+	back := func() { u.setRoot(u.pickerLayout, true).SetFocus(u.pickerInput) }
+	list := tv.NewList().ShowSecondaryText(true)
+	list.SetBorder(true).SetTitle(" Add New Provider · ↑/↓ then Enter · or press a letter · Esc cancels ")
+	list.AddItem("OpenAI — ChatGPT sign-in or API key", "Choose how to connect your OpenAI account.", 'o', func() { choose("openai") })
+	list.AddItem("Anthropic — API key required", "Claude subscription sign-in is unavailable in KompoSyn.", 'a', func() { choose("anthropic") })
+	list.AddItem("Cancel", "Return to model selection.", 'c', back)
+	list.SetDoneFunc(back)
+	u.setRoot(list, true).SetFocus(list)
 }
 
 func (u *terminal) addAPIKeyProvider(providerID string) {

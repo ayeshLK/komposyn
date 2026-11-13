@@ -1377,7 +1377,6 @@ func TestCancelButtonCancelsPendingAddOperation(t *testing.T) {
 	go func() { runDone <- u.app.Run() }()
 	t.Cleanup(func() { stopSimulationTerminal(t, u, runDone) })
 	time.Sleep(80 * time.Millisecond)
-	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
 	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 	waitForScreen(t, safeScreen, "Profile label", "")
 	press := func(key tcell.Key, r rune) {
@@ -1410,6 +1409,59 @@ func TestCancelButtonCancelsPendingAddOperation(t *testing.T) {
 	}
 }
 
+func TestProviderChoicesKeyboardWorkflow(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		keys     []tcell.Key
+		shortcut rune
+		want     string
+	}{
+		{name: "down selects Anthropic", keys: []tcell.Key{tcell.KeyDown, tcell.KeyEnter}, want: "Profile label:"},
+		{name: "up returns to OpenAI", keys: []tcell.Key{tcell.KeyDown, tcell.KeyUp, tcell.KeyEnter}, want: "Continue with ChatGPT"},
+		{name: "Anthropic shortcut", shortcut: 'a', want: "Profile label:"},
+		{name: "OpenAI shortcut", shortcut: 'o', want: "Continue with ChatGPT"},
+		{name: "escape", keys: []tcell.Key{tcell.KeyEscape}, want: "Provider picker"},
+		{name: "cancel shortcut", shortcut: 'c', want: "Provider picker"},
+		{name: "cancel row", keys: []tcell.Key{tcell.KeyDown, tcell.KeyDown, tcell.KeyEnter}, want: "Provider picker"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			screen := tcell.NewSimulationScreen("UTF-8")
+			screen.SetSize(100, 32)
+			safeScreen := &synchronizedSimulation{SimulationScreen: screen}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := &clientStub{methods: map[string][]string{
+				"openai":    {"api_key", "env", "oauth"},
+				"anthropic": {"api_key", "env"},
+			}}
+			u := &terminal{app: tv.NewApplication().SetScreen(safeScreen), client: client, ctx: ctx, cancel: cancel}
+			u.pickerInput = tv.NewInputField()
+			u.pickerLayout = tv.NewFlex().AddItem(tv.NewTextView().SetText("Provider picker"), 0, 1, false).AddItem(u.pickerInput, 1, 0, true)
+			u.addProvider()
+			runDone := make(chan error, 1)
+			go func() { runDone <- u.app.Run() }()
+			t.Cleanup(func() { stopSimulationTerminal(t, u, runDone) })
+			waitForScreen(t, safeScreen, "OpenAI — ChatGPT sign-in or API key", "")
+			waitForScreen(t, safeScreen, "Anthropic — API key required", "")
+			waitForScreen(t, safeScreen, "Claude subscription sign-in is unavailable in KompoSyn.", "")
+			for _, key := range tc.keys {
+				screen.InjectKey(key, 0, tcell.ModNone)
+			}
+			if tc.shortcut != 0 {
+				screen.InjectKey(tcell.KeyRune, tc.shortcut, tcell.ModNone)
+			}
+			waitForScreen(t, safeScreen, tc.want, "Add New Provider")
+			if tc.want == "Provider picker" {
+				var focus tv.Primitive
+				u.app.QueueUpdate(func() { focus = u.app.GetFocus() })
+				if focus != u.pickerInput {
+					t.Fatal("cancel did not restore model filter focus")
+				}
+			}
+		})
+	}
+}
+
 func TestProviderAdvertisedOAuthMethodCanBeCanceled(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(100, 32)
@@ -1436,7 +1488,6 @@ func TestProviderAdvertisedOAuthMethodCanBeCanceled(t *testing.T) {
 	go func() { finished <- u.app.Run() }()
 	press := func(key tcell.Key) { screen.InjectKey(key, 0, tcell.ModNone); time.Sleep(40 * time.Millisecond) }
 	waitForScreen(t, safeScreen, "Add New Provider", "")
-	press(tcell.KeyTab)
 	press(tcell.KeyEnter)
 	waitForScreen(t, safeScreen, "Choose an authentication method", "")
 	press(tcell.KeyRight)
