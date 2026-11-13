@@ -21,6 +21,13 @@ is required. The selected model, messages, provider continuation data,
 discovery results, and per-request usage exist only in memory and are cleared
 when the process exits.
 
+**Add New Provider** shows a direct list with authentication requirements:
+**OpenAI — ChatGPT sign-in or API key** and **Anthropic — API key required**.
+Use ↑/↓ and Enter, or press **o** for OpenAI or **a** for Anthropic. Escape or
+**c** returns to model selection. Claude subscription sign-in is unavailable
+in KompoSyn; an Anthropic connection requires an API key. OpenAI offers a
+separate choice between ChatGPT sign-in and an API key.
+
 For a short guided trial, start with the [five-minute walkthrough](first-use.md),
 including the provider/auth/platform table and read-disclosure limits. It
 targets experimental v0.16.0. The [demo and verification record](first-use-evidence.md)
