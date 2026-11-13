@@ -9,7 +9,8 @@ automated reminders.
 This procedure and its issue body are **incomplete preparation until populated
 with actual dates, publication evidence, and the returned assigned issue URL**.
 Do not create the first review before the prerequisite content rollout is
-published. In particular, [#305](https://github.com/ayeshLK/komposyn/issues/305)
+published and [metadata/public-journey rollout #304](https://github.com/ayeshLK/komposyn/issues/304)
+is complete. In particular, [#305](https://github.com/ayeshLK/komposyn/issues/305)
 remains open until its assigned review and publication evidence exist; a
 committed template alone does not satisfy it. Track rollout status in the
 [content plan](../devrel-content-plan.md#ongoing-documentation-review).
@@ -20,9 +21,15 @@ Use the merged rollout PR as publication evidence, rather than the preparation
 commit's date. For this rollout the prerequisite is
 [PR #306](https://github.com/ayeshLK/komposyn/pull/306). Run the following from
 a checkout with `gh` and Python 3 after that PR has merged. The guard stops
-before date calculation if publication has not happened:
+before date calculation if publication has not happened or #304 remains open.
+Before creating the review, inspect #304's rollout evidence and verify its actual
+applied description/topics and public-journey checks against the recorded
+publication revision; a closed state alone is not evidence of those checks:
 
 ```sh
+ROLLOUT_STATE=$(gh issue view 304 --repo ayeshLK/komposyn --json state --jq .state)
+[ "$ROLLOUT_STATE" = CLOSED ] || { echo 'Rollout #304 is incomplete; stop here.'; exit 1; }
+gh issue view 304 --repo ayeshLK/komposyn --comments
 PUBLICATION_TIMESTAMP=$(gh pr view 306 --repo ayeshLK/komposyn --json mergedAt --jq '.mergedAt // empty')
 [ -n "$PUBLICATION_TIMESTAMP" ] || { echo 'Rollout is not merged; stop here.'; exit 1; }
 PUBLICATION_REVISION=$(gh pr view 306 --repo ayeshLK/komposyn --json mergeCommit --jq '.mergeCommit.oid')
