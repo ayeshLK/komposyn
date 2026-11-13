@@ -9,7 +9,7 @@ publication.
 
 ### ⚠ BREAKING CHANGES
 
-* consumers must import github.com/ayeshLK/komposyn/plugins/token-logger and update linker targets for Version.
+* The old import path `github.com/ayeshLK/komposyn/plugins/library/token-logger` is removed. Update imports to `github.com/ayeshLK/komposyn/plugins/token-logger` and change any linker target for the exported `Version` variable to `github.com/ayeshLK/komposyn/plugins/token-logger.Version`. Existing CLI builds pinned to older core releases remain unaffected until they upgrade; upgrading to this release requires the import and linker migration.
 
 ### Bug Fixes
 
