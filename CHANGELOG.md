@@ -4,6 +4,22 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
+## [0.17.0](https://github.com/ayeshLK/komposyn/compare/v0.16.0...v0.17.0) (2026-11-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* The old import path `github.com/ayeshLK/komposyn/plugins/library/token-logger` is removed. Update imports to `github.com/ayeshLK/komposyn/plugins/token-logger` and change any linker target for the exported `Version` variable to `github.com/ayeshLK/komposyn/plugins/token-logger.Version`. Existing CLI builds pinned to older core releases remain unaffected until they upgrade; upgrading to this release requires the import and linker migration.
+
+### Bug Fixes
+
+* **ui:** clarify provider authentication and replace dropdown ([#300](https://github.com/ayeshLK/komposyn/issues/300)) ([2cfe8fd](https://github.com/ayeshLK/komposyn/commit/2cfe8fdc10d550928b0929b4d8ed14ab99ee4f4e))
+
+
+### Code Refactoring
+
+* relocate Token Logger package path ([#311](https://github.com/ayeshLK/komposyn/issues/311)) ([0b9e4d2](https://github.com/ayeshLK/komposyn/commit/0b9e4d2e754b396ed7196f1375526f7b10b90bdd))
+
 ## [0.16.0](https://github.com/ayeshLK/komposyn/compare/v0.15.0...v0.16.0) (2026-11-13)
 
 
