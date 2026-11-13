@@ -505,7 +505,7 @@ func (u *terminal) appendOutput(text string, assistant bool) {
 		return
 	}
 	message := assistant
-	if len(u.transcript) > 0 && u.transcript[len(u.transcript)-1].assistant == assistant && u.transcript[len(u.transcript)-1].message == message {
+	if len(u.transcript) > 0 && u.transcript[len(u.transcript)-1].activityID == "" && u.transcript[len(u.transcript)-1].assistant == assistant && u.transcript[len(u.transcript)-1].message == message {
 		u.transcript[len(u.transcript)-1].text += text
 	} else {
 		u.transcript = append(u.transcript, outputPart{text: text, assistant: assistant, message: message})

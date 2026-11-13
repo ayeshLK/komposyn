@@ -861,6 +861,20 @@ func TestSecondTurnActivityStaysAfterItsPromptWhenThereIsNoAnswer(t *testing.T) 
 	}
 }
 
+func TestActivityRefreshPreservesNoAnswerFailureStatus(t *testing.T) {
+	u := &terminal{output: newTranscriptView(), followingTranscript: true}
+	u.appendMessage("Read notes.txt", false)
+	u.transcript[len(u.transcript)-1].turnID = "request-failed"
+	activityID := toolActivityOutputID("request-failed", "read-1")
+	u.setToolActivity(activityID, "Tool read_file · finished · succeeded\n")
+	u.write("\nRequest failed: provider continuation unavailable\n")
+	u.setToolActivity(activityID, "Tool read_file · finished · succeeded · disclosed\n")
+	got := u.output.GetText(true)
+	if !strings.Contains(got, "Request failed: provider continuation unavailable") {
+		t.Fatalf("activity refresh erased the no-answer request failure: %q", got)
+	}
+}
+
 func TestActiveToolActivityUpdatesBeforeSendCompletes(t *testing.T) {
 	selected := &ui.Model{Key: "fixture", Provider: "openai", ID: "fixture-model", ProfileLabel: "Fixture"}
 	var mu sync.Mutex

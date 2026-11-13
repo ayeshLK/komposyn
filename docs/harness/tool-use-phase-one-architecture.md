@@ -3,10 +3,10 @@
 Status: the contracts, evaluator, in-memory grant store, bounded runtime,
 approval/permission controls, provider continuation, and two conversation-local
 tools are implemented. `cmd/harness` exposes `update_plan` and
-`request_user_input` on supported API-key routes and for the model-scoped
-ChatGPT OAuth route (`gpt-6-sol`) when it appears in the selected profile's
-catalog. Live verification covers one account; denial and broader account/model
-compatibility remain open. This does not
+`request_user_input` on supported API-key routes and the documented ChatGPT
+OAuth route for models in the selected profile's account catalog. Live
+verification covers one account/model; denial and broader live account/model
+coverage remain open. This does not
 enable filesystem/project mutation, process execution, web access, or image
 tools, and it does not claim OS isolation for trusted in-process code.
 Injected test/review adapters exercise the runtime boundary; they do not
