@@ -183,7 +183,20 @@ improved. These measurements establish the allocation tradeoff, not a general
 latency improvement. Re-run them after any runtime changes and review the
 changed-source cost before merge.
 
-Reproduction commands (run from the module root):
+The recorded baseline at merged #141 and the candidate measurements were
+collected before the Token Logger package relocation. Use the old package path
+when reproducing those historical revisions, and the new path from the current
+checkout.
+
+Historical #141 and candidate-revision commands (run from each revision's
+module root):
+
+```sh
+go test ./plugins/library/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' -benchtime=10x -count=5
+go test ./plugins/library/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedHistoryScale$' -benchtime=1x -count=3
+```
+
+Equivalent commands for the current checkout:
 
 ```sh
 go test ./plugins/token-logger -run '^$' -bench '^BenchmarkCollectorGeneratedBaselines/(claude|codex)/(unchanged-retained-collector|usage-append|non-usage-append|malformed-unchanged|unsupported-unchanged)$' -benchtime=10x -count=5
