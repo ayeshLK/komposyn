@@ -4,6 +4,14 @@ All notable changes to KompoSyn are documented in this file. Release entries
 are prepared from Conventional Commits by Release Please and reviewed before
 publication.
 
+## [0.16.0](https://github.com/ayeshLK/komposyn/compare/v0.15.0...v0.16.0) (2026-11-13)
+
+
+### Features
+
+* **harness:** explain capability availability by route ([#295](https://github.com/ayeshLK/komposyn/issues/295)) ([8680633](https://github.com/ayeshLK/komposyn/commit/8680633299a27024e40277a2782fa6f1b57d7122))
+* **openai:** add model-scoped ChatGPT OAuth tools ([#297](https://github.com/ayeshLK/komposyn/issues/297)) ([13b01e4](https://github.com/ayeshLK/komposyn/commit/13b01e4f16912aeb3c05feb9f3b9f05cbfd15c18))
+
 ## [0.15.0](https://github.com/ayeshLK/komposyn/compare/v0.14.0...v0.15.0) (2026-11-11)
 
 
