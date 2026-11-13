@@ -16,8 +16,9 @@ when the process exits.
 
 For a short guided trial, start with the [five-minute walkthrough](first-use.md),
 including the provider/auth/platform table and read-disclosure limits. It
-describes experimental v0.14.0. Live provider validation remains pending;
-fixture tests are not live tests.
+targets experimental v0.16.0. The [demo and verification record](first-use-evidence.md)
+separates staged UI captures, prior source-build live evidence, and pending
+current-release live validation.
 
 The dated [capability availability matrix](capability-availability.md)
 records route/authentication evidence, remaining verification, and the runtime
