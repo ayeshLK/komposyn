@@ -48,6 +48,10 @@ func TestPathFreeOperationErrorPreservesCauseWithoutPath(t *testing.T) {
 	if strings.Contains(missing.Error(), path) {
 		t.Fatalf("missing-file error exposed filesystem path: %v", missing)
 	}
+	rawMissing := pathFreeOperationError("open credential file", os.ErrNotExist)
+	if !errors.Is(rawMissing, os.ErrNotExist) {
+		t.Fatalf("wrapped raw missing-file error lost errors.Is classification: %v", rawMissing)
+	}
 }
 
 func TestProfileLifecycleAndSecretFreeMetadata(t *testing.T) {

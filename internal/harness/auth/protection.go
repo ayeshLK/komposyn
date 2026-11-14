@@ -56,7 +56,7 @@ func RegisterSensitiveJSONStore(ctx context.Context, protector SensitiveFileProt
 		return err
 	}
 	f, err := openPrivateFile(abs)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return protector.Protect(ctx, owner, class, abs, nil)
 	}
 	if err != nil {
