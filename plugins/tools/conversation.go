@@ -39,9 +39,12 @@ const (
 	MaxUserInputTextBytes   = 2 << 10
 	MaxReadFileInputBytes   = 4 << 10
 	MaxReadFilePathBytes    = 2 << 10
+	MaxListFilesInputBytes  = 4 << 10
+	MaxListFilesPathBytes   = 2 << 10
 )
 
 const ReadFileID ID = "read_file"
+const ListFilesID ID = "list_files"
 
 type ReadFileInput struct {
 	Path string `json:"path"`
@@ -64,6 +67,34 @@ func ParseReadFile(raw []byte) (ReadFileInput, error) {
 	}
 	if input.Path == "" || len(input.Path) > MaxReadFilePathBytes || strings.IndexByte(input.Path, 0) >= 0 {
 		return ReadFileInput{}, errors.New("read path is empty or outside its input bound")
+	}
+	return input, nil
+}
+
+// ListFilesInput identifies one directory for a bounded, nonrecursive listing.
+// It intentionally has no model-controlled filter or recursion options.
+type ListFilesInput struct {
+	Path string `json:"path"`
+}
+
+var listFilesSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048}},"required":["path"],"additionalProperties":false}`)
+
+// ListFilesDefinition describes the once-approved, nonrecursive name-disclosure
+// request. Host composition must withhold it until directory enforcement and
+// native evidence are accepted.
+func ListFilesDefinition() Definition {
+	return Definition{ID: ListFilesID, Description: "List names in one directory only (nonrecursive). Every request needs explicit once approval naming the directory and selected provider destination. Hidden entries, ignored entries, and .git are excluded; symlinks are not followed. Filenames and counts are disclosed to this provider and may be sensitive. Changing the working directory grants no listing permission. Search, recursion, filtering, and filesystem changes are unavailable.", InputSchema: append(json.RawMessage(nil), listFilesSchema...), MaxInput: MaxListFilesInputBytes}
+}
+
+// ParseListFiles rejects unknown or broadened options rather than silently
+// accepting behavior reserved for later discovery-filter work.
+func ParseListFiles(raw []byte) (ListFilesInput, error) {
+	var input ListFilesInput
+	if err := decodeStrictObject(raw, MaxListFilesInputBytes, &input); err != nil {
+		return ListFilesInput{}, err
+	}
+	if input.Path == "" || len(input.Path) > MaxListFilesPathBytes || strings.IndexByte(input.Path, 0) >= 0 {
+		return ListFilesInput{}, errors.New("listing path is empty or outside its input bound")
 	}
 	return input, nil
 }
