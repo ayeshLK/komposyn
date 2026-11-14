@@ -82,6 +82,39 @@ func TestPrivateProcProfileIsExplicitAndOptIn(t *testing.T) {
 	}
 }
 
+type protocolInput struct {
+	strings.Builder
+	closed bool
+}
+
+func (p *protocolInput) Close() error {
+	p.closed = true
+	return nil
+}
+
+func TestCreateCheckpointKeepsControlPipeOpenUntilContinue(t *testing.T) {
+	input := &protocolInput{}
+	if err := releaseWorker(input, true); err != nil {
+		t.Fatal(err)
+	}
+	if input.String() != "RELEASE\n" || input.closed {
+		t.Fatalf("release protocol=%q closed=%t; checkpoint worker must still be able to await CONTINUE", input.String(), input.closed)
+	}
+	if err := continueWorker(input); err != nil {
+		t.Fatal(err)
+	}
+	if input.String() != "RELEASE\nCONTINUE\n" || !input.closed {
+		t.Fatalf("continued protocol=%q closed=%t", input.String(), input.closed)
+	}
+	standard := &protocolInput{}
+	if err := releaseWorker(standard, false); err != nil {
+		t.Fatal(err)
+	}
+	if standard.String() != "RELEASE\n" || !standard.closed {
+		t.Fatalf("standard release protocol=%q closed=%t", standard.String(), standard.closed)
+	}
+}
+
 func TestBoundedOutputAndLiteralSanitization(t *testing.T) {
 	buffer := boundedBuffer{limit: 8}
 	if n, err := buffer.Write([]byte("0123456789")); err != nil || n != 10 {

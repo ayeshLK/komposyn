@@ -343,14 +343,15 @@ func runGatedWithCreateCheckpoint(ctx context.Context, backend, worker, scope, p
 		_ = cmd.Wait()
 		return Observation{}, err
 	}
-	if _, err := io.WriteString(stdin, "RELEASE\n"); err != nil {
+	if err := releaseWorker(stdin, afterCreate != nil); err != nil {
+		_ = stdin.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return Observation{}, err
 	}
-	_ = stdin.Close()
 	started, startedErr := readLineBounded(reader)
 	if startedErr != nil || strings.TrimSpace(started) != "STARTED" {
+		_ = stdin.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return unknownAfterRelease(action, target, "worker did not acknowledge operation start: "+sanitize(started)), nil
@@ -358,16 +359,19 @@ func runGatedWithCreateCheckpoint(ctx context.Context, backend, worker, scope, p
 	if afterCreate != nil {
 		checkpoint, checkpointErr := readLineBounded(reader)
 		if checkpointErr != nil || strings.TrimSpace(checkpoint) != "CREATED" {
+			_ = stdin.Close()
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return unknownAfterRelease(action, target, "create checkpoint missing: "+sanitize(checkpoint)), nil
 		}
 		if err := afterCreate(); err != nil {
+			_ = stdin.Close()
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return unknownAfterRelease(action, target, "same-user actor failed after create: "+sanitize(err.Error())), nil
 		}
-		if _, err := io.WriteString(stdin, "CONTINUE\n"); err != nil {
+		if err := continueWorker(stdin); err != nil {
+			_ = stdin.Close()
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return unknownAfterRelease(action, target, "cannot release post-create checkpoint: "+sanitize(err.Error())), nil
@@ -417,6 +421,23 @@ func runGatedWithCreateCheckpoint(ctx context.Context, backend, worker, scope, p
 		WorkerOutcome: result.Status,
 		Limitation:    limitation,
 	}, nil
+}
+
+func releaseWorker(stdin io.WriteCloser, awaitCreateCheckpoint bool) error {
+	if _, err := io.WriteString(stdin, "RELEASE\n"); err != nil {
+		return err
+	}
+	if awaitCreateCheckpoint {
+		return nil
+	}
+	return stdin.Close()
+}
+
+func continueWorker(stdin io.WriteCloser) error {
+	if _, err := io.WriteString(stdin, "CONTINUE\n"); err != nil {
+		return err
+	}
+	return stdin.Close()
 }
 
 func parseWorkerResult(line string) (workerResult, error) {
