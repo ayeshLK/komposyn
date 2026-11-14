@@ -7,10 +7,25 @@ study code is based on integration tip
 host with the repository's existing `cmd/sandbox-study` mechanism:
 
 ```sh
-GOCACHE=/tmp/komposyn-study-gocache CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /tmp/komposyn-sandbox-study ./cmd/sandbox-study
-/tmp/komposyn-sandbox-study --bwrap /usr/bin/bwrap --commit "$(git rev-parse HEAD)" > /tmp/komposyn-sandbox-study-report.json
-findmnt -T /tmp -o TARGET,FSTYPE,OPTIONS
+report_checkout="$HOME/projects/samples/komposyn-reporting"
+mkdir -p "$HOME/projects/samples"
+if [ ! -d "$report_checkout/.git" ]; then
+  git clone https://github.com/ayeshLK/komposyn.git "$report_checkout"
+fi
+cd "$report_checkout"
+git checkout --detach 23d0b5877ede251b296c27d59cabe26622d6d253
+study_dir="$(mktemp -d "$PWD/.sandbox-study.XXXXXX")"
+study_report="$(mktemp /tmp/komposyn-sandbox-study-report.XXXXXX.json)"
+trap 'rm -rf "$study_dir"' EXIT
+findmnt -T "$PWD" -o TARGET,FSTYPE,OPTIONS
+GOCACHE=/tmp/komposyn-study-gocache CGO_ENABLED=0 go build -buildvcs=false -trimpath -o "$study_dir/komposyn-sandbox-study" ./cmd/sandbox-study
+"$study_dir/komposyn-sandbox-study" --bwrap /usr/bin/bwrap --commit "$(git rev-parse HEAD)" > "$study_report"
+printf 'Study report: %s\n' "$study_report"
 ```
+
+Build the executable under the checkout after checking its mount with
+`findmnt`; temporary directories under `/tmp` may not permit execution. The
+report and Go build cache can remain under `/tmp`.
 
 The runner requires a root-owned, non-group/world-writable absolute
 `/usr/bin/bwrap` (or explicit `--bwrap` path), all requested user/PID/IPC/UTS
