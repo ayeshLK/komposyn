@@ -42,6 +42,7 @@ var errCancelBeforeRelease = errors.New("cancel before operation release")
 // the narrower observation that would be consistent with authority B.
 type Observation struct {
 	Case          string `json:"case"`
+	Profile       string `json:"candidate_profile,omitempty"`
 	Attempt       string `json:"attempted_operation"`
 	ActualEffect  string `json:"actual_host_effect"`
 	ExpectedA     string `json:"expected_A"`
@@ -57,12 +58,16 @@ type workerResult struct {
 }
 
 type scenario struct {
-	name      string
-	action    string
-	path      string
-	setup     func(string, string) (func() (string, error), error)
-	protected string
+	name             string
+	action           string
+	path             string
+	setup            func(string, string) (func() (string, error), error)
+	actorSetup       func(string, string, fixtureActor) (func() (string, error), error)
+	afterCreateActor string
+	protected        string
 }
+
+type fixtureActor func(action, scope, outside string) error
 
 // RunNativeSuite runs disposable same-user fixtures against the requested
 // system bubblewrap binary. It never retries outside the sandbox.
@@ -94,18 +99,37 @@ func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observ
 			return observations, err
 		}
 		afterReady, err := test.setup(scope, outside)
+		if test.actorSetup != nil {
+			afterReady, err = test.actorSetup(scope, outside, func(action, actorScope, actorOutside string) error {
+				return runFixtureActor(worker, action, actorScope, actorOutside)
+			})
+		}
 		if err != nil {
 			return observations, fmt.Errorf("fixture %s: %w", test.name, err)
 		}
-		result, runErr := runGated(ctx, backend, worker, scope, test.protected, test.action, test.path, afterReady)
+		var result Observation
+		var runErr error
+		if test.afterCreateActor != "" {
+			actor := func() error { return runFixtureActor(worker, test.afterCreateActor, scope, outside) }
+			result, runErr = runGatedWithCreateCheckpoint(ctx, backend, worker, scope, test.protected, test.action, test.path, afterReady, actor)
+		} else {
+			result, runErr = runGated(ctx, backend, worker, scope, test.protected, test.action, test.path, afterReady)
+		}
 		if runErr != nil {
-			observations = append(observations, Observation{Case: test.name, Attempt: test.action + " " + test.path,
+			profileName := "default-no-proc"
+			if test.action == "create-one-otmpfile" {
+				profileName = "otmpfile-private-pid-proc"
+			}
+			observations = append(observations, Observation{Case: test.name, Profile: profileName, Attempt: test.action + " " + test.path,
 				ExpectedA: "no effect outside the approved host pathname; refuse changed target/context",
 				Status:    "unavailable", WorkerOutcome: "not_executed", Limitation: sanitize(runErr.Error())})
 			return observations, runErr
 		}
 		result.Case = test.name
 		if result.Status == "unknown" || result.Status == "unavailable" {
+			if test.name == "create-one-unknown-outcome" {
+				result.ActualEffect = verifyUnknownCreate(scope, result)
+			}
 			observations = append(observations, result)
 			continue
 		}
@@ -127,6 +151,13 @@ func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observ
 
 func scenarios() []scenario {
 	return []scenario{
+		{name: "create-one-parent-relocation", action: "create-one", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateParentRelocation},
+		{name: "create-one-destination-collision", action: "create-one", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateCollision},
+		{name: "create-one-destination-symlink-substitution", action: "create-one", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateSymlinkSubstitution},
+		{name: "create-one-partial-outcome", action: "create-one-partial", path: "parent/partial.txt", setup: setupNoop, actorSetup: setupCreatePartial},
+		{name: "create-one-unknown-outcome", action: "create-one-unknown", path: "parent/unknown.txt", setup: setupNoop, actorSetup: setupCreateUnknown},
+		{name: "create-one-late-hardlink", action: "create-one-late-link", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateLateAlias, afterCreateActor: "link-created-alias"},
+		{name: "create-one-otmpfile-publication", action: "create-one-otmpfile", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreatePartial},
 		{name: "selected-root-relocation", action: "create-parent", path: "root-effect", setup: setupRootRelocation},
 		{name: "selected-root-relocation-read", action: "read-open", path: "secret.txt", setup: setupRootRelocationRead},
 		{name: "parent-relocation-before-create", action: "create-parent", path: "parent/new.txt", setup: setupParentRelocation},
@@ -148,8 +179,105 @@ func scenarios() []scenario {
 	}
 }
 
+func runFixtureActor(executable, action, scope, outside string) error {
+	if !filepath.IsAbs(executable) {
+		return errors.New("actor executable path is not absolute")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "--sandbox-study-actor", action, scope, outside)
+	command.Env = []string{}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("same-user actor %s failed: %s: %w", action, sanitize(string(output)), err)
+	}
+	return nil
+}
+
+// ActorMain handles the study command's fixed same-user fixture mutations.
+// It accepts no arbitrary paths or operation text from a model/provider.
+func ActorMain(args []string) int {
+	if len(args) != 3 {
+		return 2
+	}
+	action, scope, outside := args[0], args[1], args[2]
+	if validateActorFixturePaths(scope, outside) != nil {
+		return 2
+	}
+	if err := applyFixtureActor(action, scope, outside); err != nil {
+		return 1
+	}
+	return 0
+}
+
+func applyFixtureActor(action, scope, outside string) error {
+	switch action {
+	case "move-parent":
+		parent := filepath.Join(scope, "parent")
+		if err := os.Rename(parent, filepath.Join(outside, "moved-parent")); err != nil {
+			return err
+		}
+		if err := os.Mkdir(parent, 0o700); err != nil {
+			return err
+		}
+	case "insert-collision":
+		if err := os.WriteFile(filepath.Join(scope, "parent", "new.txt"), []byte("actor collision fixture\n"), 0o600); err != nil {
+			return err
+		}
+	case "insert-symlink":
+		if err := os.Symlink(filepath.Join(outside, "synthetic-target"), filepath.Join(scope, "parent", "new.txt")); err != nil {
+			return err
+		}
+	case "link-created-alias":
+		if err := os.Link(filepath.Join(scope, "parent", "new.txt"), filepath.Join(outside, "protected", "alias.txt")); err != nil {
+			return err
+		}
+	case "noop":
+	default:
+		return errors.New("unknown fixture actor action")
+	}
+	return nil
+}
+
+func validateActorFixturePaths(scope, outside string) error {
+	tempRoot, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return err
+	}
+	scope, err = filepath.Abs(scope)
+	if err != nil {
+		return err
+	}
+	outside, err = filepath.Abs(outside)
+	if err != nil {
+		return err
+	}
+	caseRoot := filepath.Dir(scope)
+	root := filepath.Dir(caseRoot)
+	if filepath.Base(scope) != "scope" || filepath.Base(outside) != "outside" || outside != filepath.Join(caseRoot, "outside") || filepath.Dir(root) != tempRoot || !strings.HasPrefix(filepath.Base(root), "komposyn-issue215-") {
+		return errors.New("actor paths are outside the disposable study fixture")
+	}
+	for _, path := range []string{root, caseRoot, scope, outside} {
+		info, statErr := os.Lstat(path)
+		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+			return errors.New("actor fixture directory is missing or not private")
+		}
+	}
+	return nil
+}
+
 func runGated(ctx context.Context, backend, worker, scope, protected, action, target string, afterReady func() (string, error)) (Observation, error) {
-	args, seccompFile, err := Profile(backend, worker, scope, protected)
+	return runGatedWithCreateCheckpoint(ctx, backend, worker, scope, protected, action, target, afterReady, nil)
+}
+
+func runGatedWithCreateCheckpoint(ctx context.Context, backend, worker, scope, protected, action, target string, afterReady func() (string, error), afterCreate func() error) (Observation, error) {
+	profile := Profile
+	profileName := "default-no-proc"
+	if action == "create-one-otmpfile" {
+		profile = ProfileWithPrivateProc
+		profileName = "otmpfile-private-pid-proc"
+	}
+	args, seccompFile, err := profile(backend, worker, scope, protected)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -215,17 +343,39 @@ func runGated(ctx context.Context, backend, worker, scope, protected, action, ta
 		_ = cmd.Wait()
 		return Observation{}, err
 	}
-	if _, err := io.WriteString(stdin, "RELEASE\n"); err != nil {
+	if err := releaseWorker(stdin, afterCreate != nil); err != nil {
+		_ = stdin.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return Observation{}, err
 	}
-	_ = stdin.Close()
 	started, startedErr := readLineBounded(reader)
 	if startedErr != nil || strings.TrimSpace(started) != "STARTED" {
+		_ = stdin.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return unknownAfterRelease(action, target, "worker did not acknowledge operation start: "+sanitize(started)), nil
+	}
+	if afterCreate != nil {
+		checkpoint, checkpointErr := readLineBounded(reader)
+		if checkpointErr != nil || strings.TrimSpace(checkpoint) != "CREATED" {
+			_ = stdin.Close()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return unknownAfterRelease(action, target, "create checkpoint missing: "+sanitize(checkpoint)), nil
+		}
+		if err := afterCreate(); err != nil {
+			_ = stdin.Close()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return unknownAfterRelease(action, target, "same-user actor failed after create: "+sanitize(err.Error())), nil
+		}
+		if err := continueWorker(stdin); err != nil {
+			_ = stdin.Close()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return unknownAfterRelease(action, target, "cannot release post-create checkpoint: "+sanitize(err.Error())), nil
+		}
 	}
 	line, readErr := readLineBounded(reader)
 	var killErr error
@@ -252,16 +402,42 @@ func runGated(ctx context.Context, backend, worker, scope, protected, action, ta
 		}
 		return unknownAfterRelease(action, target, fmt.Sprintf("worker exit: %v: %s", waitErr, stderr.String())), nil
 	}
+	expected := "deny the effect if the approved host pathname, object binding, or protected identity changed"
+	observed := "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority"
+	limitation := "one disposable same-user fixture; does not prove general backend safety or satisfy A"
+	if strings.HasPrefix(action, "create-one") {
+		expected = "create only at the approved absent leaf beneath the admitted parent object; refuse collisions and classify partial/unknown outcomes without replay"
+		observed = "the typed worker retains a parent directory descriptor and performs one single-leaf create/publication operation"
+		limitation = "synthetic one-file candidate only; protected-owner lifecycle and general backend safety remain unproven"
+	}
 	return Observation{
 		Case:          action + " " + target,
+		Profile:       profileName,
 		Attempt:       action + " " + target,
 		ActualEffect:  actualEffect + "; worker=" + result.Status + " " + result.Detail,
-		ExpectedA:     "deny the effect if the approved host pathname, object binding, or protected identity changed",
-		ObservedB:     "an already exposed object/directory descriptor can remain usable after host rename; successful effects are consistent with mounted-tree/object authority",
+		ExpectedA:     expected,
+		ObservedB:     observed,
 		Status:        "measured",
 		WorkerOutcome: result.Status,
-		Limitation:    "one disposable same-user fixture; does not prove general backend safety or satisfy A",
+		Limitation:    limitation,
 	}, nil
+}
+
+func releaseWorker(stdin io.WriteCloser, awaitCreateCheckpoint bool) error {
+	if _, err := io.WriteString(stdin, "RELEASE\n"); err != nil {
+		return err
+	}
+	if awaitCreateCheckpoint {
+		return nil
+	}
+	return stdin.Close()
+}
+
+func continueWorker(stdin io.WriteCloser) error {
+	if _, err := io.WriteString(stdin, "CONTINUE\n"); err != nil {
+		return err
+	}
+	return stdin.Close()
 }
 
 func parseWorkerResult(line string) (workerResult, error) {
@@ -410,6 +586,49 @@ func verifyObserved(name, scope string, result Observation) (string, string) {
 			return "injected post-effect failure left a known partial fixture; worker outcome=partial", "measured_pass"
 		}
 		return "partial outcome fixture mismatch", "observed_violation"
+	case "create-one-parent-relocation":
+		moved := filepath.Join(filepath.Dir(scope), "outside", "moved-parent", "new.txt")
+		data, err := os.ReadFile(moved)
+		_, replacementErr := os.ReadFile(filepath.Join(scope, "parent", "new.txt"))
+		if result.WorkerOutcome == "succeeded" && err == nil && string(data) == "synthetic create fixture\n" && errors.Is(replacementErr, os.ErrNotExist) {
+			return "same approved parent object was moved by an independent actor; its retained descriptor created the synthetic file; replacement directory stayed untouched", "measured_pass"
+		}
+		return "relocated-parent creation did not match expected descriptor-bound effect", "observed_violation"
+	case "create-one-destination-collision":
+		data, err := os.ReadFile(filepath.Join(scope, "parent", "new.txt"))
+		if result.WorkerOutcome == "failed" && err == nil && string(data) == "actor collision fixture\n" {
+			return "exclusive create refused the independently inserted destination and preserved actor fixture", "measured_pass"
+		}
+		return "collision did not fail without preserving the actor fixture", "observed_violation"
+	case "create-one-destination-symlink-substitution":
+		info, err := os.Lstat(filepath.Join(scope, "parent", "new.txt"))
+		if result.WorkerOutcome == "failed" && err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "exclusive create refused the independently substituted symlink without following it", "measured_pass"
+		}
+		return "symlink substitution was not refused", "observed_violation"
+	case "create-one-partial-outcome":
+		data, err := os.ReadFile(filepath.Join(scope, "parent", "partial.txt"))
+		if result.WorkerOutcome == "partial" && err == nil && string(data) == "synthetic prefix" {
+			return "worker reported partial after creation and a synthetic prefix; file remains incomplete", "measured_pass"
+		}
+		return "partial creation was misclassified or fixture differed", "observed_violation"
+	case "create-one-late-hardlink":
+		alias, err := os.ReadFile(filepath.Join(filepath.Dir(scope), "outside", "protected", "alias.txt"))
+		if result.WorkerOutcome == "succeeded" && err == nil && string(alias) == "synthetic create fixture\n" {
+			return "independent actor linked the newly created inode into a synthetic protected directory before payload write; later write exposed the payload through that alias", "observed_violation"
+		}
+		return "late-alias fixture did not observe the expected post-create exposure", "unavailable"
+	case "create-one-otmpfile-publication":
+		if result.WorkerOutcome == "unavailable" {
+			return "unnamed staging publication unavailable under the current worker profile: " + result.ActualEffect, "unavailable"
+		}
+		data, err := os.ReadFile(filepath.Join(scope, "parent", "new.txt"))
+		if result.WorkerOutcome == "succeeded" && err == nil && string(data) == "synthetic create fixture\n" {
+			return "unnamed inode was fully written before no-replace publication", "measured"
+		}
+		return "unnamed publication did not complete", "unavailable"
+	case "create-one-unknown-outcome":
+		return verifyUnknownCreate(scope, result), "unknown"
 	case "cancel-before-release":
 		return result.ActualEffect, "measured_pass"
 	default:
@@ -429,6 +648,14 @@ func verifyScratch(scope string, result Observation) (string, string) {
 		return "worker scratch write did not succeed; no host fixture was observed", "unavailable"
 	}
 	return "worker scratch write succeeded in its private /tmp; no host fixture file appeared", "measured_pass"
+}
+
+func verifyUnknownCreate(scope string, result Observation) string {
+	data, err := os.ReadFile(filepath.Join(scope, "parent", "unknown.txt"))
+	if err == nil && string(data) == "synthetic create fixture\n" {
+		return "synthetic file effect is present after the result was lost; the harness did not retry, so the outcome remains unknown and replay remains forbidden"
+	}
+	return "result was lost and the synthetic effect could not be determined; outcome remains unknown and replay remains forbidden"
 }
 
 func classifyEffect(effect bool) string {
@@ -490,6 +717,25 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 		parent, err = os.Open(filepath.Join("/scope", relative))
 	case "read-path":
 		// Resolution intentionally happens only after release for link/mask probes.
+	case "create-one", "create-one-partial", "create-one-unknown", "create-one-late-link", "create-one-otmpfile":
+		parentPath := filepath.Dir(relative)
+		rootFD, openErr := unix.Open("/scope", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if openErr != nil {
+			err = openErr
+		} else if parentPath == "." {
+			parent = os.NewFile(uintptr(rootFD), "scope")
+		} else {
+			how := &unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV}
+			var parentFD int
+			parentFD, err = unix.Openat2(rootFD, parentPath, how)
+			_ = unix.Close(rootFD)
+			if err == nil {
+				parent = os.NewFile(uintptr(parentFD), parentPath)
+			}
+		}
+		if err == nil && (filepath.Base(relative) == "." || strings.Contains(filepath.Base(relative), string(filepath.Separator))) {
+			err = errors.New("create target must be a single leaf")
+		}
 	case "probe", "scratch", "flood", "hold", "rename-out", "partial-create":
 	default:
 		return 2
@@ -541,6 +787,73 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 				result.Status = "partial"
 			}
 			_ = file.Close()
+		}
+	case "create-one", "create-one-partial", "create-one-unknown", "create-one-late-link":
+		name := filepath.Base(relative)
+		fd, openErr := unix.Openat(int(parent.Fd()), name, unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0o600)
+		err = openErr
+		if err == nil {
+			file := os.NewFile(uintptr(fd), name)
+			payload := []byte("synthetic create fixture\n")
+			if action == "create-one-late-link" {
+				_, _ = io.WriteString(stdout, "CREATED\n")
+				command, commandErr := bufio.NewReader(io.LimitReader(stdin, 64)).ReadString('\n')
+				if commandErr != nil || strings.TrimSpace(command) != "CONTINUE" {
+					_ = file.Close()
+					result.Status = "unknown"
+					return 4
+				}
+			}
+			if action == "create-one-partial" {
+				payload = []byte("synthetic prefix")
+			}
+			written, writeErr := file.Write(payload)
+			if action == "create-one-unknown" {
+				_ = file.Close()
+				_ = parent.Close()
+				return 4 // effect occurred but result publication is intentionally lost
+			}
+			if action == "create-one-partial" {
+				result.Status = "partial"
+				result.Detail = "injected post-create incomplete-content outcome"
+				err = errors.New("synthetic partial write")
+			} else if writeErr != nil || written != len(payload) {
+				err = errors.Join(writeErr, io.ErrShortWrite)
+				if written > 0 {
+					result.Status = "partial"
+				}
+			}
+			if closeErr := file.Close(); closeErr != nil && err == nil {
+				err = closeErr
+				if written > 0 {
+					result.Status = "partial"
+				}
+			}
+		}
+	case "create-one-otmpfile":
+		payload := []byte("synthetic create fixture\n")
+		fd, tmpErr := unix.Openat(int(parent.Fd()), ".", unix.O_TMPFILE|unix.O_WRONLY|unix.O_CLOEXEC, 0o600)
+		if tmpErr != nil {
+			result.Status = "unavailable"
+			err = tmpErr
+			break
+		}
+		file := os.NewFile(uintptr(fd), "unnamed-create-fixture")
+		written, writeErr := file.Write(payload)
+		if writeErr != nil || written != len(payload) {
+			result.Status = "unavailable"
+			err = errors.Join(writeErr, io.ErrShortWrite)
+			_ = file.Close()
+			break
+		}
+		procPath := fmt.Sprintf("/proc/self/fd/%d", fd)
+		err = unix.Linkat(unix.AT_FDCWD, procPath, int(parent.Fd()), filepath.Base(relative), unix.AT_SYMLINK_FOLLOW)
+		if err != nil {
+			result.Status = "unavailable"
+		}
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = closeErr
+			result.Status = "unknown"
 		}
 	case "delete-parent":
 		name := filepath.Base(relative)
@@ -599,7 +912,7 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 	if parent != nil {
 		_ = parent.Close()
 	}
-	if err != nil && result.Status != "partial" {
+	if err != nil && result.Status != "partial" && result.Status != "unavailable" && result.Status != "unknown" {
 		result.Status = "failed"
 		result.Detail = sanitize(err.Error())
 	} else if err != nil {

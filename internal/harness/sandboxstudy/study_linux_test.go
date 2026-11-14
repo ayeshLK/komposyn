@@ -71,6 +71,50 @@ func TestProfileRejectsUnsafeBackendAndProtectedTraversal(t *testing.T) {
 	}
 }
 
+func TestPrivateProcProfileIsExplicitAndOptIn(t *testing.T) {
+	base := []string{"--tmpfs", "/", "--unshare-pid"}
+	if got := appendPrivateProc(append([]string(nil), base...), false); strings.Contains(strings.Join(got, " "), "--proc") {
+		t.Fatalf("default profile unexpectedly mounts proc: %v", got)
+	}
+	got := appendPrivateProc(append([]string(nil), base...), true)
+	if strings.Join(got, " ") != "--tmpfs / --unshare-pid --proc /proc" {
+		t.Fatalf("private proc profile args=%v", got)
+	}
+}
+
+type protocolInput struct {
+	strings.Builder
+	closed bool
+}
+
+func (p *protocolInput) Close() error {
+	p.closed = true
+	return nil
+}
+
+func TestCreateCheckpointKeepsControlPipeOpenUntilContinue(t *testing.T) {
+	input := &protocolInput{}
+	if err := releaseWorker(input, true); err != nil {
+		t.Fatal(err)
+	}
+	if input.String() != "RELEASE\n" || input.closed {
+		t.Fatalf("release protocol=%q closed=%t; checkpoint worker must still be able to await CONTINUE", input.String(), input.closed)
+	}
+	if err := continueWorker(input); err != nil {
+		t.Fatal(err)
+	}
+	if input.String() != "RELEASE\nCONTINUE\n" || !input.closed {
+		t.Fatalf("continued protocol=%q closed=%t", input.String(), input.closed)
+	}
+	standard := &protocolInput{}
+	if err := releaseWorker(standard, false); err != nil {
+		t.Fatal(err)
+	}
+	if standard.String() != "RELEASE\n" || !standard.closed {
+		t.Fatalf("standard release protocol=%q closed=%t", standard.String(), standard.closed)
+	}
+}
+
 func TestBoundedOutputAndLiteralSanitization(t *testing.T) {
 	buffer := boundedBuffer{limit: 8}
 	if n, err := buffer.Write([]byte("0123456789")); err != nil || n != 10 {
@@ -138,7 +182,13 @@ func TestScenarioFixtureDirectoriesAreIsolatedSequentially(t *testing.T) {
 			if err := os.Mkdir(outside, 0o700); err != nil {
 				t.Fatal(err)
 			}
+			actor := func(action, actorScope, actorOutside string) error {
+				return applyFixtureActor(action, actorScope, actorOutside)
+			}
 			afterReady, err := test.setup(scope, outside)
+			if test.actorSetup != nil {
+				afterReady, err = test.actorSetup(scope, outside, actor)
+			}
 			if err != nil {
 				t.Fatalf("scenario setup: %v", err)
 			}
@@ -151,6 +201,62 @@ func TestScenarioFixtureDirectoriesAreIsolatedSequentially(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestActorRejectsPathsOutsideDisposableFixture(t *testing.T) {
+	root := t.TempDir()
+	scope := filepath.Join(root, "scope")
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(scope, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code := ActorMain([]string{"insert-collision", scope, outside}); code == 0 {
+		t.Fatal("actor accepted non-study temp paths")
+	}
+}
+
+func TestUnknownCreateDescriptionRetainsUnknownAndNeverRetries(t *testing.T) {
+	root := t.TempDir()
+	scope := filepath.Join(root, "scope")
+	parent := filepath.Join(scope, "parent")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "unknown.txt"), []byte("synthetic create fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual := verifyUnknownCreate(scope, Observation{Status: "unknown"})
+	if !strings.Contains(actual, "did not retry") || !strings.Contains(actual, "remains unknown") {
+		t.Fatalf("unknown create was not honestly described: %q", actual)
+	}
+	if data, err := os.ReadFile(filepath.Join(parent, "unknown.txt")); err != nil || string(data) != "synthetic create fixture\n" {
+		t.Fatalf("fixture changed during no-replay classification: %q, %v", data, err)
+	}
+}
+
+func TestCreateOutcomeClassificationKeepsPartialUnknownAndUnavailableDistinct(t *testing.T) {
+	scope := t.TempDir()
+	if err := os.Mkdir(filepath.Join(scope, "parent"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "parent", "partial.txt"), []byte("synthetic prefix"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual, status := verifyObserved("create-one-partial-outcome", scope, Observation{WorkerOutcome: "partial"})
+	if status != "measured_pass" || !strings.Contains(actual, "incomplete") {
+		t.Fatalf("partial outcome classification: actual=%q status=%q", actual, status)
+	}
+	actual, status = verifyObserved("create-one-otmpfile-publication", scope, Observation{WorkerOutcome: "unavailable", ActualEffect: "no proc mount"})
+	if status != "unavailable" || !strings.Contains(actual, "no proc mount") {
+		t.Fatalf("unavailable O_TMPFILE classification: actual=%q status=%q", actual, status)
+	}
+	actual, status = verifyObserved("create-one-late-hardlink", scope, Observation{WorkerOutcome: "succeeded"})
+	if status != "unavailable" {
+		t.Fatalf("missing late-alias observation classified as %q: %s", status, actual)
 	}
 }
 
