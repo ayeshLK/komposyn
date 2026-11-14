@@ -28,6 +28,32 @@ import (
 	"time"
 )
 
+func TestPathFreeOperationErrorPreservesCauseWithoutPath(t *testing.T) {
+	path := filepath.Join("private", "auth.json")
+	cause := &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
+	err := pathFreeOperationError("open auth lock file", cause)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("wrapped error lost underlying cause: %v", err)
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("wrapped error exposed filesystem path: %v", err)
+	}
+	if !strings.Contains(err.Error(), "open auth lock file") {
+		t.Fatalf("wrapped error omitted operation label: %v", err)
+	}
+	missing := pathFreeOperationError("open credential file", &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist})
+	if !os.IsNotExist(missing) {
+		t.Fatalf("path-free error lost os.IsNotExist classification: %v", missing)
+	}
+	if strings.Contains(missing.Error(), path) {
+		t.Fatalf("missing-file error exposed filesystem path: %v", missing)
+	}
+	rawMissing := pathFreeOperationError("open credential file", os.ErrNotExist)
+	if !errors.Is(rawMissing, os.ErrNotExist) {
+		t.Fatalf("wrapped raw missing-file error lost errors.Is classification: %v", rawMissing)
+	}
+}
+
 func TestProfileLifecycleAndSecretFreeMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "private", "auth.json")
 	s := Store{Path: path}

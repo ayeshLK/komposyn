@@ -46,6 +46,20 @@ var ErrOAuthRefreshOutcomeUnknown = errors.New("OpenAI refresh outcome is unknow
 var profileIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// pathFreeOperationError adds an operation label without exposing a filesystem
+// path carried by an os.PathError. It preserves the underlying cause for
+// errors.Is checks.
+func pathFreeOperationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return &os.PathError{Op: operation, Err: pathErr.Err}
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
 type AuthConfig struct {
 	Type   string           `json:"type"`
 	APIKey string           `json:"api_key,omitempty"`
@@ -678,28 +692,28 @@ func readFile(path string) (*document, error) {
 		return &document{SchemaVersion: SchemaVersion, Credentials: []Profile{}}, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, pathFreeOperationError("inspect credential store", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, errors.New("credential store must be a regular file, not a symlink")
 	}
 	if err := checkPrivateFile(path, info); err != nil {
-		return nil, err
+		return nil, pathFreeOperationError("verify credential store permissions", err)
 	}
 	f, err := openPrivateFile(path)
 	if err != nil {
-		return nil, err
+		return nil, pathFreeOperationError("open credential store", err)
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, pathFreeOperationError("inspect opened credential store", err)
 	}
 	if !opened.Mode().IsRegular() {
 		return nil, errors.New("credential store must be a regular file")
 	}
 	if err = checkPrivateFile(path, opened); err != nil {
-		return nil, err
+		return nil, pathFreeOperationError("verify opened credential store permissions", err)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, 2<<20))
 	if err != nil {
