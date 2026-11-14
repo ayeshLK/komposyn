@@ -41,6 +41,13 @@ func TestPathFreeOperationErrorPreservesCauseWithoutPath(t *testing.T) {
 	if !strings.Contains(err.Error(), "open auth lock file") {
 		t.Fatalf("wrapped error omitted operation label: %v", err)
 	}
+	missing := pathFreeOperationError("open credential file", &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist})
+	if !os.IsNotExist(missing) {
+		t.Fatalf("path-free error lost os.IsNotExist classification: %v", missing)
+	}
+	if strings.Contains(missing.Error(), path) {
+		t.Fatalf("missing-file error exposed filesystem path: %v", missing)
+	}
 }
 
 func TestProfileLifecycleAndSecretFreeMetadata(t *testing.T) {

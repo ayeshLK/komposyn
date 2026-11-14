@@ -55,7 +55,7 @@ func pathFreeOperationError(operation string, err error) error {
 	}
 	var pathErr *os.PathError
 	if errors.As(err, &pathErr) {
-		err = pathErr.Err
+		return &os.PathError{Op: operation, Err: pathErr.Err}
 	}
 	return fmt.Errorf("%s: %w", operation, err)
 }
