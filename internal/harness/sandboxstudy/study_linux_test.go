@@ -250,6 +250,13 @@ func TestCreateOutcomeClassificationKeepsPartialUnknownAndUnavailableDistinct(t 
 	if status != "measured_pass" || !strings.Contains(actual, "incomplete") {
 		t.Fatalf("partial outcome classification: actual=%q status=%q", actual, status)
 	}
+	if err := os.WriteFile(filepath.Join(scope, "parent", "empty.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual, status = verifyObserved("create-one-zero-byte-write-failure", scope, Observation{WorkerOutcome: "partial"})
+	if status != "measured_pass" || !strings.Contains(actual, "zero-byte write failure") {
+		t.Fatalf("zero-byte post-create failure classification: actual=%q status=%q", actual, status)
+	}
 	actual, status = verifyObserved("create-one-otmpfile-publication", scope, Observation{WorkerOutcome: "unavailable", ActualEffect: "no proc mount"})
 	if status != "unavailable" || !strings.Contains(actual, "no proc mount") {
 		t.Fatalf("unavailable O_TMPFILE classification: actual=%q status=%q", actual, status)

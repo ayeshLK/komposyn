@@ -3,7 +3,7 @@
 This is a disposable native study only. It is not connected to the chat
 runtime, does not register a tool, and does not change filesystem policy. The
 study code is based on integration tip
-`23d0b5877ede251b296c27d59cabe26622d6d253`. Build and run it on a trusted Linux
+`9c16b8b2c9578909800ff937782a2c6f327b452e`. Build and run it on a trusted Linux
 host with the repository's existing `cmd/sandbox-study` mechanism:
 
 ```sh
@@ -13,7 +13,8 @@ if [ ! -d "$report_checkout/.git" ]; then
   git clone https://github.com/ayeshLK/komposyn.git "$report_checkout"
 fi
 cd "$report_checkout"
-git checkout --detach 23d0b5877ede251b296c27d59cabe26622d6d253
+git fetch origin issue-315-integration
+git checkout --detach 9c16b8b2c9578909800ff937782a2c6f327b452e
 study_dir="$(mktemp -d "$PWD/.sandbox-study.XXXXXX")"
 study_report="$(mktemp /tmp/komposyn-sandbox-study-report.XXXXXX.json)"
 trap 'rm -rf "$study_dir"' EXIT
@@ -81,7 +82,9 @@ Injected partial content is reported as `partial`. A worker that creates and
 writes a synthetic file but loses its result is reported as `unknown`; the
 coordinator inspects the synthetic fixture only to describe the uncertainty
 and issues no replay. Neither result claims rollback or atomic whole-file
-publication. Native report rows remain unavailable until the trusted-backend
+publication. A failure before any payload byte is written after named-file
+creation is also `partial`, because the empty destination itself is an effect.
+Native report rows remain unavailable until the trusted-backend
 gate succeeds. Go tests validate harness code and classification only; they do
 not establish native enforcement, protected-owner synchronization, or
 model-facing safety.

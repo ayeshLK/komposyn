@@ -155,6 +155,7 @@ func scenarios() []scenario {
 		{name: "create-one-destination-collision", action: "create-one", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateCollision},
 		{name: "create-one-destination-symlink-substitution", action: "create-one", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateSymlinkSubstitution},
 		{name: "create-one-partial-outcome", action: "create-one-partial", path: "parent/partial.txt", setup: setupNoop, actorSetup: setupCreatePartial},
+		{name: "create-one-zero-byte-write-failure", action: "create-one-zero-write-failure", path: "parent/empty.txt", setup: setupNoop},
 		{name: "create-one-unknown-outcome", action: "create-one-unknown", path: "parent/unknown.txt", setup: setupNoop, actorSetup: setupCreateUnknown},
 		{name: "create-one-late-hardlink", action: "create-one-late-link", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateLateAlias, afterCreateActor: "link-created-alias"},
 		{name: "create-one-otmpfile-publication", action: "create-one-otmpfile", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreatePartial},
@@ -612,6 +613,12 @@ func verifyObserved(name, scope string, result Observation) (string, string) {
 			return "worker reported partial after creation and a synthetic prefix; file remains incomplete", "measured_pass"
 		}
 		return "partial creation was misclassified or fixture differed", "observed_violation"
+	case "create-one-zero-byte-write-failure":
+		data, err := os.ReadFile(filepath.Join(scope, "parent", "empty.txt"))
+		if result.WorkerOutcome == "partial" && err == nil && len(data) == 0 {
+			return "named destination exists after injected zero-byte write failure; worker outcome=partial", "measured_pass"
+		}
+		return "zero-byte write failure did not preserve the known destination effect", "observed_violation"
 	case "create-one-late-hardlink":
 		alias, err := os.ReadFile(filepath.Join(filepath.Dir(scope), "outside", "protected", "alias.txt"))
 		if result.WorkerOutcome == "succeeded" && err == nil && string(alias) == "synthetic create fixture\n" {
@@ -788,7 +795,7 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 			}
 			_ = file.Close()
 		}
-	case "create-one", "create-one-partial", "create-one-unknown", "create-one-late-link":
+	case "create-one", "create-one-partial", "create-one-zero-write-failure", "create-one-unknown", "create-one-late-link":
 		name := filepath.Base(relative)
 		fd, openErr := unix.Openat(int(parent.Fd()), name, unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0o600)
 		err = openErr
@@ -807,7 +814,13 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 			if action == "create-one-partial" {
 				payload = []byte("synthetic prefix")
 			}
-			written, writeErr := file.Write(payload)
+			written := 0
+			var writeErr error
+			if action == "create-one-zero-write-failure" {
+				writeErr = errors.New("synthetic zero-byte write failure")
+			} else {
+				written, writeErr = file.Write(payload)
+			}
 			if action == "create-one-unknown" {
 				_ = file.Close()
 				_ = parent.Close()
@@ -819,9 +832,7 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 				err = errors.New("synthetic partial write")
 			} else if writeErr != nil || written != len(payload) {
 				err = errors.Join(writeErr, io.ErrShortWrite)
-				if written > 0 {
-					result.Status = "partial"
-				}
+				result.Status = "partial"
 			}
 			if closeErr := file.Close(); closeErr != nil && err == nil {
 				err = closeErr
