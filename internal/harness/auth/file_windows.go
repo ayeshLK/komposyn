@@ -30,32 +30,41 @@ import (
 
 func ensurePrivateDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
-		return err
+		return pathFreeOperationError("create credential directory", err)
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
-		return err
+		return pathFreeOperationError("inspect credential directory", err)
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("credential directory must be a real directory")
 	}
-	return setOwnerOnlyACL(path, true)
+	if err := setOwnerOnlyACL(path, true); err != nil {
+		return pathFreeOperationError("protect credential directory", err)
+	}
+	return nil
 }
 
-func checkPrivateFile(path string, _ os.FileInfo) error { return verifyOwnerOnlyACL(path) }
+func checkPrivateFile(path string, _ os.FileInfo) error {
+	if err := verifyOwnerOnlyACL(path); err != nil {
+		return pathFreeOperationError("verify credential file permissions", err)
+	}
+	return nil
+}
+
 func openPrivateFile(path string) (*os.File, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return nil, err
+		return nil, pathFreeOperationError("encode credential file path", err)
 	}
 	h, err := windows.CreateFile(name, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
-		return nil, err
+		return nil, pathFreeOperationError("open credential file", err)
 	}
 	var info windows.ByHandleFileInformation
 	if err = windows.GetFileInformationByHandle(h, &info); err != nil {
 		windows.CloseHandle(h)
-		return nil, err
+		return nil, pathFreeOperationError("inspect credential file", err)
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		windows.CloseHandle(h)
@@ -67,7 +76,7 @@ func openPrivateFile(path string) (*os.File, error) {
 func setOwnerOnlyACL(path string, directory bool) error {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return err
+		return pathFreeOperationError("get current user for credential permissions", err)
 	}
 	var pin runtime.Pinner
 	pin.Pin(user.User.Sid)
@@ -80,51 +89,54 @@ func setOwnerOnlyACL(path string, directory bool) error {
 	access := []windows.EXPLICIT_ACCESS{{AccessPermissions: windows.GENERIC_ALL, AccessMode: windows.SET_ACCESS, Inheritance: inherit, Trustee: *owner}}
 	sd, err := windows.BuildSecurityDescriptor(owner, nil, access, nil, nil)
 	if err != nil {
-		return err
+		return pathFreeOperationError("build credential security descriptor", err)
 	}
 	absolute, err := sd.ToAbsolute()
 	if err != nil {
-		return err
+		return pathFreeOperationError("prepare credential security descriptor", err)
 	}
 	dacl, _, err := absolute.DACL()
 	if err != nil {
-		return err
+		return pathFreeOperationError("read credential security descriptor", err)
 	}
-	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		return pathFreeOperationError("set credential security descriptor", err)
+	}
+	return nil
 }
 
 func verifyOwnerOnlyACL(path string) error {
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
-		return err
+		return pathFreeOperationError("read credential file permissions", err)
 	}
 	if sd == nil {
 		return errors.New("credential file has no security descriptor")
 	}
 	control, _, err := sd.Control()
 	if err != nil {
-		return err
+		return pathFreeOperationError("inspect credential file permissions", err)
 	}
 	if control&windows.SE_DACL_PROTECTED == 0 {
 		return errors.New("credential file ACL is not protected from inheritance")
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil {
-		return err
+		return pathFreeOperationError("inspect credential file permissions", err)
 	}
 	if dacl == nil || dacl.AceCount != 1 {
 		return errors.New("credential file ACL must grant access only to the current user")
 	}
 	var ace *windows.ACCESS_ALLOWED_ACE
 	if err = windows.GetAce(dacl, 0, &ace); err != nil {
-		return err
+		return pathFreeOperationError("inspect credential file permissions", err)
 	}
 	if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 		return errors.New("credential file ACL contains an unexpected access rule")
 	}
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return err
+		return pathFreeOperationError("get current user for credential permission check", err)
 	}
 	aclSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
 	if !aclSID.Equals(user.User.Sid) {
@@ -144,11 +156,11 @@ func lockPathContext(ctx context.Context, path string) (func(), error) {
 	name := path + ".lock"
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, pathFreeOperationError("open auth lock file", err)
 	}
 	if err = setOwnerOnlyACL(name, false); err != nil {
 		f.Close()
-		return nil, err
+		return nil, pathFreeOperationError("protect auth lock file", err)
 	}
 	h := windows.Handle(f.Fd())
 	var overlapped windows.Overlapped
@@ -164,7 +176,7 @@ func lockPathContext(ctx context.Context, path string) (func(), error) {
 		}
 		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
 			_ = f.Close()
-			return nil, err
+			return nil, pathFreeOperationError("acquire auth lock", err)
 		}
 		if err := waitForLockRetry(ctx, delay); err != nil {
 			_ = f.Close()
@@ -190,13 +202,13 @@ func writeAtomicProtected(ctx context.Context, path string, doc any, beforeWrite
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".auth-*.tmp")
 	if err != nil {
-		return err
+		return pathFreeOperationError("create temporary auth file", err)
 	}
 	tmp := f.Name()
 	info, statErr := f.Stat()
 	if statErr != nil {
 		_ = f.Close()
-		return statErr
+		return pathFreeOperationError("inspect temporary auth file", statErr)
 	}
 	defer func() {
 		if current, e := os.Lstat(tmp); e == nil && os.SameFile(info, current) {
@@ -205,6 +217,8 @@ func writeAtomicProtected(ctx context.Context, path string, doc any, beforeWrite
 	}()
 	if err = setOwnerOnlyACL(tmp, false); err == nil {
 		err = ctx.Err()
+	} else {
+		err = pathFreeOperationError("protect temporary auth file", err)
 	}
 	if err == nil && beforeWrite != nil {
 		err = beforeWrite(ctx, f)
@@ -214,38 +228,53 @@ func writeAtomicProtected(ctx context.Context, path string, doc any, beforeWrite
 	}
 	if err == nil {
 		err = verifyTempIdentity(tmp, info)
+		if err != nil {
+			err = pathFreeOperationError("verify temporary auth file identity", err)
+		}
 	}
 	if err == nil {
 		_, err = f.Write(data)
+		if err != nil {
+			err = pathFreeOperationError("write temporary auth file", err)
+		}
 	}
 	if err == nil {
 		err = f.Sync()
+		if err != nil {
+			err = pathFreeOperationError("flush temporary auth file", err)
+		}
 	}
 	closeErr := f.Close()
 	if err == nil {
 		err = closeErr
+		if err != nil {
+			err = pathFreeOperationError("close temporary auth file", err)
+		}
 	}
 	if err != nil {
 		return err
 	}
 	if err = verifyTempIdentity(tmp, info); err != nil {
-		return err
+		return pathFreeOperationError("verify temporary auth file identity", err)
 	}
 	src, err := windows.UTF16PtrFromString(tmp)
 	if err != nil {
-		return err
+		return pathFreeOperationError("encode temporary auth file path", err)
 	}
 	dst, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return err
+		return pathFreeOperationError("encode credential file path", err)
 	}
-	return windows.MoveFileEx(src, dst, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+	if err := windows.MoveFileEx(src, dst, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
+		return pathFreeOperationError("replace credential file", err)
+	}
+	return nil
 }
 
 func verifyTempIdentity(path string, expected os.FileInfo) error {
 	current, err := os.Lstat(path)
 	if err != nil {
-		return err
+		return pathFreeOperationError("inspect temporary auth file identity", err)
 	}
 	if current.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, current) {
 		return errors.New("protected temporary file identity changed")
