@@ -77,6 +77,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-worker" {
 		os.Exit(sandboxstudy.WorkerMain(os.Args[2:], os.Stdin, os.Stdout))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-actor" {
+		os.Exit(sandboxstudy.ActorMain(os.Args[2:]))
+	}
 	backend := flag.String("bwrap", "/usr/bin/bwrap", "trusted absolute path to the system bubblewrap executable")
 	commit := flag.String("commit", "unknown", "repository commit under study")
 	flag.Parse()
@@ -85,7 +88,7 @@ func main() {
 		os.Exit(2)
 	}
 	report := report{
-		Study: "issue-215 disposable Linux feasibility study",
+		Study: "issue-215 sandbox feasibility and issue-319 one-file creation study",
 		Host:  hostSnapshot(*backend, *commit),
 		Policy: []string{
 			"unshare user, PID, IPC, UTS, and network namespaces (all required; no try/fallback flags)",
@@ -93,10 +96,12 @@ func main() {
 			"empty tmpfs root; read-only bind of this statically linked worker; only fixture root is writable",
 			"fixture protected subpath may be hidden with a private tmpfs mask; alias behavior is tested separately",
 			"clear environment; set HOME=/tmp/home TMPDIR=/tmp PATH=/nonexistent LANG=C.UTF-8",
-			"no proc, sys, dev, host home, host root, host sockets, or inherited descriptors; stdio is the framed control channel",
+			"default rows mount no proc, sys, dev, host home, host root, host sockets, or inherited descriptors; stdio is the framed control channel",
 			"architecture-checked seccomp filter denies socket/IPC, mount, namespace, ptrace, process inspection, and privilege-changing syscalls; remaining syscalls allowed",
 			"private /tmp tmpfs is limited to 16 MiB; host enforces 5-second runtime and 64 KiB per output line",
 			"no cgroup is configured; no exhaustion test is run; aggregate process/memory/CPU limits are unproven",
+			"issue-319 creation cases use only synthetic fixtures; direct O_EXCL creation and O_TMPFILE publication are separate candidates",
+			"same-user actor checkpoints are separate processes; only the O_TMPFILE row adds procfs inside its unshared PID namespace for /proc/self/fd publication",
 		},
 		TypedWorker: "candidate typed Go worker only; no arbitrary arguments or shell parsing",
 		Shell:       "not implemented or run; typed-worker evidence cannot establish shell safety",
