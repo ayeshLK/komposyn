@@ -19,6 +19,7 @@ package sandboxstudy
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -250,10 +251,7 @@ func TestCreateOutcomeClassificationKeepsPartialUnknownAndUnavailableDistinct(t 
 	if status != "measured_pass" || !strings.Contains(actual, "incomplete") {
 		t.Fatalf("partial outcome classification: actual=%q status=%q", actual, status)
 	}
-	if err := os.WriteFile(filepath.Join(scope, "parent", "empty.txt"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	actual, status = verifyObserved("create-one-zero-byte-write-failure", scope, Observation{WorkerOutcome: "partial"})
+	actual, status = verifyZeroByteCreateWorker(t, scope)
 	if status != "measured_pass" || !strings.Contains(actual, "zero-byte write failure") {
 		t.Fatalf("zero-byte post-create failure classification: actual=%q status=%q", actual, status)
 	}
@@ -265,6 +263,31 @@ func TestCreateOutcomeClassificationKeepsPartialUnknownAndUnavailableDistinct(t 
 	if status != "unavailable" {
 		t.Fatalf("missing late-alias observation classified as %q: %s", status, actual)
 	}
+}
+
+func verifyZeroByteCreateWorker(t *testing.T, scope string) (string, string) {
+	t.Helper()
+	var output strings.Builder
+	code := workerMainAt(scope, []string{"create-one-zero-write-failure", "parent/empty.txt"}, strings.NewReader("RELEASE\n"), &output)
+	if code != 0 {
+		t.Fatalf("zero-byte worker exit code = %d; output=%q", code, output.String())
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 3 || lines[0] != "READY" || lines[1] != "STARTED" {
+		t.Fatalf("zero-byte worker protocol = %q", output.String())
+	}
+	var result workerResult
+	if err := json.Unmarshal([]byte(lines[2]), &result); err != nil {
+		t.Fatalf("decode zero-byte worker result: %v", err)
+	}
+	if result.Status != "partial" {
+		t.Fatalf("zero-byte worker status = %q, want partial (detail: %s)", result.Status, result.Detail)
+	}
+	data, err := os.ReadFile(filepath.Join(scope, "parent", "empty.txt"))
+	if err != nil || len(data) != 0 {
+		t.Fatalf("zero-byte effect file = %q, %v; want existing empty file", data, err)
+	}
+	return verifyObserved("create-one-zero-byte-write-failure", scope, Observation{WorkerOutcome: result.Status})
 }
 
 func TestPrivateHomeProbeProductionAndClassification(t *testing.T) {

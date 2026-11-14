@@ -189,6 +189,13 @@ func prepareCreateParent(scope string) error {
 	return os.Mkdir(filepath.Join(scope, "parent"), 0o700)
 }
 
+func setupCreateEmptyParent(scope, _ string) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	return func() (string, error) { return "no mutation before release", nil }, nil
+}
+
 func setupCreateParentRelocation(scope, outside string, actor fixtureActor) (func() (string, error), error) {
 	if err := prepareCreateParent(scope); err != nil {
 		return nil, err

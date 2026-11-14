@@ -155,7 +155,7 @@ func scenarios() []scenario {
 		{name: "create-one-destination-collision", action: "create-one", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateCollision},
 		{name: "create-one-destination-symlink-substitution", action: "create-one", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateSymlinkSubstitution},
 		{name: "create-one-partial-outcome", action: "create-one-partial", path: "parent/partial.txt", setup: setupNoop, actorSetup: setupCreatePartial},
-		{name: "create-one-zero-byte-write-failure", action: "create-one-zero-write-failure", path: "parent/empty.txt", setup: setupNoop},
+		{name: "create-one-zero-byte-write-failure", action: "create-one-zero-write-failure", path: "parent/empty.txt", setup: setupCreateEmptyParent},
 		{name: "create-one-unknown-outcome", action: "create-one-unknown", path: "parent/unknown.txt", setup: setupNoop, actorSetup: setupCreateUnknown},
 		{name: "create-one-late-hardlink", action: "create-one-late-link", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateLateAlias, afterCreateActor: "link-created-alias"},
 		{name: "create-one-otmpfile-publication", action: "create-one-otmpfile", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreatePartial},
@@ -694,6 +694,10 @@ func classifyProbe(detail string) string {
 // WorkerMain is called by the study command's private worker mode. It is a
 // typed fixture worker and never invokes a shell or accepts arbitrary commands.
 func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
+	return workerMainAt("/scope", args, stdin, stdout)
+}
+
+func workerMainAt(scopeRoot string, args []string, stdin io.Reader, stdout io.Writer) int {
 	if len(args) != 2 {
 		return 2
 	}
@@ -711,9 +715,9 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 		if action == "write-open" {
 			mode = os.O_WRONLY | os.O_APPEND
 		}
-		target, err = os.OpenFile(filepath.Join("/scope", relative), mode, 0)
+		target, err = os.OpenFile(filepath.Join(scopeRoot, relative), mode, 0)
 	case "create-parent", "delete-parent":
-		parentPath := filepath.Dir(filepath.Join("/scope", relative))
+		parentPath := filepath.Dir(filepath.Join(scopeRoot, relative))
 		parent, err = os.Open(parentPath)
 		if err == nil && action == "delete-parent" {
 			var identity unix.Stat_t
@@ -721,12 +725,12 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 			deleteEntryValidated = err == nil
 		}
 	case "recursive-child":
-		parent, err = os.Open(filepath.Join("/scope", relative))
+		parent, err = os.Open(filepath.Join(scopeRoot, relative))
 	case "read-path":
 		// Resolution intentionally happens only after release for link/mask probes.
-	case "create-one", "create-one-partial", "create-one-unknown", "create-one-late-link", "create-one-otmpfile":
+	case "create-one", "create-one-partial", "create-one-zero-write-failure", "create-one-unknown", "create-one-late-link", "create-one-otmpfile":
 		parentPath := filepath.Dir(relative)
-		rootFD, openErr := unix.Open("/scope", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		rootFD, openErr := unix.Open(scopeRoot, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if openErr != nil {
 			err = openErr
 		} else if parentPath == "." {
@@ -893,10 +897,10 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 			result.Status = "partial"
 		}
 	case "rename-out":
-		err = os.Rename(filepath.Join("/scope", relative), filepath.Join("/outside", "renamed.txt"))
+		err = os.Rename(filepath.Join(scopeRoot, relative), filepath.Join("/outside", "renamed.txt"))
 	case "read-path":
 		var data []byte
-		data, err = os.ReadFile(filepath.Join("/scope", relative))
+		data, err = os.ReadFile(filepath.Join(scopeRoot, relative))
 		result.Detail = fmt.Sprintf("read %d fixture bytes", len(data))
 	case "probe":
 		result.Detail = sandboxProbe(relative)
@@ -907,7 +911,7 @@ func WorkerMain(args []string, stdin io.Reader, stdout io.Writer) int {
 		_, err = io.WriteString(stdout, strings.Repeat("x", 128*1024))
 	case "partial-create":
 		var file *os.File
-		file, err = os.OpenFile(filepath.Join("/scope", relative), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		file, err = os.OpenFile(filepath.Join(scopeRoot, relative), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			_, err = file.Write([]byte("prefix"))
 			result.Status = "partial"
