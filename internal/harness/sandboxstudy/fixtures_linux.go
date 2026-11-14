@@ -185,6 +185,92 @@ func setupNoop(string, string) (func() (string, error), error) {
 	return func() (string, error) { return "no host mutation before release", nil }, nil
 }
 
+func prepareCreateParent(scope string) error {
+	return os.Mkdir(filepath.Join(scope, "parent"), 0o700)
+}
+
+func setupCreateEmptyParent(scope, _ string) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	return func() (string, error) { return "no mutation before release", nil }, nil
+}
+
+func setupCreateParentRelocation(scope, outside string, actor fixtureActor) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		if err := actor("move-parent", scope, outside); err != nil {
+			return "", err
+		}
+		return "independent same-user actor moved the retained parent and installed a replacement", nil
+	}, nil
+}
+
+func setupCreateCollision(scope, outside string, actor fixtureActor) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		if err := actor("insert-collision", scope, outside); err != nil {
+			return "", err
+		}
+		return "independent same-user actor inserted the destination after parent admission", nil
+	}, nil
+}
+
+func setupCreateSymlinkSubstitution(scope, outside string, actor fixtureActor) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		if err := actor("insert-symlink", scope, outside); err != nil {
+			return "", err
+		}
+		return "independent same-user actor substituted a symlink at the absent destination", nil
+	}, nil
+}
+
+func setupCreatePartial(scope, outside string, actor fixtureActor) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		if err := actor("noop", scope, outside); err != nil {
+			return "", err
+		}
+		return "no mutation before release", nil
+	}, nil
+}
+
+func setupCreateUnknown(scope, outside string, actor fixtureActor) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		if err := actor("noop", scope, outside); err != nil {
+			return "", err
+		}
+		return "no mutation before release", nil
+	}, nil
+}
+
+func setupCreateLateAlias(scope, outside string, actor fixtureActor) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(filepath.Join(outside, "protected"), 0o700); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		if err := actor("noop", scope, outside); err != nil {
+			return "", err
+		}
+		return "worker has parent descriptor; post-create actor checkpoint follows", nil
+	}, nil
+}
+
 func setupCancel(string, string) (func() (string, error), error) {
 	return func() (string, error) { return "", errCancelBeforeRelease }, nil
 }

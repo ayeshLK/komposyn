@@ -37,14 +37,16 @@ import (
 )
 
 type report struct {
-	Study         string                     `json:"study"`
-	Host          host                       `json:"host"`
-	Policy        []string                   `json:"effective_candidate_policy"`
-	TypedWorker   string                     `json:"typed_worker"`
-	Shell         string                     `json:"shell"`
-	Observations  []sandboxstudy.Observation `json:"observations,omitempty"`
-	Unavailable   string                     `json:"unavailable,omitempty"`
-	ResourceNotes []string                   `json:"resource_controls"`
+	Study            string                          `json:"study"`
+	Host             host                            `json:"host"`
+	Policy           []string                        `json:"effective_candidate_policy"`
+	TypedWorker      string                          `json:"typed_worker"`
+	Shell            string                          `json:"shell"`
+	Observations     []sandboxstudy.Observation      `json:"observations,omitempty"`
+	LeaseStudy       []sandboxstudy.LeaseObservation `json:"unprivileged_file_lease_candidate_study,omitempty"`
+	LeaseUnavailable string                          `json:"lease_study_unavailable,omitempty"`
+	Unavailable      string                          `json:"unavailable,omitempty"`
+	ResourceNotes    []string                        `json:"resource_controls"`
 }
 
 type host struct {
@@ -77,6 +79,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-worker" {
 		os.Exit(sandboxstudy.WorkerMain(os.Args[2:], os.Stdin, os.Stdout))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-actor" {
+		os.Exit(sandboxstudy.ActorMain(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-lease-actor" {
+		os.Exit(sandboxstudy.LeaseActorMain(os.Args[2:]))
+	}
 	backend := flag.String("bwrap", "/usr/bin/bwrap", "trusted absolute path to the system bubblewrap executable")
 	commit := flag.String("commit", "unknown", "repository commit under study")
 	flag.Parse()
@@ -85,7 +93,7 @@ func main() {
 		os.Exit(2)
 	}
 	report := report{
-		Study: "issue-215 disposable Linux feasibility study",
+		Study: "issue-215 sandbox feasibility, issue-319 one-file creation, and issue-320 file-lease candidate study",
 		Host:  hostSnapshot(*backend, *commit),
 		Policy: []string{
 			"unshare user, PID, IPC, UTS, and network namespaces (all required; no try/fallback flags)",
@@ -93,10 +101,13 @@ func main() {
 			"empty tmpfs root; read-only bind of this statically linked worker; only fixture root is writable",
 			"fixture protected subpath may be hidden with a private tmpfs mask; alias behavior is tested separately",
 			"clear environment; set HOME=/tmp/home TMPDIR=/tmp PATH=/nonexistent LANG=C.UTF-8",
-			"no proc, sys, dev, host home, host root, host sockets, or inherited descriptors; stdio is the framed control channel",
+			"default rows mount no proc, sys, dev, host home, host root, host sockets, or inherited descriptors; stdio is the framed control channel",
 			"architecture-checked seccomp filter denies socket/IPC, mount, namespace, ptrace, process inspection, and privilege-changing syscalls; remaining syscalls allowed",
 			"private /tmp tmpfs is limited to 16 MiB; host enforces 5-second runtime and 64 KiB per output line",
 			"no cgroup is configured; no exhaustion test is run; aggregate process/memory/CPU limits are unproven",
+			"issue-319 creation cases use only synthetic fixtures; direct O_EXCL creation and O_TMPFILE publication are separate candidates",
+			"same-user actor checkpoints are separate processes; only the O_TMPFILE row adds procfs inside its unshared PID namespace for /proc/self/fd publication",
+			"issue-320 F_SETLEASE observations use only fixed synthetic files and same-user actor checkpoints; they run outside Bubblewrap and are not sandbox enforcement evidence",
 		},
 		TypedWorker: "candidate typed Go worker only; no arbitrary arguments or shell parsing",
 		Shell:       "not implemented or run; typed-worker evidence cannot establish shell safety",
@@ -109,6 +120,10 @@ func main() {
 	worker, err := os.Executable()
 	if err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		report.LeaseStudy, err = sandboxstudy.RunLeaseStudy(ctx, worker)
+		if err != nil {
+			report.LeaseUnavailable = err.Error()
+		}
 		report.Observations, err = sandboxstudy.RunNativeSuite(ctx, *backend, worker)
 		cancel()
 	}

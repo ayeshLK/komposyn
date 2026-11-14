@@ -101,7 +101,7 @@ func TestRegisteredExposureDoesNotImplyExecutionOrAuthorization(t *testing.T) {
 }
 
 func TestConversationToolSchemasAndBounds(t *testing.T) {
-	for _, definition := range []Definition{UpdatePlanDefinition(), RequestUserInputDefinition(), ReadFileDefinition()} {
+	for _, definition := range []Definition{UpdatePlanDefinition(), RequestUserInputDefinition(), ReadFileDefinition(), ListFilesDefinition()} {
 		if definition.MaxInput <= 0 || json.Unmarshal(definition.InputSchema, new(map[string]any)) != nil {
 			t.Fatalf("invalid bundled definition: %+v", definition)
 		}
@@ -156,6 +156,15 @@ func TestConversationToolSchemasAndBounds(t *testing.T) {
 	if _, err := ParseReadFile([]byte(`{"path":"` + strings.Repeat("x", MaxReadFilePathBytes+1) + `"}`)); err == nil {
 		t.Fatal("oversized read path accepted")
 	}
+	listing, err := ParseListFiles([]byte(`{"path":"src"}`))
+	if err != nil || listing.Path != "src" {
+		t.Fatalf("valid list input = %+v, %v", listing, err)
+	}
+	for _, raw := range []string{`{"path":""}`, `{"path":"src","recursive":true}`, `{"path":"src","path":"other"}`, `{"path":null}`, `{"path":"src"} {}`} {
+		if parsed, err := ParseListFiles([]byte(raw)); err == nil {
+			t.Fatalf("invalid list input accepted: %s as %+v", raw, parsed)
+		}
+	}
 	for _, raw := range []string{
 		`{"question":" ","options":[]}`,
 		`{"question":"Choose","options":[{"label":"","description":""}]}`,
@@ -165,6 +174,15 @@ func TestConversationToolSchemasAndBounds(t *testing.T) {
 	} {
 		if parsed, err := ParseRequestUserInput([]byte(raw)); err == nil {
 			t.Fatalf("invalid clarification accepted: %s as %+v", raw, parsed)
+		}
+	}
+}
+
+func TestListFilesDefinitionLimitsDisclosureToOneDirectory(t *testing.T) {
+	description := strings.ToLower(ListFilesDefinition().Description)
+	for _, phrase := range []string{"one directory", "once approval", "hidden", "ignored", "symlinks", "working directory grants no listing permission"} {
+		if !strings.Contains(description, phrase) {
+			t.Errorf("list_files description %q does not contain %q", description, phrase)
 		}
 	}
 }

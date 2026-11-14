@@ -19,6 +19,7 @@ package sandboxstudy
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -68,6 +69,50 @@ func TestProfileRejectsUnsafeBackendAndProtectedTraversal(t *testing.T) {
 	}
 	if _, _, err := Profile("/usr/bin/bwrap", "/worker", dir, "../outside"); err == nil {
 		t.Fatal("protected traversal was accepted")
+	}
+}
+
+func TestPrivateProcProfileIsExplicitAndOptIn(t *testing.T) {
+	base := []string{"--tmpfs", "/", "--unshare-pid"}
+	if got := appendPrivateProc(append([]string(nil), base...), false); strings.Contains(strings.Join(got, " "), "--proc") {
+		t.Fatalf("default profile unexpectedly mounts proc: %v", got)
+	}
+	got := appendPrivateProc(append([]string(nil), base...), true)
+	if strings.Join(got, " ") != "--tmpfs / --unshare-pid --proc /proc" {
+		t.Fatalf("private proc profile args=%v", got)
+	}
+}
+
+type protocolInput struct {
+	strings.Builder
+	closed bool
+}
+
+func (p *protocolInput) Close() error {
+	p.closed = true
+	return nil
+}
+
+func TestCreateCheckpointKeepsControlPipeOpenUntilContinue(t *testing.T) {
+	input := &protocolInput{}
+	if err := releaseWorker(input, true); err != nil {
+		t.Fatal(err)
+	}
+	if input.String() != "RELEASE\n" || input.closed {
+		t.Fatalf("release protocol=%q closed=%t; checkpoint worker must still be able to await CONTINUE", input.String(), input.closed)
+	}
+	if err := continueWorker(input); err != nil {
+		t.Fatal(err)
+	}
+	if input.String() != "RELEASE\nCONTINUE\n" || !input.closed {
+		t.Fatalf("continued protocol=%q closed=%t", input.String(), input.closed)
+	}
+	standard := &protocolInput{}
+	if err := releaseWorker(standard, false); err != nil {
+		t.Fatal(err)
+	}
+	if standard.String() != "RELEASE\n" || !standard.closed {
+		t.Fatalf("standard release protocol=%q closed=%t", standard.String(), standard.closed)
 	}
 }
 
@@ -138,7 +183,13 @@ func TestScenarioFixtureDirectoriesAreIsolatedSequentially(t *testing.T) {
 			if err := os.Mkdir(outside, 0o700); err != nil {
 				t.Fatal(err)
 			}
+			actor := func(action, actorScope, actorOutside string) error {
+				return applyFixtureActor(action, actorScope, actorOutside)
+			}
 			afterReady, err := test.setup(scope, outside)
+			if test.actorSetup != nil {
+				afterReady, err = test.actorSetup(scope, outside, actor)
+			}
 			if err != nil {
 				t.Fatalf("scenario setup: %v", err)
 			}
@@ -152,6 +203,91 @@ func TestScenarioFixtureDirectoriesAreIsolatedSequentially(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestActorRejectsPathsOutsideDisposableFixture(t *testing.T) {
+	root := t.TempDir()
+	scope := filepath.Join(root, "scope")
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(scope, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code := ActorMain([]string{"insert-collision", scope, outside}); code == 0 {
+		t.Fatal("actor accepted non-study temp paths")
+	}
+}
+
+func TestUnknownCreateDescriptionRetainsUnknownAndNeverRetries(t *testing.T) {
+	root := t.TempDir()
+	scope := filepath.Join(root, "scope")
+	parent := filepath.Join(scope, "parent")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "unknown.txt"), []byte("synthetic create fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual := verifyUnknownCreate(scope, Observation{Status: "unknown"})
+	if !strings.Contains(actual, "did not retry") || !strings.Contains(actual, "remains unknown") {
+		t.Fatalf("unknown create was not honestly described: %q", actual)
+	}
+	if data, err := os.ReadFile(filepath.Join(parent, "unknown.txt")); err != nil || string(data) != "synthetic create fixture\n" {
+		t.Fatalf("fixture changed during no-replay classification: %q, %v", data, err)
+	}
+}
+
+func TestCreateOutcomeClassificationKeepsPartialUnknownAndUnavailableDistinct(t *testing.T) {
+	scope := t.TempDir()
+	if err := os.Mkdir(filepath.Join(scope, "parent"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "parent", "partial.txt"), []byte("synthetic prefix"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual, status := verifyObserved("create-one-partial-outcome", scope, Observation{WorkerOutcome: "partial"})
+	if status != "measured_pass" || !strings.Contains(actual, "incomplete") {
+		t.Fatalf("partial outcome classification: actual=%q status=%q", actual, status)
+	}
+	actual, status = verifyZeroByteCreateWorker(t, scope)
+	if status != "measured_pass" || !strings.Contains(actual, "zero-byte write failure") {
+		t.Fatalf("zero-byte post-create failure classification: actual=%q status=%q", actual, status)
+	}
+	actual, status = verifyObserved("create-one-otmpfile-publication", scope, Observation{WorkerOutcome: "unavailable", ActualEffect: "no proc mount"})
+	if status != "unavailable" || !strings.Contains(actual, "no proc mount") {
+		t.Fatalf("unavailable O_TMPFILE classification: actual=%q status=%q", actual, status)
+	}
+	actual, status = verifyObserved("create-one-late-hardlink", scope, Observation{WorkerOutcome: "succeeded"})
+	if status != "unavailable" {
+		t.Fatalf("missing late-alias observation classified as %q: %s", status, actual)
+	}
+}
+
+func verifyZeroByteCreateWorker(t *testing.T, scope string) (string, string) {
+	t.Helper()
+	var output strings.Builder
+	code := workerMainAt(scope, []string{"create-one-zero-write-failure", "parent/empty.txt"}, strings.NewReader("RELEASE\n"), &output)
+	if code != 0 {
+		t.Fatalf("zero-byte worker exit code = %d; output=%q", code, output.String())
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 3 || lines[0] != "READY" || lines[1] != "STARTED" {
+		t.Fatalf("zero-byte worker protocol = %q", output.String())
+	}
+	var result workerResult
+	if err := json.Unmarshal([]byte(lines[2]), &result); err != nil {
+		t.Fatalf("decode zero-byte worker result: %v", err)
+	}
+	if result.Status != "partial" {
+		t.Fatalf("zero-byte worker status = %q, want partial (detail: %s)", result.Status, result.Detail)
+	}
+	data, err := os.ReadFile(filepath.Join(scope, "parent", "empty.txt"))
+	if err != nil || len(data) != 0 {
+		t.Fatalf("zero-byte effect file = %q, %v; want existing empty file", data, err)
+	}
+	return verifyObserved("create-one-zero-byte-write-failure", scope, Observation{WorkerOutcome: result.Status})
 }
 
 func TestPrivateHomeProbeProductionAndClassification(t *testing.T) {

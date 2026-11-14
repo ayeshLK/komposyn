@@ -43,6 +43,16 @@ const (
 // fixture root is writable. protected is a fixture-relative path hidden by an
 // empty tmpfs; it is intentionally only a path-based protected-file probe.
 func Profile(bwrapPath, workerPath, fixtureRoot, protected string) ([]string, *os.File, error) {
+	return profile(bwrapPath, workerPath, fixtureRoot, protected, false)
+}
+
+// ProfileWithPrivateProc adds a procfs mount inside the already unshared PID
+// namespace. Only the O_TMPFILE study candidate uses this separate profile.
+func ProfileWithPrivateProc(bwrapPath, workerPath, fixtureRoot, protected string) ([]string, *os.File, error) {
+	return profile(bwrapPath, workerPath, fixtureRoot, protected, true)
+}
+
+func profile(bwrapPath, workerPath, fixtureRoot, protected string, privateProc bool) ([]string, *os.File, error) {
 	if !filepath.IsAbs(bwrapPath) || !filepath.IsAbs(workerPath) || !filepath.IsAbs(fixtureRoot) {
 		return nil, nil, errors.New("backend, worker, and fixture paths must be absolute")
 	}
@@ -87,11 +97,19 @@ func Profile(bwrapPath, workerPath, fixtureRoot, protected string) ([]string, *o
 		"--ro-bind", workerPath, "/worker",
 		"--bind", fixtureRoot, "/scope",
 	}
+	args = appendPrivateProc(args, privateProc)
 	if protected != "" {
 		args = append(args, "--size", fmt.Sprint(1024*1024), "--perms", "0700", "--tmpfs", "/scope/"+filepath.ToSlash(protected))
 	}
 	args = append(args, "--seccomp", "3", "--chdir", "/scope", "--", "/worker", "--sandbox-study-worker")
 	return args, filter, nil
+}
+
+func appendPrivateProc(args []string, enabled bool) []string {
+	if !enabled {
+		return args
+	}
+	return append(args, "--proc", "/proc")
 }
 
 // ValidateBackend checks a trusted absolute system path before either reading

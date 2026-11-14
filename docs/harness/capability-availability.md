@@ -1,6 +1,6 @@
 # Temporary chat capability availability
 
-Evidence reviewed 2026-11-13. This matrix describes the bundled temporary
+Evidence reviewed 2026-11-14. This matrix describes the bundled temporary
 chat routes and its current three capabilities. “Supported” describes the
 provider protocol implementation and fixture-backed contract; it does not
 grant permission to execute a tool. Runtime availability also requires the
@@ -45,6 +45,15 @@ filesystem access.
 | `update_plan` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
 | `request_user_input` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
+| `list_files` | Unavailable: no verified directory-listing backend | Unavailable: no verified directory-listing backend | Unavailable: no verified directory-listing backend | Unimplemented route |
+
+`list_files` is not registered or sent to providers. Its nonrecursive request
+contract is reserved, but exact-directory enforcement and the required native
+directory replacement/movement, alias, protected-owner rotation, mount-boundary
+and worker-lifecycle evidence have not been accepted. The current host's
+Bubblewrap executable is owned by UID 65534 rather than root, so the trusted
+backend check refuses it; no weaker fallback is used. Existing exact-file
+evidence does not establish directory-listing safety.
 
 The conditional read path requires inspected trusted Bubblewrap, the complete
 retained-read lifecycle and host enforcement, an available working directory,

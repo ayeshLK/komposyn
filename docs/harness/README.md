@@ -121,6 +121,8 @@ and exact-object checks, and the trusted backend must be available.
 
 Mutation design is tracked separately in
 [issue #267](https://github.com/ayeshLK/komposyn/issues/267).
+The source-level `F_SETLEASE(F_WRLCK)` candidate observations and their limits
+are recorded in the [existing-file edit feasibility study](file-lease-revision-binding-study.md).
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
