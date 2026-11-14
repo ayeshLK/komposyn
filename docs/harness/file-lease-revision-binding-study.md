@@ -13,9 +13,24 @@ observations are not sandbox-enforcement evidence.
 Build and run on Linux with Go 1.26.11 or newer:
 
 ```sh
-CGO_ENABLED=0 go build -buildvcs=false -o /tmp/komposyn-sandbox-study ./cmd/sandbox-study
-/tmp/komposyn-sandbox-study --commit "$(git rev-parse HEAD)" > /tmp/komposyn-sandbox-study-report.json
+report_checkout="$HOME/projects/samples/komposyn-reporting"
+mkdir -p "$HOME/projects/samples"
+if [ ! -d "$report_checkout/.git" ]; then
+  git clone https://github.com/ayeshLK/komposyn.git "$report_checkout"
+fi
+cd "$report_checkout"
+git checkout --detach e35ed70145dbab72974b4cd1c4ee3c7f95d57442
+study_dir="$(mktemp -d "$PWD/.sandbox-study.XXXXXX")"
+study_report="$(mktemp /tmp/komposyn-sandbox-study-report.XXXXXX.json)"
+trap 'rm -rf "$study_dir"' EXIT
+findmnt -T "$PWD" -o TARGET,FSTYPE,OPTIONS
+GOCACHE=/tmp/komposyn-study-gocache CGO_ENABLED=0 go build -buildvcs=false -o "$study_dir/komposyn-sandbox-study" ./cmd/sandbox-study
+"$study_dir/komposyn-sandbox-study" --commit "$(git rev-parse HEAD)" > "$study_report"
+printf 'Study report: %s\n' "$study_report"
 ```
+
+The binary is built under the checkout after verifying its mount. `/tmp` may
+be mounted `noexec`; use it for reports and build caches, not executables.
 
 The report includes kernel, architecture and backend metadata, separate lease
 observations, and the Bubblewrap suite result. A nonzero exit caused by an
@@ -29,13 +44,14 @@ The lease code reads no host content and makes no system-setting changes.
 ## Profile and observations
 
 The reviewed run was built from source commit
-`d03f588d694389d9b258a7c51eb827ece00bd0a4` plus the study-only changes in this
-branch. It ran on Linux amd64, kernel `7.0.0-42-generic`, Go `go1.26.11`, with
-`/tmp` on ext4. Bubblewrap was `/usr/bin/bwrap` 0.9.0, mode 0755, owned by UID
-65534. Its trust preflight refused the executable path at `/usr`; the sandbox
-suite recorded `unavailable`, `not_executed`, and skipped worker/fixture
-operations. The direct lease observations below are not affected by that
-preflight.
+`e35ed70145dbab72974b4cd1c4ee3c7f95d57442`. It ran on Linux amd64, kernel
+`7.0.0-42-generic`, Go `go1.26.11`, with `/tmp` on ext4. Bubblewrap was
+`/usr/bin/bwrap` 0.9.0, mode 0755, owned by UID 65534. Its trust preflight
+refused the executable path at `/usr`; the sandbox suite recorded
+`unavailable`, `not_executed`, and skipped worker/fixture operations. The
+direct lease observations below are not affected by that preflight. The JSON
+report SHA-256 was
+`18a8e26432055c3ed80e586724ebb2c1fd4c301e024f3e68d005029f9a519153`.
 
 The report recorded:
 
@@ -97,3 +113,22 @@ because its Bubblewrap trust check refused `/usr` (root ownership and
 non-writable path-component requirement); its sandbox scenario remained
 unavailable/not executed. The direct lease rows in that same report completed
 independently.
+
+The reviewed command was:
+
+```sh
+report_checkout="$HOME/projects/samples/komposyn-reporting"
+mkdir -p "$HOME/projects/samples"
+if [ ! -d "$report_checkout/.git" ]; then
+  git clone https://github.com/ayeshLK/komposyn.git "$report_checkout"
+fi
+cd "$report_checkout"
+git checkout --detach e35ed70145dbab72974b4cd1c4ee3c7f95d57442
+study_dir="$(mktemp -d "$PWD/.sandbox-study.XXXXXX")"
+study_report="$(mktemp /tmp/komposyn-sandbox-study-report.XXXXXX.json)"
+trap 'rm -rf "$study_dir"' EXIT
+findmnt -T "$PWD" -o TARGET,FSTYPE,OPTIONS
+GOCACHE=/tmp/komposyn-study-gocache CGO_ENABLED=0 go build -buildvcs=false -o "$study_dir/komposyn-sandbox-study" ./cmd/sandbox-study
+"$study_dir/komposyn-sandbox-study" --commit e35ed70145dbab72974b4cd1c4ee3c7f95d57442 > "$study_report"
+printf 'Study report: %s\n' "$study_report"
+```
