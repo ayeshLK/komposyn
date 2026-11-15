@@ -18,7 +18,9 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
 	"debug/elf"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1484,7 +1486,10 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
 		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
-			stage6Skip(id, "trusted backend validation refused before backend probes or worker launch")
+			stage6Skip(id, fmt.Sprintf(
+				"trusted backend validation refused before backend probes or worker launch (uid=%d mode=%#o error=%s)",
+				inspection.UID, inspection.Mode, boundedStage6Diagnostic(inspection.Error),
+			))
 		}
 		t.Skip("trusted native Bubblewrap backend unavailable; no probe or worker launch was attempted")
 	}
@@ -2160,14 +2165,37 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 	}
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
-		stage6Skip("directory_listing_mount_boundary", "trusted Bubblewrap validation refused before the mounted-directory fixture or worker launch")
+		stage6Skip("directory_listing_mount_boundary", fmt.Sprintf(
+			"trusted Bubblewrap validation refused before the mounted-directory fixture or worker launch (uid=%d mode=%#o error=%s)",
+			inspection.UID, inspection.Mode, boundedStage6Diagnostic(inspection.Error),
+		))
 		t.Skip("trusted native Bubblewrap backend unavailable")
+	}
+	backendInfo, err := os.Stat(backendPath)
+	if err != nil {
+		t.Fatalf("inspect trusted Bubblewrap for nested fixture: %v", err)
+	}
+	if backendInfo.Size() <= 0 || backendInfo.Size() > 64<<20 {
+		t.Fatalf("trusted Bubblewrap size is outside the nested fixture bound: size=%d err=%v", backendInfo.Size(), err)
+	}
+	backendData, err := os.ReadFile(backendPath)
+	if err != nil || int64(len(backendData)) != backendInfo.Size() {
+		t.Fatalf("read bounded trusted Bubblewrap for nested fixture: bytes=%d size=%d err=%v", len(backendData), backendInfo.Size(), err)
+	}
+	backendDigest := sha256.Sum256(backendData)
+	if hex.EncodeToString(backendDigest[:]) != inspection.SHA256 {
+		t.Fatal("trusted Bubblewrap changed while preparing the nested fixture")
 	}
 	root := t.TempDir()
 	runtimeRoot := filepath.Join(root, "runtime-root")
 	listingPath := filepath.Join(runtimeRoot, "listing-scope")
 	mountpoint := filepath.Join(listingPath, "mounted-boundary")
 	mountSource := filepath.Join(root, "synthetic-mounted-source")
+	nestedBackend := filepath.Join(root, "nested-bwrap")
+	if err := os.WriteFile(nestedBackend, backendData, 0755); err != nil {
+		t.Fatalf("prepare exact nested Bubblewrap copy: %v", err)
+	}
+	backendData = nil
 	for _, directory := range []string{runtimeRoot, listingPath, mountpoint, mountSource} {
 		if err := os.Mkdir(directory, 0700); err != nil {
 			t.Fatalf("prepare synthetic mount fixture: %v", err)
@@ -2207,11 +2235,11 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 		}
 	}
 	appendDirectoryTargets(root)
-	arguments = append(arguments, "--bind", root, root)
+	arguments = append(arguments, "--bind", root, root, "--dir", "/trusted", "--dir", "/trusted/bin", "--ro-bind", nestedBackend, "/trusted/bin/bwrap")
 	appendDirectoryTargets(executableDirectory)
 	arguments = append(arguments, "--ro-bind", executableDirectory, executableDirectory, "--ro-bind", mountSource, mountpoint)
 	for key, value := range map[string]string{
-		"HOME": "/tmp", "KOMPOSYN_STAGE6_BWRAP": backendPath,
+		"HOME": "/tmp", "KOMPOSYN_STAGE6_BWRAP": "/trusted/bin/bwrap",
 		"KOMPOSYN_STAGE6_DIRECTORY_MOUNT_ROOT": root, "KOMPOSYN_STAGE6_REPORT": childReportPath,
 		"KOMPOSYN_STAGE6_SOURCE_COMMIT": os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"),
 		"KOMPOSYN_STAGE6_BIND_MODE":     os.Getenv("KOMPOSYN_STAGE6_BIND_MODE"),
