@@ -295,7 +295,7 @@ func TestDirectoryListHonorsAncestorIgnoreRules(t *testing.T) {
 	if err := os.Mkdir(directoryPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(base, ".gitignore"), []byte("*.log\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(base, ".gitignore"), []byte("src/*.log\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	registry, err := NewRegistry()
@@ -303,7 +303,7 @@ func TestDirectoryListHonorsAncestorIgnoreRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = registry.Close() })
-	for _, name := range []string{"trace.log", "keep.go"} {
+	for _, name := range []string{".log", "trace.log", "keep.go"} {
 		if err := os.WriteFile(filepath.Join(directoryPath, name), []byte("synthetic"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -313,8 +313,8 @@ func TestDirectoryListHonorsAncestorIgnoreRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = prepared.Close() })
-	entries := make([]directoryListingEntry, 0, 2)
-	for _, name := range []string{"trace.log", "keep.go"} {
+	entries := make([]directoryListingEntry, 0, 3)
+	for _, name := range []string{".log", "trace.log", "keep.go"} {
 		var stat unix.Stat_t
 		if err := unix.Fstatat(int(prepared.(*preparedDirectoryList).directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			t.Fatal(err)
@@ -325,7 +325,7 @@ func TestDirectoryListHonorsAncestorIgnoreRules(t *testing.T) {
 	if err := unix.Fstat(int(prepared.(*preparedDirectoryList).directory.Fd()), &directoryStat); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(directoryListingResult{Entries: entries, Examined: 2, MtimeNS: directoryStat.Mtim.Sec*1e9 + directoryStat.Mtim.Nsec, CtimeNS: directoryStat.Ctim.Sec*1e9 + directoryStat.Ctim.Nsec})
+	raw, err := json.Marshal(directoryListingResult{Entries: entries, Examined: 3, MtimeNS: directoryStat.Mtim.Sec*1e9 + directoryStat.Mtim.Nsec, CtimeNS: directoryStat.Ctim.Sec*1e9 + directoryStat.Ctim.Nsec})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -476,9 +476,9 @@ func gitByteMatch(budget *directoryFilterBudget, pattern, name string) (bool, er
 						return false, err
 					}
 				}
-				if name[nameOffset-1] != '/' {
-					current[nameOffset] = previous[nameOffset] || current[nameOffset-1]
-				}
+				// The star may consume zero bytes even when the next name byte
+				// is '/'; only consuming that slash is forbidden.
+				current[nameOffset] = previous[nameOffset] || (name[nameOffset-1] != '/' && current[nameOffset-1])
 			}
 			patternOffset++
 		} else if pattern[patternOffset] == '?' {
