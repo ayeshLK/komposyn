@@ -2305,6 +2305,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 		t.Fatalf("mounted-directory child case did not pass (run error=%v): output=%q case=%+v", runErr, output.String(), measured)
 	}
 	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
+		item.LaunchPolicy = measured.LaunchPolicy
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = measured.WorkerStarted, measured.WorkerReady, measured.WorkerJoined
 		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = measured.CapabilityTransferred, measured.ReadStarted, measured.ProbePassed
 		item.OnceApprovalCount, item.OnceGrantConsumptionCount = measured.OnceApprovalCount, measured.OnceGrantConsumptionCount
@@ -2319,6 +2320,14 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 		t.Skip("private child used only by the outer mounted-directory fixture")
 	}
 	stage6Begin("directory_listing_mount_boundary")
+	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
+		item.LaunchPolicy = map[string]any{
+			"user_namespace":        "joined the isolated fixture namespace via Bubblewrap --userns",
+			"mount_namespace":       "worker-private",
+			"pid_namespace":         "worker-private",
+			"disable_userns_option": "omitted because Bubblewrap requires --unshare-user with --disable-userns; worker seccomp denies unshare, setns, and process-like clone after bootstrap",
+		}
+	})
 	fixture := newStage6Fixture(t, "directory_listing_mount_boundary", "directory-list-mounted", false, nil)
 	fixture.reportCases = []string{"directory_listing_mount_boundary"}
 	target := filepath.Join(fixture.root, "listing-scope")

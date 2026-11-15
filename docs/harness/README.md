@@ -174,12 +174,15 @@ digest-checked copy of the already trusted Bubblewrap binary by file descriptor
 and has Bubblewrap create it at a namespace-root-owned path. The nested worker
 joins that fixture's already established user namespace while retaining its
 own mount, PID, IPC, UTS, and network namespaces; this avoids relying on a
-second user-namespace mapping. This exception is limited to the disposable
-mount-boundary study. The report retains backend trust diagnostics when a
-check refuses. These cases require a trusted-host run against the exact clean
-commit; if the outer namespace cannot be established, the mount result is
-recorded unavailable and listing remains disabled. No cross-platform support
-is claimed.
+second user-namespace mapping. Bubblewrap requires `--unshare-user` when using
+`--disable-userns`, so this study-only path omits that option. The fixed
+worker's post-bootstrap seccomp denies `unshare`, `setns`, and process-like
+`clone`; the report records this launch-profile difference. This exception is
+limited to the disposable mount-boundary study. The report retains backend
+trust diagnostics when a check refuses. These cases require a trusted-host
+run against the exact clean commit; if the outer namespace cannot be
+established, the mount result is recorded unavailable and listing remains
+disabled. No cross-platform support is claimed.
 
 ## Local configuration
 
