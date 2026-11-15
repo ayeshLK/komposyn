@@ -26,12 +26,32 @@ The candidate starts from `origin/master` commit
 nonrecursive reports belong to their recorded source and profile and do not
 prove recursive enforcement.
 
-The current host runs as a regular user and has the required Go binary at
-`$(go env GOROOT)/bin/go` (Go 1.26.11). `/usr/bin/bwrap` is owned by
-`nobody:nogroup` with mode 0755, so the repository trust check must refuse it.
-Do not change its ownership or bypass that check. A runner refusal is an
-unavailable-evidence record, not a pass. No advanced-options gate should be
-opened from that result.
+The agent execution host used for the first attempt runs as a regular user and
+has the required Go binary at `$(go env GOROOT)/bin/go` (Go 1.26.11).
+`/usr/bin/bwrap` is owned by `nobody:nogroup` with mode 0755, so the repository
+trust check must refuse it. Do not change its ownership or bypass that check.
+A runner refusal is an unavailable-evidence record, not a pass. No
+advanced-options gate should be opened from that result.
+
+A subsequent trusted-host report was supplied for source revision
+`a695916f1f56af69df244b07898b959cca43f6c6` (Go 1.26.11, Linux
+`7.0.0-42-generic`, x86_64, UID 1000, `/usr/bin/bwrap` UID/GID 0:0 mode
+0755, automatic bind mode). The runner built and started native workers: 13
+native-integrated cases passed, while nine listing cases became inconclusive
+and the test process exited 1. The listing workers started but returned a
+failed outcome. A focused kernel regression reproduced the cause: the
+read-worker seccomp profile denied `statx`, which the listing worker needs for
+mount-ID validation; listing also requires `newfstatat` and `openat2` for
+ignore metadata and constrained descendant traversal. This is a native
+failure, not unavailable evidence. The candidate now uses an operation-specific
+listing filter while retaining the stricter exact-file read filter. The
+supplied report does not test that fix; rerun Stage 6 on the updated clean
+revision before considering native acceptance.
+
+The supplied archive SHA-256 is
+`d08f9b0315d6de946b27b61602afb5ce5d7c2dfd8e5d2014467286e451ffc37b`; the
+report SHA-256 is
+`967b3ef5a9a122844fbf9bfc3cb0343b26da52fa863fc344e2724fd87deb9bdb`.
 
 Once an eligible host is available, run from a clean committed candidate:
 

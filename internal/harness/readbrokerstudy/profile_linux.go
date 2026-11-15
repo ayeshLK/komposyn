@@ -102,13 +102,16 @@ func validateStaticWorkerFile(f *os.File) error {
 	return nil
 }
 
-// workerSeccompFilter builds an architecture-checked syscall filter for the
-// fixed worker. It permits its inherited AF_UNIX control socket, but denies
-// opening or resolving paths, creating sockets, namespace/mount operations,
-// process inspection and selected privilege-changing syscalls. This is a
-// feasibility filter around one trusted worker, not a general sandbox policy.
+// workerSeccompFilter builds the stricter architecture-checked profile used
+// for exact-file reads. It permits its inherited AF_UNIX control socket, but
+// denies path operations, creating sockets, namespace/mount operations,
+// process inspection and selected privilege-changing syscalls.
 func workerSeccompFilter() (*os.File, error) {
-	data, err := workerSeccompFilterBytes()
+	return workerSeccompFilterForOperation(AdmissionReadFile)
+}
+
+func workerSeccompFilterForOperation(operation AdmissionOperation) (*os.File, error) {
+	data, err := workerSeccompFilterBytesForOperation(operation)
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +137,16 @@ func workerSeccompFilter() (*os.File, error) {
 }
 
 func workerSeccompFilterBytes() ([]byte, error) {
+	return workerSeccompFilterBytesForOperation(AdmissionReadFile)
+}
+
+func workerSeccompFilterBytesForOperation(operation AdmissionOperation) ([]byte, error) {
+	if operation == "" {
+		operation = AdmissionReadFile
+	}
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory {
+		return nil, fmt.Errorf("unsupported worker seccomp operation %q", operation)
+	}
 	arch, err := workerAuditArch(runtime.GOARCH)
 	if err != nil {
 		return nil, err
@@ -157,7 +170,7 @@ func workerSeccompFilterBytes() ([]byte, error) {
 		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
 		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
 	}
-	for _, number := range workerDeniedSyscalls() {
+	for _, number := range workerDeniedSyscallsForOperation(operation) {
 		filters = append(filters,
 			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: number, Jt: 0, Jf: 1},
 			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
@@ -187,6 +200,10 @@ func workerAuditArch(goArch string) (uint32, error) {
 }
 
 func workerDeniedSyscalls() []uint32 {
+	return workerDeniedSyscallsForOperation(AdmissionReadFile)
+}
+
+func workerDeniedSyscallsForOperation(operation AdmissionOperation) []uint32 {
 	denied := []uint32{
 		unix.SYS_CLONE3, unix.SYS_EXECVE,
 		unix.SYS_OPENAT, unix.SYS_OPENAT2, unix.SYS_NEWFSTATAT,
@@ -205,6 +222,22 @@ func workerDeniedSyscalls() []uint32 {
 		unix.SYS_KEXEC_LOAD, unix.SYS_KEXEC_FILE_LOAD, unix.SYS_ACCT,
 		unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_KEYCTL,
 		unix.SYS_PERF_EVENT_OPEN, unix.SYS_BPF, unix.SYS_EXECVEAT,
+	}
+	if operation == AdmissionListDirectory {
+		// The listing worker must inspect mount and ignore-file metadata and open
+		// descendant directories relative to the retained directory capability.
+		// Keep ordinary openat and all process-control/path-resolution escape
+		// syscalls denied; fixed code uses openat2 only with beneath constraints.
+		allowedForListing := map[uint32]struct{}{
+			unix.SYS_OPENAT2: {}, unix.SYS_NEWFSTATAT: {}, unix.SYS_STATX: {},
+		}
+		filtered := denied[:0]
+		for _, number := range denied {
+			if _, allowed := allowedForListing[number]; !allowed {
+				filtered = append(filtered, number)
+			}
+		}
+		denied = filtered
 	}
 	return append(denied, workerArchDeniedSyscalls()...)
 }

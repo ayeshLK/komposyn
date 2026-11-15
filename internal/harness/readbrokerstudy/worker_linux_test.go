@@ -1124,7 +1124,10 @@ func TestVerifyDescriptorMountRejectsInvalidDescriptors(t *testing.T) {
 
 func TestWorkerSeccompProgramIncludesBootstrapAndProcessRestrictions(t *testing.T) {
 	denied := workerDeniedSyscalls()
-	for _, required := range []uint32{unix.SYS_OPENAT, unix.SYS_SOCKET, unix.SYS_CLONE3, unix.SYS_EXECVE} {
+	for _, required := range []uint32{
+		unix.SYS_OPENAT, unix.SYS_OPENAT2, unix.SYS_NEWFSTATAT, unix.SYS_STATX,
+		unix.SYS_SOCKET, unix.SYS_CLONE3, unix.SYS_EXECVE,
+	} {
 		if !slices.Contains(denied, required) {
 			t.Errorf("seccomp policy does not deny syscall %d", required)
 		}
@@ -1134,6 +1137,20 @@ func TestWorkerSeccompProgramIncludesBootstrapAndProcessRestrictions(t *testing.
 	}
 	if _, err := workerSeccompFilterBytes(); err != nil {
 		t.Fatalf("worker seccomp program could not be built: %v", err)
+	}
+	listingDenied := workerDeniedSyscallsForOperation(AdmissionListDirectory)
+	for _, required := range []uint32{unix.SYS_OPENAT, unix.SYS_SOCKET, unix.SYS_CLONE3, unix.SYS_EXECVE} {
+		if !slices.Contains(listingDenied, required) {
+			t.Errorf("listing seccomp policy does not deny syscall %d", required)
+		}
+	}
+	for _, needed := range []uint32{unix.SYS_OPENAT2, unix.SYS_NEWFSTATAT, unix.SYS_STATX} {
+		if slices.Contains(listingDenied, needed) {
+			t.Errorf("listing seccomp policy denies required directory syscall %d", needed)
+		}
+	}
+	if _, err := workerSeccompFilterBytesForOperation(AdmissionOperation("unexpected")); err == nil {
+		t.Fatal("unknown worker operation received a seccomp profile")
 	}
 }
 

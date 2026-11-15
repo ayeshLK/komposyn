@@ -700,24 +700,25 @@ func (l *workerLauncher) Close() error {
 }
 
 type sandboxWorker struct {
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	control  *os.File
-	ctx      context.Context
-	cancel   context.CancelFunc
-	stderr   *limitedOutput
-	ready    bool
-	sent     bool
-	started  bool
-	holdMode bool
-	held     bool
-	released bool
-	finished bool
-	expected FileIdentity
-	probe    WorkerProbe
-	waitOnce sync.Once
-	waitErr  error
-	joined   bool
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	control   *os.File
+	ctx       context.Context
+	cancel    context.CancelFunc
+	stderr    *limitedOutput
+	ready     bool
+	sent      bool
+	started   bool
+	holdMode  bool
+	operation AdmissionOperation
+	held      bool
+	released  bool
+	finished  bool
+	expected  FileIdentity
+	probe     WorkerProbe
+	waitOnce  sync.Once
+	waitErr   error
+	joined    bool
 }
 
 type limitedOutput struct {
@@ -754,8 +755,18 @@ func (l *limitedOutput) String() string {
 }
 
 func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
+	return l.StartForOperation(ctx, AdmissionReadFile)
+}
+
+func (l *workerLauncher) StartForOperation(ctx context.Context, operation AdmissionOperation) (SandboxWorker, error) {
 	if ctx == nil {
 		return nil, errors.New("worker context is required")
+	}
+	if operation == "" {
+		operation = AdmissionReadFile
+	}
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory {
+		return nil, fmt.Errorf("%w: unsupported worker operation", ErrUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -766,7 +777,7 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	if l.workerFile == nil {
 		return nil, fmt.Errorf("%w: pinned fixed worker is unavailable", ErrUnavailable)
 	}
-	filter, err := workerSeccompFilter()
+	filter, err := workerSeccompFilterForOperation(operation)
 	if err != nil {
 		return nil, fmt.Errorf("%w: seccomp profile could not be prepared", ErrUnavailable)
 	}
@@ -855,7 +866,7 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		return nil, fmt.Errorf("%w: Bubblewrap process could not start: %s", ErrUnavailable, boundedText(message, 512))
 	}
 	_ = childSocket.Close()
-	worker := &sandboxWorker{cmd: cmd, control: parentSocket, ctx: workerCtx, cancel: cancel, stderr: stderr, holdMode: l.holdBeforeRead}
+	worker := &sandboxWorker{cmd: cmd, control: parentSocket, ctx: workerCtx, cancel: cancel, stderr: stderr, holdMode: l.holdBeforeRead, operation: operation}
 	if l.holdBeforeRead {
 		return &heldSandboxWorker{sandboxWorker: worker}, nil
 	}
@@ -943,14 +954,23 @@ func boundedText(value string, limit int) string {
 }
 
 func (w *sandboxWorker) TransferCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
+	if w.operation != AdmissionReadFile {
+		return ErrProtocol
+	}
 	return w.transferCapability(ctx, file, expected, frameHandoff, unix.S_IFREG, nil)
 }
 
 func (w *sandboxWorker) TransferDirectoryCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
+	if w.operation != AdmissionListDirectory {
+		return ErrProtocol
+	}
 	return w.transferCapability(ctx, file, expected, frameDirectoryHandoff, unix.S_IFDIR, nil)
 }
 
 func (w *sandboxWorker) TransferDirectoryCapabilityWithOptions(ctx context.Context, file *os.File, expected FileIdentity, options ListingOptions) error {
+	if w.operation != AdmissionListDirectory {
+		return ErrProtocol
+	}
 	encoded, err := json.Marshal(options)
 	if err != nil || len(encoded) > 2048 {
 		return ErrProtocol
@@ -1429,8 +1449,9 @@ func installWorkerSeccomp(fd int) error {
 		}
 		offset += count
 	}
-	expected, err := workerSeccompFilterBytes()
-	if err != nil || !bytes.Equal(data, expected) {
+	expectedRead, readErr := workerSeccompFilterBytesForOperation(AdmissionReadFile)
+	expectedListing, listingErr := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
+	if readErr != nil || listingErr != nil || !bytes.Equal(data, expectedRead) && !bytes.Equal(data, expectedListing) {
 		return ErrProtocol
 	}
 	filters := make([]unix.SockFilter, len(data)/unix.SizeofSockFilter)

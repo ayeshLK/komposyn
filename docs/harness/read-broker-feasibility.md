@@ -284,6 +284,16 @@ subprocess test described below. The host command receives only that synthetic m
 `--clearenv`. Standard input is `/dev/null`, stdout is discarded, and stderr
 is captured with a 4 KiB cap.
 
+Exact-file reads use the strict filter that denies `openat2`, `newfstatat`, and
+`statx`. Directory-listing operations select a separate filter that permits
+those three syscalls for descriptor-relative traversal, no-follow ignore-file
+metadata, and mount-ID checks; ordinary `openat` remains denied. The listing
+implementation supplies the fixed relative child names and uses
+`RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`, and
+`RESOLVE_NO_XDEV` for descendant opens. The startup probe's pathname-open check
+specifically verifies that `openat` is denied; it is not a claim that the
+listing profile denies `openat2`.
+
 The seccomp filter permits `clone` only when its flags exactly equal the Go
 runtime's shared-thread flags, with or without `CLONE_SETTLS`; it also requires
 the high 32 bits of the 64-bit flags argument to be zero. This matches the

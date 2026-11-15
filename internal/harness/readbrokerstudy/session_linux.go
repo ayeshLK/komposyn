@@ -548,7 +548,13 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 		ctx, cancel = context.WithTimeout(ctx, maxDirectoryFilterDuration)
 		defer cancel()
 	}
-	worker, err := s.launcher.Start(ctx)
+	var worker SandboxWorker
+	var err error
+	if operationLauncher, ok := s.launcher.(OperationWorkerLauncher); ok {
+		worker, err = operationLauncher.StartForOperation(ctx, op.admissionOperation)
+	} else {
+		worker, err = s.launcher.Start(ctx)
+	}
 	if err != nil {
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: "sandbox setup refused before capability handoff: " + boundedText(err.Error(), 768)}
 	}
