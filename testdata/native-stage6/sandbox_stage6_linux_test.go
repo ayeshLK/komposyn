@@ -1575,6 +1575,22 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			_ = service.Close(context.Background())
 			t.Fatal(err)
 		}
+		if targetKind == "directory-list-mounted" {
+			if err := authStore.AddAPIKey("protected-mount-fixture", "openai", "synthetic protected mount", "synthetic-never-real-secret", nil); err != nil {
+				_ = service.Close(context.Background())
+				t.Fatalf("create synthetic protected mount source: %v", err)
+			}
+			alias := filepath.Join(target, "protected-mounted-alias")
+			if err := os.WriteFile(alias, []byte("mountpoint"), 0600); err != nil {
+				_ = service.Close(context.Background())
+				t.Fatalf("create protected mount alias target: %v", err)
+			}
+			if err := unix.Mount(authPath, alias, "", unix.MS_BIND, ""); err != nil {
+				_ = service.Close(context.Background())
+				t.Fatalf("bind mount synthetic protected object into listing scope: %v", err)
+			}
+			t.Cleanup(func() { _ = unix.Unmount(alias, unix.MNT_DETACH) })
+		}
 	} else if targetKind == "auth" {
 		target, _ = authStore.EffectivePath()
 		content = "synthetic-never-real-key"
@@ -2361,7 +2377,7 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 		t.Fatalf("provider requests=%d, want initial and listing continuation", len(requests))
 	}
 	continuation, _ := json.Marshal(requests[1].Messages)
-	if !strings.Contains(string(continuation), "mounted-boundary") || !strings.Contains(string(continuation), "visible.go") || strings.Contains(string(continuation), "mounted-only-marker.txt") {
+	if !strings.Contains(string(continuation), "mounted-boundary") || !strings.Contains(string(continuation), "visible.go") || strings.Contains(string(continuation), "mounted-only-marker.txt") || strings.Contains(string(continuation), "protected-mounted-alias") {
 		t.Fatalf("listing crossed the mounted child boundary: %s", continuation)
 	}
 	impl := fixture.service.impl.(*linuxImplementation)
@@ -2375,7 +2391,7 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
 		item.FixtureBytesMatched = true
 	})
-	stage6Pass("directory_listing_mount_boundary", "actual mount-ID-distinct synthetic child directory was listed only as a direct entry; its mounted marker was not disclosed")
+	stage6Pass("directory_listing_mount_boundary", "the actual mount-ID-distinct child directory was listed only as a direct entry, its mounted marker stayed hidden, and a protected auth object bind-mounted under an ordinary alias was filtered")
 }
 
 func stage6MountID(path string) (uint64, error) {

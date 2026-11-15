@@ -219,12 +219,12 @@ func TestDirectoryListFilteringHonorsIgnoreRulesAndProtectedAliases(t *testing.T
 	if err := os.Link(protectedPath, filepath.Join(directoryPath, "ordinary-looking")); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"keep.txt", "ignored.log"} {
+	for _, name := range []string{"keep.txt", "ignored.log", " secret.txt"} {
 		if err := os.WriteFile(filepath.Join(directoryPath, name), []byte("synthetic"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(directoryPath, ".gitignore"), []byte("*.log\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(directoryPath, ".gitignore"), []byte("*.log\n secret.txt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	registry, err := NewRegistry()
@@ -242,7 +242,7 @@ func TestDirectoryListFilteringHonorsIgnoreRulesAndProtectedAliases(t *testing.T
 	}
 	t.Cleanup(func() { _ = prepared.Close() })
 	var entries []directoryListingEntry
-	for _, name := range []string{"keep.txt", "ignored.log", "ordinary-looking"} {
+	for _, name := range []string{"keep.txt", "ignored.log", "ordinary-looking", " secret.txt"} {
 		fd, err := unix.Openat(int(prepared.(*preparedDirectoryList).directory.Fd()), name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -259,7 +259,7 @@ func TestDirectoryListFilteringHonorsIgnoreRulesAndProtectedAliases(t *testing.T
 	if err := unix.Fstat(int(prepared.(*preparedDirectoryList).directory.Fd()), &directoryStat); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(directoryListingResult{Entries: entries, Examined: 3, MtimeNS: directoryStat.Mtim.Sec*1e9 + directoryStat.Mtim.Nsec, CtimeNS: directoryStat.Ctim.Sec*1e9 + directoryStat.Ctim.Nsec})
+	raw, err := json.Marshal(directoryListingResult{Entries: entries, Examined: 4, MtimeNS: directoryStat.Mtim.Sec*1e9 + directoryStat.Mtim.Nsec, CtimeNS: directoryStat.Ctim.Sec*1e9 + directoryStat.Ctim.Nsec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +273,62 @@ func TestDirectoryListFilteringHonorsIgnoreRulesAndProtectedAliases(t *testing.T
 	}
 	if !slices.Equal(listing.Names, []string{"keep.txt"}) {
 		t.Fatalf("filtered names=%q, want only keep.txt", listing.Names)
+	}
+	if listing.Examined != 1 || listing.Returned != 1 {
+		t.Fatalf("filtered counts examined=%d returned=%d, want only disclosed count 1", listing.Examined, listing.Returned)
+	}
+}
+
+func TestDirectoryListHonorsAncestorIgnoreRules(t *testing.T) {
+	base := t.TempDir()
+	directoryPath := filepath.Join(base, "src")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, ".gitignore"), []byte("*.log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	for _, name := range []string{"trace.log", "keep.go"} {
+		if err := os.WriteFile(filepath.Join(directoryPath, name), []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepared, err := NewBroker(registry).(DirectoryListingBroker).PrepareDirectoryList(base, directoryPath, GenerationSet{Root: 1, Policy: registry.View().Generation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = prepared.Close() })
+	entries := make([]directoryListingEntry, 0, 2)
+	for _, name := range []string{"trace.log", "keep.go"} {
+		var stat unix.Stat_t
+		if err := unix.Fstatat(int(prepared.(*preparedDirectoryList).directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, directoryListingEntry{Name: name, Inode: stat.Ino, Type: direntTypeForMode(stat.Mode)})
+	}
+	var directoryStat unix.Stat_t
+	if err := unix.Fstat(int(prepared.(*preparedDirectoryList).directory.Fd()), &directoryStat); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(directoryListingResult{Entries: entries, Examined: 2, MtimeNS: directoryStat.Mtim.Sec*1e9 + directoryStat.Mtim.Nsec, CtimeNS: directoryStat.Ctim.Sec*1e9 + directoryStat.Ctim.Nsec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := prepared.(*preparedDirectoryList).filterListing(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(filtered, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(listing.Names, []string{"keep.go"}) {
+		t.Fatalf("ancestor ignore result=%q, want only keep.go", listing.Names)
 	}
 }
 
