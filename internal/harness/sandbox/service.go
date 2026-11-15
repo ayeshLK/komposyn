@@ -279,8 +279,8 @@ func (s *Service) AdmitFilesystemRead(ctx context.Context, invocation tools.Invo
 	if ctx == nil || s == nil || s.impl == nil {
 		return runtime.FilesystemReadAdmission{}, ErrServiceClosed
 	}
-	if invocation.ToolID != tools.ID("read_file") || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
-		return runtime.FilesystemReadAdmission{}, errors.New("read admission invocation identity is invalid")
+	if (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID) || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
+		return runtime.FilesystemReadAdmission{}, errors.New("filesystem admission invocation identity is invalid")
 	}
 	s.rootMu.Lock()
 	if s.rootClosed || s.rootPending || s.rootPath == "" || invocation.ConversationID != s.rootConversationID {

@@ -236,6 +236,47 @@ func TestHostAdmissionRetainsOneObjectThroughPreparationWithoutWorker(t *testing
 	}
 }
 
+func TestHostAdmissionAcceptsBoundedDirectoryListing(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	root := t.TempDir()
+	listingPath := filepath.Join(root, "listing-scope")
+	if err := os.Mkdir(listingPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "listing-fixture", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(map[string]string{"path": listingPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "listing-fixture", TurnID: "turn", ProviderCallID: "listing-call", ToolID: tools.ListFilesID, Arguments: arguments}
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile")
+	if err != nil {
+		t.Fatalf("admit synthetic directory listing through public Service: %v", err)
+	}
+	if admission.Operation != string(tools.ListFilesID) || admission.Target != listingPath || admission.Reference == nil || admission.AdmissionBinding == "" {
+		t.Fatalf("detached listing admission metadata is incomplete: %+v", admission)
+	}
+	if err := service.CloseFilesystemReadAdmission(context.Background(), admission); err != nil {
+		t.Fatalf("retire listing admission: %v", err)
+	}
+}
+
 func TestHostAdmissionRefusesRegisteredOwnerRoutesAndAliases(t *testing.T) {
 	service, err := newTestHostService()
 	if err != nil {
