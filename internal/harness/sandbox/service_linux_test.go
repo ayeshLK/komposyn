@@ -169,6 +169,54 @@ func TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate(t *testin
 	if available, _ := backendService.BackendStatus(); available {
 		t.Fatal("untrusted/missing Bubblewrap path was treated as an available backend")
 	}
+	if impl := backendService.impl.(*linuxImplementation); impl.DirectoryListingAvailable() {
+		t.Fatal("directory listing remained available without a trusted backend")
+	}
+}
+
+func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	if !impl.DirectoryListingAvailable() {
+		t.Fatal("composed trusted worker service did not enable directory listing")
+	}
+	if err := service.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if impl.DirectoryListingAvailable() {
+		t.Fatal("closed worker service kept directory listing available")
+	}
+}
+
+func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
+	approval := runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	})
+	clarification := runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, nil
+	})
+	missingBackend, err := NewHostService(filepath.Join(t.TempDir(), "no-bubblewrap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer missingBackend.Close(context.Background())
+	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, missingBackend)
+	if _, registered := config.Registry.Lookup(tools.ListFilesID); registered {
+		t.Fatal("list_files registered without a verified backend")
+	}
+
+	availableBackend, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer availableBackend.Close(context.Background())
+	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, availableBackend)
+	if _, registered := config.Registry.Lookup(tools.ListFilesID); !registered {
+		t.Fatal("list_files not registered when the Linux host service reports an available backend")
+	}
 }
 
 func TestHostAdmissionRetainsOneObjectThroughPreparationWithoutWorker(t *testing.T) {
@@ -233,6 +281,47 @@ func TestHostAdmissionRetainsOneObjectThroughPreparationWithoutWorker(t *testing
 	impl := service.impl.(*linuxImplementation)
 	if impl.session.ActiveOperationCount() != 0 {
 		t.Fatal("host-only admission appeared as a worker operation")
+	}
+}
+
+func TestHostAdmissionAcceptsBoundedDirectoryListing(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	root := t.TempDir()
+	listingPath := filepath.Join(root, "listing-scope")
+	if err := os.Mkdir(listingPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "listing-fixture", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(map[string]string{"path": listingPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "listing-fixture", TurnID: "turn", ProviderCallID: "listing-call", ToolID: tools.ListFilesID, Arguments: arguments}
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile")
+	if err != nil {
+		t.Fatalf("admit synthetic directory listing through public Service: %v", err)
+	}
+	if admission.Operation != string(tools.ListFilesID) || admission.Target != listingPath || admission.Reference == nil || admission.AdmissionBinding == "" {
+		t.Fatalf("detached listing admission metadata is incomplete: %+v", admission)
+	}
+	if err := service.CloseFilesystemReadAdmission(context.Background(), admission); err != nil {
+		t.Fatalf("retire listing admission: %v", err)
 	}
 }
 

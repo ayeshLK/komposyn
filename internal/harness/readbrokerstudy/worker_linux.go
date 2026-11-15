@@ -36,6 +36,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -44,6 +45,7 @@ import (
 const (
 	frameReady              byte = 'R'
 	frameHandoff            byte = 'H'
+	frameDirectoryHandoff   byte = 'B'
 	frameStarted            byte = 'S'
 	frameRefused            byte = 'X'
 	frameData               byte = 'D'
@@ -317,6 +319,7 @@ type workerLauncher struct {
 	bwrapPath      string
 	capability     BubblewrapCapabilities
 	workerFile     *os.File
+	inheritUserNS  bool
 	holdBeforeRead bool
 	closeOnce      sync.Once
 	closeErr       error
@@ -811,6 +814,24 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	}
 	workerCtx, cancel := context.WithTimeout(ctx, watchdog)
 	args := effectiveBubblewrapArguments(l.capability.BindMode, l.holdBeforeRead)
+	if l.inheritUserNS {
+		updatedArgs := make([]string, 0, len(args))
+		replaced := false
+		for _, argument := range args {
+			if argument == "--unshare-user" {
+				replaced = true
+			} else if argument != "--disable-userns" && argument != "--unshare-net" {
+				updatedArgs = append(updatedArgs, argument)
+			}
+		}
+		if !replaced {
+			cancel()
+			_ = parentSocket.Close()
+			_ = childSocket.Close()
+			return nil, fmt.Errorf("%w: Stage 6 user namespace option is unavailable", ErrUnavailable)
+		}
+		args = updatedArgs
+	}
 	if args == nil {
 		cancel()
 		_ = parentSocket.Close()
@@ -921,6 +942,14 @@ func boundedText(value string, limit int) string {
 }
 
 func (w *sandboxWorker) TransferCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
+	return w.transferCapability(ctx, file, expected, frameHandoff, unix.S_IFREG)
+}
+
+func (w *sandboxWorker) TransferDirectoryCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
+	return w.transferCapability(ctx, file, expected, frameDirectoryHandoff, unix.S_IFDIR)
+}
+
+func (w *sandboxWorker) transferCapability(ctx context.Context, file *os.File, expected FileIdentity, frame byte, fileType uint32) error {
 	if file == nil || ctx == nil {
 		return ErrProtocol
 	}
@@ -933,14 +962,14 @@ func (w *sandboxWorker) TransferCapability(ctx context.Context, file *os.File, e
 		return err
 	}
 	var stat unix.Stat_t
-	if err := unix.Fstat(int(file.Fd()), &stat); err != nil || identityFromStat(&stat) != expected || stat.Mode&unix.S_IFMT != unix.S_IFREG {
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil || identityFromStat(&stat) != expected || stat.Mode&unix.S_IFMT != fileType {
 		return ErrStaleReceipt
 	}
 	flags, err := unix.FcntlInt(file.Fd(), unix.F_GETFL, 0)
 	if err != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
 		return ErrStaleReceipt
 	}
-	message := identityFrame(frameHandoff, expected)
+	message := identityFrame(frame, expected)
 	oob := unix.UnixRights(int(file.Fd()))
 	n, err := unix.SendmsgN(int(w.control.Fd()), message, oob, nil, unix.MSG_DONTWAIT|unix.MSG_NOSIGNAL)
 	if err != nil || n != len(message) {
@@ -1515,15 +1544,171 @@ func receiveAndRead(control int, holdCapability bool) int {
 			return sendRefusal(control)
 		}
 		capability := files[0]
-		if n != 1+20 || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 || packet[0] != frameHandoff {
+		// A SOCK_SEQPACKET frame is exactly 21 bytes after validation. Slice the
+		// identity to the received length, not the reusable packet capacity.
+		if n != 1+20 || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
 			_ = unix.Close(capability)
 			return sendRefusal(control)
 		}
-		// A SOCK_SEQPACKET frame is exactly 21 bytes after validation. Slice the
-		// identity to the received length, not the reusable packet capacity.
-		result := readTransferredFD(control, capability, packet[1:n], holdCapability)
+		var result int
+		switch packet[0] {
+		case frameHandoff:
+			result = readTransferredFD(control, capability, packet[1:n], holdCapability)
+		case frameDirectoryHandoff:
+			result = listTransferredDirectory(control, capability, packet[1:n], holdCapability)
+		default:
+			_ = unix.Close(capability)
+			return sendRefusal(control)
+		}
 		_ = unix.Close(capability)
 		return result
+	}
+}
+
+func listTransferredDirectory(control, fd int, expected []byte, holdCapability bool) int {
+	unix.CloseOnExec(fd)
+	var stat unix.Stat_t
+	flags, flagErr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if flagErr != nil || flags&unix.O_ACCMODE != unix.O_RDONLY || unix.Fstat(fd, &stat) != nil ||
+		stat.Mode&unix.S_IFMT != unix.S_IFDIR || !sameIdentity(expected, identityFromStat(&stat)) {
+		_ = sendPacket(control, []byte{frameRefused})
+		return 74
+	}
+	identity := identityFromStat(&stat)
+	if holdCapability {
+		if err := sendPacket(control, identityFrame(frameCapabilityHeld, identity)); err != nil {
+			return 75
+		}
+		packet, err := recvPacket(context.Background(), control, 64)
+		if err != nil || len(packet) != 1+20 || packet[0] != frameReleaseRead || !sameIdentity(packet[1:], identity) {
+			return sendRefusal(control)
+		}
+	}
+	if err := sendPacket(control, identityFrame(frameStarted, identity)); err != nil {
+		return 75
+	}
+	result := listDirectoryBounded(fd)
+	for offset := 0; offset < len(result.Bytes); {
+		end := offset + dataChunkBytes
+		if end > len(result.Bytes) {
+			end = len(result.Bytes)
+		}
+		if err := sendPacket(control, append([]byte{frameData}, result.Bytes[offset:end]...)); err != nil {
+			return 76
+		}
+		offset = end
+	}
+	truncated := byte(0)
+	if result.Truncated {
+		truncated = 1
+	}
+	finish := []byte{frameFinish, encodeOutcome(result.Outcome), truncated, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(finish[3:7], uint32(len(result.Bytes)))
+	if err := sendPacket(control, finish); err != nil {
+		return 77
+	}
+	return 0
+}
+
+type directoryListingResult struct {
+	Names      []string                `json:"names,omitempty"`
+	Entries    []directoryListingEntry `json:"entries,omitempty"`
+	Examined   int                     `json:"examined"`
+	Returned   int                     `json:"returned"`
+	Incomplete bool                    `json:"incomplete"`
+	MtimeNS    int64                   `json:"mtime_ns,omitempty"`
+	CtimeNS    int64                   `json:"ctime_ns,omitempty"`
+}
+
+type directoryListingEntry struct {
+	Name  string `json:"name"`
+	Inode uint64 `json:"inode"`
+	Type  uint8  `json:"type"`
+}
+
+func listDirectoryBounded(fd int) WorkerResult {
+	const maxExamined, maxReturned = 10_000, 1_000
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return WorkerResult{Outcome: ReadFailed, Detail: "directory identity could not be verified"}
+	}
+	var entries []directoryListingEntry
+	buf := make([]byte, 32<<10)
+	examined, incomplete := 0, false
+	for {
+		n, err := unix.ReadDirent(fd, buf)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration failed"}
+		}
+		if n == 0 {
+			break
+		}
+		parsed := buf[:n]
+		for len(parsed) > 0 {
+			if len(parsed) < 19 {
+				return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration was invalid"}
+			}
+			recordLen := int(binary.NativeEndian.Uint16(parsed[16:18]))
+			if recordLen < 20 || recordLen > len(parsed) {
+				return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration was invalid"}
+			}
+			inode := binary.NativeEndian.Uint64(parsed[:8])
+			direntType := parsed[18]
+			nameBytes := parsed[19:recordLen]
+			terminator := bytes.IndexByte(nameBytes, 0)
+			if terminator < 0 {
+				return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration was invalid"}
+			}
+			nameBytes = nameBytes[:terminator]
+			parsed = parsed[recordLen:]
+			if len(nameBytes) == 0 {
+				continue
+			}
+			examined++
+			if examined > maxExamined {
+				incomplete = true
+				break
+			}
+			name := string(nameBytes)
+			if !utf8.Valid(nameBytes) {
+				incomplete = true
+				continue
+			}
+			if name == "." || name == ".." || strings.HasPrefix(name, ".") {
+				continue
+			}
+			if len(entries) >= maxReturned {
+				incomplete = true
+				continue
+			}
+			entries = append(entries, directoryListingEntry{Name: name, Inode: inode, Type: direntType})
+		}
+		if examined > maxExamined {
+			break
+		}
+	}
+	slices.SortFunc(entries, func(a, b directoryListingEntry) int { return strings.Compare(a.Name, b.Name) })
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || before.Mtim != after.Mtim || before.Ctim != after.Ctim {
+		return WorkerResult{Outcome: ReadFailed, Detail: "directory changed during enumeration"}
+	}
+	listing := directoryListingResult{Entries: entries, Examined: min(examined, maxExamined), Returned: len(entries), Incomplete: incomplete, MtimeNS: before.Mtim.Sec*1e9 + before.Mtim.Nsec, CtimeNS: before.Ctim.Sec*1e9 + before.Ctim.Nsec}
+	for {
+		encoded, err := json.Marshal(listing)
+		if err != nil {
+			return WorkerResult{Outcome: ReadFailed, Detail: "directory listing could not be encoded"}
+		}
+		if len(encoded) <= MaxReadBytes {
+			return WorkerResult{Outcome: ReadSucceeded, Bytes: encoded}
+		}
+		if len(listing.Entries) == 0 {
+			return WorkerResult{Outcome: ReadPartial, Truncated: true, Detail: "directory listing exceeded output bound"}
+		}
+		listing.Entries = listing.Entries[:len(listing.Entries)-1]
+		listing.Incomplete = true
 	}
 }
 

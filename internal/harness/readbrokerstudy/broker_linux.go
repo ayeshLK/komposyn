@@ -17,14 +17,22 @@
 package readbrokerstudy
 
 import (
+	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -52,6 +60,21 @@ type preparedRead struct {
 	closed         bool
 	closeAttempted bool
 	closeErr       error
+}
+
+type preparedDirectoryList struct {
+	mu             sync.Mutex
+	directory      *os.File
+	registry       PolicyRegistry
+	path           string
+	identity       FileIdentity
+	class          ResourceClass
+	generation     GenerationSet
+	digest         [32]byte
+	closed         bool
+	closeAttempted bool
+	closeErr       error
+	ignoreRules    []ignoreRule
 }
 
 var _ PreparedRead = (*preparedRead)(nil)
@@ -156,8 +179,552 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 	parentOwned = true
 	return &preparedRead{
 		file: file, parent: parent, path: target, identity: id, class: class, generation: generation,
-		digest: requestDigest(root, target, id, class, generation),
+		digest: requestDigest(root, target, id, class, generation, AdmissionReadFile),
 	}, nil
+}
+
+func (b *broker) PrepareDirectoryList(root, target string, generation GenerationSet) (PreparedRead, error) {
+	if b == nil || b.registry == nil {
+		return nil, ErrUnavailable
+	}
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !filepath.IsAbs(target) || filepath.Clean(target) != target || strings.ContainsRune(target, '\x00') {
+		return nil, errInvalidReadPath
+	}
+	view := b.registry.View()
+	if generation.Policy != view.Generation {
+		return nil, ErrPolicyChanged
+	}
+	routeClass, routeProtected := b.registry.ClassifyRoute(target)
+	if latest := b.registry.View(); latest.Generation != view.Generation || latest.Generation != generation.Policy {
+		return nil, ErrPolicyChanged
+	}
+	if routeProtected && routeClass != ClassProvider {
+		return nil, ErrProtected
+	}
+	fd, err := openAbsolute(target, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NONBLOCK)
+	if err != nil {
+		return nil, mapPrepareError(err)
+	}
+	directory := os.NewFile(uintptr(fd), "prepared-directory-list-capability")
+	id, err := identityFromFile(directory)
+	if err != nil || id.Type != unix.S_IFDIR {
+		_ = directory.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, errReadNotRegular
+	}
+	class, protected := b.registry.ClassifyWithAncestors(target, id, nil)
+	if latest := b.registry.View(); latest.Generation != view.Generation || latest.Generation != generation.Policy {
+		_ = directory.Close()
+		return nil, ErrPolicyChanged
+	}
+	if protected && class != ClassProvider {
+		_ = directory.Close()
+		return nil, ErrProtected
+	}
+	if !protected {
+		class = ClassOrdinary
+	}
+	if b.registry.DirectoryCoverageIncomplete(id) {
+		_ = directory.Close()
+		return nil, ErrDirectoryCoverage
+	}
+	ignoreRules, err := readDirectoryIgnoreRules(directory, target, id, b.registry)
+	if err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	return &preparedDirectoryList{
+		directory: directory, registry: b.registry, ignoreRules: ignoreRules, path: target, identity: id, class: class, generation: generation,
+		digest: requestDigest(root, target, id, class, generation, AdmissionListDirectory),
+	}, nil
+}
+
+type ignoreRule struct {
+	pattern       string
+	base          string
+	negated       bool
+	directoryOnly bool
+	anchored      bool
+}
+
+const maxIgnoreBytes = 64 << 10
+const maxIgnoreAncestors = 64
+const maxIgnoreRules = 512
+const maxDirectoryFilterWork = 5_000_000
+const maxDirectoryFilterDuration = 5 * time.Second
+
+var errDirectoryFilterBudget = errors.New("directory listing filter work budget exceeded")
+
+type ancestorFD struct {
+	fd   int
+	path string
+}
+
+func readDirectoryIgnoreRules(directory *os.File, target string, directoryIdentity FileIdentity, registry PolicyRegistry) ([]ignoreRule, error) {
+	// Walk from the selected directory toward / using its pinned descriptor.
+	// The bounded walk captures every applicable ancestor .gitignore without
+	// resolving an attacker-controlled replacement pathname.
+	ancestors := make([]ancestorFD, 0, maxIgnoreAncestors)
+	currentFD, err := unix.Dup(int(directory.Fd()))
+	if err != nil {
+		return nil, ErrProtected
+	}
+	currentPath := target
+	for depth := 0; depth < maxIgnoreAncestors; depth++ {
+		ancestors = append(ancestors, ancestorFD{fd: currentFD, path: currentPath})
+		parentFD, openErr := unix.Openat(currentFD, "..", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if openErr != nil {
+			return nil, closeAncestors(ancestors, ErrProtected)
+		}
+		var currentStat, parentStat unix.Stat_t
+		if unix.Fstat(currentFD, &currentStat) != nil || unix.Fstat(parentFD, &parentStat) != nil {
+			_ = unix.Close(parentFD)
+			return nil, closeAncestors(ancestors, ErrProtected)
+		}
+		if currentStat.Ino == parentStat.Ino && currentStat.Dev == parentStat.Dev {
+			_ = unix.Close(parentFD)
+			break
+		}
+		if depth == maxIgnoreAncestors-1 {
+			_ = unix.Close(parentFD)
+			return nil, closeAncestors(ancestors, ErrProtected)
+		}
+		currentFD = parentFD
+		currentPath = filepath.Dir(currentPath)
+	}
+	defer func() {
+		for _, item := range ancestors {
+			_ = unix.Close(item.fd)
+		}
+	}()
+	var rules []ignoreRule
+	totalBytes := 0
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		item := ancestors[i]
+		fd, openErr := unix.Openat(item.fd, ".gitignore", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+		if openErr == unix.ENOENT {
+			continue
+		}
+		if openErr != nil {
+			return nil, ErrProtected
+		}
+		var stat unix.Stat_t
+		if unix.Fstat(fd, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size < 0 || totalBytes+int(stat.Size) > maxIgnoreBytes {
+			_ = unix.Close(fd)
+			return nil, ErrProtected
+		}
+		identity := identityFromStat(&stat)
+		ignorePath := filepath.Join(item.path, ".gitignore")
+		if _, protected := registry.ClassifyWithAncestors(ignorePath, identity, nil); protected {
+			_ = unix.Close(fd)
+			return nil, ErrProtected
+		}
+		if _, protected := registry.ClassifyRoute(ignorePath); protected {
+			_ = unix.Close(fd)
+			return nil, ErrProtected
+		}
+		file := os.NewFile(uintptr(fd), "bounded-directory-ignore-rules")
+		data, readErr := io.ReadAll(io.LimitReader(file, int64(maxIgnoreBytes-totalBytes+1)))
+		_ = file.Close()
+		if readErr != nil || len(data) > maxIgnoreBytes-totalBytes || !utf8.Valid(data) || strings.ContainsRune(string(data), '\x00') {
+			return nil, ErrProtected
+		}
+		totalBytes += len(data)
+		parsed, parseErr := parseIgnoreRules(data, item.path)
+		if parseErr != nil || len(rules)+len(parsed) > maxIgnoreRules {
+			return nil, ErrProtected
+		}
+		rules = append(rules, parsed...)
+	}
+	if len(ancestors) > 0 {
+		var selectedStat unix.Stat_t
+		if unix.Fstat(ancestors[0].fd, &selectedStat) != nil || identityFromStat(&selectedStat) != directoryIdentity {
+			return nil, ErrStaleReceipt
+		}
+	}
+	return rules, nil
+}
+
+func parseIgnoreRules(data []byte, base string) ([]ignoreRule, error) {
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 1024), 2048)
+	rules := make([]ignoreRule, 0, 32)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.ContainsRune(line, '\\') || strings.Contains(line, "**") {
+			return nil, ErrProtected
+		}
+		// Git ignores unescaped trailing spaces. Preserve leading spaces, which
+		// are part of the pattern and can name real filesystem entries.
+		line = strings.TrimRight(line, " ")
+		if line == "" {
+			continue
+		}
+		rule := ignoreRule{}
+		if strings.HasPrefix(line, "!") {
+			rule.negated = true
+			line = line[1:]
+		}
+		if line == "" {
+			return nil, ErrProtected
+		}
+		if strings.HasSuffix(line, "/") {
+			rule.directoryOnly = true
+			line = strings.TrimSuffix(line, "/")
+		}
+		if strings.HasPrefix(line, "/") {
+			rule.anchored = true
+			line = strings.TrimPrefix(line, "/")
+		}
+		if line == "" {
+			return nil, ErrProtected
+		}
+		// POSIX character classes, collating symbols, and equivalence classes
+		// are outside this bounded matcher, so refuse those patterns rather
+		// than risk exposing names under different matching semantics.
+		if strings.Contains(line, "[[") || strings.Contains(line, "[:") || strings.Contains(line, "[.") || strings.Contains(line, "[=") {
+			return nil, ErrProtected
+		}
+		if _, err := path.Match(strings.ReplaceAll(line, "[!", "[^"), "validation"); err != nil {
+			return nil, ErrProtected
+		}
+		rule.pattern, rule.base = line, base
+		rule.anchored = rule.anchored || strings.Contains(line, "/")
+		rules = append(rules, rule)
+	}
+	if scanner.Err() != nil {
+		return nil, ErrProtected
+	}
+	return rules, nil
+}
+
+func closeAncestors(ancestors []ancestorFD, err error) error {
+	for _, item := range ancestors {
+		_ = unix.Close(item.fd)
+	}
+	return err
+}
+
+func (rule ignoreRule) matches(namePath string, directory bool, budget *directoryFilterBudget) (bool, error) {
+	if rule.directoryOnly && !directory {
+		return false, nil
+	}
+	relative, err := filepath.Rel(rule.base, namePath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false, nil
+	}
+	name := filepath.ToSlash(relative)
+	if name == "." {
+		// An ignore file does not apply its patterns to the directory that
+		// contains it, only to entries below that directory.
+		return false, nil
+	}
+	if rule.anchored {
+		return gitByteMatch(budget, rule.pattern, name)
+	}
+	// ignoredByRules evaluates each path prefix separately. Match this
+	// prefix's own name, never an ancestor component of a descendant.
+	component := name[strings.LastIndex(name, "/")+1:]
+	return gitByteMatch(budget, rule.pattern, component)
+}
+
+type directoryFilterBudget struct {
+	ctx       context.Context
+	remaining int
+}
+
+func (budget *directoryFilterBudget) consume(work int) error {
+	if err := budget.ctx.Err(); err != nil {
+		return err
+	}
+	if work < 0 || work > budget.remaining {
+		return errDirectoryFilterBudget
+	}
+	budget.remaining -= work
+	return nil
+}
+
+// gitByteMatch uses a two-row dynamic program with O(pattern bytes × name
+// bytes) work. Git's ?, classes, and wildcard semantics operate on filename
+// bytes, so UTF-8 characters may consume multiple wildcard positions. '**'
+// and backslash escapes are rejected by the parser.
+func gitByteMatch(budget *directoryFilterBudget, pattern, name string) (bool, error) {
+	work := (len(pattern) + 1) * (len(name) + 1)
+	if err := budget.consume(work); err != nil {
+		return false, err
+	}
+	previous := make([]bool, len(name)+1)
+	current := make([]bool, len(name)+1)
+	previous[0] = true
+	for patternOffset := 0; patternOffset < len(pattern); {
+		if patternOffset&31 == 0 {
+			if err := budget.ctx.Err(); err != nil {
+				return false, err
+			}
+		}
+		clear(current)
+		if pattern[patternOffset] == '*' {
+			current[0] = previous[0]
+			for nameOffset := 1; nameOffset <= len(name); nameOffset++ {
+				if nameOffset&255 == 0 {
+					if err := budget.ctx.Err(); err != nil {
+						return false, err
+					}
+				}
+				// The star may consume zero bytes even when the next name byte
+				// is '/'; only consuming that slash is forbidden.
+				current[nameOffset] = previous[nameOffset] || (name[nameOffset-1] != '/' && current[nameOffset-1])
+			}
+			patternOffset++
+		} else if pattern[patternOffset] == '?' {
+			for nameOffset := 1; nameOffset <= len(name); nameOffset++ {
+				if nameOffset&255 == 0 {
+					if err := budget.ctx.Err(); err != nil {
+						return false, err
+					}
+				}
+				current[nameOffset] = name[nameOffset-1] != '/' && previous[nameOffset-1]
+			}
+			patternOffset++
+		} else if pattern[patternOffset] == '[' {
+			classEnd := patternOffset + 1 + strings.IndexByte(pattern[patternOffset+1:], ']')
+			class := pattern[patternOffset+1 : classEnd]
+			for nameOffset := 1; nameOffset <= len(name); nameOffset++ {
+				if nameOffset&255 == 0 {
+					if err := budget.ctx.Err(); err != nil {
+						return false, err
+					}
+				}
+				current[nameOffset] = name[nameOffset-1] != '/' && previous[nameOffset-1] && gitByteClassMatch(class, name[nameOffset-1])
+			}
+			patternOffset = classEnd + 1
+		} else {
+			for nameOffset := 1; nameOffset <= len(name); nameOffset++ {
+				if nameOffset&255 == 0 {
+					if err := budget.ctx.Err(); err != nil {
+						return false, err
+					}
+				}
+				current[nameOffset] = pattern[patternOffset] == name[nameOffset-1] && previous[nameOffset-1]
+			}
+			patternOffset++
+		}
+		previous, current = current, previous
+	}
+	return previous[len(name)], nil
+}
+
+func gitByteClassMatch(class string, value byte) bool {
+	negated := strings.HasPrefix(class, "!") || strings.HasPrefix(class, "^")
+	if negated {
+		class = class[1:]
+	}
+	contains := false
+	for i := 0; i < len(class); i++ {
+		if i+2 < len(class) && class[i+1] == '-' {
+			if value >= class[i] && value <= class[i+2] {
+				contains = true
+			}
+			i += 2
+			continue
+		}
+		if class[i] == value {
+			contains = true
+		}
+	}
+	if negated {
+		return !contains
+	}
+	return contains
+}
+
+func ignoredByRules(namePath string, directory bool, rules []ignoreRule, budget *directoryFilterBudget) (bool, error) {
+	if len(rules) == 0 {
+		return false, nil
+	}
+	base := rules[0].base
+	relative, err := filepath.Rel(base, namePath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false, nil
+	}
+	components := strings.Split(filepath.ToSlash(relative), "/")
+	prefix := base
+	ignored := false
+	for i, component := range components {
+		prefix = filepath.Join(prefix, filepath.FromSlash(component))
+		isDirectory := i < len(components)-1 || directory
+		parentIgnored := ignored
+		for _, rule := range rules {
+			if err := budget.consume(1); err != nil {
+				return false, err
+			}
+			matches, err := rule.matches(prefix, isDirectory, budget)
+			if err != nil {
+				return false, err
+			}
+			if !matches {
+				continue
+			}
+			if rule.negated {
+				// Git cannot re-include a child while one of its parent
+				// directories remains excluded.
+				if !parentIgnored {
+					ignored = false
+				}
+			} else {
+				ignored = true
+			}
+		}
+	}
+	return ignored, nil
+}
+
+func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, maxDirectoryFilterDuration)
+	defer cancel()
+	budget := &directoryFilterBudget{ctx: ctx, remaining: maxDirectoryFilterWork}
+	var listing directoryListingResult
+	if err := json.Unmarshal(raw, &listing); err != nil || listing.Examined > 10_000 || len(listing.Entries) > 1_000 || len(listing.Names) != 0 {
+		return nil, ErrProtocol
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.directory == nil || p.registry == nil {
+		return nil, os.ErrClosed
+	}
+	if err := budget.consume(len(raw)); err != nil {
+		return nil, err
+	}
+	var parentStat unix.Stat_t
+	if err := unix.Fstat(int(p.directory.Fd()), &parentStat); err != nil || identityFromStat(&parentStat) != p.identity {
+		return nil, ErrStaleReceipt
+	}
+	currentRules, err := readDirectoryIgnoreRules(p.directory, p.path, p.identity, p.registry)
+	if err != nil || !slices.Equal(currentRules, p.ignoreRules) {
+		return nil, ErrPolicyChanged
+	}
+	mtimeNS := parentStat.Mtim.Sec*1e9 + parentStat.Mtim.Nsec
+	ctimeNS := parentStat.Ctim.Sec*1e9 + parentStat.Ctim.Nsec
+	if mtimeNS != listing.MtimeNS || ctimeNS != listing.CtimeNS {
+		return nil, ErrStaleReceipt
+	}
+	filtered := make([]string, 0, len(listing.Entries))
+	parentMountID, err := mountIDForFD(int(p.directory.Fd()))
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	for _, entry := range listing.Entries {
+		if err := budget.consume(1); err != nil {
+			return nil, err
+		}
+		name := entry.Name
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+			return nil, ErrProtocol
+		}
+		namePath := filepath.Join(p.path, name)
+		mode, ok := modeForDirentType(entry.Type)
+		if !ok || entry.Inode == 0 {
+			return nil, ErrUnavailable
+		}
+		identity, mounted, err := childIdentityAt(int(p.directory.Fd()), name, parentMountID)
+		if err != nil {
+			return nil, err
+		}
+		if !mounted && (identity.Device != p.identity.Device || identity.Inode != entry.Inode || identity.Type != mode) {
+			return nil, ErrStaleReceipt
+		}
+		if _, protected := p.registry.ClassifyRoute(namePath); protected {
+			continue
+		}
+		if _, protected := p.registry.ClassifyWithAncestors(namePath, identity, nil); protected {
+			continue
+		}
+		ignored, err := ignoredByRules(namePath, identity.Type == unix.S_IFDIR, p.ignoreRules, budget)
+		if err != nil {
+			return nil, err
+		}
+		if ignored {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	listing.Names = filtered
+	listing.Entries = nil
+	listing.Returned = len(filtered)
+	// Raw traversal count includes hidden and protected entries. It is needed
+	// only for enforcing the worker bound and must not be disclosed.
+	listing.Examined = len(filtered)
+	listing.MtimeNS = 0
+	listing.CtimeNS = 0
+	encoded, err := json.Marshal(listing)
+	if err != nil || len(encoded) > MaxReadBytes {
+		return nil, ErrResultTooLarge
+	}
+	return encoded, nil
+}
+
+func childIdentityAt(parentFD int, name string, parentMountID uint64) (FileIdentity, bool, error) {
+	fd, err := unix.Openat(parentFD, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return FileIdentity{}, false, ErrStaleReceipt
+	}
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return FileIdentity{}, false, ErrStaleReceipt
+	}
+	mountID, err := mountIDForFD(fd)
+	if err != nil {
+		return FileIdentity{}, false, err
+	}
+	return identityFromStat(&stat), mountID != parentMountID, nil
+}
+
+func modeForDirentType(fileType uint8) (uint32, bool) {
+	switch fileType {
+	case unix.DT_REG:
+		return unix.S_IFREG, true
+	case unix.DT_DIR:
+		return unix.S_IFDIR, true
+	case unix.DT_LNK:
+		return unix.S_IFLNK, true
+	case unix.DT_FIFO:
+		return unix.S_IFIFO, true
+	case unix.DT_SOCK:
+		return unix.S_IFSOCK, true
+	case unix.DT_CHR:
+		return unix.S_IFCHR, true
+	case unix.DT_BLK:
+		return unix.S_IFBLK, true
+	default:
+		return 0, false
+	}
+}
+
+func direntTypeForMode(mode uint32) uint8 {
+	switch mode & unix.S_IFMT {
+	case unix.S_IFREG:
+		return unix.DT_REG
+	case unix.S_IFDIR:
+		return unix.DT_DIR
+	case unix.S_IFLNK:
+		return unix.DT_LNK
+	case unix.S_IFIFO:
+		return unix.DT_FIFO
+	case unix.S_IFSOCK:
+		return unix.DT_SOCK
+	case unix.S_IFCHR:
+		return unix.DT_CHR
+	case unix.S_IFBLK:
+		return unix.DT_BLK
+	default:
+		return unix.DT_UNKNOWN
+	}
 }
 
 func mountIDForFD(fd int) (uint64, error) {
@@ -221,8 +788,18 @@ func (b *broker) Revalidate(capability PreparedRead) error {
 	if b == nil || b.registry == nil {
 		return ErrUnavailable
 	}
-	prepared, ok := capability.(*preparedRead)
-	if !ok || prepared == nil {
+	switch prepared := capability.(type) {
+	case *preparedRead:
+		return b.revalidateRead(prepared)
+	case *preparedDirectoryList:
+		return b.revalidateDirectoryList(prepared)
+	default:
+		return ErrStaleReceipt
+	}
+}
+
+func (b *broker) revalidateRead(prepared *preparedRead) error {
+	if prepared == nil {
 		return ErrStaleReceipt
 	}
 	prepared.mu.Lock()
@@ -240,6 +817,36 @@ func (b *broker) Revalidate(capability PreparedRead) error {
 	}
 	if b.registry.DirectoryCoverageIncomplete(prepared.identity) {
 		return ErrDirectoryCoverage
+	}
+	return nil
+}
+
+func (b *broker) revalidateDirectoryList(prepared *preparedDirectoryList) error {
+	if prepared == nil {
+		return ErrStaleReceipt
+	}
+	prepared.mu.Lock()
+	defer prepared.mu.Unlock()
+	if prepared.closed || prepared.directory == nil {
+		return ErrStaleReceipt
+	}
+	view := b.registry.View()
+	if view.Generation != prepared.generation.Policy {
+		return ErrPolicyChanged
+	}
+	identity, err := identityFromFile(prepared.directory)
+	if err != nil || identity != prepared.identity || identity.Type != unix.S_IFDIR {
+		return ErrStaleReceipt
+	}
+	class, protected := b.registry.ClassifyWithAncestors(prepared.path, identity, nil)
+	if protected && class != prepared.class {
+		return ErrProtected
+	}
+	if b.registry.DirectoryCoverageIncomplete(identity) {
+		return ErrDirectoryCoverage
+	}
+	if latest := b.registry.View(); latest.Generation != prepared.generation.Policy {
+		return ErrPolicyChanged
 	}
 	return nil
 }
@@ -332,13 +939,54 @@ func (p *preparedRead) Close() error {
 	return p.closeErr
 }
 
-func requestDigest(root, target string, id FileIdentity, class ResourceClass, generation GenerationSet) [32]byte {
+func (p *preparedDirectoryList) Identity() FileIdentity     { return p.identity }
+func (p *preparedDirectoryList) Class() ResourceClass       { return p.class }
+func (p *preparedDirectoryList) Path() string               { return p.path }
+func (p *preparedDirectoryList) Generations() GenerationSet { return p.generation }
+func (p *preparedDirectoryList) RequestDigest() [32]byte    { return p.digest }
+
+func (p *preparedDirectoryList) DuplicateForWorker() (*os.File, error) {
+	if p == nil {
+		return nil, os.ErrInvalid
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.directory == nil {
+		return nil, os.ErrClosed
+	}
+	fd, err := unix.FcntlInt(p.directory.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), "directory-list-capability-for-worker"), nil
+}
+
+func (p *preparedDirectoryList) Close() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closeAttempted {
+		return p.closeErr
+	}
+	p.closeAttempted = true
+	p.closed = true
+	if p.directory != nil {
+		p.closeErr = p.directory.Close()
+	}
+	return p.closeErr
+}
+
+func requestDigest(root, target string, id FileIdentity, class ResourceClass, generation GenerationSet, operation AdmissionOperation) [32]byte {
 	hash := sha256.New()
 	_, _ = hash.Write([]byte(root))
 	_, _ = hash.Write([]byte{0})
 	_, _ = hash.Write([]byte(target))
 	_, _ = hash.Write([]byte{0})
 	_, _ = hash.Write([]byte(class))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(operation))
 	var encoded [8]byte
 	for _, value := range []uint64{id.Device, id.Inode, uint64(id.Type), generation.Root, generation.Policy, generation.Grant} {
 		binary.LittleEndian.PutUint64(encoded[:], value)

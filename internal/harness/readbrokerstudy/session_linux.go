@@ -55,26 +55,27 @@ type fixtureSession struct {
 }
 
 type readOperation struct {
-	id                string
-	conversationID    string
-	admission         *admissionRecord
-	gen               GenerationSet
-	state             OperationState
-	worker            SandboxWorker
-	cancel            context.CancelFunc
-	revoked           bool
-	released          bool
-	workerJoined      bool
-	cleanupRequired   bool
-	cleanupObligation bool
-	evidenceRecorded  bool
-	waitOnce          sync.Once
-	waitDone          chan struct{}
-	waitErr           error
-	completed         bool
-	done              chan struct{}
-	probe             WorkerProbe
-	evidence          ReadEvidence
+	id                 string
+	conversationID     string
+	admissionOperation AdmissionOperation
+	admission          *admissionRecord
+	gen                GenerationSet
+	state              OperationState
+	worker             SandboxWorker
+	cancel             context.CancelFunc
+	revoked            bool
+	released           bool
+	workerJoined       bool
+	cleanupRequired    bool
+	cleanupObligation  bool
+	evidenceRecorded   bool
+	waitOnce           sync.Once
+	waitDone           chan struct{}
+	waitErr            error
+	completed          bool
+	done               chan struct{}
+	probe              WorkerProbe
+	evidence           ReadEvidence
 }
 
 // workerWaitResult keeps process exit status separate from join confirmation.
@@ -516,7 +517,7 @@ func (s *fixtureSession) Read(ctx context.Context, root, target, invocationID st
 	}
 
 	operationCtx, cancel := context.WithCancel(ctx)
-	op := &readOperation{id: invocationID, gen: operationGen, state: StatePrepared, cancel: cancel, done: make(chan struct{}), evidence: ReadEvidence{Case: invocationID, Generations: operationGen}}
+	op := &readOperation{id: invocationID, admissionOperation: AdmissionReadFile, gen: operationGen, state: StatePrepared, cancel: cancel, done: make(chan struct{}), evidence: ReadEvidence{Case: invocationID, Generations: operationGen}}
 	s.mu.Lock()
 	if !s.currentLocked(op) {
 		s.mu.Unlock()
@@ -657,7 +658,17 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	// handoff. It does not cover filesystem namespace changes by independent
 	// same-user processes; Revalidate is a bounded observation, not a lock.
 	transferErr := withCurrent(func() error {
-		if err := worker.TransferCapability(ctx, capability, prepared.Identity()); err != nil {
+		var err error
+		if op.admissionOperation == AdmissionListDirectory {
+			listingWorker, ok := worker.(DirectoryCapabilityWorker)
+			if !ok {
+				return ErrUnavailable
+			}
+			err = listingWorker.TransferDirectoryCapability(ctx, capability, prepared.Identity())
+		} else {
+			err = worker.TransferCapability(ctx, capability, prepared.Identity())
+		}
+		if err != nil {
 			return err
 		}
 		op.released = true
@@ -756,6 +767,19 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	}
 	if readErr != nil || wait.ExitErr != nil || !wait.Joined {
 		return WorkerResult{Outcome: ReadUnknown, Detail: "worker result or cleanup could not be confirmed"}
+	}
+	if op.admissionOperation == AdmissionListDirectory && workerResult.Outcome == ReadSucceeded {
+		filter, ok := prepared.(interface {
+			filterListing(context.Context, []byte) ([]byte, error)
+		})
+		if !ok {
+			return WorkerResult{Outcome: ReadUnknown, Detail: "directory listing policy filter is unavailable"}
+		}
+		filtered, err := filter.filterListing(ctx, workerResult.Bytes)
+		if err != nil {
+			return WorkerResult{Outcome: ReadNotExecuted, Detail: "directory listing could not be safely filtered"}
+		}
+		workerResult.Bytes = filtered
 	}
 	if len(workerResult.Bytes) > MaxReadBytes {
 		return WorkerResult{Outcome: ReadUnknown, Detail: ErrResultTooLarge.Error()}

@@ -139,6 +139,12 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if request.Operation == "" {
+		request.Operation = AdmissionReadFile
+	}
+	if request.Operation != AdmissionReadFile && request.Operation != AdmissionListDirectory {
+		return nil, ErrInvalidPath
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -188,13 +194,24 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 		retireLock: make(chan struct{}, 1), lifetime: lifetime, cancel: cancel, deadline: deadline,
 		ref: &AdmissionReference{owner: s, id: id}, request: request,
 		state: admissionOpening, lookupDone: make(chan struct{}),
-		metadata: AdmissionMetadata{ServiceID: s.serviceID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID, Root: request.Root, Target: request.Target, RootGeneration: request.RootGeneration, Deadline: deadline, Destination: request.Destination, Generations: s.gen},
+		metadata: AdmissionMetadata{Operation: request.Operation, ServiceID: s.serviceID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID, Root: request.Root, Target: request.Target, RootGeneration: request.RootGeneration, Deadline: deadline, Destination: request.Destination, Generations: s.gen},
 	}
 	s.admissions[id] = record
 	s.mu.Unlock()
 
 	go func() {
-		prepared, err := s.broker.PrepareRead(request.Root, request.Target, record.metadata.Generations)
+		var prepared PreparedRead
+		var err error
+		if request.Operation == AdmissionListDirectory {
+			listingBroker, ok := s.broker.(DirectoryListingBroker)
+			if !ok {
+				err = ErrUnavailable
+			} else {
+				prepared, err = listingBroker.PrepareDirectoryList(request.Root, request.Target, record.metadata.Generations)
+			}
+		} else {
+			prepared, err = s.broker.PrepareRead(request.Root, request.Target, record.metadata.Generations)
+		}
 		if err == nil {
 			if revalidateErr := s.broker.Revalidate(prepared); revalidateErr != nil {
 				err = revalidateErr
@@ -326,6 +343,7 @@ func (s *fixtureSession) finishAdmissionLookup(record *admissionRecord, prepared
 
 func admissionDigest(metadata AdmissionMetadata) ([32]byte, error) {
 	canonical, err := json.Marshal(struct {
+		Operation      AdmissionOperation
 		ServiceID      string
 		ConversationID string
 		TurnID         string
@@ -338,7 +356,7 @@ func admissionDigest(metadata AdmissionMetadata) ([32]byte, error) {
 		Identity       FileIdentity
 		Class          ResourceClass
 		Generations    GenerationSet
-	}{metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Identity, metadata.Class, metadata.Generations})
+	}{metadata.Operation, metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Identity, metadata.Class, metadata.Generations})
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -441,7 +459,11 @@ func (s *fixtureSession) ExecuteAdmitted(ctx context.Context, preparation Admitt
 		if s.closed || s.cleanupBlocked || s.admissions[record.ref.id] != record || record.state != admissionPrepared || record.retired || record.prepared != prepared || record.lifetime == nil || record.lifetime.Err() != nil || time.Now().After(record.deadline) || s.gen != metadata.Generations || s.registry.View().Generation != metadata.Generations.Policy || s.inventory == nil || !s.inventory.Snapshot().Complete || s.inventory.Snapshot().Revision != metadata.Generations.Inventory {
 			return ErrAdmissionStale
 		}
-		operationCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		operationTimeout := 10 * time.Second
+		if record.request.Operation == AdmissionListDirectory {
+			operationTimeout = 5 * time.Second
+		}
+		operationCtx, cancel = context.WithTimeout(ctx, operationTimeout)
 		previousCancel := record.cancel
 		record.lifetime = operationCtx
 		record.cancel = cancel
@@ -451,7 +473,7 @@ func (s *fixtureSession) ExecuteAdmitted(ctx context.Context, preparation Admitt
 		if previousCancel != nil {
 			previousCancel()
 		}
-		op = &readOperation{id: record.ref.id, conversationID: metadata.ConversationID, gen: metadata.Generations, state: StatePrepared, cancel: cancel, done: make(chan struct{}), evidence: ReadEvidence{Case: record.request.CallID, Generations: metadata.Generations, Outcome: ReadNotExecuted}}
+		op = &readOperation{id: record.ref.id, conversationID: metadata.ConversationID, admissionOperation: record.request.Operation, gen: metadata.Generations, state: StatePrepared, cancel: cancel, done: make(chan struct{}), evidence: ReadEvidence{Case: record.request.CallID, Generations: metadata.Generations, Outcome: ReadNotExecuted}}
 		record.state = admissionLaunching
 		s.active[op.id] = op
 		record.operation = op

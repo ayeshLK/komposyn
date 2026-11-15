@@ -143,17 +143,47 @@ unknown-data refusal boundary and staged typed-read path are described in the
 [initial sandbox composition design](initial-sandbox-composition.md). The
 auth/settings lifecycle and pre-consumption admission seam are implemented in
 the [composition admission and sandbox service](composition-admission-sandbox-service.md).
-Generic filesystem access remains closed; the only exception is the bounded,
-once-approved exact-file path described above.
+Generic filesystem access remains closed except for the separately gated,
+once-approved exact-file and nonrecursive directory-listing capabilities.
 The reviewed #243 native service-fixture result, its provenance, and the
 checkout-safe reproduction runner are recorded in
 [composition native acceptance](read-broker-composition-native-acceptance.md)
 and [`scripts/native-acceptance/`](../../scripts/native-acceptance/README.md).
 The accepted unregistered exact-file policy and implementation stages are
 recorded in the [read implementation plan](read-broker-unregistered-read-implementation-plan.md).
-Generic directory and broad filesystem reads remain unavailable. The
-once-approved exact-file operation is the sole registered filesystem
-capability; its changes still require ordinary review before merge.
+Recursive listing, broad reads, mutation, and shell remain unavailable. The
+Linux `list_files` capability is separately registered only when trusted
+Bubblewrap and the fixed worker service are available, and only on supported
+client-tool routes with a selected root. Each request requires once approval
+for the exact directory and provider destination.
+
+The issue #316 `list_files` capability lists one selected directory level,
+with hidden and `.git` names omitted, bounded
+`.gitignore` rules applied, symlinks left unfollowed, and protected aliases
+filtered before provider disclosure. Unavailable backend or owner coverage
+keeps it unavailable; there is no fallback. Its fixed limits are 10,000
+examined entries, 1,000 returned names, 64 KiB of result content, and five
+seconds. A result carries examined/returned counts and an `incomplete` flag.
+The Stage 6 study includes synthetic checks for directory movement and
+replacement, protected hardlink aliases, owner rotation before provider
+handoff, worker cleanup, and a real bind-mounted child directory. The mount
+case creates a separate outer user and mount namespace, verifies distinct
+mount IDs, and confirms that listing exposes only the direct mountpoint name,
+not the mounted directory's marker. The outer fixture supplies a
+digest-checked copy of the already trusted Bubblewrap binary by file descriptor
+and has Bubblewrap create it at a namespace-root-owned path. The nested worker
+inherits the fixture's already established user and network namespaces while
+retaining private mount, PID, IPC, and UTS namespaces. The outer fixture grants
+`CAP_SYS_ADMIN` only inside its isolated user namespace to establish those
+nested namespaces. This study-only launch omits `--unshare-user`,
+`--disable-userns`, and `--unshare-net`; the nested worker drops capabilities,
+then its post-bootstrap seccomp denies network calls, `unshare`, `setns`, and
+process-like `clone`. The report records these profile differences. This
+exception is limited to the disposable mount-boundary study. The report retains
+backend trust diagnostics when a check refuses. These cases require a
+trusted-host run against the exact clean commit; if the outer namespace cannot
+be established, the mount result is recorded unavailable and listing remains
+disabled. No cross-platform support is claimed.
 
 ## Local configuration
 

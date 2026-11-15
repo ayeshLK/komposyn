@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -53,6 +54,85 @@ func TestBubblewrapCapabilitySelection(t *testing.T) {
 	if !errors.Is(err, ErrUnavailable) || incomplete.BindMode != "" {
 		t.Fatalf("read-only data snapshot without explicit permissions must be refused: mode=%q err=%v", incomplete.BindMode, err)
 	}
+}
+
+func TestListDirectoryBoundedIsSingleLevelAndSkipsHiddenNames(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "visible.txt"), []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".secret"), []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "visible.txt"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	result := listDirectoryBounded(int(directory.Fd()))
+	if result.Outcome != ReadSucceeded || result.Truncated {
+		t.Fatalf("listing outcome=%s truncated=%t detail=%s", result.Outcome, result.Truncated, result.Detail)
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(result.Bytes, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if listing.Examined < 3 || listing.Incomplete {
+		t.Fatalf("listing metadata=%+v", listing)
+	}
+	if !slices.Equal(listingEntryNames(listing.Entries), []string{"child", "link", "visible.txt"}) {
+		t.Fatalf("entries=%+v, want one-level visible entries including the symlink name", listing.Entries)
+	}
+}
+
+func TestDirectoryHandoffReturnsBoundedListingFrames(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "first.txt"), []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".hidden"), []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	identity, err := identityFromFile(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, exitCode := exchangeWorkerFrame(t, identityFrame(frameDirectoryHandoff, identity), []*os.File{directory})
+	if exitCode != 0 || len(frames) < 3 || frames[0][0] != frameStarted || !sameIdentity(frames[0][1:], identity) {
+		t.Fatalf("directory worker frames=%q exit=%d", frameKinds(frames), exitCode)
+	}
+	var result []byte
+	for _, frame := range frames[1:] {
+		if frame[0] == frameData {
+			result = append(result, frame[1:]...)
+		}
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(result, &listing); err != nil {
+		t.Fatalf("listing payload %q: %v", result, err)
+	}
+	if !slices.Equal(listingEntryNames(listing.Entries), []string{"first.txt"}) || listing.Incomplete || listing.Examined < 2 {
+		t.Fatalf("directory handoff listing=%+v", listing)
+	}
+}
+
+func listingEntryNames(entries []directoryListingEntry) []string {
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name)
+	}
+	return names
 }
 
 func TestReceiveAndReadUsesExactReceivedFrameAndReadOnlyDescriptor(t *testing.T) {

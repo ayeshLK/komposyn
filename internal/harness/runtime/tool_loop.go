@@ -672,6 +672,7 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 		definitions = runtime.definitions(plug, credential.Method, selection.ID)
 		if !c.hasCurrentFilesystemRoot(conversationID) {
 			definitions = withoutToolDefinition(definitions, tools.ReadFileID)
+			definitions = withoutToolDefinition(definitions, tools.ListFilesID)
 		}
 	}
 	result := toolLoopResult{
@@ -744,6 +745,9 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 				instructions += " read_file relative paths are resolved against the working directory. Separately approved exact targets may be outside the working directory when host eligibility checks allow. Each read requires separate explicit once approval. Starting in a directory grants no read permission. Approved contents are sent to this selected provider and may recur in this conversation. No filesystem write, rename, deletion, shell, or web capability is available."
 			} else {
 				instructions += " Do not claim filesystem, shell, web, or other unavailable capabilities."
+			}
+			if _, hasListing := definitionByID(requestTools, tools.ListFilesID); hasListing {
+				instructions += " list_files lists one directory level only, omits hidden and .git entries and entries ignored by its bounded .gitignore rules, and returns an incomplete flag when a bound is reached. Each listing needs separate explicit once approval naming the exact directory and this provider destination. It does not grant reads of listed files."
 			}
 		}
 		providerCtx, cancelProvider := context.WithTimeout(ctx, c.timeout)
@@ -935,7 +939,8 @@ func fmtRequestID(base string, request int) string {
 }
 
 func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID string, call provider.ToolCall, advertised []tools.Definition, maxBytes int, workingDirectory string, current func() bool, publish func(ToolActivity), destination string) (provider.ToolResult, ToolActivity, string, bool, *PrivateReadCapture) {
-	readCall := call.ToolID == tools.ID("read_file")
+	readCall := call.ToolID == tools.ReadFileID || call.ToolID == tools.ListFilesID
+	listingCall := call.ToolID == tools.ListFilesID
 	readEpoch := r.readAuthorityEpochSnapshot()
 	lifecycleCurrent := func() bool { return !readCall || r.readAuthorityEpochCurrent(readEpoch) }
 	activity := ToolActivity{CallID: call.CallID, ToolID: call.ToolID}
@@ -956,18 +961,18 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	}
 	arguments := append(json.RawMessage(nil), call.Arguments...)
 	invocation := tools.Invocation{ConversationID: conversationID, TurnID: turnID, ProviderCallID: call.CallID, ToolID: call.ToolID, Arguments: arguments}
-	if call.ToolID == tools.ID("read_file") {
+	if readCall {
 		tool, ok := r.registry.Lookup(call.ToolID)
 		definition, found := definitionByID(advertised, call.ToolID)
 		if !ok || !found || !sameDefinition(definition, tool.Definition()) {
 			return notExecuted("filesystem reads remain unavailable")
 		}
 		if err := tool.ValidateArguments(arguments); err != nil {
-			return notExecuted("read arguments are invalid")
+			return notExecuted("filesystem request arguments are invalid")
 		}
 		resolvedInvocation, resolveErr := resolveFilesystemReadInvocation(invocation, workingDirectory)
 		if resolveErr != nil {
-			return notExecuted("read path could not be resolved against the working directory")
+			return notExecuted("filesystem path could not be resolved against the working directory")
 		}
 		invocation = resolvedInvocation
 		arguments = append(json.RawMessage(nil), invocation.Arguments...)
@@ -979,7 +984,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		if err != nil || capture == nil {
 			if errors.Is(err, errFilesystemReadRefused) {
 				activity.Outcome = tools.OutcomeDeclined
-				activity.Message = "Read refused by the user; no file contents were captured or disclosed."
+				activity.Message = "Filesystem request refused by the user; no names or contents were disclosed."
 				update("finished")
 				return fixedToolResult(call.CallID, tools.OutcomeDeclined, activity.Message, maxBytes), activity, "", false, nil
 			}
@@ -993,25 +998,29 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 			var attempted *filesystemReadAttemptError
 			if errors.As(err, &attempted) {
 				activity.Outcome = tools.OutcomeUnknown
-				activity.Message = "read may have occurred; content was withheld and will not be retried"
+				activity.Message = "filesystem request may have occurred; result was withheld and will not be retried"
 				update("finished")
 				return fixedToolResult(call.CallID, tools.OutcomeUnknown, activity.Message, maxBytes), activity, "", true, nil
 			}
 			if errors.Is(err, errFilesystemReadTurnCancelled) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 				activity.Outcome = tools.OutcomeCancelled
-				activity.Message = "read was cancelled; no further provider request will be made"
+				activity.Message = "filesystem request was cancelled; no further provider request will be made"
 				update("finished")
 				return fixedToolResult(call.CallID, tools.OutcomeCancelled, activity.Message, maxBytes), activity, "", true, nil
 			}
 			activity.Outcome = tools.OutcomeNotExecuted
-			activity.Message = "read was not executed; no content was disclosed"
+			activity.Message = "filesystem request was not executed; no result was disclosed"
 			update("finished")
 			return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", false, nil
 		}
 		activity.Outcome = tools.OutcomeSucceeded
-		activity.Message = "Read completed; content is private until continuation commitment."
+		activity.Message = "Filesystem result is private until continuation commitment."
 		update("finished")
-		return fixedToolResult(call.CallID, tools.OutcomeSucceeded, "Read completed; content withheld until authorized provider handoff.", maxBytes), activity, "", false, capture
+		message := "Read completed; content withheld until authorized provider handoff."
+		if listingCall {
+			message = "Directory listing completed; names withheld until authorized provider handoff."
+		}
+		return fixedToolResult(call.CallID, tools.OutcomeSucceeded, message, maxBytes), activity, "", false, capture
 	}
 	tool, ok := r.registry.Lookup(call.ToolID)
 	if !ok {
@@ -1208,28 +1217,33 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 }
 
 func resolveFilesystemReadInvocation(invocation tools.Invocation, workingDirectory string) (tools.Invocation, error) {
-	if invocation.ToolID != tools.ReadFileID {
-		return invocation, errors.New("invocation is not a filesystem read")
+	if invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID {
+		return invocation, errors.New("invocation is not a filesystem request")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(invocation.Arguments))
-	decoder.DisallowUnknownFields()
-	var arguments struct {
-		Path string `json:"path"`
+	var path string
+	if invocation.ToolID == tools.ListFilesID {
+		input, err := tools.ParseListFiles(invocation.Arguments)
+		if err != nil {
+			return invocation, err
+		}
+		path = input.Path
+	} else {
+		input, err := tools.ParseReadFile(invocation.Arguments)
+		if err != nil {
+			return invocation, err
+		}
+		path = input.Path
 	}
-	if err := decoder.Decode(&arguments); err != nil || arguments.Path == "" || strings.ContainsRune(arguments.Path, '\x00') {
-		return invocation, errors.New("read request path is invalid")
-	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return invocation, errors.New("read request has trailing arguments")
-	}
-	if filepath.IsAbs(arguments.Path) {
+	if filepath.IsAbs(path) {
 		return invocation, nil
 	}
 	if workingDirectory == "" || !filepath.IsAbs(workingDirectory) || filepath.Clean(workingDirectory) != workingDirectory {
 		return invocation, errors.New("working directory is unavailable")
 	}
-	arguments.Path = filepath.Clean(filepath.Join(workingDirectory, arguments.Path))
-	resolved, err := json.Marshal(arguments)
+	path = filepath.Clean(filepath.Join(workingDirectory, path))
+	resolved, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{Path: path})
 	if err != nil {
 		return invocation, err
 	}

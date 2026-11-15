@@ -466,10 +466,18 @@ func (s *linuxImplementation) SelectFilesystemRoot(ctx context.Context, transiti
 }
 
 func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocation tools.Invocation, destination, root string, rootGeneration, coverageRevision uint64) (runtime.FilesystemReadAdmission, error) {
-	if ctx == nil || invocation.ToolID != tools.ID("read_file") || invocation.ConversationID == "" || invocation.TurnID == "" || invocation.ProviderCallID == "" || destination == "" {
+	if ctx == nil || (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID) || invocation.ConversationID == "" || invocation.TurnID == "" || invocation.ProviderCallID == "" || destination == "" {
 		return runtime.FilesystemReadAdmission{}, readbrokerstudy.ErrAdmissionStale
 	}
-	target, err := exactReadTarget(invocation.Arguments)
+	var target string
+	var err error
+	if invocation.ToolID == tools.ListFilesID {
+		listing, parseErr := tools.ParseListFiles(invocation.Arguments)
+		err = parseErr
+		target = listing.Path
+	} else {
+		target, err = exactReadTarget(invocation.Arguments)
+	}
 	if err != nil {
 		return runtime.FilesystemReadAdmission{}, err
 	}
@@ -484,6 +492,7 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 	}
 	session := s.session
 	request := readbrokerstudy.AdmissionRequest{
+		Operation:      readbrokerstudy.AdmissionOperation(invocation.ToolID),
 		ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID,
 		Root: root, Target: target, RootGeneration: rootGeneration, Destination: destination,
 	}
@@ -559,6 +568,7 @@ type linuxAdmissionPreparation struct {
 
 func runtimeAdmission(metadata readbrokerstudy.AdmissionMetadata) runtime.FilesystemReadAdmission {
 	return runtime.FilesystemReadAdmission{
+		Operation: string(metadata.Operation),
 		Reference: metadata.Reference, ServiceID: metadata.ServiceID, ConversationID: metadata.ConversationID, TurnID: metadata.TurnID, CallID: metadata.CallID,
 		Root: metadata.Root, Deadline: metadata.Deadline, AdmissionBinding: fmt.Sprintf("%x", metadata.Binding[:]), Target: metadata.Target,
 		Class: string(metadata.Class), Identity: fmt.Sprintf("%d:%d:%d", metadata.Identity.Device, metadata.Identity.Inode, metadata.Identity.Type),
@@ -662,6 +672,19 @@ func (s *linuxImplementation) BackendStatus() (bool, string) {
 		return false, readbrokerstudy.ErrUnavailable.Error()
 	}
 	return true, "trusted Bubblewrap and fixed worker capabilities were inspected; no worker has been launched"
+}
+
+// DirectoryListingAvailable requires the same inspected backend and composed
+// fixed worker service as exact-file reads. The runtime separately filters
+// this capability by provider route and selected-root state; admission checks
+// required protected-owner coverage before any approval or worker launch.
+func (s *linuxImplementation) DirectoryListingAvailable() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.backendErr == nil && s.launcher != nil && s.session != nil
 }
 
 func (s *linuxImplementation) PrepareGenericRead(ctx context.Context, _, _ string) error {

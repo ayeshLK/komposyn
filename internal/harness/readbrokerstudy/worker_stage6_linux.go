@@ -68,6 +68,20 @@ func NewWorkerLauncherForStage6(bwrapPath, workerPath string, mode BindMode, hol
 	return newWorkerLauncherWithBindMode(bwrapPath, workerPath, holdBeforeRead, mode)
 }
 
+// NewWorkerLauncherForStage6InFixtureUserNamespace inherits the caller's
+// already established user namespace for the disposable nested mount-boundary
+// study. It is available only in the Stage 6 build and keeps the ordinary
+// worker profile on its independent-user-namespace path.
+func NewWorkerLauncherForStage6InFixtureUserNamespace(bwrapPath, workerPath string, mode BindMode, holdBeforeRead bool) (WorkerLauncher, error) {
+	launcher, err := newWorkerLauncherWithBindMode(bwrapPath, workerPath, holdBeforeRead, mode)
+	if err != nil {
+		return nil, err
+	}
+	worker := launcher.(*workerLauncher)
+	worker.inheritUserNS = true
+	return worker, nil
+}
+
 // NewWorkerLauncherForStage6Image launches a separately built, source-pinned
 // cmd/harness image as the Stage 6 worker. The expected digest comes from the
 // bounded runner immediately after it builds the image. The image is copied

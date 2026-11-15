@@ -33,8 +33,12 @@ func EnableNativeReadStudy(chat *Chat) error {
 	if chat == nil || chat.toolRuntime == nil || chat.toolRuntime.registry == nil || chat.toolRuntime.readAdmission == nil || chat.toolRuntime.readPublicationGate == nil {
 		return errors.New("native read study composition is incomplete")
 	}
-	if err := chat.toolRuntime.registry.Register(readFileTool{}); err != nil {
-		return errors.New("native read study could not register its dedicated read path")
+	if _, registered := chat.toolRuntime.registry.Lookup(tools.ReadFileID); !registered {
+		if _, registered := chat.toolRuntime.registry.Lookup(tools.ReadFileID); !registered {
+			if err := chat.toolRuntime.registry.Register(readFileTool{}); err != nil {
+				return errors.New("native read study could not register its dedicated read path")
+			}
+		}
 	}
 	// Runtime route discovery requires both role boundaries. This fixture-only
 	// authorizer and enforcer reject every generic dispatch; read_file uses the
@@ -45,6 +49,18 @@ func EnableNativeReadStudy(chat *Chat) error {
 	chat.toolRuntime.enforcer = ToolEnforcerFunc(func(context.Context, tools.Tool, tools.Invocation, permissions.Request) (tools.Result, error) {
 		return tools.Result{}, errors.New("native read study exposes no generic tool execution")
 	})
+	return nil
+}
+
+// EnableNativeDirectoryListingStudy verifies that the production backend gate
+// registered list_files; it does not add a test-only capability.
+func EnableNativeDirectoryListingStudy(chat *Chat) error {
+	if chat == nil || chat.toolRuntime == nil || chat.toolRuntime.registry == nil || chat.toolRuntime.readAdmission == nil || chat.toolRuntime.readPublicationGate == nil {
+		return errors.New("native directory listing study composition is incomplete")
+	}
+	if _, registered := chat.toolRuntime.registry.Lookup(tools.ListFilesID); !registered {
+		return errors.New("native directory listing study did not receive list_files from the trusted backend gate")
+	}
 	return nil
 }
 

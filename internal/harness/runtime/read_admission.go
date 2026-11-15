@@ -34,6 +34,7 @@ import (
 // reference. Runtime carries it only between the trusted host and its own
 // approval transaction; it is never sent to a tool or UI snapshot.
 type FilesystemReadAdmission struct {
+	Operation        string
 	Reference        any
 	ServiceID        string
 	ConversationID   string
@@ -107,6 +108,12 @@ type FilesystemReadCompositionHost interface {
 	FilesystemReadPublicationGate
 	FilesystemReadAdmissionInvalidator
 	FilesystemReadExecutionInvalidator
+}
+
+// FilesystemDirectoryListingAvailability prevents route advertisement until
+// the host has accepted the additional native directory-listing evidence.
+type FilesystemDirectoryListingAvailability interface {
+	DirectoryListingAvailable() bool
 }
 
 type filesystemReadExecutionAuthority struct {
@@ -191,13 +198,29 @@ func filesystemReadActionKey() string {
 	return hex.EncodeToString(digest[:])
 }
 
+func filesystemListingActionKey() string {
+	digest := sha256.Sum256([]byte("komposyn-filesystem-list-once-v1"))
+	return hex.EncodeToString(digest[:])
+}
+
 func buildFilesystemReadRequest(invocation tools.Invocation, admission FilesystemReadAdmission, workingDirectory string) (permissions.Request, error) {
-	if invocation.ToolID != tools.ID("read_file") || invocation.ConversationID == "" || invocation.ProviderCallID == "" || admission.Reference == nil || admission.AdmissionBinding == "" || admission.Target == "" || admission.Destination == "" || admission.Deadline.IsZero() || !time.Now().Before(admission.Deadline) {
+	if (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID) || invocation.ConversationID == "" || invocation.ProviderCallID == "" || admission.Reference == nil || admission.AdmissionBinding == "" || admission.Target == "" || admission.Destination == "" || admission.Deadline.IsZero() || !time.Now().Before(admission.Deadline) {
 		return permissions.Request{}, errors.New("trusted retained read admission is incomplete")
+	}
+	if admission.Operation != string(invocation.ToolID) && !(admission.Operation == "" && invocation.ToolID == tools.ReadFileID) {
+		return permissions.Request{}, errors.New("trusted retained filesystem operation does not match invocation")
 	}
 	resourceKey := "disclosure"
 	disclosureDestination := filesystemReadDisclosureDestination(admission.Destination)
+	actionDescription := "Read this exact regular file once and send its contents to " + disclosureDestination + "; approval does not permit another read"
+	actionKey := filesystemReadActionKey()
 	resourceDescription := "Share this exact file with " + disclosureDestination + ". Its contents are unclassified and may include credentials or sensitive data; if approved, they may recur in this conversation. This approves one read only; another read needs new approval."
+	if invocation.ToolID == tools.ListFilesID {
+		resourceKey = "directory_listing_disclosure"
+		actionDescription = "List names in this exact directory once and send them to " + disclosureDestination + "; approval does not permit another listing"
+		actionKey = filesystemListingActionKey()
+		resourceDescription = "Share the nonrecursive names from this exact directory with " + disclosureDestination + ". Hidden, ignored and .git entries are excluded. Names and counts may be sensitive. This approves one listing only; another listing needs new approval."
+	}
 	targetIsOutsideWorkingDirectory := targetOutsideWorkingDirectory(workingDirectory, admission.Target)
 	if admission.Class == "provider_source" {
 		resourceKey = "provider_source_disclosure"
@@ -208,8 +231,8 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 	}
 	action := permissions.Requirement{
 		Kind: permissions.RequirementAction, Key: "read", ToolID: string(invocation.ToolID),
-		Description: "Read this exact regular file once and send its contents to " + disclosureDestination + "; approval does not permit another read", Operation: permissions.OperationRead,
-		ActionKey: filesystemReadActionKey(), SessionAllowed: false,
+		Description: actionDescription, Operation: permissions.OperationRead,
+		ActionKey: actionKey, SessionAllowed: false,
 	}
 	resource := permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: admission.Target, Operation: permissions.OperationRead}
 	resourceRequirement := permissions.Requirement{
@@ -297,10 +320,6 @@ func (r *toolRuntime) approveFilesystemRead(ctx context.Context, invocation tool
 	approved, err := r.respondApproval(pending.ID, choice, "", request, true, readEpoch)
 	if err != nil || approved.Outcome != permissions.ApprovalGranted || !approved.Decision.Ready() || approved.Transition.BeforeRevision != decision.Revision || approved.Transition.AfterRevision == 0 || approved.Transition.Binding != request.Binding {
 		return admission, nil, request, nil, errors.New("retained read approval evidence is invalid or stale")
-	}
-	request.RequireOnceKeys = []string{"disclosure"}
-	if admission.Class == "provider_source" {
-		request.RequireOnceKeys = []string{"provider_source_disclosure"}
 	}
 	preparation, err = r.readAdmission.PrepareAdmittedFilesystemRead(ctx, admission, approved.Transition.AfterRevision)
 	if err != nil || preparation == nil {

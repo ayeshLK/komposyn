@@ -256,6 +256,18 @@ func (s *Service) BackendStatus() (bool, string) {
 	return s.impl.BackendStatus()
 }
 
+// DirectoryListingAvailable reports whether this host service has the
+// verified Linux worker composition required to advertise the bounded
+// list_files capability. Other platforms and unavailable services return
+// false.
+func (s *Service) DirectoryListingAvailable() bool {
+	if s == nil || s.impl == nil {
+		return false
+	}
+	availability, ok := s.impl.(interface{ DirectoryListingAvailable() bool })
+	return ok && availability.DirectoryListingAvailable()
+}
+
 // Prepares reports that this host owns generic pre-dispatch preparation for a
 // tool ID. read_file uses its dedicated retained-read path; this generic hook
 // intentionally refuses it and cannot execute filesystem operations.
@@ -279,8 +291,8 @@ func (s *Service) AdmitFilesystemRead(ctx context.Context, invocation tools.Invo
 	if ctx == nil || s == nil || s.impl == nil {
 		return runtime.FilesystemReadAdmission{}, ErrServiceClosed
 	}
-	if invocation.ToolID != tools.ID("read_file") || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
-		return runtime.FilesystemReadAdmission{}, errors.New("read admission invocation identity is invalid")
+	if (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID) || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
+		return runtime.FilesystemReadAdmission{}, errors.New("filesystem admission invocation identity is invalid")
 	}
 	s.rootMu.Lock()
 	if s.rootClosed || s.rootPending || s.rootPath == "" || invocation.ConversationID != s.rootConversationID {
