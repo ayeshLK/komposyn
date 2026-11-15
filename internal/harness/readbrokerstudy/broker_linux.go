@@ -757,6 +757,10 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 	}
 	listing.Names = filtered
 	listing.Entries = nil
+	// Directory snapshots contain private traversal observations (including
+	// paths, identities, mount IDs, timestamps, and ignore-file metadata).
+	// They are needed only until host filtering and revalidation finish.
+	listing.Directories = nil
 	listing.Returned = len(filtered)
 	// Raw traversal count includes hidden and protected entries. It is needed
 	// only for enforcing the worker bound and must not be disclosed.
@@ -908,11 +912,17 @@ func (p *preparedDirectoryList) loadNestedListingRules(states []directoryListing
 		}
 		ignoreFD, openErr := unix.Openat(fd, ".gitignore", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
 		if verifyErr := verifyListingIgnoreEntry(fd, state); verifyErr != nil {
+			if openErr == nil {
+				_ = unix.Close(ignoreFD)
+			}
 			_ = unix.Close(fd)
 			return nil, verifyErr
 		}
 		closeDirErr := unix.Close(fd)
 		if closeDirErr != nil {
+			if openErr == nil {
+				_ = unix.Close(ignoreFD)
+			}
 			return nil, closeDirErr
 		}
 		if openErr == unix.ENOENT {

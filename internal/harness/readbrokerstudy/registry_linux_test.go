@@ -417,6 +417,111 @@ func TestRecursiveDirectoryListingFiltersAfterTraversalAndAppliesNestedIgnores(t
 	}
 }
 
+func TestDirectoryListingDoesNotPublishInternalTraversalSnapshots(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample")
+	ignored := filepath.Join(target, "ignored")
+	if err := os.MkdirAll(ignored, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, ".gitignore"), []byte("ignored/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ignored, "private.txt"), []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+
+	for _, options := range []ListingOptions{{}, {Recursive: true}} {
+		prepared, err := NewBroker(registry).(DirectoryListingBroker).PrepareDirectoryListWithOptions(base, target, GenerationSet{Root: 1, Policy: registry.View().Generation}, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fd, err := prepared.DuplicateForWorker()
+		if err != nil {
+			_ = prepared.Close()
+			t.Fatal(err)
+		}
+		raw := listDirectoryBounded(int(fd.Fd()), options)
+		if err := fd.Close(); err != nil {
+			_ = prepared.Close()
+			t.Fatal(err)
+		}
+		if raw.Outcome != ReadSucceeded {
+			_ = prepared.Close()
+			t.Fatalf("worker result=%+v", raw)
+		}
+		filtered, err := prepared.(*preparedDirectoryList).filterListing(context.Background(), raw.Bytes)
+		_ = prepared.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := string(filtered), `{"examined":0,"returned":0,"incomplete":false}`; got != want {
+			t.Fatalf("serialized provider listing=%s, want only public empty result %s", got, want)
+		}
+	}
+}
+
+func TestNestedIgnoreVerificationRefusalClosesDescriptors(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample")
+	nested := filepath.Join(target, "nested")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ignorePath := filepath.Join(nested, ".gitignore")
+	if err := os.WriteFile(ignorePath, []byte("old-rule\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	preparedRead, err := NewBroker(registry).(DirectoryListingBroker).PrepareDirectoryListWithOptions(base, target, GenerationSet{Root: 1, Policy: registry.View().Generation}, ListingOptions{Recursive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := preparedRead.(*preparedDirectoryList)
+	defer prepared.Close()
+	fd, err := prepared.DuplicateForWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := listDirectoryBounded(int(fd.Fd()), ListingOptions{Recursive: true})
+	if err := fd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Outcome != ReadSucceeded {
+		t.Fatalf("worker result=%+v", raw)
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(raw.Bytes, &listing); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := prepared.revalidateListingDirectories(listing.Directories, &directoryFilterBudget{ctx: context.Background(), remaining: maxDirectoryFilterWork})
+	if err != nil {
+		t.Fatalf("revalidate pre-mutation snapshots: %v", err)
+	}
+	if err := os.WriteFile(ignorePath, []byte("replacement-rule-is-longer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseline := openDescriptorCount(t)
+	for attempt := range 4 {
+		_, err := prepared.loadNestedListingRules(listing.Directories, blocked, &directoryFilterBudget{ctx: context.Background(), remaining: maxDirectoryFilterWork})
+		if !errors.Is(err, ErrStaleReceipt) {
+			t.Fatalf("attempt %d refusal=%v, want stale ignore snapshot", attempt, err)
+		}
+		if got := openDescriptorCount(t); got != baseline {
+			t.Fatalf("attempt %d leaked host descriptors: before=%d after=%d", attempt, baseline, got)
+		}
+	}
+}
+
 func TestDirectoryListRefusedAtAncestorLimitClosesDescriptors(t *testing.T) {
 	root := t.TempDir()
 	target := root

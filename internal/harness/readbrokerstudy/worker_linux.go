@@ -1817,10 +1817,6 @@ func walkListingDirectory(ctx context.Context, fd int, relative string, options 
 				*incomplete = true
 				continue
 			}
-			if strings.Count(child.Path, "/") >= 63 {
-				*incomplete = true
-				continue
-			}
 			childFD, openErr := unix.Openat2(fd, child.Name, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NONBLOCK, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV})
 			if openErr == unix.EXDEV || openErr == unix.ELOOP || openErr == unix.ENOTDIR {
 				*incomplete = true
