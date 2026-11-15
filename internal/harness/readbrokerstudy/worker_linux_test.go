@@ -56,7 +56,7 @@ func TestBubblewrapCapabilitySelection(t *testing.T) {
 	}
 }
 
-func TestListDirectoryBoundedIsSingleLevelAndSkipsHiddenNames(t *testing.T) {
+func TestListDirectoryBoundedReturnsRawSingleLevelNamesForHostFiltering(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "child"), 0o700); err != nil {
 		t.Fatal(err)
@@ -86,8 +86,8 @@ func TestListDirectoryBoundedIsSingleLevelAndSkipsHiddenNames(t *testing.T) {
 	if listing.Examined < 3 || listing.Incomplete {
 		t.Fatalf("listing metadata=%+v", listing)
 	}
-	if !slices.Equal(listingEntryNames(listing.Entries), []string{"child", "link", "visible.txt"}) {
-		t.Fatalf("entries=%+v, want one-level visible entries including the symlink name", listing.Entries)
+	if !slices.Equal(listingEntryNames(listing.Entries), []string{".secret", "child", "link", "visible.txt"}) {
+		t.Fatalf("entries=%+v, want raw one-level entries for host option and protection filtering", listing.Entries)
 	}
 }
 
@@ -122,8 +122,105 @@ func TestDirectoryHandoffReturnsBoundedListingFrames(t *testing.T) {
 	if err := json.Unmarshal(result, &listing); err != nil {
 		t.Fatalf("listing payload %q: %v", result, err)
 	}
-	if !slices.Equal(listingEntryNames(listing.Entries), []string{"first.txt"}) || listing.Incomplete || listing.Examined < 2 {
+	if !slices.Equal(listingEntryNames(listing.Entries), []string{".hidden", "first.txt"}) || listing.Incomplete || listing.Examined < 2 {
 		t.Fatalf("directory handoff listing=%+v", listing)
+	}
+}
+
+func TestListDirectoryRecursiveReturnsRelativePathsAndNeverWalksGitOrSymlinks(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"src", ".hidden", ".git"} {
+		if err := os.Mkdir(filepath.Join(root, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range []string{"src/main.go", ".hidden/secret.txt", ".git/config"} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(file)), []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "src"), filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	result := listDirectoryBounded(int(directory.Fd()), ListingOptions{Recursive: true})
+	if result.Outcome != ReadSucceeded || result.Truncated {
+		t.Fatalf("listing result=%+v", result)
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(result.Bytes, &listing); err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, len(listing.Entries))
+	for _, entry := range listing.Entries {
+		paths = append(paths, entry.Path)
+	}
+	slices.Sort(paths)
+	if !slices.Equal(paths, []string{".git", ".hidden", "linked", "src", "src/main.go"}) {
+		t.Fatalf("recursive paths=%v", paths)
+	}
+	if listing.Examined > 10_000 || len(listing.Directories) != 2 {
+		t.Fatalf("recursive bounds/snapshots=%+v", listing)
+	}
+	visible, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer visible.Close()
+	result = listDirectoryBounded(int(visible.Fd()), ListingOptions{Recursive: true, IncludeHidden: true})
+	if result.Outcome != ReadSucceeded {
+		t.Fatalf("hidden-inclusive listing result=%+v", result)
+	}
+	if err := json.Unmarshal(result.Bytes, &listing); err != nil {
+		t.Fatal(err)
+	}
+	paths = paths[:0]
+	for _, entry := range listing.Entries {
+		paths = append(paths, entry.Path)
+	}
+	slices.Sort(paths)
+	if !slices.Equal(paths, []string{".git", ".hidden", ".hidden/secret.txt", "linked", "src", "src/main.go"}) {
+		t.Fatalf("hidden-inclusive paths=%v", paths)
+	}
+}
+
+func TestRecursiveTraversalStopsAtSharedEntryBudget(t *testing.T) {
+	root := t.TempDir()
+	for index := range 20 {
+		child := filepath.Join(root, fmt.Sprintf("dir-%02d", index))
+		if err := os.Mkdir(child, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(child, "entry.txt"), []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+
+	listing := directoryListingResult{}
+	var entries []directoryListingEntry
+	examined, incomplete := 0, false
+	if err := walkListingDirectory(context.Background(), int(directory.Fd()), "", ListingOptions{Recursive: true}, &listing, &entries, &examined, &incomplete, 10, 100); err != nil {
+		t.Fatal(err)
+	}
+	if examined != 10 || examined > 10 || !incomplete {
+		t.Fatalf("shared traversal budget examined=%d incomplete=%t", examined, incomplete)
+	}
+	if len(listing.Directories) != 1 {
+		t.Fatalf("traversed %d directory snapshots after the entry budget was exhausted", len(listing.Directories))
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Path, "/") {
+			t.Fatalf("descended below the entry budget: %q", entry.Path)
+		}
 	}
 }
 

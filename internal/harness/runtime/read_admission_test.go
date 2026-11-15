@@ -384,7 +384,41 @@ func TestDirectoryListingApprovalBindsExactScopeAndProvider(t *testing.T) {
 	if request.Destination != "openai/model/profile" || len(request.RequireOnceKeys) != 1 || request.Requirements[1].Resource.Target != "/tmp/sample" || request.Requirements[1].Key != "directory_listing_disclosure" {
 		t.Fatalf("listing approval did not bind exact directory, once grant and destination: %+v", request)
 	}
-	if !strings.Contains(request.Requirements[0].Description, "List names in this exact directory once") || !strings.Contains(request.Requirements[1].Description, "nonrecursive") {
+	if !strings.Contains(request.Requirements[0].Description, "List names beneath this exact directory once") || !strings.Contains(request.Requirements[1].Description, "recursive=false") || !strings.Contains(request.Requirements[1].Description, "name_globs=[]") {
 		t.Fatalf("listing approval did not explain its scope: %+v", request.Requirements)
+	}
+}
+
+func TestDirectoryListingApprovalDisplaysAndBindsEveryEffectiveOption(t *testing.T) {
+	arguments := json.RawMessage(`{"path":"/tmp/sample","recursive":true,"include_hidden":true,"include_ignored":false,"name_globs":["*.go","test[!0-9].txt"]}`)
+	listing := tools.ListFilesInput{Recursive: true, IncludeHidden: true, NameGlobs: []string{"*.go", "test[!0-9].txt"}}
+	invocation := tools.Invocation{ConversationID: "conversation", ProviderCallID: "list-options", ToolID: tools.ListFilesID, Arguments: arguments}
+	admission := FilesystemReadAdmission{Operation: string(tools.ListFilesID), Reference: new(struct{}), AdmissionBinding: "options-bound-admission", Target: "/tmp/sample", Destination: "openai/model/profile", Deadline: time.Now().Add(time.Minute), Listing: listing}
+	request, err := buildFilesystemReadRequest(invocation, admission, "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	description := request.Requirements[1].Description
+	for _, expected := range []string{"/tmp/sample", "recursive=true", "include_hidden=true", "include_ignored=false", "*.go", "test[!0-9].txt", "openai/model/profile"} {
+		if !strings.Contains(description, expected) {
+			t.Fatalf("approval omitted %q: %s", expected, description)
+		}
+	}
+	admission.Listing.NameGlobs = []string{"*.txt"}
+	if _, err := buildFilesystemReadRequest(invocation, admission, "/tmp"); err == nil {
+		t.Fatal("approval accepted options different from retained admission")
+	}
+	changed := invocation
+	changed.Arguments = json.RawMessage(`{"path":"/tmp/sample","recursive":false,"include_hidden":true,"name_globs":["*.go","test[!0-9].txt"]}`)
+	first, err := bindAuthorizationRequest(invocation, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := bindAuthorizationRequest(changed, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Binding == second.Binding {
+		t.Fatal("changed listing options reused the same authorization binding")
 	}
 }

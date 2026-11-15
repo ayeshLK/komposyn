@@ -194,7 +194,11 @@ func bundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clar
 		return ToolRuntimeConfig{}
 	}
 	if listingHost, ok := readHost.(FilesystemDirectoryListingAvailability); ok && listingHost.DirectoryListingAvailable() {
-		if registry.Register(listFilesTool{}) != nil {
+		optionsAvailable := false
+		if optionsHost, ok := readHost.(FilesystemDirectoryListingOptionsAvailability); ok {
+			optionsAvailable = optionsHost.DirectoryListingOptionsAvailable()
+		}
+		if registry.Register(listFilesTool{optionsAvailable: optionsAvailable}) != nil {
 			return ToolRuntimeConfig{}
 		}
 	}
@@ -233,12 +237,32 @@ func (readFileTool) Execute(_ context.Context, invocation tools.Invocation) tool
 	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "read_dispatch_unavailable"}
 }
 
-type listFilesTool struct{}
+type listFilesTool struct{ optionsAvailable bool }
 
-func (listFilesTool) Definition() tools.Definition { return tools.ListFilesDefinition() }
-func (listFilesTool) ValidateArguments(raw json.RawMessage) error {
-	_, err := tools.ParseListFiles(raw)
-	return err
+func (tool listFilesTool) Definition() tools.Definition {
+	return tools.ListFilesDefinitionWithOptions(tool.optionsAvailable)
+}
+func (tool listFilesTool) ValidateArguments(raw json.RawMessage) error {
+	input, err := tools.ParseListFiles(raw)
+	if err != nil {
+		return err
+	}
+	if tool.optionsAvailable {
+		return nil
+	}
+	if input.Recursive || input.IncludeHidden || input.IncludeIgnored || len(input.NameGlobs) != 0 {
+		return errors.New("advanced directory listing options are unavailable without reviewed native evidence")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for _, key := range []string{"recursive", "include_hidden", "include_ignored", "name_globs"} {
+		if _, exists := fields[key]; exists {
+			return errors.New("advanced directory listing options are unavailable without reviewed native evidence")
+		}
+	}
+	return nil
 }
 func (listFilesTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
 	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "listing_dispatch_unavailable"}

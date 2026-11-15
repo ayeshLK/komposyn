@@ -235,7 +235,8 @@ cleanup remains unavailable for that mode, and the runner does not claim that
 the complete production CLI process or provider transport was exercised.
 
 Every case is explicitly classified; unavailable native cases are not
-conflated with cases that this runner revision does not implement. The report
-currently contains five synthetic-runtime controls, one actor-helper fixture,
+conflated with cases that this runner revision does not implement. Runner
+revision 8 recorded five synthetic-runtime controls, one actor-helper fixture,
 twelve native-integrated cases, one native-worker-lifecycle case, and two
-unimplemented cases.
+unimplemented cases. Revision 9 adds two recursive-listing cases; historical
+archives remain bound to their original runner/source revisions.

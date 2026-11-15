@@ -145,6 +145,15 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 	if request.Operation != AdmissionReadFile && request.Operation != AdmissionListDirectory {
 		return nil, ErrInvalidPath
 	}
+	if request.Operation != AdmissionListDirectory && !request.Listing.IsZero() {
+		return nil, ErrInvalidPath
+	}
+	if request.Operation == AdmissionListDirectory {
+		if err := validateListingOptions(request.Listing); err != nil {
+			return nil, ErrInvalidPath
+		}
+	}
+	request.Listing = request.Listing.Clone()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -194,7 +203,7 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 		retireLock: make(chan struct{}, 1), lifetime: lifetime, cancel: cancel, deadline: deadline,
 		ref: &AdmissionReference{owner: s, id: id}, request: request,
 		state: admissionOpening, lookupDone: make(chan struct{}),
-		metadata: AdmissionMetadata{Operation: request.Operation, ServiceID: s.serviceID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID, Root: request.Root, Target: request.Target, RootGeneration: request.RootGeneration, Deadline: deadline, Destination: request.Destination, Generations: s.gen},
+		metadata: AdmissionMetadata{Operation: request.Operation, ServiceID: s.serviceID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID, Root: request.Root, Target: request.Target, RootGeneration: request.RootGeneration, Deadline: deadline, Destination: request.Destination, Listing: request.Listing.Clone(), Generations: s.gen},
 	}
 	s.admissions[id] = record
 	s.mu.Unlock()
@@ -207,7 +216,7 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 			if !ok {
 				err = ErrUnavailable
 			} else {
-				prepared, err = listingBroker.PrepareDirectoryList(request.Root, request.Target, record.metadata.Generations)
+				prepared, err = listingBroker.PrepareDirectoryListWithOptions(request.Root, request.Target, record.metadata.Generations, request.Listing)
 			}
 		} else {
 			prepared, err = s.broker.PrepareRead(request.Root, request.Target, record.metadata.Generations)
@@ -353,10 +362,11 @@ func admissionDigest(metadata AdmissionMetadata) ([32]byte, error) {
 		RootGeneration uint64
 		Deadline       time.Time
 		Destination    string
+		Listing        ListingOptions
 		Identity       FileIdentity
 		Class          ResourceClass
 		Generations    GenerationSet
-	}{metadata.Operation, metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Identity, metadata.Class, metadata.Generations})
+	}{metadata.Operation, metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Listing, metadata.Identity, metadata.Class, metadata.Generations})
 	if err != nil {
 		return [32]byte{}, err
 	}

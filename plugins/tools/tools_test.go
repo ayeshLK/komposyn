@@ -160,10 +160,17 @@ func TestConversationToolSchemasAndBounds(t *testing.T) {
 	if err != nil || listing.Path != "src" {
 		t.Fatalf("valid list input = %+v, %v", listing, err)
 	}
-	for _, raw := range []string{`{"path":""}`, `{"path":"src","recursive":true}`, `{"path":"src","path":"other"}`, `{"path":null}`, `{"path":"src"} {}`} {
+	for _, raw := range []string{`{"path":""}`, `{"path":"src","unknown":true}`, `{"path":"src","path":"other"}`, `{"path":null}`, `{"path":"src"} {}`, `{"path":"src","name_globs":["**/*.go"]}`, `{"path":"src","name_globs":["[bad"]}`} {
 		if parsed, err := ParseListFiles([]byte(raw)); err == nil {
 			t.Fatalf("invalid list input accepted: %s as %+v", raw, parsed)
 		}
+	}
+	filtered, err := ParseListFiles([]byte(`{"path":"src","recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*.go","test[0-9].txt"]}`))
+	if err != nil || !filtered.Recursive || !filtered.IncludeHidden || !filtered.IncludeIgnored || len(filtered.NameGlobs) != 2 {
+		t.Fatalf("valid list filters = %+v, %v", filtered, err)
+	}
+	if _, err := ParseListFiles([]byte(`{"path":"src","name_globs":["x"]}` + strings.Repeat(" ", MaxListFilesInputBytes))); err == nil {
+		t.Fatal("oversized list request accepted")
 	}
 	for _, raw := range []string{
 		`{"question":" ","options":[]}`,

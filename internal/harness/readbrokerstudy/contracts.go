@@ -136,6 +136,25 @@ type AdmissionRequest struct {
 	Target         string
 	RootGeneration uint64
 	Destination    string
+	Listing        ListingOptions
+}
+
+// ListingOptions are trusted parsed discovery filters. The model-facing tool
+// schema is validated before these values cross the host admission boundary.
+type ListingOptions struct {
+	Recursive      bool
+	IncludeHidden  bool
+	IncludeIgnored bool
+	NameGlobs      []string
+}
+
+func (options ListingOptions) IsZero() bool {
+	return !options.Recursive && !options.IncludeHidden && !options.IncludeIgnored && len(options.NameGlobs) == 0
+}
+
+func (options ListingOptions) Clone() ListingOptions {
+	options.NameGlobs = append([]string(nil), options.NameGlobs...)
+	return options
 }
 
 // AdmissionOperation is fixed by trusted host composition, never selected by
@@ -163,6 +182,7 @@ type AdmissionMetadata struct {
 	Deadline       time.Time
 	Destination    string
 	Identity       FileIdentity
+	Listing        ListingOptions
 	Class          ResourceClass
 	Generations    GenerationSet
 	Binding        [32]byte
@@ -219,6 +239,7 @@ type ReadBroker interface {
 // fixed listing worker. The worker receives no pathname or parent descriptor.
 type DirectoryListingBroker interface {
 	PrepareDirectoryList(root, target string, generation GenerationSet) (PreparedRead, error)
+	PrepareDirectoryListWithOptions(root, target string, generation GenerationSet, options ListingOptions) (PreparedRead, error)
 }
 
 type GenerationSet struct {
@@ -387,6 +408,10 @@ type SandboxWorker interface {
 // frame and returns a bounded, nonrecursive listing.
 type DirectoryCapabilityWorker interface {
 	TransferDirectoryCapability(context.Context, *os.File, FileIdentity) error
+}
+
+type DirectoryOptionsCapabilityWorker interface {
+	TransferDirectoryCapabilityWithOptions(context.Context, *os.File, FileIdentity, ListingOptions) error
 }
 
 // HostProcessIdentity names one task-owned process by PID plus its kernel

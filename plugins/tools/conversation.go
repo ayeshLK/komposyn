@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path"
 	"strings"
 	"unicode/utf8"
 )
@@ -41,6 +42,8 @@ const (
 	MaxReadFilePathBytes    = 2 << 10
 	MaxListFilesInputBytes  = 4 << 10
 	MaxListFilesPathBytes   = 2 << 10
+	MaxListFilesGlobs       = 32
+	MaxListFilesGlobBytes   = 128
 )
 
 const ReadFileID ID = "read_file"
@@ -71,23 +74,32 @@ func ParseReadFile(raw []byte) (ReadFileInput, error) {
 	return input, nil
 }
 
-// ListFilesInput identifies one directory for a bounded, nonrecursive listing.
-// It intentionally has no model-controlled filter or recursion options.
+// ListFilesInput identifies a directory and bounded discovery filters.
 type ListFilesInput struct {
-	Path string `json:"path"`
+	Path           string   `json:"path"`
+	Recursive      bool     `json:"recursive,omitempty"`
+	IncludeHidden  bool     `json:"include_hidden,omitempty"`
+	IncludeIgnored bool     `json:"include_ignored,omitempty"`
+	NameGlobs      []string `json:"name_globs,omitempty"`
 }
 
-var listFilesSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048}},"required":["path"],"additionalProperties":false}`)
+var listFilesSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048},"recursive":{"type":"boolean"},"include_hidden":{"type":"boolean"},"include_ignored":{"type":"boolean"},"name_globs":{"type":"array","items":{"type":"string","minLength":1,"maxLength":128},"maxItems":32}},"required":["path"],"additionalProperties":false}`)
 
 // ListFilesDefinition describes the once-approved, nonrecursive name-disclosure
 // request. Host composition must withhold it until directory enforcement and
 // native evidence are accepted.
 func ListFilesDefinition() Definition {
-	return Definition{ID: ListFilesID, Description: "List names in one directory only (nonrecursive). Every request needs explicit once approval naming the directory and selected provider destination. Hidden entries, ignored entries, and .git are excluded; symlinks are not followed. Results include examined and returned counts plus an incomplete flag when a bound is reached. Filenames and counts are disclosed to this provider and may be sensitive. Changing the working directory grants no listing permission. Search, recursion, filtering, and filesystem changes are unavailable.", InputSchema: append(json.RawMessage(nil), listFilesSchema...), MaxInput: MaxListFilesInputBytes}
+	return ListFilesDefinitionWithOptions(false)
 }
 
-// ParseListFiles rejects unknown or broadened options rather than silently
-// accepting behavior reserved for later discovery-filter work.
+func ListFilesDefinitionWithOptions(optionsAvailable bool) Definition {
+	if !optionsAvailable {
+		return Definition{ID: ListFilesID, Description: "List names in one directory only (nonrecursive). Hidden entries, ignored entries, and .git are excluded. Every request needs explicit once approval naming the directory and selected provider destination. Symlinks are not followed. Results include an incomplete flag when a bound is reached. Names and counts may be sensitive. Changing the working directory grants no listing permission. Search, recursion, filtering, and filesystem changes are unavailable.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048}},"required":["path"],"additionalProperties":false}`), MaxInput: MaxListFilesInputBytes}
+	}
+	return Definition{ID: ListFilesID, Description: "List names beneath one directory. Defaults are nonrecursive and exclude hidden and ignored entries. Explicitly request recursion, hidden or ignored entries, and basename glob filters; filters do not limit traversal. .git is always excluded. Every request needs explicit once approval showing the directory, all effective options, and selected provider destination. Symlinks are not followed and mount boundaries are not crossed. Results include an incomplete flag when a bound is reached. Names and counts may be sensitive. Changing the working directory grants no listing permission. Search and filesystem changes are unavailable.", InputSchema: append(json.RawMessage(nil), listFilesSchema...), MaxInput: MaxListFilesInputBytes}
+}
+
+// ParseListFiles strictly validates the bounded discovery request.
 func ParseListFiles(raw []byte) (ListFilesInput, error) {
 	var input ListFilesInput
 	if err := decodeStrictObject(raw, MaxListFilesInputBytes, &input); err != nil {
@@ -95,6 +107,20 @@ func ParseListFiles(raw []byte) (ListFilesInput, error) {
 	}
 	if input.Path == "" || len(input.Path) > MaxListFilesPathBytes || strings.IndexByte(input.Path, 0) >= 0 {
 		return ListFilesInput{}, errors.New("listing path is empty or outside its input bound")
+	}
+	if len(input.NameGlobs) > MaxListFilesGlobs {
+		return ListFilesInput{}, errors.New("too many filename globs")
+	}
+	for _, pattern := range input.NameGlobs {
+		if pattern == "" || len(pattern) > MaxListFilesGlobBytes || strings.IndexByte(pattern, 0) >= 0 || strings.ContainsAny(pattern, "/\\") {
+			return ListFilesInput{}, errors.New("filename glob is empty, too long, or contains a path separator")
+		}
+		if strings.Contains(pattern, "**") || strings.Contains(pattern, `\`) {
+			return ListFilesInput{}, errors.New("filename glob uses unsupported syntax")
+		}
+		if _, err := path.Match(strings.ReplaceAll(pattern, "[!", "[^"), ""); err != nil {
+			return ListFilesInput{}, errors.New("filename glob is invalid")
+		}
 	}
 	return input, nil
 }

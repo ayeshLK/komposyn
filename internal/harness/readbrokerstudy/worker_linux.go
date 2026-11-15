@@ -28,6 +28,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -942,14 +943,22 @@ func boundedText(value string, limit int) string {
 }
 
 func (w *sandboxWorker) TransferCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
-	return w.transferCapability(ctx, file, expected, frameHandoff, unix.S_IFREG)
+	return w.transferCapability(ctx, file, expected, frameHandoff, unix.S_IFREG, nil)
 }
 
 func (w *sandboxWorker) TransferDirectoryCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
-	return w.transferCapability(ctx, file, expected, frameDirectoryHandoff, unix.S_IFDIR)
+	return w.transferCapability(ctx, file, expected, frameDirectoryHandoff, unix.S_IFDIR, nil)
 }
 
-func (w *sandboxWorker) transferCapability(ctx context.Context, file *os.File, expected FileIdentity, frame byte, fileType uint32) error {
+func (w *sandboxWorker) TransferDirectoryCapabilityWithOptions(ctx context.Context, file *os.File, expected FileIdentity, options ListingOptions) error {
+	encoded, err := json.Marshal(options)
+	if err != nil || len(encoded) > 2048 {
+		return ErrProtocol
+	}
+	return w.transferCapability(ctx, file, expected, frameDirectoryHandoff, unix.S_IFDIR, encoded)
+}
+
+func (w *sandboxWorker) transferCapability(ctx context.Context, file *os.File, expected FileIdentity, frame byte, fileType uint32, extra []byte) error {
 	if file == nil || ctx == nil {
 		return ErrProtocol
 	}
@@ -969,7 +978,7 @@ func (w *sandboxWorker) transferCapability(ctx context.Context, file *os.File, e
 	if err != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
 		return ErrStaleReceipt
 	}
-	message := identityFrame(frame, expected)
+	message := append(identityFrame(frame, expected), extra...)
 	oob := unix.UnixRights(int(file.Fd()))
 	n, err := unix.SendmsgN(int(w.control.Fd()), message, oob, nil, unix.MSG_DONTWAIT|unix.MSG_NOSIGNAL)
 	if err != nil || n != len(message) {
@@ -1525,7 +1534,7 @@ func probeError(ok bool, message string) error {
 }
 
 func receiveAndRead(control int, holdCapability bool) int {
-	packet := make([]byte, 64)
+	packet := make([]byte, 4096)
 	// Linux limits one SCM_RIGHTS message to SCM_MAX_FD (253). Receive enough
 	// ancillary space to account for every descriptor so even an over-counted
 	// frame can be rejected after closing all descriptors the kernel installed.
@@ -1544,18 +1553,29 @@ func receiveAndRead(control int, holdCapability bool) int {
 			return sendRefusal(control)
 		}
 		capability := files[0]
-		// A SOCK_SEQPACKET frame is exactly 21 bytes after validation. Slice the
-		// identity to the received length, not the reusable packet capacity.
-		if n != 1+20 || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
+		if n < 1+20 || n > len(packet) || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
 			_ = unix.Close(capability)
 			return sendRefusal(control)
 		}
 		var result int
 		switch packet[0] {
 		case frameHandoff:
+			if n != 1+20 {
+				_ = unix.Close(capability)
+				return sendRefusal(control)
+			}
 			result = readTransferredFD(control, capability, packet[1:n], holdCapability)
 		case frameDirectoryHandoff:
-			result = listTransferredDirectory(control, capability, packet[1:n], holdCapability)
+			var options ListingOptions
+			if n > 1+20 {
+				decoder := json.NewDecoder(bytes.NewReader(packet[1+20 : n]))
+				decoder.DisallowUnknownFields()
+				if decoder.Decode(&options) != nil || decoder.Decode(new(any)) != io.EOF {
+					_ = unix.Close(capability)
+					return sendRefusal(control)
+				}
+			}
+			result = listTransferredDirectory(control, capability, packet[1:1+20], holdCapability, options)
 		default:
 			_ = unix.Close(capability)
 			return sendRefusal(control)
@@ -1565,7 +1585,7 @@ func receiveAndRead(control int, holdCapability bool) int {
 	}
 }
 
-func listTransferredDirectory(control, fd int, expected []byte, holdCapability bool) int {
+func listTransferredDirectory(control, fd int, expected []byte, holdCapability bool, options ListingOptions) int {
 	unix.CloseOnExec(fd)
 	var stat unix.Stat_t
 	flags, flagErr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
@@ -1587,7 +1607,7 @@ func listTransferredDirectory(control, fd int, expected []byte, holdCapability b
 	if err := sendPacket(control, identityFrame(frameStarted, identity)); err != nil {
 		return 75
 	}
-	result := listDirectoryBounded(fd)
+	result := listDirectoryBounded(fd, options)
 	for offset := 0; offset < len(result.Bytes); {
 		end := offset + dataChunkBytes
 		if end > len(result.Bytes) {
@@ -1611,91 +1631,58 @@ func listTransferredDirectory(control, fd int, expected []byte, holdCapability b
 }
 
 type directoryListingResult struct {
-	Names      []string                `json:"names,omitempty"`
-	Entries    []directoryListingEntry `json:"entries,omitempty"`
-	Examined   int                     `json:"examined"`
-	Returned   int                     `json:"returned"`
-	Incomplete bool                    `json:"incomplete"`
-	MtimeNS    int64                   `json:"mtime_ns,omitempty"`
-	CtimeNS    int64                   `json:"ctime_ns,omitempty"`
+	Names       []string                    `json:"names,omitempty"`
+	Entries     []directoryListingEntry     `json:"entries,omitempty"`
+	Directories []directoryListingDirectory `json:"directories,omitempty"`
+	Examined    int                         `json:"examined"`
+	Returned    int                         `json:"returned"`
+	Incomplete  bool                        `json:"incomplete"`
+	MtimeNS     int64                       `json:"mtime_ns,omitempty"`
+	CtimeNS     int64                       `json:"ctime_ns,omitempty"`
 }
 
 type directoryListingEntry struct {
-	Name  string `json:"name"`
-	Inode uint64 `json:"inode"`
-	Type  uint8  `json:"type"`
+	Name   string `json:"name"`
+	Path   string `json:"path,omitempty"`
+	Device uint64 `json:"device,omitempty"`
+	Inode  uint64 `json:"inode"`
+	Type   uint8  `json:"type"`
 }
 
-func listDirectoryBounded(fd int) WorkerResult {
-	const maxExamined, maxReturned = 10_000, 1_000
-	var before unix.Stat_t
-	if err := unix.Fstat(fd, &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return WorkerResult{Outcome: ReadFailed, Detail: "directory identity could not be verified"}
+type directoryListingDirectory struct {
+	Path          string `json:"path,omitempty"`
+	Device        uint64 `json:"device"`
+	Inode         uint64 `json:"inode"`
+	MtimeNS       int64  `json:"mtime_ns"`
+	CtimeNS       int64  `json:"ctime_ns"`
+	MountID       uint64 `json:"mount_id"`
+	IgnoreExists  bool   `json:"ignore_exists"`
+	IgnoreDevice  uint64 `json:"ignore_device,omitempty"`
+	IgnoreInode   uint64 `json:"ignore_inode,omitempty"`
+	IgnoreSize    int64  `json:"ignore_size,omitempty"`
+	IgnoreMtimeNS int64  `json:"ignore_mtime_ns,omitempty"`
+	IgnoreCtimeNS int64  `json:"ignore_ctime_ns,omitempty"`
+}
+
+func listDirectoryBounded(fd int, requested ...ListingOptions) WorkerResult {
+	const maxExamined = 10_000
+	options := ListingOptions{}
+	if len(requested) > 0 {
+		options = requested[0].Clone()
 	}
 	var entries []directoryListingEntry
-	buf := make([]byte, 32<<10)
-	examined, incomplete := 0, false
-	for {
-		n, err := unix.ReadDirent(fd, buf)
-		if err == unix.EINTR {
-			continue
-		}
-		if err != nil {
-			return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration failed"}
-		}
-		if n == 0 {
-			break
-		}
-		parsed := buf[:n]
-		for len(parsed) > 0 {
-			if len(parsed) < 19 {
-				return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration was invalid"}
-			}
-			recordLen := int(binary.NativeEndian.Uint16(parsed[16:18]))
-			if recordLen < 20 || recordLen > len(parsed) {
-				return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration was invalid"}
-			}
-			inode := binary.NativeEndian.Uint64(parsed[:8])
-			direntType := parsed[18]
-			nameBytes := parsed[19:recordLen]
-			terminator := bytes.IndexByte(nameBytes, 0)
-			if terminator < 0 {
-				return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration was invalid"}
-			}
-			nameBytes = nameBytes[:terminator]
-			parsed = parsed[recordLen:]
-			if len(nameBytes) == 0 {
-				continue
-			}
-			examined++
-			if examined > maxExamined {
-				incomplete = true
-				break
-			}
-			name := string(nameBytes)
-			if !utf8.Valid(nameBytes) {
-				incomplete = true
-				continue
-			}
-			if name == "." || name == ".." || strings.HasPrefix(name, ".") {
-				continue
-			}
-			if len(entries) >= maxReturned {
-				incomplete = true
-				continue
-			}
-			entries = append(entries, directoryListingEntry{Name: name, Inode: inode, Type: direntType})
-		}
-		if examined > maxExamined {
-			break
-		}
+	listing := directoryListingResult{}
+	ctx, cancel := context.WithTimeout(context.Background(), maxDirectoryFilterDuration)
+	defer cancel()
+	incomplete, examined := false, 0
+	if err := walkListingDirectory(ctx, fd, "", options, &listing, &entries, &examined, &incomplete, maxExamined, maxExamined); err != nil {
+		return WorkerResult{Outcome: ReadFailed, Detail: "directory enumeration could not be safely completed"}
 	}
-	slices.SortFunc(entries, func(a, b directoryListingEntry) int { return strings.Compare(a.Name, b.Name) })
-	var after unix.Stat_t
-	if err := unix.Fstat(fd, &after); err != nil || before.Mtim != after.Mtim || before.Ctim != after.Ctim {
-		return WorkerResult{Outcome: ReadFailed, Detail: "directory changed during enumeration"}
-	}
-	listing := directoryListingResult{Entries: entries, Examined: min(examined, maxExamined), Returned: len(entries), Incomplete: incomplete, MtimeNS: before.Mtim.Sec*1e9 + before.Mtim.Nsec, CtimeNS: before.Ctim.Sec*1e9 + before.Ctim.Nsec}
+	slices.SortFunc(entries, func(a, b directoryListingEntry) int { return strings.Compare(a.Path, b.Path) })
+	listing.Entries = entries
+	listing.Examined = min(examined, maxExamined)
+	listing.Returned = len(entries)
+	listing.Incomplete = incomplete
 	for {
 		encoded, err := json.Marshal(listing)
 		if err != nil {
@@ -1710,6 +1697,157 @@ func listDirectoryBounded(fd int) WorkerResult {
 		listing.Entries = listing.Entries[:len(listing.Entries)-1]
 		listing.Incomplete = true
 	}
+}
+
+func walkListingDirectory(ctx context.Context, fd int, relative string, options ListingOptions, listing *directoryListingResult, entries *[]directoryListingEntry, examined *int, incomplete *bool, maxExamined, maxReturned int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return errors.New("directory identity could not be verified")
+	}
+	mountID, err := mountIDForFD(fd)
+	if err != nil {
+		return err
+	}
+	state := directoryListingDirectory{Path: relative, Device: uint64(before.Dev), Inode: before.Ino, MtimeNS: before.Mtim.Sec*1e9 + before.Mtim.Nsec, CtimeNS: before.Ctim.Sec*1e9 + before.Ctim.Nsec, MountID: mountID}
+	var ignoreStat unix.Stat_t
+	if ignoreErr := unix.Fstatat(fd, ".gitignore", &ignoreStat, unix.AT_SYMLINK_NOFOLLOW); ignoreErr == nil {
+		state.IgnoreExists = true
+		state.IgnoreDevice, state.IgnoreInode, state.IgnoreSize = uint64(ignoreStat.Dev), ignoreStat.Ino, ignoreStat.Size
+		state.IgnoreMtimeNS = ignoreStat.Mtim.Sec*1e9 + ignoreStat.Mtim.Nsec
+		state.IgnoreCtimeNS = ignoreStat.Ctim.Sec*1e9 + ignoreStat.Ctim.Nsec
+	} else if ignoreErr != unix.ENOENT {
+		return ignoreErr
+	}
+	listing.Directories = append(listing.Directories, state)
+	if relative == "" {
+		listing.MtimeNS = before.Mtim.Sec*1e9 + before.Mtim.Nsec
+		listing.CtimeNS = before.Ctim.Sec*1e9 + before.Ctim.Nsec
+	}
+	buf := make([]byte, 32<<10)
+	var children []directoryListingEntry
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := unix.ReadDirent(fd, buf)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			break
+		}
+		parsed := buf[:n]
+		for len(parsed) > 0 {
+			if len(parsed) < 19 {
+				return errors.New("invalid directory record")
+			}
+			recordLen := int(binary.NativeEndian.Uint16(parsed[16:18]))
+			if recordLen < 20 || recordLen > len(parsed) {
+				return errors.New("invalid directory record length")
+			}
+			inode, direntType := binary.NativeEndian.Uint64(parsed[:8]), parsed[18]
+			nameBytes := parsed[19:recordLen]
+			terminator := bytes.IndexByte(nameBytes, 0)
+			if terminator < 0 {
+				return errors.New("unterminated directory name")
+			}
+			nameBytes, parsed = nameBytes[:terminator], parsed[recordLen:]
+			if len(nameBytes) == 0 {
+				continue
+			}
+			if *examined >= maxExamined {
+				*incomplete = true
+				break
+			}
+			(*examined)++
+			name := string(nameBytes)
+			if name == "." || name == ".." {
+				continue
+			}
+			if !utf8.Valid(nameBytes) {
+				*incomplete = true
+				continue
+			}
+			if direntType == unix.DT_UNKNOWN {
+				var entryStat unix.Stat_t
+				if err := unix.Fstatat(fd, name, &entryStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+					*incomplete = true
+					continue
+				}
+				inode, direntType = entryStat.Ino, direntTypeForMode(entryStat.Mode)
+			}
+			childPath := name
+			if relative != "" {
+				childPath = relative + "/" + name
+			}
+			entry := directoryListingEntry{Name: name, Path: childPath, Device: uint64(before.Dev), Inode: inode, Type: direntType}
+			if len(*entries)+len(children) < maxReturned {
+				children = append(children, entry)
+			} else {
+				*incomplete = true
+			}
+		}
+		if *examined >= maxExamined {
+			// Do not enumerate another batch after the shared entry budget is
+			// reached. Coverage is conservatively marked incomplete even when
+			// this batch happens to end exactly at a directory boundary.
+			*incomplete = true
+			break
+		}
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || before.Mtim != after.Mtim || before.Ctim != after.Ctim {
+		return errors.New("directory changed during enumeration")
+	}
+	*entries = append(*entries, children...)
+	if options.Recursive && (relative == "" || options.IncludeHidden || !strings.HasPrefix(path.Base(relative), ".")) {
+		for _, child := range children {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if child.Name == ".git" || (child.Type != unix.DT_DIR && child.Type != unix.DT_UNKNOWN) {
+				continue
+			}
+			if !options.IncludeHidden && strings.HasPrefix(child.Name, ".") {
+				continue
+			}
+			if strings.Count(child.Path, "/") >= 63 {
+				*incomplete = true
+				continue
+			}
+			if *examined >= maxExamined {
+				*incomplete = true
+				break
+			}
+			childFD, openErr := unix.Openat2(fd, child.Name, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NONBLOCK, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV})
+			if openErr == unix.EXDEV || openErr == unix.ELOOP || openErr == unix.ENOTDIR {
+				*incomplete = true
+				continue
+			}
+			if openErr != nil {
+				return openErr
+			}
+			var openedStat unix.Stat_t
+			if statErr := unix.Fstat(childFD, &openedStat); statErr != nil || openedStat.Mode&unix.S_IFMT != unix.S_IFDIR || openedStat.Ino != child.Inode || uint64(openedStat.Dev) != child.Device {
+				_ = unix.Close(childFD)
+				return ErrStaleReceipt
+			}
+			if err := walkListingDirectory(ctx, childFD, child.Path, options, listing, entries, examined, incomplete, maxExamined, maxReturned); err != nil {
+				_ = unix.Close(childFD)
+				return err
+			}
+			if err := unix.Close(childFD); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func parseExactlyOneReceivedFD(oob []byte) ([]int, error) {

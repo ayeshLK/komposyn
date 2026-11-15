@@ -107,7 +107,11 @@ evidence record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-679
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 The closure disposition, follow-up boundaries and Stage 6 evidence
 contract are in the [#215 closure and acceptance record](issue-215-completion-tracking.md).
-The integrated native feasibility runner and reproduction steps are described in the
+The integrated native feasibility runner includes recursive listing checks for
+effective options, descendant movement/replacement, owner rotation, mount
+boundaries and held-worker cleanup. Recursive listing remains unavailable until
+those cases pass on a host satisfying the trusted backend policy and the exact
+revision is reviewed. The runner and reproduction steps are described in the
 [Stage 6 runner guide](issue-215-stage6-runner.md).
 
 Use `/cd <path>` in chat to change the working directory for future relative
@@ -151,7 +155,8 @@ checkout-safe reproduction runner are recorded in
 and [`scripts/native-acceptance/`](../../scripts/native-acceptance/README.md).
 The accepted unregistered exact-file policy and implementation stages are
 recorded in the [read implementation plan](read-broker-unregistered-read-implementation-plan.md).
-Recursive listing, broad reads, mutation, and shell remain unavailable. The
+Recursive listing and its explicit filters remain unavailable until their
+separate native evidence is reviewed. Broad reads, mutation, and shell remain unavailable. The
 Linux `list_files` capability is separately registered only when trusted
 Bubblewrap and the fixed worker service are available, and only on supported
 client-tool routes with a selected root. Each request requires once approval

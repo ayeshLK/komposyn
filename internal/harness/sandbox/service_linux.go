@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -37,19 +38,20 @@ import (
 const defaultBubblewrapPath = "/usr/bin/bwrap"
 
 type linuxImplementation struct {
-	mu              sync.Mutex
-	ownerUpdateMu   sync.Mutex
-	registry        *readbrokerstudy.Registry
-	launcher        readbrokerstudy.WorkerLauncher
-	session         readbrokerstudy.HostCoordinator
-	inventory       *readbrokerstudy.CoverageInventory
-	backendErr      error
-	revision        uint64
-	owners          map[string]OwnerCoverage
-	blocked         map[string]string
-	readInvalidator func(string)
-	closed          bool
-	pendingOwners   atomic.Int32
+	mu                      sync.Mutex
+	ownerUpdateMu           sync.Mutex
+	registry                *readbrokerstudy.Registry
+	launcher                readbrokerstudy.WorkerLauncher
+	session                 readbrokerstudy.HostCoordinator
+	inventory               *readbrokerstudy.CoverageInventory
+	backendErr              error
+	listingOptionsAvailable bool
+	revision                uint64
+	owners                  map[string]OwnerCoverage
+	blocked                 map[string]string
+	readInvalidator         func(string)
+	closed                  bool
+	pendingOwners           atomic.Int32
 }
 
 func newHostImplementation(bubblewrapPath string) (implementation, error) {
@@ -470,16 +472,24 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 		return runtime.FilesystemReadAdmission{}, readbrokerstudy.ErrAdmissionStale
 	}
 	var target string
+	var listingOptions readbrokerstudy.ListingOptions
 	var err error
 	if invocation.ToolID == tools.ListFilesID {
 		listing, parseErr := tools.ParseListFiles(invocation.Arguments)
 		err = parseErr
 		target = listing.Path
+		listingOptions = readbrokerstudy.ListingOptions{Recursive: listing.Recursive, IncludeHidden: listing.IncludeHidden, IncludeIgnored: listing.IncludeIgnored, NameGlobs: append([]string(nil), listing.NameGlobs...)}
 	} else {
 		target, err = exactReadTarget(invocation.Arguments)
 	}
 	if err != nil {
 		return runtime.FilesystemReadAdmission{}, err
+	}
+	if invocation.ToolID == tools.ListFilesID && !listingOptions.IsZero() {
+		optionsHost, ok := any(s).(runtime.FilesystemDirectoryListingOptionsAvailability)
+		if !ok || !optionsHost.DirectoryListingOptionsAvailable() {
+			return runtime.FilesystemReadAdmission{}, readbrokerstudy.ErrUnavailable
+		}
 	}
 	s.mu.Lock()
 	if s.closed || s.session == nil || s.backendErr != nil || s.launcher == nil {
@@ -495,6 +505,7 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 		Operation:      readbrokerstudy.AdmissionOperation(invocation.ToolID),
 		ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID,
 		Root: root, Target: target, RootGeneration: rootGeneration, Destination: destination,
+		Listing: listingOptions,
 	}
 	reference, err := session.BeginAdmission(ctx, request)
 	s.mu.Unlock()
@@ -538,7 +549,7 @@ func (s *linuxImplementation) PrepareAdmittedFilesystemRead(ctx context.Context,
 		return nil, err
 	}
 	metadata := prepared.Metadata()
-	if metadata.ServiceID != admission.ServiceID || metadata.ConversationID != admission.ConversationID || metadata.TurnID == "" || metadata.CallID == "" || metadata.Root != admission.Root || metadata.Target != admission.Target || !metadata.Deadline.Equal(admission.Deadline) || metadata.Destination != admission.Destination {
+	if metadata.ServiceID != admission.ServiceID || metadata.ConversationID != admission.ConversationID || metadata.TurnID == "" || metadata.CallID == "" || metadata.Root != admission.Root || metadata.Target != admission.Target || !metadata.Deadline.Equal(admission.Deadline) || metadata.Destination != admission.Destination || metadata.Listing.Recursive != admission.Listing.Recursive || metadata.Listing.IncludeHidden != admission.Listing.IncludeHidden || metadata.Listing.IncludeIgnored != admission.Listing.IncludeIgnored || !slices.Equal(metadata.Listing.NameGlobs, admission.Listing.NameGlobs) {
 		return nil, errors.Join(readbrokerstudy.ErrAdmissionStale, prepared.Close(ctx))
 	}
 	return &linuxAdmissionPreparation{impl: s, inner: prepared}, nil
@@ -574,6 +585,7 @@ func runtimeAdmission(metadata readbrokerstudy.AdmissionMetadata) runtime.Filesy
 		Class: string(metadata.Class), Identity: fmt.Sprintf("%d:%d:%d", metadata.Identity.Device, metadata.Identity.Inode, metadata.Identity.Type),
 		RootGeneration: metadata.RootGeneration, PolicyRevision: metadata.Generations.Policy,
 		CoverageRevision: metadata.Generations.Inventory, Destination: metadata.Destination,
+		Listing: tools.ListFilesInput{Recursive: metadata.Listing.Recursive, IncludeHidden: metadata.Listing.IncludeHidden, IncludeIgnored: metadata.Listing.IncludeIgnored, NameGlobs: append([]string(nil), metadata.Listing.NameGlobs...)},
 	}
 }
 
@@ -685,6 +697,17 @@ func (s *linuxImplementation) DirectoryListingAvailable() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return !s.closed && s.backendErr == nil && s.launcher != nil && s.session != nil
+}
+
+// DirectoryListingOptionsAvailable remains false until the recursive native
+// profile for this exact enforcement implementation is independently reviewed.
+func (s *linuxImplementation) DirectoryListingOptionsAvailable() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.backendErr == nil && s.launcher != nil && s.session != nil && s.listingOptionsAvailable
 }
 
 func (s *linuxImplementation) PrepareGenericRead(ctx context.Context, _, _ string) error {
