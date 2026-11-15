@@ -418,6 +418,53 @@ func TestDirectoryListAppliesIgnoredParentAndAnchoredRules(t *testing.T) {
 	}
 }
 
+func TestIgnoreRulesFailClosedOnCharacterClassesAndMatchPrefixes(t *testing.T) {
+	root := t.TempDir()
+	for _, pattern := range []string{"[[:digit:]].txt"} {
+		if _, err := parseIgnoreRules([]byte(pattern+"\n"), root); !errors.Is(err, ErrProtected) {
+			t.Errorf("parseIgnoreRules(%q) err=%v, want ErrProtected", pattern, err)
+		}
+	}
+	classRules, err := parseIgnoreRules([]byte("[!a].txt\n[abc].log\n"), root)
+	if err != nil {
+		t.Fatalf("parse supported character classes: %v", err)
+	}
+	if !ignoredByRules(filepath.Join(root, "b.txt"), false, classRules) {
+		t.Fatal("Git-negated character class did not exclude b.txt")
+	}
+	if ignoredByRules(filepath.Join(root, "a.txt"), false, classRules) {
+		t.Fatal("Git-negated character class incorrectly excluded a.txt")
+	}
+	if !ignoredByRules(filepath.Join(root, "b.log"), false, classRules) {
+		t.Fatal("ordinary character class did not exclude b.log")
+	}
+
+	rules, err := parseIgnoreRules([]byte("*.secret\n!keep\n"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ignoredByRules(filepath.Join(root, "keep", "hidden.secret"), false, rules) {
+		t.Fatal("negation matching an ancestor incorrectly re-included an ignored descendant")
+	}
+
+	nested := filepath.Join(root, "sub")
+	ancestorRules, err := parseIgnoreRules([]byte("*.tmp\n"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedRules, err := parseIgnoreRules([]byte("*\n!visible.txt\n"), nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allRules := append(ancestorRules, nestedRules...)
+	if ignoredByRules(nested, true, allRules) {
+		t.Fatal("nested ignore rules were applied to their containing directory")
+	}
+	if ignoredByRules(filepath.Join(nested, "visible.txt"), false, allRules) {
+		t.Fatal("nested allowlist failed to re-include visible.txt")
+	}
+}
+
 func filterPreparedListing(t *testing.T, prepared *preparedDirectoryList, names []string) directoryListingResult {
 	t.Helper()
 	entries := make([]directoryListingEntry, 0, len(names))

@@ -378,6 +378,14 @@ func parseIgnoreRules(data []byte, base string) ([]ignoreRule, error) {
 		if line == "" {
 			return nil, ErrProtected
 		}
+		// Translate Git's [!a] negated class to path.Match's [^a] form.
+		// POSIX character classes, collating symbols, and equivalence classes
+		// are not supported by path.Match, so refuse those patterns rather
+		// than risk exposing names under different matching semantics.
+		if strings.Contains(line, "[[") || strings.Contains(line, "[:") || strings.Contains(line, "[.") || strings.Contains(line, "[=") {
+			return nil, ErrProtected
+		}
+		line = strings.ReplaceAll(line, "[!", "[^")
 		if _, err := path.Match(line, "validation"); err != nil {
 			return nil, ErrProtected
 		}
@@ -407,17 +415,20 @@ func (rule ignoreRule) matches(namePath string, directory bool) bool {
 		return false
 	}
 	name := filepath.ToSlash(relative)
+	if name == "." {
+		// An ignore file does not apply its patterns to the directory that
+		// contains it, only to entries below that directory.
+		return false
+	}
 	if rule.anchored {
 		matched, _ := path.Match(rule.pattern, name)
 		return matched
 	}
-	for _, component := range strings.Split(name, "/") {
-		matched, _ := path.Match(rule.pattern, component)
-		if matched {
-			return true
-		}
-	}
-	return false
+	// ignoredByRules evaluates each path prefix separately. Match this
+	// prefix's own name, never an ancestor component of a descendant.
+	component := name[strings.LastIndex(name, "/")+1:]
+	matched, _ := path.Match(rule.pattern, component)
+	return matched
 }
 
 func ignoredByRules(namePath string, directory bool, rules []ignoreRule) bool {
