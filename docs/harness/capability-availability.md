@@ -57,13 +57,20 @@ worker cleanup was recorded on Linux amd64 with Bubblewrap 0.9.0. This does not
 establish live provider listing, production-provider integration, or
 cross-platform enforcement.
 
-The prior directory-specific native archive predates wiring the tool through
-the production runtime registration gate, so it is not the final #316
-acceptance record. The updated integrated fixture now asserts that the
-production backend gate registered `list_files`; rerun it against the final
-clean implementation commit before recording the evidence here. The broader
-Stage 6 profile also remains incomplete for unrelated mutation, shell,
-aggregate-quota and production-provider coverage.
+The final #316 directory-specific native run used clean commit
+`71270a8d4acf9f90bc727ecc1976eeb808921b7f` on Linux amd64 with trusted,
+root-owned Bubblewrap 0.9.0. Archive
+`komposyn-issue215-stage6-20261115T131921Z-1128181.tar.gz` has SHA-256
+`468939f09d4392c94b05a5eb67fdfb7d588b3fa347d919265636c10870e7a5d6`.
+Its report measured `positive_directory_listing`,
+`directory_listing_movement_replacement`,
+`directory_listing_owner_rotation`, `directory_listing_mount_boundary`, and
+`directory_listing_worker_cleanup` as passes. These cases use the actual
+sandbox service and assert registration through the production runtime
+backend gate. The runner report is valid and the study exited successfully;
+the overall Stage 6 profile remains incomplete for unrelated mutation, shell,
+aggregate-quota and production-provider coverage. This evidence does not
+establish live provider listing or cross-platform enforcement.
 
 The conditional read path requires inspected trusted Bubblewrap, the complete
 retained-read lifecycle and host enforcement, an available working directory,
