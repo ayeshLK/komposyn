@@ -53,6 +53,27 @@ The supplied archive SHA-256 is
 report SHA-256 is
 `967b3ef5a9a122844fbf9bfc3cb0343b26da52fa863fc344e2724fd87deb9bdb`.
 
+A second trusted-host run exercised commit
+`fdbac5fb5bb35079aee66460cd02c3c73f3494c0` with the same Go, kernel,
+architecture, Bubblewrap identity, and automatic bind mode. It measured 20 of
+22 native-integrated cases as passes, including basic and recursive positive
+listing, descendant replacement, mount boundary, owner rotation, and
+cancellation. The nested-ignore and large-listing cases reached a succeeded
+worker result and provider continuation but were left inconclusive because
+their fixture assertions decoded the outer tool-result envelope instead of
+its nested listing JSON. The archived report does not include private
+provider-result contents, so those listing assertions are not accepted as
+passes. The Stage 6 tests now decode both layers and require the expected
+names/counts. The worker probe also now reports which operation profile was
+installed, and readiness checks that it matches the host-selected operation.
+Neither change is validated by this archive. Rerun on the same trusted host at
+the updated clean revision before accepting the evidence.
+
+The second archive SHA-256 is
+`302d9a304de07c5a98d6ab92882e02ba69b0a60a975d9fde2ce2c1cd6207a349`; the
+report SHA-256 is
+`a9dcd5f99aa75d2017411e2d4cd16918ee25d8ab85ac604c9792e4421109ea7b`.
+
 Once an eligible host is available, run from a clean committed candidate:
 
 ```sh

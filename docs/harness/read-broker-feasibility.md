@@ -292,7 +292,9 @@ implementation supplies the fixed relative child names and uses
 `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`, and
 `RESOLVE_NO_XDEV` for descendant opens. The startup probe's pathname-open check
 specifically verifies that `openat` is denied; it is not a claim that the
-listing profile denies `openat2`.
+listing profile denies `openat2`. The worker reports whether the listing
+profile is installed, and host readiness requires that report to match the
+host-selected operation.
 
 The seccomp filter permits `clone` only when its flags exactly equal the Go
 runtime's shared-thread flags, with or without `CLONE_SETTLS`; it also requires

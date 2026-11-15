@@ -383,11 +383,12 @@ type WorkerProbe struct {
 	SocketCreationDenied bool `json:"socket_creation_denied"`
 	// PathOpenDenied records the startup probe for openat("/worker"). The
 	// directory-listing profile separately permits descriptor-relative openat2.
-	PathOpenDenied                bool     `json:"path_open_denied"`
-	ReadCapabilityInitiallyAbsent bool     `json:"read_capability_initially_absent"`
-	OnlyProtocolDescriptor        bool     `json:"only_protocol_descriptor"`
-	EnvironmentCleared            bool     `json:"environment_cleared"`
-	Details                       []string `json:"details,omitempty"`
+	PathOpenDenied                    bool     `json:"path_open_denied"`
+	DirectoryTraversalSyscallsAllowed bool     `json:"directory_traversal_syscalls_allowed,omitempty"`
+	ReadCapabilityInitiallyAbsent     bool     `json:"read_capability_initially_absent"`
+	OnlyProtocolDescriptor            bool     `json:"only_protocol_descriptor"`
+	EnvironmentCleared                bool     `json:"environment_cleared"`
+	Details                           []string `json:"details,omitempty"`
 }
 
 type SandboxWorker interface {

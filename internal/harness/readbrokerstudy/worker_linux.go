@@ -895,7 +895,7 @@ func (w *sandboxWorker) Ready(ctx context.Context) error {
 	w.probe = probe
 	valid := probe.SeccompMode == 2 && probe.NoNewPrivs && probe.SocketCreationDenied &&
 		probe.PathOpenDenied && probe.ReadCapabilityInitiallyAbsent && probe.OnlyProtocolDescriptor &&
-		probe.EnvironmentCleared
+		probe.EnvironmentCleared && (probe.DirectoryTraversalSyscallsAllowed == (w.operation == AdmissionListDirectory))
 	if valid {
 		w.ready = true
 	}
@@ -1290,10 +1290,11 @@ func WorkerMain() int {
 	if verifyErr != nil {
 		return 70
 	}
-	if err := installWorkerSeccomp(seccompInputFD); err != nil {
+	operation, err := installWorkerSeccompProfile(seccompInputFD)
+	if err != nil {
 		return 70
 	}
-	return workerMainFD(controlFD, holdCapability)
+	return workerMainFD(controlFD, holdCapability, operation)
 }
 
 const workerMountFD = 5
@@ -1433,10 +1434,15 @@ func verifyDescriptorMounts(mounts []DescriptorMount) (result error) {
 }
 
 func installWorkerSeccomp(fd int) error {
+	_, err := installWorkerSeccompProfile(fd)
+	return err
+}
+
+func installWorkerSeccompProfile(fd int) (AdmissionOperation, error) {
 	defer unix.Close(fd)
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size <= 0 || stat.Size > 64<<10 || stat.Size%unix.SizeofSockFilter != 0 {
-		return ErrProtocol
+		return "", ErrProtocol
 	}
 	data := make([]byte, stat.Size)
 	for offset := 0; offset < len(data); {
@@ -1445,14 +1451,18 @@ func installWorkerSeccomp(fd int) error {
 			continue
 		}
 		if err != nil || count == 0 {
-			return ErrProtocol
+			return "", ErrProtocol
 		}
 		offset += count
 	}
 	expectedRead, readErr := workerSeccompFilterBytesForOperation(AdmissionReadFile)
 	expectedListing, listingErr := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
 	if readErr != nil || listingErr != nil || !bytes.Equal(data, expectedRead) && !bytes.Equal(data, expectedListing) {
-		return ErrProtocol
+		return "", ErrProtocol
+	}
+	operation := AdmissionReadFile
+	if bytes.Equal(data, expectedListing) {
+		operation = AdmissionListDirectory
 	}
 	filters := make([]unix.SockFilter, len(data)/unix.SizeofSockFilter)
 	for index := range filters {
@@ -1464,7 +1474,7 @@ func installWorkerSeccomp(fd int) error {
 		}
 	}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return err
+		return "", err
 	}
 	program := unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
 	result, _, errno := unix.Syscall(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER, unix.SECCOMP_FILTER_FLAG_TSYNC, uintptr(unsafe.Pointer(&program)))
@@ -1472,29 +1482,33 @@ func installWorkerSeccomp(fd int) error {
 	runtime.KeepAlive(program)
 	if errno != 0 || result != 0 {
 		if errno == 0 {
-			return fmt.Errorf("seccomp thread synchronization failed for thread %d", result)
+			return "", fmt.Errorf("seccomp thread synchronization failed for thread %d", result)
 		}
-		return errno
+		return "", errno
 	}
-	return nil
+	return operation, nil
 }
 
-func workerMainFD(fd int, holdCapability bool) int {
-	probe := collectWorkerProbe(fd)
+func workerMainFD(fd int, holdCapability bool, operation AdmissionOperation) int {
+	probe := collectWorkerProbe(fd, operation)
 	encoded, err := json.Marshal(probe)
 	if err != nil || sendPacket(fd, append([]byte{frameReady}, encoded...)) != nil {
 		return 70
 	}
 	if probe.SeccompMode != 2 || !probe.NoNewPrivs || !probe.SocketCreationDenied ||
 		!probe.PathOpenDenied || !probe.ReadCapabilityInitiallyAbsent || !probe.OnlyProtocolDescriptor ||
-		!probe.EnvironmentCleared {
+		!probe.EnvironmentCleared || probe.DirectoryTraversalSyscallsAllowed != (operation == AdmissionListDirectory) {
 		return 71
 	}
 	return receiveAndRead(fd, holdCapability)
 }
 
-func collectWorkerProbe(control int) WorkerProbe {
+func collectWorkerProbe(control int, operation AdmissionOperation) WorkerProbe {
 	probe := WorkerProbe{Details: []string{"required namespaces requested: user,pid,ipc,uts,net (no try/fallback flags)", "bubblewrap mount namespace created with empty tmpfs root", "worker mount identity verified before seccomp; verification descriptors closed", "worker installed seccomp with thread synchronization before readiness"}}
+	probe.DirectoryTraversalSyscallsAllowed = operation == AdmissionListDirectory
+	if probe.DirectoryTraversalSyscallsAllowed {
+		probe.Details = append(probe.Details, "directory-listing seccomp profile permits descriptor-relative statx, newfstatat, and openat2; ordinary openat remains denied")
+	}
 	if mode, _, errno := unix.Syscall6(unix.SYS_PRCTL, unix.PR_GET_SECCOMP, 0, 0, 0, 0, 0); errno == 0 {
 		probe.SeccompMode = int(mode)
 	}

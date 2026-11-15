@@ -25,6 +25,14 @@ the entire result if observations are stale or incomplete. This retains
 object-authority semantics: a moved selected directory remains the opened
 object; descendant replacement is refused rather than followed.
 
+The worker receives an operation-specific seccomp filter. Exact-file reads
+deny `openat2`, `newfstatat`, and `statx`; directory listing permits those
+syscalls for beneath-constrained descendant opens, no-follow ignore-file
+metadata checks, and mount-ID snapshots. Ordinary `openat`, network and
+namespace operations, and process-like creation remain denied. The worker
+reports the installed operation profile, and the host refuses readiness if it
+does not match the admitted operation.
+
 Ignore rules are read as bounded data from safely reopened `.gitignore` files
 for each visited directory. Ancestor-to-descendant precedence is preserved;
 ignored parents cannot be escaped by child negation. `.git` is excluded at

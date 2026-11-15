@@ -103,8 +103,12 @@ func testWorkerListingSeccompDirectorySyscalls(t *testing.T) {
 		_ = unix.Close(filterFD)
 		t.Fatal(err)
 	}
-	if err := installWorkerSeccomp(filterFD); err != nil {
+	operation, err := installWorkerSeccompProfile(filterFD)
+	if err != nil {
 		t.Fatalf("install listing worker seccomp profile: %v", err)
+	}
+	if operation != AdmissionListDirectory {
+		t.Fatalf("installed worker profile operation=%q, want directory listing", operation)
 	}
 
 	var rootStat unix.Statx_t

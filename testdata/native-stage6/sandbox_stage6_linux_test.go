@@ -1007,6 +1007,15 @@ func stage6Update(id string, update func(*stage6Case)) {
 	}
 }
 
+func stage6WorkerProbePassed(probe readbrokerstudy.WorkerProbe) bool {
+	return probe.NoNewPrivs && probe.SeccompMode == 2 && probe.SocketCreationDenied && probe.PathOpenDenied &&
+		probe.ReadCapabilityInitiallyAbsent && probe.OnlyProtocolDescriptor && probe.EnvironmentCleared
+}
+
+func stage6DirectoryListingProbePassed(probe readbrokerstudy.WorkerProbe) bool {
+	return stage6WorkerProbePassed(probe) && probe.DirectoryTraversalSyscallsAllowed
+}
+
 func stage6Begin(id string) {
 	stage6Update(id, func(item *stage6Case) {
 		item.Status = "inconclusive"
@@ -2613,12 +2622,12 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 	}
 	impl := fixture.service.impl.(*linuxImplementation)
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !evidence[0].Probe.PathOpenDenied {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("mounted-directory listing worker evidence=%+v", evidence)
 	}
 	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, evidence[0].Probe.PathOpenDenied
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
 		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
 		item.FixtureBytesMatched = true
 	})
@@ -2686,7 +2695,7 @@ func TestStage6PositiveDirectoryListing(t *testing.T) {
 	}
 	stage6Update("positive_directory_listing", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, evidence[0].Probe.NoNewPrivs && evidence[0].Probe.SeccompMode == 2 && evidence[0].Probe.PathOpenDenied
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
 		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
 		item.GrantRevisionBefore, item.GrantRevisionAfter, item.RemainingGrantCount = grantRevisionBefore, grantRevisionAfter, grantsAfter
 		item.FixtureBytesMatched = true
@@ -2730,7 +2739,7 @@ func TestStage6PositiveRecursiveDirectoryListing(t *testing.T) {
 	}
 	impl := fixture.service.impl.(*linuxImplementation)
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("recursive worker evidence=%+v", evidence)
 	}
 	if fixture.approvals.Load() != 1 {
@@ -2738,7 +2747,7 @@ func TestStage6PositiveRecursiveDirectoryListing(t *testing.T) {
 	}
 	stage6Update("positive_recursive_directory_listing", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
 		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
 		item.FixtureBytesMatched = true
 	})
@@ -2769,8 +2778,16 @@ func TestStage6RecursiveListingNestedIgnoreAndGlobFilters(t *testing.T) {
 		Returned   int      `json:"returned"`
 		Incomplete bool     `json:"incomplete"`
 	}
-	if err := json.Unmarshal([]byte(resultText), &result); err != nil {
-		t.Fatalf("listing result %q is invalid: %v", resultText, err)
+	var envelope struct {
+		Outcome   string `json:"outcome"`
+		Truncated bool   `json:"truncated"`
+		Content   string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(resultText), &envelope); err != nil || envelope.Outcome != string(tools.OutcomeSucceeded) || envelope.Truncated {
+		t.Fatalf("listing result envelope is invalid (outcome=%q truncated=%t err=%v)", envelope.Outcome, envelope.Truncated, err)
+	}
+	if err := json.Unmarshal([]byte(envelope.Content), &result); err != nil {
+		t.Fatalf("listing content is invalid: %v", err)
 	}
 	if !slices.Equal(result.Names, []string{"nested/keep.tmp"}) || result.Examined != 1 || result.Returned != 1 || result.Incomplete {
 		t.Fatalf("recursive ignore/glob result=%+v, want only nested exception with provider-visible count 1", result)
@@ -2789,12 +2806,12 @@ func TestStage6RecursiveListingNestedIgnoreAndGlobFilters(t *testing.T) {
 		t.Fatalf("listing approvals=%d, want one", fixture.approvals.Load())
 	}
 	evidence := fixture.service.impl.(*linuxImplementation).session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("nested-ignore listing worker evidence=%+v", evidence)
 	}
 	stage6Update("recursive_listing_nested_ignore_filters", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
 		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
 		item.FixtureBytesMatched = true
 	})
@@ -2825,8 +2842,16 @@ func TestStage6RecursiveListingEntryAndOutputLimits(t *testing.T) {
 		Returned   int      `json:"returned"`
 		Incomplete bool     `json:"incomplete"`
 	}
-	if err := json.Unmarshal([]byte(resultText), &result); err != nil {
-		t.Fatalf("bounded listing result %q is invalid: %v", resultText, err)
+	var envelope struct {
+		Outcome   string `json:"outcome"`
+		Truncated bool   `json:"truncated"`
+		Content   string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(resultText), &envelope); err != nil || envelope.Outcome != string(tools.OutcomeSucceeded) || envelope.Truncated {
+		t.Fatalf("bounded listing result envelope is invalid (outcome=%q truncated=%t err=%v)", envelope.Outcome, envelope.Truncated, err)
+	}
+	if err := json.Unmarshal([]byte(envelope.Content), &result); err != nil {
+		t.Fatalf("bounded listing content is invalid: %v", err)
 	}
 	if len(result.Names) == 0 || len(result.Names) > 1_000 || result.Examined != len(result.Names) || result.Returned != len(result.Names) || !result.Incomplete {
 		t.Fatalf("large recursive listing did not truthfully disclose a bounded partial result: names=%d examined=%d returned=%d incomplete=%t", len(result.Names), result.Examined, result.Returned, result.Incomplete)
@@ -2837,12 +2862,12 @@ func TestStage6RecursiveListingEntryAndOutputLimits(t *testing.T) {
 		}
 	}
 	evidence := fixture.service.impl.(*linuxImplementation).session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("bounded recursive worker evidence=%+v", evidence)
 	}
 	stage6Update("recursive_listing_entry_limit", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
 		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
 		item.FixtureBytesMatched = true
 	})
@@ -2881,7 +2906,7 @@ func TestStage6RecursiveListingCancellationAfterTraversalWithholdsResult(t *test
 		t.Fatal("completed traversal result reached the provider after cancellation")
 	}
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadCancelled || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].Published {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadCancelled || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].Published || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("post-traversal cancellation evidence=%+v", evidence)
 	}
 	if published := impl.session.PublishedResults(); len(published) != 0 {
@@ -2889,7 +2914,7 @@ func TestStage6RecursiveListingCancellationAfterTraversalWithholdsResult(t *test
 	}
 	stage6Update("recursive_listing_cancellation_after_traversal", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
 		item.OnceApprovalCount, item.ProviderRequestCount = fixture.approvals.Load(), len(requests)
 		item.DisclosureWithheld, item.StaleDataAbsent = true, true
 	})
@@ -2949,14 +2974,15 @@ func TestStage6RecursiveListingDescendantMovementAndReplacement(t *testing.T) {
 		t.Fatalf("recursive traversal escaped the pinned selected directory or followed a moved descendant: %s", continuation)
 	}
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("recursive descendant worker evidence=%+v", evidence)
 	}
 	stage6Update("recursive_descendant_movement_replacement", func(item *stage6Case) {
 		item.ActorStarted, item.ActorTransitionCompleted, item.ActorJoined, item.ActorTransitionCount = true, true, true, 1
 		item.AuthorityObservation = "selected directory object; descendant moved outside before traversal, only replacement still beneath pinned selected object was disclosed"
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted, item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = evidence[0].CapabilitySent, evidence[0].ReadStarted, fixture.approvals.Load(), 1, len(requests)
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
 		item.FixtureBytesMatched, item.CleanupConfirmed = true, evidence[0].WorkerJoined
 	})
 	stage6Pass("recursive_descendant_movement_replacement", "an independent actor moved a descendant outside the pinned selected directory and a replacement remained inside; traversal disclosed only the replacement from the selected directory object")
@@ -3021,12 +3047,12 @@ func TestStage6DirectoryListingSurvivesSelectedDirectoryMovementAndReplacement(t
 		t.Fatalf("listing followed replacement pathname instead of the pinned directory: %s", continuation)
 	}
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !evidence[0].Probe.PathOpenDenied {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("moved-directory listing lacked native worker evidence: %+v", evidence)
 	}
 	stage6Update("directory_listing_movement_replacement", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, evidence[0].Probe.PathOpenDenied
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
 		item.ActorStarted, item.ActorTransitionCompleted, item.ActorJoined, item.ActorTransitionCount = true, true, true, 1
 		item.ProviderRequestCount, item.OnceApprovalCount, item.FixtureBytesMatched = len(requests), fixture.approvals.Load(), true
 	})
@@ -3059,12 +3085,12 @@ func TestStage6DirectoryListingOwnerRotationWithholdsCapture(t *testing.T) {
 	}
 	impl := fixture.service.impl.(*linuxImplementation)
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || !evidence[0].WorkerJoined || !evidence[0].ReadStarted || evidence[0].Outcome != readbrokerstudy.ReadSucceeded {
+	if len(evidence) != 1 || !evidence[0].WorkerJoined || !evidence[0].ReadStarted || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("owner-rotation listing worker was not joined before suppression: %+v", evidence)
 	}
 	stage6Update("directory_listing_owner_rotation", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6DirectoryListingProbePassed(evidence[0].Probe)
 		item.OnceApprovalCount, item.ProviderRequestCount = fixture.approvals.Load(), len(requests)
 		item.DisclosureWithheld, item.StaleDataAbsent = true, true
 	})
@@ -3100,7 +3126,7 @@ func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 		t.Fatalf("provider requests=%d, want initial request only after listing cancellation", len(requests))
 	}
 	evidence := session.Evidence()
-	if len(evidence) != 1 || (evidence[0].Outcome != readbrokerstudy.ReadCancelled && evidence[0].Outcome != readbrokerstudy.ReadUnknown) || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].CapabilitySent || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
+	if len(evidence) != 1 || (evidence[0].Outcome != readbrokerstudy.ReadCancelled && evidence[0].Outcome != readbrokerstudy.ReadUnknown) || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].CapabilitySent || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published || !stage6DirectoryListingProbePassed(evidence[0].Probe) {
 		t.Fatalf("cancelled listing worker lifecycle evidence=%+v", evidence)
 	}
 	initial := evidence[0]
@@ -3139,7 +3165,7 @@ func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 		// ReadEvidence intentionally remains the immutable initial observation.
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, true
 		item.CapabilityTransferred, item.CapabilityHeld, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].CapabilityHeld, evidence[0].ReadStarted
-		item.ReadOutcome, item.OnceApprovalCount = string(evidence[0].Outcome), fixture.approvals.Load()
+		item.ReadOutcome, item.ProbePassed, item.OnceApprovalCount = string(evidence[0].Outcome), stage6DirectoryListingProbePassed(evidence[0].Probe), fixture.approvals.Load()
 		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = len(requests), true, true
 	})
 	stage6Pass("directory_listing_worker_cleanup", "cancellation after the fixed worker held the directory descriptor caused bounded worker cleanup and join; no enumeration, publication, or provider continuation occurred")
