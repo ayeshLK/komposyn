@@ -108,11 +108,13 @@ evidence record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-679
 The closure disposition, follow-up boundaries and Stage 6 evidence
 contract are in the [#215 closure and acceptance record](issue-215-completion-tracking.md).
 The integrated native feasibility runner includes recursive listing checks for
-effective options, descendant movement/replacement, owner rotation, mount
-boundaries and held-worker cleanup. Recursive listing remains unavailable until
-those cases pass on a host satisfying the trusted backend policy and the exact
-revision is reviewed. The runner and reproduction steps are described in the
-[Stage 6 runner guide](issue-215-stage6-runner.md).
+effective options, nested ignore/glob behavior, entry/output limits, descendant
+movement/replacement, owner rotation, mount boundaries and held-worker cleanup.
+Recursive listing remains unavailable until those cases pass on a host
+satisfying the trusted backend policy and the exact revision is reviewed. The
+runner and reproduction steps are described in the [Stage 6 runner
+guide](issue-215-stage6-runner.md); #317's per-criterion status is in the
+[completion and evidence matrix](issue-317-completion-tracking.md).
 
 Use `/cd <path>` in chat to change the working directory for future relative
 file requests. The path may be absolute or relative to the current working

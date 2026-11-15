@@ -61,10 +61,12 @@ Recursive listing and its `recursive`, `include_hidden`, `include_ignored`, and
 `name_globs` options are implemented behind a separate native-evidence gate.
 The gate remains closed: the available `/usr/bin/bwrap` is not root-owned and
 therefore fails the trusted-backend check. Existing nonrecursive native evidence
-does not enable these options. The implementation branch adds recursive native
-cases, but those cases must run on a trusted Linux host against the exact clean
-source revision and be reviewed before the runtime may advertise advanced
-options.
+does not enable these options. Stage 6 source includes recursive operation,
+nested-ignore/glob, movement/replacement, alias, mount, owner-rotation, cleanup,
+and bounded-result cases. They must run on a trusted Linux host against the
+exact clean source revision and be reviewed before the runtime may advertise
+advanced options. The public service forwards a separate options gate, which
+remains false unless the Linux implementation selects a reviewed profile.
 
 The final integrated #316 directory-specific native run used clean commit
 `85e06601040858678d7859a5a047b774808d8e96` on Linux amd64 with trusted,

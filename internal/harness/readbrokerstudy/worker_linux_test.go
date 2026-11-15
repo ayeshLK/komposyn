@@ -224,6 +224,32 @@ func TestRecursiveTraversalStopsAtSharedEntryBudget(t *testing.T) {
 	}
 }
 
+func TestDirectoryListingOutputBoundTrimsEntriesWithoutQuadraticRetries(t *testing.T) {
+	entries := make([]directoryListingEntry, 10_000)
+	for index := range entries {
+		name := fmt.Sprintf("entry-%05d.txt", index)
+		entries[index] = directoryListingEntry{Name: name, Path: name, Device: 1, Inode: uint64(index + 1), Type: unix.DT_REG}
+	}
+	result := encodeDirectoryListingBounded(context.Background(), directoryListingResult{
+		Entries: entries, Examined: len(entries), Returned: len(entries),
+	})
+	if result.Outcome != ReadSucceeded || len(result.Bytes) > MaxReadBytes {
+		t.Fatalf("bounded listing result=%s size=%d", result.Outcome, len(result.Bytes))
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(result.Bytes, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if !listing.Incomplete || len(listing.Entries) == 0 || len(listing.Entries) >= len(entries) || listing.Returned != len(listing.Entries) {
+		t.Fatalf("output-bound listing=%+v, raw entries=%d", listing, len(entries))
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if result := encodeDirectoryListingBounded(cancelled, directoryListingResult{Entries: entries}); result.Outcome != ReadFailed {
+		t.Fatalf("expired listing encoder outcome=%s, want failure", result.Outcome)
+	}
+}
+
 func listingEntryNames(entries []directoryListingEntry) []string {
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {

@@ -238,5 +238,7 @@ Every case is explicitly classified; unavailable native cases are not
 conflated with cases that this runner revision does not implement. Runner
 revision 8 recorded five synthetic-runtime controls, one actor-helper fixture,
 twelve native-integrated cases, one native-worker-lifecycle case, and two
-unimplemented cases. Revision 9 adds two recursive-listing cases; historical
-archives remain bound to their original runner/source revisions.
+unimplemented cases. Revision 9 added two recursive-listing cases. Revision 10
+adds recursive nested-ignore/glob, whole-tree limit, and post-traversal
+cancellation cases plus a synthetic incomplete-owner listing control.
+Historical archives remain bound to their original runner/source revisions.

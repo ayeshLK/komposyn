@@ -268,6 +268,17 @@ func (s *Service) DirectoryListingAvailable() bool {
 	return ok && availability.DirectoryListingAvailable()
 }
 
+// DirectoryListingOptionsAvailable reports whether this host service has
+// independently reviewed native evidence for the recursive listing profile.
+// The Linux implementation keeps this false until that profile is accepted.
+func (s *Service) DirectoryListingOptionsAvailable() bool {
+	if s == nil || s.impl == nil {
+		return false
+	}
+	availability, ok := s.impl.(interface{ DirectoryListingOptionsAvailable() bool })
+	return ok && availability.DirectoryListingOptionsAvailable()
+}
+
 // Prepares reports that this host owns generic pre-dispatch preparation for a
 // tool ID. read_file uses its dedicated retained-read path; this generic hook
 // intentionally refuses it and cannot execute filesystem operations.

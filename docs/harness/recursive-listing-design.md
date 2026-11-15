@@ -45,6 +45,9 @@ The intended supported profile is the existing trusted Linux Bubblewrap
 profile. The current environment's `/usr/bin/bwrap` is owned by `nobody`, so it
 does not satisfy the repository's trusted-backend policy. Recursive
 advertisement must remain withheld until the extended native runner passes
-the descendant-race, alias/protection, mount, cancellation and cleanup cases on
-the tested source revision. Existing nonrecursive evidence does not enable
-recursion.
+the descendant-race, alias/protection, mount, cancellation, filtering and
+bounded-limit cases on the tested source revision and the report receives
+independent review. The public `sandbox.Service` forwards the implementation's
+separate options gate, which remains false in production. Existing
+nonrecursive evidence does not enable recursion. See the [#317 completion and
+evidence matrix](issue-317-completion-tracking.md).

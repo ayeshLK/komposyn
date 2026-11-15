@@ -1683,20 +1683,50 @@ func listDirectoryBounded(fd int, requested ...ListingOptions) WorkerResult {
 	listing.Examined = min(examined, maxExamined)
 	listing.Returned = len(entries)
 	listing.Incomplete = incomplete
-	for {
-		encoded, err := json.Marshal(listing)
-		if err != nil {
+	return encodeDirectoryListingBounded(ctx, listing)
+}
+
+func encodeDirectoryListingBounded(ctx context.Context, listing directoryListingResult) WorkerResult {
+	encoded, err := json.Marshal(listing)
+	if err != nil {
+		return WorkerResult{Outcome: ReadFailed, Detail: "directory listing could not be encoded"}
+	}
+	if err := ctx.Err(); err != nil {
+		return WorkerResult{Outcome: ReadFailed, Detail: "directory listing exceeded its execution deadline"}
+	}
+	if len(encoded) <= MaxReadBytes {
+		return WorkerResult{Outcome: ReadSucceeded, Bytes: encoded}
+	}
+
+	// Find the largest sorted entry prefix that fits in the single worker
+	// payload. Trimming one item and re-encoding repeatedly is quadratic for a
+	// wide tree and can consume the invocation deadline after traversal ends.
+	listing.Incomplete = true
+	original := listing.Entries
+	low, high, bestCount := 0, len(original), -1
+	var best []byte
+	for low <= high {
+		if err := ctx.Err(); err != nil {
+			return WorkerResult{Outcome: ReadFailed, Detail: "directory listing exceeded its execution deadline"}
+		}
+		middle := low + (high-low)/2
+		listing.Entries = original[:middle]
+		listing.Returned = middle
+		candidate, marshalErr := json.Marshal(listing)
+		if marshalErr != nil {
 			return WorkerResult{Outcome: ReadFailed, Detail: "directory listing could not be encoded"}
 		}
-		if len(encoded) <= MaxReadBytes {
-			return WorkerResult{Outcome: ReadSucceeded, Bytes: encoded}
+		if len(candidate) <= MaxReadBytes {
+			best, bestCount = candidate, middle
+			low = middle + 1
+		} else {
+			high = middle - 1
 		}
-		if len(listing.Entries) == 0 {
-			return WorkerResult{Outcome: ReadPartial, Truncated: true, Detail: "directory listing exceeded output bound"}
-		}
-		listing.Entries = listing.Entries[:len(listing.Entries)-1]
-		listing.Incomplete = true
 	}
+	if bestCount < 0 {
+		return WorkerResult{Outcome: ReadPartial, Truncated: true, Detail: "directory listing exceeded output bound"}
+	}
+	return WorkerResult{Outcome: ReadSucceeded, Bytes: best}
 }
 
 func walkListingDirectory(ctx context.Context, fd int, relative string, options ListingOptions, listing *directoryListingResult, entries *[]directoryListingEntry, examined *int, incomplete *bool, maxExamined, maxReturned int) error {

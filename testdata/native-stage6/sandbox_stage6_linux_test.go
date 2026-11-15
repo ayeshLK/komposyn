@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	stdruntime "runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -199,19 +200,20 @@ var stage6Mu sync.Mutex
 
 func newStage6Report() stage6Report {
 	ids := []string{
-		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read",
+		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read",
 		"protected_auth_refusal", "protected_settings_refusal", "provider_source_owner",
-		"incomplete_owner_inventory", "actor_helper_control", "independent_namespace_actor", "expected_once_transitions",
+		"incomplete_owner_inventory", "recursive_listing_incomplete_owner_inventory", "actor_helper_control", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
 		"late_response_and_delta_retirement", "cancellation_and_cleanup", "launch_profile_and_limits",
 		"mutation_profile", "shell_profile", "parent_death_cleanup",
 	}
 	syntheticCases := map[string]struct{}{
-		"ordinary_chat_without_root":           {},
-		"read_refused_without_root_or_backend": {},
-		"synthetic_once_authority_flow":        {},
-		"provider_source_owner":                {},
-		"incomplete_owner_inventory":           {},
+		"ordinary_chat_without_root":                   {},
+		"read_refused_without_root_or_backend":         {},
+		"synthetic_once_authority_flow":                {},
+		"provider_source_owner":                        {},
+		"incomplete_owner_inventory":                   {},
+		"recursive_listing_incomplete_owner_inventory": {},
 	}
 	actorFixtureCases := map[string]struct{}{"actor_helper_control": {}}
 	workerLifecycleCases := map[string]struct{}{"parent_death_cleanup": {}}
@@ -262,7 +264,7 @@ func newStage6Report() stage6Report {
 		)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "9",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "10",
 		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, WorkerImage: workerImage, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: limitations,
@@ -1519,7 +1521,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	}
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
-		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
+		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
 			stage6Skip(id, fmt.Sprintf(
 				"trusted backend validation refused before backend probes or worker launch (uid=%d mode=%#o error=%s)",
 				inspection.UID, inspection.Mode, boundedStage6Diagnostic(inspection.Error),
@@ -1580,7 +1582,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		content = ""
 	}
 	target := filepath.Join(root, "notes.txt")
-	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" {
 		target = filepath.Join(root, "listing-scope")
 		toolID, content = tools.ListFilesID, "visible.go"
 		if targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive-mounted" {
@@ -1606,14 +1608,38 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			_ = service.Close(context.Background())
 			t.Fatal(err)
 		}
-		if targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
-			for _, directory := range []string{"nested", ".private", filepath.Join(".git", "objects")} {
+		if targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" {
+			directories := []string{"nested", ".private", filepath.Join(".git", "objects")}
+			if targetKind == "directory-list-recursive-filtered" {
+				directories = append(directories, "ignored-dir", filepath.Join("ignored-dir", "nested"))
+			}
+			for _, directory := range directories {
 				if err := os.MkdirAll(filepath.Join(target, directory), 0700); err != nil {
 					_ = service.Close(context.Background())
 					t.Fatal(err)
 				}
 			}
-			for name, value := range map[string]string{"nested/child.go": "synthetic nested", ".private/hidden.go": "synthetic hidden", ".git/objects/secret.go": "synthetic git metadata"} {
+			nestedFiles := map[string]string{"nested/child.go": "synthetic nested", ".private/hidden.go": "synthetic hidden", ".git/objects/secret.go": "synthetic git metadata"}
+			if targetKind == "directory-list-recursive-filtered" {
+				nestedFiles["nested/keep.tmp"] = "synthetic allowed nested ignore exception"
+				nestedFiles["nested/drop.tmp"] = "synthetic ignored nested file"
+				nestedFiles[".private/hidden.tmp"] = "synthetic hidden matching glob"
+				nestedFiles["ignored-dir/nested/secret.tmp"] = "synthetic parent-ignored descendant"
+				if err := os.WriteFile(filepath.Join(target, "nested", ".gitignore"), []byte("*.tmp\n!keep.tmp\n"), 0600); err != nil {
+					_ = service.Close(context.Background())
+					t.Fatalf("create nested ignore fixture: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(target, ".gitignore"), []byte("*.tmp\nignored-dir/\n"), 0600); err != nil {
+					_ = service.Close(context.Background())
+					t.Fatalf("create recursive ignore fixture: %v", err)
+				}
+			}
+			if targetKind == "directory-list-recursive-large" {
+				for index := range 10_020 {
+					nestedFiles[fmt.Sprintf("nested/entry-%05d.txt", index)] = "synthetic bounded listing entry"
+				}
+			}
+			for name, value := range nestedFiles {
 				if err := os.WriteFile(filepath.Join(target, filepath.FromSlash(name)), []byte(value), 0600); err != nil {
 					_ = service.Close(context.Background())
 					t.Fatal(err)
@@ -1658,6 +1684,12 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	if targetKind == "directory-list-recursive" {
 		base.listingOptions = json.RawMessage(`{"recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*.go","*.tmp"]}`)
 	}
+	if targetKind == "directory-list-recursive-filtered" {
+		base.listingOptions = json.RawMessage(`{"recursive":true,"include_hidden":false,"include_ignored":false,"name_globs":["*.tmp"]}`)
+	}
+	if targetKind == "directory-list-recursive-large" {
+		base.listingOptions = json.RawMessage(`{"recursive":true,"include_hidden":false,"include_ignored":false,"name_globs":["*.txt"]}`)
+	}
 	if targetKind == "directory-list-recursive-mounted" {
 		base.listingOptions = json.RawMessage(`{"recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*"]}`)
 	}
@@ -1686,8 +1718,8 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		return permissions.ApprovalOnce, "", nil
 	})
 	var config runtime.ToolRuntimeConfig
-	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
-		if targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" {
+		if targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" {
 			if err := enableRecursiveListingForNativeStudy(service); err != nil {
 				_ = service.Close(context.Background())
 				t.Fatal(err)
@@ -1751,7 +1783,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		_ = service.Close(context.Background())
 		t.Fatalf("test-only read path setup failed: %v", err)
 	}
-	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" {
 		if err := runtime.EnableNativeDirectoryListingStudy(fixture.chat); err != nil {
 			_ = fixture.chat.CloseContext(context.Background())
 			_ = service.Close(context.Background())
@@ -2179,6 +2211,129 @@ func TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission(t *testing.T) {
 	stage6PassSynthetic("incomplete_owner_inventory", "runtime advertised the selected-root read, but Service refused admission with required auth/settings inventory incomplete; no approval or worker admission occurred, and only a correlated not_executed result reached the safe text continuation")
 }
 
+func TestStage6RecursiveListingRefusesIncompleteOwnerInventory(t *testing.T) {
+	stage6Begin("recursive_listing_incomplete_owner_inventory")
+	root := t.TempDir()
+	target := filepath.Join(root, "listing-scope")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "private-name.txt"), []byte("synthetic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := readbrokerstudy.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &stage6NeverStartedLauncher{}
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
+	if err != nil {
+		t.Fatalf("synthetic host coordinator setup failed: %v", err)
+	}
+	service := &Service{impl: impl}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	base := &stage6Provider{target: target, toolID: tools.ListFilesID, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
+	providers, err := model.NewRegistry(base)
+	if err != nil {
+		_ = service.Close(context.Background())
+		t.Fatal(err)
+	}
+	var approvals atomic.Int32
+	approval := runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approvals.Add(1)
+		return permissions.ApprovalOnce, "", nil
+	})
+	clarification := runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("synthetic clarification is unavailable")
+	})
+	authStore := auth.Store{Path: filepath.Join(root, "synthetic-chat-auth.json")}
+	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, service)
+	config.ReadAdmission = &stage6ReadHost{service: service}
+	config.Preparer = service
+	config.Grants = permissions.NewMemoryStore()
+	chat := runtime.NewChatWithToolRuntime(providers, authStore, nil, config)
+	if err := chat.AddProfile(ctx, "stage6-incomplete-list-profile", "openai", "synthetic profile", "synthetic-only-key", nil); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatal(err)
+	}
+	discovery := chat.Discover(ctx)
+	if len(discovery.Models) != 1 {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatalf("synthetic model discovery returned %d models", len(discovery.Models))
+	}
+	if err := chat.Select(ctx, discovery.Models[0].Key(), false); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatal(err)
+	}
+	if err := chat.SelectFilesystemRoot(ctx, root); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatal(err)
+	}
+	if err := runtime.EnableNativeReadStudy(chat); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatal(err)
+	}
+	if err := runtime.EnableNativeDirectoryListingStudy(chat); err != nil {
+		_ = chat.CloseContext(context.Background())
+		_ = service.Close(context.Background())
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		if err := chat.CloseContext(cleanupCtx); err != nil {
+			t.Errorf("incomplete-listing chat cleanup failed: %v", err)
+		}
+		if err := service.Close(cleanupCtx); err != nil {
+			t.Errorf("incomplete-listing service cleanup failed: %v", err)
+		} else {
+			stage6Update("recursive_listing_incomplete_owner_inventory", func(item *stage6Case) { item.CleanupConfirmed = true })
+		}
+	})
+	turn, err := chat.Send(ctx, "list the synthetic private directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("incomplete-inventory listing did not return a safe continuation: outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := base.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial listing call and refusal continuation", len(requests))
+	}
+	if _, found := readResultContent(requests[1], "stage6-read"); !found {
+		t.Fatal("incomplete-inventory continuation omitted correlated listing refusal")
+	}
+	resultText, _ := readResultContent(requests[1], "stage6-read")
+	var refusal struct {
+		Outcome string `json:"outcome"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(resultText), &refusal); err != nil || refusal.Outcome != string(tools.OutcomeNotExecuted) || refusal.Content == "" {
+		t.Fatalf("incomplete inventory result=%q; want bounded not_executed refusal (err=%v)", resultText, err)
+	}
+	for _, request := range requests {
+		encoded, _ := json.Marshal(request.Messages)
+		if strings.Contains(string(encoded), "private-name.txt") {
+			t.Fatal("private listing name reached provider with incomplete owner coverage")
+		}
+	}
+	if approvals.Load() != 0 || launcher.starts.Load() != 0 || len(impl.session.AdmissionConversations()) != 0 {
+		t.Fatalf("incomplete listing crossed trust boundary: approvals=%d starts=%d admissions=%v", approvals.Load(), launcher.starts.Load(), impl.session.AdmissionConversations())
+	}
+	_, messages, results, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(chat, "private-name.txt")
+	if messages == 0 || results != 1 || markerFound || !payloadFree {
+		t.Fatalf("incomplete listing history contains sensitive data: messages=%d results=%d marker=%t payload_free=%t", messages, results, markerFound, payloadFree)
+	}
+	stage6Update("recursive_listing_incomplete_owner_inventory", func(item *stage6Case) {
+		item.EvidenceKind, item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = "synthetic-runtime-composition", len(requests), true, true
+	})
+	stage6PassSynthetic("recursive_listing_incomplete_owner_inventory", "the composed listing tool returned only a correlated not_executed refusal when required auth/settings owner coverage was incomplete; no approval, admission, worker, count, or private name crossed the boundary")
+}
+
 func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {
 	stage6Begin("positive_exact_read_and_replay")
 	fixture := newStage6Fixture(t, "positive_exact_read_and_replay", "ordinary", false, nil)
@@ -2588,6 +2743,157 @@ func TestStage6PositiveRecursiveDirectoryListing(t *testing.T) {
 		item.FixtureBytesMatched = true
 	})
 	stage6Pass("positive_recursive_directory_listing", "recursive traversal returned relative paths, applied explicit hidden/ignored/glob options, excluded .git and protected aliases, refused symlink traversal, and continued only after once approval")
+}
+
+func TestStage6RecursiveListingNestedIgnoreAndGlobFilters(t *testing.T) {
+	stage6Begin("recursive_listing_nested_ignore_filters")
+	fixture := newStage6Fixture(t, "recursive_listing_nested_ignore_filters", "directory-list-recursive-filtered", false, nil)
+	fixture.reportCases = []string{"recursive_listing_nested_ignore_filters"}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	turn, err := fixture.chat.Send(ctx, "list matching files recursively", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("filtered recursive listing outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial plus listing continuation", len(requests))
+	}
+	resultText, found := readResultContent(requests[1], "stage6-read")
+	if !found {
+		t.Fatal("provider continuation omitted recursive listing result")
+	}
+	var result struct {
+		Names      []string `json:"names"`
+		Examined   int      `json:"examined"`
+		Returned   int      `json:"returned"`
+		Incomplete bool     `json:"incomplete"`
+	}
+	if err := json.Unmarshal([]byte(resultText), &result); err != nil {
+		t.Fatalf("listing result %q is invalid: %v", resultText, err)
+	}
+	if !slices.Equal(result.Names, []string{"nested/keep.tmp"}) || result.Examined != 1 || result.Returned != 1 || result.Incomplete {
+		t.Fatalf("recursive ignore/glob result=%+v, want only nested exception with provider-visible count 1", result)
+	}
+	for _, forbidden := range []string{"nested/drop.tmp", "ignored.tmp", "ignored-dir", "secret.tmp", ".private", ".git", "hidden.tmp"} {
+		if strings.Contains(resultText, forbidden) {
+			t.Fatalf("filtered recursive result disclosed %q: %s", forbidden, resultText)
+		}
+	}
+	for _, option := range []string{"recursive=true", "include_hidden=false", "include_ignored=false", "*.tmp", "openai/stage6-fixture-model using auth profile stage6-profile"} {
+		if !strings.Contains(fixture.approvalDescription, option) {
+			t.Fatalf("once approval omitted %q: %s", option, fixture.approvalDescription)
+		}
+	}
+	if fixture.approvals.Load() != 1 {
+		t.Fatalf("listing approvals=%d, want one", fixture.approvals.Load())
+	}
+	evidence := fixture.service.impl.(*linuxImplementation).session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted {
+		t.Fatalf("nested-ignore listing worker evidence=%+v", evidence)
+	}
+	stage6Update("recursive_listing_nested_ignore_filters", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
+		item.FixtureBytesMatched = true
+	})
+	stage6Pass("recursive_listing_nested_ignore_filters", "actual Service and provider continuation applied a nested negation, preserved ignored-parent exclusions, did not prune traversal for a basename glob, excluded hidden and .git paths, and disclosed only permitted names/counts")
+}
+
+func TestStage6RecursiveListingEntryAndOutputLimits(t *testing.T) {
+	stage6Begin("recursive_listing_entry_limit")
+	fixture := newStage6Fixture(t, "recursive_listing_entry_limit", "directory-list-recursive-large", false, nil)
+	fixture.reportCases = []string{"recursive_listing_entry_limit"}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	turn, err := fixture.chat.Send(ctx, "list all matching files recursively", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("large recursive listing outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial plus listing continuation", len(requests))
+	}
+	resultText, found := readResultContent(requests[1], "stage6-read")
+	if !found {
+		t.Fatal("provider continuation omitted bounded recursive listing result")
+	}
+	var result struct {
+		Names      []string `json:"names"`
+		Examined   int      `json:"examined"`
+		Returned   int      `json:"returned"`
+		Incomplete bool     `json:"incomplete"`
+	}
+	if err := json.Unmarshal([]byte(resultText), &result); err != nil {
+		t.Fatalf("bounded listing result %q is invalid: %v", resultText, err)
+	}
+	if len(result.Names) == 0 || len(result.Names) > 1_000 || result.Examined != len(result.Names) || result.Returned != len(result.Names) || !result.Incomplete {
+		t.Fatalf("large recursive listing did not truthfully disclose a bounded partial result: names=%d examined=%d returned=%d incomplete=%t", len(result.Names), result.Examined, result.Returned, result.Incomplete)
+	}
+	for _, name := range result.Names {
+		if strings.Contains(name, "protected-auth") || strings.Contains(name, ".git") {
+			t.Fatalf("bounded listing disclosed protected metadata path %q", name)
+		}
+	}
+	evidence := fixture.service.impl.(*linuxImplementation).session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined {
+		t.Fatalf("bounded recursive worker evidence=%+v", evidence)
+	}
+	stage6Update("recursive_listing_entry_limit", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
+		item.FixtureBytesMatched = true
+	})
+	stage6Pass("recursive_listing_entry_limit", "actual recursive worker and host filter returned a provider-visible partial result with bounded names/counts and incomplete=true after whole-tree traversal limits")
+}
+
+func TestStage6RecursiveListingCancellationAfterTraversalWithholdsResult(t *testing.T) {
+	stage6Begin("recursive_listing_cancellation_after_traversal")
+	fixture := newStage6Fixture(t, "recursive_listing_cancellation_after_traversal", "directory-list-recursive", false, nil)
+	fixture.reportCases = []string{"recursive_listing_cancellation_after_traversal"}
+	impl := fixture.service.impl.(*linuxImplementation)
+	if impl.session == nil {
+		t.Fatal("native listing session is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	checkpointReached := atomic.Bool{}
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint != readbrokerstudy.CheckpointAfterCapture {
+			return nil
+		}
+		checkpointReached.Store(true)
+		cancel()
+		return context.Canceled
+	})
+	turn, sendErr := fixture.chat.Send(ctx, "list the synthetic fixture recursively", nil)
+	if !checkpointReached.Load() || sendErr != nil && !errors.Is(sendErr, context.Canceled) || turn.Outcome != provider.OutcomeInterrupted {
+		t.Fatalf("post-traversal cancellation checkpoint=%t outcome=%s err=%v", checkpointReached.Load(), turn.Outcome, sendErr)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want no listing continuation after cancellation", len(requests))
+	}
+	encoded, _ := json.Marshal(requests[0].Messages)
+	if strings.Contains(string(encoded), "nested/child.go") {
+		t.Fatal("completed traversal result reached the provider after cancellation")
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadCancelled || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].Published {
+		t.Fatalf("post-traversal cancellation evidence=%+v", evidence)
+	}
+	if published := impl.session.PublishedResults(); len(published) != 0 {
+		t.Fatalf("post-traversal cancellation published %d private results", len(published))
+	}
+	stage6Update("recursive_listing_cancellation_after_traversal", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.OnceApprovalCount, item.ProviderRequestCount = fixture.approvals.Load(), len(requests)
+		item.DisclosureWithheld, item.StaleDataAbsent = true, true
+	})
+	stage6Pass("recursive_listing_cancellation_after_traversal", "cancellation at the deterministic post-traversal checkpoint retired the joined worker and suppressed the filtered names before provider continuation")
 }
 
 func TestStage6RecursiveListingDescendantMovementAndReplacement(t *testing.T) {
