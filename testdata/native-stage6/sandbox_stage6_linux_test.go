@@ -2308,8 +2308,9 @@ func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 	if impl.session == nil {
 		t.Fatal("native fixture session is unavailable")
 	}
+	session := impl.session
 	checkpointReached := atomic.Bool{}
-	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+	session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
 		if checkpoint != readbrokerstudy.CheckpointAfterCapabilityHeld {
 			return nil
 		}
@@ -2325,7 +2326,7 @@ func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("provider requests=%d, want initial request only after listing cancellation", len(requests))
 	}
-	evidence := impl.session.Evidence()
+	evidence := session.Evidence()
 	if len(evidence) != 1 || (evidence[0].Outcome != readbrokerstudy.ReadCancelled && evidence[0].Outcome != readbrokerstudy.ReadUnknown) || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].CapabilitySent || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
 		t.Fatalf("cancelled listing worker lifecycle evidence=%+v", evidence)
 	}
@@ -2349,14 +2350,14 @@ func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 	if err := fixture.service.Close(cleanupCtx); err != nil {
 		t.Fatalf("bounded service shutdown did not drain cancelled listing worker: %v", err)
 	}
-	evidence = impl.session.Evidence()
+	evidence = session.Evidence()
 	if len(evidence) != 1 || !evidence[0].WorkerJoined || evidence[0].Outcome != initial.Outcome || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
 		t.Fatalf("listing cleanup changed original worker evidence or failed to join: before=%+v after=%+v", initial, evidence)
 	}
-	if active := impl.session.ActiveOperationCount(); active != 0 {
+	if active := session.ActiveOperationCount(); active != 0 {
 		t.Fatalf("active operations after cancelled listing cleanup=%d", active)
 	}
-	if published := impl.session.PublishedResults(); len(published) != 0 {
+	if published := session.PublishedResults(); len(published) != 0 {
 		t.Fatalf("cancelled listing published %d private results", len(published))
 	}
 	stage6Update("directory_listing_worker_cleanup", func(item *stage6Case) {
