@@ -1576,10 +1576,21 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			t.Fatal(err)
 		}
 		if targetKind == "directory-list-mounted" {
-			if err := authStore.AddAPIKey("protected-mount-fixture", "openai", "synthetic protected mount", "synthetic-never-real-secret", nil); err != nil {
+			if err := os.WriteFile(authPath, []byte("synthetic protected mount object"), 0600); err != nil {
 				_ = service.Close(context.Background())
 				t.Fatalf("create synthetic protected mount source: %v", err)
 			}
+			protectedSource, err := os.Open(authPath)
+			if err != nil {
+				_ = service.Close(context.Background())
+				t.Fatalf("open synthetic protected mount source: %v", err)
+			}
+			if err := service.Protect(ctx, auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, authPath, protectedSource); err != nil {
+				_ = protectedSource.Close()
+				_ = service.Close(context.Background())
+				t.Fatalf("register synthetic protected mount source identity: %v", err)
+			}
+			_ = protectedSource.Close()
 			alias := filepath.Join(target, "protected-mounted-alias")
 			if err := os.WriteFile(alias, []byte("mountpoint"), 0600); err != nil {
 				_ = service.Close(context.Background())
