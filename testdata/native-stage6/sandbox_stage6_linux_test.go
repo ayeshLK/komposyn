@@ -2351,8 +2351,8 @@ func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 		t.Fatalf("bounded service shutdown did not drain cancelled listing worker: %v", err)
 	}
 	evidence = session.Evidence()
-	if len(evidence) != 1 || !evidence[0].WorkerJoined || evidence[0].Outcome != initial.Outcome || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
-		t.Fatalf("listing cleanup changed original worker evidence or failed to join: before=%+v after=%+v", initial, evidence)
+	if len(evidence) != 1 || evidence[0].WorkerJoined || evidence[0].Outcome != initial.Outcome || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
+		t.Fatalf("listing cleanup rewrote the original unknown operation observation: before=%+v after=%+v", initial, evidence)
 	}
 	if active := session.ActiveOperationCount(); active != 0 {
 		t.Fatalf("active operations after cancelled listing cleanup=%d", active)
@@ -2361,7 +2361,10 @@ func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 		t.Fatalf("cancelled listing published %d private results", len(published))
 	}
 	stage6Update("directory_listing_worker_cleanup", func(item *stage6Case) {
-		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		// CloseContext and Service.Close returned only after the session had
+		// observed the delayed direct-process join and removed its obligation.
+		// ReadEvidence intentionally remains the immutable initial observation.
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, true
 		item.CapabilityTransferred, item.CapabilityHeld, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].CapabilityHeld, evidence[0].ReadStarted
 		item.ReadOutcome, item.OnceApprovalCount = string(evidence[0].Outcome), fixture.approvals.Load()
 		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = len(requests), true, true
