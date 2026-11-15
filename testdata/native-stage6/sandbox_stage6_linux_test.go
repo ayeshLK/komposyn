@@ -1429,17 +1429,9 @@ func newStage6HostService(backendPath string, holdWorker bool) (*Service, error)
 		}
 		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6Image(backendPath, imagePath, os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256"), holdWorker)
 	} else if os.Getenv("KOMPOSYN_STAGE6_DIRECTORY_MOUNT_ROOT") != "" {
-		userNamespace, openErr := os.Open("/proc/self/ns/user")
-		if openErr != nil {
-			_ = registry.Close()
-			return nil, fmt.Errorf("open isolated user namespace for mounted-directory worker: %w", openErr)
-		}
-		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6InUserNamespace(
-			backendPath, workerPath, stage6RequestedBindMode(), holdWorker, userNamespace,
+		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6InFixtureUserNamespace(
+			backendPath, workerPath, stage6RequestedBindMode(), holdWorker,
 		)
-		if err != nil {
-			_ = userNamespace.Close()
-		}
 	} else {
 		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6(backendPath, workerPath, stage6RequestedBindMode(), holdWorker)
 	}
@@ -2312,7 +2304,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 		item.ProviderRequestCount, item.FixtureBytesMatched = measured.ProviderRequestCount, measured.FixtureBytesMatched
 		item.DisclosureWithheld, item.StaleDataAbsent, item.CleanupConfirmed = measured.DisclosureWithheld, measured.StaleDataAbsent, measured.CleanupConfirmed
 	})
-	stage6Pass("directory_listing_mount_boundary", "a synthetic bind-mounted child had a distinct native mount ID; the worker joined the isolated fixture user namespace while retaining its own mount and PID namespaces; one-level listing disclosed the mountpoint name without exposing its marker")
+	stage6Pass("directory_listing_mount_boundary", "a synthetic bind-mounted child had a distinct native mount ID; the worker inherited the isolated fixture user namespace while retaining its own mount and PID namespaces; one-level listing disclosed the mountpoint name without exposing its marker")
 }
 
 func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
@@ -2322,10 +2314,10 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 	stage6Begin("directory_listing_mount_boundary")
 	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
 		item.LaunchPolicy = map[string]any{
-			"user_namespace":        "joined the isolated fixture namespace via Bubblewrap --userns",
+			"user_namespace":        "inherited the isolated fixture namespace; no additional user mapping requested",
 			"mount_namespace":       "worker-private",
 			"pid_namespace":         "worker-private",
-			"disable_userns_option": "omitted because Bubblewrap requires --unshare-user with --disable-userns; worker seccomp denies unshare, setns, and process-like clone after bootstrap",
+			"disable_userns_option": "not used because the worker inherits the fixture user namespace; worker seccomp denies unshare, setns, and process-like clone after bootstrap",
 		}
 	})
 	fixture := newStage6Fixture(t, "directory_listing_mount_boundary", "directory-list-mounted", false, nil)
