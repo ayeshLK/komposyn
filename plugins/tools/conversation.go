@@ -83,7 +83,7 @@ var listFilesSchema = json.RawMessage(`{"type":"object","properties":{"path":{"t
 // request. Host composition must withhold it until directory enforcement and
 // native evidence are accepted.
 func ListFilesDefinition() Definition {
-	return Definition{ID: ListFilesID, Description: "List names in one directory only (nonrecursive). Every request needs explicit once approval naming the directory and selected provider destination. Hidden entries, ignored entries, and .git are excluded; symlinks are not followed. Filenames and counts are disclosed to this provider and may be sensitive. Changing the working directory grants no listing permission. Search, recursion, filtering, and filesystem changes are unavailable.", InputSchema: append(json.RawMessage(nil), listFilesSchema...), MaxInput: MaxListFilesInputBytes}
+	return Definition{ID: ListFilesID, Description: "List names in one directory only (nonrecursive). Every request needs explicit once approval naming the directory and selected provider destination. Hidden entries, ignored entries, and .git are excluded; symlinks are not followed. Results include examined and returned counts plus an incomplete flag when a bound is reached. Filenames and counts are disclosed to this provider and may be sensitive. Changing the working directory grants no listing permission. Search, recursion, filtering, and filesystem changes are unavailable.", InputSchema: append(json.RawMessage(nil), listFilesSchema...), MaxInput: MaxListFilesInputBytes}
 }
 
 // ParseListFiles rejects unknown or broadened options rather than silently

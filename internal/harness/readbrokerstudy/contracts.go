@@ -128,6 +128,7 @@ type PreparedRead interface {
 // target containment or grant access. Destination identifies the selected
 // provider/model/profile binding for consent.
 type AdmissionRequest struct {
+	Operation      AdmissionOperation
 	ConversationID string
 	TurnID         string
 	CallID         string
@@ -137,9 +138,20 @@ type AdmissionRequest struct {
 	Destination    string
 }
 
+// AdmissionOperation is fixed by trusted host composition, never selected by
+// an untrusted tool argument. The empty value preserves the existing exact
+// file-read behavior for older internal fixtures.
+type AdmissionOperation string
+
+const (
+	AdmissionReadFile      AdmissionOperation = "read_file"
+	AdmissionListDirectory AdmissionOperation = "list_files"
+)
+
 // AdmissionMetadata is detached disclosure metadata. The opaque reference is
 // host-created and is validated against the owning coordinator's record map.
 type AdmissionMetadata struct {
+	Operation      AdmissionOperation
 	Reference      *AdmissionReference
 	ServiceID      string
 	ConversationID string
@@ -201,6 +213,12 @@ type ReadCompletion struct {
 type ReadBroker interface {
 	PrepareRead(root, target string, generation GenerationSet) (PreparedRead, error)
 	Revalidate(PreparedRead) error
+}
+
+// DirectoryListingBroker prepares a read-only directory descriptor for the
+// fixed listing worker. The worker receives no pathname or parent descriptor.
+type DirectoryListingBroker interface {
+	PrepareDirectoryList(root, target string, generation GenerationSet) (PreparedRead, error)
 }
 
 type GenerationSet struct {
@@ -362,6 +380,13 @@ type SandboxWorker interface {
 	// Joined confirms that the direct process was waited/reaped. It does not
 	// claim that every namespace descendant has terminated.
 	Joined() bool
+}
+
+// DirectoryCapabilityWorker is implemented only by the fixed Linux worker.
+// It transfers a read-only directory descriptor under a distinct protocol
+// frame and returns a bounded, nonrecursive listing.
+type DirectoryCapabilityWorker interface {
+	TransferDirectoryCapability(context.Context, *os.File, FileIdentity) error
 }
 
 // HostProcessIdentity names one task-owned process by PID plus its kernel

@@ -18,10 +18,12 @@ package readbrokerstudy
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -115,6 +117,185 @@ func TestBrokerCanPrepareAnIndividuallyScopedTargetOutsideWorkingDirectory(t *te
 	got, err := os.ReadFile(fmt.Sprintf("/proc/self/fd/%d", opened.Fd()))
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("opened exact outside target=%q err=%v, want %q", got, err, want)
+	}
+}
+
+func TestDirectoryListPreparationPinsOnlyTheSelectedDirectoryObject(t *testing.T) {
+	root := t.TempDir()
+	selected := filepath.Join(root, "selected")
+	if err := os.Mkdir(selected, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(selected, "ordinary.fixture"), []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	broker := NewBroker(registry)
+	listingBroker, ok := broker.(DirectoryListingBroker)
+	if !ok {
+		t.Fatal("production broker does not implement directory listing preparation")
+	}
+	generation := GenerationSet{Root: 1, Policy: registry.View().Generation}
+	prepared, err := listingBroker.PrepareDirectoryList(root, selected, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = prepared.Close() })
+	if prepared.Path() != selected || prepared.Class() != ClassOrdinary || prepared.Identity().Type != unix.S_IFDIR {
+		t.Fatalf("prepared listing metadata path=%q class=%q identity=%+v", prepared.Path(), prepared.Class(), prepared.Identity())
+	}
+	if err := broker.Revalidate(prepared); err != nil {
+		t.Fatalf("pinned directory did not revalidate: %v", err)
+	}
+	duplicated, err := prepared.DuplicateForWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer duplicated.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(duplicated.Fd()), &stat); err != nil {
+		t.Fatal(err)
+	}
+	flags, err := unix.FcntlInt(duplicated.Fd(), unix.F_GETFL, 0)
+	if err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || flags&unix.O_ACCMODE != unix.O_RDONLY {
+		t.Fatalf("transferred directory capability mode=%#o flags=%#x err=%v", stat.Mode, flags, err)
+	}
+	if err := os.Rename(selected, filepath.Join(root, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.Revalidate(prepared); err != nil {
+		t.Fatalf("external rename changed pinned-object authority: %v", err)
+	}
+}
+
+func TestDirectoryListPreparationRefusesProtectedAndUncoveredDirectoryScopes(t *testing.T) {
+	root := t.TempDir()
+	protected := filepath.Join(root, "protected")
+	ordinary := filepath.Join(root, "ordinary")
+	for _, path := range []string{protected, ordinary} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(OwnerRegistration{Owner: "settings-fixture", Class: ClassSettings, Path: protected, Directory: true}); err != nil {
+		t.Fatal(err)
+	}
+	broker := NewBroker(registry)
+	listingBroker := broker.(DirectoryListingBroker)
+	generation := GenerationSet{Root: 1, Policy: registry.View().Generation}
+	if prepared, err := listingBroker.PrepareDirectoryList(root, protected, generation); !errors.Is(err, ErrProtected) {
+		if prepared != nil {
+			_ = prepared.Close()
+		}
+		t.Fatalf("protected directory listing preparation=%v, err=%v", prepared, err)
+	}
+	if prepared, err := listingBroker.PrepareDirectoryList(root, ordinary, generation); !errors.Is(err, ErrDirectoryCoverage) {
+		if prepared != nil {
+			_ = prepared.Close()
+		}
+		t.Fatalf("same-device directory listing preparation=%v, err=%v; want missing descendant coverage", prepared, err)
+	}
+}
+
+func TestDirectoryListFilteringHonorsIgnoreRulesAndProtectedAliases(t *testing.T) {
+	base := t.TempDir()
+	directoryPath := filepath.Join(base, "sample")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	protectedPath := filepath.Join(base, "owned-secret")
+	if err := os.WriteFile(protectedPath, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(protectedPath, filepath.Join(directoryPath, "ordinary-looking")); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"keep.txt", "ignored.log"} {
+		if err := os.WriteFile(filepath.Join(directoryPath, name), []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(directoryPath, ".gitignore"), []byte("*.log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(OwnerRegistration{Owner: "credential-fixture", Class: ClassCredential, Path: protectedPath}); err != nil {
+		t.Fatal(err)
+	}
+	broker := NewBroker(registry)
+	prepared, err := broker.(DirectoryListingBroker).PrepareDirectoryList(base, directoryPath, GenerationSet{Root: 1, Policy: registry.View().Generation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = prepared.Close() })
+	var entries []directoryListingEntry
+	for _, name := range []string{"keep.txt", "ignored.log", "ordinary-looking"} {
+		fd, err := unix.Openat(int(prepared.(*preparedDirectoryList).directory.Fd()), name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stat unix.Stat_t
+		if err := unix.Fstat(fd, &stat); err != nil {
+			_ = unix.Close(fd)
+			t.Fatal(err)
+		}
+		_ = unix.Close(fd)
+		entries = append(entries, directoryListingEntry{Name: name, Inode: uint64(stat.Ino), Type: direntTypeForMode(stat.Mode)})
+	}
+	var directoryStat unix.Stat_t
+	if err := unix.Fstat(int(prepared.(*preparedDirectoryList).directory.Fd()), &directoryStat); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(directoryListingResult{Entries: entries, Examined: 3, MtimeNS: directoryStat.Mtim.Sec*1e9 + directoryStat.Mtim.Nsec, CtimeNS: directoryStat.Ctim.Sec*1e9 + directoryStat.Ctim.Nsec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := prepared.(*preparedDirectoryList).filterListing(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(filtered, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(listing.Names, []string{"keep.txt"}) {
+		t.Fatalf("filtered names=%q, want only keep.txt", listing.Names)
+	}
+}
+
+func TestDirectoryListRefusesUnsupportedIgnoreRules(t *testing.T) {
+	base := t.TempDir()
+	directoryPath := filepath.Join(base, "sample")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directoryPath, ".gitignore"), []byte("**/private\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	prepared, err := NewBroker(registry).(DirectoryListingBroker).PrepareDirectoryList(base, directoryPath, GenerationSet{Root: 1, Policy: registry.View().Generation})
+	if prepared != nil {
+		_ = prepared.Close()
+	}
+	if !errors.Is(err, ErrProtected) {
+		t.Fatalf("unsupported ignore syntax result=%v err=%v; want fail closed", prepared, err)
 	}
 }
 

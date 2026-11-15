@@ -374,3 +374,17 @@ func TestFilesystemReadApprovalNoticeUsesCurrentWorkingDirectoryAfterNavigation(
 		})
 	}
 }
+
+func TestDirectoryListingApprovalBindsExactScopeAndProvider(t *testing.T) {
+	invocation := tools.Invocation{ConversationID: "conversation", ProviderCallID: "list-1", ToolID: tools.ListFilesID, Arguments: json.RawMessage(`{"path":"/tmp/sample"}`)}
+	request, err := buildFilesystemReadRequest(invocation, FilesystemReadAdmission{Operation: string(tools.ListFilesID), Reference: new(struct{}), AdmissionBinding: "admission", Target: "/tmp/sample", Destination: "openai/model/profile", Deadline: time.Now().Add(time.Minute)}, "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Destination != "openai/model/profile" || len(request.RequireOnceKeys) != 1 || request.Requirements[1].Resource.Target != "/tmp/sample" || request.Requirements[1].Key != "directory_listing_disclosure" {
+		t.Fatalf("listing approval did not bind exact directory, once grant and destination: %+v", request)
+	}
+	if !strings.Contains(request.Requirements[0].Description, "List names in this exact directory once") || !strings.Contains(request.Requirements[1].Description, "nonrecursive") {
+		t.Fatalf("listing approval did not explain its scope: %+v", request.Requirements)
+	}
+}

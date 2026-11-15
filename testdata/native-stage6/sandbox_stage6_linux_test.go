@@ -197,7 +197,7 @@ var stage6Mu sync.Mutex
 
 func newStage6Report() stage6Report {
 	ids := []string{
-		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "empty_file_read",
+		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read",
 		"protected_auth_refusal", "protected_settings_refusal", "provider_source_owner",
 		"incomplete_owner_inventory", "actor_helper_control", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
@@ -360,7 +360,7 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	want := map[string]int{
 		"synthetic-runtime-composition": 5,
 		"synthetic-actor-fixture":       1,
-		"native-integrated":             12,
+		"native-integrated":             17,
 		"native-worker-lifecycle":       1,
 		"not-implemented":               2,
 	}
@@ -1032,6 +1032,7 @@ type stage6Provider struct {
 	mu              sync.Mutex
 	requests        []provider.ChatRequest
 	target          string
+	toolID          tools.ID
 	blockSecond     bool
 	firstToolCall   bool
 	multipleReads   bool
@@ -1074,6 +1075,10 @@ func (p *stage6Provider) StreamChat(ctx context.Context, request provider.ChatRe
 			Native: []json.RawMessage{json.RawMessage(`{"type":"message","content":"Synthetic fixture answer."}`)}}, nil
 	}
 	if call == 1 {
+		toolID := p.toolID
+		if toolID == "" {
+			toolID = tools.ReadFileID
+		}
 		paths := []struct{ callID, itemID, path string }{{"stage6-read", "stage6-item-read", p.target}}
 		if p.multipleReads {
 			paths = append(paths, struct{ callID, itemID, path string }{"stage6-read-b", "stage6-item-read-b", p.secondTarget})
@@ -1083,8 +1088,8 @@ func (p *stage6Provider) StreamChat(ctx context.Context, request provider.ChatRe
 		for _, item := range paths {
 			arguments, _ := json.Marshal(map[string]string{"path": item.path})
 			nativeArguments, _ := json.Marshal(string(arguments))
-			nativeCalls = append(nativeCalls, json.RawMessage(`{"type":"function_call","id":"`+item.itemID+`","call_id":"`+item.callID+`","name":"read_file","arguments":`+string(nativeArguments)+`,"status":"completed"}`))
-			calls = append(calls, provider.ToolCall{CallID: item.callID, ToolID: tools.ID("read_file"), Arguments: arguments})
+			nativeCalls = append(nativeCalls, json.RawMessage(`{"type":"function_call","id":"`+item.itemID+`","call_id":"`+item.callID+`","name":"`+string(toolID)+`","arguments":`+string(nativeArguments)+`,"status":"completed"}`))
+			calls = append(calls, provider.ToolCall{CallID: item.callID, ToolID: toolID, Arguments: arguments})
 		}
 		return provider.Result{
 			RequestID: request.RequestID, ModelID: request.ModelID, Outcome: provider.OutcomeCompleted,
@@ -1478,7 +1483,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	}
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
-		for _, id := range []string{"positive_exact_read_and_replay", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
+		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
 			stage6Skip(id, "trusted backend validation refused before backend probes or worker launch")
 		}
 		t.Skip("trusted native Bubblewrap backend unavailable; no probe or worker launch was attempted")
@@ -1518,11 +1523,33 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	}
 	content := "stage6-synthetic-private-content"
 	secondContent := "stage6-second-synthetic-private-content"
+	toolID := tools.ReadFileID
 	if targetKind == "empty" {
 		content = ""
 	}
 	target := filepath.Join(root, "notes.txt")
-	if targetKind == "auth" {
+	if targetKind == "directory-list" {
+		target = filepath.Join(root, "listing-scope")
+		toolID, content = tools.ListFilesID, "visible.go"
+		if err := os.Mkdir(target, 0700); err != nil {
+			_ = service.Close(context.Background())
+			t.Fatal(err)
+		}
+		for name, value := range map[string]string{"visible.go": "synthetic visible", ".hidden": "synthetic hidden", "ignored.tmp": "synthetic ignored"} {
+			if err := os.WriteFile(filepath.Join(target, name), []byte(value), 0600); err != nil {
+				_ = service.Close(context.Background())
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(target, ".gitignore"), []byte("ignored.tmp\n"), 0600); err != nil {
+			_ = service.Close(context.Background())
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(target, ".git"), 0700); err != nil {
+			_ = service.Close(context.Background())
+			t.Fatal(err)
+		}
+	} else if targetKind == "auth" {
 		target, _ = authStore.EffectivePath()
 		content = "synthetic-never-real-key"
 	} else if targetKind == "settings" {
@@ -1539,7 +1566,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			t.Fatalf("second synthetic target setup failed: %v", err)
 		}
 	}
-	base := &stage6Provider{target: target, secondTarget: secondTarget, multipleReads: targetKind == "multiple", blockSecond: blockSecond, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
+	base := &stage6Provider{target: target, toolID: toolID, secondTarget: secondTarget, multipleReads: targetKind == "multiple", blockSecond: blockSecond, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
 	providers, err := model.NewRegistry(base)
 	if err != nil {
 		_ = service.Close(context.Background())
@@ -1590,6 +1617,13 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		_ = fixture.chat.CloseContext(context.Background())
 		_ = service.Close(context.Background())
 		t.Fatalf("test-only read path setup failed: %v", err)
+	}
+	if targetKind == "directory-list" {
+		if err := runtime.EnableNativeDirectoryListingStudy(fixture.chat); err != nil {
+			_ = fixture.chat.CloseContext(context.Background())
+			_ = service.Close(context.Background())
+			t.Fatalf("test-only directory listing path setup failed: %v", err)
+		}
 	}
 	t.Cleanup(func() {
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 12*time.Second)
@@ -2087,6 +2121,227 @@ func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {
 		item.GrantRevisionBefore, item.GrantRevisionAfter, item.RemainingGrantCount = grantRevisionBefore, grantRevisionAfter, grantsAfter
 	})
 	stage6Pass("expected_once_transitions", "one explicit once approval created a revision, runtime dispatch consumed it at the next revision, and no grant remained")
+}
+
+func TestStage6PositiveDirectoryListing(t *testing.T) {
+	stage6Begin("positive_directory_listing")
+	fixture := newStage6Fixture(t, "positive_directory_listing", "directory-list", false, nil)
+	fixture.reportCases = []string{"positive_directory_listing", "directory_listing_mount_boundary"}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	aliasPath := filepath.Join(fixture.root, "listing-scope", "protected-auth-alias.txt")
+	if err := os.Link(fixture.authPath, aliasPath); err != nil {
+		t.Fatalf("create synthetic hardlink alias to protected auth owner: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(fixture.root, "listing-scope", "nested-boundary"), 0700); err != nil {
+		t.Fatalf("create one-level boundary directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "listing-scope", "nested-boundary", "must-not-be-listed.txt"), []byte("synthetic nested marker"), 0600); err != nil {
+		t.Fatalf("create nested boundary marker: %v", err)
+	}
+	grantRevisionBefore, grantsBefore := runtime.NativeReadStudyGrantState(fixture.chat)
+	if grantsBefore != 0 {
+		t.Fatalf("unexpected preexisting once grants=%d", grantsBefore)
+	}
+	turn, err := fixture.chat.Send(ctx, "list the synthetic fixture directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("directory listing turn outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial and listing continuation", len(requests))
+	}
+	first, _ := json.Marshal(requests[0].Tools)
+	second, _ := json.Marshal(requests[1].Messages)
+	if !strings.Contains(string(first), string(tools.ListFilesID)) || !strings.Contains(string(second), "visible.go") || strings.Contains(string(second), ".hidden") || strings.Contains(string(second), "ignored.tmp") || strings.Contains(string(second), ".git") || strings.Contains(string(second), "protected-auth-alias.txt") || strings.Contains(string(second), "must-not-be-listed.txt") {
+		t.Fatalf("directory listing disclosure did not honor bounded filters: definitions=%s continuation=%s", first, second)
+	}
+	if fixture.approvals.Load() != 1 {
+		t.Fatalf("listing once approvals=%d, want one", fixture.approvals.Load())
+	}
+	grantRevisionAfter, grantsAfter := runtime.NativeReadStudyGrantState(fixture.chat)
+	if grantRevisionAfter != grantRevisionBefore+2 || grantsAfter != 0 {
+		t.Fatalf("once listing grant revision %d→%d remaining=%d", grantRevisionBefore, grantRevisionAfter, grantsAfter)
+	}
+	impl, ok := fixture.service.impl.(*linuxImplementation)
+	if !ok || impl.session == nil {
+		t.Fatal("native listing service lifecycle evidence unavailable")
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || evidence[0].Probe.SeccompMode != 2 || !evidence[0].Probe.PathOpenDenied {
+		t.Fatalf("native listing worker lifecycle not established: %+v", evidence)
+	}
+	stage6Update("positive_directory_listing", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, evidence[0].Probe.NoNewPrivs && evidence[0].Probe.SeccompMode == 2 && evidence[0].Probe.PathOpenDenied
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
+		item.GrantRevisionBefore, item.GrantRevisionAfter, item.RemainingGrantCount = grantRevisionBefore, grantRevisionAfter, grantsAfter
+		item.FixtureBytesMatched = true
+	})
+	stage6Pass("positive_directory_listing", "actual sandbox Service, exact-directory once approval, bounded listing worker, ignore filtering and provider continuation succeeded")
+	stage6Begin("directory_listing_mount_boundary")
+	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.ProbePassed, item.OnceApprovalCount, item.ProviderRequestCount = evidence[0].Probe.PathOpenDenied, fixture.approvals.Load(), len(requests)
+		item.DisclosureWithheld, item.StaleDataAbsent = true, true
+	})
+	stage6Skip("directory_listing_mount_boundary", "the nested synthetic child and denied path-open probe establish one-level traversal, but the study does not create a real mounted-subdirectory fixture; mount-boundary evidence remains unavailable")
+}
+
+func TestStage6DirectoryListingSurvivesSelectedDirectoryMovementAndReplacement(t *testing.T) {
+	stage6Begin("directory_listing_movement_replacement")
+	fixture := newStage6Fixture(t, "directory_listing_movement_replacement", "directory-list", false, nil)
+	fixture.reportCases = []string{"directory_listing_movement_replacement"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+	actorRoot := filepath.Dir(fixture.root)
+	outside := filepath.Join(actorRoot, "listing-outside")
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatalf("create actor destination: %v", err)
+	}
+	impl := fixture.service.impl.(*linuxImplementation)
+	if impl.session == nil {
+		t.Fatal("native fixture session is unavailable")
+	}
+	actorCompleted := false
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint != readbrokerstudy.CheckpointAfterFinalRevalidation {
+			return nil
+		}
+		source := filepath.Join(filepath.Base(fixture.root), "listing-scope")
+		actor, err := readbrokerstudy.NewNativeActor(ctx, os.Args[0], actorRoot, readbrokerstudy.NativeActorRename, source, filepath.Join("listing-outside", "moved-scope"))
+		if err != nil {
+			return err
+		}
+		t.Cleanup(func() {
+			if err := actor.Close(); err != nil {
+				t.Errorf("ensure directory movement actor cleanup: %v", err)
+			}
+		})
+		if !actor.Ready() {
+			return errors.New("directory movement actor did not complete its startup handshake")
+		}
+		if err := actor.Run(ctx); err != nil {
+			return err
+		}
+		if err := actor.Close(); err != nil || !actor.TransitionCompleted() || !actor.Joined() {
+			return errors.New("directory movement actor transition was not joined")
+		}
+		actorCompleted = true
+		replacement := filepath.Join(fixture.root, "listing-scope")
+		if err := os.Mkdir(replacement, 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(replacement, "attacker-only.txt"), []byte("replacement marker"), 0600)
+	})
+	turn, err := fixture.chat.Send(ctx, "list the synthetic fixture directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted || !actorCompleted {
+		t.Fatalf("listing pinned directory after movement did not complete: outcome=%s actor=%t err=%v", turn.Outcome, actorCompleted, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial and listing continuation", len(requests))
+	}
+	continuation, _ := json.Marshal(requests[1].Messages)
+	if !strings.Contains(string(continuation), "visible.go") || strings.Contains(string(continuation), "attacker-only.txt") {
+		t.Fatalf("listing followed replacement pathname instead of the pinned directory: %s", continuation)
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !evidence[0].Probe.PathOpenDenied {
+		t.Fatalf("moved-directory listing lacked native worker evidence: %+v", evidence)
+	}
+	stage6Update("directory_listing_movement_replacement", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, evidence[0].Probe.PathOpenDenied
+		item.ActorStarted, item.ActorTransitionCompleted, item.ActorJoined, item.ActorTransitionCount = true, true, true, 1
+		item.ProviderRequestCount, item.OnceApprovalCount, item.FixtureBytesMatched = len(requests), fixture.approvals.Load(), true
+	})
+	stage6Pass("directory_listing_movement_replacement", "an independent actor moved the selected directory after final revalidation and the original directory was listed through its pinned descriptor; a replacement pathname was not followed")
+}
+
+func TestStage6DirectoryListingOwnerRotationWithholdsCapture(t *testing.T) {
+	stage6Begin("directory_listing_owner_rotation")
+	var fixture *stage6Fixture
+	var rotated atomic.Bool
+	fixture = newStage6Fixture(t, "directory_listing_owner_rotation", "directory-list", false, func() error {
+		rotateSyntheticAuth(t, fixture)
+		rotated.Store(true)
+		return nil
+	})
+	fixture.reportCases = []string{"directory_listing_owner_rotation"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+	_, sendErr := fixture.chat.Send(ctx, "list the synthetic fixture directory", nil)
+	if sendErr == nil || !rotated.Load() {
+		t.Fatalf("owner rotation did not invalidate the pending listing handoff: rotated=%t err=%v", rotated.Load(), sendErr)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want only initial request after owner rotation", len(requests))
+	}
+	encoded, _ := json.Marshal(requests[0].Messages)
+	if strings.Contains(string(encoded), "visible.go") {
+		t.Fatal("directory names reached the provider after protected-owner rotation")
+	}
+	impl := fixture.service.impl.(*linuxImplementation)
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || !evidence[0].WorkerJoined || !evidence[0].ReadStarted || evidence[0].Outcome != readbrokerstudy.ReadSucceeded {
+		t.Fatalf("owner-rotation listing worker was not joined before suppression: %+v", evidence)
+	}
+	stage6Update("directory_listing_owner_rotation", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.OnceApprovalCount, item.ProviderRequestCount = fixture.approvals.Load(), len(requests)
+		item.DisclosureWithheld, item.StaleDataAbsent = true, true
+	})
+	stage6Pass("directory_listing_owner_rotation", "protected auth owner rotation after capture but before provider handoff suppressed the pending directory-name disclosure and retired the stale capture")
+}
+
+func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
+	stage6Begin("directory_listing_worker_cleanup")
+	fixture := newStage6FixtureWithHold(t, "directory_listing_worker_cleanup", "directory-list", false, nil, true)
+	fixture.reportCases = []string{"directory_listing_worker_cleanup"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+	impl := fixture.service.impl.(*linuxImplementation)
+	if impl.session == nil {
+		t.Fatal("native fixture session is unavailable")
+	}
+	checkpointReached := atomic.Bool{}
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint != readbrokerstudy.CheckpointAfterCapabilityHeld {
+			return nil
+		}
+		checkpointReached.Store(true)
+		cancel()
+		return context.Canceled
+	})
+	turn, sendErr := fixture.chat.Send(ctx, "list the synthetic fixture directory", nil)
+	if !checkpointReached.Load() || sendErr != nil && !errors.Is(sendErr, context.Canceled) || turn.Outcome != provider.OutcomeInterrupted {
+		t.Fatalf("held listing cancellation did not stop safely: checkpoint=%t outcome=%s err=%v", checkpointReached.Load(), turn.Outcome, sendErr)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want initial request only after listing cancellation", len(requests))
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || (evidence[0].Outcome != readbrokerstudy.ReadCancelled && evidence[0].Outcome != readbrokerstudy.ReadUnknown) || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
+		t.Fatalf("cancelled listing worker lifecycle evidence=%+v", evidence)
+	}
+	if active := impl.session.ActiveOperationCount(); active != 0 {
+		t.Fatalf("active operations after cancelled listing cleanup=%d", active)
+	}
+	if published := impl.session.PublishedResults(); len(published) != 0 {
+		t.Fatalf("cancelled listing published %d private results", len(published))
+	}
+	stage6Update("directory_listing_worker_cleanup", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.CapabilityHeld, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].CapabilityHeld, evidence[0].ReadStarted
+		item.ReadOutcome, item.OnceApprovalCount = string(evidence[0].Outcome), fixture.approvals.Load()
+		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = len(requests), true, true
+	})
+	stage6Pass("directory_listing_worker_cleanup", "cancellation after the fixed worker held the directory descriptor caused bounded worker cleanup and join; no enumeration, publication, or provider continuation occurred")
 }
 
 func TestStage6IndependentActorMovesOpenedObjectAfterFinalRevalidation(t *testing.T) {

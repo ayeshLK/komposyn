@@ -63,7 +63,7 @@ func (h *publicationHost) AdmitFilesystemRead(_ context.Context, invocation tool
 	if err := json.Unmarshal(invocation.Arguments, &args); err != nil || args.Path == "" {
 		return FilesystemReadAdmission{}, errors.New("invalid fixture target")
 	}
-	return FilesystemReadAdmission{Reference: new(struct{}), ServiceID: "fixture-service", ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID, Root: h.root, Deadline: time.Now().Add(time.Minute), AdmissionBinding: "synthetic-admission", Target: args.Path, Class: "ordinary", Identity: "fixture-object-1", RootGeneration: h.rootGen, PolicyRevision: 1, CoverageRevision: 1, Destination: destination}, nil
+	return FilesystemReadAdmission{Operation: string(invocation.ToolID), Reference: new(struct{}), ServiceID: "fixture-service", ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID, Root: h.root, Deadline: time.Now().Add(time.Minute), AdmissionBinding: "synthetic-admission", Target: args.Path, Class: "ordinary", Identity: "fixture-object-1", RootGeneration: h.rootGen, PolicyRevision: 1, CoverageRevision: 1, Destination: destination}, nil
 }
 func (h *publicationHost) PrepareAdmittedFilesystemRead(_ context.Context, admission FilesystemReadAdmission, _ uint64) (FilesystemReadPreparation, error) {
 	return &publicationPreparation{metadata: admission}, nil
@@ -79,6 +79,10 @@ func (h *publicationHost) InvalidateFilesystemRoot(_ context.Context, transition
 	return nil
 }
 func (h *publicationHost) BackendStatus() (bool, string) { return true, "synthetic fixture" }
+
+type listingPublicationHost struct{ *publicationHost }
+
+func (*listingPublicationHost) DirectoryListingAvailable() bool { return true }
 
 func (h *publicationHost) WithFilesystemReadPublicationCurrent(ctx context.Context, conversationID, root string, generation, policy, coverage uint64, operation func() error) error {
 	h.gateCalls.Add(1)
@@ -318,6 +322,7 @@ type publicationProvider struct {
 	seen            []string
 	blockResponse   bool
 	target          string
+	toolID          tools.ID
 	responseStarted chan struct{}
 	releaseResponse chan struct{}
 }
@@ -342,10 +347,18 @@ func (p *publicationProvider) StreamChat(ctx context.Context, request provider.C
 	p.seen = append(p.seen, providerMessagesText(request.Messages))
 	p.mu2.Unlock()
 	if call == 1 {
+		toolID := p.toolID
+		if toolID == "" {
+			toolID = tools.ReadFileID
+		}
 		args, _ := json.Marshal(map[string]string{"path": p.target})
 		nativeArgs, _ := json.Marshal(string(args))
-		raw := json.RawMessage(`{"type":"function_call","id":"item-read-1","call_id":"read-1","name":"read_file","arguments":` + string(nativeArgs) + `,"status":"completed"}`)
-		return provider.Result{RequestID: request.RequestID, ModelID: request.ModelID, Outcome: provider.OutcomeCompleted, Completion: provider.CompletionToolCalls, Text: "Reading.", Native: []json.RawMessage{raw}, ToolCalls: []provider.ToolCall{{CallID: "read-1", ToolID: tools.ID("read_file"), Arguments: args}}}, nil
+		callID := "read-1"
+		if toolID == tools.ListFilesID {
+			callID = "list-1"
+		}
+		raw := json.RawMessage(`{"type":"function_call","id":"item-` + string(toolID) + `","call_id":"` + callID + `","name":"` + string(toolID) + `","arguments":` + string(nativeArgs) + `,"status":"completed"}`)
+		return provider.Result{RequestID: request.RequestID, ModelID: request.ModelID, Outcome: provider.OutcomeCompleted, Completion: provider.CompletionToolCalls, Text: "Inspecting.", Native: []json.RawMessage{raw}, ToolCalls: []provider.ToolCall{{CallID: callID, ToolID: toolID, Arguments: args}}}, nil
 	}
 	if p.blockResponse {
 		close(p.responseStarted)
@@ -434,6 +447,96 @@ func TestStage5ReadPublicationAndSameContextReplay(t *testing.T) {
 		if strings.Contains(turn.Text, sentinel) {
 			t.Fatal("retired derived text remained in snapshot")
 		}
+	}
+}
+
+func TestDirectoryListingOnceApprovalContinuesToSelectedProvider(t *testing.T) {
+	root := t.TempDir()
+	listing := `{"names":["visible.go"],"examined":1,"incomplete":false}`
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: root, toolID: tools.ListFilesID}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &publicationHost{content: []byte(listing), root: root, target: root}
+	var approval permissions.PendingApproval
+	config := publicationReadRuntimeConfig(ToolApprovalFunc(func(_ context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approval = pending
+		return permissions.ApprovalOnce, "", nil
+	}), host)
+	if err := config.Registry.Register(listFilesTool{}); err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+		t.Fatal(err)
+	}
+	selectFirst(t, chat)
+	selectPublicationRoot(t, chat, host, root)
+	t.Cleanup(chat.Close)
+	turn, err := chat.Send(context.Background(), "list this directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("listing turn=%+v err=%v", turn, err)
+	}
+	requests := fp.captured()
+	if len(requests) != 2 || !strings.Contains(providerMessagesText(requests[1].Messages), "visible.go") {
+		t.Fatalf("approved listing did not continue to selected provider: requests=%d activity=%+v approval=%+v hostReads=%d messages=%s", len(requests), turn.ToolActivities, approval.Request, host.reads, providerMessagesText(requests[1].Messages))
+	}
+	if len(approval.Request.Requirements) != 2 || approval.Request.Requirements[1].Resource == nil || approval.Request.Requirements[1].Resource.Target != root || approval.Request.Destination == "" || approval.Request.Requirements[1].Key != "directory_listing_disclosure" || !strings.Contains(approval.Request.Requirements[1].Description, "nonrecursive names") {
+		t.Fatalf("approval did not identify the exact directory and provider disclosure: %+v", approval.Request)
+	}
+	if host.reads != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded {
+		t.Fatalf("listing executions/activity=%d/%+v", host.reads, turn.ToolActivities)
+	}
+}
+
+func TestDirectoryListingDenialAndCancellationDoNotExecute(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		choice       permissions.ApprovalChoice
+		wantRequests int
+		outcome      tools.Outcome
+	}{
+		{name: "denied", choice: permissions.ApprovalDeny, wantRequests: 2, outcome: tools.OutcomeDeclined},
+		{name: "cancelled", choice: permissions.ApprovalCancel, wantRequests: 1, outcome: tools.OutcomeCancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: root, toolID: tools.ListFilesID}
+			providers, err := model.NewRegistry(fp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			host := &publicationHost{content: []byte(`{"names":["sensitive-name"],"examined":1,"incomplete":false}`), root: root, target: root}
+			approval := ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+				return test.choice, "", nil
+			})
+			config := publicationReadRuntimeConfig(approval, host)
+			if err := config.Registry.Register(listFilesTool{}); err != nil {
+				t.Fatal(err)
+			}
+			chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+			t.Cleanup(chat.Close)
+			if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+				t.Fatal(err)
+			}
+			selectFirst(t, chat)
+			selectPublicationRoot(t, chat, host, root)
+			turn, _ := chat.Send(context.Background(), "list the directory", nil)
+			if len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != test.outcome {
+				t.Fatalf("listing activity=%+v", turn.ToolActivities)
+			}
+			requests := fp.captured()
+			if len(requests) != test.wantRequests {
+				t.Fatalf("provider requests=%d want=%d", len(requests), test.wantRequests)
+			}
+			if host.reads != 0 {
+				t.Fatalf("directory execution count=%d after %s", host.reads, test.name)
+			}
+			if test.name == "denied" && strings.Contains(providerMessagesText(requests[1].Messages), "sensitive-name") {
+				t.Fatal("denied listing name was disclosed")
+			}
+		})
 	}
 }
 
@@ -673,6 +776,32 @@ func TestFilesystemReadCatalogRequiresCompleteInspectedHost(t *testing.T) {
 	config = BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, unsupported)
 	if config.Registry == nil || len(config.Registry.Definitions()) != 2 {
 		t.Fatalf("unavailable backend retained read_file: %+v", config.Registry)
+	}
+}
+
+func TestDirectoryListingCatalogRequiresExplicitHostEvidenceGate(t *testing.T) {
+	approval := ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	})
+	clarification := ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+		return ClarificationResponse{}, nil
+	})
+	base := &publicationHost{root: t.TempDir()}
+	config := BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, base)
+	for _, definition := range config.Registry.Definitions() {
+		if definition.ID == tools.ListFilesID {
+			t.Fatal("listing was advertised without the host's native-evidence gate")
+		}
+	}
+	config = BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, &listingPublicationHost{publicationHost: base})
+	found := false
+	for _, definition := range config.Registry.Definitions() {
+		if definition.ID == tools.ListFilesID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("listing was not registered after trusted host evidence gate")
 	}
 }
 

@@ -193,6 +193,11 @@ func bundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clar
 	if readHost != nil && registry.Register(readFileTool{}) != nil {
 		return ToolRuntimeConfig{}
 	}
+	if listingHost, ok := readHost.(FilesystemDirectoryListingAvailability); ok && listingHost.DirectoryListingAvailable() {
+		if registry.Register(listFilesTool{}) != nil {
+			return ToolRuntimeConfig{}
+		}
+	}
 	return ToolRuntimeConfig{
 		Registry:      registry,
 		Plans:         plans,
@@ -226,6 +231,17 @@ func (readFileTool) ValidateArguments(raw json.RawMessage) error {
 }
 func (readFileTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
 	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "read_dispatch_unavailable"}
+}
+
+type listFilesTool struct{}
+
+func (listFilesTool) Definition() tools.Definition { return tools.ListFilesDefinition() }
+func (listFilesTool) ValidateArguments(raw json.RawMessage) error {
+	_, err := tools.ParseListFiles(raw)
+	return err
+}
+func (listFilesTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
+	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "listing_dispatch_unavailable"}
 }
 
 func conversationToolActionKey(id tools.ID) string {

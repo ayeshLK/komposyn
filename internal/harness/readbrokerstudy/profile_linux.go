@@ -190,7 +190,7 @@ func workerDeniedSyscalls() []uint32 {
 	denied := []uint32{
 		unix.SYS_CLONE3, unix.SYS_EXECVE,
 		unix.SYS_OPENAT, unix.SYS_OPENAT2, unix.SYS_NEWFSTATAT,
-		unix.SYS_STATX, unix.SYS_READLINKAT, unix.SYS_GETDENTS64,
+		unix.SYS_STATX, unix.SYS_READLINKAT,
 		unix.SYS_FACCESSAT2,
 		unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND,
 		unix.SYS_LISTEN, unix.SYS_ACCEPT, unix.SYS_ACCEPT4, unix.SYS_SENDTO,

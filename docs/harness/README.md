@@ -155,6 +155,24 @@ Generic directory and broad filesystem reads remain unavailable. The
 once-approved exact-file operation is the sole registered filesystem
 capability; its changes still require ordinary review before merge.
 
+The issue #316 `list_files` implementation is present only in the Linux
+development path and remains unadvertised by the shipped chat until its
+native directory-specific evidence is accepted. Its planned scope is one
+selected directory level, with hidden and `.git` names omitted, bounded
+`.gitignore` rules applied, symlinks left unfollowed, and protected aliases
+filtered before provider disclosure. Unavailable backend or owner coverage
+must keep it unavailable; there is no fallback. Its fixed limits are 10,000
+examined entries, 1,000 returned names, 64 KiB of result content, and five
+seconds. A result carries examined/returned counts and an `incomplete` flag.
+The Stage 6 study now includes synthetic checks for directory movement and
+replacement, protected hardlink aliases, owner rotation before provider
+handoff, one-level traversal, and worker cleanup. These cases still require a
+trusted-host run against the exact clean commit. The traversal check uses a
+nested synthetic directory and the worker's denied path-open probe; it is not
+an actual mounted-subdirectory fixture, so mount-boundary evidence remains
+incomplete and listing stays unavailable. No cross-platform support is
+claimed.
+
 ## Local configuration
 
 The default paths are `~/.komposyn/auth.json` and

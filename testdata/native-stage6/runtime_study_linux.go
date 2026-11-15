@@ -48,6 +48,18 @@ func EnableNativeReadStudy(chat *Chat) error {
 	return nil
 }
 
+// EnableNativeDirectoryListingStudy adds list_files only to the fixture that
+// records the issue-specific native directory worker evidence.
+func EnableNativeDirectoryListingStudy(chat *Chat) error {
+	if chat == nil || chat.toolRuntime == nil || chat.toolRuntime.registry == nil || chat.toolRuntime.readAdmission == nil || chat.toolRuntime.readPublicationGate == nil {
+		return errors.New("native directory listing study composition is incomplete")
+	}
+	if err := chat.toolRuntime.registry.Register(listFilesTool{}); err != nil {
+		return errors.New("native directory listing study could not register its dedicated listing path")
+	}
+	return nil
+}
+
 // NativeReadStudyState returns only whether history is sensitive and its
 // message count for lifecycle assertions; it never exposes message content.
 func NativeReadStudyState(chat *Chat) (bool, int) {
