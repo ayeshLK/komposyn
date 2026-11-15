@@ -2326,8 +2326,32 @@ func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 		t.Fatalf("provider requests=%d, want initial request only after listing cancellation", len(requests))
 	}
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || (evidence[0].Outcome != readbrokerstudy.ReadCancelled && evidence[0].Outcome != readbrokerstudy.ReadUnknown) || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
+	if len(evidence) != 1 || (evidence[0].Outcome != readbrokerstudy.ReadCancelled && evidence[0].Outcome != readbrokerstudy.ReadUnknown) || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].CapabilitySent || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
 		t.Fatalf("cancelled listing worker lifecycle evidence=%+v", evidence)
+	}
+	initial := evidence[0]
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cleanupCancel()
+	for {
+		err := fixture.chat.CloseContext(cleanupCtx)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, runtime.ErrFilesystemRootPending) {
+			t.Fatalf("bounded listing shutdown failed while joining cancelled worker: %v", err)
+		}
+		select {
+		case <-cleanupCtx.Done():
+			t.Fatalf("bounded shutdown did not join cancelled listing worker: %v", errors.Join(err, cleanupCtx.Err()))
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if err := fixture.service.Close(cleanupCtx); err != nil {
+		t.Fatalf("bounded service shutdown did not drain cancelled listing worker: %v", err)
+	}
+	evidence = impl.session.Evidence()
+	if len(evidence) != 1 || !evidence[0].WorkerJoined || evidence[0].Outcome != initial.Outcome || !evidence[0].CapabilityHeld || evidence[0].ReadStarted || evidence[0].Published {
+		t.Fatalf("listing cleanup changed original worker evidence or failed to join: before=%+v after=%+v", initial, evidence)
 	}
 	if active := impl.session.ActiveOperationCount(); active != 0 {
 		t.Fatalf("active operations after cancelled listing cleanup=%d", active)
