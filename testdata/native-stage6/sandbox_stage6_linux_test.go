@@ -2220,7 +2220,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 	}
 	executableDirectory := filepath.Dir(executable)
 	arguments := []string{
-		"--die-with-parent", "--new-session", "--unshare-user", "--uid", "0", "--gid", "0", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net", "--as-pid-1",
+		"--die-with-parent", "--new-session", "--unshare-user", "--uid", "0", "--gid", "0", "--cap-add", "CAP_SYS_ADMIN", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net", "--as-pid-1",
 		"--tmpfs", "/", "--dir", "/usr", "--ro-bind", "/usr", "/usr",
 		"--dev", "/dev", "--proc", "/proc", "--dir", "/tmp", "--chmod", "1777", "/tmp",
 	}
@@ -2315,6 +2315,8 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
 		item.LaunchPolicy = map[string]any{
 			"user_namespace":        "inherited the isolated fixture namespace; no additional user mapping requested",
+			"outer_capability":      "CAP_SYS_ADMIN inside the isolated fixture user namespace, used only to create the nested worker namespaces",
+			"worker_capabilities":   "dropped by the nested Bubblewrap worker profile",
 			"mount_namespace":       "worker-private",
 			"pid_namespace":         "worker-private",
 			"disable_userns_option": "not used because the worker inherits the fixture user namespace; worker seccomp denies unshare, setns, and process-like clone after bootstrap",
