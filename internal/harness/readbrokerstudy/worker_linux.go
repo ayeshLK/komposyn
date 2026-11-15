@@ -319,6 +319,7 @@ type workerLauncher struct {
 	bwrapPath      string
 	capability     BubblewrapCapabilities
 	workerFile     *os.File
+	userNamespace  *os.File
 	holdBeforeRead bool
 	closeOnce      sync.Once
 	closeErr       error
@@ -693,6 +694,11 @@ func (l *workerLauncher) Close() error {
 		if l.workerFile != nil {
 			l.closeErr = l.workerFile.Close()
 		}
+		if l.userNamespace != nil {
+			if err := l.userNamespace.Close(); l.closeErr == nil {
+				l.closeErr = err
+			}
+		}
 	})
 	return l.closeErr
 }
@@ -813,6 +819,25 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	}
 	workerCtx, cancel := context.WithTimeout(ctx, watchdog)
 	args := effectiveBubblewrapArguments(l.capability.BindMode, l.holdBeforeRead)
+	if l.userNamespace != nil {
+		updatedArgs := make([]string, 0, len(args)+1)
+		replaced := false
+		for _, argument := range args {
+			if argument == "--unshare-user" {
+				updatedArgs = append(updatedArgs, "--userns", "7")
+				replaced = true
+			} else {
+				updatedArgs = append(updatedArgs, argument)
+			}
+		}
+		if !replaced {
+			cancel()
+			_ = parentSocket.Close()
+			_ = childSocket.Close()
+			return nil, fmt.Errorf("%w: Stage 6 user namespace launch option is unavailable", ErrUnavailable)
+		}
+		args = updatedArgs
+	}
 	if args == nil {
 		cancel()
 		_ = parentSocket.Close()
@@ -823,6 +848,9 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	cmd.Dir = "/"
 	cmd.Env = []string{"KOMPOSYN_READBROKER_SENTINEL=synthetic-only"}
 	cmd.ExtraFiles = []*os.File{filter, childSocket, mountFile, verificationFile}
+	if l.userNamespace != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, l.userNamespace)
+	}
 	cmd.Stdout = io.Discard
 	stderr := &limitedOutput{}
 	cmd.Stderr = stderr

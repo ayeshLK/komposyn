@@ -1428,6 +1428,18 @@ func newStage6HostService(backendPath string, holdWorker bool) (*Service, error)
 			return nil, errors.New("cmd/harness worker-image profile requires file-snapshot mode")
 		}
 		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6Image(backendPath, imagePath, os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE_SHA256"), holdWorker)
+	} else if os.Getenv("KOMPOSYN_STAGE6_DIRECTORY_MOUNT_ROOT") != "" {
+		userNamespace, openErr := os.Open("/proc/self/ns/user")
+		if openErr != nil {
+			_ = registry.Close()
+			return nil, fmt.Errorf("open isolated user namespace for mounted-directory worker: %w", openErr)
+		}
+		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6InUserNamespace(
+			backendPath, workerPath, stage6RequestedBindMode(), holdWorker, userNamespace,
+		)
+		if err != nil {
+			_ = userNamespace.Close()
+		}
 	} else {
 		launcher, err = readbrokerstudy.NewWorkerLauncherForStage6(backendPath, workerPath, stage6RequestedBindMode(), holdWorker)
 	}
@@ -2299,7 +2311,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 		item.ProviderRequestCount, item.FixtureBytesMatched = measured.ProviderRequestCount, measured.FixtureBytesMatched
 		item.DisclosureWithheld, item.StaleDataAbsent, item.CleanupConfirmed = measured.DisclosureWithheld, measured.StaleDataAbsent, measured.CleanupConfirmed
 	})
-	stage6Pass("directory_listing_mount_boundary", "a synthetic bind-mounted child had a distinct native mount ID; the sandboxed one-level listing disclosed its entry name without exposing the mounted directory's marker")
+	stage6Pass("directory_listing_mount_boundary", "a synthetic bind-mounted child had a distinct native mount ID; the worker joined the isolated fixture user namespace while retaining its own mount and PID namespaces; one-level listing disclosed the mountpoint name without exposing its marker")
 }
 
 func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
