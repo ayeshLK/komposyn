@@ -1761,11 +1761,11 @@ func walkListingDirectory(ctx context.Context, fd int, relative string, options 
 			if len(nameBytes) == 0 {
 				continue
 			}
-			(*examined)++
-			if *examined > maxExamined {
+			if *examined >= maxExamined {
 				*incomplete = true
 				break
 			}
+			(*examined)++
 			name := string(nameBytes)
 			if name == "." || name == ".." {
 				continue
@@ -1793,7 +1793,11 @@ func walkListingDirectory(ctx context.Context, fd int, relative string, options 
 				*incomplete = true
 			}
 		}
-		if *examined > maxExamined {
+		if *examined >= maxExamined {
+			// Do not enumerate another batch after the shared entry budget is
+			// reached. Coverage is conservatively marked incomplete even when
+			// this batch happens to end exactly at a directory boundary.
+			*incomplete = true
 			break
 		}
 	}
@@ -1816,6 +1820,10 @@ func walkListingDirectory(ctx context.Context, fd int, relative string, options 
 			if strings.Count(child.Path, "/") >= 63 {
 				*incomplete = true
 				continue
+			}
+			if *examined >= maxExamined {
+				*incomplete = true
+				break
 			}
 			childFD, openErr := unix.Openat2(fd, child.Name, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NONBLOCK, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV})
 			if openErr == unix.EXDEV || openErr == unix.ELOOP || openErr == unix.ENOTDIR {

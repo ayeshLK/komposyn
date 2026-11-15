@@ -747,7 +747,12 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 				instructions += " Do not claim filesystem, shell, web, or other unavailable capabilities."
 			}
 			if _, hasListing := definitionByID(requestTools, tools.ListFilesID); hasListing {
-				instructions += " list_files lists names beneath an approved directory. Defaults are nonrecursive and omit hidden and ignored entries; .git is always excluded. Explicit options control recursion, hidden/ignored inclusion, and basename globs, which do not limit traversal. Each listing needs separate explicit once approval naming the exact directory, all effective options, and this provider destination. Results may be incomplete at a bound. A listing does not grant reads of listed files."
+				listingDefinition, _ := definitionByID(requestTools, tools.ListFilesID)
+				if listFilesOptionsAdvertised(listingDefinition) {
+					instructions += " list_files lists names beneath an approved directory. Defaults are nonrecursive and omit hidden and ignored entries; .git is always excluded. Explicit options control recursion, hidden/ignored inclusion, and basename globs, which do not limit traversal. Each listing needs separate explicit once approval naming the exact directory, all effective options, and this provider destination. Results may be incomplete at a bound. A listing does not grant reads of listed files."
+				} else {
+					instructions += " list_files lists names in one approved directory only (nonrecursive), omitting hidden and ignored entries; .git is always excluded. Each listing needs separate explicit once approval naming the exact directory and this provider destination. Results may be incomplete at a bound. A listing does not grant reads of listed files."
+				}
 			}
 		}
 		providerCtx, cancelProvider := context.WithTimeout(ctx, c.timeout)
@@ -1267,6 +1272,17 @@ func definitionByID(definitions []tools.Definition, id tools.ID) (tools.Definiti
 		}
 	}
 	return tools.Definition{}, false
+}
+
+func listFilesOptionsAdvertised(definition tools.Definition) bool {
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(definition.InputSchema, &schema) != nil {
+		return false
+	}
+	_, available := schema.Properties["recursive"]
+	return available
 }
 
 func withoutToolDefinition(definitions []tools.Definition, id tools.ID) []tools.Definition {

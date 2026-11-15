@@ -188,6 +188,42 @@ func TestListDirectoryRecursiveReturnsRelativePathsAndNeverWalksGitOrSymlinks(t 
 	}
 }
 
+func TestRecursiveTraversalStopsAtSharedEntryBudget(t *testing.T) {
+	root := t.TempDir()
+	for index := range 20 {
+		child := filepath.Join(root, fmt.Sprintf("dir-%02d", index))
+		if err := os.Mkdir(child, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(child, "entry.txt"), []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+
+	listing := directoryListingResult{}
+	var entries []directoryListingEntry
+	examined, incomplete := 0, false
+	if err := walkListingDirectory(context.Background(), int(directory.Fd()), "", ListingOptions{Recursive: true}, &listing, &entries, &examined, &incomplete, 10, 100); err != nil {
+		t.Fatal(err)
+	}
+	if examined != 10 || examined > 10 || !incomplete {
+		t.Fatalf("shared traversal budget examined=%d incomplete=%t", examined, incomplete)
+	}
+	if len(listing.Directories) != 1 {
+		t.Fatalf("traversed %d directory snapshots after the entry budget was exhausted", len(listing.Directories))
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Path, "/") {
+			t.Fatalf("descended below the entry budget: %q", entry.Path)
+		}
+	}
+}
+
 func listingEntryNames(entries []directoryListingEntry) []string {
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {

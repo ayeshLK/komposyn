@@ -84,6 +84,10 @@ type listingPublicationHost struct{ *publicationHost }
 
 func (*listingPublicationHost) DirectoryListingAvailable() bool { return true }
 
+type advancedListingPublicationHost struct{ listingPublicationHost }
+
+func (*advancedListingPublicationHost) DirectoryListingOptionsAvailable() bool { return true }
+
 func (h *publicationHost) WithFilesystemReadPublicationCurrent(ctx context.Context, conversationID, root string, generation, policy, coverage uint64, operation func() error) error {
 	h.gateCalls.Add(1)
 	if err := ctx.Err(); err != nil {
@@ -479,6 +483,9 @@ func TestDirectoryListingOnceApprovalContinuesToSelectedProvider(t *testing.T) {
 		t.Fatalf("listing turn=%+v err=%v", turn, err)
 	}
 	requests := fp.captured()
+	if len(requests) == 0 || !strings.Contains(requests[0].Instructions, "one approved directory only (nonrecursive)") || strings.Contains(requests[0].Instructions, "Explicit options control recursion") {
+		t.Fatalf("provider instructions do not match the nonrecursive-only schema: %+v", requests)
+	}
 	if len(requests) != 2 || !strings.Contains(providerMessagesText(requests[1].Messages), "visible.go") {
 		t.Fatalf("approved listing did not continue to selected provider: requests=%d activity=%+v approval=%+v hostReads=%d messages=%s", len(requests), turn.ToolActivities, approval.Request, host.reads, providerMessagesText(requests[1].Messages))
 	}
@@ -487,6 +494,54 @@ func TestDirectoryListingOnceApprovalContinuesToSelectedProvider(t *testing.T) {
 	}
 	if host.reads != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded {
 		t.Fatalf("listing executions/activity=%d/%+v", host.reads, turn.ToolActivities)
+	}
+}
+
+func TestDirectoryListingProviderInstructionsMatchAdvertisedOptions(t *testing.T) {
+	for _, optionsAvailable := range []bool{false, true} {
+		t.Run(map[bool]string{false: "nonrecursive-only", true: "advanced-options"}[optionsAvailable], func(t *testing.T) {
+			root := t.TempDir()
+			fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: root, toolID: tools.ListFilesID}
+			providers, err := model.NewRegistry(fp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := &publicationHost{content: []byte(`{"names":[],"examined":0,"incomplete":false}`), root: root, target: root}
+			var host FilesystemReadCompositionHost = &listingPublicationHost{publicationHost: base}
+			if optionsAvailable {
+				host = &advancedListingPublicationHost{listingPublicationHost: listingPublicationHost{publicationHost: base}}
+			}
+			approval := ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+				return permissions.ApprovalOnce, "", nil
+			})
+			clarification := ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+				return ClarificationResponse{}, errors.New("clarification is not part of this fixture")
+			})
+			config := BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, host)
+			chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+			if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+				t.Fatal(err)
+			}
+			selectFirst(t, chat)
+			selectPublicationRoot(t, chat, base, root)
+			t.Cleanup(chat.Close)
+			turn, err := chat.Send(context.Background(), "list this directory", nil)
+			if err != nil || turn.Outcome != provider.OutcomeCompleted {
+				t.Fatalf("listing turn=%+v err=%v", turn, err)
+			}
+			requests := fp.captured()
+			if len(requests) != 2 {
+				t.Fatalf("provider requests=%d, want initial and listing continuation", len(requests))
+			}
+			instructions := requests[0].Instructions
+			if optionsAvailable {
+				if !strings.Contains(instructions, "Explicit options control recursion, hidden/ignored inclusion, and basename globs") {
+					t.Fatalf("advanced schema lacked matching option instructions: %s", instructions)
+				}
+			} else if !strings.Contains(instructions, "one approved directory only (nonrecursive)") || strings.Contains(instructions, "Explicit options control recursion") {
+				t.Fatalf("basic schema received unsupported option instructions: %s", instructions)
+			}
+		})
 	}
 }
 
