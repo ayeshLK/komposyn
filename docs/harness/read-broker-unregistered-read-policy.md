@@ -54,8 +54,10 @@ These policy details are accepted; enforcement remains staged and incomplete.
 ### Target and scope
 
 - One request names one exact file beneath an explicitly selected root. The
-  root is a lookup boundary, not a read grant. There is no directory listing,
-  recursive read, write, rename, deletion, or shell operation.
+  root is a lookup boundary, not a read grant. At the time of this #215 policy,
+  there was no directory listing or recursive read. Issue #316 later adds a
+  separate once-approved, nonrecursive directory listing; write, rename,
+  deletion, and shell operations remain unavailable.
 - The initial profile accepts only a regular file opened by the supported
   constrained lookup. Symlinks, magic links, mount crossing, non-regular
   objects, unsupported lookup flags, and incomplete protected-directory

@@ -674,11 +674,18 @@ func (s *linuxImplementation) BackendStatus() (bool, string) {
 	return true, "trusted Bubblewrap and fixed worker capabilities were inspected; no worker has been launched"
 }
 
-// DirectoryListingAvailable remains false until the issue's separate native
-// replacement, alias, mount and lifecycle evidence has been reviewed. The
-// fixed worker and admission path may be exercised by tests, but are not
-// advertised as a model capability before that acceptance gate is met.
-func (s *linuxImplementation) DirectoryListingAvailable() bool { return false }
+// DirectoryListingAvailable requires the same inspected backend and composed
+// fixed worker service as exact-file reads. The runtime separately filters
+// this capability by provider route and selected-root state; admission checks
+// required protected-owner coverage before any approval or worker launch.
+func (s *linuxImplementation) DirectoryListingAvailable() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.backendErr == nil && s.launcher != nil && s.session != nil
+}
 
 func (s *linuxImplementation) PrepareGenericRead(ctx context.Context, _, _ string) error {
 	if ctx == nil {

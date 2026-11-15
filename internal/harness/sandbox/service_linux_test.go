@@ -169,6 +169,54 @@ func TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate(t *testin
 	if available, _ := backendService.BackendStatus(); available {
 		t.Fatal("untrusted/missing Bubblewrap path was treated as an available backend")
 	}
+	if impl := backendService.impl.(*linuxImplementation); impl.DirectoryListingAvailable() {
+		t.Fatal("directory listing remained available without a trusted backend")
+	}
+}
+
+func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	if !impl.DirectoryListingAvailable() {
+		t.Fatal("composed trusted worker service did not enable directory listing")
+	}
+	if err := service.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if impl.DirectoryListingAvailable() {
+		t.Fatal("closed worker service kept directory listing available")
+	}
+}
+
+func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
+	approval := runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	})
+	clarification := runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, nil
+	})
+	missingBackend, err := NewHostService(filepath.Join(t.TempDir(), "no-bubblewrap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer missingBackend.Close(context.Background())
+	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, missingBackend)
+	if _, registered := config.Registry.Lookup(tools.ListFilesID); registered {
+		t.Fatal("list_files registered without a verified backend")
+	}
+
+	availableBackend, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer availableBackend.Close(context.Background())
+	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, availableBackend)
+	if _, registered := config.Registry.Lookup(tools.ListFilesID); !registered {
+		t.Fatal("list_files not registered when the Linux host service reports an available backend")
+	}
 }
 
 func TestHostAdmissionRetainsOneObjectThroughPreparationWithoutWorker(t *testing.T) {

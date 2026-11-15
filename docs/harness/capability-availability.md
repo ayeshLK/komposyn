@@ -1,7 +1,7 @@
 # Temporary chat capability availability
 
-Evidence reviewed 2026-11-14. This matrix describes the bundled temporary
-chat routes and its current three capabilities. “Supported” describes the
+Evidence reviewed 2026-11-15. This matrix describes the bundled temporary
+chat routes and its current four capabilities. “Supported” describes the
 provider protocol implementation and fixture-backed contract; it does not
 grant permission to execute a tool. Runtime availability also requires the
 host authorization, approval, and enforcement composition. No capability
@@ -45,15 +45,25 @@ filesystem access.
 | `update_plan` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
 | `request_user_input` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
-| `list_files` | Unavailable: no verified directory-listing backend | Unavailable: no verified directory-listing backend | Unavailable: no verified directory-listing backend | Unimplemented route |
+| `list_files` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement; live listing is not verified | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 
-`list_files` is not registered or sent to providers. Its nonrecursive request
-contract is reserved, but exact-directory enforcement and the required native
-directory replacement/movement, alias, protected-owner rotation, mount-boundary
-and worker-lifecycle evidence have not been accepted. The current host's
-Bubblewrap executable is owned by UID 65534 rather than root, so the trusted
-backend check refuses it; no weaker fallback is used. Existing exact-file
-evidence does not establish directory-listing safety.
+`list_files` is registered only when the Linux host has inspected the trusted
+Bubblewrap backend and composed the fixed worker. The runtime additionally
+requires a selected root and a supported provider client-tool route; every
+directory disclosure has a separate once approval naming the exact directory
+and provider destination. Native synthetic evidence for filtering, movement
+and replacement, protected aliases, owner rotation, mount boundaries, and
+worker cleanup was recorded on Linux amd64 with Bubblewrap 0.9.0. This does not
+establish live provider listing, production-provider integration, or
+cross-platform enforcement.
+
+The prior directory-specific native archive predates wiring the tool through
+the production runtime registration gate, so it is not the final #316
+acceptance record. The updated integrated fixture now asserts that the
+production backend gate registered `list_files`; rerun it against the final
+clean implementation commit before recording the evidence here. The broader
+Stage 6 profile also remains incomplete for unrelated mutation, shell,
+aggregate-quota and production-provider coverage.
 
 The conditional read path requires inspected trusted Bubblewrap, the complete
 retained-read lifecycle and host enforcement, an available working directory,

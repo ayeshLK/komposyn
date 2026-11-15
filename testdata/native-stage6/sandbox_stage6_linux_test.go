@@ -1599,23 +1599,38 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		t.Fatalf("fixture provider registry failed: %v", err)
 	}
 	fixture := &stage6Fixture{service: service, provider: base, authStore: authStore, root: root, authPath: authPath, content: content, secondContent: secondContent, approvalEntered: make(chan struct{}), approvalRelease: make(chan struct{})}
-	config := runtime.ToolRuntimeConfig{
-		Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: &stage6ReadHost{service: service, beforeHandoff: beforeHandoff}, RootHost: service,
-		Approval: runtime.ToolApprovalFunc(func(ctx context.Context, _ permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
-			if err := ctx.Err(); err != nil {
-				return "", "", err
+	approval := runtime.ToolApprovalFunc(func(ctx context.Context, _ permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
+		count := fixture.approvals.Add(1)
+		if fixture.approvalWaitAt.Load() == count {
+			fixture.approvalWaitOnce.Do(func() { close(fixture.approvalEntered) })
+			select {
+			case <-fixture.approvalRelease:
+			case <-ctx.Done():
+				return "", "", ctx.Err()
 			}
-			count := fixture.approvals.Add(1)
-			if fixture.approvalWaitAt.Load() == count {
-				fixture.approvalWaitOnce.Do(func() { close(fixture.approvalEntered) })
-				select {
-				case <-fixture.approvalRelease:
-				case <-ctx.Done():
-					return "", "", ctx.Err()
-				}
-			}
-			return permissions.ApprovalOnce, "", nil
-		}), Grants: permissions.NewMemoryStore(),
+		}
+		return permissions.ApprovalOnce, "", nil
+	})
+	var config runtime.ToolRuntimeConfig
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" {
+		config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(
+			approval,
+			runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+				return runtime.ClarificationResponse{}, errors.New("synthetic clarification is unavailable")
+			}),
+			service,
+		)
+		config.ReadAdmission = &stage6ReadHost{service: service, beforeHandoff: beforeHandoff}
+		config.Preparer = service
+		config.Grants = permissions.NewMemoryStore()
+	} else {
+		config = runtime.ToolRuntimeConfig{
+			Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: &stage6ReadHost{service: service, beforeHandoff: beforeHandoff}, RootHost: service,
+			Approval: approval, Grants: permissions.NewMemoryStore(),
+		}
 	}
 	fixture.chat = runtime.NewChatWithToolRuntime(providers, authStore, nil, config)
 	if err := fixture.chat.AddProfile(ctx, "stage6-profile", "openai", "synthetic Stage 6 profile", "synthetic-never-real-key", nil); err != nil {
