@@ -169,14 +169,15 @@ replacement, protected hardlink aliases, owner rotation before provider
 handoff, worker cleanup, and a real bind-mounted child directory. The mount
 case creates a separate outer user and mount namespace, verifies distinct
 mount IDs, and confirms that listing exposes only the direct mountpoint name,
-not the mounted directory's marker. The outer fixture stages a digest-checked
-copy of the already trusted Bubblewrap binary at a namespace-owned path for
-the nested worker; this keeps its trusted-path ownership check meaningful
-inside the user namespace. The report retains backend trust diagnostics when
-that check refuses. These cases require a trusted-host run against the exact
-clean commit; if the outer namespace cannot be established, the mount result
-is recorded unavailable and listing remains disabled. No cross-platform
-support is claimed.
+not the mounted directory's marker. The outer fixture supplies a
+digest-checked copy of the already trusted Bubblewrap binary by file descriptor
+and has Bubblewrap create it at a namespace-root-owned path for the nested
+worker. This keeps its trusted-path ownership check meaningful inside the user
+namespace. The report retains backend trust diagnostics when that check
+refuses. These cases require a trusted-host run against the exact clean commit;
+if the outer namespace cannot be established, the mount result is recorded
+unavailable and listing remains disabled. No cross-platform support is
+claimed.
 
 ## Local configuration
 

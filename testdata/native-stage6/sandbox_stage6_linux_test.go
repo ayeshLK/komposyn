@@ -2191,11 +2191,16 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 	listingPath := filepath.Join(runtimeRoot, "listing-scope")
 	mountpoint := filepath.Join(listingPath, "mounted-boundary")
 	mountSource := filepath.Join(root, "synthetic-mounted-source")
-	nestedBackend := filepath.Join(root, "nested-bwrap")
-	if err := os.WriteFile(nestedBackend, backendData, 0755); err != nil {
-		t.Fatalf("prepare exact nested Bubblewrap copy: %v", err)
+	nestedBackendInput := filepath.Join(root, "nested-bwrap-input")
+	if err := os.WriteFile(nestedBackendInput, backendData, 0600); err != nil {
+		t.Fatalf("prepare exact nested Bubblewrap input: %v", err)
 	}
 	backendData = nil
+	backendFile, err := os.Open(nestedBackendInput)
+	if err != nil {
+		t.Fatalf("open exact nested Bubblewrap input: %v", err)
+	}
+	defer backendFile.Close()
 	for _, directory := range []string{runtimeRoot, listingPath, mountpoint, mountSource} {
 		if err := os.Mkdir(directory, 0700); err != nil {
 			t.Fatalf("prepare synthetic mount fixture: %v", err)
@@ -2211,7 +2216,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 	}
 	executableDirectory := filepath.Dir(executable)
 	arguments := []string{
-		"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net", "--as-pid-1",
+		"--die-with-parent", "--new-session", "--unshare-user", "--uid", "0", "--gid", "0", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net", "--as-pid-1",
 		"--tmpfs", "/", "--dir", "/usr", "--ro-bind", "/usr", "/usr",
 		"--dev", "/dev", "--proc", "/proc", "--dir", "/tmp", "--chmod", "1777", "/tmp",
 	}
@@ -2235,7 +2240,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 		}
 	}
 	appendDirectoryTargets(root)
-	arguments = append(arguments, "--bind", root, root, "--dir", "/trusted", "--dir", "/trusted/bin", "--ro-bind", nestedBackend, "/trusted/bin/bwrap")
+	arguments = append(arguments, "--bind", root, root, "--dir", "/trusted", "--dir", "/trusted/bin", "--file", "3", "/trusted/bin/bwrap", "--chmod", "0755", "/trusted/bin/bwrap")
 	appendDirectoryTargets(executableDirectory)
 	arguments = append(arguments, "--ro-bind", executableDirectory, executableDirectory, "--ro-bind", mountSource, mountpoint)
 	for key, value := range map[string]string{
@@ -2250,6 +2255,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, backendPath, arguments...)
+	command.ExtraFiles = []*os.File{backendFile}
 	output := &stage6BoundedBuffer{max: 16 << 10}
 	command.Stdout, command.Stderr = output, output
 	runErr := command.Run()
