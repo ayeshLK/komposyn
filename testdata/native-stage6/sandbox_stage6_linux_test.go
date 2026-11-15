@@ -1545,6 +1545,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	content := "stage6-synthetic-private-content"
 	secondContent := "stage6-second-synthetic-private-content"
 	toolID := tools.ReadFileID
+	protectedMountSource := ""
 	if targetKind == "empty" {
 		content = ""
 	}
@@ -1576,27 +1577,17 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			t.Fatal(err)
 		}
 		if targetKind == "directory-list-mounted" {
-			if err := os.WriteFile(authPath, []byte("synthetic protected mount object"), 0600); err != nil {
+			protectedMountSource = filepath.Join(root, "protected-mounted-source")
+			if err := os.WriteFile(protectedMountSource, []byte("synthetic protected mount object"), 0600); err != nil {
 				_ = service.Close(context.Background())
 				t.Fatalf("create synthetic protected mount source: %v", err)
 			}
-			protectedSource, err := os.Open(authPath)
-			if err != nil {
-				_ = service.Close(context.Background())
-				t.Fatalf("open synthetic protected mount source: %v", err)
-			}
-			if err := service.Protect(ctx, auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, authPath, protectedSource); err != nil {
-				_ = protectedSource.Close()
-				_ = service.Close(context.Background())
-				t.Fatalf("register synthetic protected mount source identity: %v", err)
-			}
-			_ = protectedSource.Close()
 			alias := filepath.Join(target, "protected-mounted-alias")
 			if err := os.WriteFile(alias, []byte("mountpoint"), 0600); err != nil {
 				_ = service.Close(context.Background())
 				t.Fatalf("create protected mount alias target: %v", err)
 			}
-			if err := unix.Mount(authPath, alias, "", unix.MS_BIND, ""); err != nil {
+			if err := unix.Mount(protectedMountSource, alias, "", unix.MS_BIND, ""); err != nil {
 				_ = service.Close(context.Background())
 				t.Fatalf("bind mount synthetic protected object into listing scope: %v", err)
 			}
@@ -1680,6 +1671,21 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		_ = fixture.chat.CloseContext(context.Background())
 		_ = service.Close(context.Background())
 		t.Fatalf("synthetic filesystem root setup failed: %v", err)
+	}
+	if protectedMountSource != "" {
+		protectedSource, err := os.Open(protectedMountSource)
+		if err != nil {
+			_ = fixture.chat.CloseContext(context.Background())
+			_ = service.Close(context.Background())
+			t.Fatalf("open synthetic protected mount source: %v", err)
+		}
+		if err := service.Protect(ctx, auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, authPath, protectedSource); err != nil {
+			_ = protectedSource.Close()
+			_ = fixture.chat.CloseContext(context.Background())
+			_ = service.Close(context.Background())
+			t.Fatalf("register synthetic protected mount source identity: %v", err)
+		}
+		_ = protectedSource.Close()
 	}
 	if err := runtime.EnableNativeReadStudy(fixture.chat); err != nil {
 		_ = fixture.chat.CloseContext(context.Background())
