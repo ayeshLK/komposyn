@@ -199,7 +199,7 @@ var stage6Mu sync.Mutex
 
 func newStage6Report() stage6Report {
 	ids := []string{
-		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read",
+		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read",
 		"protected_auth_refusal", "protected_settings_refusal", "provider_source_owner",
 		"incomplete_owner_inventory", "actor_helper_control", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
@@ -262,7 +262,7 @@ func newStage6Report() stage6Report {
 		)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "8",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "9",
 		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, WorkerImage: workerImage, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: limitations,
@@ -1035,6 +1035,7 @@ type stage6Provider struct {
 	requests        []provider.ChatRequest
 	target          string
 	toolID          tools.ID
+	listingOptions  json.RawMessage
 	blockSecond     bool
 	firstToolCall   bool
 	multipleReads   bool
@@ -1088,7 +1089,21 @@ func (p *stage6Provider) StreamChat(ctx context.Context, request provider.ChatRe
 		calls := make([]provider.ToolCall, 0, len(paths))
 		nativeCalls := make([]json.RawMessage, 0, len(paths))
 		for _, item := range paths {
-			arguments, _ := json.Marshal(map[string]string{"path": item.path})
+			argumentValues := map[string]any{"path": item.path}
+			if toolID == tools.ListFilesID && len(p.listingOptions) != 0 {
+				var options map[string]json.RawMessage
+				if json.Unmarshal(p.listingOptions, &options) != nil {
+					return provider.Result{}, errors.New("synthetic listing options are invalid")
+				}
+				for key, value := range options {
+					var decoded any
+					if json.Unmarshal(value, &decoded) != nil {
+						return provider.Result{}, errors.New("synthetic listing option is invalid")
+					}
+					argumentValues[key] = decoded
+				}
+			}
+			arguments, _ := json.Marshal(argumentValues)
 			nativeArguments, _ := json.Marshal(string(arguments))
 			nativeCalls = append(nativeCalls, json.RawMessage(`{"type":"function_call","id":"`+item.itemID+`","call_id":"`+item.callID+`","name":"`+string(toolID)+`","arguments":`+string(nativeArguments)+`,"status":"completed"}`))
 			calls = append(calls, provider.ToolCall{CallID: item.callID, ToolID: toolID, Arguments: arguments})
@@ -1402,6 +1417,7 @@ type stage6Fixture struct {
 	authPath            string
 	content             string
 	approvals           atomic.Int32
+	approvalDescription string
 	approvalWaitAt      atomic.Int32
 	approvalEntered     chan struct{}
 	approvalRelease     chan struct{}
@@ -1409,6 +1425,20 @@ type stage6Fixture struct {
 	approvalWaitOnce    sync.Once
 	secondContent       string
 	reportCases         []string
+}
+
+func enableRecursiveListingForNativeStudy(service *Service) error {
+	if service == nil {
+		return errors.New("native service is missing")
+	}
+	impl, ok := service.impl.(*linuxImplementation)
+	if !ok {
+		return errors.New("native service does not use the Linux implementation")
+	}
+	impl.mu.Lock()
+	impl.listingOptionsAvailable = true
+	impl.mu.Unlock()
+	return nil
 }
 
 func newStage6HostService(backendPath string, holdWorker bool) (*Service, error) {
@@ -1489,7 +1519,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	}
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
-		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
+		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
 			stage6Skip(id, fmt.Sprintf(
 				"trusted backend validation refused before backend probes or worker launch (uid=%d mode=%#o error=%s)",
 				inspection.UID, inspection.Mode, boundedStage6Diagnostic(inspection.Error),
@@ -1512,7 +1542,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		t.Skip("trusted backend did not satisfy the native launch profile")
 	}
 	root := t.TempDir()
-	if targetKind == "directory-list-mounted" {
+	if targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive-mounted" {
 		mountRoot := os.Getenv("KOMPOSYN_STAGE6_DIRECTORY_MOUNT_ROOT")
 		if !filepath.IsAbs(mountRoot) || filepath.Clean(mountRoot) != mountRoot {
 			_ = service.Close(context.Background())
@@ -1550,10 +1580,10 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		content = ""
 	}
 	target := filepath.Join(root, "notes.txt")
-	if targetKind == "directory-list" || targetKind == "directory-list-mounted" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
 		target = filepath.Join(root, "listing-scope")
 		toolID, content = tools.ListFilesID, "visible.go"
-		if targetKind == "directory-list-mounted" {
+		if targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive-mounted" {
 			if info, err := os.Stat(target); err != nil || !info.IsDir() {
 				_ = service.Close(context.Background())
 				t.Fatalf("mounted listing fixture directory unavailable: %v", err)
@@ -1576,7 +1606,21 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			_ = service.Close(context.Background())
 			t.Fatal(err)
 		}
-		if targetKind == "directory-list-mounted" {
+		if targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
+			for _, directory := range []string{"nested", ".private", filepath.Join(".git", "objects")} {
+				if err := os.MkdirAll(filepath.Join(target, directory), 0700); err != nil {
+					_ = service.Close(context.Background())
+					t.Fatal(err)
+				}
+			}
+			for name, value := range map[string]string{"nested/child.go": "synthetic nested", ".private/hidden.go": "synthetic hidden", ".git/objects/secret.go": "synthetic git metadata"} {
+				if err := os.WriteFile(filepath.Join(target, filepath.FromSlash(name)), []byte(value), 0600); err != nil {
+					_ = service.Close(context.Background())
+					t.Fatal(err)
+				}
+			}
+		}
+		if targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive-mounted" {
 			protectedMountSource = filepath.Join(root, "protected-mounted-source")
 			if err := os.WriteFile(protectedMountSource, []byte("synthetic protected mount object"), 0600); err != nil {
 				_ = service.Close(context.Background())
@@ -1611,17 +1655,26 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		}
 	}
 	base := &stage6Provider{target: target, toolID: toolID, secondTarget: secondTarget, multipleReads: targetKind == "multiple", blockSecond: blockSecond, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
+	if targetKind == "directory-list-recursive" {
+		base.listingOptions = json.RawMessage(`{"recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*.go","*.tmp"]}`)
+	}
+	if targetKind == "directory-list-recursive-mounted" {
+		base.listingOptions = json.RawMessage(`{"recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*"]}`)
+	}
 	providers, err := model.NewRegistry(base)
 	if err != nil {
 		_ = service.Close(context.Background())
 		t.Fatalf("fixture provider registry failed: %v", err)
 	}
 	fixture := &stage6Fixture{service: service, provider: base, authStore: authStore, root: root, authPath: authPath, content: content, secondContent: secondContent, approvalEntered: make(chan struct{}), approvalRelease: make(chan struct{})}
-	approval := runtime.ToolApprovalFunc(func(ctx context.Context, _ permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+	approval := runtime.ToolApprovalFunc(func(ctx context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", "", err
 		}
 		count := fixture.approvals.Add(1)
+		if len(pending.Request.Requirements) > 1 {
+			fixture.approvalDescription = pending.Request.Requirements[1].Description
+		}
 		if fixture.approvalWaitAt.Load() == count {
 			fixture.approvalWaitOnce.Do(func() { close(fixture.approvalEntered) })
 			select {
@@ -1633,7 +1686,13 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		return permissions.ApprovalOnce, "", nil
 	})
 	var config runtime.ToolRuntimeConfig
-	if targetKind == "directory-list" || targetKind == "directory-list-mounted" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
+		if targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
+			if err := enableRecursiveListingForNativeStudy(service); err != nil {
+				_ = service.Close(context.Background())
+				t.Fatal(err)
+			}
+		}
 		config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(
 			approval,
 			runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
@@ -1692,7 +1751,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		_ = service.Close(context.Background())
 		t.Fatalf("test-only read path setup failed: %v", err)
 	}
-	if targetKind == "directory-list" || targetKind == "directory-list-mounted" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" {
 		if err := runtime.EnableNativeDirectoryListingStudy(fixture.chat); err != nil {
 			_ = fixture.chat.CloseContext(context.Background())
 			_ = service.Close(context.Background())
@@ -2371,7 +2430,7 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 			"disable_userns_option": "not used because the worker inherits the fixture user namespace; worker seccomp denies unshare, setns, and process-like clone after bootstrap",
 		}
 	})
-	fixture := newStage6Fixture(t, "directory_listing_mount_boundary", "directory-list-mounted", false, nil)
+	fixture := newStage6Fixture(t, "directory_listing_mount_boundary", "directory-list-recursive-mounted", false, nil)
 	fixture.reportCases = []string{"directory_listing_mount_boundary"}
 	target := filepath.Join(fixture.root, "listing-scope")
 	mountpoint := filepath.Join(target, "mounted-boundary")
@@ -2480,6 +2539,123 @@ func TestStage6PositiveDirectoryListing(t *testing.T) {
 	stage6Pass("positive_directory_listing", "actual sandbox Service, exact-directory once approval, bounded listing worker, ignore filtering and provider continuation succeeded")
 }
 
+func TestStage6PositiveRecursiveDirectoryListing(t *testing.T) {
+	stage6Begin("positive_recursive_directory_listing")
+	fixture := newStage6Fixture(t, "positive_recursive_directory_listing", "directory-list-recursive", false, nil)
+	fixture.reportCases = []string{"positive_recursive_directory_listing"}
+	if err := os.Link(fixture.authPath, filepath.Join(fixture.root, "listing-scope", "nested", "protected-auth-alias.json")); err != nil {
+		t.Fatalf("create nested protected hardlink alias: %v", err)
+	}
+	if err := os.Symlink("nested", filepath.Join(fixture.root, "listing-scope", "linked.go")); err != nil {
+		t.Fatalf("create recursive-listing symlink fixture: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	turn, err := fixture.chat.Send(ctx, "list the synthetic fixture recursively", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("recursive listing outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider request count=%d, want 2", len(requests))
+	}
+	continuation, _ := json.Marshal(requests[1].Messages)
+	for _, visible := range []string{"nested/child.go", ".private/hidden.go", "ignored.tmp"} {
+		if !strings.Contains(string(continuation), visible) {
+			t.Fatalf("recursive result omitted %q: %s", visible, continuation)
+		}
+	}
+	if strings.Contains(string(continuation), ".git") || strings.Contains(string(continuation), "secret.go") || strings.Contains(string(continuation), "protected-auth-alias.json") || strings.Contains(string(continuation), "linked.go/child.go") {
+		t.Fatalf("recursive listing disclosed repository metadata: %s", continuation)
+	}
+	for _, option := range []string{"recursive=true", "include_hidden=true", "include_ignored=true", "*.go", "*.tmp", "openai/stage6-fixture-model using auth profile stage6-profile"} {
+		if !strings.Contains(fixture.approvalDescription, option) {
+			t.Fatalf("approval omitted %q: %s", option, fixture.approvalDescription)
+		}
+	}
+	impl := fixture.service.impl.(*linuxImplementation)
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted {
+		t.Fatalf("recursive worker evidence=%+v", evidence)
+	}
+	if fixture.approvals.Load() != 1 {
+		t.Fatalf("once approvals=%d, want one", fixture.approvals.Load())
+	}
+	stage6Update("positive_recursive_directory_listing", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
+		item.FixtureBytesMatched = true
+	})
+	stage6Pass("positive_recursive_directory_listing", "recursive traversal returned relative paths, applied explicit hidden/ignored/glob options, excluded .git and protected aliases, refused symlink traversal, and continued only after once approval")
+}
+
+func TestStage6RecursiveListingDescendantMovementAndReplacement(t *testing.T) {
+	stage6Begin("recursive_descendant_movement_replacement")
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	fixture := newStage6Fixture(t, "recursive_descendant_movement_replacement", "directory-list-recursive", false, nil)
+	fixture.reportCases = []string{"recursive_descendant_movement_replacement"}
+	impl := fixture.service.impl.(*linuxImplementation)
+	actorRoot := filepath.Dir(fixture.root)
+	outside := filepath.Join(actorRoot, "recursive-listing-outside")
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	actorCompleted := false
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint != readbrokerstudy.CheckpointAfterFinalRevalidation {
+			return nil
+		}
+		source := filepath.Join(filepath.Base(fixture.root), "listing-scope", "nested")
+		actor, err := readbrokerstudy.NewNativeActor(ctx, os.Args[0], actorRoot, readbrokerstudy.NativeActorRename, source, filepath.Join("recursive-listing-outside", "moved-nested"))
+		if err != nil {
+			return err
+		}
+		if !actor.Ready() {
+			_ = actor.Close()
+			return errors.New("descendant movement actor did not become ready")
+		}
+		if err := actor.Run(ctx); err != nil {
+			_ = actor.Close()
+			return err
+		}
+		if err := actor.Close(); err != nil || !actor.Joined() || !actor.TransitionCompleted() {
+			return errors.New("descendant movement actor was not joined")
+		}
+		actorCompleted = true
+		replacement := filepath.Join(fixture.root, "listing-scope", "nested")
+		if err := os.Mkdir(replacement, 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(replacement, "replacement.go"), []byte("synthetic replacement"), 0600)
+	})
+	turn, err := fixture.chat.Send(ctx, "list the synthetic fixture recursively", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted || !actorCompleted {
+		t.Fatalf("recursive descendant turn=%s actor=%t err=%v", turn.Outcome, actorCompleted, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want 2", len(requests))
+	}
+	continuation, _ := json.Marshal(requests[1].Messages)
+	if !strings.Contains(string(continuation), "nested/replacement.go") || strings.Contains(string(continuation), "nested/child.go") || strings.Contains(string(continuation), "moved-nested") {
+		t.Fatalf("recursive traversal escaped the pinned selected directory or followed a moved descendant: %s", continuation)
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent {
+		t.Fatalf("recursive descendant worker evidence=%+v", evidence)
+	}
+	stage6Update("recursive_descendant_movement_replacement", func(item *stage6Case) {
+		item.ActorStarted, item.ActorTransitionCompleted, item.ActorJoined, item.ActorTransitionCount = true, true, true, 1
+		item.AuthorityObservation = "selected directory object; descendant moved outside before traversal, only replacement still beneath pinned selected object was disclosed"
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted, item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = evidence[0].CapabilitySent, evidence[0].ReadStarted, fixture.approvals.Load(), 1, len(requests)
+		item.FixtureBytesMatched, item.CleanupConfirmed = true, evidence[0].WorkerJoined
+	})
+	stage6Pass("recursive_descendant_movement_replacement", "an independent actor moved a descendant outside the pinned selected directory and a replacement remained inside; traversal disclosed only the replacement from the selected directory object")
+}
+
 func TestStage6DirectoryListingSurvivesSelectedDirectoryMovementAndReplacement(t *testing.T) {
 	stage6Begin("directory_listing_movement_replacement")
 	fixture := newStage6Fixture(t, "directory_listing_movement_replacement", "directory-list", false, nil)
@@ -2555,7 +2731,7 @@ func TestStage6DirectoryListingOwnerRotationWithholdsCapture(t *testing.T) {
 	stage6Begin("directory_listing_owner_rotation")
 	var fixture *stage6Fixture
 	var rotated atomic.Bool
-	fixture = newStage6Fixture(t, "directory_listing_owner_rotation", "directory-list", false, func() error {
+	fixture = newStage6Fixture(t, "directory_listing_owner_rotation", "directory-list-recursive", false, func() error {
 		rotateSyntheticAuth(t, fixture)
 		rotated.Store(true)
 		return nil
@@ -2591,7 +2767,7 @@ func TestStage6DirectoryListingOwnerRotationWithholdsCapture(t *testing.T) {
 
 func TestStage6DirectoryListingCancellationJoinsWorker(t *testing.T) {
 	stage6Begin("directory_listing_worker_cleanup")
-	fixture := newStage6FixtureWithHold(t, "directory_listing_worker_cleanup", "directory-list", false, nil, true)
+	fixture := newStage6FixtureWithHold(t, "directory_listing_worker_cleanup", "directory-list-recursive", false, nil, true)
 	fixture.reportCases = []string{"directory_listing_worker_cleanup"}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()

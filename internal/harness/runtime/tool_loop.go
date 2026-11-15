@@ -747,7 +747,7 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 				instructions += " Do not claim filesystem, shell, web, or other unavailable capabilities."
 			}
 			if _, hasListing := definitionByID(requestTools, tools.ListFilesID); hasListing {
-				instructions += " list_files lists one directory level only, omits hidden and .git entries and entries ignored by its bounded .gitignore rules, and returns an incomplete flag when a bound is reached. Each listing needs separate explicit once approval naming the exact directory and this provider destination. It does not grant reads of listed files."
+				instructions += " list_files lists names beneath an approved directory. Defaults are nonrecursive and omit hidden and ignored entries; .git is always excluded. Explicit options control recursion, hidden/ignored inclusion, and basename globs, which do not limit traversal. Each listing needs separate explicit once approval naming the exact directory, all effective options, and this provider destination. Results may be incomplete at a bound. A listing does not grant reads of listed files."
 			}
 		}
 		providerCtx, cancelProvider := context.WithTimeout(ctx, c.timeout)
@@ -1241,9 +1241,18 @@ func resolveFilesystemReadInvocation(invocation tools.Invocation, workingDirecto
 		return invocation, errors.New("working directory is unavailable")
 	}
 	path = filepath.Clean(filepath.Join(workingDirectory, path))
-	resolved, err := json.Marshal(struct {
+	var resolvedValue any = struct {
 		Path string `json:"path"`
-	}{Path: path})
+	}{Path: path}
+	if invocation.ToolID == tools.ListFilesID {
+		input, parseErr := tools.ParseListFiles(invocation.Arguments)
+		if parseErr != nil {
+			return invocation, parseErr
+		}
+		input.Path = path
+		resolvedValue = input
+	}
+	resolved, err := json.Marshal(resolvedValue)
 	if err != nil {
 		return invocation, err
 	}

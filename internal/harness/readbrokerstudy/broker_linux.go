@@ -38,10 +38,11 @@ import (
 )
 
 var (
-	errInvalidReadPath      = errors.New("read broker requires clean absolute paths")
-	errReadNotRegular       = errors.New("read target is not a regular file")
-	errSymlinkLookupRefused = errors.New("read broker refused a symlink lookup")
-	errMountBoundaryRefused = errors.New("read broker refused a mount-boundary lookup")
+	errInvalidReadPath       = errors.New("read broker requires clean absolute paths")
+	errInvalidListingOptions = errors.New("directory listing options are invalid or unsupported")
+	errReadNotRegular        = errors.New("read target is not a regular file")
+	errSymlinkLookupRefused  = errors.New("read broker refused a symlink lookup")
+	errMountBoundaryRefused  = errors.New("read broker refused a mount-boundary lookup")
 )
 
 type broker struct {
@@ -75,6 +76,7 @@ type preparedDirectoryList struct {
 	closeAttempted bool
 	closeErr       error
 	ignoreRules    []ignoreRule
+	options        ListingOptions
 }
 
 var _ PreparedRead = (*preparedRead)(nil)
@@ -184,8 +186,15 @@ func (b *broker) PrepareRead(root, target string, generation GenerationSet) (Pre
 }
 
 func (b *broker) PrepareDirectoryList(root, target string, generation GenerationSet) (PreparedRead, error) {
+	return b.PrepareDirectoryListWithOptions(root, target, generation, ListingOptions{})
+}
+
+func (b *broker) PrepareDirectoryListWithOptions(root, target string, generation GenerationSet, options ListingOptions) (PreparedRead, error) {
 	if b == nil || b.registry == nil {
 		return nil, ErrUnavailable
+	}
+	if err := validateListingOptions(options); err != nil {
+		return nil, err
 	}
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !filepath.IsAbs(target) || filepath.Clean(target) != target || strings.ContainsRune(target, '\x00') {
 		return nil, errInvalidReadPath
@@ -237,8 +246,23 @@ func (b *broker) PrepareDirectoryList(root, target string, generation Generation
 	}
 	return &preparedDirectoryList{
 		directory: directory, registry: b.registry, ignoreRules: ignoreRules, path: target, identity: id, class: class, generation: generation,
-		digest: requestDigest(root, target, id, class, generation, AdmissionListDirectory),
+		digest: requestDigest(root, target, id, class, generation, AdmissionListDirectory, options), options: options.Clone(),
 	}, nil
+}
+
+func validateListingOptions(options ListingOptions) error {
+	if len(options.NameGlobs) > 32 {
+		return errInvalidListingOptions
+	}
+	for _, pattern := range options.NameGlobs {
+		if pattern == "" || len(pattern) > 128 || strings.ContainsAny(pattern, "/\\\x00") || strings.Contains(pattern, "**") || strings.Contains(pattern, `\\`) {
+			return errInvalidListingOptions
+		}
+		if _, err := path.Match(strings.ReplaceAll(pattern, "[!", "[^"), ""); err != nil {
+			return errInvalidListingOptions
+		}
+	}
+	return nil
 }
 
 type ignoreRule struct {
@@ -589,7 +613,7 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 	defer cancel()
 	budget := &directoryFilterBudget{ctx: ctx, remaining: maxDirectoryFilterWork}
 	var listing directoryListingResult
-	if err := json.Unmarshal(raw, &listing); err != nil || listing.Examined > 10_000 || len(listing.Entries) > 1_000 || len(listing.Names) != 0 {
+	if err := json.Unmarshal(raw, &listing); err != nil || listing.Examined > 10_000 || listing.Returned > 10_000 || len(listing.Entries) > 10_000 || len(listing.Directories) > 10_000 || len(listing.Names) != 0 {
 		return nil, ErrProtocol
 	}
 	p.mu.Lock()
@@ -604,54 +628,132 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 	if err := unix.Fstat(int(p.directory.Fd()), &parentStat); err != nil || identityFromStat(&parentStat) != p.identity {
 		return nil, ErrStaleReceipt
 	}
-	currentRules, err := readDirectoryIgnoreRules(p.directory, p.path, p.identity, p.registry)
-	if err != nil || !slices.Equal(currentRules, p.ignoreRules) {
-		return nil, ErrPolicyChanged
-	}
 	mtimeNS := parentStat.Mtim.Sec*1e9 + parentStat.Mtim.Nsec
 	ctimeNS := parentStat.Ctim.Sec*1e9 + parentStat.Ctim.Nsec
 	if mtimeNS != listing.MtimeNS || ctimeNS != listing.CtimeNS {
 		return nil, ErrStaleReceipt
 	}
-	filtered := make([]string, 0, len(listing.Entries))
-	parentMountID, err := mountIDForFD(int(p.directory.Fd()))
+	rootFD := int(p.directory.Fd())
+	parentMountID, err := mountIDForFD(rootFD)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
+	if listing.Directories == nil {
+		if p.options.Recursive {
+			return nil, ErrProtocol
+		}
+		state := directoryListingDirectory{Device: uint64(parentStat.Dev), Inode: parentStat.Ino, MountID: parentMountID, MtimeNS: mtimeNS, CtimeNS: ctimeNS}
+		if err := snapshotListingIgnoreEntry(rootFD, &state); err != nil {
+			return nil, err
+		}
+		listing.Directories = []directoryListingDirectory{state}
+	}
+	blockedDirectories, err := p.revalidateListingDirectories(listing.Directories, budget)
+	if err != nil {
+		return nil, err
+	}
+	allRules := append([]ignoreRule(nil), p.ignoreRules...)
+	if !p.options.IncludeIgnored {
+		currentRules, readErr := readDirectoryIgnoreRules(p.directory, p.path, p.identity, p.registry)
+		if readErr != nil || !slices.Equal(currentRules, p.ignoreRules) {
+			return nil, ErrPolicyChanged
+		}
+		allRules, err = p.loadNestedListingRules(listing.Directories, blockedDirectories, budget)
+		if err != nil {
+			return nil, err
+		}
+	}
+	filtered := make([]string, 0, min(len(listing.Entries), 1_000))
+	blockedPrefixes := make(map[string]bool)
 	for _, entry := range listing.Entries {
 		if err := budget.consume(1); err != nil {
 			return nil, err
 		}
 		name := entry.Name
-		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+		relative := entry.Path
+		if relative == "" {
+			relative = name
+		}
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") || !validListingRelativePath(relative) {
 			return nil, ErrProtocol
 		}
-		namePath := filepath.Join(p.path, name)
+		if path.Base(relative) != name {
+			return nil, ErrProtocol
+		}
+		if hasBlockedListingAncestor(relative, blockedDirectories) || hasBlockedListingAncestor(relative, blockedPrefixes) {
+			continue
+		}
+		namePath := filepath.Join(p.path, filepath.FromSlash(relative))
 		mode, ok := modeForDirentType(entry.Type)
-		if !ok || entry.Inode == 0 {
+		if entry.Device == 0 && relative == name {
+			entry.Device = p.identity.Device
+		}
+		if !ok || entry.Inode == 0 || entry.Device == 0 {
 			return nil, ErrUnavailable
 		}
-		identity, mounted, err := childIdentityAt(int(p.directory.Fd()), name, parentMountID)
+		parentFD, childName, closeParent, err := openListingParent(rootFD, relative)
 		if err != nil {
 			return nil, err
 		}
-		if !mounted && (identity.Device != p.identity.Device || identity.Inode != entry.Inode || identity.Type != mode) {
+		identity, mounted, err := childIdentityAt(parentFD, childName, parentMountID)
+		closeErr := closeParent()
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !mounted && (identity.Device != entry.Device || identity.Inode != entry.Inode || identity.Type != mode) {
 			return nil, ErrStaleReceipt
 		}
+		if name == ".git" || strings.Contains(relative, "/.git/") || strings.HasSuffix(relative, "/.git") {
+			continue
+		}
+		if !p.options.IncludeHidden && strings.HasPrefix(name, ".") {
+			continue
+		}
 		if _, protected := p.registry.ClassifyRoute(namePath); protected {
+			if identity.Type == unix.S_IFDIR {
+				blockedPrefixes[relative] = true
+			}
 			continue
 		}
 		if _, protected := p.registry.ClassifyWithAncestors(namePath, identity, nil); protected {
+			if identity.Type == unix.S_IFDIR {
+				blockedPrefixes[relative] = true
+			}
 			continue
 		}
-		ignored, err := ignoredByRules(namePath, identity.Type == unix.S_IFDIR, p.ignoreRules, budget)
-		if err != nil {
-			return nil, err
+		if !p.options.IncludeIgnored {
+			ignored, err := ignoredByRules(namePath, identity.Type == unix.S_IFDIR, allRules, budget)
+			if err != nil {
+				return nil, err
+			}
+			if ignored {
+				if identity.Type == unix.S_IFDIR {
+					blockedPrefixes[relative] = true
+				}
+				continue
+			}
 		}
-		if ignored {
+		if len(p.options.NameGlobs) > 0 {
+			matched := false
+			for _, pattern := range p.options.NameGlobs {
+				ok, matchErr := gitByteMatch(budget, pattern, name)
+				if matchErr != nil {
+					return nil, matchErr
+				}
+				matched = matched || ok
+			}
+			if !matched {
+				continue
+			}
+		}
+		if len(filtered) >= 1_000 {
+			listing.Incomplete = true
 			continue
 		}
-		filtered = append(filtered, name)
+		filtered = append(filtered, relative)
 	}
 	listing.Names = filtered
 	listing.Entries = nil
@@ -666,6 +768,215 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 		return nil, ErrResultTooLarge
 	}
 	return encoded, nil
+}
+
+func validListingRelativePath(value string) bool {
+	if value == "" || strings.HasPrefix(value, "/") || strings.ContainsRune(value, '\\') || strings.ContainsRune(value, '\x00') {
+		return false
+	}
+	for _, component := range strings.Split(value, "/") {
+		if component == "" || component == "." || component == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func snapshotListingIgnoreEntry(directoryFD int, state *directoryListingDirectory) error {
+	var stat unix.Stat_t
+	err := unix.Fstatat(directoryFD, ".gitignore", &stat, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if err != nil {
+		return ErrProtected
+	}
+	state.IgnoreExists = true
+	state.IgnoreDevice, state.IgnoreInode, state.IgnoreSize = uint64(stat.Dev), stat.Ino, stat.Size
+	state.IgnoreMtimeNS = stat.Mtim.Sec*1e9 + stat.Mtim.Nsec
+	state.IgnoreCtimeNS = stat.Ctim.Sec*1e9 + stat.Ctim.Nsec
+	return nil
+}
+
+func openListingDirectory(rootFD int, relative string) (int, error) {
+	if relative == "" {
+		return unix.Openat(rootFD, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	}
+	fd, err := unix.Openat2(rootFD, relative, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NONBLOCK, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV})
+	if err == unix.EXDEV || err == unix.ELOOP {
+		return -1, errMountBoundaryRefused
+	}
+	if err != nil {
+		return -1, mapPrepareError(err)
+	}
+	return fd, nil
+}
+
+func openListingParent(rootFD int, relative string) (int, string, func() error, error) {
+	parent := path.Dir(relative)
+	name := path.Base(relative)
+	if parent == "." {
+		return rootFD, name, func() error { return nil }, nil
+	}
+	fd, err := openListingDirectory(rootFD, parent)
+	if err != nil {
+		return -1, "", func() error { return nil }, err
+	}
+	return fd, name, func() error { return unix.Close(fd) }, nil
+}
+
+func (p *preparedDirectoryList) revalidateListingDirectories(states []directoryListingDirectory, budget *directoryFilterBudget) (map[string]bool, error) {
+	seen := make(map[string]struct{}, len(states))
+	blocked := make(map[string]bool)
+	slices.SortFunc(states, func(a, b directoryListingDirectory) int {
+		return strings.Count(a.Path, "/") - strings.Count(b.Path, "/")
+	})
+	for _, state := range states {
+		if err := budget.consume(1); err != nil {
+			return nil, err
+		}
+		if state.Path != "" && !validListingRelativePath(state.Path) {
+			return nil, ErrProtocol
+		}
+		if _, exists := seen[state.Path]; exists {
+			return nil, ErrProtocol
+		}
+		seen[state.Path] = struct{}{}
+		if hasBlockedListingAncestor(state.Path, blocked) {
+			blocked[state.Path] = true
+			continue
+		}
+		fd, err := openListingDirectory(int(p.directory.Fd()), state.Path)
+		if err != nil {
+			return nil, err
+		}
+		var stat unix.Stat_t
+		mountID, mountErr := mountIDForFD(fd)
+		statErr := unix.Fstat(fd, &stat)
+		closeErr := unix.Close(fd)
+		if mountErr != nil || statErr != nil || closeErr != nil {
+			return nil, errors.Join(ErrUnavailable, mountErr, statErr, closeErr)
+		}
+		if stat.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(stat.Dev) != state.Device || stat.Ino != state.Inode || mountID != state.MountID || stat.Mtim.Sec*1e9+stat.Mtim.Nsec != state.MtimeNS || stat.Ctim.Sec*1e9+stat.Ctim.Nsec != state.CtimeNS {
+			return nil, ErrStaleReceipt
+		}
+		verifyFD, verifyErr := openListingDirectory(int(p.directory.Fd()), state.Path)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		ignoreErr := verifyListingIgnoreEntry(verifyFD, state)
+		verifyCloseErr := unix.Close(verifyFD)
+		if ignoreErr != nil || verifyCloseErr != nil {
+			return nil, errors.Join(ErrStaleReceipt, ignoreErr, verifyCloseErr)
+		}
+		identity := FileIdentity{Device: state.Device, Inode: state.Inode, Type: unix.S_IFDIR}
+		fullPath := p.path
+		if state.Path != "" {
+			fullPath = filepath.Join(p.path, filepath.FromSlash(state.Path))
+		}
+		if p.registry.DirectoryCoverageIncomplete(identity) {
+			return nil, ErrDirectoryCoverage
+		}
+		_, routeProtected := p.registry.ClassifyRoute(fullPath)
+		_, identityProtected := p.registry.ClassifyWithAncestors(fullPath, identity, nil)
+		if routeProtected || identityProtected {
+			blocked[state.Path] = true
+		}
+	}
+	if _, exists := seen[""]; !exists {
+		return nil, ErrProtocol
+	}
+	return blocked, nil
+}
+
+func (p *preparedDirectoryList) loadNestedListingRules(states []directoryListingDirectory, blocked map[string]bool, budget *directoryFilterBudget) ([]ignoreRule, error) {
+	rules := append([]ignoreRule(nil), p.ignoreRules...)
+	inputBytes := 0
+	for _, rule := range rules {
+		inputBytes += len(rule.pattern) + len(rule.base)
+	}
+	for _, state := range states {
+		if state.Path == "" || blocked[state.Path] || hasBlockedListingAncestor(state.Path, blocked) {
+			continue
+		}
+		if err := budget.consume(1); err != nil {
+			return nil, err
+		}
+		fd, err := openListingDirectory(int(p.directory.Fd()), state.Path)
+		if err != nil {
+			return nil, err
+		}
+		ignoreFD, openErr := unix.Openat(fd, ".gitignore", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+		if verifyErr := verifyListingIgnoreEntry(fd, state); verifyErr != nil {
+			_ = unix.Close(fd)
+			return nil, verifyErr
+		}
+		closeDirErr := unix.Close(fd)
+		if closeDirErr != nil {
+			return nil, closeDirErr
+		}
+		if openErr == unix.ENOENT {
+			continue
+		}
+		if openErr != nil {
+			return nil, ErrProtected
+		}
+		var stat unix.Stat_t
+		if unix.Fstat(ignoreFD, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || uint64(stat.Dev) != state.IgnoreDevice || stat.Ino != state.IgnoreInode || stat.Size != state.IgnoreSize || stat.Mtim.Sec*1e9+stat.Mtim.Nsec != state.IgnoreMtimeNS || stat.Ctim.Sec*1e9+stat.Ctim.Nsec != state.IgnoreCtimeNS || stat.Size < 0 || stat.Size > int64(maxIgnoreBytes-inputBytes) {
+			_ = unix.Close(ignoreFD)
+			return nil, ErrProtected
+		}
+		ignorePath := filepath.Join(p.path, filepath.FromSlash(state.Path), ".gitignore")
+		identity := identityFromStat(&stat)
+		if _, protected := p.registry.ClassifyRoute(ignorePath); protected {
+			_ = unix.Close(ignoreFD)
+			return nil, ErrProtected
+		}
+		if _, protected := p.registry.ClassifyWithAncestors(ignorePath, identity, nil); protected {
+			_ = unix.Close(ignoreFD)
+			return nil, ErrProtected
+		}
+		file := os.NewFile(uintptr(ignoreFD), "nested-listing-ignore-rules")
+		data, readErr := io.ReadAll(io.LimitReader(file, int64(maxIgnoreBytes-inputBytes+1)))
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil || len(data) > maxIgnoreBytes-inputBytes || !utf8.Valid(data) || strings.ContainsRune(string(data), '\x00') {
+			return nil, ErrProtected
+		}
+		parsed, parseErr := parseIgnoreRules(data, filepath.Join(p.path, filepath.FromSlash(state.Path)))
+		if parseErr != nil || len(rules)+len(parsed) > maxIgnoreRules {
+			return nil, ErrProtected
+		}
+		inputBytes += len(data)
+		rules = append(rules, parsed...)
+	}
+	return rules, nil
+}
+
+func verifyListingIgnoreEntry(directoryFD int, state directoryListingDirectory) error {
+	var stat unix.Stat_t
+	err := unix.Fstatat(directoryFD, ".gitignore", &stat, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, unix.ENOENT) {
+		if state.IgnoreExists {
+			return ErrStaleReceipt
+		}
+		return nil
+	}
+	if err != nil || !state.IgnoreExists {
+		return ErrStaleReceipt
+	}
+	if uint64(stat.Dev) != state.IgnoreDevice || stat.Ino != state.IgnoreInode || stat.Size != state.IgnoreSize || stat.Mtim.Sec*1e9+stat.Mtim.Nsec != state.IgnoreMtimeNS || stat.Ctim.Sec*1e9+stat.Ctim.Nsec != state.IgnoreCtimeNS {
+		return ErrStaleReceipt
+	}
+	return nil
+}
+
+func hasBlockedListingAncestor(relative string, blocked map[string]bool) bool {
+	for parent := path.Dir(relative); parent != "."; parent = path.Dir(parent) {
+		if blocked[parent] {
+			return true
+		}
+	}
+	return false
 }
 
 func childIdentityAt(parentFD int, name string, parentMountID uint64) (FileIdentity, bool, error) {
@@ -939,11 +1250,12 @@ func (p *preparedRead) Close() error {
 	return p.closeErr
 }
 
-func (p *preparedDirectoryList) Identity() FileIdentity     { return p.identity }
-func (p *preparedDirectoryList) Class() ResourceClass       { return p.class }
-func (p *preparedDirectoryList) Path() string               { return p.path }
-func (p *preparedDirectoryList) Generations() GenerationSet { return p.generation }
-func (p *preparedDirectoryList) RequestDigest() [32]byte    { return p.digest }
+func (p *preparedDirectoryList) Identity() FileIdentity         { return p.identity }
+func (p *preparedDirectoryList) ListingOptions() ListingOptions { return p.options.Clone() }
+func (p *preparedDirectoryList) Class() ResourceClass           { return p.class }
+func (p *preparedDirectoryList) Path() string                   { return p.path }
+func (p *preparedDirectoryList) Generations() GenerationSet     { return p.generation }
+func (p *preparedDirectoryList) RequestDigest() [32]byte        { return p.digest }
 
 func (p *preparedDirectoryList) DuplicateForWorker() (*os.File, error) {
 	if p == nil {
@@ -978,7 +1290,7 @@ func (p *preparedDirectoryList) Close() error {
 	return p.closeErr
 }
 
-func requestDigest(root, target string, id FileIdentity, class ResourceClass, generation GenerationSet, operation AdmissionOperation) [32]byte {
+func requestDigest(root, target string, id FileIdentity, class ResourceClass, generation GenerationSet, operation AdmissionOperation, listing ...ListingOptions) [32]byte {
 	hash := sha256.New()
 	_, _ = hash.Write([]byte(root))
 	_, _ = hash.Write([]byte{0})
@@ -987,6 +1299,12 @@ func requestDigest(root, target string, id FileIdentity, class ResourceClass, ge
 	_, _ = hash.Write([]byte(class))
 	_, _ = hash.Write([]byte{0})
 	_, _ = hash.Write([]byte(operation))
+	if len(listing) > 0 {
+		if encodedOptions, err := json.Marshal(listing[0]); err == nil {
+			_, _ = hash.Write([]byte{0})
+			_, _ = hash.Write(encodedOptions)
+		}
+	}
 	var encoded [8]byte
 	for _, value := range []uint64{id.Device, id.Inode, uint64(id.Type), generation.Root, generation.Policy, generation.Grant} {
 		binary.LittleEndian.PutUint64(encoded[:], value)

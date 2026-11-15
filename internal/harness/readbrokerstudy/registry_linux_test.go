@@ -342,6 +342,81 @@ func TestDirectoryListHonorsAncestorIgnoreRules(t *testing.T) {
 	}
 }
 
+func TestRecursiveDirectoryListingFiltersAfterTraversalAndAppliesNestedIgnores(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample")
+	for _, directory := range []string{"src", ".private", ".git"} {
+		if err := os.MkdirAll(filepath.Join(target, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{".gitignore": "*.tmp\n", "src/.gitignore": "!keep.tmp\n", "src/main.go": "synthetic", "src/keep.tmp": "synthetic", "src/drop.tmp": "synthetic", ".private/hidden.go": "synthetic", ".git/config": "synthetic"}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(target, filepath.FromSlash(name)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	options := ListingOptions{Recursive: true, NameGlobs: []string{"*.go", "*.tmp"}}
+	prepared, err := NewBroker(registry).(DirectoryListingBroker).PrepareDirectoryListWithOptions(base, target, GenerationSet{Root: 1, Policy: registry.View().Generation}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Close()
+	fd, err := prepared.DuplicateForWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := listDirectoryBounded(int(fd.Fd()), options)
+	if err := fd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Outcome != ReadSucceeded {
+		t.Fatalf("worker result=%+v", raw)
+	}
+	filtered, err := prepared.(*preparedDirectoryList).filterListing(context.Background(), raw.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(filtered, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(listing.Names, []string{"src/keep.tmp", "src/main.go"}) {
+		t.Fatalf("recursive filtered paths=%q incomplete=%t", listing.Names, listing.Incomplete)
+	}
+	if listing.Examined != 2 || listing.Returned != 2 {
+		t.Fatalf("provider-visible counts include hidden, ignored or protected entries: %+v", listing)
+	}
+
+	options.IncludeHidden, options.IncludeIgnored = true, true
+	preparedWithHidden, err := NewBroker(registry).(DirectoryListingBroker).PrepareDirectoryListWithOptions(base, target, GenerationSet{Root: 1, Policy: registry.View().Generation}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer preparedWithHidden.Close()
+	fd, err = preparedWithHidden.DuplicateForWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = listDirectoryBounded(int(fd.Fd()), options)
+	_ = fd.Close()
+	filtered, err = preparedWithHidden.(*preparedDirectoryList).filterListing(context.Background(), raw.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(filtered, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(listing.Names, []string{".private/hidden.go", "src/drop.tmp", "src/keep.tmp", "src/main.go"}) {
+		t.Fatalf("explicit inclusion paths=%q", listing.Names)
+	}
+}
+
 func TestDirectoryListRefusedAtAncestorLimitClosesDescriptors(t *testing.T) {
 	root := t.TempDir()
 	target := root

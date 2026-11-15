@@ -61,6 +61,10 @@ func EnableNativeDirectoryListingStudy(chat *Chat) error {
 	if _, registered := chat.toolRuntime.registry.Lookup(tools.ListFilesID); !registered {
 		return errors.New("native directory listing study did not receive list_files from the trusted backend gate")
 	}
+	tool, registered := chat.toolRuntime.registry.Lookup(tools.ListFilesID)
+	if !registered || len(tool.Definition().InputSchema) == 0 {
+		return errors.New("native directory listing study received an invalid listing tool definition")
+	}
 	return nil
 }
 

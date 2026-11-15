@@ -543,6 +543,11 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 // execution. The latter supplies a runtime gate and never publishes to the
 // study sink.
 func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, prepared PreparedRead, authority ReadExecutionGate, publish bool) (result WorkerResult) {
+	if op.admissionOperation == AdmissionListDirectory {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, maxDirectoryFilterDuration)
+		defer cancel()
+	}
 	worker, err := s.launcher.Start(ctx)
 	if err != nil {
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: "sandbox setup refused before capability handoff: " + boundedText(err.Error(), 768)}
@@ -664,7 +669,17 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 			if !ok {
 				return ErrUnavailable
 			}
-			err = listingWorker.TransferDirectoryCapability(ctx, capability, prepared.Identity())
+			if optioned, ok := worker.(DirectoryOptionsCapabilityWorker); ok {
+				if configured, ok := prepared.(interface{ ListingOptions() ListingOptions }); ok {
+					err = optioned.TransferDirectoryCapabilityWithOptions(ctx, capability, prepared.Identity(), configured.ListingOptions())
+				} else {
+					err = ErrProtocol
+				}
+			} else if configured, ok := prepared.(interface{ ListingOptions() ListingOptions }); ok && !configured.ListingOptions().IsZero() {
+				return ErrUnavailable
+			} else {
+				err = listingWorker.TransferDirectoryCapability(ctx, capability, prepared.Identity())
+			}
 		} else {
 			err = worker.TransferCapability(ctx, capability, prepared.Identity())
 		}

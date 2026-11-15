@@ -482,7 +482,7 @@ func TestDirectoryListingOnceApprovalContinuesToSelectedProvider(t *testing.T) {
 	if len(requests) != 2 || !strings.Contains(providerMessagesText(requests[1].Messages), "visible.go") {
 		t.Fatalf("approved listing did not continue to selected provider: requests=%d activity=%+v approval=%+v hostReads=%d messages=%s", len(requests), turn.ToolActivities, approval.Request, host.reads, providerMessagesText(requests[1].Messages))
 	}
-	if len(approval.Request.Requirements) != 2 || approval.Request.Requirements[1].Resource == nil || approval.Request.Requirements[1].Resource.Target != root || approval.Request.Destination == "" || approval.Request.Requirements[1].Key != "directory_listing_disclosure" || !strings.Contains(approval.Request.Requirements[1].Description, "nonrecursive names") {
+	if len(approval.Request.Requirements) != 2 || approval.Request.Requirements[1].Resource == nil || approval.Request.Requirements[1].Resource.Target != root || approval.Request.Destination == "" || approval.Request.Requirements[1].Key != "directory_listing_disclosure" || !strings.Contains(approval.Request.Requirements[1].Description, "recursive=false") || !strings.Contains(approval.Request.Requirements[1].Description, "openai/model-a using auth profile profile") {
 		t.Fatalf("approval did not identify the exact directory and provider disclosure: %+v", approval.Request)
 	}
 	if host.reads != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded {
@@ -802,6 +802,23 @@ func TestDirectoryListingCatalogRequiresExplicitHostEvidenceGate(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("listing was not registered after trusted host evidence gate")
+	}
+}
+
+func TestAdvancedListingOptionsAreNotAdvertisedOrAcceptedBeforeNativeEvidence(t *testing.T) {
+	base := listFilesTool{}
+	if strings.Contains(string(base.Definition().InputSchema), "recursive") {
+		t.Fatal("recursive option was advertised without evidence")
+	}
+	if err := base.ValidateArguments(json.RawMessage(`{"path":"/tmp/sample","recursive":true}`)); err == nil {
+		t.Fatal("recursive option accepted without evidence")
+	}
+	verified := listFilesTool{optionsAvailable: true}
+	if !strings.Contains(string(verified.Definition().InputSchema), "recursive") {
+		t.Fatal("recursive option was not exposed to a test composition with reviewed evidence")
+	}
+	if err := verified.ValidateArguments(json.RawMessage(`{"path":"/tmp/sample","recursive":true,"name_globs":["*.go"]}`)); err != nil {
+		t.Fatalf("valid advanced listing request rejected: %v", err)
 	}
 }
 

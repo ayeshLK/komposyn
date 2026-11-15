@@ -57,6 +57,15 @@ worker cleanup was recorded on Linux amd64 with Bubblewrap 0.9.0. This does not
 establish live provider listing, production-provider integration, or
 cross-platform enforcement.
 
+Recursive listing and its `recursive`, `include_hidden`, `include_ignored`, and
+`name_globs` options are implemented behind a separate native-evidence gate.
+The gate remains closed: the available `/usr/bin/bwrap` is not root-owned and
+therefore fails the trusted-backend check. Existing nonrecursive native evidence
+does not enable these options. The implementation branch adds recursive native
+cases, but those cases must run on a trusted Linux host against the exact clean
+source revision and be reviewed before the runtime may advertise advanced
+options.
+
 The final integrated #316 directory-specific native run used clean commit
 `85e06601040858678d7859a5a047b774808d8e96` on Linux amd64 with trusted,
 root-owned Bubblewrap 0.9.0. Archive

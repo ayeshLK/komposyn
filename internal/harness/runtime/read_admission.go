@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ type FilesystemReadAdmission struct {
 	PolicyRevision   uint64
 	CoverageRevision uint64
 	Destination      string
+	Listing          tools.ListFilesInput
 }
 
 // FilesystemReadPreparation has no read, execution, or descriptor-transfer
@@ -114,6 +116,12 @@ type FilesystemReadCompositionHost interface {
 // the host has accepted the additional native directory-listing evidence.
 type FilesystemDirectoryListingAvailability interface {
 	DirectoryListingAvailable() bool
+}
+
+// FilesystemDirectoryListingOptionsAvailability is a separate native-evidence
+// gate for recursion and broader filters; base listing evidence is insufficient.
+type FilesystemDirectoryListingOptionsAvailability interface {
+	DirectoryListingOptionsAvailable() bool
 }
 
 type filesystemReadExecutionAuthority struct {
@@ -216,10 +224,14 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 	actionKey := filesystemReadActionKey()
 	resourceDescription := "Share this exact file with " + disclosureDestination + ". Its contents are unclassified and may include credentials or sensitive data; if approved, they may recur in this conversation. This approves one read only; another read needs new approval."
 	if invocation.ToolID == tools.ListFilesID {
+		listing, err := tools.ParseListFiles(invocation.Arguments)
+		if err != nil || admission.Listing.Recursive != listing.Recursive || admission.Listing.IncludeHidden != listing.IncludeHidden || admission.Listing.IncludeIgnored != listing.IncludeIgnored || !slices.Equal(admission.Listing.NameGlobs, listing.NameGlobs) {
+			return permissions.Request{}, errors.New("trusted listing admission does not match the requested options")
+		}
 		resourceKey = "directory_listing_disclosure"
-		actionDescription = "List names in this exact directory once and send them to " + disclosureDestination + "; approval does not permit another listing"
+		actionDescription = "List names beneath this exact directory once and send them to " + disclosureDestination + "; approval does not permit another listing"
 		actionKey = filesystemListingActionKey()
-		resourceDescription = "Share the nonrecursive names from this exact directory with " + disclosureDestination + ". Hidden, ignored and .git entries are excluded. Names and counts may be sensitive. This approves one listing only; another listing needs new approval."
+		resourceDescription = listingApprovalDescription(admission.Target, admission.Listing, disclosureDestination)
 	}
 	targetIsOutsideWorkingDirectory := targetOutsideWorkingDirectory(workingDirectory, admission.Target)
 	if admission.Class == "provider_source" {
@@ -248,6 +260,20 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 		RequireOnceKeys:  []string{resourceKey},
 	}
 	return bindAuthorizationRequest(invocation, request)
+}
+
+func listingApprovalDescription(target string, options tools.ListFilesInput, destination string) string {
+	var description strings.Builder
+	fmt.Fprintf(&description, "Share matching names from %s with %s. Effective options: recursive=%t; include_hidden=%t; include_ignored=%t; name_globs=", target, destination, options.Recursive, options.IncludeHidden, options.IncludeIgnored)
+	if len(options.NameGlobs) == 0 {
+		description.WriteString("[]")
+	} else if encoded, err := json.Marshal(options.NameGlobs); err != nil {
+		description.WriteString("[invalid]")
+	} else {
+		description.Write(encoded)
+	}
+	description.WriteString(". Globs match basenames and do not limit traversal. .git and protected resources are always excluded. Symlinks are not followed and mount boundaries are not crossed. Names and counts may be sensitive. This approves one listing only; another listing needs new approval.")
+	return description.String()
 }
 
 func targetOutsideWorkingDirectory(workingDirectory, target string) bool {
