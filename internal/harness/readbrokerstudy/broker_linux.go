@@ -244,7 +244,7 @@ type ignoreRule struct {
 	base          string
 	negated       bool
 	directoryOnly bool
-	slash         bool
+	anchored      bool
 }
 
 const maxIgnoreBytes = 64 << 10
@@ -266,7 +266,7 @@ func readDirectoryIgnoreRules(directory *os.File, target string, directoryIdenti
 		return nil, ErrProtected
 	}
 	currentPath := target
-	for range maxIgnoreAncestors {
+	for depth := 0; depth < maxIgnoreAncestors; depth++ {
 		ancestors = append(ancestors, ancestorFD{fd: currentFD, path: currentPath})
 		parentFD, openErr := unix.Openat(currentFD, "..", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if openErr != nil {
@@ -280,6 +280,10 @@ func readDirectoryIgnoreRules(directory *os.File, target string, directoryIdenti
 		if currentStat.Ino == parentStat.Ino && currentStat.Dev == parentStat.Dev {
 			_ = unix.Close(parentFD)
 			break
+		}
+		if depth == maxIgnoreAncestors-1 {
+			_ = unix.Close(parentFD)
+			return nil, closeAncestors(ancestors, ErrProtected)
 		}
 		currentFD = parentFD
 		currentPath = filepath.Dir(currentPath)
@@ -328,21 +332,6 @@ func readDirectoryIgnoreRules(directory *os.File, target string, directoryIdenti
 		}
 		rules = append(rules, parsed...)
 	}
-	if len(ancestors) == maxIgnoreAncestors {
-		var last, parent unix.Stat_t
-		if unix.Fstat(ancestors[len(ancestors)-1].fd, &last) != nil {
-			return nil, ErrProtected
-		}
-		parentFD, openErr := unix.Openat(ancestors[len(ancestors)-1].fd, "..", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-		if openErr != nil {
-			return nil, ErrProtected
-		}
-		parentErr := unix.Fstat(parentFD, &parent)
-		_ = unix.Close(parentFD)
-		if parentErr != nil || last.Ino != parent.Ino || last.Dev != parent.Dev {
-			return nil, ErrProtected
-		}
-	}
 	if len(ancestors) > 0 {
 		var selectedStat unix.Stat_t
 		if unix.Fstat(ancestors[0].fd, &selectedStat) != nil || identityFromStat(&selectedStat) != directoryIdentity {
@@ -383,6 +372,7 @@ func parseIgnoreRules(data []byte, base string) ([]ignoreRule, error) {
 			line = strings.TrimSuffix(line, "/")
 		}
 		if strings.HasPrefix(line, "/") {
+			rule.anchored = true
 			line = strings.TrimPrefix(line, "/")
 		}
 		if line == "" {
@@ -391,7 +381,8 @@ func parseIgnoreRules(data []byte, base string) ([]ignoreRule, error) {
 		if _, err := path.Match(line, "validation"); err != nil {
 			return nil, ErrProtected
 		}
-		rule.pattern, rule.base, rule.slash = line, base, strings.Contains(line, "/")
+		rule.pattern, rule.base = line, base
+		rule.anchored = rule.anchored || strings.Contains(line, "/")
 		rules = append(rules, rule)
 	}
 	if scanner.Err() != nil {
@@ -416,11 +407,51 @@ func (rule ignoreRule) matches(namePath string, directory bool) bool {
 		return false
 	}
 	name := filepath.ToSlash(relative)
-	if !rule.slash {
-		name = path.Base(name)
+	if rule.anchored {
+		matched, _ := path.Match(rule.pattern, name)
+		return matched
 	}
-	matched, _ := path.Match(rule.pattern, name)
-	return matched
+	for _, component := range strings.Split(name, "/") {
+		matched, _ := path.Match(rule.pattern, component)
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func ignoredByRules(namePath string, directory bool, rules []ignoreRule) bool {
+	if len(rules) == 0 {
+		return false
+	}
+	base := rules[0].base
+	relative, err := filepath.Rel(base, namePath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	components := strings.Split(filepath.ToSlash(relative), "/")
+	prefix := base
+	ignored := false
+	for i, component := range components {
+		prefix = filepath.Join(prefix, filepath.FromSlash(component))
+		isDirectory := i < len(components)-1 || directory
+		parentIgnored := ignored
+		for _, rule := range rules {
+			if !rule.matches(prefix, isDirectory) {
+				continue
+			}
+			if rule.negated {
+				// Git cannot re-include a child while one of its parent
+				// directories remains excluded.
+				if !parentIgnored {
+					ignored = false
+				}
+			} else {
+				ignored = true
+			}
+		}
+	}
+	return ignored
 }
 
 func (p *preparedDirectoryList) filterListing(raw []byte) ([]byte, error) {
@@ -474,14 +505,7 @@ func (p *preparedDirectoryList) filterListing(raw []byte) ([]byte, error) {
 		if _, protected := p.registry.ClassifyWithAncestors(namePath, identity, nil); protected {
 			continue
 		}
-		isDir := identity.Type == unix.S_IFDIR
-		ignored := false
-		for _, rule := range p.ignoreRules {
-			if rule.matches(namePath, isDir) {
-				ignored = !rule.negated
-			}
-		}
-		if ignored {
+		if ignoredByRules(namePath, identity.Type == unix.S_IFDIR, p.ignoreRules) {
 			continue
 		}
 		filtered = append(filtered, name)

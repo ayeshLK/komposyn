@@ -332,6 +332,136 @@ func TestDirectoryListHonorsAncestorIgnoreRules(t *testing.T) {
 	}
 }
 
+func TestDirectoryListRefusedAtAncestorLimitClosesDescriptors(t *testing.T) {
+	root := t.TempDir()
+	target := root
+	for range maxIgnoreAncestors + 12 {
+		target = filepath.Join(target, "d")
+		if err := os.Mkdir(target, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	broker := NewBroker(registry).(DirectoryListingBroker)
+	baseline := openDescriptorCount(t)
+	for attempt := range 4 {
+		prepared, err := broker.PrepareDirectoryList(root, target, GenerationSet{Root: 1, Policy: registry.View().Generation})
+		if prepared != nil {
+			_ = prepared.Close()
+		}
+		if !errors.Is(err, ErrProtected) {
+			t.Fatalf("deep target attempt %d result=%v err=%v; want bounded refusal", attempt, prepared, err)
+		}
+		if got := openDescriptorCount(t); got != baseline {
+			t.Fatalf("open descriptor count after refusal %d=%d, before=%d", attempt, got, baseline)
+		}
+	}
+}
+
+func TestDirectoryListAppliesIgnoredParentAndAnchoredRules(t *testing.T) {
+	root := t.TempDir()
+	private := filepath.Join(root, "private")
+	src := filepath.Join(root, "src")
+	rootSecret := filepath.Join(root, "secret")
+	srcSecret := filepath.Join(src, "secret")
+	for _, directory := range []string{private, src, rootSecret, srcSecret} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, target := range []string{filepath.Join(private, "secret.txt"), filepath.Join(root, "keep.log"), filepath.Join(rootSecret, "secret.txt"), filepath.Join(src, "keep.log"), filepath.Join(src, "visible.go"), filepath.Join(srcSecret, "visible.go")} {
+		if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("private/\n!private/secret.txt\n*.log\n!/keep.log\n/secret/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	prepare := func(directory string) *preparedDirectoryList {
+		t.Helper()
+		prepared, err := NewBroker(registry).(DirectoryListingBroker).PrepareDirectoryList(root, directory, GenerationSet{Root: 1, Policy: registry.View().Generation})
+		if err != nil {
+			t.Fatalf("prepare listing %s: %v", directory, err)
+		}
+		result, ok := prepared.(*preparedDirectoryList)
+		if !ok {
+			t.Fatalf("prepared listing has unexpected type %T", prepared)
+		}
+		return result
+	}
+	rootListing := prepare(root)
+	t.Cleanup(func() { _ = rootListing.Close() })
+	rootResult := filterPreparedListing(t, rootListing, []string{"keep.log", "src", "secret"})
+	if !slices.Equal(rootResult.Names, []string{"keep.log", "src"}) {
+		t.Fatalf("root anchored listing=%q, want keep.log and src", rootResult.Names)
+	}
+	srcListing := prepare(src)
+	t.Cleanup(func() { _ = srcListing.Close() })
+	srcResult := filterPreparedListing(t, srcListing, []string{"keep.log", "secret", "visible.go"})
+	if !slices.Equal(srcResult.Names, []string{"secret", "visible.go"}) {
+		t.Fatalf("nested anchored listing=%q, want secret and visible.go", srcResult.Names)
+	}
+	privateListing := prepare(private)
+	t.Cleanup(func() { _ = privateListing.Close() })
+	privateResult := filterPreparedListing(t, privateListing, []string{"secret.txt"})
+	if len(privateResult.Names) != 0 || privateResult.Examined != 0 {
+		t.Fatalf("ignored-parent listing=%+v, want empty disclosed result", privateResult)
+	}
+}
+
+func filterPreparedListing(t *testing.T, prepared *preparedDirectoryList, names []string) directoryListingResult {
+	t.Helper()
+	entries := make([]directoryListingEntry, 0, len(names))
+	for _, name := range names {
+		fd, err := unix.Openat(int(prepared.directory.Fd()), name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stat unix.Stat_t
+		if err := unix.Fstat(fd, &stat); err != nil {
+			_ = unix.Close(fd)
+			t.Fatal(err)
+		}
+		_ = unix.Close(fd)
+		entries = append(entries, directoryListingEntry{Name: name, Inode: stat.Ino, Type: direntTypeForMode(stat.Mode)})
+	}
+	var directoryStat unix.Stat_t
+	if err := unix.Fstat(int(prepared.directory.Fd()), &directoryStat); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(directoryListingResult{Entries: entries, Examined: len(entries), MtimeNS: directoryStat.Mtim.Sec*1e9 + directoryStat.Mtim.Nsec, CtimeNS: directoryStat.Ctim.Sec*1e9 + directoryStat.Ctim.Nsec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := prepared.filterListing(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing directoryListingResult
+	if err := json.Unmarshal(filtered, &listing); err != nil {
+		t.Fatal(err)
+	}
+	return listing
+}
+
+func openDescriptorCount(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(entries)
+}
+
 func TestDirectoryListRefusesUnsupportedIgnoreRules(t *testing.T) {
 	base := t.TempDir()
 	directoryPath := filepath.Join(base, "sample")
