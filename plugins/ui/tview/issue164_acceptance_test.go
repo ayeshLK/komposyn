@@ -76,7 +76,9 @@ func TestIssue164LoginSuccessAndDenialThroughRuntimeAdapterAndScreen(t *testing.
 				case <-time.After(2 * time.Second):
 					t.Fatal("manage providers did not open")
 				}
-				waitForScreen(t, screen, "permission_required", "")
+				// Depending on which screen refresh completes first, the visible
+				// status is either the account's machine label or the picker copy.
+				waitForScreenOneOf(t, screen, "permission_required", "missing permission")
 				profiles, err := client.Profiles(context.Background())
 				if err != nil || len(profiles) != 1 || profiles[0].Status != "permission_required" || len(profiles[0].Permissions) != 1 || profiles[0].Permissions[0].State != string(auth.PermissionMissing) {
 					t.Fatalf("identity-only profile status=%+v err=%v", profiles, err)
@@ -96,6 +98,31 @@ func TestIssue164LoginSuccessAndDenialThroughRuntimeAdapterAndScreen(t *testing.
 			}
 		})
 	}
+}
+
+func waitForScreenOneOf(t *testing.T, screen *synchronizedSimulation, alternatives ...string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		cells, _, _ := screen.GetContents()
+		var b strings.Builder
+		for _, cell := range cells {
+			b.WriteString(string(cell.Runes))
+		}
+		text := b.String()
+		for _, alternative := range alternatives {
+			if strings.Contains(text, alternative) {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cells, _, _ := screen.GetContents()
+	var b strings.Builder
+	for _, cell := range cells {
+		b.WriteString(string(cell.Runes))
+	}
+	t.Fatalf("screen did not contain any of %q: %q", alternatives, b.String())
 }
 
 func TestIssue164AdapterForwardsLoginCompletion(t *testing.T) {

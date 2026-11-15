@@ -378,15 +378,13 @@ func parseIgnoreRules(data []byte, base string) ([]ignoreRule, error) {
 		if line == "" {
 			return nil, ErrProtected
 		}
-		// Translate Git's [!a] negated class to path.Match's [^a] form.
 		// POSIX character classes, collating symbols, and equivalence classes
-		// are not supported by path.Match, so refuse those patterns rather
+		// are outside this bounded matcher, so refuse those patterns rather
 		// than risk exposing names under different matching semantics.
 		if strings.Contains(line, "[[") || strings.Contains(line, "[:") || strings.Contains(line, "[.") || strings.Contains(line, "[=") {
 			return nil, ErrProtected
 		}
-		line = strings.ReplaceAll(line, "[!", "[^")
-		if _, err := path.Match(line, "validation"); err != nil {
+		if _, err := path.Match(strings.ReplaceAll(line, "[!", "[^"), "validation"); err != nil {
 			return nil, ErrProtected
 		}
 		rule.pattern, rule.base = line, base
@@ -421,14 +419,82 @@ func (rule ignoreRule) matches(namePath string, directory bool) bool {
 		return false
 	}
 	if rule.anchored {
-		matched, _ := path.Match(rule.pattern, name)
-		return matched
+		return gitByteMatch(rule.pattern, name)
 	}
 	// ignoredByRules evaluates each path prefix separately. Match this
 	// prefix's own name, never an ancestor component of a descendant.
 	component := name[strings.LastIndex(name, "/")+1:]
-	matched, _ := path.Match(rule.pattern, component)
-	return matched
+	return gitByteMatch(rule.pattern, component)
+}
+
+// gitByteMatch implements the supported Git ignore wildcards over filename
+// bytes. In particular, '?' and character classes consume one byte, not one
+// Unicode code point. '**' and backslash escapes are rejected by the parser.
+func gitByteMatch(pattern, name string) bool {
+	type state struct{ pattern, name int }
+	results := make(map[state]bool)
+	visited := make(map[state]bool)
+	var match func(int, int) bool
+	match = func(patternOffset, nameOffset int) bool {
+		key := state{patternOffset, nameOffset}
+		if visited[key] {
+			return results[key]
+		}
+		visited[key] = true
+		matched := false
+		switch {
+		case patternOffset == len(pattern):
+			matched = nameOffset == len(name)
+		case pattern[patternOffset] == '*':
+			next := patternOffset + 1
+			for next < len(pattern) && pattern[next] == '*' {
+				next++
+			}
+			for end := nameOffset; end <= len(name) && (end == nameOffset || name[end-1] != '/'); end++ {
+				if match(next, end) {
+					matched = true
+					break
+				}
+			}
+		case pattern[patternOffset] == '?':
+			matched = nameOffset < len(name) && name[nameOffset] != '/' && match(patternOffset+1, nameOffset+1)
+		case pattern[patternOffset] == '[':
+			close := strings.IndexByte(pattern[patternOffset+1:], ']')
+			if close >= 0 && nameOffset < len(name) && name[nameOffset] != '/' {
+				close += patternOffset + 1
+				matched = gitByteClassMatch(pattern[patternOffset+1:close], name[nameOffset]) && match(close+1, nameOffset+1)
+			}
+		default:
+			matched = nameOffset < len(name) && pattern[patternOffset] == name[nameOffset] && match(patternOffset+1, nameOffset+1)
+		}
+		results[key] = matched
+		return matched
+	}
+	return match(0, 0)
+}
+
+func gitByteClassMatch(class string, value byte) bool {
+	negated := strings.HasPrefix(class, "!")
+	if negated {
+		class = class[1:]
+	}
+	contains := false
+	for i := 0; i < len(class); i++ {
+		if i+2 < len(class) && class[i+1] == '-' {
+			if value >= class[i] && value <= class[i+2] {
+				contains = true
+			}
+			i += 2
+			continue
+		}
+		if class[i] == value {
+			contains = true
+		}
+	}
+	if negated {
+		return !contains
+	}
+	return contains
 }
 
 func ignoredByRules(namePath string, directory bool, rules []ignoreRule) bool {

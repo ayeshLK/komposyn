@@ -438,6 +438,19 @@ func TestIgnoreRulesFailClosedOnCharacterClassesAndMatchPrefixes(t *testing.T) {
 	if !ignoredByRules(filepath.Join(root, "b.log"), false, classRules) {
 		t.Fatal("ordinary character class did not exclude b.log")
 	}
+	byteRules, err := parseIgnoreRules([]byte("??.txt\n/??.log\n?.csv\n"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ignoredByRules(filepath.Join(root, "é.txt"), false, byteRules) {
+		t.Fatal("unanchored question marks did not match UTF-8 filename bytes")
+	}
+	if !ignoredByRules(filepath.Join(root, "é.log"), false, byteRules) {
+		t.Fatal("anchored question marks did not match UTF-8 filename bytes")
+	}
+	if ignoredByRules(filepath.Join(root, "é.csv"), false, byteRules) {
+		t.Fatal("single question mark matched a two-byte UTF-8 character")
+	}
 
 	rules, err := parseIgnoreRules([]byte("*.secret\n!keep\n"), root)
 	if err != nil {
