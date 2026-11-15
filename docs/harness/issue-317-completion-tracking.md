@@ -2,22 +2,23 @@
 
 This record distinguishes implementation and ordinary tests from native
 filesystem evidence. The recursive options remain unavailable until the
-required native profile has been measured on the candidate revision and that
-evidence has received independent maintainer review.
+required native profile has been measured on the candidate revision, that
+evidence has received independent maintainer review, and enablement is
+approved separately.
 
 ## Acceptance matrix
 
 | #317 criterion | Implementation and ordinary coverage | Native harness coverage | Current result |
 |---|---|---|---|
-| Explicit recursion, hidden/ignored inclusion, basename globs, and exact once-approval binding | `plugins/tools/conversation.go`; runtime admission and publication tests; provider-request schema/instruction tests | `positive_recursive_directory_listing` and `recursive_listing_nested_ignore_filters` exercise the real Service/provider fixture | Implemented and fixture-compiled; native run unavailable |
-| Defaults, nested `.gitignore` precedence/negation, ignored-parent behavior, glob traversal, and hidden filtering | `TestRecursiveDirectoryListingFiltersAfterTraversalAndAppliesNestedIgnores`; worker and parser tests | `positive_directory_listing` plus `recursive_listing_nested_ignore_filters` | Ordinary tests pass; native cases await trusted host |
-| `.git` exclusion, symlink refusal, and mount boundaries under explicit options | Worker traversal tests; host-side mounted-object and protection checks | `positive_recursive_directory_listing` includes a directory symlink and `.git`; `directory_listing_mount_boundary` checks a mounted child and protected bind-mounted alias | Fixture assertions present; native cases unavailable here |
-| Protected aliases, owner rotation, and missing owner coverage | Registry and admission tests; protected identities checked before visible counts | Recursive positive case creates a nested protected hard link; `directory_listing_owner_rotation` checks stale publication; `recursive_listing_incomplete_owner_inventory` checks refusal before approval/worker | Missing-owner case is synthetic runtime evidence only; native worker cases await trusted host |
-| Descendant movement/replacement and object authority | Broker identity and mount revalidation tests | `recursive_descendant_movement_replacement` uses a separate actor after final revalidation | Fixture present; native case unavailable here |
-| Cancellation, revocation, stale publication, and cleanup | Runtime/session cancellation and lifecycle tests; descriptor-refusal regression tests | `directory_listing_worker_cleanup` cancels after the worker holds the capability; `recursive_listing_cancellation_after_traversal` cancels after host filtering; owner rotation suppresses capture after traversal | Pre-release and post-traversal cancellation cases are in source; native run unavailable here. Cancellation during active traversal is still not independently measured |
-| Shared 10,000-entry budget, 1,000 visible-path limit, 64 KiB output, five-second deadline, bounded ignore input and matcher work | `TestRecursiveTraversalStopsAtSharedEntryBudget`, bounded encoder test, broker filter budgets and existing admission/session deadlines | `recursive_listing_entry_limit` creates a 10,020-file tree and requires a bounded `incomplete=true` provider result | Ordinary tests pass; native limit case awaits trusted host. Stage 6 currently observes only provider-safe counts |
-| Provider-visible names/counts/errors and stale-result suppression | Runtime continuation tests; host filter removes protected entries before counts and strips all worker snapshots before serialization | Recursive provider fixture cases assert disclosed results, approval details, and absence of filtered names | Fixture assertions present; no native result from this host |
-| Supported-profile enablement and route/schema composition | Linux gate defaults false; public `sandbox.Service` forwards the options gate; runtime schema/instructions follow the exposed definition | Test-only Stage 6 composition sets the gate to exercise the path; this is not an enablement decision | Gate remains closed. No production profile can be accepted without native evidence and independent review |
+| Explicit recursion, hidden/ignored inclusion, basename globs, and exact once-approval binding | `plugins/tools/conversation.go`; runtime admission and publication tests; provider-request schema/instruction tests | `positive_recursive_directory_listing` and `recursive_listing_nested_ignore_filters` exercise the real Service/provider fixture | Native pass on the recorded trusted Linux profile |
+| Defaults, nested `.gitignore` precedence/negation, ignored-parent behavior, glob traversal, and hidden filtering | `TestRecursiveDirectoryListingFiltersAfterTraversalAndAppliesNestedIgnores`; worker and parser tests | `positive_directory_listing` plus `recursive_listing_nested_ignore_filters` | Ordinary and native tests pass on the recorded profile |
+| `.git` exclusion, symlink refusal, and mount boundaries under explicit options | Worker traversal tests; host-side mounted-object and protection checks | `positive_recursive_directory_listing` includes a directory symlink and `.git`; `directory_listing_mount_boundary` checks a mounted child and protected bind-mounted alias | Native pass on the recorded profile |
+| Protected aliases, owner rotation, and missing owner coverage | Registry and admission tests; protected identities checked before visible counts | Recursive positive case creates a nested protected hard link; `directory_listing_owner_rotation` checks stale publication; `recursive_listing_incomplete_owner_inventory` checks refusal before approval/worker | Native pass for protected alias and owner-rotation worker cases; missing-owner refusal is synthetic runtime evidence |
+| Descendant movement/replacement and object authority | Broker identity and mount revalidation tests | `recursive_descendant_movement_replacement` uses a separate actor after final revalidation | Native pass on the recorded profile |
+| Cancellation, revocation, stale publication, and cleanup | Runtime/session cancellation and lifecycle tests; descriptor-refusal regression tests | `directory_listing_worker_cleanup` cancels after the worker holds the capability; `recursive_listing_cancellation_after_traversal` cancels after host filtering; owner rotation suppresses capture after traversal | Native pass for post-traversal cancellation and worker cleanup. Cancellation during active traversal is still not independently measured |
+| Shared 10,000-entry budget, 1,000 visible-path limit, 64 KiB output, five-second deadline, bounded ignore input and matcher work | `TestRecursiveTraversalStopsAtSharedEntryBudget`, bounded encoder test, broker filter budgets and existing admission/session deadlines | `recursive_listing_entry_limit` creates a 10,020-file tree and requires a bounded `incomplete=true` provider result | Native limit case passes; ordinary tests cover the remaining bounds |
+| Provider-visible names/counts/errors and stale-result suppression | Runtime continuation tests; host filter removes protected entries before counts and strips all worker snapshots before serialization | Recursive provider fixture cases assert disclosed results, approval details, and absence of filtered names | Native pass on the recorded profile |
+| Supported-profile enablement and route/schema composition | Linux gate defaults false; public `sandbox.Service` forwards the options gate; runtime schema/instructions follow the exposed definition | Test-only Stage 6 composition sets the gate to exercise the path; this is not an enablement decision | The automatic-bind Linux profile passed the required listing cases on Bubblewrap 0.9.0. Keep the gate closed pending independent evidence review and a separate enablement decision |
 
 ## Evidence provenance and host result
 
@@ -74,7 +75,32 @@ The second archive SHA-256 is
 report SHA-256 is
 `a9dcd5f99aa75d2017411e2d4cd16918ee25d8ab85ac604c9792e4421109ea7b`.
 
-Once an eligible host is available, run from a clean committed candidate:
+A third trusted-host run exercised the exact clean source revision
+`430d9c860c1f4a2c520025c60789c559815fa13c` (Go 1.26.11, Linux
+`7.0.0-42-generic`, amd64, UID 1000, trusted root-owned Bubblewrap 0.9.0,
+automatic bind mode). All #317 native-integrated recursive listing cases
+passed, including nested ignore/glob filtering, the 10,020-entry bounded
+listing, descendant and selected-directory movement, mount boundary, owner
+rotation, post-traversal cancellation, and worker cleanup. In particular, the
+two cases previously inconclusive because of the fixture's envelope parsing
+now passed their expected names/counts assertions. The Stage 6 report is valid
+and the study exited successfully.
+
+This report's overall classification remains `stage6_profile_incomplete`
+because separate mutation and shell cases are unavailable in Stage 6 runner
+version 10, and it does not establish provider-source lifecycle, aggregate
+cgroup quotas, shipped-binary integration, or non-Linux enforcement. Those
+limitations are outside issue #317's recursive-listing acceptance criteria;
+they must not be described as passed. Active-traversal cancellation also
+remains unmeasured. The listing gate remains closed until independent review
+accepts this evidence and a separate enablement decision is made.
+
+The third archive SHA-256 is
+`5914fa1bd57e67b60ffea613fd5c4affd31cb1ba7632006f9c00cc2933f41ad7`; the
+report SHA-256 is
+`8bf926362711edb04c66a4e8c63203da824cf891949b9d3cd036f6931e8c5d22`.
+
+To reproduce the trusted-host run from a clean committed candidate:
 
 ```sh
 go_root="$(go env GOROOT)"
