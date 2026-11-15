@@ -2319,6 +2319,7 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 			"worker_capabilities":   "dropped by the nested Bubblewrap worker profile",
 			"mount_namespace":       "worker-private",
 			"pid_namespace":         "worker-private",
+			"network_namespace":     "inherited isolated fixture namespace; network syscalls are denied by worker seccomp",
 			"disable_userns_option": "not used because the worker inherits the fixture user namespace; worker seccomp denies unshare, setns, and process-like clone after bootstrap",
 		}
 	})

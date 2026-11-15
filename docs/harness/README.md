@@ -172,15 +172,15 @@ mount IDs, and confirms that listing exposes only the direct mountpoint name,
 not the mounted directory's marker. The outer fixture supplies a
 digest-checked copy of the already trusted Bubblewrap binary by file descriptor
 and has Bubblewrap create it at a namespace-root-owned path. The nested worker
-inherits that fixture's already established user namespace while retaining
-its own mount, PID, IPC, UTS, and network namespaces; this avoids a second
-user-namespace mapping. The outer fixture grants `CAP_SYS_ADMIN` only inside
-its isolated user namespace to establish those nested namespaces. This
-study-only launch omits `--unshare-user` and `--disable-userns`; the nested
-worker drops capabilities, then its post-bootstrap seccomp denies `unshare`,
-`setns`, and process-like `clone`. The report records this profile difference.
-This exception is limited to the disposable mount-boundary study. The report
-retains backend trust diagnostics when a check refuses. These cases require a
+inherits the fixture's already established user and network namespaces while
+retaining private mount, PID, IPC, and UTS namespaces. The outer fixture grants
+`CAP_SYS_ADMIN` only inside its isolated user namespace to establish those
+nested namespaces. This study-only launch omits `--unshare-user`,
+`--disable-userns`, and `--unshare-net`; the nested worker drops capabilities,
+then its post-bootstrap seccomp denies network calls, `unshare`, `setns`, and
+process-like `clone`. The report records these profile differences. This
+exception is limited to the disposable mount-boundary study. The report retains
+backend trust diagnostics when a check refuses. These cases require a
 trusted-host run against the exact clean commit; if the outer namespace cannot
 be established, the mount result is recorded unavailable and listing remains
 disabled. No cross-platform support is claimed.

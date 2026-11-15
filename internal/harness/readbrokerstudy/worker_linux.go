@@ -820,7 +820,7 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		for _, argument := range args {
 			if argument == "--unshare-user" {
 				replaced = true
-			} else if argument != "--disable-userns" {
+			} else if argument != "--disable-userns" && argument != "--unshare-net" {
 				updatedArgs = append(updatedArgs, argument)
 			}
 		}
