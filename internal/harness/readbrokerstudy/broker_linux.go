@@ -18,6 +18,7 @@ package readbrokerstudy
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -30,6 +31,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
@@ -250,6 +252,10 @@ type ignoreRule struct {
 const maxIgnoreBytes = 64 << 10
 const maxIgnoreAncestors = 64
 const maxIgnoreRules = 512
+const maxDirectoryFilterWork = 5_000_000
+const maxDirectoryFilterDuration = 5 * time.Second
+
+var errDirectoryFilterBudget = errors.New("directory listing filter work budget exceeded")
 
 type ancestorFD struct {
 	fd   int
@@ -404,77 +410,117 @@ func closeAncestors(ancestors []ancestorFD, err error) error {
 	return err
 }
 
-func (rule ignoreRule) matches(namePath string, directory bool) bool {
+func (rule ignoreRule) matches(namePath string, directory bool, budget *directoryFilterBudget) (bool, error) {
 	if rule.directoryOnly && !directory {
-		return false
+		return false, nil
 	}
 	relative, err := filepath.Rel(rule.base, namePath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return false
+		return false, nil
 	}
 	name := filepath.ToSlash(relative)
 	if name == "." {
 		// An ignore file does not apply its patterns to the directory that
 		// contains it, only to entries below that directory.
-		return false
+		return false, nil
 	}
 	if rule.anchored {
-		return gitByteMatch(rule.pattern, name)
+		return gitByteMatch(budget, rule.pattern, name)
 	}
 	// ignoredByRules evaluates each path prefix separately. Match this
 	// prefix's own name, never an ancestor component of a descendant.
 	component := name[strings.LastIndex(name, "/")+1:]
-	return gitByteMatch(rule.pattern, component)
+	return gitByteMatch(budget, rule.pattern, component)
 }
 
-// gitByteMatch implements the supported Git ignore wildcards over filename
-// bytes. In particular, '?' and character classes consume one byte, not one
-// Unicode code point. '**' and backslash escapes are rejected by the parser.
-func gitByteMatch(pattern, name string) bool {
-	type state struct{ pattern, name int }
-	results := make(map[state]bool)
-	visited := make(map[state]bool)
-	var match func(int, int) bool
-	match = func(patternOffset, nameOffset int) bool {
-		key := state{patternOffset, nameOffset}
-		if visited[key] {
-			return results[key]
-		}
-		visited[key] = true
-		matched := false
-		switch {
-		case patternOffset == len(pattern):
-			matched = nameOffset == len(name)
-		case pattern[patternOffset] == '*':
-			next := patternOffset + 1
-			for next < len(pattern) && pattern[next] == '*' {
-				next++
+type directoryFilterBudget struct {
+	ctx       context.Context
+	remaining int
+}
+
+func (budget *directoryFilterBudget) consume(work int) error {
+	if err := budget.ctx.Err(); err != nil {
+		return err
+	}
+	if work < 0 || work > budget.remaining {
+		return errDirectoryFilterBudget
+	}
+	budget.remaining -= work
+	return nil
+}
+
+// gitByteMatch uses a two-row dynamic program with O(pattern bytes × name
+// bytes) work. Git's ?, classes, and wildcard semantics operate on filename
+// bytes, so UTF-8 characters may consume multiple wildcard positions. '**'
+// and backslash escapes are rejected by the parser.
+func gitByteMatch(budget *directoryFilterBudget, pattern, name string) (bool, error) {
+	work := (len(pattern) + 1) * (len(name) + 1)
+	if err := budget.consume(work); err != nil {
+		return false, err
+	}
+	previous := make([]bool, len(name)+1)
+	current := make([]bool, len(name)+1)
+	previous[0] = true
+	for patternOffset := 0; patternOffset < len(pattern); {
+		if patternOffset&31 == 0 {
+			if err := budget.ctx.Err(); err != nil {
+				return false, err
 			}
-			for end := nameOffset; end <= len(name) && (end == nameOffset || name[end-1] != '/'); end++ {
-				if match(next, end) {
-					matched = true
-					break
+		}
+		clear(current)
+		if pattern[patternOffset] == '*' {
+			current[0] = previous[0]
+			for nameOffset := 1; nameOffset <= len(name); nameOffset++ {
+				if nameOffset&255 == 0 {
+					if err := budget.ctx.Err(); err != nil {
+						return false, err
+					}
+				}
+				if name[nameOffset-1] != '/' {
+					current[nameOffset] = previous[nameOffset] || current[nameOffset-1]
 				}
 			}
-		case pattern[patternOffset] == '?':
-			matched = nameOffset < len(name) && name[nameOffset] != '/' && match(patternOffset+1, nameOffset+1)
-		case pattern[patternOffset] == '[':
-			close := strings.IndexByte(pattern[patternOffset+1:], ']')
-			if close >= 0 && nameOffset < len(name) && name[nameOffset] != '/' {
-				close += patternOffset + 1
-				matched = gitByteClassMatch(pattern[patternOffset+1:close], name[nameOffset]) && match(close+1, nameOffset+1)
+			patternOffset++
+		} else if pattern[patternOffset] == '?' {
+			for nameOffset := 1; nameOffset <= len(name); nameOffset++ {
+				if nameOffset&255 == 0 {
+					if err := budget.ctx.Err(); err != nil {
+						return false, err
+					}
+				}
+				current[nameOffset] = name[nameOffset-1] != '/' && previous[nameOffset-1]
 			}
-		default:
-			matched = nameOffset < len(name) && pattern[patternOffset] == name[nameOffset] && match(patternOffset+1, nameOffset+1)
+			patternOffset++
+		} else if pattern[patternOffset] == '[' {
+			classEnd := patternOffset + 1 + strings.IndexByte(pattern[patternOffset+1:], ']')
+			class := pattern[patternOffset+1 : classEnd]
+			for nameOffset := 1; nameOffset <= len(name); nameOffset++ {
+				if nameOffset&255 == 0 {
+					if err := budget.ctx.Err(); err != nil {
+						return false, err
+					}
+				}
+				current[nameOffset] = name[nameOffset-1] != '/' && previous[nameOffset-1] && gitByteClassMatch(class, name[nameOffset-1])
+			}
+			patternOffset = classEnd + 1
+		} else {
+			for nameOffset := 1; nameOffset <= len(name); nameOffset++ {
+				if nameOffset&255 == 0 {
+					if err := budget.ctx.Err(); err != nil {
+						return false, err
+					}
+				}
+				current[nameOffset] = pattern[patternOffset] == name[nameOffset-1] && previous[nameOffset-1]
+			}
+			patternOffset++
 		}
-		results[key] = matched
-		return matched
+		previous, current = current, previous
 	}
-	return match(0, 0)
+	return previous[len(name)], nil
 }
 
 func gitByteClassMatch(class string, value byte) bool {
-	negated := strings.HasPrefix(class, "!")
+	negated := strings.HasPrefix(class, "!") || strings.HasPrefix(class, "^")
 	if negated {
 		class = class[1:]
 	}
@@ -497,14 +543,14 @@ func gitByteClassMatch(class string, value byte) bool {
 	return contains
 }
 
-func ignoredByRules(namePath string, directory bool, rules []ignoreRule) bool {
+func ignoredByRules(namePath string, directory bool, rules []ignoreRule, budget *directoryFilterBudget) (bool, error) {
 	if len(rules) == 0 {
-		return false
+		return false, nil
 	}
 	base := rules[0].base
 	relative, err := filepath.Rel(base, namePath)
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return false
+		return false, nil
 	}
 	components := strings.Split(filepath.ToSlash(relative), "/")
 	prefix := base
@@ -514,7 +560,14 @@ func ignoredByRules(namePath string, directory bool, rules []ignoreRule) bool {
 		isDirectory := i < len(components)-1 || directory
 		parentIgnored := ignored
 		for _, rule := range rules {
-			if !rule.matches(prefix, isDirectory) {
+			if err := budget.consume(1); err != nil {
+				return false, err
+			}
+			matches, err := rule.matches(prefix, isDirectory, budget)
+			if err != nil {
+				return false, err
+			}
+			if !matches {
 				continue
 			}
 			if rule.negated {
@@ -528,10 +581,13 @@ func ignoredByRules(namePath string, directory bool, rules []ignoreRule) bool {
 			}
 		}
 	}
-	return ignored
+	return ignored, nil
 }
 
-func (p *preparedDirectoryList) filterListing(raw []byte) ([]byte, error) {
+func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, maxDirectoryFilterDuration)
+	defer cancel()
+	budget := &directoryFilterBudget{ctx: ctx, remaining: maxDirectoryFilterWork}
 	var listing directoryListingResult
 	if err := json.Unmarshal(raw, &listing); err != nil || listing.Examined > 10_000 || len(listing.Entries) > 1_000 || len(listing.Names) != 0 {
 		return nil, ErrProtocol
@@ -540,6 +596,9 @@ func (p *preparedDirectoryList) filterListing(raw []byte) ([]byte, error) {
 	defer p.mu.Unlock()
 	if p.closed || p.directory == nil || p.registry == nil {
 		return nil, os.ErrClosed
+	}
+	if err := budget.consume(len(raw)); err != nil {
+		return nil, err
 	}
 	var parentStat unix.Stat_t
 	if err := unix.Fstat(int(p.directory.Fd()), &parentStat); err != nil || identityFromStat(&parentStat) != p.identity {
@@ -560,6 +619,9 @@ func (p *preparedDirectoryList) filterListing(raw []byte) ([]byte, error) {
 		return nil, ErrUnavailable
 	}
 	for _, entry := range listing.Entries {
+		if err := budget.consume(1); err != nil {
+			return nil, err
+		}
 		name := entry.Name
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
 			return nil, ErrProtocol
@@ -582,7 +644,11 @@ func (p *preparedDirectoryList) filterListing(raw []byte) ([]byte, error) {
 		if _, protected := p.registry.ClassifyWithAncestors(namePath, identity, nil); protected {
 			continue
 		}
-		if ignoredByRules(namePath, identity.Type == unix.S_IFDIR, p.ignoreRules) {
+		ignored, err := ignoredByRules(namePath, identity.Type == unix.S_IFDIR, p.ignoreRules, budget)
+		if err != nil {
+			return nil, err
+		}
+		if ignored {
 			continue
 		}
 		filtered = append(filtered, name)

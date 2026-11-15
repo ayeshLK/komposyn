@@ -769,11 +769,13 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 		return WorkerResult{Outcome: ReadUnknown, Detail: "worker result or cleanup could not be confirmed"}
 	}
 	if op.admissionOperation == AdmissionListDirectory && workerResult.Outcome == ReadSucceeded {
-		filter, ok := prepared.(interface{ filterListing([]byte) ([]byte, error) })
+		filter, ok := prepared.(interface {
+			filterListing(context.Context, []byte) ([]byte, error)
+		})
 		if !ok {
 			return WorkerResult{Outcome: ReadUnknown, Detail: "directory listing policy filter is unavailable"}
 		}
-		filtered, err := filter.filterListing(workerResult.Bytes)
+		filtered, err := filter.filterListing(ctx, workerResult.Bytes)
 		if err != nil {
 			return WorkerResult{Outcome: ReadNotExecuted, Detail: "directory listing could not be safely filtered"}
 		}

@@ -18,12 +18,14 @@ package readbrokerstudy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -263,7 +265,7 @@ func TestDirectoryListFilteringHonorsIgnoreRulesAndProtectedAliases(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	filtered, err := prepared.(*preparedDirectoryList).filterListing(raw)
+	filtered, err := prepared.(*preparedDirectoryList).filterListing(context.Background(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,6 +278,14 @@ func TestDirectoryListFilteringHonorsIgnoreRulesAndProtectedAliases(t *testing.T
 	}
 	if listing.Examined != 1 || listing.Returned != 1 {
 		t.Fatalf("filtered counts examined=%d returned=%d, want only disclosed count 1", listing.Examined, listing.Returned)
+	}
+	filterCtx, cancelFilter := context.WithCancel(context.Background())
+	cancelFilter()
+	if _, err := prepared.(*preparedDirectoryList).filterListing(filterCtx, raw); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled filter err=%v, want context.Canceled", err)
+	}
+	if err := prepared.Close(); err != nil {
+		t.Fatalf("close after cancelled filtering: %v", err)
 	}
 }
 
@@ -319,7 +329,7 @@ func TestDirectoryListHonorsAncestorIgnoreRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	filtered, err := prepared.(*preparedDirectoryList).filterListing(raw)
+	filtered, err := prepared.(*preparedDirectoryList).filterListing(context.Background(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,30 +435,33 @@ func TestIgnoreRulesFailClosedOnCharacterClassesAndMatchPrefixes(t *testing.T) {
 			t.Errorf("parseIgnoreRules(%q) err=%v, want ErrProtected", pattern, err)
 		}
 	}
-	classRules, err := parseIgnoreRules([]byte("[!a].txt\n[abc].log\n"), root)
+	classRules, err := parseIgnoreRules([]byte("[!a].txt\n[abc].log\n[^a].cfg\n"), root)
 	if err != nil {
 		t.Fatalf("parse supported character classes: %v", err)
 	}
-	if !ignoredByRules(filepath.Join(root, "b.txt"), false, classRules) {
+	if !ignoreMatchesForTest(t, filepath.Join(root, "b.txt"), false, classRules) {
 		t.Fatal("Git-negated character class did not exclude b.txt")
 	}
-	if ignoredByRules(filepath.Join(root, "a.txt"), false, classRules) {
+	if ignoreMatchesForTest(t, filepath.Join(root, "a.txt"), false, classRules) {
 		t.Fatal("Git-negated character class incorrectly excluded a.txt")
 	}
-	if !ignoredByRules(filepath.Join(root, "b.log"), false, classRules) {
+	if !ignoreMatchesForTest(t, filepath.Join(root, "b.log"), false, classRules) {
 		t.Fatal("ordinary character class did not exclude b.log")
+	}
+	if !ignoreMatchesForTest(t, filepath.Join(root, "b.cfg"), false, classRules) || ignoreMatchesForTest(t, filepath.Join(root, "a.cfg"), false, classRules) {
+		t.Fatal("caret-negated character class did not exclude only non-a names")
 	}
 	byteRules, err := parseIgnoreRules([]byte("??.txt\n/??.log\n?.csv\n"), root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ignoredByRules(filepath.Join(root, "é.txt"), false, byteRules) {
+	if !ignoreMatchesForTest(t, filepath.Join(root, "é.txt"), false, byteRules) {
 		t.Fatal("unanchored question marks did not match UTF-8 filename bytes")
 	}
-	if !ignoredByRules(filepath.Join(root, "é.log"), false, byteRules) {
+	if !ignoreMatchesForTest(t, filepath.Join(root, "é.log"), false, byteRules) {
 		t.Fatal("anchored question marks did not match UTF-8 filename bytes")
 	}
-	if ignoredByRules(filepath.Join(root, "é.csv"), false, byteRules) {
+	if ignoreMatchesForTest(t, filepath.Join(root, "é.csv"), false, byteRules) {
 		t.Fatal("single question mark matched a two-byte UTF-8 character")
 	}
 
@@ -456,7 +469,7 @@ func TestIgnoreRulesFailClosedOnCharacterClassesAndMatchPrefixes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ignoredByRules(filepath.Join(root, "keep", "hidden.secret"), false, rules) {
+	if !ignoreMatchesForTest(t, filepath.Join(root, "keep", "hidden.secret"), false, rules) {
 		t.Fatal("negation matching an ancestor incorrectly re-included an ignored descendant")
 	}
 
@@ -470,12 +483,48 @@ func TestIgnoreRulesFailClosedOnCharacterClassesAndMatchPrefixes(t *testing.T) {
 		t.Fatal(err)
 	}
 	allRules := append(ancestorRules, nestedRules...)
-	if ignoredByRules(nested, true, allRules) {
+	if ignoreMatchesForTest(t, nested, true, allRules) {
 		t.Fatal("nested ignore rules were applied to their containing directory")
 	}
-	if ignoredByRules(filepath.Join(nested, "visible.txt"), false, allRules) {
+	if ignoreMatchesForTest(t, filepath.Join(nested, "visible.txt"), false, allRules) {
 		t.Fatal("nested allowlist failed to re-include visible.txt")
 	}
+}
+
+func TestDirectoryIgnoreMatcherBoundsAdversarialPatterns(t *testing.T) {
+	root := t.TempDir()
+	pattern := strings.Repeat("*a", 100) + "b"
+	var input strings.Builder
+	for range 40 {
+		input.WriteString(pattern)
+		input.WriteByte('\n')
+	}
+	rules, err := parseIgnoreRules([]byte(input.String()), root)
+	if err != nil {
+		t.Fatalf("parse legal adversarial patterns: %v", err)
+	}
+	namePath := filepath.Join(root, strings.Repeat("a", 255))
+	budget := &directoryFilterBudget{ctx: context.Background(), remaining: maxDirectoryFilterWork}
+	ignored, err := ignoredByRules(namePath, false, rules, budget)
+	if err != nil || ignored {
+		t.Fatalf("bounded adversarial match ignored=%t err=%v", ignored, err)
+	}
+	if budget.remaining <= 0 || budget.remaining >= maxDirectoryFilterWork {
+		t.Fatalf("aggregate work was not accounted for, remaining=%d", budget.remaining)
+	}
+	limited := &directoryFilterBudget{ctx: context.Background(), remaining: 100_000}
+	if _, err := ignoredByRules(namePath, false, rules, limited); !errors.Is(err, errDirectoryFilterBudget) {
+		t.Fatalf("low aggregate budget err=%v, want filter budget exhaustion", err)
+	}
+}
+
+func ignoreMatchesForTest(t *testing.T, namePath string, directory bool, rules []ignoreRule) bool {
+	t.Helper()
+	ignored, err := ignoredByRules(namePath, directory, rules, &directoryFilterBudget{ctx: context.Background(), remaining: maxDirectoryFilterWork})
+	if err != nil {
+		t.Fatalf("evaluate ignore rules: %v", err)
+	}
+	return ignored
 }
 
 func filterPreparedListing(t *testing.T, prepared *preparedDirectoryList, names []string) directoryListingResult {
@@ -502,7 +551,7 @@ func filterPreparedListing(t *testing.T, prepared *preparedDirectoryList, names 
 	if err != nil {
 		t.Fatal(err)
 	}
-	filtered, err := prepared.filterListing(raw)
+	filtered, err := prepared.filterListing(context.Background(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
