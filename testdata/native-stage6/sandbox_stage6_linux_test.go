@@ -1503,6 +1503,18 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		t.Skip("trusted backend did not satisfy the native launch profile")
 	}
 	root := t.TempDir()
+	if targetKind == "directory-list-mounted" {
+		mountRoot := os.Getenv("KOMPOSYN_STAGE6_DIRECTORY_MOUNT_ROOT")
+		if !filepath.IsAbs(mountRoot) || filepath.Clean(mountRoot) != mountRoot {
+			_ = service.Close(context.Background())
+			t.Fatal("directory mount fixture root is unavailable")
+		}
+		root = filepath.Join(mountRoot, "runtime-root")
+		if info, statErr := os.Stat(root); statErr != nil || !info.IsDir() {
+			_ = service.Close(context.Background())
+			t.Fatalf("directory mount fixture root is not a directory: %v", statErr)
+		}
+	}
 	authPath := filepath.Join(root, "synthetic-auth.json")
 	settingsPath := filepath.Join(root, "synthetic-settings.json")
 	authStore := auth.Store{Path: authPath, Protection: service}
@@ -1528,10 +1540,15 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		content = ""
 	}
 	target := filepath.Join(root, "notes.txt")
-	if targetKind == "directory-list" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" {
 		target = filepath.Join(root, "listing-scope")
 		toolID, content = tools.ListFilesID, "visible.go"
-		if err := os.Mkdir(target, 0700); err != nil {
+		if targetKind == "directory-list-mounted" {
+			if info, err := os.Stat(target); err != nil || !info.IsDir() {
+				_ = service.Close(context.Background())
+				t.Fatalf("mounted listing fixture directory unavailable: %v", err)
+			}
+		} else if err := os.Mkdir(target, 0700); err != nil {
 			_ = service.Close(context.Background())
 			t.Fatal(err)
 		}
@@ -1618,7 +1635,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		_ = service.Close(context.Background())
 		t.Fatalf("test-only read path setup failed: %v", err)
 	}
-	if targetKind == "directory-list" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" {
 		if err := runtime.EnableNativeDirectoryListingStudy(fixture.chat); err != nil {
 			_ = fixture.chat.CloseContext(context.Background())
 			_ = service.Close(context.Background())
@@ -2123,10 +2140,194 @@ func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {
 	stage6Pass("expected_once_transitions", "one explicit once approval created a revision, runtime dispatch consumed it at the next revision, and no grant remained")
 }
 
+func TestStage6DirectoryListingMountBoundary(t *testing.T) {
+	stage6Begin("directory_listing_mount_boundary")
+	if os.Getenv("KOMPOSYN_STAGE6_WORKER_IMAGE") != "" {
+		stage6Skip("directory_listing_mount_boundary", "mounted-subdirectory fixture is measured only with the fixed Stage 6 test-binary worker profile")
+		t.Skip("mounted-subdirectory fixture is unavailable in shipped-worker image mode")
+	}
+	backendPath := os.Getenv("KOMPOSYN_STAGE6_BWRAP")
+	if backendPath == "" {
+		backendPath = "/usr/bin/bwrap"
+	}
+	inspection := readbrokerstudy.InspectBubblewrapForStage6(backendPath, stage6RequestedBindMode())
+	stage6Mu.Lock()
+	stage6.Backend = map[string]any{
+		"path": backendPath, "uid": inspection.UID, "mode": inspection.Mode,
+		"trusted": inspection.Trusted, "sha256": inspection.SHA256,
+		"version": inspection.Version, "bind_mode": inspection.BindMode,
+		"features": append([]string(nil), inspection.Capabilities...), "reason": inspection.Error,
+	}
+	stage6Mu.Unlock()
+	if !inspection.Trusted || inspection.Error != "" {
+		stage6Skip("directory_listing_mount_boundary", "trusted Bubblewrap validation refused before the mounted-directory fixture or worker launch")
+		t.Skip("trusted native Bubblewrap backend unavailable")
+	}
+	root := t.TempDir()
+	runtimeRoot := filepath.Join(root, "runtime-root")
+	listingPath := filepath.Join(runtimeRoot, "listing-scope")
+	mountpoint := filepath.Join(listingPath, "mounted-boundary")
+	mountSource := filepath.Join(root, "synthetic-mounted-source")
+	for _, directory := range []string{runtimeRoot, listingPath, mountpoint, mountSource} {
+		if err := os.Mkdir(directory, 0700); err != nil {
+			t.Fatalf("prepare synthetic mount fixture: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(mountSource, "mounted-only-marker.txt"), []byte("synthetic mounted marker"), 0600); err != nil {
+		t.Fatalf("prepare mounted marker: %v", err)
+	}
+	childReportPath := filepath.Join(root, "mounted-child-report.json")
+	executable, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatalf("resolve Stage 6 test image: %v", err)
+	}
+	executableDirectory := filepath.Dir(executable)
+	arguments := []string{
+		"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net", "--as-pid-1",
+		"--tmpfs", "/", "--dir", "/usr", "--ro-bind", "/usr", "/usr",
+		"--dev", "/dev", "--proc", "/proc", "--dir", "/tmp", "--chmod", "1777", "/tmp",
+	}
+	for _, directory := range []string{"bin", "lib", "lib64"} {
+		if _, err := os.Stat(filepath.Join("/usr", directory)); err == nil {
+			arguments = append(arguments, "--symlink", filepath.Join("usr", directory), string(filepath.Separator)+directory)
+		}
+	}
+	directoryTargets := map[string]bool{"/usr": true, "/tmp": true}
+	appendDirectoryTargets := func(value string) {
+		current := string(filepath.Separator)
+		for _, component := range strings.Split(strings.Trim(value, string(filepath.Separator)), string(filepath.Separator)) {
+			if component == "" {
+				continue
+			}
+			current = filepath.Join(current, component)
+			if !directoryTargets[current] {
+				arguments = append(arguments, "--dir", current)
+				directoryTargets[current] = true
+			}
+		}
+	}
+	appendDirectoryTargets(root)
+	arguments = append(arguments, "--bind", root, root)
+	appendDirectoryTargets(executableDirectory)
+	arguments = append(arguments, "--ro-bind", executableDirectory, executableDirectory, "--ro-bind", mountSource, mountpoint)
+	for key, value := range map[string]string{
+		"HOME": "/tmp", "KOMPOSYN_STAGE6_BWRAP": backendPath,
+		"KOMPOSYN_STAGE6_DIRECTORY_MOUNT_ROOT": root, "KOMPOSYN_STAGE6_REPORT": childReportPath,
+		"KOMPOSYN_STAGE6_SOURCE_COMMIT": os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"),
+		"KOMPOSYN_STAGE6_BIND_MODE":     os.Getenv("KOMPOSYN_STAGE6_BIND_MODE"),
+	} {
+		arguments = append(arguments, "--setenv", key, value)
+	}
+	arguments = append(arguments, "--chdir", "/tmp", "--", executable, "-test.run=^TestStage6DirectoryListingMountBoundaryChild$", "-test.timeout=60s", "-test.count=1")
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, backendPath, arguments...)
+	output := &stage6BoundedBuffer{max: 16 << 10}
+	command.Stdout, command.Stderr = output, output
+	runErr := command.Run()
+	if ctx.Err() != nil {
+		stage6Skip("directory_listing_mount_boundary", "isolated mounted-directory fixture exceeded its bounded deadline")
+		t.Skip("mounted-directory helper exceeded its bounded deadline")
+	}
+	reportData, readErr := os.ReadFile(childReportPath)
+	if readErr != nil {
+		stage6Skip("directory_listing_mount_boundary", "outer Bubblewrap could not establish the isolated synthetic mount fixture")
+		t.Skip("outer Bubblewrap did not establish the synthetic mount fixture")
+	}
+	if len(reportData) > 2<<20 {
+		t.Fatal("mounted-directory child report exceeded its bound")
+	}
+	var childReport stage6Report
+	if err := json.Unmarshal(reportData, &childReport); err != nil {
+		t.Fatalf("mounted-directory child report was invalid: %v", err)
+	}
+	var measured *stage6Case
+	for index := range childReport.Cases {
+		if childReport.Cases[index].ID == "directory_listing_mount_boundary" {
+			measured = &childReport.Cases[index]
+			break
+		}
+	}
+	if measured == nil {
+		t.Fatalf("mounted-directory child report omitted its required case (run error=%v): output=%q", runErr, output.String())
+	}
+	if measured.Status == "unavailable" {
+		stage6Skip("directory_listing_mount_boundary", "mounted-directory child profile unavailable: "+boundedStage6Diagnostic(measured.Reason))
+		return
+	}
+	if runErr != nil || measured.Status != "measured_pass" || !measured.WorkerStarted || !measured.WorkerJoined || !measured.CapabilityTransferred || !measured.ReadStarted || !measured.ProbePassed || !measured.CleanupConfirmed || !measured.FixtureBytesMatched {
+		t.Fatalf("mounted-directory child case did not pass (run error=%v): output=%q case=%+v", runErr, output.String(), measured)
+	}
+	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = measured.WorkerStarted, measured.WorkerReady, measured.WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = measured.CapabilityTransferred, measured.ReadStarted, measured.ProbePassed
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount = measured.OnceApprovalCount, measured.OnceGrantConsumptionCount
+		item.ProviderRequestCount, item.FixtureBytesMatched = measured.ProviderRequestCount, measured.FixtureBytesMatched
+		item.DisclosureWithheld, item.StaleDataAbsent, item.CleanupConfirmed = measured.DisclosureWithheld, measured.StaleDataAbsent, measured.CleanupConfirmed
+	})
+	stage6Pass("directory_listing_mount_boundary", "a synthetic bind-mounted child had a distinct native mount ID; the sandboxed one-level listing disclosed its entry name without exposing the mounted directory's marker")
+}
+
+func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
+	if os.Getenv("KOMPOSYN_STAGE6_DIRECTORY_MOUNT_ROOT") == "" {
+		t.Skip("private child used only by the outer mounted-directory fixture")
+	}
+	stage6Begin("directory_listing_mount_boundary")
+	fixture := newStage6Fixture(t, "directory_listing_mount_boundary", "directory-list-mounted", false, nil)
+	fixture.reportCases = []string{"directory_listing_mount_boundary"}
+	target := filepath.Join(fixture.root, "listing-scope")
+	mountpoint := filepath.Join(target, "mounted-boundary")
+	parentMountID, err := stage6MountID(target)
+	if err != nil {
+		t.Fatalf("inspect selected directory mount ID: %v", err)
+	}
+	childMountID, err := stage6MountID(mountpoint)
+	if err != nil || childMountID == parentMountID {
+		t.Fatalf("fixture child is not a distinct mount: parent=%d child=%d err=%v", parentMountID, childMountID, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	turn, err := fixture.chat.Send(ctx, "list the synthetic fixture directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("mounted-directory listing turn outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial and listing continuation", len(requests))
+	}
+	continuation, _ := json.Marshal(requests[1].Messages)
+	if !strings.Contains(string(continuation), "mounted-boundary") || !strings.Contains(string(continuation), "visible.go") || strings.Contains(string(continuation), "mounted-only-marker.txt") {
+		t.Fatalf("listing crossed the mounted child boundary: %s", continuation)
+	}
+	impl := fixture.service.impl.(*linuxImplementation)
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !evidence[0].Probe.PathOpenDenied {
+		t.Fatalf("mounted-directory listing worker evidence=%+v", evidence)
+	}
+	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, evidence[0].Probe.PathOpenDenied
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
+		item.FixtureBytesMatched = true
+	})
+	stage6Pass("directory_listing_mount_boundary", "actual mount-ID-distinct synthetic child directory was listed only as a direct entry; its mounted marker was not disclosed")
+}
+
+func stage6MountID(path string) (uint64, error) {
+	var stat unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, path, unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &stat); err != nil {
+		return 0, err
+	}
+	if stat.Mask&unix.STATX_MNT_ID == 0 {
+		return 0, errors.New("mount ID is unavailable")
+	}
+	return stat.Mnt_id, nil
+}
+
 func TestStage6PositiveDirectoryListing(t *testing.T) {
 	stage6Begin("positive_directory_listing")
 	fixture := newStage6Fixture(t, "positive_directory_listing", "directory-list", false, nil)
-	fixture.reportCases = []string{"positive_directory_listing", "directory_listing_mount_boundary"}
+	fixture.reportCases = []string{"positive_directory_listing"}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	aliasPath := filepath.Join(fixture.root, "listing-scope", "protected-auth-alias.txt")
@@ -2179,14 +2380,6 @@ func TestStage6PositiveDirectoryListing(t *testing.T) {
 		item.FixtureBytesMatched = true
 	})
 	stage6Pass("positive_directory_listing", "actual sandbox Service, exact-directory once approval, bounded listing worker, ignore filtering and provider continuation succeeded")
-	stage6Begin("directory_listing_mount_boundary")
-	stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
-		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
-		item.CapabilityTransferred, item.ReadStarted = evidence[0].CapabilitySent, evidence[0].ReadStarted
-		item.ProbePassed, item.OnceApprovalCount, item.ProviderRequestCount = evidence[0].Probe.PathOpenDenied, fixture.approvals.Load(), len(requests)
-		item.DisclosureWithheld, item.StaleDataAbsent = true, true
-	})
-	stage6Skip("directory_listing_mount_boundary", "the nested synthetic child and denied path-open probe establish one-level traversal, but the study does not create a real mounted-subdirectory fixture; mount-boundary evidence remains unavailable")
 }
 
 func TestStage6DirectoryListingSurvivesSelectedDirectoryMovementAndReplacement(t *testing.T) {

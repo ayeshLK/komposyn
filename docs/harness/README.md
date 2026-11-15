@@ -164,14 +164,15 @@ filtered before provider disclosure. Unavailable backend or owner coverage
 must keep it unavailable; there is no fallback. Its fixed limits are 10,000
 examined entries, 1,000 returned names, 64 KiB of result content, and five
 seconds. A result carries examined/returned counts and an `incomplete` flag.
-The Stage 6 study now includes synthetic checks for directory movement and
+The Stage 6 study includes synthetic checks for directory movement and
 replacement, protected hardlink aliases, owner rotation before provider
-handoff, one-level traversal, and worker cleanup. These cases still require a
-trusted-host run against the exact clean commit. The traversal check uses a
-nested synthetic directory and the worker's denied path-open probe; it is not
-an actual mounted-subdirectory fixture, so mount-boundary evidence remains
-incomplete and listing stays unavailable. No cross-platform support is
-claimed.
+handoff, worker cleanup, and a real bind-mounted child directory. The mount
+case creates a separate outer user and mount namespace, verifies distinct
+mount IDs, and confirms that listing exposes only the direct mountpoint name,
+not the mounted directory's marker. These cases require a trusted-host run
+against the exact clean commit; if the outer namespace cannot be established,
+the mount result is recorded unavailable and listing remains disabled. No
+cross-platform support is claimed.
 
 ## Local configuration
 
