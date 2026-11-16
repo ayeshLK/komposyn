@@ -200,7 +200,7 @@ var stage6Mu sync.Mutex
 
 func newStage6Report() stage6Report {
 	ids := []string{
-		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "positive_content_search", "search_candidate_protected_substitution", "search_content_worker_cancellation_cleanup", "search_selected_root_movement", "search_owner_rotation_withholds_capture", "empty_file_read",
+		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "positive_content_search", "search_candidate_protected_substitution", "search_content_worker_cancellation_cleanup", "search_selected_root_movement", "search_owner_rotation_withholds_capture", "search_revocation_withholds_capture", "empty_file_read",
 		"protected_auth_refusal", "protected_settings_refusal", "provider_source_owner",
 		"incomplete_owner_inventory", "recursive_listing_incomplete_owner_inventory", "actor_helper_control", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
@@ -1152,6 +1152,7 @@ func (p *stage6Provider) captured() []provider.ChatRequest {
 type stage6ReadHost struct {
 	service       *Service
 	beforeHandoff func() error
+	reference     *runtime.ReadExecutionReference
 }
 
 var _ runtime.FilesystemReadAdmissionHost = (*stage6ReadHost)(nil)
@@ -1167,6 +1168,7 @@ func (h *stage6ReadHost) PrepareAdmittedFilesystemRead(ctx context.Context, admi
 	return h.service.PrepareAdmittedFilesystemRead(ctx, admission, revision)
 }
 func (h *stage6ReadHost) ExecuteAdmittedFilesystemRead(ctx context.Context, admission runtime.FilesystemReadAdmission, preparation runtime.FilesystemReadPreparation, reference *runtime.ReadExecutionReference, authority runtime.FilesystemReadExecutionAuthority) (*runtime.PrivateReadCapture, error) {
+	h.reference = reference
 	return h.service.ExecuteAdmittedFilesystemRead(ctx, admission, preparation, reference, authority)
 }
 func (h *stage6ReadHost) CloseFilesystemReadAdmission(ctx context.Context, admission runtime.FilesystemReadAdmission) error {
@@ -1422,6 +1424,7 @@ func TestStage6SyntheticRuntimeReadForwarding(t *testing.T) {
 type stage6Fixture struct {
 	service             *Service
 	chat                *runtime.Chat
+	readHost            *stage6ReadHost
 	provider            *stage6Provider
 	authStore           auth.Store
 	root                string
@@ -1548,7 +1551,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	}
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
-		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "positive_content_search", "search_candidate_protected_substitution", "search_content_worker_cancellation_cleanup", "search_selected_root_movement", "search_owner_rotation_withholds_capture", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
+		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "positive_content_search", "search_candidate_protected_substitution", "search_content_worker_cancellation_cleanup", "search_selected_root_movement", "search_owner_rotation_withholds_capture", "search_revocation_withholds_capture", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
 			stage6Skip(id, fmt.Sprintf(
 				"trusted backend validation refused before backend probes or worker launch (uid=%d mode=%#o error=%s)",
 				inspection.UID, inspection.Mode, boundedStage6Diagnostic(inspection.Error),
@@ -1732,6 +1735,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		t.Fatalf("fixture provider registry failed: %v", err)
 	}
 	fixture := &stage6Fixture{service: service, provider: base, authStore: authStore, root: root, authPath: authPath, content: content, secondContent: secondContent, approvalEntered: make(chan struct{}), approvalRelease: make(chan struct{})}
+	fixture.readHost = &stage6ReadHost{service: service, beforeHandoff: beforeHandoff}
 	approval := runtime.ToolApprovalFunc(func(ctx context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", "", err
@@ -1771,12 +1775,12 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			}),
 			service,
 		)
-		config.ReadAdmission = &stage6ReadHost{service: service, beforeHandoff: beforeHandoff}
+		config.ReadAdmission = fixture.readHost
 		config.Preparer = service
 		config.Grants = permissions.NewMemoryStore()
 	} else {
 		config = runtime.ToolRuntimeConfig{
-			Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: &stage6ReadHost{service: service, beforeHandoff: beforeHandoff}, RootHost: service,
+			Registry: tools.NewRegistry(), Preparer: service, ReadAdmission: fixture.readHost, RootHost: service,
 			Approval: approval, Grants: permissions.NewMemoryStore(),
 		}
 	}
@@ -3039,6 +3043,54 @@ func TestStage6SearchOwnerRotationWithholdsCapture(t *testing.T) {
 		item.DisclosureWithheld, item.StaleDataAbsent, item.CleanupConfirmed = true, true, evidence[0].WorkerJoined
 	})
 	stage6Pass("search_owner_rotation_withholds_capture", "protected auth owner rotation after search capture but before provider handoff suppressed the pending search disclosure and retired its stale capture")
+}
+
+func TestStage6SearchRevocationWithholdsCapture(t *testing.T) {
+	stage6Begin("search_revocation_withholds_capture")
+	var fixture *stage6Fixture
+	var revoked atomic.Bool
+	fixture = newStage6Fixture(t, "search_revocation_withholds_capture", "content-search", false, func() error {
+		if fixture.readHost == nil || fixture.readHost.reference == nil {
+			return errors.New("search execution reference was not retained by the host fixture")
+		}
+		if err := fixture.chat.RevokeReadExecution(fixture.readHost.reference); err != nil {
+			return err
+		}
+		revoked.Store(true)
+		return nil
+	})
+	fixture.reportCases = []string{"search_revocation_withholds_capture"}
+	nested := filepath.Join(fixture.root, "listing-scope", "nested")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal("create nested search directory:", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "control.go"), []byte("synthetic-never-real-key\n"), 0600); err != nil {
+		t.Fatal("create matching search control:", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	_, sendErr := fixture.chat.Send(ctx, "search this synthetic directory", nil)
+	if sendErr == nil || !revoked.Load() {
+		t.Fatalf("search execution was not revoked before publication: revoked=%t err=%v", revoked.Load(), sendErr)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want only initial request after revocation", len(requests))
+	}
+	encoded, _ := json.Marshal(requests[0].Messages)
+	if strings.Contains(string(encoded), "synthetic-never-real-key") || strings.Contains(string(encoded), "nested/control.go") {
+		t.Fatalf("revoked search result reached provider: %s", encoded)
+	}
+	evidence := fixture.service.impl.(*linuxImplementation).session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerJoined || !stage6WorkerProbePassed(evidence[0].SearchContentProbe) {
+		t.Fatalf("revoked search worker was not joined before suppression: %+v", evidence)
+	}
+	stage6Update("search_revocation_withholds_capture", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerJoined, item.ProbePassed = evidence[0].WorkerStarted, evidence[0].WorkerJoined, stage6WorkerProbePassed(evidence[0].SearchContentProbe)
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
+		item.DisclosureWithheld, item.StaleDataAbsent, item.CleanupConfirmed = true, true, evidence[0].WorkerJoined
+	})
+	stage6Pass("search_revocation_withholds_capture", "runtime revoked the consumed search execution after capture but before provider handoff; the content worker was joined and the result was withheld")
 }
 
 func TestStage6PositiveDirectoryListing(t *testing.T) {

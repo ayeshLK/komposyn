@@ -15,7 +15,7 @@ umbrella issue #315.
 | Search only small UTF-8 regular files and report truthful limits | Literal case-sensitive line matching, safe binary/invalid-UTF-8/oversize skips, bounded snippets, aggregate skipped count and `incomplete` output | No trusted-host measurement yet | Implemented and unit tested |
 | Revalidate identity and revision before disclosure | Host retains candidate descriptors through the content worker, reopens each candidate beneath the selected directory, reclassifies current path/identity/ancestors, and omits changed candidates before publication | `search_candidate_protected_substitution` uses independent same-user actors to replace a candidate with a protected auth hard link after content scan | Implementation test passes; native case awaits trusted-host run |
 | Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Positive search case captures both worker probes | Profile implementation/tests pass; native case awaits trusted-host run |
-| Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; cancellation before content transfer joins the worker and suppresses disclosure | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, and `search_owner_rotation_withholds_capture` cover cleanup, selected-object authority, and stale-capture suppression; revocation and mount-boundary cases remain to be measured | Partial; native coverage incomplete |
+| Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; cancellation before content transfer joins the worker and suppresses disclosure | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, and `search_revocation_withholds_capture` cover cleanup, selected-object authority, revocation and stale-capture suppression; mount-boundary evidence remains to be measured | Partial; native coverage incomplete |
 | Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | No search native archive/report exists | Gate closed; enablement approval not recorded |
 
 ## Proposed profile and evidence status
@@ -28,8 +28,8 @@ other architectures, and non-Linux platforms remain unavailable.
 
 The version 11 harness now includes composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root
-movement/replacement, owner rotation, and content-worker cancellation cases.
-It was compiled with the existing Stage 6 overlay. The current
+movement/replacement, owner rotation, revocation, and content-worker
+cancellation cases. It was compiled with the existing Stage 6 overlay. The current
 environment's `/usr/bin/bwrap` is `nobody:nogroup`, so the Stage 6 test refused
 before backend probes or worker launch. That run is unavailable evidence, not
 a search pass. No archive or report hash is claimed for native search.
