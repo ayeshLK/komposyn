@@ -117,9 +117,9 @@ not yet been run or reviewed.
 Behavioral tests exercise the runtime-to-provider seam with synthetic content;
 the Stage 6 fixture exercises the composed sandbox Service and provider
 continuation. Native cases include positive search, protected aliases,
-protected candidate substitution by independent same-user actors, and
-content-worker cancellation/cleanup. Root/directory movement, owner rotation,
-mount boundaries, revocation, and stale-publication search cases still require
-native measurement. Synthetic runtime-composition outcomes remain separate
-from native worker enforcement. Production search availability stays false
+protected candidate substitution by independent same-user actors,
+content-worker cancellation/cleanup, root/directory movement, owner rotation,
+mount-boundary exclusion, revocation, and stale-publication suppression. All
+search-specific cases still require native measurement. Synthetic
+runtime-composition outcomes remain separate from native worker enforcement. Production search availability stays false
 until the operation-specific results are recorded and reviewed.

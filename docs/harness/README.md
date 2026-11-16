@@ -186,11 +186,13 @@ nested namespaces. This study-only launch omits `--unshare-user`,
 `--disable-userns`, and `--unshare-net`; the nested worker drops capabilities,
 then its post-bootstrap seccomp denies network calls, `unshare`, `setns`, and
 process-like `clone`. The report records these profile differences. This
-exception is limited to the disposable mount-boundary study. The report retains
-backend trust diagnostics when a check refuses. These cases require a
-trusted-host run against the exact clean commit; if the outer namespace cannot
-be established, the mount result is recorded unavailable and listing remains
-disabled. No cross-platform support is claimed.
+exception is limited to the disposable mount-boundary study. A parallel search
+fixture puts matching content below a distinct mounted child and verifies that
+recursive search excludes it while returning an unmounted matching control.
+The report retains backend trust diagnostics when a check refuses. These cases
+require a trusted-host run against the exact clean commit; if the outer
+namespace cannot be established, the mount result is recorded unavailable and
+listing remains disabled. No cross-platform support is claimed.
 
 ## Local configuration
 

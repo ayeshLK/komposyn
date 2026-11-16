@@ -11,11 +11,11 @@ umbrella issue #315.
 | --- | --- | --- | --- |
 | Advertise only on an eligible host route and require explicit once approval | Independent `SearchFilesAvailable` gate; runtime/provider integration tests check schema, denial, exact directory/query/options/destination approval and continuation | `positive_content_search` drives the composed Service and provider fixture | Implemented; native case awaits trusted-host run |
 | Bind target, query, options and destination through admission and publication | Search fields are parsed before admission and included in request digest and execution authority; changed binding is refused | Native positive case records exact approval text | Implemented; native case awaits trusted-host run |
-| Reuse bounded traversal, ignores, globs and protection without following links or crossing mounts | Host filters traversal snapshot, classifies path/inode/ancestors before descriptor preparation, and caps traversal, candidates, bytes, matcher work, lines, output and duration | Positive case covers recursion, protected hard-link alias and `.git`; listing mount evidence is not counted as search evidence | Implementation tests pass; search mount/race evidence remains incomplete |
+| Reuse bounded traversal, ignores, globs and protection without following links or crossing mounts | Host filters traversal snapshot, classifies path/inode/ancestors before descriptor preparation, and caps traversal, candidates, bytes, matcher work, lines, output and duration | Positive case covers recursion, protected hard-link alias and `.git`; `search_mount_boundary` independently checks matching content under an actual mount-ID-distinct directory | Implementation tests pass; search mount/race evidence remains incomplete |
 | Search only small UTF-8 regular files and report truthful limits | Literal case-sensitive line matching, safe binary/invalid-UTF-8/oversize skips, bounded snippets, aggregate skipped count and `incomplete` output | No trusted-host measurement yet | Implemented and unit tested |
 | Revalidate identity and revision before disclosure | Host retains candidate descriptors through the content worker, reopens each candidate beneath the selected directory, reclassifies current path/identity/ancestors, and omits changed candidates before publication | `search_candidate_protected_substitution` uses independent same-user actors to replace a candidate with a protected auth hard link after content scan | Implementation test passes; native case awaits trusted-host run |
 | Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Positive search case captures both worker probes | Profile implementation/tests pass; native case awaits trusted-host run |
-| Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; cancellation before content transfer joins the worker and suppresses disclosure | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, and `search_revocation_withholds_capture` cover cleanup, selected-object authority, revocation and stale-capture suppression; mount-boundary evidence remains to be measured | Partial; native coverage incomplete |
+| Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; cancellation before content transfer joins the worker and suppresses disclosure | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, `search_revocation_withholds_capture`, and `search_mount_boundary` cover cleanup, selected-object authority, revocation, stale-capture suppression, and mount exclusion | Partial; all native cases await trusted-host measurement |
 | Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | No search native archive/report exists | Gate closed; enablement approval not recorded |
 
 ## Proposed profile and evidence status
@@ -28,15 +28,18 @@ other architectures, and non-Linux platforms remain unavailable.
 
 The version 11 harness now includes composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root
-movement/replacement, owner rotation, revocation, and content-worker
-cancellation cases. It was compiled with the existing Stage 6 overlay. The current
-environment's `/usr/bin/bwrap` is `nobody:nogroup`, so the Stage 6 test refused
-before backend probes or worker launch. That run is unavailable evidence, not
-a search pass. No archive or report hash is claimed for native search.
+movement/replacement, owner rotation, revocation, content-worker cancellation,
+and search-specific mount-boundary cases. The latter places matching content
+under a mount-ID-distinct child and checks that the unmounted matching control
+is returned while mounted content is excluded. The overlay compiled and the
+targeted cases ran, but the current environment's `/usr/bin/bwrap` is
+`nobody:nogroup`; Stage 6 refused before backend probes or worker launch. That
+run is unavailable evidence, not a search pass. No archive or report hash is
+claimed for native search.
 
 Before enablement, the trusted-host run still needs to measure the exact clean
 candidate revision, actual backend and launch mode, both worker probes, and
-search-specific directory races, revocation, stale-publication,
-mount-boundary and cleanup behavior. Review the resulting
+the search-specific cases for directory races, revocation, stale publication,
+mount-boundary exclusion and cleanup. Review the resulting
 manifest and report against the code before changing the closed gate. Listing
 evidence remains historical supporting context only.
