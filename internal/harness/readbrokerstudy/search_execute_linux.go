@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -82,15 +83,33 @@ type preparedSearchSnapshot struct {
 	Skipped    int
 }
 
-func (p *preparedDirectoryList) validateAndCloseSearchSnapshot(snapshot *preparedSearchSnapshot) error {
-	if p == nil || snapshot == nil {
+func (p *preparedDirectoryList) validateAndCloseSearchSnapshot(ctx context.Context, snapshot *preparedSearchSnapshot) error {
+	if p == nil || snapshot == nil || ctx == nil {
 		return ErrProtocol
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	defer func() { p.searchDirectories = nil }()
 	var closeErr error
 	if p.closed || p.directory == nil || p.registry == nil {
 		closeErr = ErrStaleReceipt
+	}
+	if err := ctx.Err(); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+	if closeErr == nil {
+		budget := &directoryFilterBudget{ctx: ctx, remaining: maxDirectoryFilterWork}
+		blocked, err := p.revalidateListingDirectoriesAtRevision(slices.Clone(p.searchDirectories), budget, false)
+		closeErr = errors.Join(closeErr, err)
+		if err == nil && len(blocked) > 0 {
+			closeErr = errors.Join(closeErr, ErrProtected)
+		}
+		if closeErr == nil && !p.options.IncludeIgnored {
+			currentRules, readErr := readDirectoryIgnoreRules(p.directory, p.path, p.identity, p.registry)
+			if readErr != nil || !slices.Equal(currentRules, p.ignoreRules) {
+				closeErr = errors.Join(closeErr, ErrPolicyChanged)
+			}
+		}
 	}
 	rootFD := -1
 	var rootMount uint64
@@ -101,6 +120,9 @@ func (p *preparedDirectoryList) validateAndCloseSearchSnapshot(snapshot *prepare
 		closeErr = errors.Join(closeErr, err)
 	}
 	for index := range snapshot.Candidates {
+		if err := ctx.Err(); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
 		candidate := &snapshot.Candidates[index]
 		changed := false
 		if candidate.file == nil {

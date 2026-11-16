@@ -64,19 +64,20 @@ type preparedRead struct {
 }
 
 type preparedDirectoryList struct {
-	mu             sync.Mutex
-	directory      *os.File
-	registry       PolicyRegistry
-	path           string
-	identity       FileIdentity
-	class          ResourceClass
-	generation     GenerationSet
-	digest         [32]byte
-	closed         bool
-	closeAttempted bool
-	closeErr       error
-	ignoreRules    []ignoreRule
-	options        ListingOptions
+	mu                sync.Mutex
+	directory         *os.File
+	registry          PolicyRegistry
+	path              string
+	identity          FileIdentity
+	class             ResourceClass
+	generation        GenerationSet
+	digest            [32]byte
+	closed            bool
+	closeAttempted    bool
+	closeErr          error
+	ignoreRules       []ignoreRule
+	searchDirectories []directoryListingDirectory
+	options           ListingOptions
 }
 
 var _ PreparedRead = (*preparedRead)(nil)
@@ -785,6 +786,7 @@ func (p *preparedDirectoryList) filterListingMode(ctx context.Context, raw []byt
 	if search {
 		listing.Names = nil
 		listing.Entries = filteredEntries
+		p.searchDirectories = slices.Clone(listing.Directories)
 	} else {
 		listing.Names = filtered
 		listing.Entries = nil
@@ -866,6 +868,10 @@ func openListingParent(rootFD int, relative string) (int, string, func() error, 
 }
 
 func (p *preparedDirectoryList) revalidateListingDirectories(states []directoryListingDirectory, budget *directoryFilterBudget) (map[string]bool, error) {
+	return p.revalidateListingDirectoriesAtRevision(states, budget, true)
+}
+
+func (p *preparedDirectoryList) revalidateListingDirectoriesAtRevision(states []directoryListingDirectory, budget *directoryFilterBudget, requireRevision bool) (map[string]bool, error) {
 	seen := make(map[string]struct{}, len(states))
 	blocked := make(map[string]bool)
 	slices.SortFunc(states, func(a, b directoryListingDirectory) int {
@@ -897,7 +903,7 @@ func (p *preparedDirectoryList) revalidateListingDirectories(states []directoryL
 		if mountErr != nil || statErr != nil || closeErr != nil {
 			return nil, errors.Join(ErrUnavailable, mountErr, statErr, closeErr)
 		}
-		if stat.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(stat.Dev) != state.Device || stat.Ino != state.Inode || mountID != state.MountID || stat.Mtim.Sec*1e9+stat.Mtim.Nsec != state.MtimeNS || stat.Ctim.Sec*1e9+stat.Ctim.Nsec != state.CtimeNS {
+		if stat.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(stat.Dev) != state.Device || stat.Ino != state.Inode || mountID != state.MountID || requireRevision && (stat.Mtim.Sec*1e9+stat.Mtim.Nsec != state.MtimeNS || stat.Ctim.Sec*1e9+stat.Ctim.Nsec != state.CtimeNS) {
 			return nil, ErrStaleReceipt
 		}
 		verifyFD, verifyErr := openListingDirectory(int(p.directory.Fd()), state.Path)
@@ -1333,6 +1339,7 @@ func (p *preparedDirectoryList) Close() error {
 	if p.directory != nil {
 		p.closeErr = p.directory.Close()
 	}
+	p.searchDirectories = nil
 	return p.closeErr
 }
 

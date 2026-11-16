@@ -1,13 +1,12 @@
 # Issue #318 search implementation and acceptance
 
-Status: the latest recorded native run covers the search implementation at
-`77785c29ae602d9d1dd3cd0a1a5e84e4413d28f1`, but predates the review fixes now
-being prepared. Per-worker join state, shared matcher/filter work accounting,
-and same-inode mutation coverage require a fresh native acceptance run before
-the affected cleanup and content-revalidation claims are current. The
-production gate remains closed pending independent review and a separate
-enablement decision. This record does not approve enablement or complete
-umbrella issue #315.
+Status: the latest recorded native run covers historical commit
+`77785c29ae602d9d1dd3cd0a1a5e84e4413d28f1` only. The current review follow-up
+adds startup lifecycle reservation and final ignore-observation revalidation,
+with new Stage 6 cases; a fresh trusted-host acceptance run is required. The
+production gate remains closed pending independent review, fresh evidence, and
+a separate enablement decision. This record does not approve enablement or
+complete umbrella issue #315.
 
 ## Acceptance matrix
 
@@ -30,7 +29,7 @@ and successful composition of the fixed traversal and content workers. Other
 bind modes, architectures, and non-Linux platforms remain unavailable. This is
 evidence for review, not authorization to enable search.
 
-The version 11 harness includes composed-service positive search,
+The version 11 historical harness included composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root
 movement/replacement, owner rotation, revocation, content-worker cancellation,
 and search-specific mount-boundary cases. A trusted-host run against clean
@@ -65,7 +64,7 @@ and makes no provider continuation. The exact updated commit still requires a
 clean trusted-host run.
 
 
-The final trusted-host run reported all seven search-specific cases as passes on
+The prior trusted-host run reported all seven search-specific cases as passes on
 clean commit `77785c29ae602d9d1dd3cd0a1a5e84e4413d28f1`, using Go 1.26.11,
 Linux 7.0.0-42-generic amd64, regular UID 1000, and root-owned Bubblewrap 0.9.0
 (SHA-256 `e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`),
@@ -83,9 +82,13 @@ workers shared one per-operation `Wait` bookkeeping record. Consequently,
 content-worker cleanup assertions could report the traversal worker's joined
 state without calling `Wait` on the content worker. Preserve this archive as
 historical provenance, but do not treat its search cleanup or publication
-results as current acceptance evidence. This PR update gives each worker its
-own join state and adds same-inode mutation coverage; a clean trusted-host
-rerun is required before relying on those claims.
+results as current acceptance evidence. The previous PR update gave each worker its own join state and added
+same-inode mutation coverage. This follow-up reserves the lifecycle obligation before
+worker startup and retains private directory/ignore observations through final
+publication validation. It adds native cases for Close during worker startup
+and ignore-rule changes after content scanning. The clean trusted-host rerun
+for this follow-up is pending; the historical archive does not establish these
+claims.
 
 Earlier trusted-host candidates exposed and corrected the public Service search
 admission allowlist and the cancellation-test expectation. Their archive hashes
@@ -93,8 +96,9 @@ and tested commits remain recorded above for provenance. The final run confirms
 that the cancellation checkpoint joins the content worker before its separate
 snapshot handoff, leaves no private result, and makes no provider continuation.
 
-The historical native evidence supports the prior candidate only. The
-production `searchAccepted` gate remains false. Fresh native acceptance on the
+The historical native evidence supports the prior candidate only. The current
+runner is version 12; its new lifecycle and post-content ignore-rule cases have
+not yet been measured on a trusted host. The production `searchAccepted` gate remains false. Fresh native acceptance on the
 review-fixed candidate, independent review of that evidence, and an explicit
 separate enablement decision are still required before enablement.
 This work does not close umbrella issue #315 or establish shipped-binary,

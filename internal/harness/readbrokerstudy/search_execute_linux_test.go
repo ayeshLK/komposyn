@@ -71,6 +71,56 @@ func TestSearchFilterAndMatcherShareWorkAllowance(t *testing.T) {
 	}
 }
 
+func TestSearchRejectsChangedApplicableIgnoreRulesBeforePublication(t *testing.T) {
+	for _, mutation := range []string{"nested", "ancestor"} {
+		t.Run(mutation, func(t *testing.T) {
+			workspace := t.TempDir()
+			root := filepath.Join(workspace, "selected")
+			nested := filepath.Join(root, "nested")
+			if err := os.MkdirAll(nested, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(nested, "control.go"), []byte("needle\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			prepared := prepareSearchDirectory(t, root, ListingOptions{Recursive: true})
+			defer prepared.Close()
+			filtered := filterSearchDirectorySnapshot(t, prepared)
+			snapshot, err := prepared.prepareSearchSnapshot(context.Background(), filtered, "needle", maxSearchWorkUnits)
+			clear(filtered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded := mustReadSearchSnapshot(t, snapshot.File)
+			_, err = searchSnapshotBytes(encoded)
+			clear(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ignorePath := filepath.Join(nested, ".gitignore")
+			if mutation == "ancestor" {
+				ignorePath = filepath.Join(workspace, ".gitignore")
+			}
+			if err := os.WriteFile(ignorePath, []byte("control.go\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := prepared.validateAndCloseSearchSnapshot(context.Background(), &snapshot); err == nil {
+				t.Fatal("changed ignore observations did not invalidate the search snapshot")
+			}
+		})
+	}
+}
+
+func mustReadSearchSnapshot(t *testing.T, file *os.File) []byte {
+	t.Helper()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestSearchFilteredCandidatesAppliesIgnoreAndSafeSkipBounds(t *testing.T) {
 	root := t.TempDir()
 	for name, contents := range map[string][]byte{
@@ -235,7 +285,7 @@ func TestSearchSuppressesCandidateReplacedByProtectedObjectBeforePublication(t *
 	if err := os.Rename(protected, target); err != nil {
 		t.Fatal("replace candidate with protected object:", err)
 	}
-	if err := prepared.validateAndCloseSearchSnapshot(&snapshot); err != nil {
+	if err := prepared.validateAndCloseSearchSnapshot(context.Background(), &snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if len(snapshot.Changed) != 1 || snapshot.Changed[0] != 0 {
@@ -294,7 +344,7 @@ func executeSearchCandidates(t *testing.T, prepared *preparedDirectoryList, filt
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer prepared.validateAndCloseSearchSnapshot(&snapshot)
+	defer prepared.validateAndCloseSearchSnapshot(context.Background(), &snapshot)
 	encoded, err := io.ReadAll(snapshot.File)
 	if err != nil {
 		t.Fatal(err)

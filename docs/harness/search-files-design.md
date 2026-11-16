@@ -104,8 +104,10 @@ The proposed support boundary for native review is trusted Linux amd64,
 Bubblewrap's actual measured `ro-bind-fd` mode, complete owner inventory, and
 successful fixed-worker composition. The gate is independent and remains
 closed until search-specific native acceptance and independent enablement
-review pass. File-snapshot, other architectures, and non-Linux systems remain
-unavailable for search.
+review pass. The current runner version 12 adds Close-during-startup and
+post-content ignore-change cases; those require a fresh trusted-host run.
+File-snapshot, other architectures, and non-Linux systems remain unavailable
+for search.
 
 ## Worker operation profiles and tests
 
@@ -114,7 +116,7 @@ existing beneath-constrained directory lookup, metadata, and bounded
 ignore-file operations. The content worker uses a separate profile that denies
 pathname lookup and receives only the sealed content snapshot. Exact file reads
 keep their stricter existing profile; no listing or read profile is weakened
-for search. The final trusted-host run measured all seven search-specific Stage
+for search. A prior trusted-host run measured all seven search-specific Stage
 6 cases as passes on Linux amd64 with Bubblewrap `ro-bind-fd`. The cancellation
 case verified that the content worker joins before its separate snapshot
 handoff. The full Stage 6 profile remains incomplete because mutation and shell
@@ -126,8 +128,9 @@ the Stage 6 fixture exercises the composed sandbox Service and provider
 continuation. Native cases include positive search, protected aliases,
 protected candidate substitution by independent same-user actors,
 content-worker cancellation/cleanup, root/directory movement, owner rotation,
-mount-boundary exclusion, revocation, and stale-publication suppression. All
-seven search-specific cases passed in the recorded trusted-host run; see the
+mount-boundary exclusion, revocation, and stale-publication suppression. The
+current runner adds lifecycle and post-content ignore-rule mutation cases;
+fresh trusted-host evidence is pending. See the
 [#318 completion record](issue-318-search-completion.md) for commit and report
 hashes. Synthetic runtime-composition outcomes remain separate from native
 worker enforcement. Production search availability stays false pending
