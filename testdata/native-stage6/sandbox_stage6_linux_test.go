@@ -364,7 +364,7 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	want := map[string]int{
 		"synthetic-runtime-composition": 6,
 		"synthetic-actor-fixture":       1,
-		"native-integrated":             22,
+		"native-integrated":             29,
 		"native-worker-lifecycle":       1,
 		"not-implemented":               2,
 	}

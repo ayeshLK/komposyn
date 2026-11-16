@@ -16,7 +16,7 @@ umbrella issue #315.
 | Revalidate identity and revision before disclosure | Host retains candidate descriptors through the content worker, reopens each candidate beneath the selected directory, reclassifies current path/identity/ancestors, and omits changed candidates before publication | `search_candidate_protected_substitution` uses independent same-user actors to replace a candidate with a protected auth hard link after content scan | Implementation test passes; native case awaits trusted-host run |
 | Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Positive search case captures both worker probes | Profile implementation/tests pass; native case awaits trusted-host run |
 | Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; cancellation before content transfer joins the worker and suppresses disclosure | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, `search_revocation_withholds_capture`, and `search_mount_boundary` cover cleanup, selected-object authority, revocation, stale-capture suppression, and mount exclusion | Partial; all native cases await trusted-host measurement |
-| Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | No search native archive/report exists | Gate closed; enablement approval not recorded |
+| Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | The first trusted-host candidate archive contains a failed run; no search worker launched and no search case passed | Gate closed; enablement approval not recorded |
 
 ## Proposed profile and evidence status
 
@@ -26,20 +26,27 @@ of the fixed search traversal and content workers. This is a proposal only:
 no native search result establishes that profile yet. File-snapshot mode,
 other architectures, and non-Linux platforms remain unavailable.
 
-The version 11 harness now includes composed-service positive search,
+The version 11 harness includes composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root
 movement/replacement, owner rotation, revocation, content-worker cancellation,
-and search-specific mount-boundary cases. The latter places matching content
-under a mount-ID-distinct child and checks that the unmounted matching control
-is returned while mounted content is excluded. The overlay compiled and the
-targeted cases ran, but the current environment's `/usr/bin/bwrap` is
-`nobody:nogroup`; Stage 6 refused before backend probes or worker launch. That
-run is unavailable evidence, not a search pass. No archive or report hash is
-claimed for native search.
+and search-specific mount-boundary cases. A trusted-host run against clean
+commit `511665bca9516239aee2931f404ce5e5af6fd6e0` used Go 1.26.11, trusted
+Bubblewrap 0.9.0 (SHA-256
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`), and
+`ro-bind-fd`. The general read and listing cases passed, but the study failed:
+the public Service rejected `search_files` before admission, leaving six search
+cases inconclusive and the mount-boundary case unavailable. The report-classification test also had a stale
+expected count (22 instead of 29 native-integrated cases). This is a failed
+candidate, not search enforcement evidence. Archive SHA-256:
+`34c3717a7b948756cba919c2af2100e928ac62a335acf23d5e794c4d314af75c`; report
+SHA-256: `891c13477cc25046db8067887fa06b21f9ef8c950d626d6937d270c58835a7d2`.
+The archive is at `/tmp/komposyn-issue215-stage6-20261116T232444Z-1617473.tar.gz`
+on the test host. The follow-up corrects Service admission and the case count;
+the exact new commit still requires a clean trusted-host run.
 
-Before enablement, the trusted-host run still needs to measure the exact clean
-candidate revision, actual backend and launch mode, both worker probes, and
-the search-specific cases for directory races, revocation, stale publication,
-mount-boundary exclusion and cleanup. Review the resulting
+Before enablement, a trusted-host run must measure the exact follow-up commit,
+actual backend and launch mode, both worker probes, and every search-specific
+case, including directory races, revocation, stale publication, mount-boundary
+exclusion and cleanup. Review the resulting
 manifest and report against the code before changing the closed gate. Listing
 evidence remains historical supporting context only.

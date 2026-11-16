@@ -111,8 +111,9 @@ existing beneath-constrained directory lookup, metadata, and bounded
 ignore-file operations. The content worker uses a separate profile that denies
 pathname lookup and receives only the sealed content snapshot. Exact file reads
 keep their stricter existing profile; no listing or read profile is weakened
-for search. The operation profiles are implemented, but native acceptance has
-not yet been run or reviewed.
+for search. The operation profiles are implemented, but the first trusted-host
+candidate failed before launching search workers because the public Service
+rejected search admission. Native acceptance remains incomplete.
 
 Behavioral tests exercise the runtime-to-provider seam with synthetic content;
 the Stage 6 fixture exercises the composed sandbox Service and provider
