@@ -107,14 +107,12 @@ evidence record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-679
 [real-store native acceptance criteria](read-broker-real-store-native-acceptance.md).
 The closure disposition, follow-up boundaries and Stage 6 evidence
 contract are in the [#215 closure and acceptance record](issue-215-completion-tracking.md).
-The integrated native feasibility runner includes recursive listing checks for
-effective options, nested ignore/glob behavior, entry/output limits, descendant
-movement/replacement, owner rotation, mount boundaries and held-worker cleanup.
-Recursive listing remains unavailable until those cases pass on a host
-satisfying the trusted backend policy and the exact revision is reviewed. The
-runner and reproduction steps are described in the [Stage 6 runner
-guide](issue-215-stage6-runner.md); #317's per-criterion status is in the
-[completion and evidence matrix](issue-317-completion-tracking.md).
+The integrated native feasibility runner covers recursive listing options,
+nested ignore/glob behavior, entry/output limits, descendant
+movement/replacement, owner rotation, mount boundaries and worker cleanup. The
+accepted run and profile-specific limits are in the [#317 completion and
+evidence matrix](issue-317-completion-tracking.md); runner and reproduction
+details are in the [Stage 6 runner guide](issue-215-stage6-runner.md).
 
 Use `/cd <path>` in chat to change the working directory for future relative
 file requests. The path may be absolute or relative to the current working
@@ -150,19 +148,19 @@ unknown-data refusal boundary and staged typed-read path are described in the
 auth/settings lifecycle and pre-consumption admission seam are implemented in
 the [composition admission and sandbox service](composition-admission-sandbox-service.md).
 Generic filesystem access remains closed except for the separately gated,
-once-approved exact-file and nonrecursive directory-listing capabilities.
+once-approved exact-file and bounded directory-listing capabilities.
 The reviewed #243 native service-fixture result, its provenance, and the
 checkout-safe reproduction runner are recorded in
 [composition native acceptance](read-broker-composition-native-acceptance.md)
 and [`scripts/native-acceptance/`](../../scripts/native-acceptance/README.md).
 The accepted unregistered exact-file policy and implementation stages are
 recorded in the [read implementation plan](read-broker-unregistered-read-implementation-plan.md).
-Recursive listing and its explicit filters remain unavailable until their
-separate native evidence is reviewed. Broad reads, mutation, and shell remain unavailable. The
-Linux `list_files` capability is separately registered only when trusted
-Bubblewrap and the fixed worker service are available, and only on supported
-client-tool routes with a selected root. Each request requires once approval
-for the exact directory and provider destination.
+Recursive listing and its explicit filters are supported only on trusted Linux
+amd64 with Bubblewrap's measured `ro-bind-fd` worker-image bind mode, successful
+fixed-worker composition, and a supported client-tool route. Other architectures
+and bind modes remain unavailable. Every listing requires once approval for the
+exact directory, effective options, and provider destination. Broad reads,
+mutation, and shell remain unavailable.
 
 The issue #316 `list_files` capability lists one selected directory level,
 with hidden and `.git` names omitted, bounded

@@ -58,13 +58,16 @@ establish live provider listing, production-provider integration, or
 cross-platform enforcement.
 
 Recursive listing and its `recursive`, `include_hidden`, `include_ignored`, and
-`name_globs` options are proposed for trusted Linux amd64 Bubblewrap using the
-descriptor bind profile (`ro-bind-fd`). The launcher exposes this profile only
-after trust and bounded capability checks succeed and the fixed worker service
-is composed. Other architectures remain unavailable until native evidence is
-reviewed. Stage 6 passed the recursive-listing cases on exact clean revision
+`name_globs` options are supported for trusted Linux amd64 Bubblewrap using the
+descriptor bind profile (`ro-bind-fd`), enabled in [PR #330](https://github.com/ayeshLK/komposyn/pull/330)
+(merge `7938bbf998fd2a1a7db503417f7201ef5e32f1e0`). The launcher exposes this
+profile only after trust and bounded capability checks succeed and the fixed
+worker service is composed. Other architectures remain unavailable because
+native evidence covers amd64 only. Stage 6 passed the recursive-listing cases
+on exact clean revision
 `eb56eef57c90b3c5a653b99e1d3a3dcec451cfc5` using trusted, root-owned Bubblewrap
-0.9.0 on Linux amd64; the report records actual mode `ro-bind-fd`. The report measured 30 cases as passes; mutation and
+0.9.0 on Linux amd64; the report records actual mode `ro-bind-fd`. It measured
+30 cases as passes; mutation and
 shell profile cases were unavailable because they are outside this Stage 6
 profile. Provider-source lifecycle, aggregate cgroup quotas, shipped-binary
 integration, non-Linux enforcement, and active-traversal cancellation were not
@@ -75,13 +78,10 @@ remaining limitations.
 The file-snapshot bind profile remains unavailable for advanced options
 because the recorded run did not measure it. The public parser rejects glob
 sets whose worker options frame would exceed 2,048 bytes, before once approval
-or worker launch. The maintainer approved enabling the measured `ro-bind-fd`
-profile on Linux amd64 in this task thread on 2026-11-16. The initial agent
-host's untrusted
+or worker launch. The initial agent host's untrusted
 `/usr/bin/bwrap` refusal remains historical and does not describe the supplied
-trusted-host result. The public service forwards a separate options gate,
-which remains false unless the Linux implementation selects a reviewed
-profile.
+trusted-host result. The public service forwards the profile-derived options
+gate.
 
 The final integrated #316 directory-specific native run used clean commit
 `85e06601040858678d7859a5a047b774808d8e96` on Linux amd64 with trusted,
