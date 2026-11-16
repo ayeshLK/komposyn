@@ -49,11 +49,15 @@ ignore bytes/rule counts (up to 64 KiB for the selected-root ancestor chain and
 objects remain private. Results carry an incomplete flag if a safe limit stops
 coverage; budget exhaustion never publishes unfiltered or exhaustive results.
 
-The proposed supported profile is trusted Linux Bubblewrap using the
+The proposed supported profile is trusted Linux amd64 Bubblewrap using the
 `ro-bind-fd` worker-image bind mode. The launcher exposes the profile only
 after trust, capability, and worker checks succeed; the service additionally
 requires successful fixed-worker composition. Other bind modes remain
-unavailable because the accepted native run did not measure them. The exact
+unavailable because the accepted native run did not measure them. Other
+architectures remain unavailable because native evidence covers amd64 only.
+The runtime parser rejects effective options whose encoded worker frame would
+exceed 2,048 bytes, before approval or worker startup; the worker retains the
+same transfer bound as a second check. The exact
 clean revision `eb56eef57c90b3c5a653b99e1d3a3dcec451cfc5` passed the extended
 listing cases, including descendant races, alias/protection, mount boundaries,
 post-traversal cancellation, filtering, and bounded limits. The maintainer

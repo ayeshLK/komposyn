@@ -331,7 +331,7 @@ type workerLauncher struct {
 // native acceptance run. The constructor has already required trusted
 // Bubblewrap and completed its bounded capability and worker checks.
 func (l *workerLauncher) AdvancedDirectoryListingProfileAvailable() bool {
-	if l == nil || l.capability.BindMode != BindModeDescriptor {
+	if l == nil || runtime.GOARCH != "amd64" || l.capability.BindMode != BindModeDescriptor {
 		return false
 	}
 	_, err := workerSeccompFilterBytesForOperation(AdmissionListDirectory)

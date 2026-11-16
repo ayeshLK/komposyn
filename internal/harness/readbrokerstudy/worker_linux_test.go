@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -644,8 +645,8 @@ func TestAdvancedDirectoryListingProfileRequiresMeasuredDescriptorBind(t *testin
 		}
 	}
 	launcher := &workerLauncher{capability: BubblewrapCapabilities{BindMode: BindModeDescriptor}}
-	if !launcher.AdvancedDirectoryListingProfileAvailable() {
-		t.Fatal("descriptor bind profile with the compiled listing syscall policy was not eligible")
+	if got, want := launcher.AdvancedDirectoryListingProfileAvailable(), runtime.GOARCH == "amd64"; got != want {
+		t.Fatalf("descriptor bind profile eligibility=%t, want amd64-only result %t on %s", got, want, runtime.GOARCH)
 	}
 }
 

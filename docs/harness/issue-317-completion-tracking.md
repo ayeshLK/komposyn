@@ -2,10 +2,11 @@
 
 This record distinguishes implementation and ordinary tests from native
 filesystem evidence. The local follow-up proposes advanced options only for
-trusted Bubblewrap using `ro-bind-fd`, the actual launch mode in the accepted
-native run. The maintainer approved enabling this profile in this task thread
-on 2026-11-16. That decision applies only to the measured bind profile; it
-does not approve other bind modes or waive the documented evidence limits.
+trusted Linux amd64 Bubblewrap using `ro-bind-fd`, the actual launch mode in the
+accepted native run. The maintainer approved enabling this profile in this
+task thread on 2026-11-16. That decision applies only to the measured
+architecture and bind profile; it does not waive the documented evidence
+limits.
 
 ## Acceptance matrix
 
@@ -17,9 +18,9 @@ does not approve other bind modes or waive the documented evidence limits.
 | Protected aliases, owner rotation, and missing owner coverage | Registry and admission tests; protected identities checked before visible counts | Recursive positive case creates a nested protected hard link; `directory_listing_owner_rotation` checks stale publication; `recursive_listing_incomplete_owner_inventory` checks refusal before approval/worker | Protected alias, owner rotation, and recursive missing-owner refusal all pass on the latest trusted profile; the missing-owner result is synthetic runtime-composition evidence |
 | Descendant movement/replacement and object authority | Broker identity and mount revalidation tests | `recursive_descendant_movement_replacement` uses a separate actor after final revalidation | Native pass on the recorded profile |
 | Cancellation, revocation, stale publication, and cleanup | Runtime/session cancellation and lifecycle tests; descriptor-refusal regression tests | `directory_listing_worker_cleanup` cancels after the worker holds the capability; `recursive_listing_cancellation_after_traversal` cancels after host filtering; owner rotation suppresses capture after traversal | Native pass for post-traversal cancellation and worker cleanup. Cancellation during active traversal is still not independently measured |
-| Shared 10,000-entry budget, 1,000 visible-path limit, 64 KiB output, five-second deadline, bounded ignore input and matcher work | `TestRecursiveTraversalStopsAtSharedEntryBudget`, bounded encoder test, broker filter budgets and existing admission/session deadlines | `recursive_listing_entry_limit` creates a 10,020-file tree and requires a bounded `incomplete=true` provider result | Native limit case passes; ordinary tests cover the remaining bounds |
+| Shared 10,000-entry budget, 1,000 visible-path limit, 64 KiB output, five-second deadline, bounded ignore input and matcher work | `TestRecursiveTraversalStopsAtSharedEntryBudget`, bounded encoder test, broker filter budgets, options-frame boundary validation and existing admission/session deadlines | `recursive_listing_entry_limit` creates a 10,020-file tree and requires a bounded `incomplete=true` provider result | Native limit case passes; ordinary tests cover the remaining bounds, including rejection of options too large for the worker frame before approval |
 | Provider-visible names/counts/errors and stale-result suppression | Runtime continuation tests; host filter removes protected entries before counts and strips all worker snapshots before serialization | Recursive provider fixture cases assert disclosed results, approval details, and absence of filtered names | Native pass on the recorded profile |
-| Supported-profile enablement and route/schema composition | Linux gate is derived from trusted launcher inspection, selected `ro-bind-fd` mode, and successful fixed-worker composition; public `sandbox.Service` forwards it; runtime schema/instructions follow the exposed definition | Accepted Stage 6 report records actual `ro-bind-fd` mode and passes the required listing cases; runtime composition checks are ordinary tests | Enablement approved in this task thread on 2026-11-16 for `ro-bind-fd` only; remaining evidence limits still apply |
+| Supported-profile enablement and route/schema composition | Linux amd64 gate is derived from trusted launcher inspection, selected `ro-bind-fd` mode, and successful fixed-worker composition; public `sandbox.Service` forwards it; runtime schema/instructions follow the exposed definition | Accepted Stage 6 report records actual `ro-bind-fd` mode and passes the required listing cases; runtime composition checks are ordinary tests | Enablement approved in this task thread on 2026-11-16 for Linux amd64 and `ro-bind-fd` only; remaining evidence limits still apply |
 
 ## Evidence provenance and host result
 
@@ -153,9 +154,10 @@ artifacts outside the repository and do not treat skipped cases as passes.
 
 ## Enablement decision
 
-The accepted automatic selection resolved to `ro-bind-fd` and passed the #317
-recursive-listing cases on `eb56eef`. The proposed code compares the launcher's
-immutable selected bind mode against that measured mode; the launcher's
+The accepted automatic selection resolved to `ro-bind-fd` on Linux amd64 and
+passed the #317 recursive-listing cases on `eb56eef`. The proposed code
+compares the launcher's immutable selected bind mode and runtime architecture
+against the measured profile; the launcher's
 constructor already enforces backend trust and required capabilities, and the
 service only marks the profile eligible after fixed-worker composition
 succeeds. Exact-file reads retain their stricter operation-specific seccomp

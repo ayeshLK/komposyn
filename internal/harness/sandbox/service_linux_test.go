@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,7 +177,7 @@ func TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate(t *testin
 }
 
 func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T) {
-	service, err := newTestHostService()
+	service, err := newTestHostServiceWithLauncher(profileTestWorkerLauncher{mode: readbrokerstudy.BindModeDescriptor})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,14 +185,9 @@ func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T)
 	if !impl.DirectoryListingAvailable() {
 		t.Fatal("composed trusted worker service did not enable directory listing")
 	}
-	if service.DirectoryListingOptionsAvailable() {
-		t.Fatal("recursive listing options enabled without accepted native evidence")
-	}
-	impl.mu.Lock()
-	impl.listingOptionsAvailable = true
-	impl.mu.Unlock()
-	if !service.DirectoryListingOptionsAvailable() {
-		t.Fatal("public service did not forward the Linux options availability gate")
+	wantOptions := goruntime.GOARCH == "amd64"
+	if got := service.DirectoryListingOptionsAvailable(); got != wantOptions {
+		t.Fatalf("public service profile availability=%t, want %t for %s", got, wantOptions, goruntime.GOARCH)
 	}
 	if err := service.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -221,33 +217,22 @@ func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
 		t.Fatal("list_files registered without a verified backend")
 	}
 
-	availableBackend, err := newTestHostService()
+	availableBackend, err := newTestHostServiceWithLauncher(profileTestWorkerLauncher{mode: readbrokerstudy.BindModeDescriptor})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer availableBackend.Close(context.Background())
-	if availableBackend.DirectoryListingOptionsAvailable() {
-		t.Fatal("public service enabled recursive options before a reviewed profile was selected")
+	wantOptions := goruntime.GOARCH == "amd64"
+	if got := availableBackend.DirectoryListingOptionsAvailable(); got != wantOptions {
+		t.Fatalf("public service profile availability=%t, want %t for %s", got, wantOptions, goruntime.GOARCH)
 	}
 	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, availableBackend)
 	definition, registered := config.Registry.Lookup(tools.ListFilesID)
 	if !registered {
 		t.Fatal("list_files not registered when the Linux host service reports an available backend")
 	}
-	if strings.Contains(string(definition.Definition().InputSchema), "recursive") {
-		t.Fatal("recursive options were advertised while the public service gate was closed")
-	}
-	impl := availableBackend.impl.(*linuxImplementation)
-	impl.mu.Lock()
-	impl.listingOptionsAvailable = true
-	impl.mu.Unlock()
-	if !availableBackend.DirectoryListingOptionsAvailable() {
-		t.Fatal("public service did not expose the explicitly selected Linux profile gate")
-	}
-	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, availableBackend)
-	definition, registered = config.Registry.Lookup(tools.ListFilesID)
-	if !registered || !strings.Contains(string(definition.Definition().InputSchema), "recursive") {
-		t.Fatal("real runtime composition did not receive the explicitly enabled Linux profile schema")
+	if got := strings.Contains(string(definition.Definition().InputSchema), "recursive"); got != wantOptions {
+		t.Fatalf("runtime schema advanced fields=%t, want %t for %s", got, wantOptions, goruntime.GOARCH)
 	}
 }
 
@@ -749,15 +734,28 @@ func assertOwnerState(t *testing.T, snapshot CoverageSnapshot, want OwnerState) 
 }
 
 func newTestHostService() (*Service, error) {
+	return newTestHostServiceWithLauncher(inertWorkerLauncher{})
+}
+
+func newTestHostServiceWithLauncher(launcher readbrokerstudy.WorkerLauncher) (*Service, error) {
 	registry, err := readbrokerstudy.NewRegistry()
 	if err != nil {
 		return nil, err
 	}
-	impl, err := composeLinuxImplementation(registry, inertWorkerLauncher{}, nil)
+	impl, err := composeLinuxImplementation(registry, launcher, nil)
 	if err != nil {
 		return nil, err
 	}
 	return &Service{impl: impl}, nil
+}
+
+type profileTestWorkerLauncher struct {
+	inertWorkerLauncher
+	mode readbrokerstudy.BindMode
+}
+
+func (launcher profileTestWorkerLauncher) AdvancedDirectoryListingProfileAvailable() bool {
+	return goruntime.GOARCH == "amd64" && launcher.mode == readbrokerstudy.BindModeDescriptor
 }
 
 func TestInvalidateReadExecutionIsNoopWithoutBackendSession(t *testing.T) {
