@@ -2240,9 +2240,17 @@ func TestStage6RecursiveListingRefusesIncompleteOwnerInventory(t *testing.T) {
 		t.Fatalf("synthetic host coordinator setup failed: %v", err)
 	}
 	service := &Service{impl: impl}
+	if err := enableRecursiveListingForNativeStudy(service); err != nil {
+		_ = service.Close(context.Background())
+		t.Fatalf("enable recursive listing for missing-owner fixture: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	base := &stage6Provider{target: target, toolID: tools.ListFilesID, firstToolCall: true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{})}
+	base := &stage6Provider{
+		target: target, toolID: tools.ListFilesID,
+		listingOptions: json.RawMessage(`{"recursive":true,"include_hidden":false,"include_ignored":false,"name_globs":["*.txt"]}`),
+		firstToolCall:  true, secondStarted: make(chan struct{}), releaseSecond: make(chan struct{}),
+	}
 	providers, err := model.NewRegistry(base)
 	if err != nil {
 		_ = service.Close(context.Background())
@@ -2313,6 +2321,34 @@ func TestStage6RecursiveListingRefusesIncompleteOwnerInventory(t *testing.T) {
 	if len(requests) != 2 {
 		t.Fatalf("provider requests=%d, want initial listing call and refusal continuation", len(requests))
 	}
+	definitions, err := json.Marshal(requests[0].Tools)
+	if err != nil || len(requests[0].Tools) != 1 || requests[0].Tools[0].ID != tools.ListFilesID ||
+		!strings.Contains(string(definitions), `"recursive"`) || !strings.Contains(string(definitions), `"name_globs"`) {
+		t.Fatalf("initial provider request did not advertise recursive listing options: tools=%s err=%v", definitions, err)
+	}
+	var recursiveCallFound bool
+	for _, message := range requests[1].Messages {
+		for _, native := range message.Native {
+			var call struct {
+				Type      string `json:"type"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}
+			if err := json.Unmarshal(native, &call); err != nil || call.Type != "function_call" || call.Name != string(tools.ListFilesID) {
+				continue
+			}
+			var options struct {
+				Recursive bool     `json:"recursive"`
+				NameGlobs []string `json:"name_globs"`
+			}
+			if err := json.Unmarshal([]byte(call.Arguments), &options); err == nil && options.Recursive && slices.Equal(options.NameGlobs, []string{"*.txt"}) {
+				recursiveCallFound = true
+			}
+		}
+	}
+	if !recursiveCallFound {
+		t.Fatalf("provider continuation did not retain the explicit recursive list_files call: messages=%+v", requests[1].Messages)
+	}
 	if _, found := readResultContent(requests[1], "stage6-read"); !found {
 		t.Fatal("incomplete-inventory continuation omitted correlated listing refusal")
 	}
@@ -2340,7 +2376,7 @@ func TestStage6RecursiveListingRefusesIncompleteOwnerInventory(t *testing.T) {
 	stage6Update("recursive_listing_incomplete_owner_inventory", func(item *stage6Case) {
 		item.EvidenceKind, item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = "synthetic-runtime-composition", len(requests), true, true
 	})
-	stage6PassSynthetic("recursive_listing_incomplete_owner_inventory", "the composed listing tool returned only a correlated not_executed refusal when required auth/settings owner coverage was incomplete; no approval, admission, worker, count, or private name crossed the boundary")
+	stage6PassSynthetic("recursive_listing_incomplete_owner_inventory", "the provider advertised advanced listing options and requested recursive listing, then received only a correlated not_executed refusal because required auth/settings owner coverage was incomplete; no approval, admission, worker, count, or private name crossed the boundary")
 }
 
 func TestStage6PositiveReadAndSameContextReplay(t *testing.T) {
@@ -2707,7 +2743,8 @@ func TestStage6PositiveRecursiveDirectoryListing(t *testing.T) {
 	stage6Begin("positive_recursive_directory_listing")
 	fixture := newStage6Fixture(t, "positive_recursive_directory_listing", "directory-list-recursive", false, nil)
 	fixture.reportCases = []string{"positive_recursive_directory_listing"}
-	if err := os.Link(fixture.authPath, filepath.Join(fixture.root, "listing-scope", "nested", "protected-auth-alias.json")); err != nil {
+	protectedAlias := "nested/protected-auth-alias.go"
+	if err := os.Link(fixture.authPath, filepath.Join(fixture.root, "listing-scope", filepath.FromSlash(protectedAlias))); err != nil {
 		t.Fatalf("create nested protected hardlink alias: %v", err)
 	}
 	if err := os.Symlink("nested", filepath.Join(fixture.root, "listing-scope", "linked.go")); err != nil {
@@ -2724,12 +2761,33 @@ func TestStage6PositiveRecursiveDirectoryListing(t *testing.T) {
 		t.Fatalf("provider request count=%d, want 2", len(requests))
 	}
 	continuation, _ := json.Marshal(requests[1].Messages)
-	for _, visible := range []string{"nested/child.go", ".private/hidden.go", "ignored.tmp"} {
-		if !strings.Contains(string(continuation), visible) {
-			t.Fatalf("recursive result omitted %q: %s", visible, continuation)
-		}
+	resultText, found := readResultContent(requests[1], "stage6-read")
+	if !found {
+		t.Fatalf("recursive continuation omitted listing result: %s", continuation)
 	}
-	if strings.Contains(string(continuation), ".git") || strings.Contains(string(continuation), "secret.go") || strings.Contains(string(continuation), "protected-auth-alias.json") || strings.Contains(string(continuation), "linked.go/child.go") {
+	var envelope struct {
+		Outcome   string `json:"outcome"`
+		Truncated bool   `json:"truncated"`
+		Content   string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(resultText), &envelope); err != nil || envelope.Outcome != string(tools.OutcomeSucceeded) || envelope.Truncated {
+		t.Fatalf("recursive result envelope is invalid (outcome=%q truncated=%t err=%v)", envelope.Outcome, envelope.Truncated, err)
+	}
+	var listing struct {
+		Names      []string `json:"names"`
+		Examined   int      `json:"examined"`
+		Returned   int      `json:"returned"`
+		Incomplete bool     `json:"incomplete"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Content), &listing); err != nil {
+		t.Fatalf("recursive listing content is invalid: %v", err)
+	}
+	slices.Sort(listing.Names)
+	wantNames := []string{".private/hidden.go", "ignored.tmp", "linked.go", "nested/child.go", "visible.go"}
+	if !slices.Equal(listing.Names, wantNames) || listing.Examined != len(wantNames) || listing.Returned != len(wantNames) || listing.Incomplete {
+		t.Fatalf("recursive listing names/counts=%+v, want names=%q examined=%d returned=%d incomplete=false", listing, wantNames, len(wantNames), len(wantNames))
+	}
+	if strings.Contains(string(continuation), ".git") || strings.Contains(string(continuation), "secret.go") || strings.Contains(string(continuation), protectedAlias) || strings.Contains(string(continuation), "linked.go/child.go") {
 		t.Fatalf("recursive listing disclosed repository metadata: %s", continuation)
 	}
 	for _, option := range []string{"recursive=true", "include_hidden=true", "include_ignored=true", "*.go", "*.tmp", "openai/stage6-fixture-model using auth profile stage6-profile"} {
