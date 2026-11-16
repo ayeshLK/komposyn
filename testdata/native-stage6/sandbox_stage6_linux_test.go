@@ -234,7 +234,7 @@ func newStage6Report() stage6Report {
 			item.Reason = "synthetic separate-process actor helper control was not executed"
 		} else if unimplemented {
 			item.EvidenceKind = "not-implemented"
-			item.Reason = "case is not implemented by Stage 6 runner version 8"
+			item.Reason = "case is outside the implemented Stage 6 profile"
 		} else if _, workerLifecycle := workerLifecycleCases[id]; workerLifecycle {
 			item.EvidenceKind = "native-worker-lifecycle"
 			item.Reason = "fixed worker parent-death lifecycle case was not executed"
@@ -2321,10 +2321,20 @@ func TestStage6RecursiveListingRefusesIncompleteOwnerInventory(t *testing.T) {
 	if len(requests) != 2 {
 		t.Fatalf("provider requests=%d, want initial listing call and refusal continuation", len(requests))
 	}
-	definitions, err := json.Marshal(requests[0].Tools)
-	if err != nil || len(requests[0].Tools) != 1 || requests[0].Tools[0].ID != tools.ListFilesID ||
-		!strings.Contains(string(definitions), `"recursive"`) || !strings.Contains(string(definitions), `"name_globs"`) {
-		t.Fatalf("initial provider request did not advertise recursive listing options: tools=%s err=%v", definitions, err)
+	var listingDefinition *tools.Definition
+	for index := range requests[0].Tools {
+		if requests[0].Tools[index].ID == tools.ListFilesID {
+			listingDefinition = &requests[0].Tools[index]
+			break
+		}
+	}
+	var listingSchema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if listingDefinition == nil || json.Unmarshal(listingDefinition.InputSchema, &listingSchema) != nil ||
+		listingSchema.Properties["recursive"] == nil || listingSchema.Properties["name_globs"] == nil {
+		definitions, _ := json.Marshal(requests[0].Tools)
+		t.Fatalf("initial provider request did not advertise recursive list_files options: tools=%s", definitions)
 	}
 	var recursiveCallFound bool
 	for _, message := range requests[1].Messages {
