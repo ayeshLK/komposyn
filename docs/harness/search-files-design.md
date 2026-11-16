@@ -71,8 +71,8 @@ snapshot.
    beneath the retained directory, checks the current object and protection
    classification again, and records changed candidates as skipped. It then
    validates result indexes, directory observations, policy/owner generations,
-   and the admission binding. It attaches host-owned eligible relative paths, removes
-   private metadata, enforces result and envelope budgets, and stages the
+   and the admission binding. It attaches host-owned eligible relative paths,
+   removes private metadata, enforces result and envelope budgets, and stages the
    result only through the runtime's current authority gate. Owner rotation,
    revocation, cancellation, stale roots, changed objects, worker cleanup
    failure, or stale provider continuation suppresses publication.

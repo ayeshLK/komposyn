@@ -574,6 +574,47 @@ func TestSearchFilesOnceApprovalBindsOptionsAndContinuesToSelectedProvider(t *te
 	}
 }
 
+func TestSearchFilesDenialDoesNotExecuteOrDisclose(t *testing.T) {
+	root := t.TempDir()
+	secret := "private synthetic search result"
+	fp := &publicationProvider{
+		fakeProvider:  &fakeProvider{id: provider.OpenAI},
+		target:        root,
+		toolID:        tools.SearchFilesID,
+		callArguments: json.RawMessage(`{"path":"` + root + `","query":"private","recursive":false,"include_hidden":false,"include_ignored":false,"name_globs":[]}`),
+	}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &publicationHost{content: []byte(secret), root: root, target: root}
+	host := &searchPublicationHost{publicationHost: base}
+	config := BundledConversationToolRuntimeConfigWithFilesystemRead(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalDeny, "synthetic denial", nil
+	}), ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+		return ClarificationResponse{}, errors.New("clarification is not part of this fixture")
+	}), host)
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+		t.Fatal(err)
+	}
+	selectFirst(t, chat)
+	selectPublicationRoot(t, chat, base, root)
+	t.Cleanup(chat.Close)
+	turn, err := chat.Send(context.Background(), "search this directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("denied search turn=%+v err=%v", turn, err)
+	}
+	if base.reads != 0 {
+		t.Fatalf("host execution count=%d after denial, want zero", base.reads)
+	}
+	for _, request := range fp.captured() {
+		if strings.Contains(providerMessagesText(request.Messages), secret) {
+			t.Fatal("denied search result reached provider")
+		}
+	}
+}
+
 func TestDirectoryListingProviderInstructionsMatchAdvertisedOptions(t *testing.T) {
 	for _, optionsAvailable := range []bool{false, true} {
 		t.Run(map[bool]string{false: "nonrecursive-only", true: "advanced-options"}[optionsAvailable], func(t *testing.T) {
