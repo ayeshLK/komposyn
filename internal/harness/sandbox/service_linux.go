@@ -713,6 +713,11 @@ func (s *linuxImplementation) DirectoryListingOptionsAvailable() bool {
 	return !s.closed && s.backendErr == nil && s.launcher != nil && s.session != nil && s.listingOptionsAvailable
 }
 
+// SearchFilesAvailable stays closed until a search-specific worker protocol,
+// seccomp profile, native acceptance, and independent review are recorded.
+// Listing availability does not authorize reading candidate contents.
+func (s *linuxImplementation) SearchFilesAvailable() bool { return false }
+
 func (s *linuxImplementation) PrepareGenericRead(ctx context.Context, _, _ string) error {
 	if ctx == nil {
 		return context.Canceled

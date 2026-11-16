@@ -45,10 +45,14 @@ const (
 	MaxListFilesOptionsFrameBytes = 2048
 	MaxListFilesGlobs             = 32
 	MaxListFilesGlobBytes         = 128
+	MaxSearchFilesInputBytes      = 8 << 10
+	MaxSearchFilesQueryBytes      = 512
+	MaxSearchFilesOptionsFrame    = 2048
 )
 
 const ReadFileID ID = "read_file"
 const ListFilesID ID = "list_files"
+const SearchFilesID ID = "search_files"
 
 type ReadFileInput struct {
 	Path string `json:"path"`
@@ -137,6 +141,72 @@ func ParseListFiles(raw []byte) (ListFilesInput, error) {
 	if err != nil || len(encodedOptions) > MaxListFilesOptionsFrameBytes {
 		return ListFilesInput{}, errors.New("listing options exceed the worker transfer bound")
 	}
+	return input, nil
+}
+
+// SearchFilesInput identifies a directory search and its approved discovery
+// filters. Query matching is literal and case-sensitive, one line at a time.
+type SearchFilesInput struct {
+	Path           string   `json:"path"`
+	Query          string   `json:"query"`
+	Recursive      bool     `json:"recursive,omitempty"`
+	IncludeHidden  bool     `json:"include_hidden,omitempty"`
+	IncludeIgnored bool     `json:"include_ignored,omitempty"`
+	NameGlobs      []string `json:"name_globs,omitempty"`
+}
+
+var searchFilesSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048},"query":{"type":"string","minLength":1,"maxLength":512},"recursive":{"type":"boolean"},"include_hidden":{"type":"boolean"},"include_ignored":{"type":"boolean"},"name_globs":{"type":"array","items":{"type":"string","minLength":1,"maxLength":128},"maxItems":32}},"required":["path","query"],"additionalProperties":false}`)
+
+// SearchFilesDefinition describes the once-approved bounded literal search.
+// Runtime composition withholds it until a search-specific enforcement profile
+// is independently measured and reviewed.
+func SearchFilesDefinition() Definition {
+	return Definition{
+		ID:          SearchFilesID,
+		Description: "Search one approved directory for a nonempty, case-sensitive literal query, one line at a time. Defaults are nonrecursive and exclude hidden and ignored entries; .git and protected resources are always excluded. Explicitly request recursion, hidden or ignored entries, and basename glob filters; filters do not limit traversal. Only UTF-8 regular files up to 64 KiB are searched. Each request needs explicit once approval showing the exact directory, literal query, all effective options, and selected provider/model/profile destination. Results are bounded and identify incomplete coverage; an incomplete search must not be treated as an exhaustive no-match result. Matching content is sensitive and may recur in this conversation. Starting in a directory or approving a listing grants no search permission. No regex, shell, or filesystem changes.",
+		InputSchema: append(json.RawMessage(nil), searchFilesSchema...),
+		MaxInput:    MaxSearchFilesInputBytes,
+	}
+}
+
+// ParseSearchFiles strictly validates the bounded search request, including
+// the exact option frame passed to the fixed worker.
+func ParseSearchFiles(raw []byte) (SearchFilesInput, error) {
+	var input SearchFilesInput
+	if !utf8.Valid(raw) {
+		return SearchFilesInput{}, errors.New("search request is not valid UTF-8")
+	}
+	if err := decodeStrictObject(raw, MaxSearchFilesInputBytes, &input); err != nil {
+		return SearchFilesInput{}, err
+	}
+	if input.Path == "" || len(input.Path) > MaxListFilesPathBytes || strings.IndexByte(input.Path, 0) >= 0 {
+		return SearchFilesInput{}, errors.New("search path is empty or outside its input bound")
+	}
+	if input.Query == "" || len(input.Query) > MaxSearchFilesQueryBytes || strings.ContainsAny(input.Query, "\r\n\x00") {
+		return SearchFilesInput{}, errors.New("search query is empty or outside its input bound")
+	}
+	if len(input.NameGlobs) > MaxListFilesGlobs {
+		return SearchFilesInput{}, errors.New("too many filename globs")
+	}
+	for _, pattern := range input.NameGlobs {
+		if pattern == "" || len(pattern) > MaxListFilesGlobBytes || strings.ContainsAny(pattern, "/\\\x00") || strings.Contains(pattern, "**") || strings.Contains(pattern, `\\`) {
+			return SearchFilesInput{}, errors.New("filename glob is empty, too long, or contains unsupported syntax")
+		}
+		if _, err := path.Match(strings.ReplaceAll(pattern, "[!", "[^"), ""); err != nil {
+			return SearchFilesInput{}, errors.New("filename glob is invalid")
+		}
+	}
+	frame, err := json.Marshal(struct {
+		Query          string   `json:"query"`
+		Recursive      bool     `json:"recursive"`
+		IncludeHidden  bool     `json:"include_hidden"`
+		IncludeIgnored bool     `json:"include_ignored"`
+		NameGlobs      []string `json:"name_globs"`
+	}{input.Query, input.Recursive, input.IncludeHidden, input.IncludeIgnored, append([]string{}, input.NameGlobs...)})
+	if err != nil || len(frame) > MaxSearchFilesOptionsFrame {
+		return SearchFilesInput{}, errors.New("search options exceed the worker transfer bound")
+	}
+	input.NameGlobs = append([]string(nil), input.NameGlobs...)
 	return input, nil
 }
 

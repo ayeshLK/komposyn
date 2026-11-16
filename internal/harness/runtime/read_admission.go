@@ -52,6 +52,7 @@ type FilesystemReadAdmission struct {
 	CoverageRevision uint64
 	Destination      string
 	Listing          tools.ListFilesInput
+	Search           tools.SearchFilesInput
 }
 
 // FilesystemReadPreparation has no read, execution, or descriptor-transfer
@@ -122,6 +123,12 @@ type FilesystemDirectoryListingAvailability interface {
 // gate for recursion and broader filters; base listing evidence is insufficient.
 type FilesystemDirectoryListingOptionsAvailability interface {
 	DirectoryListingOptionsAvailable() bool
+}
+
+// FilesystemSearchAvailability is an independent native-evidence gate. Search
+// disclosures cannot inherit directory-listing availability.
+type FilesystemSearchAvailability interface {
+	SearchFilesAvailable() bool
 }
 
 type filesystemReadExecutionAuthority struct {
@@ -211,8 +218,13 @@ func filesystemListingActionKey() string {
 	return hex.EncodeToString(digest[:])
 }
 
+func filesystemSearchActionKey() string {
+	digest := sha256.Sum256([]byte("komposyn-filesystem-search-once-v1"))
+	return hex.EncodeToString(digest[:])
+}
+
 func buildFilesystemReadRequest(invocation tools.Invocation, admission FilesystemReadAdmission, workingDirectory string) (permissions.Request, error) {
-	if (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID) || invocation.ConversationID == "" || invocation.ProviderCallID == "" || admission.Reference == nil || admission.AdmissionBinding == "" || admission.Target == "" || admission.Destination == "" || admission.Deadline.IsZero() || !time.Now().Before(admission.Deadline) {
+	if (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID && invocation.ToolID != tools.SearchFilesID) || invocation.ConversationID == "" || invocation.ProviderCallID == "" || admission.Reference == nil || admission.AdmissionBinding == "" || admission.Target == "" || admission.Destination == "" || admission.Deadline.IsZero() || !time.Now().Before(admission.Deadline) {
 		return permissions.Request{}, errors.New("trusted retained read admission is incomplete")
 	}
 	if admission.Operation != string(invocation.ToolID) && !(admission.Operation == "" && invocation.ToolID == tools.ReadFileID) {
@@ -232,6 +244,15 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 		actionDescription = "List names beneath this exact directory once and send them to " + disclosureDestination + "; approval does not permit another listing"
 		actionKey = filesystemListingActionKey()
 		resourceDescription = listingApprovalDescription(admission.Target, admission.Listing, disclosureDestination)
+	} else if invocation.ToolID == tools.SearchFilesID {
+		search, err := tools.ParseSearchFiles(invocation.Arguments)
+		if err != nil || admission.Search.Path != search.Path || admission.Search.Query != search.Query || admission.Search.Recursive != search.Recursive || admission.Search.IncludeHidden != search.IncludeHidden || admission.Search.IncludeIgnored != search.IncludeIgnored || !slices.Equal(admission.Search.NameGlobs, search.NameGlobs) {
+			return permissions.Request{}, errors.New("trusted search admission does not match the requested query or options")
+		}
+		resourceKey = "filesystem_search_disclosure"
+		actionDescription = "Search this exact directory once for the approved literal query and send matching lines to " + disclosureDestination
+		actionKey = filesystemSearchActionKey()
+		resourceDescription = searchApprovalDescription(admission.Target, admission.Search, disclosureDestination)
 	}
 	targetIsOutsideWorkingDirectory := targetOutsideWorkingDirectory(workingDirectory, admission.Target)
 	if admission.Class == "provider_source" {
@@ -260,6 +281,20 @@ func buildFilesystemReadRequest(invocation tools.Invocation, admission Filesyste
 		RequireOnceKeys:  []string{resourceKey},
 	}
 	return bindAuthorizationRequest(invocation, request)
+}
+
+func searchApprovalDescription(target string, options tools.SearchFilesInput, destination string) string {
+	var description strings.Builder
+	fmt.Fprintf(&description, "Search %s for the exact case-sensitive literal query %q and share matching lines with %s. Effective options: recursive=%t; include_hidden=%t; include_ignored=%t; name_globs=", target, options.Query, destination, options.Recursive, options.IncludeHidden, options.IncludeIgnored)
+	if len(options.NameGlobs) == 0 {
+		description.WriteString("[]")
+	} else if encoded, err := json.Marshal(options.NameGlobs); err != nil {
+		description.WriteString("[invalid]")
+	} else {
+		description.Write(encoded)
+	}
+	description.WriteString(". Matching text is sensitive. .git and protected resources are always excluded; symlinks are not followed and mount boundaries are not crossed. This approves one bounded search only; another search needs new approval.")
+	return description.String()
 }
 
 func listingApprovalDescription(target string, options tools.ListFilesInput, destination string) string {

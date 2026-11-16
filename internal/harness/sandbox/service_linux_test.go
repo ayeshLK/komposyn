@@ -185,6 +185,9 @@ func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T)
 	if !impl.DirectoryListingAvailable() {
 		t.Fatal("composed trusted worker service did not enable directory listing")
 	}
+	if service.SearchFilesAvailable() {
+		t.Fatal("search inherited availability without search-specific worker evidence")
+	}
 	wantOptions := goruntime.GOARCH == "amd64"
 	if got := service.DirectoryListingOptionsAvailable(); got != wantOptions {
 		t.Fatalf("public service profile availability=%t, want %t for %s", got, wantOptions, goruntime.GOARCH)
@@ -197,6 +200,9 @@ func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T)
 	}
 	if service.DirectoryListingOptionsAvailable() {
 		t.Fatal("closed worker service kept advanced listing options available")
+	}
+	if service.SearchFilesAvailable() {
+		t.Fatal("closed worker service kept search available")
 	}
 }
 
@@ -227,6 +233,9 @@ func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
 		t.Fatalf("public service profile availability=%t, want %t for %s", got, wantOptions, goruntime.GOARCH)
 	}
 	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, availableBackend)
+	if _, registered := config.Registry.Lookup(tools.SearchFilesID); registered {
+		t.Fatal("search_files inherited the listing evidence gate")
+	}
 	definition, registered := config.Registry.Lookup(tools.ListFilesID)
 	if !registered {
 		t.Fatal("list_files not registered when the Linux host service reports an available backend")

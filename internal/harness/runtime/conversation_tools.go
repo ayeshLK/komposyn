@@ -202,6 +202,11 @@ func bundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clar
 			return ToolRuntimeConfig{}
 		}
 	}
+	if searchHost, ok := readHost.(FilesystemSearchAvailability); ok && searchHost.SearchFilesAvailable() {
+		if registry.Register(searchFilesTool{}) != nil {
+			return ToolRuntimeConfig{}
+		}
+	}
 	return ToolRuntimeConfig{
 		Registry:      registry,
 		Plans:         plans,
@@ -266,6 +271,17 @@ func (tool listFilesTool) ValidateArguments(raw json.RawMessage) error {
 }
 func (listFilesTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
 	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "listing_dispatch_unavailable"}
+}
+
+type searchFilesTool struct{}
+
+func (searchFilesTool) Definition() tools.Definition { return tools.SearchFilesDefinition() }
+func (searchFilesTool) ValidateArguments(raw json.RawMessage) error {
+	_, err := tools.ParseSearchFiles(raw)
+	return err
+}
+func (searchFilesTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
+	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "search_dispatch_unavailable"}
 }
 
 func conversationToolActionKey(id tools.ID) string {

@@ -46,6 +46,7 @@ filesystem access.
 | `request_user_input` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `list_files` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement; live listing is not verified | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
+| `search_files` | Unavailable: search-specific retained candidate filtering, worker protocol/seccomp, and native acceptance are not implemented | Unavailable for the same search-specific host requirements; listing evidence does not enable search | Unavailable for the same search-specific host requirements | Unimplemented route |
 
 `list_files` is registered only when the Linux host has inspected the trusted
 Bubblewrap backend and composed the fixed worker. The runtime additionally
@@ -113,6 +114,18 @@ separate explicit once approval naming the resolved target and provider
 destination. Directory selection grants no read permission. See the [read
 acceptance record](issue-215-completion-tracking.md) and
 [#278 evidence record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362).
+
+`search_files` remains unavailable on every route. The request schema and
+runtime approval binding are being prepared behind an independent
+`SearchFilesAvailable` host gate that defaults closed. The current fixed
+worker has no search protocol or search-specific seccomp profile; therefore
+no search candidate may be read or disclosed by this revision. Existing read
+and listing evidence is not search enforcement evidence. Enablement requires
+the complete two-phase host candidate validation and content-worker design,
+native search acceptance on the exact supported profile, and independent
+review. See [the search design note](search-files-design.md) for the proposed
+limits and enforcement boundary; those values are not yet measured search
+behavior.
 
 ## Runtime and UI reasons
 

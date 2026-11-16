@@ -391,6 +391,28 @@ func TestDirectoryListingApprovalBindsExactScopeAndProvider(t *testing.T) {
 	}
 }
 
+func TestSearchApprovalBindsLiteralQueryOptionsAndDestination(t *testing.T) {
+	arguments := json.RawMessage(`{"path":"/tmp/sample","query":"needle","recursive":true,"include_hidden":true,"name_globs":["*.go"]}`)
+	invocation := tools.Invocation{ConversationID: "conversation", ProviderCallID: "search-1", ToolID: tools.SearchFilesID, Arguments: arguments}
+	search := tools.SearchFilesInput{Path: "/tmp/sample", Query: "needle", Recursive: true, IncludeHidden: true, NameGlobs: []string{"*.go"}}
+	admission := FilesystemReadAdmission{Operation: string(tools.SearchFilesID), Reference: new(struct{}), AdmissionBinding: "search-admission", Target: "/tmp/sample", Destination: "openai/model/profile", Deadline: time.Now().Add(time.Minute), Search: search}
+	request, err := buildFilesystemReadRequest(invocation, admission, "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Requirements) != 2 || request.Requirements[1].Description == "" || !strings.Contains(request.Requirements[1].Description, `"needle"`) || !strings.Contains(request.Requirements[1].Description, `name_globs=["*.go"]`) || !strings.Contains(request.Requirements[1].Description, "recursive=true") || !strings.Contains(request.Requirements[1].Description, "openai/model/profile") {
+		t.Fatalf("approval description omitted bound search scope: %+v", request.Requirements)
+	}
+	changed := invocation
+	changed.Arguments = json.RawMessage(`{"path":"/tmp/sample","query":"other","recursive":true,"include_hidden":true,"name_globs":["*.go"]}`)
+	if _, err := buildFilesystemReadRequest(changed, admission, "/tmp"); err == nil {
+		t.Fatal("changed query reused retained search admission")
+	}
+	if _, err := buildFilesystemReadRequest(invocation, FilesystemReadAdmission{Operation: admission.Operation, Reference: admission.Reference, AdmissionBinding: admission.AdmissionBinding, Target: admission.Target, Destination: admission.Destination, Deadline: admission.Deadline, Search: tools.SearchFilesInput{Path: search.Path, Query: search.Query}}, "/tmp"); err == nil {
+		t.Fatal("changed effective options reused retained search admission")
+	}
+}
+
 func TestDirectoryListingApprovalDisplaysAndBindsEveryEffectiveOption(t *testing.T) {
 	arguments := json.RawMessage(`{"path":"/tmp/sample","recursive":true,"include_hidden":true,"include_ignored":false,"name_globs":["*.go","test[!0-9].txt"]}`)
 	listing := tools.ListFilesInput{Recursive: true, IncludeHidden: true, NameGlobs: []string{"*.go", "test[!0-9].txt"}}

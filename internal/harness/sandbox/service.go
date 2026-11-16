@@ -279,6 +279,16 @@ func (s *Service) DirectoryListingOptionsAvailable() bool {
 	return ok && availability.DirectoryListingOptionsAvailable()
 }
 
+// SearchFilesAvailable is independent from both directory listing gates and
+// remains closed until search-specific native evidence and review are accepted.
+func (s *Service) SearchFilesAvailable() bool {
+	if s == nil || s.impl == nil {
+		return false
+	}
+	availability, ok := s.impl.(interface{ SearchFilesAvailable() bool })
+	return ok && availability.SearchFilesAvailable()
+}
+
 // Prepares reports that this host owns generic pre-dispatch preparation for a
 // tool ID. read_file uses its dedicated retained-read path; this generic hook
 // intentionally refuses it and cannot execute filesystem operations.
