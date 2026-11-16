@@ -1,10 +1,11 @@
 # Issue #317 completion and evidence matrix
 
 This record distinguishes implementation and ordinary tests from native
-filesystem evidence. The recursive options remain unavailable until the
-required native profile has been measured on the candidate revision, that
-evidence has received independent maintainer review, and enablement is
-approved separately.
+filesystem evidence. The local follow-up proposes advanced options only for
+trusted Bubblewrap using `ro-bind-fd`, the actual launch mode in the accepted
+native run. The evidence is recorded; separate enablement approval has not
+been recorded. Do not publish or merge the local open-gate proposal until the
+maintainer records that decision.
 
 ## Acceptance matrix
 
@@ -18,7 +19,7 @@ approved separately.
 | Cancellation, revocation, stale publication, and cleanup | Runtime/session cancellation and lifecycle tests; descriptor-refusal regression tests | `directory_listing_worker_cleanup` cancels after the worker holds the capability; `recursive_listing_cancellation_after_traversal` cancels after host filtering; owner rotation suppresses capture after traversal | Native pass for post-traversal cancellation and worker cleanup. Cancellation during active traversal is still not independently measured |
 | Shared 10,000-entry budget, 1,000 visible-path limit, 64 KiB output, five-second deadline, bounded ignore input and matcher work | `TestRecursiveTraversalStopsAtSharedEntryBudget`, bounded encoder test, broker filter budgets and existing admission/session deadlines | `recursive_listing_entry_limit` creates a 10,020-file tree and requires a bounded `incomplete=true` provider result | Native limit case passes; ordinary tests cover the remaining bounds |
 | Provider-visible names/counts/errors and stale-result suppression | Runtime continuation tests; host filter removes protected entries before counts and strips all worker snapshots before serialization | Recursive provider fixture cases assert disclosed results, approval details, and absence of filtered names | Native pass on the recorded profile |
-| Supported-profile enablement and route/schema composition | Linux gate defaults false; public `sandbox.Service` forwards the options gate; runtime schema/instructions follow the exposed definition | Test-only Stage 6 composition sets the gate to exercise the path; this is not an enablement decision | The automatic-bind Linux profile passed the required listing cases on Bubblewrap 0.9.0. Keep the gate closed pending independent evidence review and a separate enablement decision |
+| Supported-profile enablement and route/schema composition | Linux gate is derived from trusted launcher inspection, selected `ro-bind-fd` mode, and successful fixed-worker composition; public `sandbox.Service` forwards it; runtime schema/instructions follow the exposed definition | Accepted Stage 6 report records actual `ro-bind-fd` mode and passes the required listing cases; runtime composition checks are ordinary tests | Local proposed gate is open only for that profile. Separate enablement approval is outstanding; do not publish or merge before the decision |
 
 ## Evidence provenance and host result
 
@@ -152,11 +153,17 @@ artifacts outside the repository and do not treat skipped cases as passes.
 
 ## Enablement decision
 
-Do not set `linuxImplementation.listingOptionsAvailable` in production yet.
-The automatic-bind Linux profile passed the #317 recursive-listing cases on
-`eb56eef`. An independent maintainer should review the exact report and decide
-separately whether to enable the profile. Keep the enforcement revision and any
-later gate-only revision separately identifiable.
+The accepted automatic selection resolved to `ro-bind-fd` and passed the #317
+recursive-listing cases on `eb56eef`. The proposed code compares the launcher's
+immutable selected bind mode against that measured mode; the launcher's
+constructor already enforces backend trust and required capabilities, and the
+service only marks the profile eligible after fixed-worker composition
+succeeds. Exact-file reads retain their stricter operation-specific seccomp
+profile; only directory workers receive the listing profile. The native run
+used the Stage 6 test worker image, not `cmd/harness` or a live provider. This
+evidence supports the proposed profile selector, but is not itself an
+enablement decision. Separate approval remains outstanding. Keep the
+enforcement revision and gate-selection revision separately identifiable.
 
 Issue #317 remains open pending independent review and the separate enablement
 decision. This record does not complete #315 or mutation work.

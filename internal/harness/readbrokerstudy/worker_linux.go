@@ -326,6 +326,18 @@ type workerLauncher struct {
 	closeErr       error
 }
 
+// AdvancedDirectoryListingProfileAvailable reports whether this inspected
+// launcher selects the only worker image bind profile covered by the #317
+// native acceptance run. The constructor has already required trusted
+// Bubblewrap and completed its bounded capability and worker checks.
+func (l *workerLauncher) AdvancedDirectoryListingProfileAvailable() bool {
+	if l == nil || l.capability.BindMode != BindModeDescriptor {
+		return false
+	}
+	_, err := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
+	return err == nil
+}
+
 // NewWorkerLauncher constructs the only launch path in this feasibility
 // package. Modern Bubblewrap receives the held descriptor for the currently
 // executing image through its /proc/self/fd interface and verifies the

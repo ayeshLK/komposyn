@@ -109,6 +109,8 @@ func composeLinuxImplementation(registry *readbrokerstudy.Registry, launcher rea
 		}
 		return nil, fmt.Errorf("%w: trusted worker service could not be composed", readbrokerstudy.ErrUnavailable)
 	}
+	profile, ok := launcher.(interface{ AdvancedDirectoryListingProfileAvailable() bool })
+	impl.listingOptionsAvailable = ok && profile.AdvancedDirectoryListingProfileAvailable()
 	return impl, nil
 }
 
@@ -699,8 +701,9 @@ func (s *linuxImplementation) DirectoryListingAvailable() bool {
 	return !s.closed && s.backendErr == nil && s.launcher != nil && s.session != nil
 }
 
-// DirectoryListingOptionsAvailable remains false until the recursive native
-// profile for this exact enforcement implementation is independently reviewed.
+// DirectoryListingOptionsAvailable exposes advanced listing only for the
+// trusted, composed descriptor-bind worker profile covered by the accepted
+// recursive native evidence. Other launch modes fail closed.
 func (s *linuxImplementation) DirectoryListingOptionsAvailable() bool {
 	if s == nil {
 		return false

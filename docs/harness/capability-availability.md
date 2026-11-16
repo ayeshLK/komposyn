@@ -58,10 +58,12 @@ establish live provider listing, production-provider integration, or
 cross-platform enforcement.
 
 Recursive listing and its `recursive`, `include_hidden`, `include_ignored`, and
-`name_globs` options are implemented behind a separate native-evidence gate.
-Stage 6 passed the recursive-listing cases on exact clean revision
+`name_globs` options are proposed for trusted Linux Bubblewrap using the
+descriptor bind profile (`ro-bind-fd`). The launcher exposes this profile only
+after trust and bounded capability checks succeed and the fixed worker service
+is composed. Stage 6 passed the recursive-listing cases on exact clean revision
 `eb56eef57c90b3c5a653b99e1d3a3dcec451cfc5` using trusted, root-owned Bubblewrap
-0.9.0 on Linux amd64. The report measured 30 cases as passes; mutation and
+0.9.0 on Linux amd64; the report records actual mode `ro-bind-fd`. The report measured 30 cases as passes; mutation and
 shell profile cases were unavailable because they are outside this Stage 6
 profile. Provider-source lifecycle, aggregate cgroup quotas, shipped-binary
 integration, non-Linux enforcement, and active-traversal cancellation were not
@@ -69,8 +71,10 @@ established. See [the issue #317 completion and evidence record](issue-317-compl
 for the acceptance matrix, report and archive hashes, earlier attempts, and
 remaining limitations.
 
-The production gate remains closed pending independent review of that evidence
-and a separate enablement decision. The initial agent host's untrusted
+The file-snapshot bind profile remains unavailable for advanced options
+because the recorded run did not measure it. Separate enablement approval has
+not been recorded, so this local proposal does not authorize publishing or
+merging an open gate. The initial agent host's untrusted
 `/usr/bin/bwrap` refusal remains historical and does not describe the supplied
 trusted-host result. The public service forwards a separate options gate,
 which remains false unless the Linux implementation selects a reviewed

@@ -633,6 +633,22 @@ func TestStage6PreferredBindModeIsFeatureCheckedWithoutChangingAutomaticSelectio
 	}
 }
 
+func TestAdvancedDirectoryListingProfileRequiresMeasuredDescriptorBind(t *testing.T) {
+	if (*workerLauncher)(nil).AdvancedDirectoryListingProfileAvailable() {
+		t.Fatal("nil launcher exposed the advanced listing profile")
+	}
+	for _, mode := range []BindMode{BindModeFileSnapshot, BindMode("unknown")} {
+		launcher := &workerLauncher{capability: BubblewrapCapabilities{BindMode: mode}}
+		if launcher.AdvancedDirectoryListingProfileAvailable() {
+			t.Fatalf("bind mode %q exposed an unmeasured advanced listing profile", mode)
+		}
+	}
+	launcher := &workerLauncher{capability: BubblewrapCapabilities{BindMode: BindModeDescriptor}}
+	if !launcher.AdvancedDirectoryListingProfileAvailable() {
+		t.Fatal("descriptor bind profile with the compiled listing syscall policy was not eligible")
+	}
+}
+
 func TestSafeSystemErrorOmitsPathText(t *testing.T) {
 	err := &os.PathError{Op: "open", Path: "/tmp/synthetic-private-path", Err: syscall.EACCES}
 	got := safeSystemError(err)
