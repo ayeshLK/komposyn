@@ -113,7 +113,10 @@ pathname lookup and receives only the sealed content snapshot. Exact file reads
 keep their stricter existing profile; no listing or read profile is weakened
 for search. The operation profiles are implemented, but the first trusted-host
 candidate failed before launching search workers because the public Service
-rejected search admission. Native acceptance remains incomplete.
+rejected search admission. The next run exercised the search workers and
+passed all search cases except cancellation, where the test incorrectly expected
+a completed turn instead of the runtime's interrupted outcome. Native
+acceptance remains incomplete pending a rerun of the corrected case.
 
 Behavioral tests exercise the runtime-to-provider seam with synthetic content;
 the Stage 6 fixture exercises the composed sandbox Service and provider

@@ -125,9 +125,11 @@ failed before any search worker launch because the public Service rejected
 acceptance. Existing read and listing evidence is not search evidence.
 Enablement still requires search-specific native acceptance on the exact
 supported profile and independent review. The Stage 6 overlay now contains
-search-specific mount-boundary and lifecycle cases. The follow-up fixes the
-Service admission issue exposed on the trusted host; the exact updated commit
-still needs native acceptance. See [the search design
+search-specific mount-boundary and lifecycle cases. A second trusted-host run
+confirmed that the Service fix enables the search path and measured all search
+cases except cancellation; that case exposed an incorrect harness expectation
+about interrupted turns. The updated cancellation assertion and exact commit
+still need native acceptance. See [the search design
 note](search-files-design.md) and [#318 completion matrix](issue-318-search-completion.md)
 for limits, current coverage and remaining evidence.
 

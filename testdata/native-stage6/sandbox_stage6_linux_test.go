@@ -3010,37 +3010,45 @@ func TestStage6SearchContentWorkerCancellationCleanup(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(nested, "control.go"), []byte("synthetic-never-real-key\n"), 0600); err != nil {
 		t.Fatal("create matching search control:", err)
 	}
+	fixture.provider.listingOptions = json.RawMessage(`{"query":"synthetic","recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*.go"]}`)
 	impl := fixture.service.impl.(*linuxImplementation)
 	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
 		if checkpoint == readbrokerstudy.CheckpointBeforeSearchContent {
-			return errors.New("synthetic cancellation before content handoff")
+			return context.Canceled
 		}
 		return nil
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	turn, err := fixture.chat.Send(ctx, "search this synthetic directory", nil)
-	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+	if err != nil || turn.Outcome != provider.OutcomeInterrupted {
 		t.Fatalf("cancelled search turn outcome=%s err=%v", turn.Outcome, err)
 	}
 	requests := fixture.provider.captured()
-	if len(requests) != 2 {
-		t.Fatalf("provider requests=%d, want initial and cancellation continuation", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d, want no continuation after cancellation", len(requests))
 	}
-	continuation, _ := json.Marshal(requests[1].Messages)
-	if strings.Contains(string(continuation), "synthetic-never-real-key") || strings.Contains(string(continuation), "nested/control.go") {
-		t.Fatalf("cancelled search disclosed candidate data: %s", continuation)
+	requestMessages, _ := json.Marshal(requests[0].Messages)
+	if strings.Contains(string(requestMessages), "synthetic-never-real-key") {
+		t.Fatalf("cancelled search disclosed candidate data in the initial provider request: %s", requestMessages)
+	}
+	_, historyMessages, toolResults, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(fixture.chat, "synthetic-never-real-key")
+	if historyMessages == 0 || toolResults != 1 || markerFound || !payloadFree {
+		t.Fatalf("cancelled search history was not payload-free: messages=%d results=%d marker=%t payload_free=%t", historyMessages, toolResults, markerFound, payloadFree)
 	}
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadCancelled || !evidence[0].WorkerStarted || !evidence[0].WorkerJoined || evidence[0].CapabilitySent || evidence[0].ReadStarted || !stage6WorkerProbePassed(evidence[0].SearchContentProbe) {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadCancelled || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || evidence[0].CapabilitySent || evidence[0].ReadStarted || evidence[0].Published || !stage6WorkerProbePassed(evidence[0].SearchContentProbe) {
 		t.Fatalf("cancelled content worker evidence=%+v", evidence)
+	}
+	if published := impl.session.PublishedResults(); len(published) != 0 {
+		t.Fatalf("cancelled search published %d private results", len(published))
 	}
 	stage6Update("search_content_worker_cancellation_cleanup", func(item *stage6Case) {
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
 		item.ProbePassed, item.OnceApprovalCount, item.OnceGrantConsumptionCount = stage6WorkerProbePassed(evidence[0].SearchContentProbe), fixture.approvals.Load(), 1
-		item.ProviderRequestCount, item.DisclosureWithheld, item.CleanupConfirmed = len(requests), true, evidence[0].WorkerJoined
+		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent, item.CleanupConfirmed = len(requests), true, true, evidence[0].WorkerJoined
 	})
-	stage6Pass("search_content_worker_cancellation_cleanup", "cancellation after the content worker passed its startup probe but before snapshot transfer joined the worker, transferred no content descriptor, and withheld the matching candidate from provider continuation")
+	stage6Pass("search_content_worker_cancellation_cleanup", "cancellation after the content worker passed its startup probe but before snapshot transfer joined the worker, transferred no content descriptor, published no private result, and stopped before provider continuation")
 }
 
 func TestStage6SearchSelectedRootMovement(t *testing.T) {
