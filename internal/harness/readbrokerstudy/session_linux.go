@@ -588,6 +588,9 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	}
 	op.probe = worker.Probe()
 	op.evidence.Probe = op.probe
+	if op.admissionOperation == AdmissionSearchFiles {
+		op.evidence.SearchTraversalProbe = op.probe
+	}
 	if !validWorkerProbe(op.probe) {
 		cleanup := terminateAndWait()
 		if !cleanup.cleanupConfirmed() {
@@ -819,11 +822,11 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 			return WorkerResult{Outcome: ReadNotExecuted, Detail: "search candidates could not be safely inspected"}
 		}
 		if snapshot.File == nil {
+			_ = filter.validateAndCloseSearchSnapshot(&snapshot)
 			return WorkerResult{Outcome: ReadUnknown, Detail: "search content snapshot is unavailable"}
 		}
 		contentWorkerResult := s.runSearchContentWorker(ctx, op, snapshot.File, authority, publish)
-		closeErr := snapshot.File.Close()
-		if closeErr != nil {
+		if closeErr := filter.validateAndCloseSearchSnapshot(&snapshot); closeErr != nil {
 			clear(contentWorkerResult.Bytes)
 			return WorkerResult{Outcome: ReadUnknown, Detail: "search content worker or snapshot cleanup could not be confirmed"}
 		}
@@ -926,6 +929,7 @@ func (s *fixtureSession) runSearchContentWorker(ctx context.Context, op *readOpe
 	}
 	op.probe = worker.Probe()
 	op.evidence.Probe = op.probe
+	op.evidence.SearchContentProbe = op.probe
 	if !validWorkerProbe(op.probe) {
 		cleanup := terminate()
 		if !cleanup.cleanupConfirmed() {

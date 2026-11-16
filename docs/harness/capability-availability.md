@@ -123,8 +123,11 @@ operation-specific seccomp profiles. No search native acceptance has been run
 or reviewed, so these implementation checks do not establish filesystem
 enforcement. Existing read and listing evidence is not search evidence.
 Enablement still requires search-specific native acceptance on the exact
-supported profile and independent review. See [the search design note](search-files-design.md)
-for limits and the enforcement boundary.
+supported profile and independent review. The Stage 6 overlay now contains
+search cases, but this host refused before worker launch because its Bubblewrap
+binary is not trusted; that is unavailable evidence. See [the search design
+note](search-files-design.md) and [#318 completion matrix](issue-318-search-completion.md)
+for limits, current coverage and remaining evidence.
 
 ## Runtime and UI reasons
 

@@ -200,7 +200,7 @@ var stage6Mu sync.Mutex
 
 func newStage6Report() stage6Report {
 	ids := []string{
-		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read",
+		"ordinary_chat_without_root", "read_refused_without_root_or_backend", "synthetic_once_authority_flow", "positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "positive_content_search", "search_candidate_protected_substitution", "search_content_worker_cancellation_cleanup", "empty_file_read",
 		"protected_auth_refusal", "protected_settings_refusal", "provider_source_owner",
 		"incomplete_owner_inventory", "recursive_listing_incomplete_owner_inventory", "actor_helper_control", "independent_namespace_actor", "expected_once_transitions",
 		"captured_batch_revocation", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation",
@@ -1101,7 +1101,7 @@ func (p *stage6Provider) StreamChat(ctx context.Context, request provider.ChatRe
 		nativeCalls := make([]json.RawMessage, 0, len(paths))
 		for _, item := range paths {
 			argumentValues := map[string]any{"path": item.path}
-			if toolID == tools.ListFilesID && len(p.listingOptions) != 0 {
+			if (toolID == tools.ListFilesID || toolID == tools.SearchFilesID) && len(p.listingOptions) != 0 {
 				var options map[string]json.RawMessage
 				if json.Unmarshal(p.listingOptions, &options) != nil {
 					return provider.Result{}, errors.New("synthetic listing options are invalid")
@@ -1452,6 +1452,24 @@ func enableRecursiveListingForNativeStudy(service *Service) error {
 	return nil
 }
 
+func enableSearchForNativeStudy(service *Service) error {
+	if service == nil {
+		return errors.New("native service is missing")
+	}
+	impl, ok := service.impl.(*linuxImplementation)
+	if !ok || impl.session == nil {
+		return errors.New("native service does not use the composed Linux worker")
+	}
+	profile, ok := impl.launcher.(interface{ SearchProfilesAvailable() bool })
+	if !ok || !profile.SearchProfilesAvailable() {
+		return errors.New("native search worker profiles are unavailable")
+	}
+	impl.mu.Lock()
+	impl.searchAccepted = true
+	impl.mu.Unlock()
+	return nil
+}
+
 func newStage6HostService(backendPath string, holdWorker bool) (*Service, error) {
 	registry, err := readbrokerstudy.NewRegistry()
 	if err != nil {
@@ -1530,7 +1548,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	}
 	stage6Mu.Unlock()
 	if !inspection.Trusted || inspection.Error != "" {
-		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
+		for _, id := range []string{"positive_exact_read_and_replay", "positive_directory_listing", "positive_recursive_directory_listing", "recursive_listing_nested_ignore_filters", "recursive_listing_entry_limit", "recursive_listing_cancellation_after_traversal", "recursive_descendant_movement_replacement", "directory_listing_movement_replacement", "directory_listing_owner_rotation", "directory_listing_mount_boundary", "directory_listing_worker_cleanup", "positive_content_search", "search_candidate_protected_substitution", "search_content_worker_cancellation_cleanup", "empty_file_read", "protected_auth_refusal", "protected_settings_refusal", "independent_namespace_actor", "pre_handoff_owner_invalidation", "post_handoff_owner_invalidation", "cancellation_and_cleanup", "launch_profile_and_limits", "late_response_and_delta_retirement", "expected_once_transitions"} {
 			stage6Skip(id, fmt.Sprintf(
 				"trusted backend validation refused before backend probes or worker launch (uid=%d mode=%#o error=%s)",
 				inspection.UID, inspection.Mode, boundedStage6Diagnostic(inspection.Error),
@@ -1591,9 +1609,12 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		content = ""
 	}
 	target := filepath.Join(root, "notes.txt")
-	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" || targetKind == "content-search" {
 		target = filepath.Join(root, "listing-scope")
 		toolID, content = tools.ListFilesID, "visible.go"
+		if targetKind == "content-search" {
+			toolID = tools.SearchFilesID
+		}
 		if targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive-mounted" {
 			if info, err := os.Stat(target); err != nil || !info.IsDir() {
 				_ = service.Close(context.Background())
@@ -1702,6 +1723,9 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	if targetKind == "directory-list-recursive-mounted" {
 		base.listingOptions = json.RawMessage(`{"recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*"]}`)
 	}
+	if targetKind == "content-search" {
+		base.listingOptions = json.RawMessage(`{"query":"synthetic-never-real-key","recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*.go"]}`)
+	}
 	providers, err := model.NewRegistry(base)
 	if err != nil {
 		_ = service.Close(context.Background())
@@ -1727,9 +1751,15 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 		return permissions.ApprovalOnce, "", nil
 	})
 	var config runtime.ToolRuntimeConfig
-	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" {
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" || targetKind == "content-search" {
 		if targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" {
 			if err := enableRecursiveListingForNativeStudy(service); err != nil {
+				_ = service.Close(context.Background())
+				t.Fatal(err)
+			}
+		}
+		if targetKind == "content-search" {
+			if err := enableSearchForNativeStudy(service); err != nil {
 				_ = service.Close(context.Background())
 				t.Fatal(err)
 			}
@@ -1797,6 +1827,13 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			_ = fixture.chat.CloseContext(context.Background())
 			_ = service.Close(context.Background())
 			t.Fatalf("test-only directory listing path setup failed: %v", err)
+		}
+	}
+	if targetKind == "content-search" {
+		if err := runtime.EnableNativeSearchStudy(fixture.chat); err != nil {
+			_ = fixture.chat.CloseContext(context.Background())
+			_ = service.Close(context.Background())
+			t.Fatalf("test-only search path setup failed: %v", err)
 		}
 	}
 	t.Cleanup(func() {
@@ -2689,6 +2726,205 @@ func stage6MountID(path string) (uint64, error) {
 		return 0, errors.New("mount ID is unavailable")
 	}
 	return stat.Mnt_id, nil
+}
+
+func TestStage6PositiveContentSearch(t *testing.T) {
+	stage6Begin("positive_content_search")
+	fixture := newStage6Fixture(t, "positive_content_search", "content-search", false, nil)
+	fixture.reportCases = []string{"positive_content_search"}
+	target := filepath.Join(fixture.root, "listing-scope")
+	nested := filepath.Join(target, "nested")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal("create nested search directory:", err)
+	}
+	control := filepath.Join(nested, "control.go")
+	if err := os.WriteFile(control, []byte("prefix synthetic-never-real-key suffix\n"), 0600); err != nil {
+		t.Fatal("create unprotected matching control:", err)
+	}
+	protectedAlias := filepath.Join(nested, "protected-auth-alias.go")
+	if err := os.Link(fixture.authPath, protectedAlias); err != nil {
+		t.Fatal("create protected auth hardlink alias:", err)
+	}
+	gitMarker := filepath.Join(target, ".git", "must-not-search.go")
+	if err := os.WriteFile(gitMarker, []byte("synthetic-never-real-key\n"), 0600); err != nil {
+		t.Fatal("create .git exclusion marker:", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	turn, err := fixture.chat.Send(ctx, "search this synthetic directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("search turn outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial and search continuation", len(requests))
+	}
+	definitionBytes, _ := json.Marshal(requests[0].Tools)
+	if !strings.Contains(string(definitionBytes), string(tools.SearchFilesID)) || !strings.Contains(string(definitionBytes), "query") {
+		t.Fatalf("search_files was not advertised with its query schema: %s", definitionBytes)
+	}
+	continuation, _ := json.Marshal(requests[1].Messages)
+	encoded := string(continuation)
+	if !strings.Contains(encoded, "nested/control.go") || !strings.Contains(encoded, "synthetic-never-real-key") || strings.Contains(encoded, "protected-auth-alias.go") || strings.Contains(encoded, "must-not-search.go") {
+		t.Fatalf("search continuation did not preserve control result and protected/.git exclusions: %s", encoded)
+	}
+	if fixture.approvals.Load() != 1 {
+		t.Fatalf("search once approvals=%d, want one", fixture.approvals.Load())
+	}
+	for _, want := range []string{target, "synthetic-never-real-key", "recursive=true", "include_hidden=true", "include_ignored=true", `name_globs=["*.go"]`, "openai/"} {
+		if !strings.Contains(fixture.approvalDescription, want) {
+			t.Fatalf("search approval omits %q: %s", want, fixture.approvalDescription)
+		}
+	}
+	impl := fixture.service.impl.(*linuxImplementation)
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadSucceeded || !evidence[0].WorkerStarted || !evidence[0].WorkerJoined || !evidence[0].CapabilitySent || !evidence[0].ReadStarted || !stage6DirectoryListingProbePassed(evidence[0].SearchTraversalProbe) || !stage6WorkerProbePassed(evidence[0].SearchContentProbe) || evidence[0].SearchContentProbe.DirectoryTraversalSyscallsAllowed {
+		t.Fatalf("search content worker evidence=%+v", evidence)
+	}
+	stage6Update("positive_content_search", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = evidence[0].CapabilitySent, evidence[0].ReadStarted, stage6WorkerProbePassed(evidence[0].Probe)
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount, item.ProviderRequestCount = fixture.approvals.Load(), 1, len(requests)
+		item.FixtureBytesMatched, item.CleanupConfirmed = true, evidence[0].WorkerJoined
+	})
+	stage6Pass("positive_content_search", "actual composed sandbox Service traversed the approved recursive directory, excluded a matching protected hardlink alias and .git content, and returned only the unprotected matching line through provider continuation")
+}
+
+func TestStage6SearchCandidateProtectedSubstitution(t *testing.T) {
+	stage6Begin("search_candidate_protected_substitution")
+	fixture := newStage6Fixture(t, "search_candidate_protected_substitution", "content-search", false, nil)
+	fixture.reportCases = []string{"search_candidate_protected_substitution"}
+	nested := filepath.Join(fixture.root, "listing-scope", "nested")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal("create nested search directory:", err)
+	}
+	for _, name := range []string{"control.go", "race.go"} {
+		if err := os.WriteFile(filepath.Join(nested, name), []byte("synthetic-never-real-key\n"), 0600); err != nil {
+			t.Fatal("create unprotected matching control:", err)
+		}
+	}
+	impl := fixture.service.impl.(*linuxImplementation)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	transitioned := false
+	actorJoined := false
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint != readbrokerstudy.CheckpointAfterSearchContent || transitioned {
+			return nil
+		}
+		if err := os.Mkdir(filepath.Join(fixture.root, "outside"), 0700); err != nil {
+			return err
+		}
+		transitions := []struct {
+			action readbrokerstudy.NativeActorAction
+			source string
+			target string
+		}{
+			{readbrokerstudy.NativeActorRename, "listing-scope/nested/race.go", "outside/race.go"},
+			{readbrokerstudy.NativeActorHardlink, "synthetic-auth.json", "listing-scope/nested/race.go"},
+		}
+		for _, transition := range transitions {
+			actor, err := readbrokerstudy.NewNativeActor(ctx, os.Args[0], fixture.root, transition.action, transition.source, transition.target)
+			if err != nil {
+				return err
+			}
+			if !actor.Ready() {
+				_ = actor.Close()
+				return errors.New("search protected-substitution actor did not become ready")
+			}
+			if err := actor.Run(ctx); err != nil {
+				_ = actor.Close()
+				return err
+			}
+			if err := actor.Close(); err != nil || !actor.Joined() || !actor.TransitionCompleted() {
+				return errors.New("search protected-substitution actor was not joined")
+			}
+		}
+		actorJoined = true
+		transitioned = true
+		return nil
+	})
+	turn, err := fixture.chat.Send(ctx, "search this synthetic directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted || !transitioned || !actorJoined {
+		t.Fatalf("search turn outcome=%s transition=%t actor_joined=%t err=%v", turn.Outcome, transitioned, actorJoined, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial and search continuation", len(requests))
+	}
+	resultText, found := readResultContent(requests[1], "stage6-read")
+	if !found {
+		t.Fatal("search continuation omitted the correlated tool result")
+	}
+	var envelope struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(resultText), &envelope); err != nil {
+		t.Fatal("decode search tool envelope:", err)
+	}
+	var result struct {
+		Matches      []map[string]any `json:"matches"`
+		Incomplete   bool             `json:"incomplete"`
+		SkippedFiles int              `json:"skipped_files"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Content), &result); err != nil {
+		t.Fatal("decode search result:", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0]["path"] != "nested/control.go" || !result.Incomplete || result.SkippedFiles != 1 {
+		t.Fatalf("replaced protected candidate was not omitted with truthful incomplete status: %+v", result)
+	}
+	impl.session.SetCheckpointHook(nil)
+	stage6Update("search_candidate_protected_substitution", func(item *stage6Case) {
+		item.ActorStarted, item.ActorTransitionCompleted, item.ActorJoined, item.ActorTransitionCount = true, transitioned, actorJoined, 2
+		item.WorkerStarted, item.WorkerJoined, item.ReadStarted = true, true, true
+		item.CapabilityTransferred, item.OnceApprovalCount, item.OnceGrantConsumptionCount = true, fixture.approvals.Load(), 1
+		item.ProviderRequestCount, item.FixtureBytesMatched, item.CleanupConfirmed = len(requests), true, true
+	})
+	stage6Pass("search_candidate_protected_substitution", "after the content worker completed, an independent filesystem transition replaced one matching candidate with a protected auth hardlink; host revalidation omitted it, counted one permitted skip, marked the result incomplete, and retained a matching unprotected control")
+}
+
+func TestStage6SearchContentWorkerCancellationCleanup(t *testing.T) {
+	stage6Begin("search_content_worker_cancellation_cleanup")
+	fixture := newStage6Fixture(t, "search_content_worker_cancellation_cleanup", "content-search", false, nil)
+	fixture.reportCases = []string{"search_content_worker_cancellation_cleanup"}
+	nested := filepath.Join(fixture.root, "listing-scope", "nested")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal("create nested search directory:", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "control.go"), []byte("synthetic-never-real-key\n"), 0600); err != nil {
+		t.Fatal("create matching search control:", err)
+	}
+	impl := fixture.service.impl.(*linuxImplementation)
+	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+		if checkpoint == readbrokerstudy.CheckpointBeforeSearchContent {
+			return errors.New("synthetic cancellation before content handoff")
+		}
+		return nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	turn, err := fixture.chat.Send(ctx, "search this synthetic directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("cancelled search turn outcome=%s err=%v", turn.Outcome, err)
+	}
+	requests := fixture.provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial and cancellation continuation", len(requests))
+	}
+	continuation, _ := json.Marshal(requests[1].Messages)
+	if strings.Contains(string(continuation), "synthetic-never-real-key") || strings.Contains(string(continuation), "nested/control.go") {
+		t.Fatalf("cancelled search disclosed candidate data: %s", continuation)
+	}
+	evidence := impl.session.Evidence()
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadCancelled || !evidence[0].WorkerStarted || !evidence[0].WorkerJoined || evidence[0].CapabilitySent || evidence[0].ReadStarted || !stage6WorkerProbePassed(evidence[0].SearchContentProbe) {
+		t.Fatalf("cancelled content worker evidence=%+v", evidence)
+	}
+	stage6Update("search_content_worker_cancellation_cleanup", func(item *stage6Case) {
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = evidence[0].WorkerStarted, evidence[0].WorkerReady, evidence[0].WorkerJoined
+		item.ProbePassed, item.OnceApprovalCount, item.OnceGrantConsumptionCount = stage6WorkerProbePassed(evidence[0].SearchContentProbe), fixture.approvals.Load(), 1
+		item.ProviderRequestCount, item.DisclosureWithheld, item.CleanupConfirmed = len(requests), true, evidence[0].WorkerJoined
+	})
+	stage6Pass("search_content_worker_cancellation_cleanup", "cancellation after the content worker passed its startup probe but before snapshot transfer joined the worker, transferred no content descriptor, and withheld the matching candidate from provider continuation")
 }
 
 func TestStage6PositiveDirectoryListing(t *testing.T) {

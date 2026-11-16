@@ -68,6 +68,19 @@ func EnableNativeDirectoryListingStudy(chat *Chat) error {
 	return nil
 }
 
+// EnableNativeSearchStudy verifies that the search-specific backend gate
+// registered search_files; it does not add a test-only capability.
+func EnableNativeSearchStudy(chat *Chat) error {
+	if chat == nil || chat.toolRuntime == nil || chat.toolRuntime.registry == nil || chat.toolRuntime.readAdmission == nil || chat.toolRuntime.readPublicationGate == nil {
+		return errors.New("native search study composition is incomplete")
+	}
+	tool, registered := chat.toolRuntime.registry.Lookup(tools.SearchFilesID)
+	if !registered || len(tool.Definition().InputSchema) == 0 {
+		return errors.New("native search study did not receive search_files from the trusted backend gate")
+	}
+	return nil
+}
+
 // NativeReadStudyState returns only whether history is sensitive and its
 // message count for lifecycle assertions; it never exposes message content.
 func NativeReadStudyState(chat *Chat) (bool, int) {

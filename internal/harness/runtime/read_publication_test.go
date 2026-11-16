@@ -88,6 +88,23 @@ type advancedListingPublicationHost struct{ listingPublicationHost }
 
 func (*advancedListingPublicationHost) DirectoryListingOptionsAvailable() bool { return true }
 
+type searchPublicationHost struct{ *publicationHost }
+
+func (*searchPublicationHost) SearchFilesAvailable() bool { return true }
+
+func (h *searchPublicationHost) AdmitFilesystemRead(ctx context.Context, invocation tools.Invocation, destination string) (FilesystemReadAdmission, error) {
+	search, err := tools.ParseSearchFiles(invocation.Arguments)
+	if err != nil {
+		return FilesystemReadAdmission{}, err
+	}
+	admission, err := h.publicationHost.AdmitFilesystemRead(ctx, invocation, destination)
+	if err != nil {
+		return FilesystemReadAdmission{}, err
+	}
+	admission.Search = search
+	return admission, nil
+}
+
 func (h *publicationHost) WithFilesystemReadPublicationCurrent(ctx context.Context, conversationID, root string, generation, policy, coverage uint64, operation func() error) error {
 	h.gateCalls.Add(1)
 	if err := ctx.Err(); err != nil {
@@ -327,6 +344,7 @@ type publicationProvider struct {
 	blockResponse   bool
 	target          string
 	toolID          tools.ID
+	callArguments   json.RawMessage
 	responseStarted chan struct{}
 	releaseResponse chan struct{}
 }
@@ -355,7 +373,10 @@ func (p *publicationProvider) StreamChat(ctx context.Context, request provider.C
 		if toolID == "" {
 			toolID = tools.ReadFileID
 		}
-		args, _ := json.Marshal(map[string]string{"path": p.target})
+		args := append(json.RawMessage(nil), p.callArguments...)
+		if len(args) == 0 {
+			args, _ = json.Marshal(map[string]string{"path": p.target})
+		}
 		nativeArgs, _ := json.Marshal(string(args))
 		callID := "read-1"
 		if toolID == tools.ListFilesID {
@@ -494,6 +515,62 @@ func TestDirectoryListingOnceApprovalContinuesToSelectedProvider(t *testing.T) {
 	}
 	if host.reads != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded {
 		t.Fatalf("listing executions/activity=%d/%+v", host.reads, turn.ToolActivities)
+	}
+}
+
+func TestSearchFilesOnceApprovalBindsOptionsAndContinuesToSelectedProvider(t *testing.T) {
+	root := t.TempDir()
+	searchResult := `{"matches":[{"path":"nested/notes.go","line":2,"snippet":"needle in a synthetic fixture"}],"incomplete":false}`
+	arguments := json.RawMessage(`{"path":"` + root + `","query":"needle","recursive":true,"include_hidden":true,"include_ignored":false,"name_globs":["*.go"]}`)
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: root, toolID: tools.SearchFilesID, callArguments: arguments}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &publicationHost{content: []byte(searchResult), root: root, target: root}
+	host := &searchPublicationHost{publicationHost: base}
+	var approval permissions.PendingApproval
+	clarification := ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+		return ClarificationResponse{}, errors.New("clarification is not part of this fixture")
+	})
+	config := BundledConversationToolRuntimeConfigWithFilesystemRead(ToolApprovalFunc(func(_ context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approval = pending
+		return permissions.ApprovalOnce, "", nil
+	}), clarification, host)
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+		t.Fatal(err)
+	}
+	selectFirst(t, chat)
+	selectPublicationRoot(t, chat, base, root)
+	t.Cleanup(chat.Close)
+	turn, err := chat.Send(context.Background(), "search this directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("search turn=%+v err=%v", turn, err)
+	}
+	requests := fp.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want initial and search continuation", len(requests))
+	}
+	definitions, _ := json.Marshal(requests[0].Tools)
+	if !strings.Contains(string(definitions), string(tools.SearchFilesID)) || !strings.Contains(string(definitions), "query") {
+		t.Fatalf("search schema was not advertised: %s", definitions)
+	}
+	continuation := providerMessagesText(requests[1].Messages)
+	if !strings.Contains(continuation, "nested/notes.go") || !strings.Contains(continuation, "needle in a synthetic fixture") {
+		t.Fatalf("approved search result did not reach selected provider: %s", continuation)
+	}
+	if len(approval.Request.Requirements) != 2 || approval.Request.Requirements[1].Resource == nil || approval.Request.Requirements[1].Resource.Target != root || approval.Request.Destination == "" {
+		t.Fatalf("search approval omitted target or provider destination: %+v", approval.Request)
+	}
+	description := approval.Request.Requirements[1].Description
+	for _, want := range []string{root, `"needle"`, "recursive=true", "include_hidden=true", "include_ignored=false", `name_globs=["*.go"]`, "openai/model-a using auth profile profile"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("search approval omits %q: %s", want, description)
+		}
+	}
+	if base.reads != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded {
+		t.Fatalf("search executions/activity=%d/%+v", base.reads, turn.ToolActivities)
 	}
 }
 

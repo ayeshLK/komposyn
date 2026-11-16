@@ -321,22 +321,24 @@ const (
 )
 
 type ReadEvidence struct {
-	Case               string        `json:"case"`
-	Outcome            ReadOutcome   `json:"outcome"`
-	FailureDetail      string        `json:"failure_detail,omitempty"`
-	Generations        GenerationSet `json:"generations"`
-	Probe              WorkerProbe   `json:"worker_probe,omitempty"`
-	WorkerStarted      bool          `json:"worker_started"`
-	WorkerReady        bool          `json:"worker_ready"`
-	WorkerJoined       bool          `json:"worker_join_confirmed"`
-	CapabilitySent     bool          `json:"capability_sent"`
-	CapabilityHeld     bool          `json:"capability_received_held"`
-	CapabilityIdentity FileIdentity  `json:"capability_identity,omitempty"`
-	ReadStarted        bool          `json:"read_started"`
-	Published          bool          `json:"published"`
-	BytesMatchTarget   bool          `json:"bytes_match_target"`
-	Effect             string        `json:"fixture_effect"`
-	Limitation         string        `json:"limitation,omitempty"`
+	Case                 string        `json:"case"`
+	Outcome              ReadOutcome   `json:"outcome"`
+	FailureDetail        string        `json:"failure_detail,omitempty"`
+	Generations          GenerationSet `json:"generations"`
+	Probe                WorkerProbe   `json:"worker_probe,omitempty"`
+	SearchTraversalProbe WorkerProbe   `json:"search_traversal_probe,omitempty"`
+	SearchContentProbe   WorkerProbe   `json:"search_content_probe,omitempty"`
+	WorkerStarted        bool          `json:"worker_started"`
+	WorkerReady          bool          `json:"worker_ready"`
+	WorkerJoined         bool          `json:"worker_join_confirmed"`
+	CapabilitySent       bool          `json:"capability_sent"`
+	CapabilityHeld       bool          `json:"capability_received_held"`
+	CapabilityIdentity   FileIdentity  `json:"capability_identity,omitempty"`
+	ReadStarted          bool          `json:"read_started"`
+	Published            bool          `json:"published"`
+	BytesMatchTarget     bool          `json:"bytes_match_target"`
+	Effect               string        `json:"fixture_effect"`
+	Limitation           string        `json:"limitation,omitempty"`
 }
 
 type CheckpointHook func(Checkpoint) error

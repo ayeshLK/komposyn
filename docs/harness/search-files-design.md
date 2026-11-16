@@ -66,9 +66,12 @@ snapshot.
    indexes, line numbers, bounded snippets, and sanitized skip indexes. The
    host maps indexes to its private path list and never accepts a provider-
    ready result from the worker.
-6. Before staging, the host verifies candidate indexes, descriptor identity
-   and revision, directory observations, policy/owner generations, and the
-   admission binding. It attaches host-owned eligible relative paths, removes
+6. After the content worker joins and before staging, the host verifies
+   candidate descriptor identity and revision, reopens each candidate path
+   beneath the retained directory, checks the current object and protection
+   classification again, and records changed candidates as skipped. It then
+   validates result indexes, directory observations, policy/owner generations,
+   and the admission binding. It attaches host-owned eligible relative paths, removes
    private metadata, enforces result and envelope budgets, and stages the
    result only through the runtime's current authority gate. Owner rotation,
    revocation, cancellation, stale roots, changed objects, worker cleanup
@@ -111,11 +114,12 @@ keep their stricter existing profile; no listing or read profile is weakened
 for search. The operation profiles are implemented, but native acceptance has
 not yet been run or reviewed.
 
-Behavioral tests exercise the real runtime-to-UI/provider seam and a composed
-sandbox Service, with synthetic content and routes. Native tests use the same
-fixed worker and independent same-user actors to cover target substitution,
-directory/root movement, protected hard-link/bind aliases and owner rotation,
-mount boundaries, file revision changes, revocation, stale publication, and
-worker/descriptor cleanup. Synthetic runtime-composition outcomes remain
-separate from native worker enforcement. Production search availability stays
-false until those operation-specific results are recorded and reviewed.
+Behavioral tests exercise the runtime-to-provider seam with synthetic content;
+the Stage 6 fixture exercises the composed sandbox Service and provider
+continuation. Native cases include positive search, protected aliases,
+protected candidate substitution by independent same-user actors, and
+content-worker cancellation/cleanup. Root/directory movement, owner rotation,
+mount boundaries, revocation, and stale-publication search cases still require
+native measurement. Synthetic runtime-composition outcomes remain separate
+from native worker enforcement. Production search availability stays false
+until the operation-specific results are recorded and reviewed.

@@ -74,9 +74,77 @@ type searchSnapshotFile struct {
 type preparedSearchSnapshot struct {
 	File       *os.File
 	Paths      []string
+	Candidates []preparedSearchCandidate
+	Changed    []int
 	Query      string
 	Incomplete bool
 	Skipped    int
+}
+
+func (p *preparedDirectoryList) validateAndCloseSearchSnapshot(snapshot *preparedSearchSnapshot) error {
+	if p == nil || snapshot == nil {
+		return ErrProtocol
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var closeErr error
+	if p.closed || p.directory == nil || p.registry == nil {
+		closeErr = ErrStaleReceipt
+	}
+	rootFD := -1
+	var rootMount uint64
+	if closeErr == nil {
+		rootFD = int(p.directory.Fd())
+		var err error
+		rootMount, err = mountIDForFD(rootFD)
+		closeErr = errors.Join(closeErr, err)
+	}
+	for index := range snapshot.Candidates {
+		candidate := &snapshot.Candidates[index]
+		changed := false
+		if candidate.file == nil {
+			changed = true
+		} else if stat, err := statSearchCandidate(candidate.file); err != nil || !sameSearchRevision(*candidate, stat) {
+			changed = true
+		}
+		if !changed && rootFD >= 0 {
+			parentFD, name, closeParent, err := openListingParent(rootFD, candidate.relative)
+			if err != nil {
+				changed = true
+			} else {
+				fd, openErr := unix.Openat2(parentFD, name, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV})
+				if openErr != nil {
+					changed = true
+				} else {
+					var stat unix.Stat_t
+					identityErr := unix.Fstat(fd, &stat)
+					mountID, mountErr := mountIDForFD(fd)
+					identity := identityFromStat(&stat)
+					ancestors, ancestorErr := directoryAncestors(parentFD)
+					path := filepath.Join(p.path, filepath.FromSlash(candidate.relative))
+					_, protectedRoute := p.registry.ClassifyRoute(path)
+					_, protectedIdentity := p.registry.ClassifyWithAncestors(path, identity, ancestors)
+					if identityErr != nil || mountErr != nil || ancestorErr != nil || identity != candidate.identity || stat.Size != candidate.size || stat.Mtim != candidate.mtime || stat.Ctim != candidate.ctime || mountID != rootMount || protectedRoute || protectedIdentity {
+						changed = true
+					}
+					closeErr = errors.Join(closeErr, unix.Close(fd))
+				}
+				closeErr = errors.Join(closeErr, closeParent())
+			}
+		}
+		if changed {
+			snapshot.Changed = append(snapshot.Changed, index)
+		}
+		if candidate.file != nil {
+			closeErr = errors.Join(closeErr, candidate.file.Close())
+			candidate.file = nil
+		}
+	}
+	if snapshot.File != nil {
+		closeErr = errors.Join(closeErr, snapshot.File.Close())
+		snapshot.File = nil
+	}
+	return closeErr
 }
 
 type searchWorkerMatch struct {
@@ -133,10 +201,6 @@ func (p *preparedDirectoryList) prepareSearchSnapshot(ctx context.Context, raw [
 		if entry.Type != unix.DT_REG {
 			continue
 		}
-		if len(candidates) >= maxSearchCandidates {
-			incomplete = true
-			break
-		}
 		if !validListingRelativePath(entry.Path) || entry.Inode == 0 || entry.Device == 0 {
 			return preparedSearchSnapshot{}, ErrProtocol
 		}
@@ -183,6 +247,13 @@ func (p *preparedDirectoryList) prepareSearchSnapshot(ctx context.Context, raw [
 		}
 		if p.registry.DirectoryCoverageIncomplete(identity) {
 			return preparedSearchSnapshot{}, errors.Join(ErrDirectoryCoverage, file.Close())
+		}
+		if len(candidates)+skipped >= maxSearchCandidates {
+			incomplete = true
+			if err := file.Close(); err != nil {
+				return preparedSearchSnapshot{}, err
+			}
+			break
 		}
 		if stat.Size < 0 {
 			return preparedSearchSnapshot{}, errors.Join(ErrStaleReceipt, file.Close())
@@ -245,6 +316,8 @@ func (p *preparedDirectoryList) prepareSearchSnapshot(ctx context.Context, raw [
 		return preparedSearchSnapshot{}, err
 	}
 	prepared.File = file
+	prepared.Candidates = candidates
+	candidates = nil
 	return prepared, nil
 }
 
@@ -302,13 +375,19 @@ func finalizeSearchWorkerResult(ctx context.Context, worker WorkerResult, snapsh
 	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || len(result.Matches) > maxSearchLines {
 		return WorkerResult{}, ErrProtocol
 	}
-	providerResult := searchProviderResult{Matches: make([]searchProviderMatch, 0, len(result.Matches)), Incomplete: snapshot.Incomplete || result.Incomplete, SkippedFiles: snapshot.Skipped}
+	providerResult := searchProviderResult{Matches: make([]searchProviderMatch, 0, len(result.Matches)), Incomplete: snapshot.Incomplete || result.Incomplete || len(snapshot.Changed) != 0, SkippedFiles: snapshot.Skipped}
 	skipped := make(map[int]struct{}, len(result.SkippedIndices))
 	for _, index := range result.SkippedIndices {
 		if index < 0 || index >= len(snapshot.Paths) {
 			return WorkerResult{}, ErrProtocol
 		}
 		if _, duplicate := skipped[index]; duplicate {
+			return WorkerResult{}, ErrProtocol
+		}
+		skipped[index] = struct{}{}
+	}
+	for _, index := range snapshot.Changed {
+		if index < 0 || index >= len(snapshot.Paths) {
 			return WorkerResult{}, ErrProtocol
 		}
 		skipped[index] = struct{}{}
@@ -320,6 +399,9 @@ func finalizeSearchWorkerResult(ctx context.Context, worker WorkerResult, snapsh
 	lastIndex, lastLine := -1, 0
 	for _, match := range result.Matches {
 		_, isSkipped := skipped[match.Index]
+		if isSkipped {
+			continue
+		}
 		if match.Index < 0 || match.Index >= len(snapshot.Paths) || isSkipped || match.Line < 1 || len(match.Snippet) > searchSnippetMaxBytes || !utf8.ValidString(match.Snippet) || !strings.Contains(match.Snippet, snapshot.Query) || match.Index < lastIndex || match.Index == lastIndex && match.Line <= lastLine {
 			return WorkerResult{}, ErrProtocol
 		}
