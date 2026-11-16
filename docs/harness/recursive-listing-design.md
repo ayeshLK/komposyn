@@ -56,8 +56,8 @@ requires successful fixed-worker composition. Other bind modes remain
 unavailable because the accepted native run did not measure them. The exact
 clean revision `eb56eef57c90b3c5a653b99e1d3a3dcec451cfc5` passed the extended
 listing cases, including descendant races, alias/protection, mount boundaries,
-post-traversal cancellation, filtering, and bounded limits. Separate
-enablement approval has not been recorded. This local proposal therefore
-requires final maintainer review before it can be published or merged. Existing
+post-traversal cancellation, filtering, and bounded limits. The maintainer
+approved enabling this measured profile in this task thread on 2026-11-16.
+Other bind modes remain unavailable. Existing
 nonrecursive evidence does not enable recursion. See the [#317 completion and
 evidence matrix](issue-317-completion-tracking.md).

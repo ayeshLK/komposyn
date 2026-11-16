@@ -72,9 +72,9 @@ for the acceptance matrix, report and archive hashes, earlier attempts, and
 remaining limitations.
 
 The file-snapshot bind profile remains unavailable for advanced options
-because the recorded run did not measure it. Separate enablement approval has
-not been recorded, so this local proposal does not authorize publishing or
-merging an open gate. The initial agent host's untrusted
+because the recorded run did not measure it. The maintainer approved enabling
+the measured `ro-bind-fd` profile in this task thread on 2026-11-16. The initial
+agent host's untrusted
 `/usr/bin/bwrap` refusal remains historical and does not describe the supplied
 trusted-host result. The public service forwards a separate options gate,
 which remains false unless the Linux implementation selects a reviewed
