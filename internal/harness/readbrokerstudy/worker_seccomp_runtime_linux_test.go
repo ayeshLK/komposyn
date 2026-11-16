@@ -23,6 +23,7 @@ package readbrokerstudy
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -48,6 +49,88 @@ func TestWorkerSeccompAllowsRuntimeThreadsAndDeniesProcessClone(t *testing.T) {
 	if !strings.Contains(string(output), "THREADS_OK_PROCESS_CLONE_DENIED") {
 		t.Fatalf("filtered subprocess did not complete both checks: %s", output)
 	}
+}
+
+func TestWorkerListingSeccompAllowsOnlyItsRequiredDirectorySyscalls(t *testing.T) {
+	const childEnv = "KOMPOSYN_READBROKER_LISTING_SECCOMP_CHILD=1"
+	for _, value := range os.Environ() {
+		if value == childEnv {
+			testWorkerListingSeccompDirectorySyscalls(t)
+			return
+		}
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("*.tmp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestWorkerListingSeccompAllowsOnlyItsRequiredDirectorySyscalls$")
+	command.Env = append(os.Environ(), childEnv, "KOMPOSYN_READBROKER_LISTING_SECCOMP_ROOT="+root)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("listing-filtered subprocess failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "LISTING_DIRECTORY_SYSCALLS_OK") {
+		t.Fatalf("listing-filtered subprocess did not complete its checks: %s", output)
+	}
+}
+
+func testWorkerListingSeccompDirectorySyscalls(t *testing.T) {
+	root := os.Getenv("KOMPOSYN_READBROKER_LISTING_SECCOMP_ROOT")
+	if root == "" {
+		t.Fatal("listing seccomp fixture root is missing")
+	}
+	rootFile, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootFile.Close()
+	filter, err := workerSeccompFilterForOperation(AdmissionListDirectory)
+	if err != nil {
+		t.Fatalf("create listing worker seccomp fixture: %v", err)
+	}
+	filterPath := filter.Name()
+	if err := filter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	filterFD, err := unix.Open(filterPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filterPath); err != nil {
+		_ = unix.Close(filterFD)
+		t.Fatal(err)
+	}
+	operation, err := installWorkerSeccompProfile(filterFD)
+	if err != nil {
+		t.Fatalf("install listing worker seccomp profile: %v", err)
+	}
+	if operation != AdmissionListDirectory {
+		t.Fatalf("installed worker profile operation=%q, want directory listing", operation)
+	}
+
+	var rootStat unix.Statx_t
+	if err := unix.Statx(int(rootFile.Fd()), "", unix.AT_EMPTY_PATH|unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &rootStat); err != nil {
+		t.Fatalf("listing profile denied mount identity lookup on the retained directory: %v", err)
+	}
+	var ignoreStat unix.Stat_t
+	if err := unix.Fstatat(int(rootFile.Fd()), ".gitignore", &ignoreStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		t.Fatalf("listing profile denied no-follow ignore-file metadata lookup: %v", err)
+	}
+	childFD, err := unix.Openat2(int(rootFile.Fd()), "child", &unix.OpenHow{
+		Flags:   unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NONBLOCK,
+		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV,
+	})
+	if err != nil {
+		t.Fatalf("listing profile denied beneath-only child-directory traversal: %v", err)
+	}
+	_ = unix.Close(childFD)
+	if _, err := unix.Openat(int(rootFile.Fd()), "child", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0); err != unix.EPERM {
+		t.Fatalf("listing profile openat error=%v, want EPERM", err)
+	}
+	_, _ = unix.Write(1, []byte("LISTING_DIRECTORY_SYSCALLS_OK\n"))
 }
 
 func testWorkerSeccompRuntimeAndProcessRules(t *testing.T) {

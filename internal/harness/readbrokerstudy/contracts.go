@@ -378,14 +378,17 @@ type WorkerResult struct {
 }
 
 type WorkerProbe struct {
-	NoNewPrivs                    bool     `json:"no_new_privs"`
-	SeccompMode                   int      `json:"seccomp_mode"`
-	SocketCreationDenied          bool     `json:"socket_creation_denied"`
-	PathOpenDenied                bool     `json:"path_open_denied"`
-	ReadCapabilityInitiallyAbsent bool     `json:"read_capability_initially_absent"`
-	OnlyProtocolDescriptor        bool     `json:"only_protocol_descriptor"`
-	EnvironmentCleared            bool     `json:"environment_cleared"`
-	Details                       []string `json:"details,omitempty"`
+	NoNewPrivs           bool `json:"no_new_privs"`
+	SeccompMode          int  `json:"seccomp_mode"`
+	SocketCreationDenied bool `json:"socket_creation_denied"`
+	// PathOpenDenied records the startup probe for openat("/worker"). The
+	// directory-listing profile separately permits descriptor-relative openat2.
+	PathOpenDenied                    bool     `json:"path_open_denied"`
+	DirectoryTraversalSyscallsAllowed bool     `json:"directory_traversal_syscalls_allowed,omitempty"`
+	ReadCapabilityInitiallyAbsent     bool     `json:"read_capability_initially_absent"`
+	OnlyProtocolDescriptor            bool     `json:"only_protocol_descriptor"`
+	EnvironmentCleared                bool     `json:"environment_cleared"`
+	Details                           []string `json:"details,omitempty"`
 }
 
 type SandboxWorker interface {
@@ -447,4 +450,11 @@ type HeldCapabilityWorker interface {
 type WorkerLauncher interface {
 	Start(context.Context) (SandboxWorker, error)
 	Close() error
+}
+
+// OperationWorkerLauncher can select a fixed worker syscall profile based on
+// the host-authorized operation. The operation comes from the admitted host
+// request, never from worker-controlled protocol data.
+type OperationWorkerLauncher interface {
+	StartForOperation(context.Context, AdmissionOperation) (SandboxWorker, error)
 }

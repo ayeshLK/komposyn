@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -183,11 +184,23 @@ func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T)
 	if !impl.DirectoryListingAvailable() {
 		t.Fatal("composed trusted worker service did not enable directory listing")
 	}
+	if service.DirectoryListingOptionsAvailable() {
+		t.Fatal("recursive listing options enabled without accepted native evidence")
+	}
+	impl.mu.Lock()
+	impl.listingOptionsAvailable = true
+	impl.mu.Unlock()
+	if !service.DirectoryListingOptionsAvailable() {
+		t.Fatal("public service did not forward the Linux options availability gate")
+	}
 	if err := service.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if impl.DirectoryListingAvailable() {
 		t.Fatal("closed worker service kept directory listing available")
+	}
+	if service.DirectoryListingOptionsAvailable() {
+		t.Fatal("closed worker service kept advanced listing options available")
 	}
 }
 
@@ -213,9 +226,28 @@ func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer availableBackend.Close(context.Background())
+	if availableBackend.DirectoryListingOptionsAvailable() {
+		t.Fatal("public service enabled recursive options before a reviewed profile was selected")
+	}
 	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, availableBackend)
-	if _, registered := config.Registry.Lookup(tools.ListFilesID); !registered {
+	definition, registered := config.Registry.Lookup(tools.ListFilesID)
+	if !registered {
 		t.Fatal("list_files not registered when the Linux host service reports an available backend")
+	}
+	if strings.Contains(string(definition.Definition().InputSchema), "recursive") {
+		t.Fatal("recursive options were advertised while the public service gate was closed")
+	}
+	impl := availableBackend.impl.(*linuxImplementation)
+	impl.mu.Lock()
+	impl.listingOptionsAvailable = true
+	impl.mu.Unlock()
+	if !availableBackend.DirectoryListingOptionsAvailable() {
+		t.Fatal("public service did not expose the explicitly selected Linux profile gate")
+	}
+	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, availableBackend)
+	definition, registered = config.Registry.Lookup(tools.ListFilesID)
+	if !registered || !strings.Contains(string(definition.Definition().InputSchema), "recursive") {
+		t.Fatal("real runtime composition did not receive the explicitly enabled Linux profile schema")
 	}
 }
 

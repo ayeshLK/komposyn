@@ -59,12 +59,22 @@ cross-platform enforcement.
 
 Recursive listing and its `recursive`, `include_hidden`, `include_ignored`, and
 `name_globs` options are implemented behind a separate native-evidence gate.
-The gate remains closed: the available `/usr/bin/bwrap` is not root-owned and
-therefore fails the trusted-backend check. Existing nonrecursive native evidence
-does not enable these options. The implementation branch adds recursive native
-cases, but those cases must run on a trusted Linux host against the exact clean
-source revision and be reviewed before the runtime may advertise advanced
-options.
+Stage 6 passed the recursive-listing cases on exact clean revision
+`eb56eef57c90b3c5a653b99e1d3a3dcec451cfc5` using trusted, root-owned Bubblewrap
+0.9.0 on Linux amd64. The report measured 30 cases as passes; mutation and
+shell profile cases were unavailable because they are outside this Stage 6
+profile. Provider-source lifecycle, aggregate cgroup quotas, shipped-binary
+integration, non-Linux enforcement, and active-traversal cancellation were not
+established. See [the issue #317 completion and evidence record](issue-317-completion-tracking.md)
+for the acceptance matrix, report and archive hashes, earlier attempts, and
+remaining limitations.
+
+The production gate remains closed pending independent review of that evidence
+and a separate enablement decision. The initial agent host's untrusted
+`/usr/bin/bwrap` refusal remains historical and does not describe the supplied
+trusted-host result. The public service forwards a separate options gate,
+which remains false unless the Linux implementation selects a reviewed
+profile.
 
 The final integrated #316 directory-specific native run used clean commit
 `85e06601040858678d7859a5a047b774808d8e96` on Linux amd64 with trusted,

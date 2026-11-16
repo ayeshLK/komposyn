@@ -700,24 +700,25 @@ func (l *workerLauncher) Close() error {
 }
 
 type sandboxWorker struct {
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	control  *os.File
-	ctx      context.Context
-	cancel   context.CancelFunc
-	stderr   *limitedOutput
-	ready    bool
-	sent     bool
-	started  bool
-	holdMode bool
-	held     bool
-	released bool
-	finished bool
-	expected FileIdentity
-	probe    WorkerProbe
-	waitOnce sync.Once
-	waitErr  error
-	joined   bool
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	control   *os.File
+	ctx       context.Context
+	cancel    context.CancelFunc
+	stderr    *limitedOutput
+	ready     bool
+	sent      bool
+	started   bool
+	holdMode  bool
+	operation AdmissionOperation
+	held      bool
+	released  bool
+	finished  bool
+	expected  FileIdentity
+	probe     WorkerProbe
+	waitOnce  sync.Once
+	waitErr   error
+	joined    bool
 }
 
 type limitedOutput struct {
@@ -754,8 +755,18 @@ func (l *limitedOutput) String() string {
 }
 
 func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
+	return l.StartForOperation(ctx, AdmissionReadFile)
+}
+
+func (l *workerLauncher) StartForOperation(ctx context.Context, operation AdmissionOperation) (SandboxWorker, error) {
 	if ctx == nil {
 		return nil, errors.New("worker context is required")
+	}
+	if operation == "" {
+		operation = AdmissionReadFile
+	}
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory {
+		return nil, fmt.Errorf("%w: unsupported worker operation", ErrUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -766,7 +777,7 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 	if l.workerFile == nil {
 		return nil, fmt.Errorf("%w: pinned fixed worker is unavailable", ErrUnavailable)
 	}
-	filter, err := workerSeccompFilter()
+	filter, err := workerSeccompFilterForOperation(operation)
 	if err != nil {
 		return nil, fmt.Errorf("%w: seccomp profile could not be prepared", ErrUnavailable)
 	}
@@ -855,7 +866,7 @@ func (l *workerLauncher) Start(ctx context.Context) (SandboxWorker, error) {
 		return nil, fmt.Errorf("%w: Bubblewrap process could not start: %s", ErrUnavailable, boundedText(message, 512))
 	}
 	_ = childSocket.Close()
-	worker := &sandboxWorker{cmd: cmd, control: parentSocket, ctx: workerCtx, cancel: cancel, stderr: stderr, holdMode: l.holdBeforeRead}
+	worker := &sandboxWorker{cmd: cmd, control: parentSocket, ctx: workerCtx, cancel: cancel, stderr: stderr, holdMode: l.holdBeforeRead, operation: operation}
 	if l.holdBeforeRead {
 		return &heldSandboxWorker{sandboxWorker: worker}, nil
 	}
@@ -884,7 +895,7 @@ func (w *sandboxWorker) Ready(ctx context.Context) error {
 	w.probe = probe
 	valid := probe.SeccompMode == 2 && probe.NoNewPrivs && probe.SocketCreationDenied &&
 		probe.PathOpenDenied && probe.ReadCapabilityInitiallyAbsent && probe.OnlyProtocolDescriptor &&
-		probe.EnvironmentCleared
+		probe.EnvironmentCleared && (probe.DirectoryTraversalSyscallsAllowed == (w.operation == AdmissionListDirectory))
 	if valid {
 		w.ready = true
 	}
@@ -943,14 +954,23 @@ func boundedText(value string, limit int) string {
 }
 
 func (w *sandboxWorker) TransferCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
+	if w.operation != AdmissionReadFile {
+		return ErrProtocol
+	}
 	return w.transferCapability(ctx, file, expected, frameHandoff, unix.S_IFREG, nil)
 }
 
 func (w *sandboxWorker) TransferDirectoryCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
+	if w.operation != AdmissionListDirectory {
+		return ErrProtocol
+	}
 	return w.transferCapability(ctx, file, expected, frameDirectoryHandoff, unix.S_IFDIR, nil)
 }
 
 func (w *sandboxWorker) TransferDirectoryCapabilityWithOptions(ctx context.Context, file *os.File, expected FileIdentity, options ListingOptions) error {
+	if w.operation != AdmissionListDirectory {
+		return ErrProtocol
+	}
 	encoded, err := json.Marshal(options)
 	if err != nil || len(encoded) > 2048 {
 		return ErrProtocol
@@ -1270,10 +1290,11 @@ func WorkerMain() int {
 	if verifyErr != nil {
 		return 70
 	}
-	if err := installWorkerSeccomp(seccompInputFD); err != nil {
+	operation, err := installWorkerSeccompProfile(seccompInputFD)
+	if err != nil {
 		return 70
 	}
-	return workerMainFD(controlFD, holdCapability)
+	return workerMainFD(controlFD, holdCapability, operation)
 }
 
 const workerMountFD = 5
@@ -1413,10 +1434,15 @@ func verifyDescriptorMounts(mounts []DescriptorMount) (result error) {
 }
 
 func installWorkerSeccomp(fd int) error {
+	_, err := installWorkerSeccompProfile(fd)
+	return err
+}
+
+func installWorkerSeccompProfile(fd int) (AdmissionOperation, error) {
 	defer unix.Close(fd)
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size <= 0 || stat.Size > 64<<10 || stat.Size%unix.SizeofSockFilter != 0 {
-		return ErrProtocol
+		return "", ErrProtocol
 	}
 	data := make([]byte, stat.Size)
 	for offset := 0; offset < len(data); {
@@ -1425,13 +1451,18 @@ func installWorkerSeccomp(fd int) error {
 			continue
 		}
 		if err != nil || count == 0 {
-			return ErrProtocol
+			return "", ErrProtocol
 		}
 		offset += count
 	}
-	expected, err := workerSeccompFilterBytes()
-	if err != nil || !bytes.Equal(data, expected) {
-		return ErrProtocol
+	expectedRead, readErr := workerSeccompFilterBytesForOperation(AdmissionReadFile)
+	expectedListing, listingErr := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
+	if readErr != nil || listingErr != nil || !bytes.Equal(data, expectedRead) && !bytes.Equal(data, expectedListing) {
+		return "", ErrProtocol
+	}
+	operation := AdmissionReadFile
+	if bytes.Equal(data, expectedListing) {
+		operation = AdmissionListDirectory
 	}
 	filters := make([]unix.SockFilter, len(data)/unix.SizeofSockFilter)
 	for index := range filters {
@@ -1443,7 +1474,7 @@ func installWorkerSeccomp(fd int) error {
 		}
 	}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return err
+		return "", err
 	}
 	program := unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
 	result, _, errno := unix.Syscall(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER, unix.SECCOMP_FILTER_FLAG_TSYNC, uintptr(unsafe.Pointer(&program)))
@@ -1451,29 +1482,33 @@ func installWorkerSeccomp(fd int) error {
 	runtime.KeepAlive(program)
 	if errno != 0 || result != 0 {
 		if errno == 0 {
-			return fmt.Errorf("seccomp thread synchronization failed for thread %d", result)
+			return "", fmt.Errorf("seccomp thread synchronization failed for thread %d", result)
 		}
-		return errno
+		return "", errno
 	}
-	return nil
+	return operation, nil
 }
 
-func workerMainFD(fd int, holdCapability bool) int {
-	probe := collectWorkerProbe(fd)
+func workerMainFD(fd int, holdCapability bool, operation AdmissionOperation) int {
+	probe := collectWorkerProbe(fd, operation)
 	encoded, err := json.Marshal(probe)
 	if err != nil || sendPacket(fd, append([]byte{frameReady}, encoded...)) != nil {
 		return 70
 	}
 	if probe.SeccompMode != 2 || !probe.NoNewPrivs || !probe.SocketCreationDenied ||
 		!probe.PathOpenDenied || !probe.ReadCapabilityInitiallyAbsent || !probe.OnlyProtocolDescriptor ||
-		!probe.EnvironmentCleared {
+		!probe.EnvironmentCleared || probe.DirectoryTraversalSyscallsAllowed != (operation == AdmissionListDirectory) {
 		return 71
 	}
 	return receiveAndRead(fd, holdCapability)
 }
 
-func collectWorkerProbe(control int) WorkerProbe {
+func collectWorkerProbe(control int, operation AdmissionOperation) WorkerProbe {
 	probe := WorkerProbe{Details: []string{"required namespaces requested: user,pid,ipc,uts,net (no try/fallback flags)", "bubblewrap mount namespace created with empty tmpfs root", "worker mount identity verified before seccomp; verification descriptors closed", "worker installed seccomp with thread synchronization before readiness"}}
+	probe.DirectoryTraversalSyscallsAllowed = operation == AdmissionListDirectory
+	if probe.DirectoryTraversalSyscallsAllowed {
+		probe.Details = append(probe.Details, "directory-listing seccomp profile permits descriptor-relative statx, newfstatat, and openat2; ordinary openat remains denied")
+	}
 	if mode, _, errno := unix.Syscall6(unix.SYS_PRCTL, unix.PR_GET_SECCOMP, 0, 0, 0, 0, 0); errno == 0 {
 		probe.SeccompMode = int(mode)
 	}
@@ -1683,20 +1718,50 @@ func listDirectoryBounded(fd int, requested ...ListingOptions) WorkerResult {
 	listing.Examined = min(examined, maxExamined)
 	listing.Returned = len(entries)
 	listing.Incomplete = incomplete
-	for {
-		encoded, err := json.Marshal(listing)
-		if err != nil {
+	return encodeDirectoryListingBounded(ctx, listing)
+}
+
+func encodeDirectoryListingBounded(ctx context.Context, listing directoryListingResult) WorkerResult {
+	encoded, err := json.Marshal(listing)
+	if err != nil {
+		return WorkerResult{Outcome: ReadFailed, Detail: "directory listing could not be encoded"}
+	}
+	if err := ctx.Err(); err != nil {
+		return WorkerResult{Outcome: ReadFailed, Detail: "directory listing exceeded its execution deadline"}
+	}
+	if len(encoded) <= MaxReadBytes {
+		return WorkerResult{Outcome: ReadSucceeded, Bytes: encoded}
+	}
+
+	// Find the largest sorted entry prefix that fits in the single worker
+	// payload. Trimming one item and re-encoding repeatedly is quadratic for a
+	// wide tree and can consume the invocation deadline after traversal ends.
+	listing.Incomplete = true
+	original := listing.Entries
+	low, high, bestCount := 0, len(original), -1
+	var best []byte
+	for low <= high {
+		if err := ctx.Err(); err != nil {
+			return WorkerResult{Outcome: ReadFailed, Detail: "directory listing exceeded its execution deadline"}
+		}
+		middle := low + (high-low)/2
+		listing.Entries = original[:middle]
+		listing.Returned = middle
+		candidate, marshalErr := json.Marshal(listing)
+		if marshalErr != nil {
 			return WorkerResult{Outcome: ReadFailed, Detail: "directory listing could not be encoded"}
 		}
-		if len(encoded) <= MaxReadBytes {
-			return WorkerResult{Outcome: ReadSucceeded, Bytes: encoded}
+		if len(candidate) <= MaxReadBytes {
+			best, bestCount = candidate, middle
+			low = middle + 1
+		} else {
+			high = middle - 1
 		}
-		if len(listing.Entries) == 0 {
-			return WorkerResult{Outcome: ReadPartial, Truncated: true, Detail: "directory listing exceeded output bound"}
-		}
-		listing.Entries = listing.Entries[:len(listing.Entries)-1]
-		listing.Incomplete = true
 	}
+	if bestCount < 0 {
+		return WorkerResult{Outcome: ReadPartial, Truncated: true, Detail: "directory listing exceeded output bound"}
+	}
+	return WorkerResult{Outcome: ReadSucceeded, Bytes: best}
 }
 
 func walkListingDirectory(ctx context.Context, fd int, relative string, options ListingOptions, listing *directoryListingResult, entries *[]directoryListingEntry, examined *int, incomplete *bool, maxExamined, maxReturned int) error {
