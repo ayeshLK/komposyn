@@ -13,7 +13,7 @@ approved separately.
 | Explicit recursion, hidden/ignored inclusion, basename globs, and exact once-approval binding | `plugins/tools/conversation.go`; runtime admission and publication tests; provider-request schema/instruction tests | `positive_recursive_directory_listing` and `recursive_listing_nested_ignore_filters` exercise the real Service/provider fixture | Native pass on the recorded trusted Linux profile |
 | Defaults, nested `.gitignore` precedence/negation, ignored-parent behavior, glob traversal, and hidden filtering | `TestRecursiveDirectoryListingFiltersAfterTraversalAndAppliesNestedIgnores`; worker and parser tests | `positive_directory_listing` plus `recursive_listing_nested_ignore_filters` | Ordinary and native tests pass on the recorded profile |
 | `.git` exclusion, symlink refusal, and mount boundaries under explicit options | Worker traversal tests; host-side mounted-object and protection checks | `positive_recursive_directory_listing` includes a directory symlink and `.git`; `directory_listing_mount_boundary` checks a mounted child and protected bind-mounted alias | Native pass on the recorded profile |
-| Protected aliases, owner rotation, and missing owner coverage | Registry and admission tests; protected identities checked before visible counts | Recursive positive case creates a nested protected hard link; `directory_listing_owner_rotation` checks stale publication; `recursive_listing_incomplete_owner_inventory` checks refusal before approval/worker | The protected alias and owner-rotation cases pass on the latest recorded profile. Recursive missing-owner refusal remains synthetic evidence; its latest run stopped at a fixture assertion and needs rerun after that assertion fix |
+| Protected aliases, owner rotation, and missing owner coverage | Registry and admission tests; protected identities checked before visible counts | Recursive positive case creates a nested protected hard link; `directory_listing_owner_rotation` checks stale publication; `recursive_listing_incomplete_owner_inventory` checks refusal before approval/worker | Protected alias, owner rotation, and recursive missing-owner refusal all pass on the latest trusted profile; the missing-owner result is synthetic runtime-composition evidence |
 | Descendant movement/replacement and object authority | Broker identity and mount revalidation tests | `recursive_descendant_movement_replacement` uses a separate actor after final revalidation | Native pass on the recorded profile |
 | Cancellation, revocation, stale publication, and cleanup | Runtime/session cancellation and lifecycle tests; descriptor-refusal regression tests | `directory_listing_worker_cleanup` cancels after the worker holds the capability; `recursive_listing_cancellation_after_traversal` cancels after host filtering; owner rotation suppresses capture after traversal | Native pass for post-traversal cancellation and worker cleanup. Cancellation during active traversal is still not independently measured |
 | Shared 10,000-entry budget, 1,000 visible-path limit, 64 KiB output, five-second deadline, bounded ignore input and matcher work | `TestRecursiveTraversalStopsAtSharedEntryBudget`, bounded encoder test, broker filter budgets and existing admission/session deadlines | `recursive_listing_entry_limit` creates a 10,020-file tree and requires a bounded `incomplete=true` provider result | Native limit case passes; ordinary tests cover the remaining bounds |
@@ -107,19 +107,31 @@ The fourth archive SHA-256 is
 report SHA-256 is
 `7348a7543419608549dd128c5db697201bb405842078bc0684f0adc75219bd73`.
 The fourth report measured 29 cases as passes, one as inconclusive, and two
-out-of-profile cases as unavailable. The latest code changes the unavailable
-case reason to avoid the stale runner-version label in that historical report.
+out-of-profile cases as unavailable. Its failure was limited to the missing-
+owner fixture assertion, subsequently corrected in `eb56eef`.
 
-The report classifications `stage6_profile_incomplete` and
-`candidate_failed_or_incomplete` reflect the broader harness profile and the
-one incomplete synthetic case; they are not listing enforcement failures.
-Mutation and shell cases are outside the implemented Stage 6 profile, and the
-study does not establish provider-source lifecycle, aggregate cgroup quotas,
-shipped-binary integration, or non-Linux enforcement. Active-traversal
-cancellation also remains unmeasured. These limitations must not be described
-as passed. The listing gate remains closed until the corrected missing-owner
-case passes on a trusted host, independent review accepts the evidence, and a
-separate enablement decision is made.
+A fifth trusted-host run exercised exact clean revision
+`eb56eef57c90b3c5a653b99e1d3a3dcec451cfc5` with Go 1.26.11 on Linux
+`7.0.0-42-generic`, amd64, UID 1000, trusted root-owned Bubblewrap 0.9.0, and
+automatic bind mode. The study completed with exit code 0. All #317 native
+recursive-listing cases passed, including the protected alias with its matching
+`*.go` glob and unprotected control, and recursive missing-owner refusal. The
+report measured 30 cases as passes; two unrelated mutation and shell profile
+cases were unavailable.
+
+The fifth archive SHA-256 is
+`7d29fa5c715c7353b99989381728fe34ced91208f55afae0d10295d764d83ba9`; the
+report SHA-256 is
+`f29d5ec5009383e2b71180fd31c49da9a25d9115fe433d996d4c67a8b0a9102b`.
+
+The `stage6_profile_incomplete` classification describes the broader harness
+profile: mutation and shell cases are outside the implemented Stage 6 profile,
+and the study does not establish provider-source lifecycle, aggregate cgroup
+quotas, shipped-binary integration, or non-Linux enforcement. Active-traversal
+cancellation also remains unmeasured. These limitations are not claimed as
+passed and do not invalidate the #317 listing results. Keep the listing gate
+closed until independent review accepts this evidence and a separate
+enablement decision is made.
 
 To reproduce the trusted-host run from a clean committed candidate:
 
@@ -141,12 +153,10 @@ artifacts outside the repository and do not treat skipped cases as passes.
 ## Enablement decision
 
 Do not set `linuxImplementation.listingOptionsAvailable` in production yet.
-The automatic-bind Linux profile has now passed the corrected protected-alias
-case. The recursive missing-owner fixture was corrected after review, but its
-latest assertion fix still needs a trusted-host rerun. Once that evidence is available,
-an independent maintainer should review the exact report and decide separately
-whether to enable the profile. Keep the enforcement revision and any later
-gate-only revision separately identifiable.
+The automatic-bind Linux profile passed the #317 recursive-listing cases on
+`eb56eef`. An independent maintainer should review the exact report and decide
+separately whether to enable the profile. Keep the enforcement revision and any
+later gate-only revision separately identifiable.
 
-Issue #317 remains open pending the corrected native evidence and independent
-review. This record does not complete #315 or mutation work.
+Issue #317 remains open pending independent review and the separate enablement
+decision. This record does not complete #315 or mutation work.
