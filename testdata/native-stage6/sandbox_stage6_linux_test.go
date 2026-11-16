@@ -3037,7 +3037,7 @@ func TestStage6SearchContentWorkerCancellationCleanup(t *testing.T) {
 		t.Fatalf("cancelled search history was not payload-free: messages=%d results=%d marker=%t payload_free=%t", historyMessages, toolResults, markerFound, payloadFree)
 	}
 	evidence := impl.session.Evidence()
-	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadCancelled || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || evidence[0].CapabilitySent || evidence[0].ReadStarted || evidence[0].Published || !stage6WorkerProbePassed(evidence[0].SearchContentProbe) {
+	if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadCancelled || !evidence[0].WorkerStarted || !evidence[0].WorkerReady || !evidence[0].WorkerJoined || evidence[0].Published || !stage6DirectoryListingProbePassed(evidence[0].SearchTraversalProbe) || !stage6WorkerProbePassed(evidence[0].SearchContentProbe) || !strings.Contains(evidence[0].FailureDetail, "search cancelled before content handoff") {
 		t.Fatalf("cancelled content worker evidence=%+v", evidence)
 	}
 	if published := impl.session.PublishedResults(); len(published) != 0 {
@@ -3048,7 +3048,7 @@ func TestStage6SearchContentWorkerCancellationCleanup(t *testing.T) {
 		item.ProbePassed, item.OnceApprovalCount, item.OnceGrantConsumptionCount = stage6WorkerProbePassed(evidence[0].SearchContentProbe), fixture.approvals.Load(), 1
 		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent, item.CleanupConfirmed = len(requests), true, true, evidence[0].WorkerJoined
 	})
-	stage6Pass("search_content_worker_cancellation_cleanup", "cancellation after the content worker passed its startup probe but before snapshot transfer joined the worker, transferred no content descriptor, published no private result, and stopped before provider continuation")
+	stage6Pass("search_content_worker_cancellation_cleanup", "after the search traversal completed, cancellation at the content worker checkpoint joined the worker before its separate snapshot handoff; no private result was published or sent in a provider continuation")
 }
 
 func TestStage6SearchSelectedRootMovement(t *testing.T) {

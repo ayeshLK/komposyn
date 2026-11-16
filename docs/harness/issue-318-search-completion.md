@@ -45,17 +45,19 @@ on the test host. A second trusted-host run against clean commit
 `d9d73498908afc90cf1e61fd13982d0eb89e1a78` used the same Go, Bubblewrap and
 `ro-bind-fd` profile. The Service fix worked: positive search, protected
 candidate substitution, search mount exclusion, selected-root movement, owner
-rotation and revocation all passed. The cancellation case joined its worker
-without transferring the content descriptor, but the harness incorrectly
-expected a completed turn and a provider continuation; runtime correctly
-returned an interrupted turn. That case was inconclusive and the suite failed
+rotation and revocation all passed. The cancellation case joined its content worker before the separate content
+snapshot handoff; the shared operation evidence correctly retained the earlier
+traversal worker's capability transfer. The harness incorrectly expected a
+completed turn and a provider continuation; runtime correctly returned an
+interrupted turn. That case was inconclusive and the suite failed
 on the assertion. Archive SHA-256:
 `80f6c576842401aaf4ed935b1c7652a1b5d98c45ed619b769d09f385b28b0a9f`; report
 SHA-256: `ec9b4440a22e6c0389fda9c267349f97de0f28ab103203bc2e334a8780c478bc`.
 The archive is at `/tmp/komposyn-issue215-stage6-20261116T234207Z-1626259.tar.gz`
-on the test host. The follow-up corrects the cancellation assertion to verify
-that cancellation stops the turn, joins the worker, publishes no result and
-makes no provider continuation. The exact updated commit still requires a
+on the test host. The follow-up corrects the cancellation assertion to distinguish the completed
+traversal handoff from the cancelled content snapshot handoff, and to verify
+that cancellation stops the turn, joins the content worker, publishes no result
+and makes no provider continuation. The exact updated commit still requires a
 clean trusted-host run.
 
 Before enablement, a trusted-host run must measure the exact follow-up commit,
