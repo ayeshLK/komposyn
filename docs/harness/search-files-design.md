@@ -57,11 +57,15 @@ snapshot.
    are removed before counts or candidate descriptors are created.
 5. For each eligible regular file, the host opens and retains a read-only
    descriptor beneath the verified directory, checks its identity and size,
-   and records a private revision observation. Only these vetted descriptors
-   are sent to the fixed search-content worker. The worker receives no paths
-   and cannot open or resolve pathnames. It reports candidate indexes, line
-   numbers, bounded snippets, and sanitized skip status; it never supplies a
-   provider-ready result.
+   and records a private revision observation. After all candidate identities
+   are classified, the host reads only those retained descriptors and writes
+   a bounded content-only snapshot into a sealed anonymous file. It contains
+   the query and ordered file bytes, but no names, paths, identities or
+   timestamps. The fixed search-content worker receives only this snapshot
+   descriptor, cannot open or resolve pathnames, and returns candidate
+   indexes, line numbers, bounded snippets, and sanitized skip indexes. The
+   host maps indexes to its private path list and never accepts a provider-
+   ready result from the worker.
 6. Before staging, the host verifies candidate indexes, descriptor identity
    and revision, directory observations, policy/owner generations, and the
    admission binding. It attaches host-owned eligible relative paths, removes
@@ -101,10 +105,11 @@ unavailable for search.
 
 Traversal uses a search-specific seccomp profile that permits only the
 existing beneath-constrained directory lookup, metadata, and bounded
-ignore-file operations. The content worker receives vetted descriptors only
-and uses a separate search-content profile that denies pathname lookup. Exact
-file reads keep their stricter existing profile; no listing or read profile is
-weakened for search.
+ignore-file operations. The content worker uses a separate profile that denies
+pathname lookup and receives only the sealed content snapshot. Exact file reads
+keep their stricter existing profile; no listing or read profile is weakened
+for search. The operation profiles are implemented, but native acceptance has
+not yet been run or reviewed.
 
 Behavioral tests exercise the real runtime-to-UI/provider seam and a composed
 sandbox Service, with synthetic content and routes. Native tests use the same

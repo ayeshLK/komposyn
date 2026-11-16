@@ -609,11 +609,23 @@ func ignoredByRules(namePath string, directory bool, rules []ignoreRule, budget 
 }
 
 func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) ([]byte, error) {
+	return p.filterListingMode(ctx, raw, false)
+}
+
+func (p *preparedDirectoryList) filterSearchListing(ctx context.Context, raw []byte) ([]byte, error) {
+	return p.filterListingMode(ctx, raw, true)
+}
+
+func (p *preparedDirectoryList) filterListingMode(ctx context.Context, raw []byte, search bool) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, maxDirectoryFilterDuration)
 	defer cancel()
 	budget := &directoryFilterBudget{ctx: ctx, remaining: maxDirectoryFilterWork}
 	var listing directoryListingResult
-	if err := json.Unmarshal(raw, &listing); err != nil || listing.Examined > 10_000 || listing.Returned > 10_000 || len(listing.Entries) > 10_000 || len(listing.Directories) > 10_000 || len(listing.Names) != 0 {
+	maxRaw := MaxReadBytes
+	if search {
+		maxRaw = maxWorkerSnapshotBytes
+	}
+	if len(raw) > maxRaw || json.Unmarshal(raw, &listing) != nil || listing.Examined > 10_000 || listing.Returned > 10_000 || len(listing.Entries) > 10_000 || len(listing.Directories) > 10_000 || len(listing.Names) != 0 {
 		return nil, ErrProtocol
 	}
 	p.mu.Lock()
@@ -663,7 +675,12 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 			return nil, err
 		}
 	}
-	filtered := make([]string, 0, min(len(listing.Entries), 1_000))
+	maxReturned := 1_000
+	if search {
+		maxReturned = 10_000
+	}
+	filtered := make([]string, 0, min(len(listing.Entries), maxReturned))
+	filteredEntries := make([]directoryListingEntry, 0, min(len(listing.Entries), maxReturned))
 	blockedPrefixes := make(map[string]bool)
 	for _, entry := range listing.Entries {
 		if err := budget.consume(1); err != nil {
@@ -749,14 +766,23 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 				continue
 			}
 		}
-		if len(filtered) >= 1_000 {
+		if len(filtered) >= maxReturned {
 			listing.Incomplete = true
 			continue
 		}
 		filtered = append(filtered, relative)
+		entry.Path = relative
+		entry.Device = identity.Device
+		entry.Inode = identity.Inode
+		filteredEntries = append(filteredEntries, entry)
 	}
-	listing.Names = filtered
-	listing.Entries = nil
+	if search {
+		listing.Names = nil
+		listing.Entries = filteredEntries
+	} else {
+		listing.Names = filtered
+		listing.Entries = nil
+	}
 	// Directory snapshots contain private traversal observations (including
 	// paths, identities, mount IDs, timestamps, and ignore-file metadata).
 	// They are needed only until host filtering and revalidation finish.
@@ -768,7 +794,11 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 	listing.MtimeNS = 0
 	listing.CtimeNS = 0
 	encoded, err := json.Marshal(listing)
-	if err != nil || len(encoded) > MaxReadBytes {
+	outputLimit := MaxReadBytes
+	if search {
+		outputLimit = maxWorkerSnapshotBytes
+	}
+	if err != nil || len(encoded) > outputLimit {
 		return nil, ErrResultTooLarge
 	}
 	return encoded, nil

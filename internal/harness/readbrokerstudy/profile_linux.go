@@ -144,7 +144,7 @@ func workerSeccompFilterBytesForOperation(operation AdmissionOperation) ([]byte,
 	if operation == "" {
 		operation = AdmissionReadFile
 	}
-	if operation != AdmissionReadFile && operation != AdmissionListDirectory {
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent {
 		return nil, fmt.Errorf("unsupported worker seccomp operation %q", operation)
 	}
 	arch, err := workerAuditArch(runtime.GOARCH)
@@ -223,7 +223,7 @@ func workerDeniedSyscallsForOperation(operation AdmissionOperation) []uint32 {
 		unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_KEYCTL,
 		unix.SYS_PERF_EVENT_OPEN, unix.SYS_BPF, unix.SYS_EXECVEAT,
 	}
-	if operation == AdmissionListDirectory {
+	if operation == AdmissionListDirectory || operation == AdmissionSearchFiles {
 		// The listing worker must inspect mount and ignore-file metadata and open
 		// descendant directories relative to the retained directory capability.
 		// Keep ordinary openat and all process-control/path-resolution escape
@@ -238,6 +238,12 @@ func workerDeniedSyscallsForOperation(operation AdmissionOperation) []uint32 {
 			}
 		}
 		denied = filtered
+	}
+	if operation == AdmissionSearchFiles || operation == AdmissionSearchContent {
+		// Search workers do not need memory locking. Keeping this prohibition in
+		// their operation-specific profile produces a distinct, inspectable
+		// filter while preserving the reviewed read and traversal surfaces.
+		denied = append(denied, unix.SYS_MLOCK, unix.SYS_MLOCK2, unix.SYS_MUNLOCK, unix.SYS_MUNLOCKALL)
 	}
 	return append(denied, workerArchDeniedSyscalls()...)
 }

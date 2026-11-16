@@ -273,6 +273,23 @@ func TestSearchFilesDefinitionExplainsLiteralBoundedDisclosure(t *testing.T) {
 	}
 }
 
+func TestParseSearchFilesRejectsExpandedWorkerOptionFrameBeforeAdmission(t *testing.T) {
+	globs := make([]string, MaxListFilesGlobs)
+	for index := range globs {
+		globs[index] = strings.Repeat("a", MaxListFilesGlobBytes-1) + "*"
+	}
+	raw, err := json.Marshal(SearchFilesInput{Path: "src", Query: "needle", NameGlobs: globs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > MaxSearchFilesInputBytes {
+		t.Fatalf("fixture input unexpectedly exceeds outer limit: %d", len(raw))
+	}
+	if _, err := ParseSearchFiles(raw); err == nil {
+		t.Fatal("search options exceeding the actual worker frame were accepted")
+	}
+}
+
 func TestListFilesDefinitionLimitsDisclosureToOneDirectory(t *testing.T) {
 	description := strings.ToLower(ListFilesDefinition().Description)
 	for _, phrase := range []string{"one directory", "once approval", "hidden", "ignored", "symlinks", "working directory grants no listing permission"} {

@@ -44,25 +44,27 @@ import (
 )
 
 const (
-	frameReady              byte = 'R'
-	frameHandoff            byte = 'H'
-	frameDirectoryHandoff   byte = 'B'
-	frameStarted            byte = 'S'
-	frameRefused            byte = 'X'
-	frameData               byte = 'D'
-	frameFinish             byte = 'F'
-	frameCapabilityHeld     byte = 'C'
-	frameReleaseRead        byte = 'L'
-	workerBootstrapMode          = "--readbrokerstudy-bootstrap"
-	workerHoldBootstrapArg       = "--hold-capability-before-read"
-	workerStderrLimit            = 4 << 10
-	workerWaitDelay              = 500 * time.Millisecond
-	backendProbeTimeout          = 2 * time.Second
-	backendHashLimit             = 512 << 20
-	backendProbeOutputLimit      = 64 << 10
-	maxWorkerSnapshotBytes       = 14 << 20
-	workerRootSizeBytes          = 16 << 20
-	maxSCMRightsFDs              = 253
+	frameReady                 byte = 'R'
+	frameHandoff               byte = 'H'
+	frameDirectoryHandoff      byte = 'B'
+	frameStarted               byte = 'S'
+	frameRefused               byte = 'X'
+	frameData                  byte = 'D'
+	frameFinish                byte = 'F'
+	frameCapabilityHeld        byte = 'C'
+	frameReleaseRead           byte = 'L'
+	frameSearchSnapshot        byte = 'Q'
+	workerBootstrapMode             = "--readbrokerstudy-bootstrap"
+	workerHoldBootstrapArg          = "--hold-capability-before-read"
+	workerStderrLimit               = 4 << 10
+	workerWaitDelay                 = 500 * time.Millisecond
+	backendProbeTimeout             = 2 * time.Second
+	backendHashLimit                = 512 << 20
+	backendProbeOutputLimit         = 64 << 10
+	maxWorkerSnapshotBytes          = 14 << 20
+	maxSearchWorkerResultBytes      = 1 << 20
+	workerRootSizeBytes             = 16 << 20
+	maxSCMRightsFDs                 = 253
 )
 
 type BindMode string
@@ -336,6 +338,17 @@ func (l *workerLauncher) AdvancedDirectoryListingProfileAvailable() bool {
 	}
 	_, err := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
 	return err == nil
+}
+
+// SearchProfilesAvailable is only a compatibility preflight. It does not
+// represent native search acceptance or enable the public capability.
+func (l *workerLauncher) SearchProfilesAvailable() bool {
+	if l == nil || runtime.GOARCH != "amd64" || l.capability.BindMode != BindModeDescriptor {
+		return false
+	}
+	_, traversalErr := workerSeccompFilterBytesForOperation(AdmissionSearchFiles)
+	_, contentErr := workerSeccompFilterBytesForOperation(AdmissionSearchContent)
+	return traversalErr == nil && contentErr == nil
 }
 
 // NewWorkerLauncher constructs the only launch path in this feasibility
@@ -777,7 +790,7 @@ func (l *workerLauncher) StartForOperation(ctx context.Context, operation Admiss
 	if operation == "" {
 		operation = AdmissionReadFile
 	}
-	if operation != AdmissionReadFile && operation != AdmissionListDirectory {
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent {
 		return nil, fmt.Errorf("%w: unsupported worker operation", ErrUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
@@ -907,7 +920,7 @@ func (w *sandboxWorker) Ready(ctx context.Context) error {
 	w.probe = probe
 	valid := probe.SeccompMode == 2 && probe.NoNewPrivs && probe.SocketCreationDenied &&
 		probe.PathOpenDenied && probe.ReadCapabilityInitiallyAbsent && probe.OnlyProtocolDescriptor &&
-		probe.EnvironmentCleared && (probe.DirectoryTraversalSyscallsAllowed == (w.operation == AdmissionListDirectory))
+		probe.EnvironmentCleared && (probe.DirectoryTraversalSyscallsAllowed == (w.operation == AdmissionListDirectory || w.operation == AdmissionSearchFiles))
 	if valid {
 		w.ready = true
 	}
@@ -972,15 +985,22 @@ func (w *sandboxWorker) TransferCapability(ctx context.Context, file *os.File, e
 	return w.transferCapability(ctx, file, expected, frameHandoff, unix.S_IFREG, nil)
 }
 
+func (w *sandboxWorker) TransferSearchSnapshot(ctx context.Context, file *os.File, expected FileIdentity) error {
+	if w.operation != AdmissionSearchContent {
+		return ErrProtocol
+	}
+	return w.transferCapability(ctx, file, expected, frameSearchSnapshot, unix.S_IFREG, nil)
+}
+
 func (w *sandboxWorker) TransferDirectoryCapability(ctx context.Context, file *os.File, expected FileIdentity) error {
-	if w.operation != AdmissionListDirectory {
+	if w.operation != AdmissionListDirectory && w.operation != AdmissionSearchFiles {
 		return ErrProtocol
 	}
 	return w.transferCapability(ctx, file, expected, frameDirectoryHandoff, unix.S_IFDIR, nil)
 }
 
 func (w *sandboxWorker) TransferDirectoryCapabilityWithOptions(ctx context.Context, file *os.File, expected FileIdentity, options ListingOptions) error {
-	if w.operation != AdmissionListDirectory {
+	if w.operation != AdmissionListDirectory && w.operation != AdmissionSearchFiles {
 		return ErrProtocol
 	}
 	encoded, err := json.Marshal(options)
@@ -1099,6 +1119,12 @@ func (w *sandboxWorker) ReadResult(ctx context.Context) (WorkerResult, error) {
 	w.finished = true
 	w.mu.Unlock()
 	result := WorkerResult{Outcome: ReadUnknown}
+	resultLimit := MaxReadBytes
+	if w.operation == AdmissionSearchFiles {
+		resultLimit = maxWorkerSnapshotBytes
+	} else if w.operation == AdmissionSearchContent {
+		resultLimit = maxSearchWorkerResultBytes
+	}
 	for {
 		packet, err := recvPacket(ctx, int(w.control.Fd()), dataChunkBytes+16)
 		if err != nil {
@@ -1109,7 +1135,7 @@ func (w *sandboxWorker) ReadResult(ctx context.Context) (WorkerResult, error) {
 		}
 		switch packet[0] {
 		case frameData:
-			if len(packet) == 1 || len(result.Bytes)+len(packet)-1 > MaxReadBytes {
+			if len(packet) == 1 || len(result.Bytes)+len(packet)-1 > resultLimit {
 				return WorkerResult{Outcome: ReadUnknown}, ErrResultTooLarge
 			}
 			result.Bytes = append(result.Bytes, packet[1:]...)
@@ -1469,12 +1495,18 @@ func installWorkerSeccompProfile(fd int) (AdmissionOperation, error) {
 	}
 	expectedRead, readErr := workerSeccompFilterBytesForOperation(AdmissionReadFile)
 	expectedListing, listingErr := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
-	if readErr != nil || listingErr != nil || !bytes.Equal(data, expectedRead) && !bytes.Equal(data, expectedListing) {
+	expectedSearch, searchErr := workerSeccompFilterBytesForOperation(AdmissionSearchFiles)
+	expectedSearchContent, contentErr := workerSeccompFilterBytesForOperation(AdmissionSearchContent)
+	if readErr != nil || listingErr != nil || searchErr != nil || contentErr != nil || !bytes.Equal(data, expectedRead) && !bytes.Equal(data, expectedListing) && !bytes.Equal(data, expectedSearch) && !bytes.Equal(data, expectedSearchContent) {
 		return "", ErrProtocol
 	}
 	operation := AdmissionReadFile
 	if bytes.Equal(data, expectedListing) {
 		operation = AdmissionListDirectory
+	} else if bytes.Equal(data, expectedSearch) {
+		operation = AdmissionSearchFiles
+	} else if bytes.Equal(data, expectedSearchContent) {
+		operation = AdmissionSearchContent
 	}
 	filters := make([]unix.SockFilter, len(data)/unix.SizeofSockFilter)
 	for index := range filters {
@@ -1509,15 +1541,15 @@ func workerMainFD(fd int, holdCapability bool, operation AdmissionOperation) int
 	}
 	if probe.SeccompMode != 2 || !probe.NoNewPrivs || !probe.SocketCreationDenied ||
 		!probe.PathOpenDenied || !probe.ReadCapabilityInitiallyAbsent || !probe.OnlyProtocolDescriptor ||
-		!probe.EnvironmentCleared || probe.DirectoryTraversalSyscallsAllowed != (operation == AdmissionListDirectory) {
+		!probe.EnvironmentCleared || probe.DirectoryTraversalSyscallsAllowed != (operation == AdmissionListDirectory || operation == AdmissionSearchFiles) {
 		return 71
 	}
-	return receiveAndRead(fd, holdCapability)
+	return receiveAndRead(fd, holdCapability, operation)
 }
 
 func collectWorkerProbe(control int, operation AdmissionOperation) WorkerProbe {
 	probe := WorkerProbe{Details: []string{"required namespaces requested: user,pid,ipc,uts,net (no try/fallback flags)", "bubblewrap mount namespace created with empty tmpfs root", "worker mount identity verified before seccomp; verification descriptors closed", "worker installed seccomp with thread synchronization before readiness"}}
-	probe.DirectoryTraversalSyscallsAllowed = operation == AdmissionListDirectory
+	probe.DirectoryTraversalSyscallsAllowed = operation == AdmissionListDirectory || operation == AdmissionSearchFiles
 	if probe.DirectoryTraversalSyscallsAllowed {
 		probe.Details = append(probe.Details, "directory-listing seccomp profile permits descriptor-relative statx, newfstatat, and openat2; ordinary openat remains denied")
 	}
@@ -1580,7 +1612,7 @@ func probeError(ok bool, message string) error {
 	return errors.New(message)
 }
 
-func receiveAndRead(control int, holdCapability bool) int {
+func receiveAndRead(control int, holdCapability bool, operation AdmissionOperation) int {
 	packet := make([]byte, 4096)
 	// Linux limits one SCM_RIGHTS message to SCM_MAX_FD (253). Receive enough
 	// ancillary space to account for every descriptor so even an over-counted
@@ -1607,12 +1639,22 @@ func receiveAndRead(control int, holdCapability bool) int {
 		var result int
 		switch packet[0] {
 		case frameHandoff:
-			if n != 1+20 {
+			if operation != AdmissionReadFile || n != 1+20 {
 				_ = unix.Close(capability)
 				return sendRefusal(control)
 			}
 			result = readTransferredFD(control, capability, packet[1:n], holdCapability)
+		case frameSearchSnapshot:
+			if operation != AdmissionSearchContent || n != 1+20 {
+				_ = unix.Close(capability)
+				return sendRefusal(control)
+			}
+			result = searchTransferredSnapshot(control, capability, packet[1:n])
 		case frameDirectoryHandoff:
+			if operation != AdmissionListDirectory && operation != AdmissionSearchFiles {
+				_ = unix.Close(capability)
+				return sendRefusal(control)
+			}
 			var options ListingOptions
 			if n > 1+20 {
 				decoder := json.NewDecoder(bytes.NewReader(packet[1+20 : n]))
@@ -1622,7 +1664,7 @@ func receiveAndRead(control int, holdCapability bool) int {
 					return sendRefusal(control)
 				}
 			}
-			result = listTransferredDirectory(control, capability, packet[1:1+20], holdCapability, options)
+			result = listTransferredDirectory(control, capability, packet[1:1+20], holdCapability, options, operation)
 		default:
 			_ = unix.Close(capability)
 			return sendRefusal(control)
@@ -1632,7 +1674,7 @@ func receiveAndRead(control int, holdCapability bool) int {
 	}
 }
 
-func listTransferredDirectory(control, fd int, expected []byte, holdCapability bool, options ListingOptions) int {
+func listTransferredDirectory(control, fd int, expected []byte, holdCapability bool, options ListingOptions, operation AdmissionOperation) int {
 	unix.CloseOnExec(fd)
 	var stat unix.Stat_t
 	flags, flagErr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
@@ -1654,7 +1696,12 @@ func listTransferredDirectory(control, fd int, expected []byte, holdCapability b
 	if err := sendPacket(control, identityFrame(frameStarted, identity)); err != nil {
 		return 75
 	}
-	result := listDirectoryBounded(fd, options)
+	var result WorkerResult
+	if operation == AdmissionSearchFiles {
+		result = listDirectorySearchBounded(fd, options)
+	} else {
+		result = listDirectoryBounded(fd, options)
+	}
 	for offset := 0; offset < len(result.Bytes); {
 		end := offset + dataChunkBytes
 		if end > len(result.Bytes) {
@@ -1671,6 +1718,64 @@ func listTransferredDirectory(control, fd int, expected []byte, holdCapability b
 	}
 	finish := []byte{frameFinish, encodeOutcome(result.Outcome), truncated, 0, 0, 0, 0}
 	binary.BigEndian.PutUint32(finish[3:7], uint32(len(result.Bytes)))
+	if err := sendPacket(control, finish); err != nil {
+		return 77
+	}
+	return 0
+}
+
+func searchTransferredSnapshot(control, fd int, expected []byte) int {
+	unix.CloseOnExec(fd)
+	var before unix.Stat_t
+	flags, flagErr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	seals, sealErr := unix.FcntlInt(uintptr(fd), unix.F_GET_SEALS, 0)
+	allSeals := unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
+	if flagErr != nil || flags&unix.O_ACCMODE != unix.O_RDONLY || sealErr != nil || seals&allSeals != allSeals ||
+		unix.Fstat(fd, &before) != nil || before.Mode&unix.S_IFMT != unix.S_IFREG || before.Size <= 0 || before.Size > maxWorkerSnapshotBytes || !sameIdentity(expected, identityFromStat(&before)) {
+		_ = sendPacket(control, []byte{frameRefused})
+		return 74
+	}
+	identity := identityFromStat(&before)
+	if err := sendPacket(control, identityFrame(frameStarted, identity)); err != nil {
+		return 75
+	}
+	data := make([]byte, int(before.Size))
+	for offset := 0; offset < len(data); {
+		count, err := unix.Pread(fd, data[offset:], int64(offset))
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil || count <= 0 {
+			clear(data)
+			return sendRefusal(control)
+		}
+		offset += count
+	}
+	var after unix.Stat_t
+	if unix.Fstat(fd, &after) != nil || after.Dev != before.Dev || after.Ino != before.Ino || after.Size != before.Size || after.Mtim != before.Mtim || after.Ctim != before.Ctim {
+		clear(data)
+		return sendRefusal(control)
+	}
+	result, err := searchSnapshotBytes(data)
+	clear(data)
+	if err != nil {
+		return sendRefusal(control)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || len(encoded) > maxSearchWorkerResultBytes {
+		clear(encoded)
+		return sendRefusal(control)
+	}
+	defer clear(encoded)
+	for offset := 0; offset < len(encoded); {
+		end := min(offset+dataChunkBytes, len(encoded))
+		if err := sendPacket(control, append([]byte{frameData}, encoded[offset:end]...)); err != nil {
+			return 76
+		}
+		offset = end
+	}
+	finish := []byte{frameFinish, encodeOutcome(ReadSucceeded), 0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(finish[3:7], uint32(len(encoded)))
 	if err := sendPacket(control, finish); err != nil {
 		return 77
 	}
@@ -1712,6 +1817,14 @@ type directoryListingDirectory struct {
 }
 
 func listDirectoryBounded(fd int, requested ...ListingOptions) WorkerResult {
+	return listDirectoryBoundedToLimit(fd, MaxReadBytes, requested...)
+}
+
+func listDirectorySearchBounded(fd int, requested ...ListingOptions) WorkerResult {
+	return listDirectoryBoundedToLimit(fd, maxWorkerSnapshotBytes, requested...)
+}
+
+func listDirectoryBoundedToLimit(fd, outputLimit int, requested ...ListingOptions) WorkerResult {
 	const maxExamined = 10_000
 	options := ListingOptions{}
 	if len(requested) > 0 {
@@ -1730,10 +1843,14 @@ func listDirectoryBounded(fd int, requested ...ListingOptions) WorkerResult {
 	listing.Examined = min(examined, maxExamined)
 	listing.Returned = len(entries)
 	listing.Incomplete = incomplete
-	return encodeDirectoryListingBounded(ctx, listing)
+	return encodeDirectoryListingBoundedLimit(ctx, listing, outputLimit)
 }
 
 func encodeDirectoryListingBounded(ctx context.Context, listing directoryListingResult) WorkerResult {
+	return encodeDirectoryListingBoundedLimit(ctx, listing, MaxReadBytes)
+}
+
+func encodeDirectoryListingBoundedLimit(ctx context.Context, listing directoryListingResult, outputLimit int) WorkerResult {
 	encoded, err := json.Marshal(listing)
 	if err != nil {
 		return WorkerResult{Outcome: ReadFailed, Detail: "directory listing could not be encoded"}
@@ -1741,7 +1858,7 @@ func encodeDirectoryListingBounded(ctx context.Context, listing directoryListing
 	if err := ctx.Err(); err != nil {
 		return WorkerResult{Outcome: ReadFailed, Detail: "directory listing exceeded its execution deadline"}
 	}
-	if len(encoded) <= MaxReadBytes {
+	if len(encoded) <= outputLimit {
 		return WorkerResult{Outcome: ReadSucceeded, Bytes: encoded}
 	}
 
@@ -1763,7 +1880,7 @@ func encodeDirectoryListingBounded(ctx context.Context, listing directoryListing
 		if marshalErr != nil {
 			return WorkerResult{Outcome: ReadFailed, Detail: "directory listing could not be encoded"}
 		}
-		if len(candidate) <= MaxReadBytes {
+		if len(candidate) <= outputLimit {
 			best, bestCount = candidate, middle
 			low = middle + 1
 		} else {

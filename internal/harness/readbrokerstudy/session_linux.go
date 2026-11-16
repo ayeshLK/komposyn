@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -543,7 +544,7 @@ func (s *fixtureSession) runWorker(ctx context.Context, op *readOperation, prepa
 // execution. The latter supplies a runtime gate and never publishes to the
 // study sink.
 func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, prepared PreparedRead, authority ReadExecutionGate, publish bool) (result WorkerResult) {
-	if op.admissionOperation == AdmissionListDirectory {
+	if op.admissionOperation == AdmissionListDirectory || op.admissionOperation == AdmissionSearchFiles {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, maxDirectoryFilterDuration)
 		defer cancel()
@@ -670,7 +671,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	// same-user processes; Revalidate is a bounded observation, not a lock.
 	transferErr := withCurrent(func() error {
 		var err error
-		if op.admissionOperation == AdmissionListDirectory {
+		if op.admissionOperation == AdmissionListDirectory || op.admissionOperation == AdmissionSearchFiles {
 			listingWorker, ok := worker.(DirectoryCapabilityWorker)
 			if !ok {
 				return ErrUnavailable
@@ -801,6 +802,40 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 			return WorkerResult{Outcome: ReadNotExecuted, Detail: "directory listing could not be safely filtered"}
 		}
 		workerResult.Bytes = filtered
+	} else if op.admissionOperation == AdmissionSearchFiles && workerResult.Outcome == ReadSucceeded {
+		filter, ok := prepared.(*preparedDirectoryList)
+		if !ok || op.admission == nil {
+			return WorkerResult{Outcome: ReadUnknown, Detail: "search host filter is unavailable"}
+		}
+		traversalBytes := workerResult.Bytes
+		filtered, filterErr := filter.filterSearchListing(ctx, traversalBytes)
+		clear(traversalBytes)
+		if filterErr != nil {
+			return WorkerResult{Outcome: ReadNotExecuted, Detail: "search candidates could not be safely filtered"}
+		}
+		snapshot, searchErr := filter.prepareSearchSnapshot(ctx, filtered, op.admission.request.SearchQuery)
+		clear(filtered)
+		if searchErr != nil {
+			return WorkerResult{Outcome: ReadNotExecuted, Detail: "search candidates could not be safely inspected"}
+		}
+		if snapshot.File == nil {
+			return WorkerResult{Outcome: ReadUnknown, Detail: "search content snapshot is unavailable"}
+		}
+		contentWorkerResult := s.runSearchContentWorker(ctx, op, snapshot.File, authority, publish)
+		closeErr := snapshot.File.Close()
+		if closeErr != nil {
+			clear(contentWorkerResult.Bytes)
+			return WorkerResult{Outcome: ReadUnknown, Detail: "search content worker or snapshot cleanup could not be confirmed"}
+		}
+		if contentWorkerResult.Outcome != ReadSucceeded {
+			return contentWorkerResult
+		}
+		finalResult, finalizeErr := finalizeSearchWorkerResult(ctx, contentWorkerResult, snapshot)
+		clear(contentWorkerResult.Bytes)
+		if finalizeErr != nil {
+			return WorkerResult{Outcome: ReadUnknown, Detail: "search content worker response was invalid"}
+		}
+		workerResult = finalResult
 	}
 	if len(workerResult.Bytes) > MaxReadBytes {
 		return WorkerResult{Outcome: ReadUnknown, Detail: ErrResultTooLarge.Error()}
@@ -812,6 +847,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 		}
 		return workerResult
 	}
+
 	if workerResult.Truncated {
 		workerResult.Bytes = nil
 		return WorkerResult{Outcome: ReadPartial, Truncated: true, Detail: "truncated worker response is not eligible for private capture"}
@@ -853,6 +889,145 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	return WorkerResult{Outcome: ReadSucceeded, Bytes: append([]byte(nil), copyForSink...), Detail: workerResult.Detail}
 }
 
+func (s *fixtureSession) runSearchContentWorker(ctx context.Context, op *readOperation, snapshot *os.File, authority ReadExecutionGate, publish bool) WorkerResult {
+	launcher, ok := s.launcher.(OperationWorkerLauncher)
+	if !ok || snapshot == nil {
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: "search content worker profile is unavailable"}
+	}
+	worker, err := launcher.StartForOperation(ctx, AdmissionSearchContent)
+	if err != nil {
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: "search content worker setup refused"}
+	}
+	s.mu.Lock()
+	op.worker = worker
+	op.cleanupRequired = true
+	op.evidence.WorkerStarted = true
+	invalid := !s.currentLocked(op) || op.revoked
+	s.mu.Unlock()
+	terminate := func() workerTerminationResult {
+		if publish {
+			return s.terminateAndWait(op, worker)
+		}
+		return s.terminateAndWaitContext(ctx, op, worker)
+	}
+	if invalid {
+		cleanup := terminate()
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("revoked search worker cleanup is unconfirmed", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("search revoked before worker startup", cleanup)}
+	}
+	if err := worker.Ready(ctx); err != nil {
+		cleanup := terminate()
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search worker startup cleanup is unconfirmed", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("search worker did not acknowledge its fixed profile", cleanup)}
+	}
+	op.probe = worker.Probe()
+	op.evidence.Probe = op.probe
+	if !validWorkerProbe(op.probe) {
+		cleanup := terminate()
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search worker probe cleanup is unconfirmed", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("search worker isolation probes failed", cleanup)}
+	}
+	if err := runCheckpoint(s.checkpointHook(), CheckpointBeforeSearchContent); err != nil || ctx.Err() != nil {
+		cleanup := terminate()
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search cancelled before content handoff; cleanup is unconfirmed", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadCancelled, Detail: withTerminationDiagnostic("search cancelled before content handoff", cleanup)}
+	}
+	identity, err := identityFromFile(snapshot)
+	if err != nil {
+		cleanup := terminate()
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("invalid search snapshot cleanup is unconfirmed", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("search snapshot identity is unavailable", cleanup)}
+	}
+	checkCurrent := func(operation func() error) error {
+		check := func() error {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if !s.currentLocked(op) || op.revoked {
+				return ErrPolicyChanged
+			}
+			return operation()
+		}
+		if authority != nil {
+			return authority.WithCurrent(check)
+		}
+		return check()
+	}
+	transferErr := checkCurrent(func() error {
+		capabilityWorker, ok := worker.(SearchSnapshotCapabilityWorker)
+		if !ok {
+			return ErrUnavailable
+		}
+		if err := capabilityWorker.TransferSearchSnapshot(ctx, snapshot, identity); err != nil {
+			return err
+		}
+		op.released = true
+		op.evidence.CapabilitySent = true
+		op.evidence.CapabilityIdentity = identity
+		return nil
+	})
+	if transferErr != nil {
+		cleanup := terminate()
+		if !cleanup.cleanupConfirmed() {
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search snapshot transfer refusal cleanup is unconfirmed", cleanup)}
+		}
+		if errors.Is(transferErr, ErrPolicyChanged) {
+			return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("search policy changed before content handoff", cleanup)}
+		}
+		return WorkerResult{Outcome: ReadNotExecuted, Detail: withTerminationDiagnostic("search snapshot handoff was refused", cleanup)}
+	}
+	if err := worker.AwaitReadStarted(ctx); err != nil {
+		cleanup := terminate()
+		return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search snapshot was transferred but worker start is unconfirmed", cleanup)}
+	}
+	s.mu.Lock()
+	op.state = StateRunning
+	op.evidence.ReadStarted = true
+	stale := !s.currentLocked(op) || op.revoked
+	s.mu.Unlock()
+	if stale {
+		cleanup := terminate()
+		return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search worker result suppressed after revocation", cleanup)}
+	}
+	workerResult, readErr := worker.ReadResult(ctx)
+	var wait workerWaitResult
+	if publish {
+		wait = s.waitWorker(op, worker)
+	} else {
+		var waitErr error
+		wait, waitErr = s.waitWorkerContext(ctx, op, worker)
+		if waitErr != nil {
+			cleanup := terminate()
+			clear(workerResult.Bytes)
+			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search content worker join exceeded the deadline", cleanup)}
+		}
+	}
+	if readErr != nil || wait.ExitErr != nil || !wait.Joined {
+		clear(workerResult.Bytes)
+		return WorkerResult{Outcome: ReadUnknown, Detail: "search worker result or cleanup could not be confirmed"}
+	}
+	if err := runCheckpoint(s.checkpointHook(), CheckpointAfterSearchContent); err != nil || ctx.Err() != nil {
+		clear(workerResult.Bytes)
+		return WorkerResult{Outcome: ReadCancelled, Detail: "search result discarded after content scan cancellation"}
+	}
+	s.mu.Lock()
+	stale = !s.currentLocked(op) || op.revoked
+	s.mu.Unlock()
+	if stale {
+		clear(workerResult.Bytes)
+		return WorkerResult{Outcome: ReadUnknown, Detail: "search result suppressed after revocation"}
+	}
+	return workerResult
+}
 func workerFailureDiagnostic(worker SandboxWorker, fallback error) string {
 	if source, ok := worker.(interface{ FailureDetail() string }); ok {
 		if detail := source.FailureDetail(); detail != "" {

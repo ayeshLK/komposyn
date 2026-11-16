@@ -115,17 +115,16 @@ destination. Directory selection grants no read permission. See the [read
 acceptance record](issue-215-completion-tracking.md) and
 [#278 evidence record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362).
 
-`search_files` remains unavailable on every route. The request schema and
-runtime approval binding are being prepared behind an independent
-`SearchFilesAvailable` host gate that defaults closed. The current fixed
-worker has no search protocol or search-specific seccomp profile; therefore
-no search candidate may be read or disclosed by this revision. Existing read
-and listing evidence is not search enforcement evidence. Enablement requires
-the complete two-phase host candidate validation and content-worker design,
-native search acceptance on the exact supported profile, and independent
-review. See [the search design note](search-files-design.md) for the proposed
-limits and enforcement boundary; those values are not yet measured search
-behavior.
+`search_files` remains unavailable on every route. The request schema,
+approval binding, host candidate validation and pathless sealed-snapshot worker
+protocol are implemented behind an independent `SearchFilesAvailable` gate
+that defaults closed. Search traversal and content workers use separate
+operation-specific seccomp profiles. No search native acceptance has been run
+or reviewed, so these implementation checks do not establish filesystem
+enforcement. Existing read and listing evidence is not search evidence.
+Enablement still requires search-specific native acceptance on the exact
+supported profile and independent review. See [the search design note](search-files-design.md)
+for limits and the enforcement boundary.
 
 ## Runtime and UI reasons
 
