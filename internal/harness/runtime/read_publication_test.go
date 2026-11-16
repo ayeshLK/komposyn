@@ -877,6 +877,51 @@ func TestAdvancedListingOptionsAreNotAdvertisedOrAcceptedBeforeNativeEvidence(t 
 	}
 }
 
+func TestOversizedListingOptionsAreRejectedBeforeAdmissionOrApproval(t *testing.T) {
+	globs := make([]string, 26)
+	for i := range globs {
+		globs[i] = strings.Repeat("a", 80) + "*"
+	}
+	arguments, err := json.Marshal(tools.ListFilesInput{Path: "/tmp/sample", NameGlobs: globs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	optionsFrame, err := json.Marshal(struct {
+		Recursive      bool
+		IncludeHidden  bool
+		IncludeIgnored bool
+		NameGlobs      []string
+	}{NameGlobs: globs})
+	if err != nil || len(optionsFrame) <= 2048 {
+		t.Fatalf("fixture options frame length=%d err=%v; want over 2048", len(optionsFrame), err)
+	}
+
+	registry := tools.NewRegistry()
+	if err := registry.Register(listFilesTool{optionsAvailable: true}); err != nil {
+		t.Fatal(err)
+	}
+	host := &retainedAdmissionFixture{}
+	approvalCalls := 0
+	readRuntime := newToolRuntime(ToolRuntimeConfig{
+		Registry: registry, ReadAdmission: host,
+		Approval: ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			approvalCalls++
+			return permissions.ApprovalOnce, "", nil
+		}),
+	})
+	call := provider.ToolCall{CallID: "oversized-list", ToolID: tools.ListFilesID, Arguments: arguments}
+	_, activity, _, interrupted, capture := readRuntime.executeOne(
+		context.Background(), "conversation", "turn", call, registry.Definitions(), 1024,
+		"/tmp", func() bool { return true }, nil, "openai/model/profile",
+	)
+	if activity.Outcome != tools.OutcomeNotExecuted || interrupted || capture != nil {
+		t.Fatalf("oversized invocation result=%+v interrupted=%t capture=%v", activity, interrupted, capture)
+	}
+	if host.admitted != 0 || host.prepared != 0 || approvalCalls != 0 {
+		t.Fatalf("oversized request crossed authority boundary: admitted=%d prepared=%d approvals=%d", host.admitted, host.prepared, approvalCalls)
+	}
+}
+
 func TestReadFileAdvertisementRequiresSelectedRootAndApprovalIsExplicit(t *testing.T) {
 	for _, test := range []struct {
 		name          string

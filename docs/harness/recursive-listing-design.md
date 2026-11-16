@@ -49,13 +49,19 @@ ignore bytes/rule counts (up to 64 KiB for the selected-root ancestor chain and
 objects remain private. Results carry an incomplete flag if a safe limit stops
 coverage; budget exhaustion never publishes unfiltered or exhaustive results.
 
-The intended supported profile is the existing trusted Linux Bubblewrap
-profile. The current environment's `/usr/bin/bwrap` is owned by `nobody`, so it
-does not satisfy the repository's trusted-backend policy. Recursive
-advertisement must remain withheld until the extended native runner passes
-the descendant-race, alias/protection, mount, cancellation, filtering and
-bounded-limit cases on the tested source revision and the report receives
-independent review. The public `sandbox.Service` forwards the implementation's
-separate options gate, which remains false in production. Existing
+The proposed supported profile is trusted Linux amd64 Bubblewrap using the
+`ro-bind-fd` worker-image bind mode. The launcher exposes the profile only
+after trust, capability, and worker checks succeed; the service additionally
+requires successful fixed-worker composition. Other bind modes remain
+unavailable because the accepted native run did not measure them. Other
+architectures remain unavailable because native evidence covers amd64 only.
+The runtime parser rejects effective options whose encoded worker frame would
+exceed 2,048 bytes, before approval or worker startup; the worker retains the
+same transfer bound as a second check. The exact
+clean revision `eb56eef57c90b3c5a653b99e1d3a3dcec451cfc5` passed the extended
+listing cases, including descendant races, alias/protection, mount boundaries,
+post-traversal cancellation, filtering, and bounded limits. The maintainer
+approved enabling this measured profile in this task thread on 2026-11-16.
+Other bind modes remain unavailable. Existing
 nonrecursive evidence does not enable recursion. See the [#317 completion and
 evidence matrix](issue-317-completion-tracking.md).

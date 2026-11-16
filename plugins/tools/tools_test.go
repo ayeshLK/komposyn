@@ -185,6 +185,47 @@ func TestConversationToolSchemasAndBounds(t *testing.T) {
 	}
 }
 
+func TestParseListFilesRejectsOptionsThatExceedWorkerFrame(t *testing.T) {
+	var accepted, rejected json.RawMessage
+	acceptedBytes, rejectedBytes := 0, 0
+	for count := 1; count <= MaxListFilesGlobs; count++ {
+		for size := 1; size <= MaxListFilesGlobBytes; size++ {
+			globs := make([]string, count)
+			for i := range globs {
+				globs[i] = strings.Repeat("a", size-1) + "*"
+			}
+			options, err := json.Marshal(struct {
+				Recursive      bool
+				IncludeHidden  bool
+				IncludeIgnored bool
+				NameGlobs      []string
+			}{NameGlobs: globs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, err := json.Marshal(ListFilesInput{Path: "/tmp/sample", NameGlobs: globs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case len(options) <= MaxListFilesOptionsFrameBytes && len(options) > acceptedBytes:
+				accepted, acceptedBytes = input, len(options)
+			case len(options) > MaxListFilesOptionsFrameBytes && (rejectedBytes == 0 || len(options) < rejectedBytes):
+				rejected, rejectedBytes = input, len(options)
+			}
+		}
+	}
+	if acceptedBytes == 0 || acceptedBytes > MaxListFilesOptionsFrameBytes || rejectedBytes <= MaxListFilesOptionsFrameBytes {
+		t.Fatalf("could not construct adjacent frame boundary cases: accepted=%d rejected=%d", acceptedBytes, rejectedBytes)
+	}
+	if _, err := ParseListFiles(accepted); err != nil {
+		t.Fatalf("largest in-bound options payload (%d bytes) rejected: %v", acceptedBytes, err)
+	}
+	if _, err := ParseListFiles(rejected); err == nil {
+		t.Fatalf("over-bound options payload (%d bytes) accepted", rejectedBytes)
+	}
+}
+
 func TestListFilesDefinitionLimitsDisclosureToOneDirectory(t *testing.T) {
 	description := strings.ToLower(ListFilesDefinition().Description)
 	for _, phrase := range []string{"one directory", "once approval", "hidden", "ignored", "symlinks", "working directory grants no listing permission"} {

@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -630,6 +631,22 @@ func TestStage6PreferredBindModeIsFeatureCheckedWithoutChangingAutomaticSelectio
 	}
 	if mode, err := selectWorkerBindModePreferred(modern, source, BindMode("unknown")); err == nil || mode != "" {
 		t.Fatalf("unknown explicit mode was accepted: mode=%q err=%v", mode, err)
+	}
+}
+
+func TestAdvancedDirectoryListingProfileRequiresMeasuredDescriptorBind(t *testing.T) {
+	if (*workerLauncher)(nil).AdvancedDirectoryListingProfileAvailable() {
+		t.Fatal("nil launcher exposed the advanced listing profile")
+	}
+	for _, mode := range []BindMode{BindModeFileSnapshot, BindMode("unknown")} {
+		launcher := &workerLauncher{capability: BubblewrapCapabilities{BindMode: mode}}
+		if launcher.AdvancedDirectoryListingProfileAvailable() {
+			t.Fatalf("bind mode %q exposed an unmeasured advanced listing profile", mode)
+		}
+	}
+	launcher := &workerLauncher{capability: BubblewrapCapabilities{BindMode: BindModeDescriptor}}
+	if got, want := launcher.AdvancedDirectoryListingProfileAvailable(), runtime.GOARCH == "amd64"; got != want {
+		t.Fatalf("descriptor bind profile eligibility=%t, want amd64-only result %t on %s", got, want, runtime.GOARCH)
 	}
 }
 

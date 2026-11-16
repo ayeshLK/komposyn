@@ -28,22 +28,23 @@ const (
 	UpdatePlanID       ID = "update_plan"
 	RequestUserInputID ID = "request_user_input"
 
-	MaxPlanInputBytes       = 16 << 10
-	MaxPlanSteps            = 32
-	MaxPlanStepRunes        = 160
-	MaxPlanTextBytes        = 8 << 10
-	MaxUserInputBytes       = 4 << 10
-	MaxUserInputQuestion    = 500
-	MaxSuggestedAnswers     = 3
-	MaxSuggestedAnswerLabel = 80
-	MaxSuggestedAnswerHelp  = 160
-	MaxUserInputTextBytes   = 2 << 10
-	MaxReadFileInputBytes   = 4 << 10
-	MaxReadFilePathBytes    = 2 << 10
-	MaxListFilesInputBytes  = 4 << 10
-	MaxListFilesPathBytes   = 2 << 10
-	MaxListFilesGlobs       = 32
-	MaxListFilesGlobBytes   = 128
+	MaxPlanInputBytes             = 16 << 10
+	MaxPlanSteps                  = 32
+	MaxPlanStepRunes              = 160
+	MaxPlanTextBytes              = 8 << 10
+	MaxUserInputBytes             = 4 << 10
+	MaxUserInputQuestion          = 500
+	MaxSuggestedAnswers           = 3
+	MaxSuggestedAnswerLabel       = 80
+	MaxSuggestedAnswerHelp        = 160
+	MaxUserInputTextBytes         = 2 << 10
+	MaxReadFileInputBytes         = 4 << 10
+	MaxReadFilePathBytes          = 2 << 10
+	MaxListFilesInputBytes        = 4 << 10
+	MaxListFilesPathBytes         = 2 << 10
+	MaxListFilesOptionsFrameBytes = 2048
+	MaxListFilesGlobs             = 32
+	MaxListFilesGlobBytes         = 128
 )
 
 const ReadFileID ID = "read_file"
@@ -121,6 +122,20 @@ func ParseListFiles(raw []byte) (ListFilesInput, error) {
 		if _, err := path.Match(strings.ReplaceAll(pattern, "[!", "[^"), ""); err != nil {
 			return ListFilesInput{}, errors.New("filename glob is invalid")
 		}
+	}
+	encodedOptions, err := json.Marshal(struct {
+		Recursive      bool
+		IncludeHidden  bool
+		IncludeIgnored bool
+		NameGlobs      []string
+	}{
+		Recursive:      input.Recursive,
+		IncludeHidden:  input.IncludeHidden,
+		IncludeIgnored: input.IncludeIgnored,
+		NameGlobs:      append([]string(nil), input.NameGlobs...),
+	})
+	if err != nil || len(encodedOptions) > MaxListFilesOptionsFrameBytes {
+		return ListFilesInput{}, errors.New("listing options exceed the worker transfer bound")
 	}
 	return input, nil
 }

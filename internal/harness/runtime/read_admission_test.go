@@ -31,6 +31,7 @@ import (
 type retainedAdmissionFixture struct {
 	metadata     FilesystemReadAdmission
 	current      FilesystemReadAdmission
+	admitted     int
 	prepareError error
 	prepared     int
 	committed    int
@@ -38,6 +39,7 @@ type retainedAdmissionFixture struct {
 }
 
 func (f *retainedAdmissionFixture) AdmitFilesystemRead(_ context.Context, _ tools.Invocation, destination string) (FilesystemReadAdmission, error) {
+	f.admitted++
 	metadata := f.metadata
 	metadata.Destination = destination
 	f.current = metadata
