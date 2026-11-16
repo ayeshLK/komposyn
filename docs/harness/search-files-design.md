@@ -111,14 +111,12 @@ existing beneath-constrained directory lookup, metadata, and bounded
 ignore-file operations. The content worker uses a separate profile that denies
 pathname lookup and receives only the sealed content snapshot. Exact file reads
 keep their stricter existing profile; no listing or read profile is weakened
-for search. The operation profiles are implemented, but the first trusted-host
-candidate failed before launching search workers because the public Service
-rejected search admission. The next run exercised the search workers and
-passed all search cases except cancellation, where the test incorrectly expected
-a completed turn instead of the runtime's interrupted outcome and initially
-confused the traversal descriptor transfer with the separate content snapshot
-handoff. Native acceptance remains incomplete pending a rerun of the corrected
-case.
+for search. The final trusted-host run measured all seven search-specific Stage
+6 cases as passes on Linux amd64 with Bubblewrap `ro-bind-fd`. The cancellation
+case verified that the content worker joins before its separate snapshot
+handoff. The full Stage 6 profile remains incomplete because mutation and shell
+cases are outside its implemented scope. Search is still unavailable until
+independent review and explicit enablement approval.
 
 Behavioral tests exercise the runtime-to-provider seam with synthetic content;
 the Stage 6 fixture exercises the composed sandbox Service and provider
@@ -126,6 +124,8 @@ continuation. Native cases include positive search, protected aliases,
 protected candidate substitution by independent same-user actors,
 content-worker cancellation/cleanup, root/directory movement, owner rotation,
 mount-boundary exclusion, revocation, and stale-publication suppression. All
-search-specific cases still require native measurement. Synthetic
-runtime-composition outcomes remain separate from native worker enforcement. Production search availability stays false
-until the operation-specific results are recorded and reviewed.
+seven search-specific cases passed in the recorded trusted-host run; see the
+[#318 completion record](issue-318-search-completion.md) for commit and report
+hashes. Synthetic runtime-composition outcomes remain separate from native
+worker enforcement. Production search availability stays false pending
+independent review and a separate enablement decision.

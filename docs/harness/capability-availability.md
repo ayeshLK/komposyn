@@ -119,19 +119,16 @@ acceptance record](issue-215-completion-tracking.md) and
 approval binding, host candidate validation and pathless sealed-snapshot worker
 protocol are implemented behind an independent `SearchFilesAvailable` gate
 that defaults closed. Search traversal and content workers use separate
-operation-specific seccomp profiles. The first trusted-host candidate run
-failed before any search worker launch because the public Service rejected
-`search_files` admission; it is recorded as a failed candidate, not search
-acceptance. Existing read and listing evidence is not search evidence.
-Enablement still requires search-specific native acceptance on the exact
-supported profile and independent review. The Stage 6 overlay now contains
-search-specific mount-boundary and lifecycle cases. A second trusted-host run
-confirmed that the Service fix enables the search path and measured all search
-cases except cancellation; that case exposed an incorrect harness expectation
-about interrupted turns. The updated cancellation assertion and exact commit
-still need native acceptance. See [the search design
+operation-specific seccomp profiles. A trusted-host Stage 6 run measured all
+seven search-specific cases as passes on clean commit
+`77785c29ae602d9d1dd3cd0a1a5e84e4413d28f1`, Linux amd64, Bubblewrap 0.9.0,
+and `ro-bind-fd`. The full Stage 6 profile remains incomplete because its
+separate mutation and shell cases are unimplemented. This evidence does not
+approve enablement: the production gate remains closed pending independent
+review and an explicit enablement decision. The run used the Stage 6 test-binary
+worker, not the shipped executable or a real provider. See [the search design
 note](search-files-design.md) and [#318 completion matrix](issue-318-search-completion.md)
-for limits, current coverage and remaining evidence.
+for profile limits, provenance and remaining decisions.
 
 ## Runtime and UI reasons
 

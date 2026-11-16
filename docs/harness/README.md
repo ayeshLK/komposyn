@@ -113,8 +113,9 @@ movement/replacement, owner rotation, mount boundaries and worker cleanup. The
 accepted run and profile-specific limits are in the [#317 completion and
 evidence matrix](issue-317-completion-tracking.md); runner and reproduction
 details are in the [Stage 6 runner guide](issue-215-stage6-runner.md).
-The bounded `search_files` implementation and its still-pending native
-acceptance matrix are tracked in the [#318 search completion record](issue-318-search-completion.md).
+The bounded `search_files` implementation, trusted-host evidence, and
+pending enablement decision are tracked in the [#318 search completion
+record](issue-318-search-completion.md).
 
 Use `/cd <path>` in chat to change the working directory for future relative
 file requests. The path may be absolute or relative to the current working
