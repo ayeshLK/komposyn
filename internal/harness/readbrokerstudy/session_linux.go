@@ -62,7 +62,7 @@ type readOperation struct {
 	admission          *admissionRecord
 	gen                GenerationSet
 	state              OperationState
-	worker             SandboxWorker
+	worker             *workerLifecycle
 	cancel             context.CancelFunc
 	revoked            bool
 	released           bool
@@ -70,13 +70,21 @@ type readOperation struct {
 	cleanupRequired    bool
 	cleanupObligation  bool
 	evidenceRecorded   bool
-	waitOnce           sync.Once
-	waitDone           chan struct{}
-	waitErr            error
 	completed          bool
 	done               chan struct{}
 	probe              WorkerProbe
 	evidence           ReadEvidence
+}
+
+// workerLifecycle belongs to one child process. A single authorized operation
+// may run a traversal worker followed by a content worker, so wait-once state
+// must never be shared between those sequential children.
+type workerLifecycle struct {
+	worker   SandboxWorker
+	waitOnce sync.Once
+	waitDone chan struct{}
+	waitErr  error
+	joined   bool
 }
 
 // workerWaitResult keeps process exit status separate from join confirmation.
@@ -559,17 +567,19 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	if err != nil {
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: "sandbox setup refused before capability handoff: " + boundedText(err.Error(), 768)}
 	}
+	workerState := &workerLifecycle{worker: worker}
 	s.mu.Lock()
-	op.worker = worker
+	op.worker = workerState
+	op.workerJoined = false
 	op.cleanupRequired = true
 	op.evidence.WorkerStarted = true
 	invalid := !s.currentLocked(op) || op.revoked
 	s.mu.Unlock()
 	terminateAndWait := func() workerTerminationResult {
-		if publish {
-			return s.terminateAndWait(op, worker)
+		if publish && op.admissionOperation != AdmissionSearchFiles {
+			return s.terminateAndWait(op, workerState)
 		}
-		return s.terminateAndWaitContext(ctx, op, worker)
+		return s.terminateAndWaitContext(ctx, op, workerState)
 	}
 	if invalid {
 		cleanup := terminateAndWait()
@@ -780,11 +790,11 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 	workerResult, readErr := worker.ReadResult(ctx)
 	defer func() { clear(workerResult.Bytes) }()
 	var wait workerWaitResult
-	if publish {
-		wait = s.waitWorker(op, worker)
+	if publish && op.admissionOperation != AdmissionSearchFiles {
+		wait = s.waitWorker(op, workerState)
 	} else {
 		var waitErr error
-		wait, waitErr = s.waitWorkerContext(ctx, op, worker)
+		wait, waitErr = s.waitWorkerContext(ctx, op, workerState)
 		if waitErr != nil {
 			cleanup := terminateAndWait()
 			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("worker join exceeded the execution deadline; cleanup remains pending", cleanup)}
@@ -811,12 +821,12 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 			return WorkerResult{Outcome: ReadUnknown, Detail: "search host filter is unavailable"}
 		}
 		traversalBytes := workerResult.Bytes
-		filtered, filterErr := filter.filterSearchListing(ctx, traversalBytes)
+		filtered, remainingWork, filterErr := filter.filterSearchListingWithBudget(ctx, traversalBytes)
 		clear(traversalBytes)
 		if filterErr != nil {
 			return WorkerResult{Outcome: ReadNotExecuted, Detail: "search candidates could not be safely filtered"}
 		}
-		snapshot, searchErr := filter.prepareSearchSnapshot(ctx, filtered, op.admission.request.SearchQuery)
+		snapshot, searchErr := filter.prepareSearchSnapshot(ctx, filtered, op.admission.request.SearchQuery, remainingWork)
 		clear(filtered)
 		if searchErr != nil {
 			return WorkerResult{Outcome: ReadNotExecuted, Detail: "search candidates could not be safely inspected"}
@@ -901,17 +911,16 @@ func (s *fixtureSession) runSearchContentWorker(ctx context.Context, op *readOpe
 	if err != nil {
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: "search content worker setup refused"}
 	}
+	workerState := &workerLifecycle{worker: worker}
 	s.mu.Lock()
-	op.worker = worker
+	op.worker = workerState
+	op.workerJoined = false
 	op.cleanupRequired = true
 	op.evidence.WorkerStarted = true
 	invalid := !s.currentLocked(op) || op.revoked
 	s.mu.Unlock()
 	terminate := func() workerTerminationResult {
-		if publish {
-			return s.terminateAndWait(op, worker)
-		}
-		return s.terminateAndWaitContext(ctx, op, worker)
+		return s.terminateAndWaitContext(ctx, op, workerState)
 	}
 	if invalid {
 		cleanup := terminate()
@@ -1004,16 +1013,12 @@ func (s *fixtureSession) runSearchContentWorker(ctx context.Context, op *readOpe
 	}
 	workerResult, readErr := worker.ReadResult(ctx)
 	var wait workerWaitResult
-	if publish {
-		wait = s.waitWorker(op, worker)
-	} else {
-		var waitErr error
-		wait, waitErr = s.waitWorkerContext(ctx, op, worker)
-		if waitErr != nil {
-			cleanup := terminate()
-			clear(workerResult.Bytes)
-			return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search content worker join exceeded the deadline", cleanup)}
-		}
+	var waitErr error
+	wait, waitErr = s.waitWorkerContext(ctx, op, workerState)
+	if waitErr != nil {
+		cleanup := terminate()
+		clear(workerResult.Bytes)
+		return WorkerResult{Outcome: ReadUnknown, Detail: withTerminationDiagnostic("search content worker join exceeded the deadline", cleanup)}
 	}
 	if readErr != nil || wait.ExitErr != nil || !wait.Joined {
 		clear(workerResult.Bytes)
@@ -1108,7 +1113,7 @@ func (s *fixtureSession) invalidateLocked(selectOp func(*readOperation) bool) []
 			s.cleanupBlocked = true
 		}
 		if op.worker != nil {
-			workers = append(workers, op.worker)
+			workers = append(workers, op.worker.worker)
 		}
 	}
 	return workers
@@ -1151,21 +1156,21 @@ func (s *fixtureSession) terminateAndCheck(workers []SandboxWorker) error {
 	return terminateErr
 }
 
-func (s *fixtureSession) waitWorker(op *readOperation, worker SandboxWorker) workerWaitResult {
-	if worker == nil {
+func (s *fixtureSession) waitWorker(op *readOperation, worker *workerLifecycle) workerWaitResult {
+	if worker == nil || worker.worker == nil {
 		return workerWaitResult{Joined: true}
 	}
 	<-s.startWorkerWait(op, worker)
-	return s.workerWaitSnapshot(op)
+	return s.workerWaitSnapshot(worker)
 }
 
-func (s *fixtureSession) waitWorkerContext(ctx context.Context, op *readOperation, worker SandboxWorker) (workerWaitResult, error) {
-	if worker == nil {
+func (s *fixtureSession) waitWorkerContext(ctx context.Context, op *readOperation, worker *workerLifecycle) (workerWaitResult, error) {
+	if worker == nil || worker.worker == nil {
 		return workerWaitResult{Joined: true}, nil
 	}
 	select {
 	case <-s.startWorkerWait(op, worker):
-		return s.workerWaitSnapshot(op), nil
+		return s.workerWaitSnapshot(worker), nil
 	case <-ctx.Done():
 		return workerWaitResult{}, ctx.Err()
 	}
@@ -1174,49 +1179,52 @@ func (s *fixtureSession) waitWorkerContext(ctx context.Context, op *readOperatio
 // workerWaitSnapshot reads mutable join state under the same lock used by
 // Close. waitDone publishes the waiter goroutine's writes, but Close may
 // independently confirm a join after that channel has closed.
-func (s *fixtureSession) workerWaitSnapshot(op *readOperation) workerWaitResult {
+func (s *fixtureSession) workerWaitSnapshot(worker *workerLifecycle) workerWaitResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return workerWaitResult{ExitErr: op.waitErr, Joined: op.workerJoined}
+	return workerWaitResult{ExitErr: worker.waitErr, Joined: worker.joined}
 }
 
-func (s *fixtureSession) startWorkerWait(op *readOperation, worker SandboxWorker) <-chan struct{} {
-	op.waitOnce.Do(func() {
-		op.waitDone = make(chan struct{})
+func (s *fixtureSession) startWorkerWait(op *readOperation, worker *workerLifecycle) <-chan struct{} {
+	worker.waitOnce.Do(func() {
+		worker.waitDone = make(chan struct{})
 		go func() {
-			err := worker.Wait()
-			joined := worker.Joined()
+			err := worker.worker.Wait()
+			joined := worker.worker.Joined()
 			if !joined && err == nil {
 				err = ErrCleanupPending
 			}
 			s.mu.Lock()
-			op.waitErr = err
-			op.workerJoined = joined
-			if joined && op.cleanupObligation && !op.completed {
+			worker.waitErr = err
+			worker.joined = joined
+			if op.worker == worker {
+				op.workerJoined = joined
+			}
+			if joined && op.cleanupObligation && !op.completed && op.worker == worker {
 				s.completeJoinedLocked(op, WorkerResult{Outcome: ReadUnknown, Detail: "worker joined after the execution deadline; result suppressed"})
 			}
 			s.mu.Unlock()
-			close(op.waitDone)
+			close(worker.waitDone)
 		}()
 	})
-	return op.waitDone
+	return worker.waitDone
 }
 
-func (s *fixtureSession) terminateAndWait(op *readOperation, worker SandboxWorker) workerTerminationResult {
+func (s *fixtureSession) terminateAndWait(op *readOperation, worker *workerLifecycle) workerTerminationResult {
 	if worker == nil {
 		return workerTerminationResult{Wait: workerWaitResult{Joined: true}}
 	}
-	return workerTerminationResult{TerminationErr: worker.Terminate(), Wait: s.waitWorker(op, worker)}
+	return workerTerminationResult{TerminationErr: worker.worker.Terminate(), Wait: s.waitWorker(op, worker)}
 }
 
-func (s *fixtureSession) terminateAndWaitContext(ctx context.Context, op *readOperation, worker SandboxWorker) workerTerminationResult {
+func (s *fixtureSession) terminateAndWaitContext(ctx context.Context, op *readOperation, worker *workerLifecycle) workerTerminationResult {
 	if worker == nil {
 		return workerTerminationResult{Wait: workerWaitResult{Joined: true}}
 	}
-	terminationErr := worker.Terminate()
+	terminationErr := worker.worker.Terminate()
 	wait, waitErr := s.waitWorkerContext(ctx, op, worker)
 	if waitErr != nil {
-		wait = s.workerWaitSnapshot(op)
+		wait = s.workerWaitSnapshot(worker)
 	}
 	if !wait.Joined {
 		s.mu.Lock()
@@ -1252,7 +1260,7 @@ func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
 			other.cleanupObligation = true
 			other.state = StateTerminating
 			if other.worker != nil {
-				terminate = append(terminate, other.worker)
+				terminate = append(terminate, other.worker.worker)
 			}
 		}
 		s.mu.Unlock()
@@ -1323,7 +1331,7 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 	activeOps := make([]*readOperation, 0, len(s.active))
 	type workerWait struct {
 		op     *readOperation
-		worker SandboxWorker
+		worker *workerLifecycle
 	}
 	waits := make([]workerWait, 0, len(s.active))
 	for _, op := range s.active {
@@ -1338,15 +1346,18 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 	terminateErr := terminateWorkers(workers)
 	terminateErr = errors.Join(terminateErr, s.retireAdmissionRecords(ctx, admissions))
 	for _, item := range waits {
-		if item.worker.Joined() {
+		if item.worker.worker.Joined() {
 			s.mu.Lock()
-			item.op.workerJoined = true
+			item.worker.joined = true
+			if item.op.worker == item.worker {
+				item.op.workerJoined = true
+			}
 			s.mu.Unlock()
 			continue
 		}
 		waitResult, waitErr := s.waitWorkerContext(ctx, item.op, item.worker)
 		if waitErr != nil {
-			if !item.worker.Joined() {
+			if !item.worker.worker.Joined() {
 				terminateErr = errors.Join(terminateErr, ErrCleanupPending)
 			} else {
 				terminateErr = errors.Join(terminateErr, waitErr)

@@ -63,8 +63,9 @@ type preparedSearchCandidate struct {
 }
 
 type searchSnapshotInput struct {
-	Query string               `json:"query"`
-	Files []searchSnapshotFile `json:"files"`
+	Query      string               `json:"query"`
+	WorkBudget int                  `json:"work_budget"`
+	Files      []searchSnapshotFile `json:"files"`
 }
 
 type searchSnapshotFile struct {
@@ -162,8 +163,8 @@ type searchWorkerResult struct {
 
 var errSearchCandidateChanged = errors.New("search candidate changed during preparation")
 
-func (p *preparedDirectoryList) prepareSearchSnapshot(ctx context.Context, raw []byte, query string) (prepared preparedSearchSnapshot, resultErr error) {
-	if ctx == nil || query == "" || len(query) > 512 || strings.ContainsAny(query, "\r\n\x00") {
+func (p *preparedDirectoryList) prepareSearchSnapshot(ctx context.Context, raw []byte, query string, workBudget int) (prepared preparedSearchSnapshot, resultErr error) {
+	if ctx == nil || query == "" || len(query) > 512 || strings.ContainsAny(query, "\r\n\x00") || workBudget < 0 || workBudget > maxSearchWorkUnits {
 		return preparedSearchSnapshot{}, ErrProtocol
 	}
 	p.mu.Lock()
@@ -271,7 +272,7 @@ func (p *preparedDirectoryList) prepareSearchSnapshot(ctx context.Context, raw [
 	if err := ctx.Err(); err != nil {
 		return preparedSearchSnapshot{}, err
 	}
-	result := searchSnapshotInput{Query: query, Files: make([]searchSnapshotFile, 0, len(candidates))}
+	result := searchSnapshotInput{Query: query, WorkBudget: workBudget, Files: make([]searchSnapshotFile, 0, len(candidates))}
 	prepared = preparedSearchSnapshot{Paths: make([]string, 0, len(candidates)), Query: query, Incomplete: incomplete, Skipped: skipped}
 	remainingBytes := maxSearchScanBytes
 	for _, candidate := range candidates {
@@ -326,11 +327,15 @@ func searchSnapshotBytes(data []byte) (searchWorkerResult, error) {
 		return searchWorkerResult{}, ErrProtocol
 	}
 	var input searchSnapshotInput
-	if json.Unmarshal(data, &input) != nil || input.Query == "" || len(input.Query) > 512 || strings.ContainsAny(input.Query, "\r\n\x00") || len(input.Files) > maxSearchCandidates {
+	if json.Unmarshal(data, &input) != nil || input.Query == "" || len(input.Query) > 512 || strings.ContainsAny(input.Query, "\r\n\x00") || input.WorkBudget < 0 || input.WorkBudget > maxSearchWorkUnits || len(input.Files) > maxSearchCandidates {
 		return searchWorkerResult{}, ErrProtocol
 	}
 	result := searchWorkerResult{Matches: make([]searchWorkerMatch, 0)}
-	budget := &searchBudget{bytes: maxSearchScanBytes, work: maxSearchWorkUnits}
+	if input.WorkBudget == 0 && len(input.Files) > 0 {
+		result.Incomplete = true
+		return result, nil
+	}
+	budget := &searchBudget{bytes: maxSearchScanBytes, work: input.WorkBudget}
 	for index, file := range input.Files {
 		if len(file.Content) > MaxReadBytes || len(file.Content) > budget.bytes {
 			return searchWorkerResult{}, ErrProtocol

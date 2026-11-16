@@ -27,6 +27,50 @@ import (
 	"testing"
 )
 
+func TestSearchFilterAndMatcherShareWorkAllowance(t *testing.T) {
+	filterBudget := &directoryFilterBudget{ctx: context.Background(), remaining: maxDirectoryFilterWork}
+	if err := filterBudget.consume(maxDirectoryFilterWork - 5); err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(searchSnapshotInput{
+		Query: "needle", WorkBudget: filterBudget.remaining,
+		Files: []searchSnapshotFile{{Content: []byte("needle")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(input)
+	limited, err := searchSnapshotBytes(input)
+	if err != nil || !limited.Incomplete || len(limited.Matches) != 0 {
+		t.Fatalf("matcher with filter allowance remaining=%d returned %+v, err=%v; want truthful incomplete result", filterBudget.remaining, limited, err)
+	}
+
+	input, err = json.Marshal(searchSnapshotInput{
+		Query: "needle", WorkBudget: maxSearchWorkUnits,
+		Files: []searchSnapshotFile{{Content: []byte("needle")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(input)
+	if _, err := searchSnapshotBytes(input); err != nil {
+		t.Fatalf("matcher with full allowance: %v", err)
+	}
+
+	input, err = json.Marshal(searchSnapshotInput{
+		Query: "needle", WorkBudget: 0,
+		Files: []searchSnapshotFile{{Content: []byte("needle")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(input)
+	limited, err = searchSnapshotBytes(input)
+	if err != nil || !limited.Incomplete || len(limited.Matches) != 0 {
+		t.Fatalf("matcher with zero remaining work returned %+v, err=%v; want truthful incomplete result", limited, err)
+	}
+}
+
 func TestSearchFilteredCandidatesAppliesIgnoreAndSafeSkipBounds(t *testing.T) {
 	root := t.TempDir()
 	for name, contents := range map[string][]byte{
@@ -66,7 +110,7 @@ func TestSearchResultLineAndEnvelopeBoundsAreTruthful(t *testing.T) {
 	for range maxSearchLines + 1 {
 		lines = append(lines, []byte("needle\n")...)
 	}
-	input, err := json.Marshal(searchSnapshotInput{Query: "needle", Files: []searchSnapshotFile{{Content: lines}}})
+	input, err := json.Marshal(searchSnapshotInput{Query: "needle", WorkBudget: maxSearchWorkUnits, Files: []searchSnapshotFile{{Content: lines}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +214,7 @@ func TestSearchSuppressesCandidateReplacedByProtectedObjectBeforePublication(t *
 	prepared := preparedRead.(*preparedDirectoryList)
 	defer prepared.Close()
 	filtered := filterSearchDirectorySnapshot(t, prepared)
-	snapshot, err := prepared.prepareSearchSnapshot(context.Background(), filtered, "needle")
+	snapshot, err := prepared.prepareSearchSnapshot(context.Background(), filtered, "needle", maxSearchWorkUnits)
 	clear(filtered)
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +290,7 @@ func filterSearchDirectorySnapshot(t *testing.T, prepared *preparedDirectoryList
 func executeSearchCandidates(t *testing.T, prepared *preparedDirectoryList, filtered []byte, query string) searchProviderResult {
 	t.Helper()
 	defer clear(filtered)
-	snapshot, err := prepared.prepareSearchSnapshot(context.Background(), filtered, query)
+	snapshot, err := prepared.prepareSearchSnapshot(context.Background(), filtered, query, maxSearchWorkUnits)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -884,6 +884,60 @@ func TestReservedProtectedRouteRefusesBeforeOpeningAbsentOrNonRegularTarget(t *t
 	}
 }
 
+func TestSequentialWorkersHaveIndependentJoinState(t *testing.T) {
+	fixture := newSessionFixture(t, t.TempDir())
+	session, ok := fixture.session.(*fixtureSession)
+	if !ok {
+		t.Fatal("fixture session has unexpected implementation")
+	}
+	op := &readOperation{done: make(chan struct{})}
+	traversal := &fakeWorker{}
+	traversalState := &workerLifecycle{worker: traversal}
+	session.mu.Lock()
+	op.worker = traversalState
+	session.mu.Unlock()
+	if result := session.waitWorker(op, traversalState); !result.Joined {
+		t.Fatal("traversal worker did not join")
+	}
+	if traversal.waitCalls != 1 {
+		t.Fatalf("traversal Wait calls=%d, want 1", traversal.waitCalls)
+	}
+
+	content := &fakeWorker{waitEntered: make(chan struct{}), waitRelease: make(chan struct{})}
+	contentState := &workerLifecycle{worker: content}
+	session.mu.Lock()
+	op.worker = contentState
+	op.workerJoined = false
+	session.mu.Unlock()
+
+	type waitResult struct {
+		result workerWaitResult
+		err    error
+	}
+	finished := make(chan waitResult, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	go func() {
+		result, err := session.waitWorkerContext(ctx, op, contentState)
+		finished <- waitResult{result: result, err: err}
+	}()
+	<-content.waitEntered
+	result := <-finished
+	cancel()
+	if !errors.Is(result.err, context.DeadlineExceeded) || result.result.Joined {
+		t.Fatalf("delayed content worker wait=(%+v,%v), want bounded unconfirmed wait", result.result, result.err)
+	}
+	close(content.waitRelease)
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	joined, err := session.waitWorkerContext(ctx, op, contentState)
+	if err != nil || !joined.Joined {
+		t.Fatalf("content worker wait=(%+v,%v), want confirmed join", joined, err)
+	}
+	if content.waitCalls != 1 || !content.Joined() {
+		t.Fatalf("content worker Wait calls=%d joined=%v, want one confirmed Wait", content.waitCalls, content.Joined())
+	}
+}
+
 func TestUnconfirmedWorkerJoinBlocksFurtherReadsAndResourceRelease(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "cleanup.fixture")

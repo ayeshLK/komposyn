@@ -129,7 +129,7 @@ func TestDirectoryHandoffReturnsBoundedListingFrames(t *testing.T) {
 }
 
 func TestSearchSnapshotHandoffReturnsPathlessLiteralMatches(t *testing.T) {
-	encoded, err := json.Marshal(searchSnapshotInput{Query: "needle", Files: []searchSnapshotFile{{Content: []byte("needle once\nnone\nneedle twice\n")}, {Content: []byte("other\n")}}})
+	encoded, err := json.Marshal(searchSnapshotInput{Query: "needle", WorkBudget: maxSearchWorkUnits, Files: []searchSnapshotFile{{Content: []byte("needle once\nnone\nneedle twice\n")}, {Content: []byte("other\n")}}})
 	if err != nil {
 		t.Fatal(err)
 	}

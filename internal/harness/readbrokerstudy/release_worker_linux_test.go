@@ -134,8 +134,8 @@ func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	if err := json.Unmarshal(reportData, &report); err != nil {
 		t.Fatalf("decode Stage 6 control report: %v", err)
 	}
-	if report.RunnerVersion != "10" || report.Kernel == "" {
-		t.Fatalf("Stage 6 report metadata runner_version=%q kernel=%q; want runner 10 and a kernel release", report.RunnerVersion, report.Kernel)
+	if report.RunnerVersion != "11" || report.Kernel == "" {
+		t.Fatalf("Stage 6 report metadata runner_version=%q kernel=%q; want runner 11 and a kernel release", report.RunnerVersion, report.Kernel)
 	}
 	want := map[string]bool{
 		"synthetic_once_authority_flow":        false,

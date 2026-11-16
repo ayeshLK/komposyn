@@ -17,6 +17,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"debug/elf"
@@ -2914,10 +2915,15 @@ func TestStage6SearchCandidateProtectedSubstitution(t *testing.T) {
 	if err := os.Mkdir(nested, 0700); err != nil {
 		t.Fatal("create nested search directory:", err)
 	}
-	for _, name := range []string{"control.go", "race.go"} {
+	for _, name := range []string{"control.go", "race.go", "same-inode.go"} {
 		if err := os.WriteFile(filepath.Join(nested, name), []byte("synthetic-never-real-key\n"), 0600); err != nil {
 			t.Fatal("create unprotected matching control:", err)
 		}
+	}
+	sameInodePath := filepath.Join(nested, "same-inode.go")
+	sameInodeBefore, err := os.Stat(sameInodePath)
+	if err != nil {
+		t.Fatal("stat same-inode search candidate:", err)
 	}
 	impl := fixture.service.impl.(*linuxImplementation)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -2927,6 +2933,13 @@ func TestStage6SearchCandidateProtectedSubstitution(t *testing.T) {
 	impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
 		if checkpoint != readbrokerstudy.CheckpointAfterSearchContent || transitioned {
 			return nil
+		}
+		if err := os.WriteFile(sameInodePath, bytes.Repeat([]byte{'x'}, len("synthetic-never-real-key\n")), 0600); err != nil {
+			return err
+		}
+		sameInodeAfter, err := os.Stat(sameInodePath)
+		if err != nil || !os.SameFile(sameInodeBefore, sameInodeAfter) || sameInodeAfter.Size() != sameInodeBefore.Size() {
+			return errors.New("same-inode search candidate replacement was not an in-place same-size mutation")
 		}
 		if err := os.Mkdir(filepath.Join(fixture.root, "outside"), 0700); err != nil {
 			return err
@@ -2986,8 +2999,8 @@ func TestStage6SearchCandidateProtectedSubstitution(t *testing.T) {
 	if err := json.Unmarshal([]byte(envelope.Content), &result); err != nil {
 		t.Fatal("decode search result:", err)
 	}
-	if len(result.Matches) != 1 || result.Matches[0]["path"] != "nested/control.go" || !result.Incomplete || result.SkippedFiles != 1 {
-		t.Fatalf("replaced protected candidate was not omitted with truthful incomplete status: %+v", result)
+	if len(result.Matches) != 1 || result.Matches[0]["path"] != "nested/control.go" || !result.Incomplete || result.SkippedFiles != 2 {
+		t.Fatalf("changed candidates were not omitted with truthful incomplete status: %+v", result)
 	}
 	impl.session.SetCheckpointHook(nil)
 	stage6Update("search_candidate_protected_substitution", func(item *stage6Case) {
@@ -2996,7 +3009,7 @@ func TestStage6SearchCandidateProtectedSubstitution(t *testing.T) {
 		item.CapabilityTransferred, item.OnceApprovalCount, item.OnceGrantConsumptionCount = true, fixture.approvals.Load(), 1
 		item.ProviderRequestCount, item.FixtureBytesMatched, item.CleanupConfirmed = len(requests), true, true
 	})
-	stage6Pass("search_candidate_protected_substitution", "after the content worker completed, an independent filesystem transition replaced one matching candidate with a protected auth hardlink; host revalidation omitted it, counted one permitted skip, marked the result incomplete, and retained a matching unprotected control")
+	stage6Pass("search_candidate_protected_substitution", "after the content worker completed, a same-size in-place write changed one matching inode and an independent actor replaced another matching candidate with a protected auth hardlink; host revalidation omitted both, counted two permitted skips, marked the result incomplete, and retained a matching unprotected control")
 }
 
 func TestStage6SearchContentWorkerCancellationCleanup(t *testing.T) {

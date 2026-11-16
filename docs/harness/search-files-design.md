@@ -93,7 +93,10 @@ bytes scanned, 5,000,000 bounded matcher/filter work units, 100 result lines,
 and 64 KiB serialized result bytes. Per-file reads remain capped at 64 KiB;
 ignore input and rule limits reuse the reviewed listing ceilings. The
 128-descriptor cap fits within the transport's existing SCM_RIGHTS limit and
-keeps the content scan to one worker. Search input is rejected before
+keeps the content scan to one worker. Directory filtering debits the work
+allowance first, and the sealed content snapshot carries only the remainder
+to the matcher, so neither phase can reset the five-million-unit ceiling.
+Search input is rejected before
 admission if its encoded worker frame exceeds 2,048 bytes. Limits are not
 aggregate process, CPU, or memory isolation and no cgroup quota is claimed.
 

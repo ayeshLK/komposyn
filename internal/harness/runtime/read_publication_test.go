@@ -521,7 +521,11 @@ func TestDirectoryListingOnceApprovalContinuesToSelectedProvider(t *testing.T) {
 func TestSearchFilesOnceApprovalBindsOptionsAndContinuesToSelectedProvider(t *testing.T) {
 	root := t.TempDir()
 	searchResult := `{"matches":[{"path":"nested/notes.go","line":2,"snippet":"needle in a synthetic fixture"}],"incomplete":false}`
-	arguments := json.RawMessage(`{"path":"` + root + `","query":"needle","recursive":true,"include_hidden":true,"include_ignored":false,"name_globs":["*.go"]}`)
+	argumentBytes, err := json.Marshal(tools.SearchFilesInput{Path: root, Query: "needle", Recursive: true, IncludeHidden: true, NameGlobs: []string{"*.go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := json.RawMessage(argumentBytes)
 	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: root, toolID: tools.SearchFilesID, callArguments: arguments}
 	providers, err := model.NewRegistry(fp)
 	if err != nil {
@@ -577,11 +581,15 @@ func TestSearchFilesOnceApprovalBindsOptionsAndContinuesToSelectedProvider(t *te
 func TestSearchFilesDenialDoesNotExecuteOrDisclose(t *testing.T) {
 	root := t.TempDir()
 	secret := "private synthetic search result"
+	arguments, err := json.Marshal(tools.SearchFilesInput{Path: root, Query: "private"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	fp := &publicationProvider{
 		fakeProvider:  &fakeProvider{id: provider.OpenAI},
 		target:        root,
 		toolID:        tools.SearchFilesID,
-		callArguments: json.RawMessage(`{"path":"` + root + `","query":"private","recursive":false,"include_hidden":false,"include_ignored":false,"name_globs":[]}`),
+		callArguments: json.RawMessage(arguments),
 	}
 	providers, err := model.NewRegistry(fp)
 	if err != nil {
