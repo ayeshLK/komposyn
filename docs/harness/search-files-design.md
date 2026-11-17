@@ -115,12 +115,16 @@ worker-join, and descriptor-close assertions passed on the recorded candidate;
 see the [#318 completion record](issue-318-search-completion.md). Runner 14
 captures filesystem type and selected mount characteristics at actual fixture
 roots, selected search/listing scopes, and nested mount fixtures, with
-path-free observations attached to each case. A fresh trusted-host runner 14
-archive is still required to obtain those values; historical archives are not
-rewritten. Until then, filesystem-specific portability is unestablished.
+path-free observations attached to each case. Its fresh trusted-host archive
+recorded 51 observations, all ext4 (`f_type=0xef53`, mount type `ext4`,
+4096-byte blocks), including read-only nested mount boundaries. This evidence
+is limited to that fixture environment. The runtime availability gate checks
+the Linux amd64 descriptor-bind worker profile, but does not check the selected
+directory's filesystem type; a separate enablement change must enforce the
+ext4-supported profile or gather and approve evidence for other filesystems.
 File-snapshot, other architectures, and non-Linux systems remain unavailable.
-Production search remains gated pending evidence review and a separate
-enablement decision.
+Production search remains gated pending that change, evidence review, and a
+separate enablement decision.
 
 ## Worker operation profiles and tests
 

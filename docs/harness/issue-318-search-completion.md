@@ -1,12 +1,13 @@
 # Issue #318 search implementation and acceptance
 
-Status: the latest trusted-host run measured all implemented #318 search cases
-as passes on clean commit `000c3e6fbcb453a4bad902de934311e93143b9be` with runner
-13 and `ro-bind-fd`. The overall Stage 6 profile remains incomplete because
+Status: runner 14 measured all eight implemented #318 search cases as passes on
+clean commit `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` with trusted Bubblewrap
+0.9.0 and `ro-bind-fd`. All 51 fixture filesystem observations were recorded
+and identified ext4. The overall Stage 6 profile remains incomplete because
 mutation and shell profiles are unavailable and outside this search follow-up.
-Production search remains disabled pending independent evidence review and a
-separate enablement decision. This record does not complete umbrella issue
-#315.
+Production search remains disabled pending a filesystem-aware enablement
+change, independent evidence review, and a separate enablement decision. This
+record does not complete umbrella issue #315.
 
 ## Acceptance matrix
 
@@ -22,7 +23,7 @@ separate enablement decision. This record does not complete umbrella issue
 | Keep known stale-policy refusal separate from uncertain cleanup | A joined scan with changed ignore policy returns a sanitized failed tool result, with no staged search content. Descriptor-close errors or unconfirmed joins remain unknown and interrupt continuation; cleanup ownership keeps admission blocked | `search_ignore_rules_changed_after_content` passed for nested and applicable ancestor mutations; both worker joins, both descriptor closures, two once-grant consumptions, sanitized continuations, and no disclosure were recorded | Measured on the candidate; cleanup uncertainty remains fail-closed |
 | Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | Exact candidate search cases now pass on the proposed profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Gate closed; separate enablement approval not recorded |
 
-## Latest trusted-host run
+## Runner 13 trusted-host run (historical)
 
 The accepted search-case run used Go 1.26.11, Linux 7.0.0-42-generic amd64,
 UID 1000, root-owned mode-755 Bubblewrap 0.9.0 (binary SHA-256
@@ -55,7 +56,7 @@ case roles in the hashed report/manifest. This changes no historical archive;
 a fresh trusted-host run must exercise the instrumentation before any
 filesystem-specific support claim can be made.
 
-### Runner 14 availability attempt
+### Earlier runner 14 availability attempt
 
 Clean candidate `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` was run with Go
 1.26.11 on Linux 7.0.0-42-generic amd64 as UID 1000. The local Bubblewrap
@@ -73,7 +74,8 @@ manifest SHA-256
 `fc2d0fada881a7798c6686fe2ec36544a80c56a68cca27a8414025221057b7cf`.
 All archive `SHA256SUMS` entries were independently verified. The report
 explicitly marks fixture provenance `unavailable`, with zero observations and
-no disclosed paths.
+no disclosed paths. This was an earlier attempt in the assistant environment;
+the later trusted-host run below supersedes its availability outcome only.
 
 To obtain the required measurement on a trusted regular-user Linux host, check
 out the exact clean candidate and run:
@@ -89,31 +91,82 @@ PATH="$go_root/bin:$PATH" python3 -B scripts/run-issue215-stage6.py \
 ```
 
 The host must already have Go 1.26.11 or newer and Bubblewrap satisfying the
-repository's root-ownership trust check. Preserve the resulting archive and
-send its path for review; do not infer fixture filesystem values from this
-availability attempt or fill the historical archive retroactively.
+repository's root-ownership trust check. Do not infer fixture filesystem
+values from this availability attempt or fill its archive retroactively.
+
+## Latest trusted-host run (runner 14)
+
+The fresh run tested clean source commit
+`d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` on Linux
+7.0.0-42-generic amd64, Go 1.26.11, and UID 1000. Bubblewrap was trusted,
+root-owned mode 0755, version 0.9.0, SHA-256
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`; the
+requested and actual bind mode were both `ro-bind-fd`. The clean source build
+and study completed with exit code 0 and cleanup confirmed. The report contains
+38 measured passes and two unavailable cases (`mutation_profile` and
+`shell_profile`), so the overall classification remains
+`stage6_profile_incomplete`. Those two profiles are outside this search
+follow-up. All eight search cases passed.
+
+The test process recorded 51 path-free fixture observations: 29 fixture roots,
+19 selected listing/search scopes, one nested bind-mounted alias, and two
+nested mount boundaries. All 51 were `recorded`; there were no failed,
+unknown, or partial mount observations. Every observation reported filesystem
+magic `0x000000000000ef53`, mount type `ext4`, and 4096-byte blocks.
+Twenty-seven fixture roots and 17 selected scopes were `filesystem_root`
+mounts with read/write and relatime options. Two roots and two selected scopes
+were `subtree` mounts with read/write, nodev, nosuid, and relatime options.
+The nested bind alias had the same subtree options. The two nested mount
+boundaries were `subtree` mounts with read-only, nodev, nosuid, and relatime
+options; their superblock options remained read/write.
+These observations establish the fixture filesystems and arrangements in this
+run only. They do not establish support or portability on other filesystems,
+mount configurations, architectures, or launch modes.
+
+Archive: `/tmp/komposyn-issue215-stage6-20261117T200336Z-1852003.tar.gz`; SHA-256
+`16eecff18b46fbc0d7c153448cb4decbe21cde6aa8ec89665cc23ab811fc53f2`. Report
+SHA-256 `e16995c0db36ff102659950ef1eebd517c70fbaadf610c4ed2a9ca9c949f7621`;
+manifest SHA-256
+`ee0204532f76afafff5c4436636317efc2d796166069820f6428aaede7599d41`.
+Manifest source archive SHA-256:
+`73d08d9462aee4d5ebd2eedd94ec5039c02befb06d53022ee105a1c8f7d865d8`.
+Runner script SHA-256:
+`88fe08edd2db5707253f5efef9062ee0d210ec3185db366b8e99069c43373a51`;
+capture helper SHA-256:
+`fade10f56a5b762489375c8c58e7f033ea50c1b37c7cc57dde81938b2560b7da`;
+Stage 6 test SHA-256:
+`19504f08e9f1c253ebc35e4db557e63a051aa960a277cfeb4768ddf691581b01`;
+runtime overlay SHA-256:
+`1fbb3f6cb53e419eaec3ce32a7043469b51c16f9d3dc505d750d5889a1107db5`;
+overlay mapping SHA-256:
+`3ec13bf2dbe94d8aa8118dac291aef63e4291888174d37b6e15b36a6bc62c0d0`.
+The archive was extracted and all `SHA256SUMS` entries were independently
+verified. The report's fixture summary matches the per-case records and
+manifest.
 
 ## Supported-profile evidence and approval status
 
-The last accepted search-specific evidence records trusted Linux amd64,
-Bubblewrap's actual `ro-bind-fd` mode, complete auth/settings owner coverage,
-and successful composition of the fixed traversal and content workers. Its
-fixture filesystem was not recorded. Runner 14 adds the missing capture, but
-until a trusted-host run produces recorded fixture observations, no
-filesystem-specific portability claim is established. Other bind modes,
-architectures, and non-Linux platforms remain unavailable. This is evidence
-for review, not authorization to enable search.
+The accepted runner 14 evidence records trusted Linux amd64, Bubblewrap 0.9.0
+in actual `ro-bind-fd` mode, complete auth/settings owner coverage, successful
+composition of the fixed traversal and content workers, and ext4 fixture
+locations with the mount characteristics listed above. Other filesystems,
+bind modes, architectures, and non-Linux platforms remain unmeasured. This is
+evidence for review, not authorization to enable search.
 
-For the next enablement review, consider only Linux amd64 with a trusted,
-root-owned Bubblewrap installation using the measured `ro-bind-fd` launch
-profile and complete protected-owner inventory. Before opening the gate, use a
-fresh runner 14 archive to identify the filesystem type and selected mount
-characteristics at both the selected search scope and mount-boundary fixtures.
-The runtime gate must be able to recognize the accepted filesystem scope from
-the approved directory and refuse any unmeasured type; if that check is not
-implemented or the run reports partial/unknown provenance, keep search closed
-or gather narrower evidence. Do not treat this profile proposal as an
-enablement decision. `searchAccepted` remains false.
+For the next enablement review, propose Linux amd64 with trusted, root-owned
+Bubblewrap 0.9.0 using actual `ro-bind-fd`, complete protected-owner inventory,
+and an approved search directory on ext4 (`f_type=0xef53`). The current
+`SearchFilesAvailable`/`SearchProfilesAvailable` gate checks the Linux amd64
+descriptor-bind worker profile but does not inspect the selected directory's
+filesystem type. The enablement change must therefore either check the
+canonical selected directory's filesystem type during admission and refuse
+non-ext4 targets, or add native evidence and a separate explicit decision for
+additional filesystem types. Keep the public gate closed for unknown or
+unmeasured filesystems and for partial provenance. That change must also
+exercise the real composed Service/runtime availability, provider schema and
+instructions, admission, approval, and unsupported-profile refusal paths.
+This profile proposal is not an enablement decision; `searchAccepted` remains
+false and #318/#315 remain open.
 
 The version 11 historical harness included composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root

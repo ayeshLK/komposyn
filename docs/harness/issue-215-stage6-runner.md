@@ -279,4 +279,9 @@ archives remain bound to their original runner/source revisions; runner 12's
 failed report is not acceptance evidence for revision 13. Revision 14 adds
 sanitized filesystem provenance observations at actual fixture paths and
 requires the report and manifest summaries to agree. Historical archives
-remain unchanged and do not gain filesystem provenance retroactively.
+remain unchanged and do not gain filesystem provenance retroactively. The
+fresh runner 14 trusted-host run against `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e`
+recorded all 51 fixture observations as ext4 on the measured `ro-bind-fd`
+profile; see the [#318 completion record](issue-318-search-completion.md) for
+hashes, scope and limitations. Its overall Stage 6 profile remains incomplete
+because mutation and shell cases were unavailable.
