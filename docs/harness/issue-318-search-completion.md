@@ -1,28 +1,51 @@
 # Issue #318 search implementation and acceptance
 
-Status: the latest archive is a failed run against merged commit
-`ac1893a78dfc7528027537ba3baa700415f45674`; it is preserved below as historical
-provenance and is not acceptance evidence. The current follow-up fixes its case
-count and distinguishes a joined search that fails final policy validation
-from uncertain cleanup. Runner version 13 records traversal/content joins and
-snapshot/candidate descriptor closure independently. A fresh trusted-host run
-of the clean follow-up commit remains required. Production search remains
-disabled pending independent evidence review and a separate enablement
-decision. This record does not complete umbrella issue #315.
+Status: the latest trusted-host run measured all implemented #318 search cases
+as passes on clean commit `000c3e6fbcb453a4bad902de934311e93143b9be` with runner
+13 and `ro-bind-fd`. The overall Stage 6 profile remains incomplete because
+mutation and shell profiles are unavailable and outside this search follow-up.
+Production search remains disabled pending independent evidence review and a
+separate enablement decision. This record does not complete umbrella issue
+#315.
 
 ## Acceptance matrix
 
 | #318 requirement | Implementation and behavioral coverage | Native coverage | Status |
 | --- | --- | --- | --- |
-| Advertise only on an eligible host route and require explicit once approval | Independent `SearchFilesAvailable` gate; runtime/provider integration tests check schema, denial, exact directory/query/options/destination approval and continuation | `positive_content_search` drove the composed Service and provider fixture under once approval in the historical run | Implementation and local integration tests pass; native case must be remeasured after the join-state fix |
-| Bind target, query, options and destination through admission and publication | Search fields are parsed before admission and included in request digest and execution authority; changed binding is refused | Native positive case recorded exact approval text and continuation in the historical run | Implemented; native case must be remeasured |
-| Reuse bounded traversal, ignores, globs and protection without following links or crossing mounts | Host filters traversal snapshot, classifies path/inode/ancestors before descriptor preparation, and caps traversal, candidates, bytes, aggregate matcher/filter work, lines, output and duration | Historical cases covered recursion, protected aliases, `.git`, mount exclusion, candidate substitution and root movement | Prior outcomes were reported as passes, but must be remeasured after the worker lifecycle defect; do not use them as current acceptance evidence |
+| Advertise only on an eligible host route and require explicit once approval | Independent `SearchFilesAvailable` gate; runtime/provider integration tests check schema, denial, exact directory/query/options/destination approval and continuation | `positive_content_search` passed on the composed Service and provider fixture under once approval | Native case passed on the measured profile; production gate remains closed pending independent evidence review and enablement approval |
+| Bind target, query, options and destination through admission and publication | Search fields are parsed before admission and included in request digest and execution authority; changed binding is refused | Native positive case recorded exact approval text and continuation | Implemented and measured; no broader provider or shipped-binary claim |
+| Reuse bounded traversal, ignores, globs and protection without following links or crossing mounts | Host filters traversal snapshot, classifies path/inode/ancestors before descriptor preparation, and caps traversal, candidates, bytes, aggregate matcher/filter work, lines, output and duration | Native cases covered recursion, protected aliases, `.git`, mount exclusion, candidate substitution and root movement | Implemented and measured for listed cases; aggregate cgroup quotas remain unprovisioned and unclaimed |
 | Search only small UTF-8 regular files and report truthful limits | Literal case-sensitive line matching, safe binary/invalid-UTF-8/oversize skips, bounded snippets, aggregate skipped count and `incomplete` output | Native composed-service positive search passes; per-file filtering and result-boundary edge cases are covered by focused implementation tests, not claimed as aggregate host resource enforcement | Implemented; aggregate cgroup quotas remain unprovisioned and unclaimed |
-| Revalidate identity, directory and ignore observations before disclosure | Host retains candidate and discovery observations through content scanning, revalidates them, and closes all candidate/snapshot descriptors before deciding publication | Historical `search_candidate_protected_substitution` covers protected hard-link replacement. Runner 13 adds nested and applicable ancestor ignore changes after content scan with separate join/descriptor-close evidence | Implementation and synthetic regressions pass; native retest pending |
-| Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Historical positive and cancellation cases recorded the two profiles and handoff boundary | Reverify on the fixed candidate; exact-file read profile remains unchanged |
-| Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; each child worker has independent join state; search joins honor the invocation deadline and suppress disclosure when cleanup is unconfirmed | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, `search_revocation_withholds_capture`, and `search_mount_boundary` cover cleanup, selected-object authority, revocation, stale-capture suppression, and mount exclusion | Earlier run predates per-worker join fix; fresh native run required |
-| Keep known stale-policy refusal separate from uncertain cleanup | A joined scan with changed ignore policy returns a sanitized failed tool result, with no staged search content. Descriptor-close errors or unconfirmed joins remain unknown and interrupt continuation; cleanup ownership keeps admission blocked | Runner 13 checks the failure continuation, no stale marker/path, one approval/consumption per run, both worker joins, descriptor closure, and no private publication for nested and ancestor mutations | Focused runtime, host and lifecycle regressions pass; fresh native assertions pending |
+| Revalidate identity, directory and ignore observations before disclosure | Host retains candidate and discovery observations through content scanning, revalidates them, and closes all candidate/snapshot descriptors before deciding publication | `search_candidate_protected_substitution` and `search_ignore_rules_changed_after_content` passed; the latter recorded both worker joins and both descriptor-closure checks | Measured on the candidate; final-policy changes withheld stale results |
+| Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Positive and cancellation cases recorded the two profiles and handoff boundary on the candidate | Measured for this profile; exact-file read profile remains unchanged |
+| Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; each child worker has independent join state; search joins honor the invocation deadline and suppress disclosure when cleanup is unconfirmed | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, `search_revocation_withholds_capture`, and `search_mount_boundary` passed on the candidate | Measured for the listed cases; no aggregate cgroup quota or arbitrary-descendant claim |
+| Keep known stale-policy refusal separate from uncertain cleanup | A joined scan with changed ignore policy returns a sanitized failed tool result, with no staged search content. Descriptor-close errors or unconfirmed joins remain unknown and interrupt continuation; cleanup ownership keeps admission blocked | `search_ignore_rules_changed_after_content` passed for nested and applicable ancestor mutations; both worker joins, both descriptor closures, two once-grant consumptions, sanitized continuations, and no disclosure were recorded | Measured on the candidate; cleanup uncertainty remains fail-closed |
 | Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | Exact candidate search cases now pass on the proposed profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Gate closed; separate enablement approval not recorded |
+
+## Latest trusted-host run
+
+The accepted search-case run used Go 1.26.11, Linux 7.0.0-42-generic amd64,
+UID 1000, root-owned mode-755 Bubblewrap 0.9.0 (binary SHA-256
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`), and
+measured `ro-bind-fd`. It built the fixed Stage 6 test-binary worker from the
+clean exact candidate commit above. The build and study both exited 0 with
+cleanup complete. All 38 implemented cases passed; mutation and shell were the
+two unavailable cases, so the overall Stage 6 classification is
+`stage6_profile_incomplete`. This is not acceptance for those unavailable
+profiles, a shipped binary, or a real provider.
+
+Archive: `/tmp/komposyn-issue318-native-results/komposyn-issue215-stage6-20261117T182252Z-1799056.tar.gz`;
+SHA-256 `add7bb898c7b244cd1debb1fcb45d59f7f5bf2627663c71070b3e854f83700fc`.
+Report SHA-256:
+`0e6b9b2100ac499e12c55c5cd582bee6f39a5088838b085f0c59be077cc8a4a6`.
+Manifest source archive SHA-256:
+`b88f7a7166439d590e24f87ebc750c6d5578a3ed8c9a624ab4dd722991fb2dc4`.
+The manifest records `checkout_clean: true`, matching requested and actual
+revision, runner version 13, Bubblewrap trust metadata, and the measured bind
+mode. The report records `search_ignore_rules_changed_after_content` as
+`measured_pass`, with failed safe outcomes, both search workers joined, both
+descriptor groups closed, no staged fixture bytes, disclosure withheld, and
+cleanup confirmed.
 
 ## Supported-profile evidence and approval status
 
@@ -107,10 +130,8 @@ descriptor close remains unknown, interrupts the turn, and preserves the
 existing cleanup/admission barrier. Runner version 13 asserts the expected 30
 native-integrated cases and reports traversal/content joins and descriptor
 closure separately. Focused runtime, host and lifecycle tests plus the synthetic
-Stage 6 overlay pass locally. A clean trusted-host run against the exact
-follow-up commit remains outstanding: Go 1.26.11 is available here, but
-`/usr/bin/bwrap` is owned by `nobody:nogroup` rather than a trusted root owner.
-No native acceptance is claimed.
+Stage 6 overlay pass locally. The trusted-host run above verifies the new
+final-policy refusal behavior on the exact candidate.
 
 Earlier trusted-host candidates exposed and corrected the public Service search
 admission allowlist and the cancellation-test expectation. Their archive hashes
@@ -118,12 +139,11 @@ and tested commits remain recorded above for provenance. The final run confirms
 that the cancellation checkpoint joins the content worker before its separate
 snapshot handoff, leaves no private result, and makes no provider continuation.
 
-The historical native evidence supports only its recorded candidates. The
-current runner is version 13; its fixed case classification and known-failure
-versus cleanup-uncertainty assertions have not yet been measured on a trusted
-host. The production `searchAccepted` gate remains false. Fresh native acceptance on the
-review-fixed candidate, independent review of that evidence, and an explicit
-separate enablement decision are still required before enablement.
+The historical native evidence supports only its recorded candidates; the
+runner 13 evidence above applies only to its exact recorded candidate and
+profile. The production `searchAccepted` gate remains false. Independent review
+of this evidence and a separate enablement decision are still required before
+enablement.
 This work does not close umbrella issue #315 or establish shipped-binary,
 real-provider, file-snapshot, non-Linux, mutation, shell, or aggregate cgroup
 quota support. Listing evidence remains historical supporting context only.

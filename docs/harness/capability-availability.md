@@ -119,16 +119,16 @@ acceptance record](issue-215-completion-tracking.md) and
 approval binding, host candidate validation and pathless sealed-snapshot worker
 protocol are implemented behind an independent `SearchFilesAvailable` gate
 that defaults closed. Search traversal and content workers use separate
-operation-specific seccomp profiles. The previous trusted-host Stage 6 run
-measured seven search-specific cases as passes on clean commit
-`77785c29ae602d9d1dd3cd0a1a5e84e4413d28f1`; a later run on merged `ac1893a`
-failed with a stale native-case count and an inconclusive ignore-change case.
-Neither run accepts the corrected outcome semantics or runner version 13. A
-fresh trusted-host run and independent review remain necessary before any
-separate enablement decision. The prior runs used the Stage 6 test-binary
-worker, not the shipped executable or a real provider. See [the search design
-note](search-files-design.md) and [#318 completion matrix](issue-318-search-completion.md)
-for profile limits, provenance and remaining decisions.
+operation-specific seccomp profiles. A trusted-host runner 13 study on clean
+commit `000c3e6fbcb453a4bad902de934311e93143b9be` measured all 38 implemented
+cases as passes, including the fixed ignore-policy failure path with independent
+worker-join and descriptor-close evidence. Mutation and shell profiles were
+unavailable, leaving the overall Stage 6 classification incomplete. The run
+used the fixed test-binary worker, not the shipped executable or a real
+provider. Independent review of the evidence and a separate enablement decision
+are still required; native results do not open the production gate. See [the
+search design note](search-files-design.md) and [#318 completion
+matrix](issue-318-search-completion.md) for exact provenance and profile limits.
 
 ## Runtime and UI reasons
 
