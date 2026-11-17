@@ -46,7 +46,7 @@ filesystem access.
 | `request_user_input` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `list_files` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement; live listing is not verified | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
-| `search_files` | Unavailable: implemented behind the independent closed gate; fresh search-specific native acceptance and separate enablement review remain pending | Unavailable for the same search-specific host requirements; listing evidence does not enable search | Unavailable for the same search-specific host requirements | Unimplemented route |
+| `search_files` | Unavailable: implemented behind the independent closed gate; search-specific native cases passed on one measured host profile, but fixture filesystem metadata was not recorded and separate enablement review remains pending | Unavailable for the same search-specific host requirements; listing evidence does not enable search | Unavailable for the same search-specific host requirements | Unimplemented route |
 
 `list_files` is registered only when the Linux host has inspected the trusted
 Bubblewrap backend and composed the fixed worker. The runtime additionally
@@ -122,13 +122,15 @@ that defaults closed. Search traversal and content workers use separate
 operation-specific seccomp profiles. A trusted-host runner 13 study on clean
 commit `000c3e6fbcb453a4bad902de934311e93143b9be` measured all 38 implemented
 cases as passes, including the fixed ignore-policy failure path with independent
-worker-join and descriptor-close evidence. Mutation and shell profiles were
-unavailable, leaving the overall Stage 6 classification incomplete. The run
-used the fixed test-binary worker, not the shipped executable or a real
-provider. Independent review of the evidence and a separate enablement decision
-are still required; native results do not open the production gate. See [the
-search design note](search-files-design.md) and [#318 completion
-matrix](issue-318-search-completion.md) for exact provenance and profile limits.
+worker-join and descriptor-close evidence. The archive does not record the
+fixture filesystem, so this result establishes no filesystem-specific
+portability claim. Mutation and shell profiles were unavailable, leaving the
+overall Stage 6 classification incomplete. The run used the fixed test-binary
+worker, not the shipped executable or a real provider. Independent evidence
+review and a separate enablement decision remain required; native results do
+not open the production gate. See [the search design note](search-files-design.md)
+and [#318 completion matrix](issue-318-search-completion.md) for exact
+provenance and profile limits.
 
 ## Runtime and UI reasons
 

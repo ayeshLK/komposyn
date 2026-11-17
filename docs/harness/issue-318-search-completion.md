@@ -47,13 +47,21 @@ mode. The report records `search_ignore_rules_changed_after_content` as
 descriptor groups closed, no staged fixture bytes, disclosure withheld, and
 cleanup confirmed.
 
+The archive, manifest and report do not record the filesystem containing the
+synthetic fixtures. Do not infer it from the kernel, Bubblewrap mode or host OS.
+This is an unresolved evidence limitation: the run supports only its observed
+host/profile and establishes no filesystem-specific portability claim. Capture
+fixture filesystem metadata contemporaneously on a future run before making a
+filesystem-specific support claim.
+
 ## Supported-profile evidence and approval status
 
-The search-specific evidence supports the proposed profile: trusted Linux amd64,
-Bubblewrap's actual `ro-bind-fd` mode, complete auth/settings owner coverage,
-and successful composition of the fixed traversal and content workers. Other
-bind modes, architectures, and non-Linux platforms remain unavailable. This is
-evidence for review, not authorization to enable search.
+The search-specific evidence records trusted Linux amd64, Bubblewrap's actual
+`ro-bind-fd` mode, complete auth/settings owner coverage, and successful
+composition of the fixed traversal and content workers. The fixture filesystem
+was not recorded, so this does not establish filesystem-specific portability.
+Other bind modes, architectures, and non-Linux platforms remain unavailable.
+This is evidence for review, not authorization to enable search.
 
 The version 11 historical harness included composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root
