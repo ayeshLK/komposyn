@@ -128,6 +128,43 @@ func TestDirectoryHandoffReturnsBoundedListingFrames(t *testing.T) {
 	}
 }
 
+func TestSearchSnapshotHandoffReturnsPathlessLiteralMatches(t *testing.T) {
+	encoded, err := json.Marshal(searchSnapshotInput{Query: "needle", WorkBudget: maxSearchWorkUnits, Files: []searchSnapshotFile{{Content: []byte("needle once\nnone\nneedle twice\n")}, {Content: []byte("other\n")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := createSealedSearchSnapshot(encoded)
+	clear(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	identity, err := identityFromFile(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, exitCode := exchangeWorkerFrame(t, identityFrame(frameSearchSnapshot, identity), []*os.File{snapshot})
+	if exitCode != 0 || len(frames) < 3 || frames[0][0] != frameStarted || !sameIdentity(frames[0][1:], identity) {
+		t.Fatalf("search worker frames=%q exit=%d", frameKinds(frames), exitCode)
+	}
+	var resultBytes []byte
+	for _, frame := range frames[1:] {
+		if frame[0] == frameData {
+			resultBytes = append(resultBytes, frame[1:]...)
+		}
+	}
+	var result searchWorkerResult
+	if err := json.Unmarshal(resultBytes, &result); err != nil {
+		t.Fatalf("search worker payload %q: %v", resultBytes, err)
+	}
+	if result.Incomplete || len(result.Matches) != 2 || result.Matches[0].Index != 0 || result.Matches[0].Line != 1 || result.Matches[1].Line != 3 {
+		t.Fatalf("search worker result=%+v", result)
+	}
+	if bytes.Contains(resultBytes, []byte(`"path"`)) {
+		t.Fatalf("worker response contains a provider-visible path: %q", resultBytes)
+	}
+}
+
 func TestListDirectoryRecursiveReturnsRelativePathsAndNeverWalksGitOrSymlinks(t *testing.T) {
 	root := t.TempDir()
 	for _, directory := range []string{"src", ".hidden", ".git"} {
@@ -408,7 +445,13 @@ func exchangeWorkerFrame(t *testing.T, frame []byte, files []*os.File) ([][]byte
 	workerControl := os.NewFile(uintptr(sockets[1]), "worker-control")
 	defer workerControl.Close()
 	done := make(chan int, 1)
-	go func() { done <- receiveAndRead(int(workerControl.Fd()), false) }()
+	operation := AdmissionReadFile
+	if len(frame) > 0 && frame[0] == frameDirectoryHandoff {
+		operation = AdmissionListDirectory
+	} else if len(frame) > 0 && frame[0] == frameSearchSnapshot {
+		operation = AdmissionSearchContent
+	}
+	go func() { done <- receiveAndRead(int(workerControl.Fd()), false, operation) }()
 	var rights []int
 	for _, file := range files {
 		rights = append(rights, int(file.Fd()))
@@ -1165,6 +1208,21 @@ func TestWorkerSeccompProgramIncludesBootstrapAndProcessRestrictions(t *testing.
 		if slices.Contains(listingDenied, needed) {
 			t.Errorf("listing seccomp policy denies required directory syscall %d", needed)
 		}
+	}
+	searchTraversal := workerDeniedSyscallsForOperation(AdmissionSearchFiles)
+	if slices.Contains(searchTraversal, unix.SYS_OPENAT2) || !slices.Contains(searchTraversal, unix.SYS_OPENAT) || !slices.Contains(searchTraversal, unix.SYS_MLOCK) {
+		t.Fatalf("search traversal syscall policy=%v", searchTraversal)
+	}
+	searchContent := workerDeniedSyscallsForOperation(AdmissionSearchContent)
+	if !slices.Contains(searchContent, unix.SYS_OPENAT2) || !slices.Contains(searchContent, unix.SYS_OPENAT) || !slices.Contains(searchContent, unix.SYS_MLOCK) {
+		t.Fatalf("search content syscall policy=%v", searchContent)
+	}
+	readProfile, _ := workerSeccompFilterBytesForOperation(AdmissionReadFile)
+	listingProfile, _ := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
+	searchTraversalProfile, _ := workerSeccompFilterBytesForOperation(AdmissionSearchFiles)
+	searchContentProfile, _ := workerSeccompFilterBytesForOperation(AdmissionSearchContent)
+	if bytes.Equal(searchTraversalProfile, listingProfile) || bytes.Equal(searchContentProfile, readProfile) || bytes.Equal(searchContentProfile, searchTraversalProfile) {
+		t.Fatal("search operations did not receive distinct seccomp profiles")
 	}
 	if _, err := workerSeccompFilterBytesForOperation(AdmissionOperation("unexpected")); err == nil {
 		t.Fatal("unknown worker operation received a seccomp profile")

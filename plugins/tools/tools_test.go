@@ -226,6 +226,70 @@ func TestParseListFilesRejectsOptionsThatExceedWorkerFrame(t *testing.T) {
 	}
 }
 
+func TestParseSearchFilesUsesBoundedLiteralQueryAndExactOptions(t *testing.T) {
+	search, err := ParseSearchFiles([]byte(`{"path":"src","query":"TODO: fix","recursive":true,"include_hidden":true,"include_ignored":true,"name_globs":["*.go"]}`))
+	if err != nil || search.Path != "src" || search.Query != "TODO: fix" || !search.Recursive || !search.IncludeHidden || !search.IncludeIgnored || len(search.NameGlobs) != 1 {
+		t.Fatalf("valid search input = %+v, %v", search, err)
+	}
+	for _, raw := range []string{
+		`{"path":"src","query":""}`,
+		`{"path":"src","query":"line\nnext"}`,
+		`{"path":"src","query":"line\rnext"}`,
+		`{"path":"src","query":"bad\u0000query"}`,
+		`{"path":"src","query":"TODO","extra":true}`,
+		`{"path":"src","query":"TODO","query":"again"}`,
+		`{"path":"src","query":null}`,
+		`{"path":"src","query":"TODO","name_globs":["**/*.go"]}`,
+	} {
+		if parsed, err := ParseSearchFiles([]byte(raw)); err == nil {
+			t.Fatalf("invalid search input accepted: %s as %+v", raw, parsed)
+		}
+	}
+	tooLong, err := json.Marshal(SearchFilesInput{Path: "src", Query: strings.Repeat("q", MaxSearchFilesQueryBytes+1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseSearchFiles(tooLong); err == nil {
+		t.Fatal("query above its byte bound was accepted")
+	}
+	if _, err := ParseSearchFiles([]byte{'{', '"', 'q', 'u', 'e', 'r', 'y', '"', ':', '"', 0xff, '"', '}'}); err == nil {
+		t.Fatal("invalid UTF-8 search request was accepted")
+	}
+	if _, err := ParseSearchFiles([]byte(`{"path":"src","query":"TODO"}` + strings.Repeat(" ", MaxSearchFilesInputBytes))); err == nil {
+		t.Fatal("oversized search request was accepted")
+	}
+}
+
+func TestSearchFilesDefinitionExplainsLiteralBoundedDisclosure(t *testing.T) {
+	definition := SearchFilesDefinition()
+	if definition.ID != SearchFilesID || definition.MaxInput != MaxSearchFilesInputBytes || json.Unmarshal(definition.InputSchema, new(map[string]any)) != nil {
+		t.Fatalf("invalid search definition: %+v", definition)
+	}
+	description := strings.ToLower(definition.Description)
+	for _, phrase := range []string{"literal", "case-sensitive", "once approval", "provider/model/profile destination", "utf-8", "incomplete"} {
+		if !strings.Contains(description, phrase) {
+			t.Errorf("search_files description %q does not contain %q", definition.Description, phrase)
+		}
+	}
+}
+
+func TestParseSearchFilesRejectsExpandedWorkerOptionFrameBeforeAdmission(t *testing.T) {
+	globs := make([]string, MaxListFilesGlobs)
+	for index := range globs {
+		globs[index] = strings.Repeat("a", MaxListFilesGlobBytes-1) + "*"
+	}
+	raw, err := json.Marshal(SearchFilesInput{Path: "src", Query: "needle", NameGlobs: globs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > MaxSearchFilesInputBytes {
+		t.Fatalf("fixture input unexpectedly exceeds outer limit: %d", len(raw))
+	}
+	if _, err := ParseSearchFiles(raw); err == nil {
+		t.Fatal("search options exceeding the actual worker frame were accepted")
+	}
+}
+
 func TestListFilesDefinitionLimitsDisclosureToOneDirectory(t *testing.T) {
 	description := strings.ToLower(ListFilesDefinition().Description)
 	for _, phrase := range []string{"one directory", "once approval", "hidden", "ignored", "symlinks", "working directory grants no listing permission"} {

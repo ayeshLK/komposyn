@@ -185,6 +185,9 @@ func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T)
 	if !impl.DirectoryListingAvailable() {
 		t.Fatal("composed trusted worker service did not enable directory listing")
 	}
+	if service.SearchFilesAvailable() {
+		t.Fatal("search inherited availability without search-specific worker evidence")
+	}
 	wantOptions := goruntime.GOARCH == "amd64"
 	if got := service.DirectoryListingOptionsAvailable(); got != wantOptions {
 		t.Fatalf("public service profile availability=%t, want %t for %s", got, wantOptions, goruntime.GOARCH)
@@ -197,6 +200,9 @@ func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T)
 	}
 	if service.DirectoryListingOptionsAvailable() {
 		t.Fatal("closed worker service kept advanced listing options available")
+	}
+	if service.SearchFilesAvailable() {
+		t.Fatal("closed worker service kept search available")
 	}
 }
 
@@ -227,6 +233,9 @@ func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
 		t.Fatalf("public service profile availability=%t, want %t for %s", got, wantOptions, goruntime.GOARCH)
 	}
 	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, availableBackend)
+	if _, registered := config.Registry.Lookup(tools.SearchFilesID); registered {
+		t.Fatal("search_files inherited the listing evidence gate")
+	}
 	definition, registered := config.Registry.Lookup(tools.ListFilesID)
 	if !registered {
 		t.Fatal("list_files not registered when the Linux host service reports an available backend")
@@ -339,6 +348,61 @@ func TestHostAdmissionAcceptsBoundedDirectoryListing(t *testing.T) {
 	}
 	if err := service.CloseFilesystemReadAdmission(context.Background(), admission); err != nil {
 		t.Fatalf("retire listing admission: %v", err)
+	}
+}
+
+func TestHostAdmissionAcceptsSearchOnlyWhenSearchGateIsOpen(t *testing.T) {
+	launcher := searchProfileTestWorkerLauncher{profileTestWorkerLauncher{mode: readbrokerstudy.BindModeDescriptor}}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	root := t.TempDir()
+	searchPath := filepath.Join(root, "search-scope")
+	if err := os.Mkdir(searchPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "search-fixture", Root: root, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(tools.SearchFilesInput{
+		Path: searchPath, Query: "synthetic-query", Recursive: true,
+		IncludeHidden: true, IncludeIgnored: true, NameGlobs: []string{"*.go"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{
+		ConversationID: "search-fixture", TurnID: "turn", ProviderCallID: "search-call",
+		ToolID: tools.SearchFilesID, Arguments: arguments,
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); !errors.Is(err, readbrokerstudy.ErrUnavailable) {
+		t.Fatalf("search admission with closed profile gate error=%v, want unavailable", err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	impl.mu.Lock()
+	impl.searchAccepted = true
+	impl.mu.Unlock()
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile")
+	if err != nil {
+		t.Fatalf("admit synthetic search through public Service with its test gate open: %v", err)
+	}
+	if admission.Operation != string(tools.SearchFilesID) || admission.Target != searchPath || admission.Search.Query != "synthetic-query" || !admission.Search.Recursive || !admission.Search.IncludeHidden || !admission.Search.IncludeIgnored || len(admission.Search.NameGlobs) != 1 || admission.Reference == nil || admission.AdmissionBinding == "" {
+		t.Fatalf("detached search admission metadata is incomplete: %+v", admission)
+	}
+	if err := service.CloseFilesystemReadAdmission(context.Background(), admission); err != nil {
+		t.Fatalf("retire search admission: %v", err)
 	}
 }
 
@@ -755,6 +819,14 @@ type profileTestWorkerLauncher struct {
 }
 
 func (launcher profileTestWorkerLauncher) AdvancedDirectoryListingProfileAvailable() bool {
+	return goruntime.GOARCH == "amd64" && launcher.mode == readbrokerstudy.BindModeDescriptor
+}
+
+type searchProfileTestWorkerLauncher struct {
+	profileTestWorkerLauncher
+}
+
+func (launcher searchProfileTestWorkerLauncher) SearchProfilesAvailable() bool {
 	return goruntime.GOARCH == "amd64" && launcher.mode == readbrokerstudy.BindModeDescriptor
 }
 

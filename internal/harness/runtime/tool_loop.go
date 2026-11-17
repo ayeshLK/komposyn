@@ -403,7 +403,7 @@ func bindAuthorizationRequest(invocation tools.Invocation, request permissions.R
 	if request.AdmissionBinding == "" {
 		request.AdmissionBinding = request.Binding
 	}
-	if invocation.ToolID == tools.ID("read_file") && request.AdmissionBinding == "" {
+	if isFilesystemDisclosureTool(invocation.ToolID) && request.AdmissionBinding == "" {
 		return permissions.Request{}, errors.New("trusted host admission binding is required")
 	}
 	canonicalArguments, err := canonicalJSON(invocation.Arguments)
@@ -454,7 +454,7 @@ func (r *toolRuntime) authorize(ctx context.Context, invocation tools.Invocation
 	if err != nil {
 		return permissions.Request{}, permissions.Decision{}, err
 	}
-	if invocation.ToolID == tools.ID("read_file") {
+	if isFilesystemDisclosureTool(invocation.ToolID) {
 		if request.AdmissionBinding == "" {
 			request.AdmissionBinding = request.Binding
 		}
@@ -754,6 +754,9 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 					instructions += " list_files lists names in one approved directory only (nonrecursive), omitting hidden and ignored entries; .git is always excluded. Each listing needs separate explicit once approval naming the exact directory and this provider destination. Results may be incomplete at a bound. A listing does not grant reads of listed files."
 				}
 			}
+			if _, hasSearch := definitionByID(requestTools, tools.SearchFilesID); hasSearch {
+				instructions += " search_files performs case-sensitive literal matching one line at a time beneath an approved directory. Defaults are nonrecursive and exclude hidden and ignored entries; .git and protected resources are always excluded. Explicit options select recursion, hidden/ignored inclusion, and basename globs. Only UTF-8 regular files up to 64 KiB are searched. Every search requires a separate explicit once approval displaying the exact directory, query, all effective options, and selected provider destination. Results may be incomplete at a bound; do not treat an incomplete no-match result as exhaustive. Search results are sensitive. A directory selection or listing approval grants no search authority."
+			}
 		}
 		providerCtx, cancelProvider := context.WithTimeout(ctx, c.timeout)
 		reservation := reserveProviderDispatch()
@@ -944,8 +947,9 @@ func fmtRequestID(base string, request int) string {
 }
 
 func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID string, call provider.ToolCall, advertised []tools.Definition, maxBytes int, workingDirectory string, current func() bool, publish func(ToolActivity), destination string) (provider.ToolResult, ToolActivity, string, bool, *PrivateReadCapture) {
-	readCall := call.ToolID == tools.ReadFileID || call.ToolID == tools.ListFilesID
+	readCall := isFilesystemDisclosureTool(call.ToolID)
 	listingCall := call.ToolID == tools.ListFilesID
+	searchCall := call.ToolID == tools.SearchFilesID
 	readEpoch := r.readAuthorityEpochSnapshot()
 	lifecycleCurrent := func() bool { return !readCall || r.readAuthorityEpochCurrent(readEpoch) }
 	activity := ToolActivity{CallID: call.CallID, ToolID: call.ToolID}
@@ -1024,6 +1028,8 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		message := "Read completed; content withheld until authorized provider handoff."
 		if listingCall {
 			message = "Directory listing completed; names withheld until authorized provider handoff."
+		} else if searchCall {
+			message = "Search completed; matching lines withheld until authorized provider handoff."
 		}
 		return fixedToolResult(call.CallID, tools.OutcomeSucceeded, message, maxBytes), activity, "", false, capture
 	}
@@ -1222,12 +1228,18 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 }
 
 func resolveFilesystemReadInvocation(invocation tools.Invocation, workingDirectory string) (tools.Invocation, error) {
-	if invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID {
+	if !isFilesystemDisclosureTool(invocation.ToolID) {
 		return invocation, errors.New("invocation is not a filesystem request")
 	}
 	var path string
 	if invocation.ToolID == tools.ListFilesID {
 		input, err := tools.ParseListFiles(invocation.Arguments)
+		if err != nil {
+			return invocation, err
+		}
+		path = input.Path
+	} else if invocation.ToolID == tools.SearchFilesID {
+		input, err := tools.ParseSearchFiles(invocation.Arguments)
 		if err != nil {
 			return invocation, err
 		}
@@ -1256,6 +1268,13 @@ func resolveFilesystemReadInvocation(invocation tools.Invocation, workingDirecto
 		}
 		input.Path = path
 		resolvedValue = input
+	} else if invocation.ToolID == tools.SearchFilesID {
+		input, parseErr := tools.ParseSearchFiles(invocation.Arguments)
+		if parseErr != nil {
+			return invocation, parseErr
+		}
+		input.Path = path
+		resolvedValue = input
 	}
 	resolved, err := json.Marshal(resolvedValue)
 	if err != nil {
@@ -1263,6 +1282,10 @@ func resolveFilesystemReadInvocation(invocation tools.Invocation, workingDirecto
 	}
 	invocation.Arguments = resolved
 	return invocation, nil
+}
+
+func isFilesystemDisclosureTool(id tools.ID) bool {
+	return id == tools.ReadFileID || id == tools.ListFilesID || id == tools.SearchFilesID
 }
 
 func definitionByID(definitions []tools.Definition, id tools.ID) (tools.Definition, bool) {

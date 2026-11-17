@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const maxRetainedAdmissions = 1
@@ -142,16 +143,23 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 	if request.Operation == "" {
 		request.Operation = AdmissionReadFile
 	}
-	if request.Operation != AdmissionReadFile && request.Operation != AdmissionListDirectory {
+	if request.Operation != AdmissionReadFile && request.Operation != AdmissionListDirectory && request.Operation != AdmissionSearchFiles {
 		return nil, ErrInvalidPath
 	}
-	if request.Operation != AdmissionListDirectory && !request.Listing.IsZero() {
+	if request.Operation != AdmissionListDirectory && request.Operation != AdmissionSearchFiles && !request.Listing.IsZero() {
 		return nil, ErrInvalidPath
 	}
-	if request.Operation == AdmissionListDirectory {
+	if request.Operation == AdmissionListDirectory || request.Operation == AdmissionSearchFiles {
 		if err := validateListingOptions(request.Listing); err != nil {
 			return nil, ErrInvalidPath
 		}
+	}
+	if request.Operation == AdmissionSearchFiles {
+		if request.SearchQuery == "" || len(request.SearchQuery) > 512 || !utf8.ValidString(request.SearchQuery) || strings.ContainsAny(request.SearchQuery, "\r\n\x00") {
+			return nil, ErrInvalidPath
+		}
+	} else if request.SearchQuery != "" {
+		return nil, ErrInvalidPath
 	}
 	request.Listing = request.Listing.Clone()
 	s.mu.Lock()
@@ -203,7 +211,7 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 		retireLock: make(chan struct{}, 1), lifetime: lifetime, cancel: cancel, deadline: deadline,
 		ref: &AdmissionReference{owner: s, id: id}, request: request,
 		state: admissionOpening, lookupDone: make(chan struct{}),
-		metadata: AdmissionMetadata{Operation: request.Operation, ServiceID: s.serviceID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID, Root: request.Root, Target: request.Target, RootGeneration: request.RootGeneration, Deadline: deadline, Destination: request.Destination, Listing: request.Listing.Clone(), Generations: s.gen},
+		metadata: AdmissionMetadata{Operation: request.Operation, ServiceID: s.serviceID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID, Root: request.Root, Target: request.Target, RootGeneration: request.RootGeneration, Deadline: deadline, Destination: request.Destination, Listing: request.Listing.Clone(), SearchQuery: request.SearchQuery, Generations: s.gen},
 	}
 	s.admissions[id] = record
 	s.mu.Unlock()
@@ -211,7 +219,7 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 	go func() {
 		var prepared PreparedRead
 		var err error
-		if request.Operation == AdmissionListDirectory {
+		if request.Operation == AdmissionListDirectory || request.Operation == AdmissionSearchFiles {
 			listingBroker, ok := s.broker.(DirectoryListingBroker)
 			if !ok {
 				err = ErrUnavailable
@@ -363,10 +371,11 @@ func admissionDigest(metadata AdmissionMetadata) ([32]byte, error) {
 		Deadline       time.Time
 		Destination    string
 		Listing        ListingOptions
+		SearchQuery    string
 		Identity       FileIdentity
 		Class          ResourceClass
 		Generations    GenerationSet
-	}{metadata.Operation, metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Listing, metadata.Identity, metadata.Class, metadata.Generations})
+	}{metadata.Operation, metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Listing, metadata.SearchQuery, metadata.Identity, metadata.Class, metadata.Generations})
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -470,7 +479,7 @@ func (s *fixtureSession) ExecuteAdmitted(ctx context.Context, preparation Admitt
 			return ErrAdmissionStale
 		}
 		operationTimeout := 10 * time.Second
-		if record.request.Operation == AdmissionListDirectory {
+		if record.request.Operation == AdmissionListDirectory || record.request.Operation == AdmissionSearchFiles {
 			operationTimeout = 5 * time.Second
 		}
 		operationCtx, cancel = context.WithTimeout(ctx, operationTimeout)

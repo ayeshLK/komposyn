@@ -46,6 +46,7 @@ type linuxImplementation struct {
 	inventory               *readbrokerstudy.CoverageInventory
 	backendErr              error
 	listingOptionsAvailable bool
+	searchAccepted          bool
 	revision                uint64
 	owners                  map[string]OwnerCoverage
 	blocked                 map[string]string
@@ -263,6 +264,13 @@ func (s *linuxImplementation) ExecuteAdmittedFilesystemRead(ctx context.Context,
 	if ctx == nil {
 		return nil, context.Canceled
 	}
+	if admission.Operation == string(tools.SearchFilesID) {
+		// The search host reads only objects filtered and classified by the
+		// retained directory capability. Serialize owner replacement with that
+		// content read and publication window.
+		s.ownerUpdateMu.Lock()
+		defer s.ownerUpdateMu.Unlock()
+	}
 	reject := func(err error) (*runtime.PrivateReadCapture, error) {
 		if preparation != nil {
 			err = errors.Join(err, preparation.Close(ctx))
@@ -470,17 +478,25 @@ func (s *linuxImplementation) SelectFilesystemRoot(ctx context.Context, transiti
 }
 
 func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocation tools.Invocation, destination, root string, rootGeneration, coverageRevision uint64) (runtime.FilesystemReadAdmission, error) {
-	if ctx == nil || (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID) || invocation.ConversationID == "" || invocation.TurnID == "" || invocation.ProviderCallID == "" || destination == "" {
+	if ctx == nil || (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID && invocation.ToolID != tools.SearchFilesID) || invocation.ConversationID == "" || invocation.TurnID == "" || invocation.ProviderCallID == "" || destination == "" {
 		return runtime.FilesystemReadAdmission{}, readbrokerstudy.ErrAdmissionStale
 	}
 	var target string
 	var listingOptions readbrokerstudy.ListingOptions
+	var searchInput tools.SearchFilesInput
 	var err error
 	if invocation.ToolID == tools.ListFilesID {
 		listing, parseErr := tools.ParseListFiles(invocation.Arguments)
 		err = parseErr
 		target = listing.Path
 		listingOptions = readbrokerstudy.ListingOptions{Recursive: listing.Recursive, IncludeHidden: listing.IncludeHidden, IncludeIgnored: listing.IncludeIgnored, NameGlobs: append([]string(nil), listing.NameGlobs...)}
+	} else if invocation.ToolID == tools.SearchFilesID {
+		searchInput, err = tools.ParseSearchFiles(invocation.Arguments)
+		target = searchInput.Path
+		listingOptions = readbrokerstudy.ListingOptions{Recursive: searchInput.Recursive, IncludeHidden: searchInput.IncludeHidden, IncludeIgnored: searchInput.IncludeIgnored, NameGlobs: append([]string(nil), searchInput.NameGlobs...)}
+		if err == nil && !s.SearchFilesAvailable() {
+			err = readbrokerstudy.ErrUnavailable
+		}
 	} else {
 		target, err = exactReadTarget(invocation.Arguments)
 	}
@@ -507,7 +523,7 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 		Operation:      readbrokerstudy.AdmissionOperation(invocation.ToolID),
 		ConversationID: invocation.ConversationID, TurnID: invocation.TurnID, CallID: invocation.ProviderCallID,
 		Root: root, Target: target, RootGeneration: rootGeneration, Destination: destination,
-		Listing: listingOptions,
+		Listing: listingOptions, SearchQuery: searchInput.Query,
 	}
 	reference, err := session.BeginAdmission(ctx, request)
 	s.mu.Unlock()
@@ -588,6 +604,7 @@ func runtimeAdmission(metadata readbrokerstudy.AdmissionMetadata) runtime.Filesy
 		RootGeneration: metadata.RootGeneration, PolicyRevision: metadata.Generations.Policy,
 		CoverageRevision: metadata.Generations.Inventory, Destination: metadata.Destination,
 		Listing: tools.ListFilesInput{Recursive: metadata.Listing.Recursive, IncludeHidden: metadata.Listing.IncludeHidden, IncludeIgnored: metadata.Listing.IncludeIgnored, NameGlobs: append([]string(nil), metadata.Listing.NameGlobs...)},
+		Search:  tools.SearchFilesInput{Path: metadata.Target, Query: metadata.SearchQuery, Recursive: metadata.Listing.Recursive, IncludeHidden: metadata.Listing.IncludeHidden, IncludeIgnored: metadata.Listing.IncludeIgnored, NameGlobs: append([]string(nil), metadata.Listing.NameGlobs...)},
 	}
 }
 
@@ -711,6 +728,19 @@ func (s *linuxImplementation) DirectoryListingOptionsAvailable() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return !s.closed && s.backendErr == nil && s.launcher != nil && s.session != nil && s.listingOptionsAvailable
+}
+
+// SearchFilesAvailable stays closed until search-specific native acceptance
+// and independent review are recorded. Search acceptance is additionally
+// constrained to the measured Linux amd64 descriptor-bind worker profile.
+func (s *linuxImplementation) SearchFilesAvailable() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	profile, ok := s.launcher.(interface{ SearchProfilesAvailable() bool })
+	return !s.closed && s.backendErr == nil && s.session != nil && s.launcher != nil && s.searchAccepted && ok && profile.SearchProfilesAvailable()
 }
 
 func (s *linuxImplementation) PrepareGenericRead(ctx context.Context, _, _ string) error {

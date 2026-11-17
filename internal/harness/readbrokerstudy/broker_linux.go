@@ -64,19 +64,20 @@ type preparedRead struct {
 }
 
 type preparedDirectoryList struct {
-	mu             sync.Mutex
-	directory      *os.File
-	registry       PolicyRegistry
-	path           string
-	identity       FileIdentity
-	class          ResourceClass
-	generation     GenerationSet
-	digest         [32]byte
-	closed         bool
-	closeAttempted bool
-	closeErr       error
-	ignoreRules    []ignoreRule
-	options        ListingOptions
+	mu                sync.Mutex
+	directory         *os.File
+	registry          PolicyRegistry
+	path              string
+	identity          FileIdentity
+	class             ResourceClass
+	generation        GenerationSet
+	digest            [32]byte
+	closed            bool
+	closeAttempted    bool
+	closeErr          error
+	ignoreRules       []ignoreRule
+	searchDirectories []directoryListingDirectory
+	options           ListingOptions
 }
 
 var _ PreparedRead = (*preparedRead)(nil)
@@ -609,65 +610,88 @@ func ignoredByRules(namePath string, directory bool, rules []ignoreRule, budget 
 }
 
 func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) ([]byte, error) {
+	filtered, _, err := p.filterListingMode(ctx, raw, false)
+	return filtered, err
+}
+
+func (p *preparedDirectoryList) filterSearchListing(ctx context.Context, raw []byte) ([]byte, error) {
+	filtered, _, err := p.filterListingMode(ctx, raw, true)
+	return filtered, err
+}
+
+func (p *preparedDirectoryList) filterSearchListingWithBudget(ctx context.Context, raw []byte) ([]byte, int, error) {
+	return p.filterListingMode(ctx, raw, true)
+}
+
+func (p *preparedDirectoryList) filterListingMode(ctx context.Context, raw []byte, search bool) ([]byte, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, maxDirectoryFilterDuration)
 	defer cancel()
 	budget := &directoryFilterBudget{ctx: ctx, remaining: maxDirectoryFilterWork}
 	var listing directoryListingResult
-	if err := json.Unmarshal(raw, &listing); err != nil || listing.Examined > 10_000 || listing.Returned > 10_000 || len(listing.Entries) > 10_000 || len(listing.Directories) > 10_000 || len(listing.Names) != 0 {
-		return nil, ErrProtocol
+	maxRaw := MaxReadBytes
+	if search {
+		maxRaw = maxWorkerSnapshotBytes
+	}
+	if len(raw) > maxRaw || json.Unmarshal(raw, &listing) != nil || listing.Examined > 10_000 || listing.Returned > 10_000 || len(listing.Entries) > 10_000 || len(listing.Directories) > 10_000 || len(listing.Names) != 0 {
+		return nil, 0, ErrProtocol
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed || p.directory == nil || p.registry == nil {
-		return nil, os.ErrClosed
+		return nil, 0, os.ErrClosed
 	}
 	if err := budget.consume(len(raw)); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var parentStat unix.Stat_t
 	if err := unix.Fstat(int(p.directory.Fd()), &parentStat); err != nil || identityFromStat(&parentStat) != p.identity {
-		return nil, ErrStaleReceipt
+		return nil, 0, ErrStaleReceipt
 	}
 	mtimeNS := parentStat.Mtim.Sec*1e9 + parentStat.Mtim.Nsec
 	ctimeNS := parentStat.Ctim.Sec*1e9 + parentStat.Ctim.Nsec
 	if mtimeNS != listing.MtimeNS || ctimeNS != listing.CtimeNS {
-		return nil, ErrStaleReceipt
+		return nil, 0, ErrStaleReceipt
 	}
 	rootFD := int(p.directory.Fd())
 	parentMountID, err := mountIDForFD(rootFD)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, 0, ErrUnavailable
 	}
 	if listing.Directories == nil {
 		if p.options.Recursive {
-			return nil, ErrProtocol
+			return nil, 0, ErrProtocol
 		}
 		state := directoryListingDirectory{Device: uint64(parentStat.Dev), Inode: parentStat.Ino, MountID: parentMountID, MtimeNS: mtimeNS, CtimeNS: ctimeNS}
 		if err := snapshotListingIgnoreEntry(rootFD, &state); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		listing.Directories = []directoryListingDirectory{state}
 	}
 	blockedDirectories, err := p.revalidateListingDirectories(listing.Directories, budget)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	allRules := append([]ignoreRule(nil), p.ignoreRules...)
 	if !p.options.IncludeIgnored {
 		currentRules, readErr := readDirectoryIgnoreRules(p.directory, p.path, p.identity, p.registry)
 		if readErr != nil || !slices.Equal(currentRules, p.ignoreRules) {
-			return nil, ErrPolicyChanged
+			return nil, 0, ErrPolicyChanged
 		}
 		allRules, err = p.loadNestedListingRules(listing.Directories, blockedDirectories, budget)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
-	filtered := make([]string, 0, min(len(listing.Entries), 1_000))
+	maxReturned := 1_000
+	if search {
+		maxReturned = 10_000
+	}
+	filtered := make([]string, 0, min(len(listing.Entries), maxReturned))
+	filteredEntries := make([]directoryListingEntry, 0, min(len(listing.Entries), maxReturned))
 	blockedPrefixes := make(map[string]bool)
 	for _, entry := range listing.Entries {
 		if err := budget.consume(1); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		name := entry.Name
 		relative := entry.Path
@@ -675,10 +699,10 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 			relative = name
 		}
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") || !validListingRelativePath(relative) {
-			return nil, ErrProtocol
+			return nil, 0, ErrProtocol
 		}
 		if path.Base(relative) != name {
-			return nil, ErrProtocol
+			return nil, 0, ErrProtocol
 		}
 		if hasBlockedListingAncestor(relative, blockedDirectories) || hasBlockedListingAncestor(relative, blockedPrefixes) {
 			continue
@@ -689,22 +713,22 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 			entry.Device = p.identity.Device
 		}
 		if !ok || entry.Inode == 0 || entry.Device == 0 {
-			return nil, ErrUnavailable
+			return nil, 0, ErrUnavailable
 		}
 		parentFD, childName, closeParent, err := openListingParent(rootFD, relative)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		identity, mounted, err := childIdentityAt(parentFD, childName, parentMountID)
 		closeErr := closeParent()
 		if closeErr != nil {
-			return nil, closeErr
+			return nil, 0, closeErr
 		}
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if !mounted && (identity.Device != entry.Device || identity.Inode != entry.Inode || identity.Type != mode) {
-			return nil, ErrStaleReceipt
+			return nil, 0, ErrStaleReceipt
 		}
 		if name == ".git" || strings.Contains(relative, "/.git/") || strings.HasSuffix(relative, "/.git") {
 			continue
@@ -727,7 +751,7 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 		if !p.options.IncludeIgnored {
 			ignored, err := ignoredByRules(namePath, identity.Type == unix.S_IFDIR, allRules, budget)
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			if ignored {
 				if identity.Type == unix.S_IFDIR {
@@ -741,7 +765,7 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 			for _, pattern := range p.options.NameGlobs {
 				ok, matchErr := gitByteMatch(budget, pattern, name)
 				if matchErr != nil {
-					return nil, matchErr
+					return nil, 0, matchErr
 				}
 				matched = matched || ok
 			}
@@ -749,14 +773,24 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 				continue
 			}
 		}
-		if len(filtered) >= 1_000 {
+		if len(filtered) >= maxReturned {
 			listing.Incomplete = true
 			continue
 		}
 		filtered = append(filtered, relative)
+		entry.Path = relative
+		entry.Device = identity.Device
+		entry.Inode = identity.Inode
+		filteredEntries = append(filteredEntries, entry)
 	}
-	listing.Names = filtered
-	listing.Entries = nil
+	if search {
+		listing.Names = nil
+		listing.Entries = filteredEntries
+		p.searchDirectories = slices.Clone(listing.Directories)
+	} else {
+		listing.Names = filtered
+		listing.Entries = nil
+	}
 	// Directory snapshots contain private traversal observations (including
 	// paths, identities, mount IDs, timestamps, and ignore-file metadata).
 	// They are needed only until host filtering and revalidation finish.
@@ -768,10 +802,14 @@ func (p *preparedDirectoryList) filterListing(ctx context.Context, raw []byte) (
 	listing.MtimeNS = 0
 	listing.CtimeNS = 0
 	encoded, err := json.Marshal(listing)
-	if err != nil || len(encoded) > MaxReadBytes {
-		return nil, ErrResultTooLarge
+	outputLimit := MaxReadBytes
+	if search {
+		outputLimit = maxWorkerSnapshotBytes
 	}
-	return encoded, nil
+	if err != nil || len(encoded) > outputLimit {
+		return nil, 0, ErrResultTooLarge
+	}
+	return encoded, budget.remaining, nil
 }
 
 func validListingRelativePath(value string) bool {
@@ -830,6 +868,10 @@ func openListingParent(rootFD int, relative string) (int, string, func() error, 
 }
 
 func (p *preparedDirectoryList) revalidateListingDirectories(states []directoryListingDirectory, budget *directoryFilterBudget) (map[string]bool, error) {
+	return p.revalidateListingDirectoriesAtRevision(states, budget, true)
+}
+
+func (p *preparedDirectoryList) revalidateListingDirectoriesAtRevision(states []directoryListingDirectory, budget *directoryFilterBudget, requireRevision bool) (map[string]bool, error) {
 	seen := make(map[string]struct{}, len(states))
 	blocked := make(map[string]bool)
 	slices.SortFunc(states, func(a, b directoryListingDirectory) int {
@@ -861,7 +903,7 @@ func (p *preparedDirectoryList) revalidateListingDirectories(states []directoryL
 		if mountErr != nil || statErr != nil || closeErr != nil {
 			return nil, errors.Join(ErrUnavailable, mountErr, statErr, closeErr)
 		}
-		if stat.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(stat.Dev) != state.Device || stat.Ino != state.Inode || mountID != state.MountID || stat.Mtim.Sec*1e9+stat.Mtim.Nsec != state.MtimeNS || stat.Ctim.Sec*1e9+stat.Ctim.Nsec != state.CtimeNS {
+		if stat.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(stat.Dev) != state.Device || stat.Ino != state.Inode || mountID != state.MountID || requireRevision && (stat.Mtim.Sec*1e9+stat.Mtim.Nsec != state.MtimeNS || stat.Ctim.Sec*1e9+stat.Ctim.Nsec != state.CtimeNS) {
 			return nil, ErrStaleReceipt
 		}
 		verifyFD, verifyErr := openListingDirectory(int(p.directory.Fd()), state.Path)
@@ -1297,6 +1339,7 @@ func (p *preparedDirectoryList) Close() error {
 	if p.directory != nil {
 		p.closeErr = p.directory.Close()
 	}
+	p.searchDirectories = nil
 	return p.closeErr
 }
 

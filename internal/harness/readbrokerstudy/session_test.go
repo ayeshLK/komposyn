@@ -304,6 +304,12 @@ func (l *fakeLauncher) Close() error {
 	return nil
 }
 
+func (l *fakeLauncher) isClosed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closed
+}
+
 type sessionFixture struct {
 	session    FixtureSession
 	registry   *Registry
@@ -881,6 +887,130 @@ func TestReservedProtectedRouteRefusesBeforeOpeningAbsentOrNonRegularTarget(t *t
 	}
 	if fixture.launcher.starts != 0 || fixture.authorizer.ConsumptionCount("reserved-absent") != 0 || fixture.authorizer.ConsumptionCount("reserved-nonregular") != 0 || len(fixture.session.PublishedResults()) != 0 {
 		t.Fatalf("protected route caused activity: worker starts=%d once counts=(%d,%d) published=%d", fixture.launcher.starts, fixture.authorizer.ConsumptionCount("reserved-absent"), fixture.authorizer.ConsumptionCount("reserved-nonregular"), len(fixture.session.PublishedResults()))
+	}
+}
+
+func TestSequentialWorkersHaveIndependentJoinState(t *testing.T) {
+	fixture := newSessionFixture(t, t.TempDir())
+	session, ok := fixture.session.(*fixtureSession)
+	if !ok {
+		t.Fatal("fixture session has unexpected implementation")
+	}
+	op := &readOperation{done: make(chan struct{})}
+	traversal := &fakeWorker{}
+	traversalState := &workerLifecycle{worker: traversal}
+	session.mu.Lock()
+	op.worker = traversalState
+	session.mu.Unlock()
+	if result := session.waitWorker(op, traversalState); !result.Joined {
+		t.Fatal("traversal worker did not join")
+	}
+	if traversal.waitCalls != 1 {
+		t.Fatalf("traversal Wait calls=%d, want 1", traversal.waitCalls)
+	}
+
+	content := &fakeWorker{waitEntered: make(chan struct{}), waitRelease: make(chan struct{})}
+	contentState := &workerLifecycle{worker: content}
+	session.mu.Lock()
+	op.worker = contentState
+	op.workerJoined = false
+	session.mu.Unlock()
+
+	type waitResult struct {
+		result workerWaitResult
+		err    error
+	}
+	finished := make(chan waitResult, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	go func() {
+		result, err := session.waitWorkerContext(ctx, op, contentState)
+		finished <- waitResult{result: result, err: err}
+	}()
+	<-content.waitEntered
+	result := <-finished
+	cancel()
+	if !errors.Is(result.err, context.DeadlineExceeded) || result.result.Joined {
+		t.Fatalf("delayed content worker wait=(%+v,%v), want bounded unconfirmed wait", result.result, result.err)
+	}
+	close(content.waitRelease)
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	joined, err := session.waitWorkerContext(ctx, op, contentState)
+	if err != nil || !joined.Joined {
+		t.Fatalf("content worker wait=(%+v,%v), want confirmed join", joined, err)
+	}
+	if content.waitCalls != 1 || !content.Joined() {
+		t.Fatalf("content worker Wait calls=%d joined=%v, want one confirmed Wait", content.waitCalls, content.Joined())
+	}
+}
+
+func TestCloseWaitsForContentWorkerStartupAndJoin(t *testing.T) {
+	fixture := newSessionFixture(t, t.TempDir())
+	session := fixture.session.(*fixtureSession)
+	_, cancelOperation := context.WithCancel(context.Background())
+	defer cancelOperation()
+	op := &readOperation{id: "content-start-race", state: StateLaunching, gen: session.gen, cancel: cancelOperation, done: make(chan struct{})}
+	session.mu.Lock()
+	session.active[op.id] = op
+	session.mu.Unlock()
+
+	startEntered, startRelease := make(chan struct{}), make(chan struct{})
+	worker := &fakeWorker{waitEntered: make(chan struct{}), waitRelease: make(chan struct{})}
+	type startResult struct {
+		state   *workerLifecycle
+		invalid bool
+		err     error
+	}
+	started := make(chan startResult, 1)
+	go func() {
+		state, invalid, err := session.startOperationWorker(op, func() (SandboxWorker, error) {
+			close(startEntered)
+			<-startRelease
+			return worker, nil
+		})
+		started <- startResult{state: state, invalid: invalid, err: err}
+	}()
+	<-startEntered
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	closeErr := session.Close(closeCtx)
+	closeCancel()
+	if !errors.Is(closeErr, context.DeadlineExceeded) || fixture.launcher.isClosed() || session.ActiveOperationCount() != 1 {
+		t.Fatalf("Close during startup err=%v launcher_closed=%t active=%d; want pending startup to retain operation and launcher", closeErr, fixture.launcher.isClosed(), session.ActiveOperationCount())
+	}
+
+	close(startRelease)
+	result := <-started
+	if result.err != nil || !result.invalid || result.state == nil || result.state.worker != worker {
+		t.Fatalf("late content startup result=%+v; want registered child invalidated by Close", result)
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	cleanup := session.terminateAndWaitContext(cleanupCtx, op, result.state)
+	cleanupCancel()
+	if cleanup.cleanupConfirmed() {
+		t.Fatal("controlled delayed worker joined before release")
+	}
+	session.finish(op, WorkerResult{Outcome: ReadUnknown, Detail: "controlled delayed cleanup"})
+	if session.ActiveOperationCount() != 1 || fixture.launcher.isClosed() {
+		t.Fatalf("unjoined child was forgotten: active=%d launcher_closed=%t", session.ActiveOperationCount(), fixture.launcher.isClosed())
+	}
+
+	closeCtx, closeCancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
+	closeErr = session.Close(closeCtx)
+	closeCancel()
+	if !errors.Is(closeErr, context.DeadlineExceeded) || fixture.launcher.isClosed() || session.ActiveOperationCount() != 1 {
+		t.Fatalf("second Close while child is unjoined err=%v launcher_closed=%t active=%d", closeErr, fixture.launcher.isClosed(), session.ActiveOperationCount())
+	}
+	close(worker.waitRelease)
+	select {
+	case <-op.done:
+	case <-time.After(time.Second):
+		t.Fatal("operation did not retire after the delayed child joined")
+	}
+	finalCtx, finalCancel := context.WithTimeout(context.Background(), time.Second)
+	defer finalCancel()
+	if err := session.Close(finalCtx); err != nil || !fixture.launcher.isClosed() {
+		t.Fatalf("final Close err=%v launcher_closed=%t", err, fixture.launcher.isClosed())
 	}
 }
 

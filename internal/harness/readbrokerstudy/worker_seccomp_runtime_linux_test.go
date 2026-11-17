@@ -21,6 +21,7 @@
 package readbrokerstudy
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +76,64 @@ func TestWorkerListingSeccompAllowsOnlyItsRequiredDirectorySyscalls(t *testing.T
 	if !strings.Contains(string(output), "LISTING_DIRECTORY_SYSCALLS_OK") {
 		t.Fatalf("listing-filtered subprocess did not complete its checks: %s", output)
 	}
+}
+
+func TestSearchContentSeccompAllowsOnlyTransferredSnapshotReads(t *testing.T) {
+	const childEnv = "KOMPOSYN_READBROKER_SEARCH_CONTENT_SECCOMP_CHILD=1"
+	for _, value := range os.Environ() {
+		if value == childEnv {
+			testSearchContentSeccompSnapshotOnly(t)
+			return
+		}
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestSearchContentSeccompAllowsOnlyTransferredSnapshotReads$")
+	command.Env = append(os.Environ(), childEnv)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("search-content filtered subprocess failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "SEARCH_CONTENT_SNAPSHOT_ONLY") {
+		t.Fatalf("search-content filtered subprocess did not complete its checks: %s", output)
+	}
+}
+
+func testSearchContentSeccompSnapshotOnly(t *testing.T) {
+	file, err := os.Open(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	filter, err := workerSeccompFilterForOperation(AdmissionSearchContent)
+	if err != nil {
+		t.Fatalf("create search-content profile: %v", err)
+	}
+	filterPath := filter.Name()
+	if err := filter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	filterFD, err := unix.Open(filterPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filterPath); err != nil {
+		_ = unix.Close(filterFD)
+		t.Fatal(err)
+	}
+	operation, err := installWorkerSeccompProfile(filterFD)
+	if err != nil || operation != AdmissionSearchContent {
+		t.Fatalf("installed profile operation=%q err=%v", operation, err)
+	}
+	if _, err := unix.Openat(unix.AT_FDCWD, "/etc/passwd", unix.O_RDONLY|unix.O_CLOEXEC, 0); err != unix.EPERM {
+		t.Fatalf("search content worker pathname lookup err=%v; want EPERM", err)
+	}
+	data := make([]byte, 16)
+	if count, err := unix.Pread(int(file.Fd()), data, 0); err != nil || count == 0 {
+		t.Fatalf("search content worker could not read already-open descriptor: bytes=%d err=%v", count, err)
+	}
+	if _, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0); err != unix.EPERM {
+		t.Fatalf("search content worker socket creation err=%v; want EPERM", err)
+	}
+	fmt.Println("SEARCH_CONTENT_SNAPSHOT_ONLY")
 }
 
 func testWorkerListingSeccompDirectorySyscalls(t *testing.T) {

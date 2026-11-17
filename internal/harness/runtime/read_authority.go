@@ -139,7 +139,7 @@ func (r *toolRuntime) issueReadExecutionReference(invocation tools.Invocation, r
 }
 
 func (r *toolRuntime) issueReadExecutionReferenceLocked(invocation tools.Invocation, request permissions.Request, approval, consumption permissions.GrantTransition, expectedEpoch uint64) (*ReadExecutionReference, error) {
-	if r == nil || (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID) || request.ConversationID != invocation.ConversationID || request.CallID != invocation.ProviderCallID || request.Binding == "" || request.AdmissionBinding == "" || approval.Binding != request.Binding || consumption.Binding != request.Binding || approval.AfterRevision == 0 || approval.AfterRevision != consumption.BeforeRevision || consumption.AfterRevision <= consumption.BeforeRevision {
+	if r == nil || (invocation.ToolID != tools.ReadFileID && invocation.ToolID != tools.ListFilesID && invocation.ToolID != tools.SearchFilesID) || request.ConversationID != invocation.ConversationID || request.CallID != invocation.ProviderCallID || request.Binding == "" || request.AdmissionBinding == "" || approval.Binding != request.Binding || consumption.Binding != request.Binding || approval.AfterRevision == 0 || approval.AfterRevision != consumption.BeforeRevision || consumption.AfterRevision <= consumption.BeforeRevision {
 		return nil, errReadAuthorityInvalid
 	}
 	if len(approval.InsertedIDs) == 0 || len(consumption.ConsumedIDs) == 0 || !validGrantEvidence(approval.InsertedIDs, approval.InsertedRequirementKeys, approval.Inserted, request.RequireOnceKeys) || !validGrantEvidence(consumption.ConsumedIDs, consumption.ConsumedRequirementKeys, consumption.Consumed, request.RequireOnceKeys) || !approval.Decision.Ready() {

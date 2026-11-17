@@ -137,6 +137,7 @@ type AdmissionRequest struct {
 	RootGeneration uint64
 	Destination    string
 	Listing        ListingOptions
+	SearchQuery    string
 }
 
 // ListingOptions are trusted parsed discovery filters. The model-facing tool
@@ -165,6 +166,8 @@ type AdmissionOperation string
 const (
 	AdmissionReadFile      AdmissionOperation = "read_file"
 	AdmissionListDirectory AdmissionOperation = "list_files"
+	AdmissionSearchFiles   AdmissionOperation = "search_files"
+	AdmissionSearchContent AdmissionOperation = "search_content"
 )
 
 // AdmissionMetadata is detached disclosure metadata. The opaque reference is
@@ -183,6 +186,7 @@ type AdmissionMetadata struct {
 	Destination    string
 	Identity       FileIdentity
 	Listing        ListingOptions
+	SearchQuery    string
 	Class          ResourceClass
 	Generations    GenerationSet
 	Binding        [32]byte
@@ -304,6 +308,8 @@ const (
 	CheckpointAfterOpen           Checkpoint = "after_open"
 	CheckpointAfterClassify       Checkpoint = "after_classify"
 	CheckpointBeforeHandoff       Checkpoint = "before_handoff"
+	CheckpointBeforeSearchContent Checkpoint = "before_search_content_handoff"
+	CheckpointAfterSearchContent  Checkpoint = "after_search_content_capture"
 	CheckpointAfterCapabilityHeld Checkpoint = "after_capability_held_before_read_release"
 	// CheckpointAfterFinalRevalidation is the last deterministic fixture hook
 	// after the broker's final policy scan and before duplicating or releasing
@@ -315,22 +321,24 @@ const (
 )
 
 type ReadEvidence struct {
-	Case               string        `json:"case"`
-	Outcome            ReadOutcome   `json:"outcome"`
-	FailureDetail      string        `json:"failure_detail,omitempty"`
-	Generations        GenerationSet `json:"generations"`
-	Probe              WorkerProbe   `json:"worker_probe,omitempty"`
-	WorkerStarted      bool          `json:"worker_started"`
-	WorkerReady        bool          `json:"worker_ready"`
-	WorkerJoined       bool          `json:"worker_join_confirmed"`
-	CapabilitySent     bool          `json:"capability_sent"`
-	CapabilityHeld     bool          `json:"capability_received_held"`
-	CapabilityIdentity FileIdentity  `json:"capability_identity,omitempty"`
-	ReadStarted        bool          `json:"read_started"`
-	Published          bool          `json:"published"`
-	BytesMatchTarget   bool          `json:"bytes_match_target"`
-	Effect             string        `json:"fixture_effect"`
-	Limitation         string        `json:"limitation,omitempty"`
+	Case                 string        `json:"case"`
+	Outcome              ReadOutcome   `json:"outcome"`
+	FailureDetail        string        `json:"failure_detail,omitempty"`
+	Generations          GenerationSet `json:"generations"`
+	Probe                WorkerProbe   `json:"worker_probe,omitempty"`
+	SearchTraversalProbe WorkerProbe   `json:"search_traversal_probe,omitempty"`
+	SearchContentProbe   WorkerProbe   `json:"search_content_probe,omitempty"`
+	WorkerStarted        bool          `json:"worker_started"`
+	WorkerReady          bool          `json:"worker_ready"`
+	WorkerJoined         bool          `json:"worker_join_confirmed"`
+	CapabilitySent       bool          `json:"capability_sent"`
+	CapabilityHeld       bool          `json:"capability_received_held"`
+	CapabilityIdentity   FileIdentity  `json:"capability_identity,omitempty"`
+	ReadStarted          bool          `json:"read_started"`
+	Published            bool          `json:"published"`
+	BytesMatchTarget     bool          `json:"bytes_match_target"`
+	Effect               string        `json:"fixture_effect"`
+	Limitation           string        `json:"limitation,omitempty"`
 }
 
 type CheckpointHook func(Checkpoint) error
@@ -415,6 +423,12 @@ type DirectoryCapabilityWorker interface {
 
 type DirectoryOptionsCapabilityWorker interface {
 	TransferDirectoryCapabilityWithOptions(context.Context, *os.File, FileIdentity, ListingOptions) error
+}
+
+// SearchSnapshotCapabilityWorker accepts one sealed anonymous snapshot of
+// already-filtered candidate bytes. It receives no candidate pathnames.
+type SearchSnapshotCapabilityWorker interface {
+	TransferSearchSnapshot(context.Context, *os.File, FileIdentity) error
 }
 
 // HostProcessIdentity names one task-owned process by PID plus its kernel
