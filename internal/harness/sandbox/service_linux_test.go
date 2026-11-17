@@ -206,7 +206,7 @@ func TestDirectoryListingAvailabilityTracksTrustedServiceLifecycle(t *testing.T)
 	}
 }
 
-func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
+func TestRuntimeFilesystemToolRegistrationRequiresEligibleHostProfile(t *testing.T) {
 	approval := runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
 	})
@@ -222,6 +222,9 @@ func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
 	if _, registered := config.Registry.Lookup(tools.ListFilesID); registered {
 		t.Fatal("list_files registered without a verified backend")
 	}
+	if _, registered := config.Registry.Lookup(tools.SearchFilesID); registered {
+		t.Fatal("search_files registered without a verified backend")
+	}
 
 	availableBackend, err := newTestHostServiceWithLauncher(profileTestWorkerLauncher{mode: readbrokerstudy.BindModeDescriptor})
 	if err != nil {
@@ -236,12 +239,42 @@ func TestRuntimeListingRegistrationRequiresVerifiedHostBackend(t *testing.T) {
 	if _, registered := config.Registry.Lookup(tools.SearchFilesID); registered {
 		t.Fatal("search_files inherited the listing evidence gate")
 	}
+	searchRoot := t.TempDir()
+	if err := availableBackend.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := availableBackend.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := availableBackend.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "conversation", Root: searchRoot, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(tools.SearchFilesInput{Path: searchRoot, Query: "needle", Recursive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := availableBackend.AdmitFilesystemRead(context.Background(), tools.Invocation{ConversationID: "conversation", TurnID: "turn", ProviderCallID: "call", ToolID: tools.SearchFilesID, Arguments: arguments}, "openai/model/profile"); !errors.Is(err, readbrokerstudy.ErrUnavailable) {
+		t.Fatalf("search arguments on a listing-only profile error=%v, want unavailable", err)
+	}
 	definition, registered := config.Registry.Lookup(tools.ListFilesID)
 	if !registered {
 		t.Fatal("list_files not registered when the Linux host service reports an available backend")
 	}
 	if got := strings.Contains(string(definition.Definition().InputSchema), "recursive"); got != wantOptions {
 		t.Fatalf("runtime schema advanced fields=%t, want %t for %s", got, wantOptions, goruntime.GOARCH)
+	}
+	searchBackend, err := newTestHostServiceWithLauncher(searchProfileTestWorkerLauncher{profileTestWorkerLauncher{mode: readbrokerstudy.BindModeDescriptor}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchBackend.Close(context.Background())
+	config = runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, searchBackend)
+	searchDefinition, registered := config.Registry.Lookup(tools.SearchFilesID)
+	if registered != searchBackend.SearchFilesAvailable() {
+		t.Fatalf("search_files registration=%t, profile availability=%t", registered, searchBackend.SearchFilesAvailable())
+	}
+	if !registered || !strings.Contains(strings.ToLower(searchDefinition.Definition().Description), "ext4") {
+		t.Fatalf("eligible runtime did not advertise the ext4 search requirement: registered=%t definition=%+v", registered, searchDefinition)
 	}
 }
 
@@ -351,7 +384,7 @@ func TestHostAdmissionAcceptsBoundedDirectoryListing(t *testing.T) {
 	}
 }
 
-func TestHostAdmissionAcceptsSearchOnlyWhenSearchGateIsOpen(t *testing.T) {
+func TestHostSearchAdmissionRequiresMeasuredProfileAndExt4(t *testing.T) {
 	launcher := searchProfileTestWorkerLauncher{profileTestWorkerLauncher{mode: readbrokerstudy.BindModeDescriptor}}
 	service, err := newTestHostServiceWithLauncher(launcher)
 	if err != nil {
@@ -387,16 +420,28 @@ func TestHostAdmissionAcceptsSearchOnlyWhenSearchGateIsOpen(t *testing.T) {
 		ConversationID: "search-fixture", TurnID: "turn", ProviderCallID: "search-call",
 		ToolID: tools.SearchFilesID, Arguments: arguments,
 	}
-	if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); !errors.Is(err, readbrokerstudy.ErrUnavailable) {
-		t.Fatalf("search admission with closed profile gate error=%v, want unavailable", err)
+	if !service.SearchFilesAvailable() {
+		t.Fatal("measured search worker profile was not exposed by the composed service")
 	}
-	impl := service.impl.(*linuxImplementation)
-	impl.mu.Lock()
-	impl.searchAccepted = true
-	impl.mu.Unlock()
+	unsupportedArguments, err := json.Marshal(tools.SearchFilesInput{Path: "/proc", Query: "synthetic-query"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsupportedInvocation := invocation
+	unsupportedInvocation.Arguments = unsupportedArguments
+	if _, err := service.AdmitFilesystemRead(context.Background(), unsupportedInvocation, "openai/gpt-test/profile"); !errors.Is(err, readbrokerstudy.ErrUnsupportedFilesystem) {
+		t.Fatalf("non-ext4 search admission error=%v, want unsupported filesystem", err)
+	}
+	var filesystem unix.Statfs_t
+	if err := unix.Statfs(searchPath, &filesystem); err != nil {
+		t.Fatal(err)
+	}
+	if uint64(filesystem.Type) != 0xef53 {
+		t.Skipf("positive composed-service search admission requires ext4, got filesystem magic %#x", uint64(filesystem.Type))
+	}
 	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile")
 	if err != nil {
-		t.Fatalf("admit synthetic search through public Service with its test gate open: %v", err)
+		t.Fatalf("admit synthetic search through public Service on ext4: %v", err)
 	}
 	if admission.Operation != string(tools.SearchFilesID) || admission.Target != searchPath || admission.Search.Query != "synthetic-query" || !admission.Search.Recursive || !admission.Search.IncludeHidden || !admission.Search.IncludeIgnored || len(admission.Search.NameGlobs) != 1 || admission.Reference == nil || admission.AdmissionBinding == "" {
 		t.Fatalf("detached search admission metadata is incomplete: %+v", admission)

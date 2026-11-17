@@ -340,8 +340,8 @@ func (l *workerLauncher) AdvancedDirectoryListingProfileAvailable() bool {
 	return err == nil
 }
 
-// SearchProfilesAvailable is only a compatibility preflight. It does not
-// represent native search acceptance or enable the public capability.
+// SearchProfilesAvailable reports the operation-specific worker profile
+// measured for search on Linux amd64 with descriptor binds.
 func (l *workerLauncher) SearchProfilesAvailable() bool {
 	if l == nil || runtime.GOARCH != "amd64" || l.capability.BindMode != BindModeDescriptor {
 		return false

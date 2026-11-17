@@ -80,6 +80,7 @@ type preparedDirectoryList struct {
 	ignoreRules        []ignoreRule
 	searchDirectories  []directoryListingDirectory
 	options            ListingOptions
+	search             bool
 }
 
 var _ PreparedRead = (*preparedRead)(nil)
@@ -193,6 +194,16 @@ func (b *broker) PrepareDirectoryList(root, target string, generation Generation
 }
 
 func (b *broker) PrepareDirectoryListWithOptions(root, target string, generation GenerationSet, options ListingOptions) (PreparedRead, error) {
+	return b.prepareDirectoryListWithOptions(root, target, generation, options, false)
+}
+
+func (b *broker) PrepareSearchDirectoryWithOptions(root, target string, generation GenerationSet, options ListingOptions) (PreparedRead, error) {
+	return b.prepareDirectoryListWithOptions(root, target, generation, options, true)
+}
+
+const ext4FilesystemMagic = 0xef53
+
+func (b *broker) prepareDirectoryListWithOptions(root, target string, generation GenerationSet, options ListingOptions, search bool) (PreparedRead, error) {
 	if b == nil || b.registry == nil {
 		return nil, ErrUnavailable
 	}
@@ -226,6 +237,17 @@ func (b *broker) PrepareDirectoryListWithOptions(root, target string, generation
 		}
 		return nil, errReadNotRegular
 	}
+	if search {
+		var filesystem unix.Statfs_t
+		if err := unix.Fstatfs(int(directory.Fd()), &filesystem); err != nil {
+			_ = directory.Close()
+			return nil, ErrUnsupportedFilesystem
+		}
+		if uint64(filesystem.Type) != ext4FilesystemMagic {
+			_ = directory.Close()
+			return nil, ErrUnsupportedFilesystem
+		}
+	}
 	class, protected := b.registry.ClassifyWithAncestors(target, id, nil)
 	if latest := b.registry.View(); latest.Generation != view.Generation || latest.Generation != generation.Policy {
 		_ = directory.Close()
@@ -249,8 +271,15 @@ func (b *broker) PrepareDirectoryListWithOptions(root, target string, generation
 	}
 	return &preparedDirectoryList{
 		directory: directory, registry: b.registry, ignoreRules: ignoreRules, path: target, identity: id, class: class, generation: generation,
-		digest: requestDigest(root, target, id, class, generation, AdmissionListDirectory, options), options: options.Clone(),
+		digest: requestDigest(root, target, id, class, generation, directoryOperation(search), options), options: options.Clone(), search: search,
 	}, nil
+}
+
+func directoryOperation(search bool) AdmissionOperation {
+	if search {
+		return AdmissionSearchFiles
+	}
+	return AdmissionListDirectory
 }
 
 func validateListingOptions(options ListingOptions) error {
@@ -1202,6 +1231,12 @@ func (b *broker) revalidateDirectoryList(prepared *preparedDirectoryList) error 
 	identity, err := identityFromFile(prepared.directory)
 	if err != nil || identity != prepared.identity || identity.Type != unix.S_IFDIR {
 		return ErrStaleReceipt
+	}
+	if prepared.search {
+		var filesystem unix.Statfs_t
+		if err := unix.Fstatfs(int(prepared.directory.Fd()), &filesystem); err != nil || uint64(filesystem.Type) != ext4FilesystemMagic {
+			return ErrUnsupportedFilesystem
+		}
 	}
 	class, protected := b.registry.ClassifyWithAncestors(prepared.path, identity, nil)
 	if protected && class != prepared.class {

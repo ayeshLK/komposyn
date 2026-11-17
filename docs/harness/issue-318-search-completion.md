@@ -5,15 +5,19 @@ clean commit `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` with trusted Bubblewrap
 0.9.0 and `ro-bind-fd`. All 51 fixture filesystem observations were recorded
 and identified ext4. The overall Stage 6 profile remains incomplete because
 mutation and shell profiles are unavailable and outside this search follow-up.
-Production search remains disabled pending a filesystem-aware enablement
-change, independent evidence review, and a separate enablement decision. This
-record does not complete umbrella issue #315.
+The approved ext4-scoped enablement is implemented here: availability requires
+the measured Linux amd64 descriptor-bind worker profile, complete owner
+coverage, and the selected directory's retained descriptor to report ext4.
+Non-ext4 directories are refused before approval and again at execution
+revalidation. The maintainer approved this scoped enablement in the task
+conversation, and this implementation enables only the measured ext4-scoped
+profile. This record does not complete umbrella issue #315.
 
 ## Acceptance matrix
 
 | #318 requirement | Implementation and behavioral coverage | Native coverage | Status |
 | --- | --- | --- | --- |
-| Advertise only on an eligible host route and require explicit once approval | Independent `SearchFilesAvailable` gate; runtime/provider integration tests check schema, denial, exact directory/query/options/destination approval and continuation | `positive_content_search` passed on the composed Service and provider fixture under once approval | Native case passed on the measured profile; production gate remains closed pending independent evidence review and enablement approval |
+| Advertise only on an eligible host route and require explicit once approval | Availability requires the measured launcher profile; runtime/provider integration tests check schema, denial, exact directory/query/options/destination approval and continuation. Admission rejects non-ext4 before approval | `positive_content_search` passed on the composed Service and provider fixture under once approval | Native case passed on the measured profile; the approved enablement is implemented in this follow-up for the measured profile |
 | Bind target, query, options and destination through admission and publication | Search fields are parsed before admission and included in request digest and execution authority; changed binding is refused | Native positive case recorded exact approval text and continuation | Implemented and measured; no broader provider or shipped-binary claim |
 | Reuse bounded traversal, ignores, globs and protection without following links or crossing mounts | Host filters traversal snapshot, classifies path/inode/ancestors before descriptor preparation, and caps traversal, candidates, bytes, aggregate matcher/filter work, lines, output and duration | Native cases covered recursion, protected aliases, `.git`, mount exclusion, candidate substitution and root movement | Implemented and measured for listed cases; aggregate cgroup quotas remain unprovisioned and unclaimed |
 | Search only small UTF-8 regular files and report truthful limits | Literal case-sensitive line matching, safe binary/invalid-UTF-8/oversize skips, bounded snippets, aggregate skipped count and `incomplete` output | Native composed-service positive search passes; per-file filtering and result-boundary edge cases are covered by focused implementation tests, not claimed as aggregate host resource enforcement | Implemented; aggregate cgroup quotas remain unprovisioned and unclaimed |
@@ -21,7 +25,7 @@ record does not complete umbrella issue #315.
 | Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Positive and cancellation cases recorded the two profiles and handoff boundary on the candidate | Measured for this profile; exact-file read profile remains unchanged |
 | Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; each child worker has independent join state; search joins honor the invocation deadline and suppress disclosure when cleanup is unconfirmed | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, `search_revocation_withholds_capture`, and `search_mount_boundary` passed on the candidate | Measured for the listed cases; no aggregate cgroup quota or arbitrary-descendant claim |
 | Keep known stale-policy refusal separate from uncertain cleanup | A joined scan with changed ignore policy returns a sanitized failed tool result, with no staged search content. Descriptor-close errors or unconfirmed joins remain unknown and interrupt continuation; cleanup ownership keeps admission blocked | `search_ignore_rules_changed_after_content` passed for nested and applicable ancestor mutations; both worker joins, both descriptor closures, two once-grant consumptions, sanitized continuations, and no disclosure were recorded | Measured on the candidate; cleanup uncertainty remains fail-closed |
-| Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | Exact candidate search cases now pass on the proposed profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Gate closed; separate enablement approval not recorded |
+| Enable only the measured profile | Search availability requires trusted Linux amd64 descriptor-bind worker composition; admission uses `fstatfs` on the retained directory and fails closed unless it is ext4 | Exact candidate search cases passed on the measured profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Ext4-only enablement approved and implemented here. Other filesystems and launch profiles remain unavailable |
 
 ## Runner 13 trusted-host run (historical)
 
@@ -165,8 +169,14 @@ additional filesystem types. Keep the public gate closed for unknown or
 unmeasured filesystems and for partial provenance. That change must also
 exercise the real composed Service/runtime availability, provider schema and
 instructions, admission, approval, and unsupported-profile refusal paths.
-This profile proposal is not an enablement decision; `searchAccepted` remains
-false and #318/#315 remain open.
+This evidence applies to the worker/enforcement revision recorded above. The
+follow-up adds only a host-side filesystem eligibility check and the profile
+availability gate; traversal/content workers, worker protocol, seccomp
+profiles, and native assertions are unchanged. Focused tests exercise ext4
+admission and pre-approval refusal on procfs. These changes do not extend the
+native evidence to another filesystem or launch profile. The ext4-only
+enablement decision is recorded for this change; #318/#315 remain open until
+their other acceptance and closure criteria are completed.
 
 The version 11 historical harness included composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root
@@ -254,9 +264,8 @@ snapshot handoff, leaves no private result, and makes no provider continuation.
 
 The historical native evidence supports only its recorded candidates; the
 runner 13 evidence above applies only to its exact recorded candidate and
-profile. The production `searchAccepted` gate remains false. Independent review
-of this evidence and a separate enablement decision are still required before
-enablement.
-This work does not close umbrella issue #315 or establish shipped-binary,
+profile. Runner 14 supplies the filesystem provenance for its own clean
+candidate; it does not retroactively change earlier archives. This follow-up
+opens search availability only for the approved ext4-scoped profile. This work does not close umbrella issue #315 or establish shipped-binary,
 real-provider, file-snapshot, non-Linux, mutation, shell, or aggregate cgroup
 quota support. Listing evidence remains historical supporting context only.

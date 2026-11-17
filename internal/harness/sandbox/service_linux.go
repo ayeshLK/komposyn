@@ -46,7 +46,7 @@ type linuxImplementation struct {
 	inventory               *readbrokerstudy.CoverageInventory
 	backendErr              error
 	listingOptionsAvailable bool
-	searchAccepted          bool
+	searchProfileAvailable  bool
 	revision                uint64
 	owners                  map[string]OwnerCoverage
 	blocked                 map[string]string
@@ -112,6 +112,8 @@ func composeLinuxImplementation(registry *readbrokerstudy.Registry, launcher rea
 	}
 	profile, ok := launcher.(interface{ AdvancedDirectoryListingProfileAvailable() bool })
 	impl.listingOptionsAvailable = ok && profile.AdvancedDirectoryListingProfileAvailable()
+	searchProfile, ok := launcher.(interface{ SearchProfilesAvailable() bool })
+	impl.searchProfileAvailable = ok && searchProfile.SearchProfilesAvailable()
 	return impl, nil
 }
 
@@ -733,9 +735,9 @@ func (s *linuxImplementation) DirectoryListingOptionsAvailable() bool {
 	return !s.closed && s.backendErr == nil && s.launcher != nil && s.session != nil && s.listingOptionsAvailable
 }
 
-// SearchFilesAvailable stays closed until search-specific native acceptance
-// and independent review are recorded. Search acceptance is additionally
-// constrained to the measured Linux amd64 descriptor-bind worker profile.
+// SearchFilesAvailable requires the measured Linux amd64 descriptor-bind
+// worker profile. Admission additionally verifies the selected directory's
+// retained descriptor is on ext4 before presenting an approval request.
 func (s *linuxImplementation) SearchFilesAvailable() bool {
 	if s == nil {
 		return false
@@ -743,7 +745,7 @@ func (s *linuxImplementation) SearchFilesAvailable() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	profile, ok := s.launcher.(interface{ SearchProfilesAvailable() bool })
-	return !s.closed && s.backendErr == nil && s.session != nil && s.launcher != nil && s.searchAccepted && ok && profile.SearchProfilesAvailable()
+	return !s.closed && s.backendErr == nil && s.session != nil && s.launcher != nil && s.searchProfileAvailable && ok && profile.SearchProfilesAvailable()
 }
 
 func (s *linuxImplementation) PrepareGenericRead(ctx context.Context, _, _ string) error {
