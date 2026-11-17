@@ -123,13 +123,13 @@ Admission checks that descriptor's statfs magic and exact mount-ID filesystem
 type before the runtime can request once approval, and revalidates both before
 execution. Other filesystems, architectures, bind modes, and non-Linux
 platforms stay unavailable. The tool
-description states the ext4 requirement. The change opens availability only
+description states the ext4 requirement. Availability opens only
 when the inspected launcher matches the measured worker profile; it does not
 enable search on listing evidence or version strings. The ext4-scoped
-enablement decision is recorded for this change, and the implementation
-enforces those profile limits. The trusted-host runner 14 archive recorded 38
-passes and two unrelated unavailable profiles, plus 51 ext4 fixture observations; it
-used the fixed test-binary worker and did not establish live provider or
+enablement decision was implemented by merged PR #334, and the implementation
+enforces those profile limits. The merged-source trusted-host runner 14 archive
+recorded 38 passes and two unrelated unavailable profiles, plus 51 ext4 fixture
+observations; it used the fixed test-binary worker and did not establish live provider or
 shipped-binary acceptance. See [the search design note](search-files-design.md)
 and [#318 completion matrix](issue-318-search-completion.md) for exact
 provenance and profile limits.
