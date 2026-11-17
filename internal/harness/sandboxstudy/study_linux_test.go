@@ -290,6 +290,59 @@ func verifyZeroByteCreateWorker(t *testing.T, scope string) (string, string) {
 	return verifyObserved("create-one-zero-byte-write-failure", scope, Observation{WorkerOutcome: result.Status})
 }
 
+func TestOTmpfileWorkerRefusesExistingDestinationWithoutChangingIt(t *testing.T) {
+	for _, destination := range []string{"regular", "symlink"} {
+		t.Run(destination, func(t *testing.T) {
+			scope := t.TempDir()
+			parent := filepath.Join(scope, "parent")
+			if err := os.Mkdir(parent, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			leaf := filepath.Join(parent, "new.txt")
+			if destination == "regular" {
+				if err := os.WriteFile(leaf, []byte("actor collision fixture\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink("outside-target", leaf); err != nil {
+				t.Fatal(err)
+			}
+			var output strings.Builder
+			code := workerMainAt(scope, []string{"create-one-otmpfile", "parent/new.txt"}, strings.NewReader("RELEASE\nCONTINUE\n"), &output)
+			if code != 0 {
+				t.Fatalf("worker exit=%d output=%q", code, output.String())
+			}
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			result, err := parseWorkerResult(lines[len(lines)-1])
+			if err != nil {
+				t.Fatalf("decode worker result: %v (%q)", err, output.String())
+			}
+			if result.Status == "unavailable" || result.Status == "setup_refused" {
+				t.Skipf("host filesystem does not support O_TMPFILE publication: %s", result.Detail)
+			}
+			if result.Status != "failed" {
+				t.Fatalf("existing %s destination status=%q detail=%q", destination, result.Status, result.Detail)
+			}
+			if destination == "regular" {
+				if data, err := os.ReadFile(leaf); err != nil || string(data) != "actor collision fixture\n" {
+					t.Fatalf("regular destination changed: %q %v", data, err)
+				}
+			} else if info, err := os.Lstat(leaf); err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("symlink destination changed: info=%v err=%v", info, err)
+			}
+		})
+	}
+}
+
+func TestFixtureFilesystemUsesDescriptorMountID(t *testing.T) {
+	fstype, mountID := fixtureFilesystem(t.TempDir())
+	if fstype == "" || mountID == 0 {
+		t.Fatalf("fixture filesystem provenance unavailable: type=%q mount=%d", fstype, mountID)
+	}
+	if !strings.Contains(fstype, "magic:0x") {
+		t.Fatalf("filesystem magic missing from provenance: %q", fstype)
+	}
+}
+
 func TestPrivateHomeProbeProductionAndClassification(t *testing.T) {
 	empty := t.TempDir()
 	if got := probeHome(empty); got != "home_config_not_present" {

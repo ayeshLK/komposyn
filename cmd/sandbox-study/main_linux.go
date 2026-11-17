@@ -63,7 +63,6 @@ type host struct {
 	BubblewrapMode             string `json:"bubblewrap_mode,omitempty"`
 	UserNamespaceMax           string `json:"user_namespace_max,omitempty"`
 	UIDMap                     string `json:"uid_map,omitempty"`
-	CgroupPath                 string `json:"cgroup_path,omitempty"`
 	HostCgroupControllers      string `json:"host_cgroup_controllers,omitempty"`
 	CgroupControllers          string `json:"cgroup_controllers,omitempty"`
 	CgroupSubtreeControl       string `json:"cgroup_subtree_control,omitempty"`
@@ -157,9 +156,9 @@ func hostSnapshot(backend, commit string) host {
 	result.NoNewPrivs = statusLine(status, "NoNewPrivs:")
 	result.Seccomp = statusLine(status, "Seccomp:")
 	result.EffectiveCaps = statusLine(status, "CapEff:")
-	result.CgroupPath = readTrimmed("/proc/self/cgroup")
+	cgroupMembership := readTrimmed("/proc/self/cgroup")
 	result.HostCgroupControllers = readTrimmed("/sys/fs/cgroup/cgroup.controllers")
-	if path := currentCgroupPath(result.CgroupPath); path != "" {
+	if path := currentCgroupPath(cgroupMembership); path != "" {
 		result.CgroupControllers = readTrimmed(filepath.Join(path, "cgroup.controllers"))
 		result.CgroupSubtreeControl = readTrimmed(filepath.Join(path, "cgroup.subtree_control"))
 		result.CgroupWritable = controlFileWritable(filepath.Join(path, "cgroup.procs"))
