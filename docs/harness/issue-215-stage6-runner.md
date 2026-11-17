@@ -241,4 +241,11 @@ twelve native-integrated cases, one native-worker-lifecycle case, and two
 unimplemented cases. Revision 9 added two recursive-listing cases. Revision 10
 adds recursive nested-ignore/glob, whole-tree limit, and post-traversal
 cancellation cases plus a synthetic incomplete-owner listing control.
-Historical archives remain bound to their original runner/source revisions.
+Revision 11 added the composed-service content-search profiles. Revision 12
+added post-content ignore-change and worker-startup/cleanup regressions.
+Revision 13 records traversal and content-worker joins independently,
+records search snapshot and candidate descriptor retirement, corrects the
+native-integrated case classification to 30 without reclassifying cases, and
+checks known final-policy refusal separately from uncertain cleanup. Historical
+archives remain bound to their original runner/source revisions; runner 12's
+failed report is not acceptance evidence for revision 13.

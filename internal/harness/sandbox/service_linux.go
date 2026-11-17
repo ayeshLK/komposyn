@@ -321,6 +321,9 @@ func (s *linuxImplementation) ExecuteAdmittedFilesystemRead(ctx context.Context,
 		capture, err = authority.Stage(admission, result)
 		return err
 	})
+	if admission.Operation == string(tools.SearchFilesID) && errors.Is(err, readbrokerstudy.ErrExecutionFailed) && !errors.Is(err, readbrokerstudy.ErrCleanupPending) {
+		return nil, runtime.ErrFilesystemReadFailed
+	}
 	return capture, err
 }
 

@@ -64,20 +64,22 @@ type preparedRead struct {
 }
 
 type preparedDirectoryList struct {
-	mu                sync.Mutex
-	directory         *os.File
-	registry          PolicyRegistry
-	path              string
-	identity          FileIdentity
-	class             ResourceClass
-	generation        GenerationSet
-	digest            [32]byte
-	closed            bool
-	closeAttempted    bool
-	closeErr          error
-	ignoreRules       []ignoreRule
-	searchDirectories []directoryListingDirectory
-	options           ListingOptions
+	mu                 sync.Mutex
+	directory          *os.File
+	registry           PolicyRegistry
+	path               string
+	identity           FileIdentity
+	class              ResourceClass
+	generation         GenerationSet
+	digest             [32]byte
+	closed             bool
+	closeAttempted     bool
+	closeErr           error
+	searchCleanupErr   error
+	searchCleanupFiles []*os.File
+	ignoreRules        []ignoreRule
+	searchDirectories  []directoryListingDirectory
+	options            ListingOptions
 }
 
 var _ PreparedRead = (*preparedRead)(nil)
@@ -1337,7 +1339,9 @@ func (p *preparedDirectoryList) Close() error {
 	p.closeAttempted = true
 	p.closed = true
 	if p.directory != nil {
-		p.closeErr = p.directory.Close()
+		p.closeErr = errors.Join(p.searchCleanupErr, p.directory.Close())
+	} else {
+		p.closeErr = p.searchCleanupErr
 	}
 	p.searchDirectories = nil
 	return p.closeErr

@@ -105,6 +105,22 @@ func (h *searchPublicationHost) AdmitFilesystemRead(ctx context.Context, invocat
 	return admission, nil
 }
 
+type failedSearchPublicationHost struct {
+	*searchPublicationHost
+	executions int
+}
+
+func (h *failedSearchPublicationHost) ExecuteAdmittedFilesystemRead(ctx context.Context, _ FilesystemReadAdmission, preparation FilesystemReadPreparation, _ *ReadExecutionReference, authority FilesystemReadExecutionAuthority) (*PrivateReadCapture, error) {
+	h.executions++
+	if err := authority.Claim(); err != nil {
+		return nil, err
+	}
+	if err := preparation.Close(ctx); err != nil {
+		return nil, err
+	}
+	return nil, ErrFilesystemReadFailed
+}
+
 func (h *publicationHost) WithFilesystemReadPublicationCurrent(ctx context.Context, conversationID, root string, generation, policy, coverage uint64, operation func() error) error {
 	h.gateCalls.Add(1)
 	if err := ctx.Err(); err != nil {
@@ -575,6 +591,76 @@ func TestSearchFilesOnceApprovalBindsOptionsAndContinuesToSelectedProvider(t *te
 	}
 	if base.reads != 1 || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded {
 		t.Fatalf("search executions/activity=%d/%+v", base.reads, turn.ToolActivities)
+	}
+}
+
+func TestSearchKnownFailureContinuesWithSanitizedToolResult(t *testing.T) {
+	root := t.TempDir()
+	arguments, err := json.Marshal(tools.SearchFilesInput{Path: root, Query: "synthetic-query", Recursive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := &publicationProvider{fakeProvider: &fakeProvider{id: provider.OpenAI}, target: root, toolID: tools.SearchFilesID, callArguments: arguments}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &publicationHost{root: root, target: root}
+	host := &failedSearchPublicationHost{searchPublicationHost: &searchPublicationHost{publicationHost: base}}
+	var approvals atomic.Int32
+	config := BundledConversationToolRuntimeConfigWithFilesystemRead(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approvals.Add(1)
+		return permissions.ApprovalOnce, "", nil
+	}), ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+		return ClarificationResponse{}, errors.New("clarification is not part of this fixture")
+	}), host)
+	chat := NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
+		t.Fatal(err)
+	}
+	selectFirst(t, chat)
+	selectPublicationRoot(t, chat, base, root)
+	t.Cleanup(chat.Close)
+	chat.mu.Lock()
+	conversationID := chat.conversationID
+	grants := chat.toolRuntime.grants
+	chat.mu.Unlock()
+	beforeRevision, beforeGrants := grants.Snapshot(conversationID)
+	if len(beforeGrants) != 0 {
+		t.Fatalf("preexisting once grants=%d, want none", len(beforeGrants))
+	}
+
+	turn, err := chat.Send(context.Background(), "search this directory", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("known failed search turn=%+v err=%v", turn, err)
+	}
+	requests := fp.captured()
+	if len(requests) != 2 || approvals.Load() != 1 || host.executions != 1 {
+		t.Fatalf("requests=%d approvals=%d executions=%d; want one tool invocation and one safe continuation", len(requests), approvals.Load(), host.executions)
+	}
+	var toolResult string
+	for _, message := range requests[1].Messages {
+		if message.Role == provider.RoleTool && message.ToolResult != nil && message.ToolResult.CallID == "read-1" {
+			toolResult = message.ToolResult.Content
+			break
+		}
+	}
+	if toolResult == "" {
+		t.Fatal("safe continuation omitted the correlated search tool result")
+	}
+	var envelope struct {
+		Outcome string `json:"outcome"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(toolResult), &envelope); err != nil || envelope.Outcome != string(tools.OutcomeFailed) || envelope.Content != "Filesystem request failed; no names or contents were disclosed." {
+		t.Fatalf("known failure continuation=%q decoded=%+v err=%v", toolResult, envelope, err)
+	}
+	if len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeFailed {
+		t.Fatalf("known failed search activity=%+v", turn.ToolActivities)
+	}
+	afterRevision, afterGrants := grants.Snapshot(conversationID)
+	if afterRevision != beforeRevision+2 || len(afterGrants) != 0 {
+		t.Fatalf("once grant revision=%d→%d remaining=%d; want approval+consumption and no reusable grant", beforeRevision, afterRevision, len(afterGrants))
 	}
 }
 

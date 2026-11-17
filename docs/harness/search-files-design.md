@@ -77,6 +77,14 @@ snapshot.
    revocation, cancellation, stale roots, changed objects, worker cleanup
    failure, or stale provider continuation suppresses publication.
 
+A final policy-observation change, such as a new applicable `.gitignore`, is a
+known failed search when both workers joined and the host closed the retained
+candidate and snapshot descriptors. The host stages no result and sends only a
+fixed sanitized failed tool result through the existing provider continuation;
+it never reports an exhaustive empty search. If a worker join or descriptor
+close is unconfirmed, the result remains unknown, the turn is interrupted, and
+the existing cleanup barrier retains ownership and blocks affected admission.
+
 This is object authority: a retained object may remain the selected object
 after rename, but stale or unverifiable observations are refused or produce an
 explicit incomplete result without disclosing stale data. Worker cleanup
@@ -100,14 +108,16 @@ Search input is rejected before
 admission if its encoded worker frame exceeds 2,048 bytes. Limits are not
 aggregate process, CPU, or memory isolation and no cgroup quota is claimed.
 
-The proposed support boundary for native review is trusted Linux amd64,
-Bubblewrap's actual measured `ro-bind-fd` mode, complete owner inventory, and
-successful fixed-worker composition. The gate is independent and remains
-closed until search-specific native acceptance and independent enablement
-review pass. The current runner version 12 adds Close-during-startup and
-post-content ignore-change cases; those require a fresh trusted-host run.
-File-snapshot, other architectures, and non-Linux systems remain unavailable
-for search.
+The measured search profile is trusted Linux amd64, Bubblewrap's actual
+`ro-bind-fd` mode, complete owner inventory, and successful fixed-worker
+composition. Runner 13's classification, known-validation-refusal, independent
+worker-join, and descriptor-close assertions passed on the recorded candidate;
+see the [#318 completion record](issue-318-search-completion.md). The native
+archive does not identify the fixture filesystem. Filesystem-specific
+portability is therefore unestablished, and no broader filesystem support claim
+is made pending contemporaneous filesystem evidence. File-snapshot, other
+architectures, and non-Linux systems remain unavailable. Production search
+remains gated pending evidence review and a separate enablement decision.
 
 ## Worker operation profiles and tests
 
@@ -117,11 +127,13 @@ ignore-file operations. The content worker uses a separate profile that denies
 pathname lookup and receives only the sealed content snapshot. Exact file reads
 keep their stricter existing profile; no listing or read profile is weakened
 for search. A prior trusted-host run measured all seven search-specific Stage
-6 cases as passes on Linux amd64 with Bubblewrap `ro-bind-fd`. The cancellation
-case verified that the content worker joins before its separate snapshot
-handoff. The full Stage 6 profile remains incomplete because mutation and shell
-cases are outside its implemented scope. Search is still unavailable until
-independent review and explicit enablement approval.
+6 cases as passes on Linux amd64 with Bubblewrap `ro-bind-fd`; this is historical
+evidence. The latest runner 13 run also passed the expanded search cases,
+including cancellation before the separate snapshot handoff and post-content
+ignore-rule changes with both worker joins and descriptor groups confirmed. The
+full Stage 6 profile remains incomplete because mutation and shell cases are
+outside its implemented scope. Search remains unavailable pending independent
+review and explicit enablement approval.
 
 Behavioral tests exercise the runtime-to-provider seam with synthetic content;
 the Stage 6 fixture exercises the composed sandbox Service and provider
@@ -129,9 +141,10 @@ continuation. Native cases include positive search, protected aliases,
 protected candidate substitution by independent same-user actors,
 content-worker cancellation/cleanup, root/directory movement, owner rotation,
 mount-boundary exclusion, revocation, and stale-publication suppression. The
-current runner adds lifecycle and post-content ignore-rule mutation cases;
-fresh trusted-host evidence is pending. See the
-[#318 completion record](issue-318-search-completion.md) for commit and report
-hashes. Synthetic runtime-composition outcomes remain separate from native
-worker enforcement. Production search availability stays false pending
+runner 13's lifecycle and post-content ignore-rule cases passed on the exact
+candidate documented in the [#318 completion record](issue-318-search-completion.md),
+which includes commit and report hashes. The fixture filesystem was not
+recorded; that remains an explicit provenance limitation rather than an
+inferred property. Synthetic runtime-composition outcomes remain separate from
+native worker enforcement. Production search availability stays false pending
 independent review and a separate enablement decision.

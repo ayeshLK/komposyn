@@ -991,6 +991,12 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		update("awaiting approval")
 		capture, err := r.executeFilesystemRead(ctx, invocation, destination, workingDirectory)
 		if err != nil || capture == nil {
+			if errors.Is(err, ErrFilesystemReadFailed) {
+				activity.Outcome = tools.OutcomeFailed
+				activity.Message = "Filesystem request failed; no names or contents were disclosed."
+				update("finished")
+				return fixedToolResult(call.CallID, tools.OutcomeFailed, activity.Message, maxBytes), activity, "", false, nil
+			}
 			if errors.Is(err, errFilesystemReadRefused) {
 				activity.Outcome = tools.OutcomeDeclined
 				activity.Message = "Filesystem request refused by the user; no names or contents were disclosed."

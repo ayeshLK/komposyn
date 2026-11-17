@@ -83,6 +83,38 @@ type preparedSearchSnapshot struct {
 	Skipped    int
 }
 
+type searchSnapshotValidationError struct {
+	validationErr error
+	cleanupErr    error
+}
+
+func searchCandidatesClosed(snapshot *preparedSearchSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, candidate := range snapshot.Candidates {
+		if candidate.file != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *searchSnapshotValidationError) Error() string {
+	return errors.Join(e.validationErr, e.cleanupErr).Error()
+}
+
+func (e *searchSnapshotValidationError) Unwrap() []error {
+	var errs []error
+	if e.validationErr != nil {
+		errs = append(errs, e.validationErr)
+	}
+	if e.cleanupErr != nil {
+		errs = append(errs, e.cleanupErr)
+	}
+	return errs
+}
+
 func (p *preparedDirectoryList) validateAndCloseSearchSnapshot(ctx context.Context, snapshot *preparedSearchSnapshot) error {
 	if p == nil || snapshot == nil || ctx == nil {
 		return ErrProtocol
@@ -90,38 +122,38 @@ func (p *preparedDirectoryList) validateAndCloseSearchSnapshot(ctx context.Conte
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	defer func() { p.searchDirectories = nil }()
-	var closeErr error
+	var validationErr, cleanupErr error
 	if p.closed || p.directory == nil || p.registry == nil {
-		closeErr = ErrStaleReceipt
+		validationErr = errors.Join(validationErr, ErrStaleReceipt)
 	}
 	if err := ctx.Err(); err != nil {
-		closeErr = errors.Join(closeErr, err)
+		validationErr = errors.Join(validationErr, err)
 	}
-	if closeErr == nil {
+	if validationErr == nil {
 		budget := &directoryFilterBudget{ctx: ctx, remaining: maxDirectoryFilterWork}
 		blocked, err := p.revalidateListingDirectoriesAtRevision(slices.Clone(p.searchDirectories), budget, false)
-		closeErr = errors.Join(closeErr, err)
+		validationErr = errors.Join(validationErr, err)
 		if err == nil && len(blocked) > 0 {
-			closeErr = errors.Join(closeErr, ErrProtected)
+			validationErr = errors.Join(validationErr, ErrProtected)
 		}
-		if closeErr == nil && !p.options.IncludeIgnored {
+		if validationErr == nil && !p.options.IncludeIgnored {
 			currentRules, readErr := readDirectoryIgnoreRules(p.directory, p.path, p.identity, p.registry)
 			if readErr != nil || !slices.Equal(currentRules, p.ignoreRules) {
-				closeErr = errors.Join(closeErr, ErrPolicyChanged)
+				validationErr = errors.Join(validationErr, ErrPolicyChanged)
 			}
 		}
 	}
 	rootFD := -1
 	var rootMount uint64
-	if closeErr == nil {
+	if validationErr == nil {
 		rootFD = int(p.directory.Fd())
 		var err error
 		rootMount, err = mountIDForFD(rootFD)
-		closeErr = errors.Join(closeErr, err)
+		validationErr = errors.Join(validationErr, err)
 	}
 	for index := range snapshot.Candidates {
 		if err := ctx.Err(); err != nil {
-			closeErr = errors.Join(closeErr, err)
+			validationErr = errors.Join(validationErr, err)
 		}
 		candidate := &snapshot.Candidates[index]
 		changed := false
@@ -150,24 +182,37 @@ func (p *preparedDirectoryList) validateAndCloseSearchSnapshot(ctx context.Conte
 					if identityErr != nil || mountErr != nil || ancestorErr != nil || identity != candidate.identity || stat.Size != candidate.size || stat.Mtim != candidate.mtime || stat.Ctim != candidate.ctime || mountID != rootMount || protectedRoute || protectedIdentity {
 						changed = true
 					}
-					closeErr = errors.Join(closeErr, unix.Close(fd))
+					cleanupErr = errors.Join(cleanupErr, unix.Close(fd))
 				}
-				closeErr = errors.Join(closeErr, closeParent())
+				cleanupErr = errors.Join(cleanupErr, closeParent())
 			}
 		}
 		if changed {
 			snapshot.Changed = append(snapshot.Changed, index)
 		}
 		if candidate.file != nil {
-			closeErr = errors.Join(closeErr, candidate.file.Close())
-			candidate.file = nil
+			file := candidate.file
+			if err := file.Close(); err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
+				p.searchCleanupFiles = append(p.searchCleanupFiles, file)
+			} else {
+				candidate.file = nil
+			}
 		}
 	}
 	if snapshot.File != nil {
-		closeErr = errors.Join(closeErr, snapshot.File.Close())
+		file := snapshot.File
+		if err := file.Close(); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+			p.searchCleanupFiles = append(p.searchCleanupFiles, file)
+		}
 		snapshot.File = nil
 	}
-	return closeErr
+	p.searchCleanupErr = errors.Join(p.searchCleanupErr, cleanupErr)
+	if validationErr == nil && cleanupErr == nil {
+		return nil
+	}
+	return &searchSnapshotValidationError{validationErr: validationErr, cleanupErr: cleanupErr}
 }
 
 type searchWorkerMatch struct {

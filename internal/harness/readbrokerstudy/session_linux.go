@@ -81,6 +81,7 @@ type readOperation struct {
 // must never be shared between those sequential children.
 type workerLifecycle struct {
 	worker    SandboxWorker
+	operation AdmissionOperation
 	starting  bool
 	startDone chan struct{}
 	waitOnce  sync.Once
@@ -93,8 +94,8 @@ type workerLifecycle struct {
 // calling the launcher. Close can then wait for a child whose Start call has
 // not returned yet, instead of completing the operation around an invisible
 // process.
-func (s *fixtureSession) startOperationWorker(op *readOperation, start func() (SandboxWorker, error)) (*workerLifecycle, bool, error) {
-	state := &workerLifecycle{starting: true, startDone: make(chan struct{})}
+func (s *fixtureSession) startOperationWorker(op *readOperation, operation AdmissionOperation, start func() (SandboxWorker, error)) (*workerLifecycle, bool, error) {
+	state := &workerLifecycle{operation: operation, starting: true, startDone: make(chan struct{})}
 	s.mu.Lock()
 	if !s.currentLocked(op) || op.revoked {
 		s.mu.Unlock()
@@ -598,7 +599,7 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 		ctx, cancel = context.WithTimeout(ctx, maxDirectoryFilterDuration)
 		defer cancel()
 	}
-	workerState, invalid, err := s.startOperationWorker(op, func() (SandboxWorker, error) {
+	workerState, invalid, err := s.startOperationWorker(op, op.admissionOperation, func() (SandboxWorker, error) {
 		if operationLauncher, ok := s.launcher.(OperationWorkerLauncher); ok {
 			return operationLauncher.StartForOperation(ctx, op.admissionOperation)
 		}
@@ -875,10 +876,28 @@ func (s *fixtureSession) runWorkerMode(ctx context.Context, op *readOperation, p
 			return WorkerResult{Outcome: ReadUnknown, Detail: "search content snapshot is unavailable"}
 		}
 		contentWorkerResult := s.runSearchContentWorker(ctx, op, snapshot.File, authority, publish)
-		if closeErr := filter.validateAndCloseSearchSnapshot(ctx, &snapshot); closeErr != nil {
+		closeErr := filter.validateAndCloseSearchSnapshot(ctx, &snapshot)
+		if closeErr != nil {
 			clear(contentWorkerResult.Bytes)
-			return WorkerResult{Outcome: ReadUnknown, Detail: "search content worker or snapshot cleanup could not be confirmed"}
+			var validationErr *searchSnapshotValidationError
+			if errors.As(closeErr, &validationErr) {
+				op.evidence.SearchSnapshotClosed = validationErr.cleanupErr == nil && snapshot.File == nil
+				op.evidence.SearchCandidatesClosed = validationErr.cleanupErr == nil && searchCandidatesClosed(&snapshot)
+				if validationErr.cleanupErr != nil {
+					return WorkerResult{Outcome: ReadUnknown, Detail: "search snapshot descriptor cleanup could not be confirmed"}
+				}
+				if contentWorkerResult.Outcome == ReadUnknown || contentWorkerResult.Outcome == ReadCancelled || contentWorkerResult.Outcome == ReadNotExecuted {
+					return contentWorkerResult
+				}
+				if errors.Is(validationErr.validationErr, context.Canceled) || errors.Is(validationErr.validationErr, context.DeadlineExceeded) {
+					return WorkerResult{Outcome: ReadCancelled, Detail: "search result withheld after validation deadline or cancellation"}
+				}
+				return WorkerResult{Outcome: ReadFailed, Detail: "search discovery policy changed after content scan; results withheld"}
+			}
+			return WorkerResult{Outcome: ReadUnknown, Detail: "search snapshot validation or cleanup could not be confirmed"}
 		}
+		op.evidence.SearchSnapshotClosed = snapshot.File == nil
+		op.evidence.SearchCandidatesClosed = searchCandidatesClosed(&snapshot)
 		if contentWorkerResult.Outcome != ReadSucceeded {
 			return contentWorkerResult
 		}
@@ -946,7 +965,7 @@ func (s *fixtureSession) runSearchContentWorker(ctx context.Context, op *readOpe
 	if !ok || snapshot == nil {
 		return WorkerResult{Outcome: ReadNotExecuted, Detail: "search content worker profile is unavailable"}
 	}
-	workerState, invalid, err := s.startOperationWorker(op, func() (SandboxWorker, error) {
+	workerState, invalid, err := s.startOperationWorker(op, AdmissionSearchContent, func() (SandboxWorker, error) {
 		return launcher.StartForOperation(ctx, AdmissionSearchContent)
 	})
 	if err != nil {
@@ -1237,6 +1256,7 @@ func (s *fixtureSession) startWorkerWait(op *readOperation, worker *workerLifecy
 			s.mu.Lock()
 			worker.waitErr = err
 			worker.joined = joined
+			s.recordWorkerJoinLocked(op, worker)
 			if op.worker == worker {
 				op.workerJoined = joined
 			}
@@ -1248,6 +1268,18 @@ func (s *fixtureSession) startWorkerWait(op *readOperation, worker *workerLifecy
 		}()
 	})
 	return worker.waitDone
+}
+
+func (s *fixtureSession) recordWorkerJoinLocked(op *readOperation, worker *workerLifecycle) {
+	if op == nil || worker == nil || !worker.joined {
+		return
+	}
+	switch worker.operation {
+	case AdmissionSearchFiles:
+		op.evidence.SearchTraversalWorkerJoined = true
+	case AdmissionSearchContent:
+		op.evidence.SearchContentWorkerJoined = true
+	}
 }
 
 func (s *fixtureSession) terminateAndWait(op *readOperation, worker *workerLifecycle) workerTerminationResult {
@@ -1412,6 +1444,7 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 		if worker.Joined() {
 			s.mu.Lock()
 			item.worker.joined = true
+			s.recordWorkerJoinLocked(item.op, item.worker)
 			if item.op.worker == item.worker {
 				item.op.workerJoined = true
 			}
