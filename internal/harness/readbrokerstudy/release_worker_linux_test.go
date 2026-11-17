@@ -107,7 +107,7 @@ func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	runCtx, runCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer runCancel()
 	run := exec.CommandContext(runCtx, output,
-		"-test.run=^(TestStage6SyntheticRuntimeReadForwarding|TestStage6ReadRefusedWithoutRootOrBackend|TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission)$",
+		"-test.run=^(TestStage6ReportClassifiesEveryCase|TestStage6SyntheticRuntimeReadForwarding|TestStage6ReadRefusedWithoutRootOrBackend|TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission)$",
 		"-test.timeout=75s", "-test.count=1")
 	run.Env = append(os.Environ(),
 		"KOMPOSYN_STAGE6_REPORT="+reportPath,
@@ -134,8 +134,8 @@ func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	if err := json.Unmarshal(reportData, &report); err != nil {
 		t.Fatalf("decode Stage 6 control report: %v", err)
 	}
-	if report.RunnerVersion != "12" || report.Kernel == "" {
-		t.Fatalf("Stage 6 report metadata runner_version=%q kernel=%q; want runner 12 and a kernel release", report.RunnerVersion, report.Kernel)
+	if report.RunnerVersion != "13" || report.Kernel == "" {
+		t.Fatalf("Stage 6 report metadata runner_version=%q kernel=%q; want runner 13 and a kernel release", report.RunnerVersion, report.Kernel)
 	}
 	want := map[string]bool{
 		"synthetic_once_authority_flow":        false,

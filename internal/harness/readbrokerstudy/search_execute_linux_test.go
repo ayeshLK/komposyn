@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -105,8 +106,16 @@ func TestSearchRejectsChangedApplicableIgnoreRulesBeforePublication(t *testing.T
 			if err := os.WriteFile(ignorePath, []byte("control.go\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := prepared.validateAndCloseSearchSnapshot(context.Background(), &snapshot); err == nil {
+			validationCloseErr := prepared.validateAndCloseSearchSnapshot(context.Background(), &snapshot)
+			if validationCloseErr == nil {
 				t.Fatal("changed ignore observations did not invalidate the search snapshot")
+			}
+			var classifiedErr *searchSnapshotValidationError
+			if !errors.As(validationCloseErr, &classifiedErr) || classifiedErr.validationErr == nil || classifiedErr.cleanupErr != nil {
+				t.Fatalf("changed ignore observations were not distinguished from cleanup failure: %v", validationCloseErr)
+			}
+			if snapshot.File != nil || !searchCandidatesClosed(&snapshot) || prepared.searchDirectories != nil {
+				t.Fatal("stale search snapshot retained private descriptors or directory observations")
 			}
 		})
 	}

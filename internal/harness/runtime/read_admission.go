@@ -188,6 +188,11 @@ func (e *filesystemReadAttemptError) Unwrap() error { return e.err }
 var errFilesystemReadTurnCancelled = errors.New("filesystem read approval cancelled the turn")
 var errFilesystemReadRefused = errors.New("filesystem read was refused by the user")
 
+// ErrFilesystemReadFailed marks a host-confirmed failed operation whose
+// workers and retained capabilities were retired. Unlike an attempt error,
+// it is safe to return a sanitized failed tool result to the provider.
+var ErrFilesystemReadFailed = errors.New("filesystem read failed after confirmed cleanup")
+
 type filesystemReadRedirectError struct{ instruction string }
 
 func (e *filesystemReadRedirectError) Error() string {
@@ -458,6 +463,13 @@ func (r *toolRuntime) executeFilesystemRead(ctx context.Context, invocation tool
 	}
 	authority := &filesystemReadExecutionAuthority{runtime: r, ref: reference, request: request}
 	capture, err := executor.ExecuteAdmittedFilesystemRead(ctx, admission, preparation, reference, authority)
+	if errors.Is(err, ErrFilesystemReadFailed) {
+		finishErr := r.FinishReadExecution(reference)
+		if finishErr != nil {
+			return nil, &filesystemReadAttemptError{err: errors.Join(err, finishErr)}
+		}
+		return nil, ErrFilesystemReadFailed
+	}
 	if err != nil || capture == nil {
 		_ = r.FinishReadExecution(reference)
 		if capture != nil {

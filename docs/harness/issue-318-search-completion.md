@@ -1,12 +1,14 @@
 # Issue #318 search implementation and acceptance
 
-Status: the latest recorded native run covers historical commit
-`77785c29ae602d9d1dd3cd0a1a5e84e4413d28f1` only. The current review follow-up
-adds startup lifecycle reservation and final ignore-observation revalidation,
-with new Stage 6 cases; a fresh trusted-host acceptance run is required. The
-production gate remains closed pending independent review, fresh evidence, and
-a separate enablement decision. This record does not approve enablement or
-complete umbrella issue #315.
+Status: the latest archive is a failed run against merged commit
+`ac1893a78dfc7528027537ba3baa700415f45674`; it is preserved below as historical
+provenance and is not acceptance evidence. The current follow-up fixes its case
+count and distinguishes a joined search that fails final policy validation
+from uncertain cleanup. Runner version 13 records traversal/content joins and
+snapshot/candidate descriptor closure independently. A fresh trusted-host run
+of the clean follow-up commit remains required. Production search remains
+disabled pending independent evidence review and a separate enablement
+decision. This record does not complete umbrella issue #315.
 
 ## Acceptance matrix
 
@@ -16,9 +18,10 @@ complete umbrella issue #315.
 | Bind target, query, options and destination through admission and publication | Search fields are parsed before admission and included in request digest and execution authority; changed binding is refused | Native positive case recorded exact approval text and continuation in the historical run | Implemented; native case must be remeasured |
 | Reuse bounded traversal, ignores, globs and protection without following links or crossing mounts | Host filters traversal snapshot, classifies path/inode/ancestors before descriptor preparation, and caps traversal, candidates, bytes, aggregate matcher/filter work, lines, output and duration | Historical cases covered recursion, protected aliases, `.git`, mount exclusion, candidate substitution and root movement | Prior outcomes were reported as passes, but must be remeasured after the worker lifecycle defect; do not use them as current acceptance evidence |
 | Search only small UTF-8 regular files and report truthful limits | Literal case-sensitive line matching, safe binary/invalid-UTF-8/oversize skips, bounded snippets, aggregate skipped count and `incomplete` output | Native composed-service positive search passes; per-file filtering and result-boundary edge cases are covered by focused implementation tests, not claimed as aggregate host resource enforcement | Implemented; aggregate cgroup quotas remain unprovisioned and unclaimed |
-| Revalidate identity and revision before disclosure | Host retains candidate descriptors through the content worker, reopens each candidate beneath the selected directory, reclassifies current path/identity/ancestors, and omits changed candidates before publication | The recorded `search_candidate_protected_substitution` case covers protected hard-link replacement. This PR update adds a same-size in-place content mutation check to that case | Historical protected-substitution pass; updated assertion requires a fresh native run |
+| Revalidate identity, directory and ignore observations before disclosure | Host retains candidate and discovery observations through content scanning, revalidates them, and closes all candidate/snapshot descriptors before deciding publication | Historical `search_candidate_protected_substitution` covers protected hard-link replacement. Runner 13 adds nested and applicable ancestor ignore changes after content scan with separate join/descriptor-close evidence | Implementation and synthetic regressions pass; native retest pending |
 | Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Historical positive and cancellation cases recorded the two profiles and handoff boundary | Reverify on the fixed candidate; exact-file read profile remains unchanged |
 | Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; each child worker has independent join state; search joins honor the invocation deadline and suppress disclosure when cleanup is unconfirmed | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, `search_revocation_withholds_capture`, and `search_mount_boundary` cover cleanup, selected-object authority, revocation, stale-capture suppression, and mount exclusion | Earlier run predates per-worker join fix; fresh native run required |
+| Keep known stale-policy refusal separate from uncertain cleanup | A joined scan with changed ignore policy returns a sanitized failed tool result, with no staged search content. Descriptor-close errors or unconfirmed joins remain unknown and interrupt continuation; cleanup ownership keeps admission blocked | Runner 13 checks the failure continuation, no stale marker/path, one approval/consumption per run, both worker joins, descriptor closure, and no private publication for nested and ancestor mutations | Focused runtime, host and lifecycle regressions pass; fresh native assertions pending |
 | Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | Exact candidate search cases now pass on the proposed profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Gate closed; separate enablement approval not recorded |
 
 ## Supported-profile evidence and approval status
@@ -82,13 +85,32 @@ workers shared one per-operation `Wait` bookkeeping record. Consequently,
 content-worker cleanup assertions could report the traversal worker's joined
 state without calling `Wait` on the content worker. Preserve this archive as
 historical provenance, but do not treat its search cleanup or publication
-results as current acceptance evidence. The previous PR update gave each worker its own join state and added
-same-inode mutation coverage. This follow-up reserves the lifecycle obligation before
-worker startup and retains private directory/ignore observations through final
-publication validation. It adds native cases for Close during worker startup
-and ignore-rule changes after content scanning. The clean trusted-host rerun
-for this follow-up is pending; the historical archive does not establish these
-claims.
+results as current acceptance evidence. The supplied follow-up run against
+`ac1893a` has verified archive SHA-256
+`a4dd62b75317eb4be3192aa8985a164c3e9dc878b7775b5d6e70b5c1375e59d4` and report
+SHA-256 `e1a8cf7d770d18cde05b65ee503f2d56f82f25988c6874e364d1b95dd1dfb4d1`.
+It recorded 37 measured passes, one inconclusive search case, and two unavailable
+profiles; the study exited 1 and was classified `candidate_failed_or_incomplete`.
+The report-classification assertion expected 29 native-integrated cases when
+the registry contained 30. The ignore-change case reached only its nested
+mutation and returned `interrupted` because the host conflated final policy
+validation failure with descriptor cleanup uncertainty. It did not establish
+the ancestor mutation or the intended nondisclosure assertions. The archive is
+`/tmp/komposyn-issue215-stage6-20261117T061746Z-1711147.tar.gz`. This failed run
+remains bound to `ac1893a`; it is not a pass for the follow-up.
+
+The current code records known final-policy refusal as a failed tool result only
+after both workers joined and all candidate/snapshot descriptors closed. The
+provider receives a fixed sanitized error continuation; no empty result is
+returned and no private capture is staged. An unconfirmed worker join or
+descriptor close remains unknown, interrupts the turn, and preserves the
+existing cleanup/admission barrier. Runner version 13 asserts the expected 30
+native-integrated cases and reports traversal/content joins and descriptor
+closure separately. Focused runtime, host and lifecycle tests plus the synthetic
+Stage 6 overlay pass locally. A clean trusted-host run against the exact
+follow-up commit remains outstanding: Go 1.26.11 is available here, but
+`/usr/bin/bwrap` is owned by `nobody:nogroup` rather than a trusted root owner.
+No native acceptance is claimed.
 
 Earlier trusted-host candidates exposed and corrected the public Service search
 admission allowlist and the cancellation-test expectation. Their archive hashes
@@ -96,9 +118,10 @@ and tested commits remain recorded above for provenance. The final run confirms
 that the cancellation checkpoint joins the content worker before its separate
 snapshot handoff, leaves no private result, and makes no provider continuation.
 
-The historical native evidence supports the prior candidate only. The current
-runner is version 12; its new lifecycle and post-content ignore-rule cases have
-not yet been measured on a trusted host. The production `searchAccepted` gate remains false. Fresh native acceptance on the
+The historical native evidence supports only its recorded candidates. The
+current runner is version 13; its fixed case classification and known-failure
+versus cleanup-uncertainty assertions have not yet been measured on a trusted
+host. The production `searchAccepted` gate remains false. Fresh native acceptance on the
 review-fixed candidate, independent review of that evidence, and an explicit
 separate enablement decision are still required before enablement.
 This work does not close umbrella issue #315 or establish shipped-binary,

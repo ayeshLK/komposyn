@@ -46,7 +46,7 @@ filesystem access.
 | `request_user_input` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `list_files` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement; live listing is not verified | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
-| `search_files` | Unavailable: search-specific retained candidate filtering, worker protocol/seccomp, and native acceptance are not implemented | Unavailable for the same search-specific host requirements; listing evidence does not enable search | Unavailable for the same search-specific host requirements | Unimplemented route |
+| `search_files` | Unavailable: implemented behind the independent closed gate; fresh search-specific native acceptance and separate enablement review remain pending | Unavailable for the same search-specific host requirements; listing evidence does not enable search | Unavailable for the same search-specific host requirements | Unimplemented route |
 
 `list_files` is registered only when the Linux host has inspected the trusted
 Bubblewrap backend and composed the fixed worker. The runtime additionally
@@ -119,13 +119,13 @@ acceptance record](issue-215-completion-tracking.md) and
 approval binding, host candidate validation and pathless sealed-snapshot worker
 protocol are implemented behind an independent `SearchFilesAvailable` gate
 that defaults closed. Search traversal and content workers use separate
-operation-specific seccomp profiles. A trusted-host Stage 6 run measured all
-seven search-specific cases as passes on clean commit
-`77785c29ae602d9d1dd3cd0a1a5e84e4413d28f1`, Linux amd64, Bubblewrap 0.9.0,
-and `ro-bind-fd`. The full Stage 6 profile remains incomplete because its
-separate mutation and shell cases are unimplemented. This evidence does not
-approve enablement: the production gate remains closed pending independent
-review and an explicit enablement decision. The run used the Stage 6 test-binary
+operation-specific seccomp profiles. The previous trusted-host Stage 6 run
+measured seven search-specific cases as passes on clean commit
+`77785c29ae602d9d1dd3cd0a1a5e84e4413d28f1`; a later run on merged `ac1893a`
+failed with a stale native-case count and an inconclusive ignore-change case.
+Neither run accepts the corrected outcome semantics or runner version 13. A
+fresh trusted-host run and independent review remain necessary before any
+separate enablement decision. The prior runs used the Stage 6 test-binary
 worker, not the shipped executable or a real provider. See [the search design
 note](search-files-design.md) and [#318 completion matrix](issue-318-search-completion.md)
 for profile limits, provenance and remaining decisions.

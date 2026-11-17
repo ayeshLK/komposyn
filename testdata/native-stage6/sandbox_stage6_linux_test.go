@@ -63,43 +63,47 @@ func init() {
 }
 
 type stage6Case struct {
-	ID                        string         `json:"case_id"`
-	Status                    string         `json:"status"`
-	EvidenceKind              string         `json:"evidence_kind,omitempty"`
-	Reason                    string         `json:"reason,omitempty"`
-	FailureDiagnostic         string         `json:"failure_diagnostic,omitempty"`
-	LaunchPolicy              map[string]any `json:"launch_policy,omitempty"`
-	WorkerStarted             bool           `json:"worker_started"`
-	WorkerReady               bool           `json:"worker_ready"`
-	WorkerJoined              bool           `json:"worker_joined"`
-	CapabilityTransferred     bool           `json:"capability_transferred"`
-	CapabilityHeld            bool           `json:"capability_held"`
-	ReadStarted               bool           `json:"read_started"`
-	ReadOutcome               string         `json:"read_outcome,omitempty"`
-	ProbePassed               bool           `json:"required_probe_passed"`
-	OnceApprovalCount         int32          `json:"once_approval_count"`
-	OnceGrantConsumptionCount int            `json:"once_grant_consumption_count"`
-	GrantRevisionBefore       uint64         `json:"grant_revision_before"`
-	GrantRevisionAfter        uint64         `json:"grant_revision_after"`
-	RemainingGrantCount       int            `json:"remaining_grant_count"`
-	ProviderRequestCount      int            `json:"provider_request_count"`
-	FixtureBytesMatched       bool           `json:"fixture_bytes_matched"`
-	DisclosureWithheld        bool           `json:"disclosure_withheld"`
-	StaleDataAbsent           bool           `json:"stale_data_absent"`
-	LateResponseReturned      bool           `json:"late_response_returned"`
-	LateDeltaAttempted        bool           `json:"late_delta_attempted"`
-	LateDeltaSuppressed       bool           `json:"late_delta_suppressed"`
-	ActorStarted              bool           `json:"actor_started"`
-	ActorTransitionCompleted  bool           `json:"actor_transition_completed"`
-	ActorJoined               bool           `json:"actor_joined"`
-	ActorTransitionCount      int            `json:"actor_transition_count"`
-	AuthorityObservation      string         `json:"authority_observation,omitempty"`
-	CleanupConfirmed          bool           `json:"cleanup_confirmed"`
-	CoordinatorStarted        bool           `json:"coordinator_started"`
-	CoordinatorJoined         bool           `json:"coordinator_joined"`
-	BubblewrapExitObserved    bool           `json:"bubblewrap_exit_observed"`
-	NamespaceInitExitObserved bool           `json:"namespace_init_exit_observed"`
-	ObservedProcessesGone     bool           `json:"observed_processes_gone"`
+	ID                          string         `json:"case_id"`
+	Status                      string         `json:"status"`
+	EvidenceKind                string         `json:"evidence_kind,omitempty"`
+	Reason                      string         `json:"reason,omitempty"`
+	FailureDiagnostic           string         `json:"failure_diagnostic,omitempty"`
+	LaunchPolicy                map[string]any `json:"launch_policy,omitempty"`
+	WorkerStarted               bool           `json:"worker_started"`
+	WorkerReady                 bool           `json:"worker_ready"`
+	WorkerJoined                bool           `json:"worker_joined"`
+	SearchTraversalWorkerJoined bool           `json:"search_traversal_worker_joined"`
+	SearchContentWorkerJoined   bool           `json:"search_content_worker_joined"`
+	SearchSnapshotClosed        bool           `json:"search_snapshot_descriptor_closed"`
+	SearchCandidatesClosed      bool           `json:"search_candidate_descriptors_closed"`
+	CapabilityTransferred       bool           `json:"capability_transferred"`
+	CapabilityHeld              bool           `json:"capability_held"`
+	ReadStarted                 bool           `json:"read_started"`
+	ReadOutcome                 string         `json:"read_outcome,omitempty"`
+	ProbePassed                 bool           `json:"required_probe_passed"`
+	OnceApprovalCount           int32          `json:"once_approval_count"`
+	OnceGrantConsumptionCount   int            `json:"once_grant_consumption_count"`
+	GrantRevisionBefore         uint64         `json:"grant_revision_before"`
+	GrantRevisionAfter          uint64         `json:"grant_revision_after"`
+	RemainingGrantCount         int            `json:"remaining_grant_count"`
+	ProviderRequestCount        int            `json:"provider_request_count"`
+	FixtureBytesMatched         bool           `json:"fixture_bytes_matched"`
+	DisclosureWithheld          bool           `json:"disclosure_withheld"`
+	StaleDataAbsent             bool           `json:"stale_data_absent"`
+	LateResponseReturned        bool           `json:"late_response_returned"`
+	LateDeltaAttempted          bool           `json:"late_delta_attempted"`
+	LateDeltaSuppressed         bool           `json:"late_delta_suppressed"`
+	ActorStarted                bool           `json:"actor_started"`
+	ActorTransitionCompleted    bool           `json:"actor_transition_completed"`
+	ActorJoined                 bool           `json:"actor_joined"`
+	ActorTransitionCount        int            `json:"actor_transition_count"`
+	AuthorityObservation        string         `json:"authority_observation,omitempty"`
+	CleanupConfirmed            bool           `json:"cleanup_confirmed"`
+	CoordinatorStarted          bool           `json:"coordinator_started"`
+	CoordinatorJoined           bool           `json:"coordinator_joined"`
+	BubblewrapExitObserved      bool           `json:"bubblewrap_exit_observed"`
+	NamespaceInitExitObserved   bool           `json:"namespace_init_exit_observed"`
+	ObservedProcessesGone       bool           `json:"observed_processes_gone"`
 }
 
 func stage6CaptureReadFailure(caseID string, coordinator readbrokerstudy.HostCoordinator) {
@@ -265,7 +269,7 @@ func newStage6Report() stage6Report {
 		)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "12",
+		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "13",
 		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, WorkerImage: workerImage, LaunchPolicy: map[string]any{}, Cases: cases,
 		Limitations: limitations,
@@ -365,7 +369,7 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	want := map[string]int{
 		"synthetic-runtime-composition": 6,
 		"synthetic-actor-fixture":       1,
-		"native-integrated":             29,
+		"native-integrated":             30,
 		"native-worker-lifecycle":       1,
 		"not-implemented":               2,
 	}
@@ -3066,23 +3070,33 @@ func TestStage6SearchContentWorkerCancellationCleanup(t *testing.T) {
 
 func TestStage6SearchIgnoreRulesChangedAfterContentSuppressesDisclosure(t *testing.T) {
 	const caseID = "search_ignore_rules_changed_after_content"
+	const query = "synthetic-never-real-key"
+	const privateMarker = "private-search-match-marker"
 	stage6Begin(caseID)
-	var lastFixture *stage6Fixture
-	var lastEvidence []readbrokerstudy.ReadEvidence
-	providerRequests := 0
+	var traversalJoined, contentJoined, snapshotClosed, candidatesClosed bool = true, true, true, true
+	var probesPassed, allDisclosureWithheld, allStaleDataAbsent bool = true, true, true
+	var totalApprovals int32
+	var totalProviderRequests int
+	var firstGrantRevision, lastGrantRevision uint64
 	for _, mutation := range []string{"nested", "ancestor"} {
 		fixture := newStage6Fixture(t, caseID, "content-search", false, nil)
 		fixture.reportCases = []string{caseID}
-		lastFixture = fixture
 		nested := filepath.Join(fixture.root, "listing-scope", "nested")
 		if err := os.Mkdir(nested, 0700); err != nil {
 			t.Fatal("create nested search directory:", err)
 		}
-		if err := os.WriteFile(filepath.Join(nested, "control.go"), []byte("synthetic-never-real-key\n"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(nested, "control.go"), []byte(query+" "+privateMarker+"\n"), 0600); err != nil {
 			t.Fatal("create matching search control:", err)
 		}
-		fixture.provider.listingOptions = json.RawMessage(`{"query":"synthetic-never-real-key","recursive":true,"include_hidden":true,"include_ignored":false,"name_globs":["*.go"]}`)
+		fixture.provider.listingOptions = json.RawMessage(`{"query":"` + query + `","recursive":true,"include_hidden":true,"include_ignored":false,"name_globs":["*.go"]}`)
 		impl := fixture.service.impl.(*linuxImplementation)
+		grantRevisionBefore, grantsBefore := runtime.NativeReadStudyGrantState(fixture.chat)
+		if grantsBefore != 0 {
+			t.Fatalf("%s preexisting grants=%d, want none", mutation, grantsBefore)
+		}
+		if mutation == "nested" {
+			firstGrantRevision = grantRevisionBefore
+		}
 		mutated := false
 		impl.session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
 			if checkpoint != readbrokerstudy.CheckpointAfterSearchContent || mutated {
@@ -3106,31 +3120,65 @@ func TestStage6SearchIgnoreRulesChangedAfterContentSuppressesDisclosure(t *testi
 			t.Fatalf("%s ignore mutation search outcome=%s mutated=%t err=%v", mutation, turn.Outcome, mutated, err)
 		}
 		requests := fixture.provider.captured()
-		providerRequests += len(requests)
 		if len(requests) != 2 {
 			t.Fatalf("%s provider requests=%d, want initial and safe error continuation", mutation, len(requests))
 		}
-		for _, request := range requests {
-			encoded, _ := json.Marshal(request.Messages)
-			if strings.Contains(string(encoded), "synthetic-never-real-key") || strings.Contains(string(encoded), "nested/control.go") {
-				t.Fatalf("%s stale search data reached provider: %s", mutation, encoded)
-			}
+		totalProviderRequests += len(requests)
+		toolResult, found := readResultContent(requests[1], "stage6-read")
+		if !found {
+			t.Fatalf("%s safe continuation omitted its correlated search result", mutation)
+		}
+		var envelope struct {
+			Outcome string `json:"outcome"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(toolResult), &envelope); err != nil || envelope.Outcome != string(tools.OutcomeFailed) || envelope.Content != "Filesystem request failed; no names or contents were disclosed." {
+			t.Fatalf("%s continuation result=%q decoded=%+v err=%v", mutation, toolResult, envelope, err)
+		}
+		if strings.Contains(toolResult, privateMarker) || strings.Contains(toolResult, "nested/control.go") {
+			t.Fatalf("%s stale search data reached correlated tool result: %s", mutation, toolResult)
 		}
 		if published := impl.session.PublishedResults(); len(published) != 0 {
 			t.Fatalf("%s stale search published %d private results", mutation, len(published))
 		}
-		lastEvidence = impl.session.Evidence()
-		if len(lastEvidence) != 1 || lastEvidence[0].Outcome != readbrokerstudy.ReadUnknown || !lastEvidence[0].WorkerJoined || lastEvidence[0].Published {
-			t.Fatalf("%s stale search evidence=%+v, want joined unknown result with no publication", mutation, lastEvidence)
+		evidence := impl.session.Evidence()
+		if len(evidence) != 1 || evidence[0].Outcome != readbrokerstudy.ReadFailed || !evidence[0].WorkerJoined || !evidence[0].ReadStarted || evidence[0].Published || !evidence[0].SearchTraversalWorkerJoined || !evidence[0].SearchContentWorkerJoined || !evidence[0].SearchSnapshotClosed || !evidence[0].SearchCandidatesClosed {
+			t.Fatalf("%s stale search evidence=%+v, want failed refusal with both workers joined and all descriptors closed", mutation, evidence)
 		}
+		if !stage6WorkerProbePassed(evidence[0].SearchTraversalProbe) || !stage6WorkerProbePassed(evidence[0].SearchContentProbe) {
+			t.Fatalf("%s worker probes were not established for both phases: %+v", mutation, evidence[0])
+		}
+		_, historyMessages, toolResults, markerFound, payloadFree := runtime.NativeReadStudyHistoryEvidence(fixture.chat, privateMarker, "nested/control.go")
+		if historyMessages == 0 || toolResults != 1 || markerFound || !payloadFree {
+			t.Fatalf("%s stale search history markers=%t tool_results=%d payload_free=%t", mutation, markerFound, toolResults, payloadFree)
+		}
+		grantRevisionAfter, grantsAfter := runtime.NativeReadStudyGrantState(fixture.chat)
+		if grantRevisionAfter != grantRevisionBefore+2 || grantsAfter != 0 || fixture.approvals.Load() != 1 {
+			t.Fatalf("%s once grant transition revision=%d→%d grants=%d approvals=%d", mutation, grantRevisionBefore, grantRevisionAfter, grantsAfter, fixture.approvals.Load())
+		}
+		lastGrantRevision = grantRevisionAfter
+		totalApprovals += fixture.approvals.Load()
+		traversalJoined = traversalJoined && evidence[0].SearchTraversalWorkerJoined
+		contentJoined = contentJoined && evidence[0].SearchContentWorkerJoined
+		snapshotClosed = snapshotClosed && evidence[0].SearchSnapshotClosed
+		candidatesClosed = candidatesClosed && evidence[0].SearchCandidatesClosed
+		probesPassed = probesPassed && stage6WorkerProbePassed(evidence[0].SearchTraversalProbe) && stage6WorkerProbePassed(evidence[0].SearchContentProbe)
+		allDisclosureWithheld = allDisclosureWithheld && !evidence[0].Published
+		allStaleDataAbsent = allStaleDataAbsent && !markerFound && !strings.Contains(toolResult, "nested/control.go")
+		impl.session.SetCheckpointHook(nil)
 	}
-	lastFixture.service.impl.(*linuxImplementation).session.SetCheckpointHook(nil)
 	stage6Update(caseID, func(item *stage6Case) {
-		item.WorkerStarted, item.WorkerJoined, item.ProbePassed = lastEvidence[0].WorkerStarted, lastEvidence[0].WorkerJoined, stage6WorkerProbePassed(lastEvidence[0].SearchContentProbe)
-		item.OnceApprovalCount, item.OnceGrantConsumptionCount = lastFixture.approvals.Load(), 1
-		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent, item.CleanupConfirmed = providerRequests, true, true, lastEvidence[0].WorkerJoined
+		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = true, true, traversalJoined && contentJoined
+		item.SearchTraversalWorkerJoined, item.SearchContentWorkerJoined = traversalJoined, contentJoined
+		item.SearchSnapshotClosed, item.SearchCandidatesClosed = snapshotClosed, candidatesClosed
+		item.CapabilityTransferred, item.ReadStarted, item.ReadOutcome = true, true, string(readbrokerstudy.ReadFailed)
+		item.ProbePassed = probesPassed
+		item.OnceApprovalCount, item.OnceGrantConsumptionCount = totalApprovals, 2
+		item.GrantRevisionBefore, item.GrantRevisionAfter, item.RemainingGrantCount = firstGrantRevision, lastGrantRevision, 0
+		item.ProviderRequestCount, item.DisclosureWithheld, item.StaleDataAbsent = totalProviderRequests, allDisclosureWithheld, allStaleDataAbsent
+		item.CleanupConfirmed = traversalJoined && contentJoined && snapshotClosed && candidatesClosed
 	})
-	stage6Pass(caseID, "after content scanning, adding nested and applicable ancestor ignore rules invalidated the private discovery snapshot; both searches suppressed stale matches before provider publication")
+	stage6Pass(caseID, "after content scanning, added nested and applicable ancestor ignore rules caused safe failed tool results rather than stale disclosure; both worker joins, descriptor retirement, once-grant consumption, and sanitized provider continuations were verified")
 }
 
 func TestStage6SearchSelectedRootMovement(t *testing.T) {

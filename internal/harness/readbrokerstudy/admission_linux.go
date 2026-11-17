@@ -39,6 +39,7 @@ var (
 	ErrAdmissionPending = errors.New("a retained read admission or cleanup obligation is already pending")
 	ErrAdmissionStale   = errors.New("retained read admission is stale")
 	ErrAdmissionClosed  = errors.New("retained read admission is closed")
+	ErrExecutionFailed  = errors.New("retained worker completed with a known failure")
 )
 
 type admissionState uint8
@@ -528,6 +529,13 @@ func (s *fixtureSession) ExecuteAdmitted(ctx context.Context, preparation Admitt
 		}
 		s.mu.Unlock()
 		retired = true
+	}
+	if record.request.Operation == AdmissionSearchFiles && result.Outcome == ReadFailed && joined {
+		clear(result.Bytes)
+		if retireErr := retire(); retireErr != nil {
+			return errors.Join(ErrCleanupPending, retireErr)
+		}
+		return ErrExecutionFailed
 	}
 	if result.Outcome != ReadSucceeded || !joined {
 		clear(result.Bytes)

@@ -77,6 +77,14 @@ snapshot.
    revocation, cancellation, stale roots, changed objects, worker cleanup
    failure, or stale provider continuation suppresses publication.
 
+A final policy-observation change, such as a new applicable `.gitignore`, is a
+known failed search when both workers joined and the host closed the retained
+candidate and snapshot descriptors. The host stages no result and sends only a
+fixed sanitized failed tool result through the existing provider continuation;
+it never reports an exhaustive empty search. If a worker join or descriptor
+close is unconfirmed, the result remains unknown, the turn is interrupted, and
+the existing cleanup barrier retains ownership and blocks affected admission.
+
 This is object authority: a retained object may remain the selected object
 after rename, but stale or unverifiable observations are refused or produce an
 explicit incomplete result without disclosing stale data. Worker cleanup
@@ -104,8 +112,10 @@ The proposed support boundary for native review is trusted Linux amd64,
 Bubblewrap's actual measured `ro-bind-fd` mode, complete owner inventory, and
 successful fixed-worker composition. The gate is independent and remains
 closed until search-specific native acceptance and independent enablement
-review pass. The current runner version 12 adds Close-during-startup and
-post-content ignore-change cases; those require a fresh trusted-host run.
+review pass. The current runner version 13 checks the expected case
+classification, distinguishes known validation refusal from cleanup
+uncertainty, and records traversal/content joins and descriptor closure. These
+assertions require a fresh trusted-host run.
 File-snapshot, other architectures, and non-Linux systems remain unavailable
 for search.
 

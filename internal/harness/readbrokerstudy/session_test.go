@@ -963,7 +963,7 @@ func TestCloseWaitsForContentWorkerStartupAndJoin(t *testing.T) {
 	}
 	started := make(chan startResult, 1)
 	go func() {
-		state, invalid, err := session.startOperationWorker(op, func() (SandboxWorker, error) {
+		state, invalid, err := session.startOperationWorker(op, AdmissionSearchContent, func() (SandboxWorker, error) {
 			close(startEntered)
 			<-startRelease
 			return worker, nil
@@ -991,7 +991,7 @@ func TestCloseWaitsForContentWorkerStartupAndJoin(t *testing.T) {
 		t.Fatal("controlled delayed worker joined before release")
 	}
 	session.finish(op, WorkerResult{Outcome: ReadUnknown, Detail: "controlled delayed cleanup"})
-	if session.ActiveOperationCount() != 1 || fixture.launcher.isClosed() {
+	if session.ActiveOperationCount() != 1 || fixture.launcher.isClosed() || op.evidence.SearchContentWorkerJoined {
 		t.Fatalf("unjoined child was forgotten: active=%d launcher_closed=%t", session.ActiveOperationCount(), fixture.launcher.isClosed())
 	}
 
@@ -1011,6 +1011,9 @@ func TestCloseWaitsForContentWorkerStartupAndJoin(t *testing.T) {
 	defer finalCancel()
 	if err := session.Close(finalCtx); err != nil || !fixture.launcher.isClosed() {
 		t.Fatalf("final Close err=%v launcher_closed=%t", err, fixture.launcher.isClosed())
+	}
+	if !op.evidence.SearchContentWorkerJoined || op.evidence.Outcome != ReadUnknown || op.evidence.Published {
+		t.Fatalf("delayed search worker cleanup evidence=%+v; want joined cleanup without rewriting uncertainty or publishing", op.evidence)
 	}
 }
 
