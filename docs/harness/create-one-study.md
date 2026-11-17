@@ -136,6 +136,21 @@ manifest, does not report fixture mount-ID provenance, and does not cover the
 new publication checkpoints, owner lifecycle, or cancellation cases. Treat it
 as historical narrow evidence, not acceptance of this candidate revision.
 
+The current candidate build is commit
+`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. Its current-environment report is
+`/tmp/komposyn-issue-319-native-unavailable-8fdd943.json` (SHA-256
+`601825f7e093ec89409b25af37a771fbc2609a980b75a70e47979af9b7d99d76`), and
+the packaged report plus manifest is
+`/tmp/komposyn-issue-319-native-unavailable-8fdd943.tar.gz` (SHA-256
+`1c8df713d26820526b965fac13747f91c6a591b666294bbecc0b985b5d31329c`). The
+manifest SHA-256 is
+`d800946119a6f88c8845a2558a23158c5ea571c103081858b594a22fdeebf51b`.
+The report says `/usr` is not root-owned and marks the native suite
+`unavailable/not_executed`; its only creation row is the preflight failure.
+The study binary SHA-256 is
+`a442cc4d3007ba2e6d7739d68668038c3f70310bef5b91911746e48349d987ef`.
+This packet records a blocked attempt, not a native test pass or failure.
+
 Earlier preflight-only reports remain distinct: for example,
 `/tmp/komposyn-sandbox-study-319-followup.json` has SHA-256
 `e71249fe47d812ad9953080d660c60a821ad0273651a826f33c2bac34bb503b0` and
@@ -146,9 +161,11 @@ For this run, the clean checkout is under `/tmp`; Go is 1.26.11, and
 `/usr/bin/bwrap` is version 0.9.0 with the same binary hash, but is owned by
 `nobody:nogroup` rather than root. `ValidateBackend` correctly refuses it, so
 no new native scenario ran. No ownership, privilege, or host security setting
-was changed. The latest study report and checksummed packet must be generated
-from the committed candidate on a regular-user Linux host where the already
-trusted Bubblewrap path passes the unchanged trust gate.
+was changed. Bubblewrap SHA-256 was
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`, but its
+current owner is `nobody:nogroup`; a prior historical report's claim that the
+same binary was root-owned does not describe this run. No fixture filesystem
+or mount ID is available because no worker started.
 
 ## Reproduction on a trusted Linux host
 
@@ -215,3 +232,18 @@ continue this candidate or record a candidate-specific limitation and evaluate
 other unprivileged mechanisms. Do not close #319, unblock #321, or expose
 creation/editing based on this study alone. Keep #320 editing research
 separate, and leave #315, #319, #321, and #267 open for review.
+
+## Validation
+
+Go `1.26.11` was used. All repository checks passed on the committed source:
+
+- `go mod verify`
+- `go vet ./...`
+- `go test ./...`
+- `go test -race ./...` (Token Logger package completed in 268.136 seconds)
+- `make check`
+- Focused `go test ./internal/harness/sandboxstudy ./cmd/sandbox-study`
+
+The study binary built successfully. Its native command exited `3` after the
+unchanged backend trust check refused `/usr`; Bubblewrap scenarios did not
+execute. Ordinary Go and race checks do not establish filesystem enforcement.
