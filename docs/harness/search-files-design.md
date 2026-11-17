@@ -2,10 +2,12 @@
 
 `search_files` is a distinct once-approved disclosure operation. It uses the
 existing provider/runtime/UI/sandbox composition and the fixed Linux worker;
-it does not chain provider-visible listing and reads. Search remains
-unavailable until a search-specific native profile has been measured and
-separately reviewed. Listing evidence and the listing availability gate do not
-enable search.
+it does not chain provider-visible listing and reads. The supported
+profile is trusted Linux amd64 Bubblewrap using measured `ro-bind-fd`, with
+complete owner coverage and an ext4 selected directory. Admission checks the
+filesystem on the retained directory descriptor before approval and again
+before execution. Other filesystems and launch profiles remain unavailable.
+Listing evidence and the listing availability gate do not enable search.
 
 ## Request and matching semantics
 
@@ -109,15 +111,24 @@ admission if its encoded worker frame exceeds 2,048 bytes. Limits are not
 aggregate process, CPU, or memory isolation and no cgroup quota is claimed.
 
 The measured search profile is trusted Linux amd64, Bubblewrap's actual
-`ro-bind-fd` mode, complete owner inventory, and successful fixed-worker
-composition. Runner 13's classification, known-validation-refusal, independent
-worker-join, and descriptor-close assertions passed on the recorded candidate;
-see the [#318 completion record](issue-318-search-completion.md). The native
-archive does not identify the fixture filesystem. Filesystem-specific
-portability is therefore unestablished, and no broader filesystem support claim
-is made pending contemporaneous filesystem evidence. File-snapshot, other
-architectures, and non-Linux systems remain unavailable. Production search
-remains gated pending evidence review and a separate enablement decision.
+`ro-bind-fd` mode, complete owner inventory, successful fixed-worker
+composition, and ext4 mount type for the selected directory. The host verifies
+both the descriptor's statfs magic and its mount ID's exact filesystem type;
+the ext4-family magic alone is insufficient. Runner 13's
+classification, known-validation-refusal, independent worker-join, and
+descriptor-close assertions passed on the recorded candidate; see the
+[#318 completion record](issue-318-search-completion.md). Runner 14 captured
+filesystem type and selected mount characteristics at actual fixture roots,
+selected search/listing scopes, and nested mount fixtures, with path-free
+observations attached to each case. Its fresh trusted-host archive recorded 51
+observations, all ext4, including read-only nested mount boundaries. This
+evidence is limited to that fixture environment. Availability checks the
+measured launcher profile. Admission checks `fstatfs` and the mount type
+resolved from the retained descriptor's mount ID before once approval, and
+repeats both checks at revalidation; a failed check refuses search. File-snapshot,
+other filesystems, other architectures, and non-Linux systems remain
+unavailable. The ext4-scoped enablement approval is recorded for this change;
+the code enforces the profile limits at availability and admission.
 
 ## Worker operation profiles and tests
 
@@ -132,8 +143,8 @@ evidence. The latest runner 13 run also passed the expanded search cases,
 including cancellation before the separate snapshot handoff and post-content
 ignore-rule changes with both worker joins and descriptor groups confirmed. The
 full Stage 6 profile remains incomplete because mutation and shell cases are
-outside its implemented scope. Search remains unavailable pending independent
-review and explicit enablement approval.
+outside its implemented scope. This change exposes search only for the
+approved ext4-scoped profile and takes effect when merged.
 
 Behavioral tests exercise the runtime-to-provider seam with synthetic content;
 the Stage 6 fixture exercises the composed sandbox Service and provider
@@ -141,10 +152,10 @@ continuation. Native cases include positive search, protected aliases,
 protected candidate substitution by independent same-user actors,
 content-worker cancellation/cleanup, root/directory movement, owner rotation,
 mount-boundary exclusion, revocation, and stale-publication suppression. The
-runner 13's lifecycle and post-content ignore-rule cases passed on the exact
+runner 13 lifecycle and post-content ignore-rule cases passed on the exact
 candidate documented in the [#318 completion record](issue-318-search-completion.md),
-which includes commit and report hashes. The fixture filesystem was not
-recorded; that remains an explicit provenance limitation rather than an
-inferred property. Synthetic runtime-composition outcomes remain separate from
-native worker enforcement. Production search availability stays false pending
-independent review and a separate enablement decision.
+which includes commit and report hashes. Runner 13 did not record fixture
+filesystems; runner 14 later recorded ext4 for all 51 observations, as
+identified in that completion record. Synthetic runtime-composition outcomes
+remain separate from native worker enforcement. The approved enablement is
+limited to the measured ext4 profile.

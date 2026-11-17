@@ -1,18 +1,23 @@
 # Issue #318 search implementation and acceptance
 
-Status: the latest trusted-host run measured all implemented #318 search cases
-as passes on clean commit `000c3e6fbcb453a4bad902de934311e93143b9be` with runner
-13 and `ro-bind-fd`. The overall Stage 6 profile remains incomplete because
+Status: runner 14 measured all eight implemented #318 search cases as passes on
+clean commit `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` with trusted Bubblewrap
+0.9.0 and `ro-bind-fd`. All 51 fixture filesystem observations were recorded
+and identified ext4. The overall Stage 6 profile remains incomplete because
 mutation and shell profiles are unavailable and outside this search follow-up.
-Production search remains disabled pending independent evidence review and a
-separate enablement decision. This record does not complete umbrella issue
-#315.
+The approved ext4-scoped enablement is implemented here: availability requires
+the measured Linux amd64 descriptor-bind worker profile, complete owner
+coverage, and the selected directory's retained descriptor to report ext4.
+Non-ext4 directories are refused before approval and again at execution
+revalidation. The maintainer approved this scoped enablement in the task
+conversation, and this implementation enables only the measured ext4-scoped
+profile. This record does not complete umbrella issue #315.
 
 ## Acceptance matrix
 
 | #318 requirement | Implementation and behavioral coverage | Native coverage | Status |
 | --- | --- | --- | --- |
-| Advertise only on an eligible host route and require explicit once approval | Independent `SearchFilesAvailable` gate; runtime/provider integration tests check schema, denial, exact directory/query/options/destination approval and continuation | `positive_content_search` passed on the composed Service and provider fixture under once approval | Native case passed on the measured profile; production gate remains closed pending independent evidence review and enablement approval |
+| Advertise only on an eligible host route and require explicit once approval | Availability requires the measured launcher profile; runtime/provider integration tests check schema, denial, exact directory/query/options/destination approval and continuation. Admission rejects non-ext4 before approval | `positive_content_search` passed on the composed Service and provider fixture under once approval | Native case passed on the measured profile; the approved enablement is implemented in this follow-up for the measured profile |
 | Bind target, query, options and destination through admission and publication | Search fields are parsed before admission and included in request digest and execution authority; changed binding is refused | Native positive case recorded exact approval text and continuation | Implemented and measured; no broader provider or shipped-binary claim |
 | Reuse bounded traversal, ignores, globs and protection without following links or crossing mounts | Host filters traversal snapshot, classifies path/inode/ancestors before descriptor preparation, and caps traversal, candidates, bytes, aggregate matcher/filter work, lines, output and duration | Native cases covered recursion, protected aliases, `.git`, mount exclusion, candidate substitution and root movement | Implemented and measured for listed cases; aggregate cgroup quotas remain unprovisioned and unclaimed |
 | Search only small UTF-8 regular files and report truthful limits | Literal case-sensitive line matching, safe binary/invalid-UTF-8/oversize skips, bounded snippets, aggregate skipped count and `incomplete` output | Native composed-service positive search passes; per-file filtering and result-boundary edge cases are covered by focused implementation tests, not claimed as aggregate host resource enforcement | Implemented; aggregate cgroup quotas remain unprovisioned and unclaimed |
@@ -20,9 +25,9 @@ separate enablement decision. This record does not complete umbrella issue
 | Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Positive and cancellation cases recorded the two profiles and handoff boundary on the candidate | Measured for this profile; exact-file read profile remains unchanged |
 | Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; each child worker has independent join state; search joins honor the invocation deadline and suppress disclosure when cleanup is unconfirmed | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, `search_revocation_withholds_capture`, and `search_mount_boundary` passed on the candidate | Measured for the listed cases; no aggregate cgroup quota or arbitrary-descendant claim |
 | Keep known stale-policy refusal separate from uncertain cleanup | A joined scan with changed ignore policy returns a sanitized failed tool result, with no staged search content. Descriptor-close errors or unconfirmed joins remain unknown and interrupt continuation; cleanup ownership keeps admission blocked | `search_ignore_rules_changed_after_content` passed for nested and applicable ancestor mutations; both worker joins, both descriptor closures, two once-grant consumptions, sanitized continuations, and no disclosure were recorded | Measured on the candidate; cleanup uncertainty remains fail-closed |
-| Keep unavailable until measured evidence and independent review | `searchAccepted` defaults false; no listing gate or version string opens it | Exact candidate search cases now pass on the proposed profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Gate closed; separate enablement approval not recorded |
+| Enable only the measured profile | Search availability requires trusted Linux amd64 descriptor-bind worker composition; admission matches retained-descriptor `fstatfs` and mount-ID type and fails closed unless the mount type is exactly ext4 | Exact candidate search cases passed on the measured profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Ext4-only enablement approved and implemented here. Other filesystems and launch profiles remain unavailable |
 
-## Latest trusted-host run
+## Runner 13 trusted-host run (historical)
 
 The accepted search-case run used Go 1.26.11, Linux 7.0.0-42-generic amd64,
 UID 1000, root-owned mode-755 Bubblewrap 0.9.0 (binary SHA-256
@@ -49,19 +54,137 @@ cleanup confirmed.
 
 The archive, manifest and report do not record the filesystem containing the
 synthetic fixtures. Do not infer it from the kernel, Bubblewrap mode or host OS.
-This is an unresolved evidence limitation: the run supports only its observed
-host/profile and establishes no filesystem-specific portability claim. Capture
-fixture filesystem metadata contemporaneously on a future run before making a
-filesystem-specific support claim.
+Runner 14 now instruments `statfs` and the matched, allowlisted mount
+characteristics at the actual fixture paths and binds those observations to
+case roles in the hashed report/manifest. This changes no historical archive;
+a fresh trusted-host run must exercise the instrumentation before any
+filesystem-specific support claim can be made.
+
+### Earlier runner 14 availability attempt
+
+Clean candidate `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` was run with Go
+1.26.11 on Linux 7.0.0-42-generic amd64 as UID 1000. The local Bubblewrap
+binary was version 0.9.0, mode 0755, but owned by UID/GID 65534; the harness
+requires a root-owned backend and refused before backend probes or worker
+launch. The study process exited 0, but the report classified the profile as
+`native_unavailable`: seven synthetic controls passed, 33 native cases were
+unavailable, and there were zero fixture filesystem observations. This is
+not fresh enforcement evidence and establishes no fixture filesystem type.
+
+Archive: `/tmp/komposyn-issue215-stage6-20261117T194852Z-2.tar.gz`; SHA-256
+`e75894e42e32eb2310aa1fa58c8e60d5bab6edb94222596522314d696bc1e902`. Report
+SHA-256 `047d0ac989223262220176a661669ef5203a0aade8fb3a0482e1eb425642c707`;
+manifest SHA-256
+`fc2d0fada881a7798c6686fe2ec36544a80c56a68cca27a8414025221057b7cf`.
+All archive `SHA256SUMS` entries were independently verified. The report
+explicitly marks fixture provenance `unavailable`, with zero observations and
+no disclosed paths. This was an earlier attempt in the assistant environment;
+the later trusted-host run below supersedes its availability outcome only.
+
+To obtain the required measurement on a trusted regular-user Linux host, check
+out the exact clean candidate and run:
+
+```sh
+git checkout d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e
+go_root="$(go env GOROOT)"
+"$go_root/bin/go" version
+PATH="$go_root/bin:$PATH" python3 -B scripts/run-issue215-stage6.py \
+  --revision "$(git rev-parse HEAD)" \
+  --bwrap /usr/bin/bwrap \
+  --output-root /tmp
+```
+
+The host must already have Go 1.26.11 or newer and Bubblewrap satisfying the
+repository's root-ownership trust check. Do not infer fixture filesystem
+values from this availability attempt or fill its archive retroactively.
+
+## Latest trusted-host run (runner 14)
+
+The fresh run tested clean source commit
+`d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` on Linux
+7.0.0-42-generic amd64, Go 1.26.11, and UID 1000. Bubblewrap was trusted,
+root-owned mode 0755, version 0.9.0, SHA-256
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`; the
+requested and actual bind mode were both `ro-bind-fd`. The clean source build
+and study completed with exit code 0 and cleanup confirmed. The report contains
+38 measured passes and two unavailable cases (`mutation_profile` and
+`shell_profile`), so the overall classification remains
+`stage6_profile_incomplete`. Those two profiles are outside this search
+follow-up. All eight search cases passed.
+
+The test process recorded 51 path-free fixture observations: 29 fixture roots,
+19 selected listing/search scopes, one nested bind-mounted alias, and two
+nested mount boundaries. All 51 were `recorded`; there were no failed,
+unknown, or partial mount observations. Every observation reported filesystem
+magic `0x000000000000ef53`, mount type `ext4`, and 4096-byte blocks.
+Twenty-seven fixture roots and 17 selected scopes were `filesystem_root`
+mounts with read/write and relatime options. Two roots and two selected scopes
+were `subtree` mounts with read/write, nodev, nosuid, and relatime options.
+The nested bind alias had the same subtree options. The two nested mount
+boundaries were `subtree` mounts with read-only, nodev, nosuid, and relatime
+options; their superblock options remained read/write.
+These observations establish the fixture filesystems and arrangements in this
+run only. They do not establish support or portability on other filesystems,
+mount configurations, architectures, or launch modes.
+
+Archive: `/tmp/komposyn-issue215-stage6-20261117T200336Z-1852003.tar.gz`; SHA-256
+`16eecff18b46fbc0d7c153448cb4decbe21cde6aa8ec89665cc23ab811fc53f2`. Report
+SHA-256 `e16995c0db36ff102659950ef1eebd517c70fbaadf610c4ed2a9ca9c949f7621`;
+manifest SHA-256
+`ee0204532f76afafff5c4436636317efc2d796166069820f6428aaede7599d41`.
+Manifest source archive SHA-256:
+`73d08d9462aee4d5ebd2eedd94ec5039c02befb06d53022ee105a1c8f7d865d8`.
+Runner script SHA-256:
+`88fe08edd2db5707253f5efef9062ee0d210ec3185db366b8e99069c43373a51`;
+capture helper SHA-256:
+`fade10f56a5b762489375c8c58e7f033ea50c1b37c7cc57dde81938b2560b7da`;
+Stage 6 test SHA-256:
+`19504f08e9f1c253ebc35e4db557e63a051aa960a277cfeb4768ddf691581b01`;
+runtime overlay SHA-256:
+`1fbb3f6cb53e419eaec3ce32a7043469b51c16f9d3dc505d750d5889a1107db5`;
+overlay mapping SHA-256:
+`3ec13bf2dbe94d8aa8118dac291aef63e4291888174d37b6e15b36a6bc62c0d0`.
+The archive was extracted and all `SHA256SUMS` entries were independently
+verified. The report's fixture summary matches the per-case records and
+manifest.
+
+The runner 14 archive predates the descriptor-mount-ID correction in this
+follow-up. Its filesystem magic values and recorded mount types are preserved
+as historical observations. Because the archive intentionally omits fixture
+paths, it cannot establish whether any path had a symlinked parent; the
+corrected runner now reads `statfs` from an opened fixture descriptor and
+matches mount information by that descriptor's mount ID. A synthetic
+regression test covers a symlinked parent pointing to tmpfs. No supplied
+artifact demonstrates that the earlier archive reported a wrong filesystem.
 
 ## Supported-profile evidence and approval status
 
-The search-specific evidence records trusted Linux amd64, Bubblewrap's actual
-`ro-bind-fd` mode, complete auth/settings owner coverage, and successful
-composition of the fixed traversal and content workers. The fixture filesystem
-was not recorded, so this does not establish filesystem-specific portability.
-Other bind modes, architectures, and non-Linux platforms remain unavailable.
-This is evidence for review, not authorization to enable search.
+The ext4-scoped profile is trusted Linux amd64, Bubblewrap 0.9.0 in actual
+`ro-bind-fd` mode, complete auth/settings owner coverage, successful composition
+of the fixed traversal and content workers, and a selected directory whose
+retained descriptor has ext4 mount type and the measured statfs magic. The
+runner 14 archive recorded 51 fixture observations with ext4 mount type and
+`f_type=0xef53`; the path-matching limitation for that historical observer is
+documented above. Other filesystems, bind modes, architectures, and non-Linux
+platforms remain unsupported or unmeasured.
+
+The current availability gate requires the measured Linux amd64 descriptor-
+bind worker profile. Admission reads statfs from the retained directory FD,
+obtains that FD's mount ID from procfs, and matches the ID to an exact `ext4`
+record in mountinfo. A failed or ambiguous lookup refuses search before once
+approval and is repeated during revalidation. The separate ext4-scoped
+enablement decision is recorded for this change; it does not expand the native
+evidence to another filesystem or launch profile.
+
+The follow-up adds the host-side filesystem eligibility check and profile
+availability gate; traversal/content workers, worker protocol, and seccomp
+profiles are unchanged. Focused tests exercise exact ext4 mount-type matching,
+shared ext-family magic refusal, ext4 admission, pre-approval refusal on
+procfs, and descriptor-based fixture provenance through a symlinked parent.
+These changes do not extend the native worker evidence to another filesystem
+or launch profile. The ext4-only enablement decision is recorded for this
+change; #318/#315 remain open until their other acceptance and closure
+criteria are completed.
 
 The version 11 historical harness included composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root
@@ -149,9 +272,8 @@ snapshot handoff, leaves no private result, and makes no provider continuation.
 
 The historical native evidence supports only its recorded candidates; the
 runner 13 evidence above applies only to its exact recorded candidate and
-profile. The production `searchAccepted` gate remains false. Independent review
-of this evidence and a separate enablement decision are still required before
-enablement.
-This work does not close umbrella issue #315 or establish shipped-binary,
+profile. Runner 14 supplies the filesystem provenance for its own clean
+candidate; it does not retroactively change earlier archives. This follow-up
+opens search availability only for the approved ext4-scoped profile. This work does not close umbrella issue #315 or establish shipped-binary,
 real-provider, file-snapshot, non-Linux, mutation, shell, or aggregate cgroup
 quota support. Listing evidence remains historical supporting context only.

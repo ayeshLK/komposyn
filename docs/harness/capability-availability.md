@@ -46,7 +46,7 @@ filesystem access.
 | `request_user_input` | Supported; runtime authorization and approval required | Supported on the documented OAuth route for catalog-listed models; runtime authorization and approval required. Live Allow once observed on one account/model. | Supported; runtime authorization and approval required | Unimplemented route |
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `list_files` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement; live listing is not verified | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
-| `search_files` | Unavailable: implemented behind the independent closed gate; search-specific native cases passed on one measured host profile, but fixture filesystem metadata was not recorded and separate enablement review remains pending | Unavailable for the same search-specific host requirements; listing evidence does not enable search | Unavailable for the same search-specific host requirements | Unimplemented route |
+| `search_files` | Conditional: trusted Linux amd64 Bubblewrap descriptor-bind profile, complete owner coverage, ext4 selected directory, and explicit once approval | Conditional under the same host and ext4 requirements for catalog-listed OAuth models; no live search-provider journey is claimed | Conditional under the same host and ext4 requirements; no live search-provider journey is claimed | Unimplemented route |
 
 `list_files` is registered only when the Linux host has inspected the trusted
 Bubblewrap backend and composed the fixed worker. The runtime additionally
@@ -115,20 +115,22 @@ destination. Directory selection grants no read permission. See the [read
 acceptance record](issue-215-completion-tracking.md) and
 [#278 evidence record](https://github.com/ayeshLK/komposyn/issues/278#issuecomment-6798370362).
 
-`search_files` remains unavailable on every route. The request schema,
-approval binding, host candidate validation and pathless sealed-snapshot worker
-protocol are implemented behind an independent `SearchFilesAvailable` gate
-that defaults closed. Search traversal and content workers use separate
-operation-specific seccomp profiles. A trusted-host runner 13 study on clean
-commit `000c3e6fbcb453a4bad902de934311e93143b9be` measured all 38 implemented
-cases as passes, including the fixed ignore-policy failure path with independent
-worker-join and descriptor-close evidence. The archive does not record the
-fixture filesystem, so this result establishes no filesystem-specific
-portability claim. Mutation and shell profiles were unavailable, leaving the
-overall Stage 6 classification incomplete. The run used the fixed test-binary
-worker, not the shipped executable or a real provider. Independent evidence
-review and a separate enablement decision remain required; native results do
-not open the production gate. See [the search design note](search-files-design.md)
+`search_files` is available conditionally for a narrow profile: trusted Linux
+amd64 Bubblewrap using the measured `ro-bind-fd` mode, complete owner coverage,
+and a selected directory whose retained descriptor maps to an ext4 mount and
+reports the measured statfs magic (`f_type=0xef53`).
+Admission checks that descriptor's statfs magic and exact mount-ID filesystem
+type before the runtime can request once approval, and revalidates both before
+execution. Other filesystems, architectures, bind modes, and non-Linux
+platforms stay unavailable. The tool
+description states the ext4 requirement. The change opens availability only
+when the inspected launcher matches the measured worker profile; it does not
+enable search on listing evidence or version strings. The ext4-scoped
+enablement decision is recorded for this change, and the implementation
+enforces those profile limits. The trusted-host runner 14 archive recorded 38
+passes and two unrelated unavailable profiles, plus 51 ext4 fixture observations; it
+used the fixed test-binary worker and did not establish live provider or
+shipped-binary acceptance. See [the search design note](search-files-design.md)
 and [#318 completion matrix](issue-318-search-completion.md) for exact
 provenance and profile limits.
 

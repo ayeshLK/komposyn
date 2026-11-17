@@ -158,12 +158,12 @@ type SearchFilesInput struct {
 var searchFilesSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048},"query":{"type":"string","minLength":1,"maxLength":512},"recursive":{"type":"boolean"},"include_hidden":{"type":"boolean"},"include_ignored":{"type":"boolean"},"name_globs":{"type":"array","items":{"type":"string","minLength":1,"maxLength":128},"maxItems":32}},"required":["path","query"],"additionalProperties":false}`)
 
 // SearchFilesDefinition describes the once-approved bounded literal search.
-// Runtime composition withholds it until a search-specific enforcement profile
-// is independently measured and reviewed.
+// Runtime composition withholds it until the measured worker profile is
+// available; admission additionally requires an ext4 target directory.
 func SearchFilesDefinition() Definition {
 	return Definition{
 		ID:          SearchFilesID,
-		Description: "Search one approved directory for a nonempty, case-sensitive literal query, one line at a time. Defaults are nonrecursive and exclude hidden and ignored entries; .git and protected resources are always excluded. Explicitly request recursion, hidden or ignored entries, and basename glob filters; filters do not limit traversal. Only UTF-8 regular files up to 64 KiB are searched. Each request needs explicit once approval showing the exact directory, literal query, all effective options, and selected provider/model/profile destination. Results are bounded and identify incomplete coverage; an incomplete search must not be treated as an exhaustive no-match result. Matching content is sensitive and may recur in this conversation. Starting in a directory or approving a listing grants no search permission. No regex, shell, or filesystem changes.",
+		Description: "Search one approved directory on ext4 for a nonempty, case-sensitive literal query, one line at a time. Requests targeting other filesystems are refused before approval. Defaults are nonrecursive and exclude hidden and ignored entries; .git and protected resources are always excluded. Explicitly request recursion, hidden or ignored entries, and basename glob filters; filters do not limit traversal. Only UTF-8 regular files up to 64 KiB are searched. Each request needs explicit once approval showing the exact directory, literal query, all effective options, and selected provider/model/profile destination. Results are bounded and identify incomplete coverage; an incomplete search must not be treated as an exhaustive no-match result. Matching content is sensitive and may recur in this conversation. Starting in a directory or approving a listing grants no search permission. No regex, shell, or filesystem changes.",
 		InputSchema: append(json.RawMessage(nil), searchFilesSchema...),
 		MaxInput:    MaxSearchFilesInputBytes,
 	}

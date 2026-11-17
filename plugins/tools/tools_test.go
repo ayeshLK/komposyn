@@ -266,7 +266,7 @@ func TestSearchFilesDefinitionExplainsLiteralBoundedDisclosure(t *testing.T) {
 		t.Fatalf("invalid search definition: %+v", definition)
 	}
 	description := strings.ToLower(definition.Description)
-	for _, phrase := range []string{"literal", "case-sensitive", "once approval", "provider/model/profile destination", "utf-8", "incomplete"} {
+	for _, phrase := range []string{"literal", "case-sensitive", "ext4", "other filesystems", "before approval", "once approval", "provider/model/profile destination", "utf-8", "incomplete"} {
 		if !strings.Contains(description, phrase) {
 			t.Errorf("search_files description %q does not contain %q", definition.Description, phrase)
 		}

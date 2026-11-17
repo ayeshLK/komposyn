@@ -17,6 +17,7 @@
 package sandbox
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -104,6 +105,218 @@ type stage6Case struct {
 	BubblewrapExitObserved      bool           `json:"bubblewrap_exit_observed"`
 	NamespaceInitExitObserved   bool           `json:"namespace_init_exit_observed"`
 	ObservedProcessesGone       bool           `json:"observed_processes_gone"`
+	FixtureFS                   fixtureFS      `json:"fixture_filesystems,omitempty"`
+}
+
+type fixtureFS []stage6FixtureFilesystem
+
+// stage6FixtureFilesystem records properties observed at the fixture itself.
+// It deliberately contains no host path, mount source, or source content.
+type stage6FixtureFilesystem struct {
+	Role                string   `json:"role"`
+	Status              string   `json:"status"`
+	FilesystemType      string   `json:"filesystem_type,omitempty"`
+	BlockSize           int64    `json:"block_size_bytes,omitempty"`
+	StatfsFlags         []string `json:"statfs_flags,omitempty"`
+	MountStatus         string   `json:"mount_status"`
+	MountFilesystemType string   `json:"mount_filesystem_type,omitempty"`
+	MountRoot           string   `json:"mount_root_scope,omitempty"`
+	MountOptions        []string `json:"mount_options"`
+	SuperblockOptions   []string `json:"superblock_options"`
+	ObservationFailure  string   `json:"observation_failure,omitempty"`
+}
+
+type stage6MountInfo struct {
+	root       string
+	filesystem string
+	options    []string
+	superopts  []string
+}
+
+func observeStage6FixtureFilesystem(path string) stage6FixtureFilesystem {
+	observation := stage6FixtureFilesystem{Status: "unknown", MountStatus: "unknown"}
+	fd, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		observation.Status = "failed"
+		observation.MountStatus = "not_attempted"
+		observation.ObservationFailure = "open_fixture_failed"
+		return observation
+	}
+	defer unix.Close(fd)
+	var stat unix.Statfs_t
+	if err := unix.Fstatfs(fd, &stat); err != nil {
+		observation.Status = "failed"
+		observation.MountStatus = "not_attempted"
+		observation.ObservationFailure = "statfs_failed"
+		return observation
+	}
+	observation.Status = "recorded"
+	observation.FilesystemType = fmt.Sprintf("0x%016x", uint64(stat.Type))
+	observation.BlockSize = stat.Bsize
+	observation.StatfsFlags = stage6StatfsFlags(stat.Flags)
+
+	mount, ok := stage6MountInfoForFD(fd)
+	if !ok {
+		observation.Status = "partial"
+		observation.MountStatus = "unavailable"
+		observation.ObservationFailure = "mountinfo_match_unavailable"
+		return observation
+	}
+	observation.MountStatus = "recorded"
+	observation.MountFilesystemType = mount.filesystem
+	if mount.root == "/" {
+		observation.MountRoot = "filesystem_root"
+	} else {
+		observation.MountRoot = "subtree"
+	}
+	observation.MountOptions = mount.options
+	observation.SuperblockOptions = mount.superopts
+	return observation
+}
+
+func stage6StatfsFlags(flags int64) []string {
+	const known = unix.ST_RDONLY | unix.ST_NOSUID | unix.ST_NODEV | unix.ST_NOEXEC | unix.ST_SYNCHRONOUS | unix.ST_MANDLOCK | unix.ST_NOATIME | unix.ST_NODIRATIME | unix.ST_RELATIME
+	var result []string
+	for _, flag := range []struct {
+		bit  int64
+		name string
+	}{{unix.ST_RDONLY, "readonly"}, {unix.ST_NOSUID, "nosuid"}, {unix.ST_NODEV, "nodev"}, {unix.ST_NOEXEC, "noexec"}, {unix.ST_SYNCHRONOUS, "synchronous"}, {unix.ST_MANDLOCK, "mandatory_locking"}, {unix.ST_NOATIME, "noatime"}, {unix.ST_NODIRATIME, "nodiratime"}, {unix.ST_RELATIME, "relatime"}} {
+		if flags&flag.bit != 0 {
+			result = append(result, flag.name)
+		}
+	}
+	if flags & ^known != 0 {
+		result = append(result, "other_flags_present")
+	}
+	slices.Sort(result)
+	return result
+}
+
+func stage6MountInfoForFD(fd int) (stage6MountInfo, bool) {
+	mountIDData, err := os.ReadFile(filepath.Join("/proc/self/fdinfo", strconv.Itoa(fd)))
+	if err != nil || len(mountIDData) > 16<<10 {
+		return stage6MountInfo{}, false
+	}
+	mountID := ""
+	for _, line := range strings.Split(string(mountIDData), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "mnt_id:" {
+			mountID = fields[1]
+			break
+		}
+	}
+	if mountID == "" {
+		return stage6MountInfo{}, false
+	}
+	file, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return stage6MountInfo{}, false
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	var selected stage6MountInfo
+	found := false
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		separator := slices.Index(fields, "-")
+		if separator < 6 || len(fields) <= separator+3 {
+			continue
+		}
+		if fields[0] != mountID {
+			continue
+		}
+		found = true
+		selected.root = stage6UnescapeMountInfo(fields[3])
+		selected.filesystem = fields[separator+1]
+		selected.options = stage6RelevantMountOptions(fields[5])
+		selected.superopts = stage6RelevantMountOptions(fields[separator+3])
+		break
+	}
+	if scanner.Err() != nil || !found {
+		return stage6MountInfo{}, false
+	}
+	return selected, true
+}
+
+func stage6UnescapeMountInfo(value string) string {
+	return strings.NewReplacer("\\040", " ", "\\011", "\t", "\\012", "\n", "\\134", "\\").Replace(value)
+}
+
+func stage6RelevantMountOptions(options string) []string {
+	allowed := map[string]struct{}{
+		"ro": {}, "rw": {}, "nosuid": {}, "nodev": {}, "noexec": {}, "relatime": {},
+		"strictatime": {}, "noatime": {}, "lazytime": {}, "sync": {}, "dirsync": {},
+	}
+	seen := map[string]struct{}{}
+	for _, option := range strings.Split(options, ",") {
+		if _, ok := allowed[option]; ok {
+			seen[option] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for option := range seen {
+		result = append(result, option)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func stage6CaptureFixtureFilesystem(caseID, role, path string) {
+	observation := observeStage6FixtureFilesystem(path)
+	observation.Role = role
+	stage6Update(caseID, func(item *stage6Case) {
+		item.FixtureFS = append(item.FixtureFS, observation)
+	})
+}
+
+func stage6FinalizeFixtureFilesystemEvidence(report *stage6Report) {
+	roles := map[string]struct{}{}
+	observations := 0
+	failed := 0
+	partialObservations := 0
+	partialMounts := 0
+	for _, item := range report.Cases {
+		for _, observation := range item.FixtureFS {
+			observations++
+			roles[observation.Role] = struct{}{}
+			switch observation.Status {
+			case "failed", "unknown":
+				failed++
+			case "partial":
+				partialObservations++
+			}
+			if observation.MountStatus != "recorded" {
+				partialMounts++
+			}
+		}
+	}
+	roleNames := make([]string, 0, len(roles))
+	for role := range roles {
+		roleNames = append(roleNames, role)
+	}
+	slices.Sort(roleNames)
+	status := "recorded"
+	reason := ""
+	if observations == 0 {
+		status = "unavailable"
+		reason = "no actual fixture paths were observed before study shutdown"
+	} else if failed > 0 || partialObservations > 0 || partialMounts > 0 {
+		status = "partial"
+	}
+	report.FixtureEvidence = map[string]any{
+		"status":                         status,
+		"observation_scope":              "actual Stage 6 fixture roots, selected listing/search scopes, and nested mount boundaries",
+		"observations":                   observations,
+		"failed_or_unknown_observations": failed,
+		"partial_observations":           partialObservations,
+		"partial_mount_observations":     partialMounts,
+		"roles_observed":                 roleNames,
+		"paths_disclosed":                false,
+	}
+	if reason != "" {
+		report.FixtureEvidence["reason"] = reason
+	}
 }
 
 func stage6CaptureReadFailure(caseID string, coordinator readbrokerstudy.HostCoordinator) {
@@ -156,19 +369,20 @@ func stage6RequestedBindMode() readbrokerstudy.BindMode {
 }
 
 type stage6Report struct {
-	SchemaVersion int            `json:"schema_version"`
-	SourceCommit  string         `json:"source_commit"`
-	RunnerVersion string         `json:"runner_version"`
-	OS            string         `json:"os"`
-	Architecture  string         `json:"architecture"`
-	Kernel        string         `json:"kernel"`
-	UID           int            `json:"uid"`
-	Backend       map[string]any `json:"backend"`
-	WorkerImage   map[string]any `json:"worker_image"`
-	LaunchPolicy  map[string]any `json:"launch_policy"`
-	Overall       string         `json:"overall_status"`
-	Cases         []stage6Case   `json:"cases"`
-	Limitations   []string       `json:"limitations"`
+	SchemaVersion   int            `json:"schema_version"`
+	SourceCommit    string         `json:"source_commit"`
+	RunnerVersion   string         `json:"runner_version"`
+	OS              string         `json:"os"`
+	Architecture    string         `json:"architecture"`
+	Kernel          string         `json:"kernel"`
+	UID             int            `json:"uid"`
+	Backend         map[string]any `json:"backend"`
+	WorkerImage     map[string]any `json:"worker_image"`
+	LaunchPolicy    map[string]any `json:"launch_policy"`
+	Overall         string         `json:"overall_status"`
+	Cases           []stage6Case   `json:"cases"`
+	Limitations     []string       `json:"limitations"`
+	FixtureEvidence map[string]any `json:"fixture_filesystem_evidence"`
 }
 
 type stage6BoundedBuffer struct {
@@ -269,10 +483,11 @@ func newStage6Report() stage6Report {
 		)
 	}
 	return stage6Report{
-		SchemaVersion: 1, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "13",
+		SchemaVersion: 2, SourceCommit: os.Getenv("KOMPOSYN_STAGE6_SOURCE_COMMIT"), RunnerVersion: "14",
 		OS: "linux", Architecture: stdruntime.GOARCH, Kernel: stage6KernelRelease(), UID: os.Getuid(), Overall: "stage6_profile_incomplete",
 		Backend: map[string]any{}, WorkerImage: workerImage, LaunchPolicy: map[string]any{}, Cases: cases,
-		Limitations: limitations,
+		Limitations:     limitations,
+		FixtureEvidence: map[string]any{"status": "not_observed", "observation_scope": "actual Stage 6 fixture root and selected listing/search directory; mountinfo fields are reduced to allowlisted characteristics", "paths_disclosed": false},
 	}
 }
 
@@ -307,6 +522,7 @@ func TestMain(m *testing.M) {
 	} else if allNativeCasesUnavailable(stage6.Cases) {
 		stage6.Overall = "native_unavailable"
 	}
+	stage6FinalizeFixtureFilesystemEvidence(&stage6)
 	data, err := json.MarshalIndent(stage6, "", "  ")
 	stage6Mu.Unlock()
 	if path := os.Getenv("KOMPOSYN_STAGE6_REPORT"); path != "" && err == nil {
@@ -392,6 +608,96 @@ func TestStage6ReportClassifiesEveryCase(t *testing.T) {
 	}
 	if allNativeCasesUnavailable(report.Cases) {
 		t.Fatal("a measured native case was classified as wholly unavailable")
+	}
+}
+
+func TestStage6FixtureFilesystemObservationUsesFixtureLocation(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "actual-fixture")
+	if err := os.Mkdir(fixture, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var expected unix.Statfs_t
+	if err := unix.Statfs(fixture, &expected); err != nil {
+		t.Fatal(err)
+	}
+	got := observeStage6FixtureFilesystem(fixture)
+	if got.Status != "recorded" && got.Status != "partial" {
+		t.Fatalf("fixture filesystem observation status=%q failure=%q", got.Status, got.ObservationFailure)
+	}
+	if got.FilesystemType != fmt.Sprintf("0x%016x", uint64(expected.Type)) || got.BlockSize != expected.Bsize {
+		t.Fatalf("observation does not match the actual fixture location: got=%+v expected_type=0x%016x expected_block_size=%d", got, uint64(expected.Type), expected.Bsize)
+	}
+	if got.MountStatus != "recorded" && got.MountStatus != "unavailable" {
+		t.Fatalf("mount observation failure was not represented explicitly: %+v", got)
+	}
+	if got.MountStatus == "recorded" && got.MountFilesystemType == "" {
+		t.Fatalf("matched mount filesystem type was not recorded: %+v", got)
+	}
+	for _, option := range got.MountOptions {
+		if _, ok := map[string]bool{"ro": true, "rw": true, "nosuid": true, "nodev": true, "noexec": true, "relatime": true, "strictatime": true, "noatime": true, "lazytime": true, "sync": true, "dirsync": true}[option]; !ok {
+			t.Fatalf("unexpected mount option %q", option)
+		}
+	}
+}
+
+func TestStage6FixtureFilesystemObservationReportsMissingLocation(t *testing.T) {
+	got := observeStage6FixtureFilesystem(filepath.Join(t.TempDir(), "missing-fixture"))
+	if got.Status != "failed" || got.ObservationFailure != "open_fixture_failed" || got.MountStatus != "not_attempted" {
+		t.Fatalf("missing fixture location was represented as established provenance: %+v", got)
+	}
+}
+
+func TestStage6FixtureFilesystemObservationDoesNotSubstituteOutputFilesystem(t *testing.T) {
+	outputFixture := t.TempDir()
+	var outputStat unix.Statfs_t
+	if err := unix.Statfs(outputFixture, &outputStat); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.MkdirTemp("/dev/shm", "komposyn-stage6-fixture-")
+	if err != nil {
+		t.Skipf("a separate writable fixture filesystem is unavailable: %v", err)
+	}
+	defer os.RemoveAll(fixture)
+	var fixtureStat unix.Statfs_t
+	if err := unix.Statfs(fixture, &fixtureStat); err != nil {
+		t.Fatal(err)
+	}
+	if fixtureStat.Type == outputStat.Type {
+		t.Skip("available temporary locations use the same filesystem type")
+	}
+	got := observeStage6FixtureFilesystem(fixture)
+	if got.Status != "recorded" || got.FilesystemType != fmt.Sprintf("0x%016x", uint64(fixtureStat.Type)) {
+		t.Fatalf("fixture provenance was substituted with another filesystem: got=%+v fixture_type=0x%016x", got, uint64(fixtureStat.Type))
+	}
+	if outputStat.Type == fixtureStat.Type || got.FilesystemType == fmt.Sprintf("0x%016x", uint64(outputStat.Type)) {
+		t.Fatalf("fixture observation matches output filesystem unexpectedly: fixture=%+v", got)
+	}
+}
+
+func TestStage6FixtureFilesystemObservationFollowsSymlinkedParentMount(t *testing.T) {
+	fixtureParent, err := os.MkdirTemp("/dev/shm", "komposyn-stage6-symlink-fixture-")
+	if err != nil {
+		t.Skipf("a writable tmpfs fixture location is unavailable: %v", err)
+	}
+	defer os.RemoveAll(fixtureParent)
+	aliasParent := filepath.Join(t.TempDir(), "fixture-parent")
+	if err := os.Symlink("/dev/shm", aliasParent); err != nil {
+		t.Skipf("symlinked fixture parent is unavailable: %v", err)
+	}
+	fixture := filepath.Join(aliasParent, filepath.Base(fixtureParent))
+	var expected unix.Statfs_t
+	if err := unix.Statfs(fixture, &expected); err != nil {
+		t.Fatal(err)
+	}
+	if uint64(expected.Type) != unix.TMPFS_MAGIC {
+		t.Skipf("/dev/shm is not tmpfs: filesystem magic %#x", uint64(expected.Type))
+	}
+	got := observeStage6FixtureFilesystem(fixture)
+	if got.Status != "recorded" || got.MountStatus != "recorded" {
+		t.Fatalf("symlinked fixture filesystem provenance is incomplete: %+v", got)
+	}
+	if got.FilesystemType != fmt.Sprintf("0x%016x", uint64(expected.Type)) || got.MountFilesystemType != "tmpfs" {
+		t.Fatalf("symlinked fixture filesystem and mount provenance disagree: %+v", got)
 	}
 }
 
@@ -1468,13 +1774,9 @@ func enableSearchForNativeStudy(service *Service) error {
 	if !ok || impl.session == nil {
 		return errors.New("native service does not use the composed Linux worker")
 	}
-	profile, ok := impl.launcher.(interface{ SearchProfilesAvailable() bool })
-	if !ok || !profile.SearchProfilesAvailable() {
+	if !service.SearchFilesAvailable() {
 		return errors.New("native search worker profiles are unavailable")
 	}
-	impl.mu.Lock()
-	impl.searchAccepted = true
-	impl.mu.Unlock()
 	return nil
 }
 
@@ -1595,6 +1897,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 			t.Fatalf("directory mount fixture root is not a directory: %v", statErr)
 		}
 	}
+	stage6CaptureFixtureFilesystem(caseID, "synthetic_fixture_root", root)
 	authPath := filepath.Join(root, "synthetic-auth.json")
 	settingsPath := filepath.Join(root, "synthetic-settings.json")
 	authStore := auth.Store{Path: authPath, Protection: service}
@@ -1707,6 +2010,7 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 				_ = service.Close(context.Background())
 				t.Fatalf("bind mount synthetic protected object into listing scope: %v", err)
 			}
+			stage6CaptureFixtureFilesystem(caseID, "nested_bind_mount_alias", alias)
 			t.Cleanup(func() { _ = unix.Unmount(alias, unix.MNT_DETACH) })
 		}
 	} else if targetKind == "auth" {
@@ -1718,6 +2022,9 @@ func newStage6FixtureWithHold(t *testing.T, caseID, targetKind string, blockSeco
 	} else if err := os.WriteFile(target, []byte(content), 0600); err != nil {
 		_ = service.Close(context.Background())
 		t.Fatalf("synthetic target setup failed: %v", err)
+	}
+	if targetKind == "directory-list" || targetKind == "directory-list-mounted" || targetKind == "directory-list-recursive" || targetKind == "directory-list-recursive-mounted" || targetKind == "directory-list-recursive-filtered" || targetKind == "directory-list-recursive-large" || targetKind == "content-search" || targetKind == "content-search-mounted" {
+		stage6CaptureFixtureFilesystem(caseID, "selected_listing_or_search_scope", target)
 	}
 	secondTarget := filepath.Join(root, "second-notes.txt")
 	if targetKind == "multiple" {
@@ -2679,6 +2986,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 	}
 	if measured.Status == "measured_pass" {
 		stage6Update("directory_listing_mount_boundary", func(item *stage6Case) {
+			item.FixtureFS = append(item.FixtureFS, measured.FixtureFS...)
 			item.LaunchPolicy = measured.LaunchPolicy
 			item.WorkerStarted, item.WorkerReady, item.WorkerJoined = measured.WorkerStarted, measured.WorkerReady, measured.WorkerJoined
 			item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = measured.CapabilityTransferred, measured.ReadStarted, measured.ProbePassed
@@ -2707,6 +3015,7 @@ func TestStage6DirectoryListingMountBoundary(t *testing.T) {
 		t.Fatalf("mounted search child case did not pass (run error=%v): output=%q case=%+v", runErr, output.String(), searchMeasured)
 	}
 	stage6Update("search_mount_boundary", func(item *stage6Case) {
+		item.FixtureFS = append(item.FixtureFS, searchMeasured.FixtureFS...)
 		item.LaunchPolicy = searchMeasured.LaunchPolicy
 		item.WorkerStarted, item.WorkerReady, item.WorkerJoined = searchMeasured.WorkerStarted, searchMeasured.WorkerReady, searchMeasured.WorkerJoined
 		item.CapabilityTransferred, item.ReadStarted, item.ProbePassed = searchMeasured.CapabilityTransferred, searchMeasured.ReadStarted, searchMeasured.ProbePassed
@@ -2745,6 +3054,7 @@ func TestStage6DirectoryListingMountBoundaryChild(t *testing.T) {
 	if err != nil || childMountID == parentMountID {
 		t.Fatalf("fixture child is not a distinct mount: parent=%d child=%d err=%v", parentMountID, childMountID, err)
 	}
+	stage6CaptureFixtureFilesystem("directory_listing_mount_boundary", "nested_mount_boundary", mountpoint)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	turn, err := fixture.chat.Send(ctx, "list the synthetic fixture directory", nil)
@@ -2801,6 +3111,7 @@ func TestStage6SearchMountBoundaryChild(t *testing.T) {
 	if err != nil || childMountID == parentMountID {
 		t.Fatalf("search fixture child is not a distinct mount: parent=%d child=%d err=%v", parentMountID, childMountID, err)
 	}
+	stage6CaptureFixtureFilesystem("search_mount_boundary", "nested_mount_boundary", mountpoint)
 	nested := filepath.Join(target, "nested")
 	if err := os.Mkdir(nested, 0700); err != nil {
 		t.Fatalf("create unmounted search control directory: %v", err)

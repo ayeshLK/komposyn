@@ -44,17 +44,18 @@ const (
 )
 
 var (
-	ErrInvalidPath       = errors.New("read fixture path must be clean and absolute")
-	ErrOutOfScope        = errors.New("read target escapes its verified mount root")
-	ErrProtected         = errors.New("registered protected resource is unavailable to generic reads")
-	ErrDirectoryCoverage = errors.New("read scope overlaps a registered protected directory with incomplete descendant identity coverage")
-	ErrPolicyChanged     = errors.New("protected policy changed during read preparation")
-	ErrStaleReceipt      = errors.New("authorization receipt does not match the prepared read")
-	ErrPinBudget         = errors.New("protected identity pin budget exhausted")
-	ErrUnavailable       = errors.New("sandboxed read worker is unavailable")
-	ErrCleanupPending    = errors.New("worker termination requested; cleanup is not yet confirmed")
-	ErrProtocol          = errors.New("sandboxed read worker protocol is invalid")
-	ErrResultTooLarge    = errors.New("sandboxed read result exceeds its bound")
+	ErrInvalidPath           = errors.New("read fixture path must be clean and absolute")
+	ErrOutOfScope            = errors.New("read target escapes its verified mount root")
+	ErrProtected             = errors.New("registered protected resource is unavailable to generic reads")
+	ErrDirectoryCoverage     = errors.New("read scope overlaps a registered protected directory with incomplete descendant identity coverage")
+	ErrPolicyChanged         = errors.New("protected policy changed during read preparation")
+	ErrStaleReceipt          = errors.New("authorization receipt does not match the prepared read")
+	ErrPinBudget             = errors.New("protected identity pin budget exhausted")
+	ErrUnavailable           = errors.New("sandboxed read worker is unavailable")
+	ErrUnsupportedFilesystem = errors.New("search target filesystem is unsupported")
+	ErrCleanupPending        = errors.New("worker termination requested; cleanup is not yet confirmed")
+	ErrProtocol              = errors.New("sandboxed read worker protocol is invalid")
+	ErrResultTooLarge        = errors.New("sandboxed read result exceeds its bound")
 )
 
 type ResourceClass string
@@ -244,6 +245,12 @@ type ReadBroker interface {
 type DirectoryListingBroker interface {
 	PrepareDirectoryList(root, target string, generation GenerationSet) (PreparedRead, error)
 	PrepareDirectoryListWithOptions(root, target string, generation GenerationSet, options ListingOptions) (PreparedRead, error)
+}
+
+// SearchDirectoryBroker prepares the selected directory for search only when
+// its retained descriptor is on the measured filesystem profile.
+type SearchDirectoryBroker interface {
+	PrepareSearchDirectoryWithOptions(root, target string, generation GenerationSet, options ListingOptions) (PreparedRead, error)
 }
 
 type GenerationSet struct {

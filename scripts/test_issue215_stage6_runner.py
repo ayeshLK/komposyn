@@ -105,6 +105,47 @@ class Stage6RunnerTests(unittest.TestCase):
         )
         self.assertIn("worker startup failed: synthetic error", summary)
 
+    def test_fixture_filesystem_report_requires_path_free_observed_provenance(self):
+        report = {
+            "fixture_filesystem_evidence": {
+                "status": "recorded",
+                "observations": 1,
+                "roles_observed": ["selected_listing_or_search_scope"],
+                "paths_disclosed": False,
+            },
+            "cases": [{
+                "case_id": "positive_content_search",
+                "fixture_filesystems": [{
+                    "role": "selected_listing_or_search_scope",
+                    "status": "recorded",
+                    "filesystem_type": "0x0000000001021994",
+                    "block_size_bytes": 4096,
+                    "mount_status": "recorded",
+                    "mount_filesystem_type": "overlay",
+                    "mount_root_scope": "filesystem_root",
+                    "mount_options": ["rw", "nosuid", "nodev"],
+                    "superblock_options": ["rw"],
+                }],
+            }],
+        }
+        self.assertEqual(RUNNER.validate_fixture_filesystem_report(report)["observations"], 1)
+
+        missing_summary = json.loads(json.dumps(report))
+        del missing_summary["fixture_filesystem_evidence"]
+        with self.assertRaisesRegex(ValueError, "evidence is missing"):
+            RUNNER.validate_fixture_filesystem_report(missing_summary)
+
+        wrong_location = json.loads(json.dumps(report))
+        wrong_location["cases"][0]["fixture_filesystems"][0]["path"] = "/tmp/output"
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            RUNNER.validate_fixture_filesystem_report(wrong_location)
+
+        unobserved = json.loads(json.dumps(report))
+        unobserved["fixture_filesystem_evidence"].update({"status": "recorded", "observations": 0})
+        unobserved["cases"][0]["fixture_filesystems"] = []
+        with self.assertRaisesRegex(ValueError, "no observations"):
+            RUNNER.validate_fixture_filesystem_report(unobserved)
+
     def test_summary_records_requested_shipped_worker_image_separately(self):
         summary = RUNNER.summarize(
             {"overall_status": "native_unavailable", "worker_image": {"profile": "cmd-harness-worker-image", "size_bytes": 12, "sha256": "abc"}, "cases": [], "limitations": []},
@@ -216,11 +257,14 @@ class Stage6RunnerTests(unittest.TestCase):
             manifest = json.loads((result_path / "manifest.json").read_text())
             self.assertEqual(manifest["classification"], "refused_dirty_or_non_head_source")
             self.assertTrue(manifest["source"]["checkout_clean"] is False)
+            self.assertEqual(manifest["fixture_filesystem_evidence"], {"status": "not_available"})
             self.assertEqual(manifest["build"]["status"], "not_started")
             self.assertEqual(manifest["study"]["status"], "not_started")
             with tarfile.open(archive_path, "r:gz") as archive:
                 archive.extractall(Path(output_root) / "unpacked", filter="data")
             unpacked = Path(output_root) / "unpacked" / result_path.name
+            archived_manifest = json.loads((unpacked / "manifest.json").read_text())
+            self.assertEqual(archived_manifest["fixture_filesystem_evidence"], {"status": "not_available"})
             for line in (unpacked / "SHA256SUMS").read_text().splitlines():
                 expected, name = line.split("  ", 1)
                 self.assertEqual(hashlib.sha256((unpacked / name).read_bytes()).hexdigest(), expected)

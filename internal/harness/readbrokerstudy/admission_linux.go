@@ -220,12 +220,19 @@ func (s *fixtureSession) BeginAdmission(ctx context.Context, request AdmissionRe
 	go func() {
 		var prepared PreparedRead
 		var err error
-		if request.Operation == AdmissionListDirectory || request.Operation == AdmissionSearchFiles {
+		if request.Operation == AdmissionListDirectory {
 			listingBroker, ok := s.broker.(DirectoryListingBroker)
 			if !ok {
 				err = ErrUnavailable
 			} else {
 				prepared, err = listingBroker.PrepareDirectoryListWithOptions(request.Root, request.Target, record.metadata.Generations, request.Listing)
+			}
+		} else if request.Operation == AdmissionSearchFiles {
+			searchBroker, ok := s.broker.(SearchDirectoryBroker)
+			if !ok {
+				err = ErrUnavailable
+			} else {
+				prepared, err = searchBroker.PrepareSearchDirectoryWithOptions(request.Root, request.Target, record.metadata.Generations, request.Listing)
 			}
 		} else {
 			prepared, err = s.broker.PrepareRead(request.Root, request.Target, record.metadata.Generations)
