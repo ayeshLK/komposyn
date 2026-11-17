@@ -81,6 +81,34 @@ func TestExactFileRoutesAndPinnedIdentitiesUseCapturedClassification(t *testing.
 	assertClassified(t, registry, providerAlias, providerID, ClassProvider)
 }
 
+func TestSearchFilesystemRequiresExactExt4MountType(t *testing.T) {
+	for _, filesystemType := range []string{"ext2", "ext3", "ext4", "tmpfs"} {
+		t.Run(filesystemType, func(t *testing.T) {
+			got := isSupportedSearchFilesystem(extFilesystemMagic, filesystemType)
+			want := filesystemType == "ext4"
+			if got != want {
+				t.Fatalf("search filesystem support for %q = %t, want %t", filesystemType, got, want)
+			}
+		})
+	}
+}
+
+func TestMountFilesystemLookupUsesDescriptorMountID(t *testing.T) {
+	fdInfo := []byte("pos:\t0\nflags:\t0100000\nmnt_id:\t42\n")
+	mountID, err := parseDescriptorMountID(fdInfo)
+	if err != nil || mountID != 42 {
+		t.Fatalf("parse descriptor mount ID = %d, %v; want 42", mountID, err)
+	}
+	mountInfo := []byte("41 1 8:1 / /ext3 rw,relatime - ext3 /dev/example rw\n42 1 8:2 / /ext4 rw,relatime - ext4 /dev/example rw\n")
+	filesystemType, err := parseMountFilesystemType(mountInfo, mountID)
+	if err != nil || filesystemType != "ext4" {
+		t.Fatalf("descriptor mount filesystem = %q, %v; want ext4", filesystemType, err)
+	}
+	if _, err := parseMountFilesystemType(mountInfo, 43); err == nil {
+		t.Fatal("missing descriptor mount ID was accepted")
+	}
+}
+
 func TestBrokerCanPrepareAnIndividuallyScopedTargetOutsideWorkingDirectory(t *testing.T) {
 	base := t.TempDir()
 	workingDirectory := filepath.Join(base, "working")

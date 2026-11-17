@@ -107,7 +107,7 @@ func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	runCtx, runCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer runCancel()
 	run := exec.CommandContext(runCtx, output,
-		"-test.run=^(TestStage6ReportClassifiesEveryCase|TestStage6FixtureFilesystemObservationUsesFixtureLocation|TestStage6FixtureFilesystemObservationReportsMissingLocation|TestStage6FixtureFilesystemObservationDoesNotSubstituteOutputFilesystem|TestStage6SyntheticRuntimeReadForwarding|TestStage6ReadRefusedWithoutRootOrBackend|TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission)$",
+		"-test.run=^(TestStage6ReportClassifiesEveryCase|TestStage6FixtureFilesystemObservationUsesFixtureLocation|TestStage6FixtureFilesystemObservationReportsMissingLocation|TestStage6FixtureFilesystemObservationDoesNotSubstituteOutputFilesystem|TestStage6FixtureFilesystemObservationFollowsSymlinkedParentMount|TestStage6SyntheticRuntimeReadForwarding|TestStage6ReadRefusedWithoutRootOrBackend|TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission)$",
 		"-test.timeout=75s", "-test.count=1")
 	run.Env = append(os.Environ(),
 		"KOMPOSYN_STAGE6_REPORT="+reportPath,

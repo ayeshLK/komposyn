@@ -25,7 +25,7 @@ profile. This record does not complete umbrella issue #315.
 | Separate directory traversal and content search enforcement | Search traversal and sealed-content workers have separate seccomp profiles; exact-file read profile stays unchanged | Positive and cancellation cases recorded the two profiles and handoff boundary on the candidate | Measured for this profile; exact-file read profile remains unchanged |
 | Cancellation, revocation, stale publication and cleanup | Existing operation authority/generation gates are retained; each child worker has independent join state; search joins honor the invocation deadline and suppress disclosure when cleanup is unconfirmed | `search_content_worker_cancellation_cleanup`, `search_selected_root_movement`, `search_owner_rotation_withholds_capture`, `search_revocation_withholds_capture`, and `search_mount_boundary` passed on the candidate | Measured for the listed cases; no aggregate cgroup quota or arbitrary-descendant claim |
 | Keep known stale-policy refusal separate from uncertain cleanup | A joined scan with changed ignore policy returns a sanitized failed tool result, with no staged search content. Descriptor-close errors or unconfirmed joins remain unknown and interrupt continuation; cleanup ownership keeps admission blocked | `search_ignore_rules_changed_after_content` passed for nested and applicable ancestor mutations; both worker joins, both descriptor closures, two once-grant consumptions, sanitized continuations, and no disclosure were recorded | Measured on the candidate; cleanup uncertainty remains fail-closed |
-| Enable only the measured profile | Search availability requires trusted Linux amd64 descriptor-bind worker composition; admission uses `fstatfs` on the retained directory and fails closed unless it is ext4 | Exact candidate search cases passed on the measured profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Ext4-only enablement approved and implemented here. Other filesystems and launch profiles remain unavailable |
+| Enable only the measured profile | Search availability requires trusted Linux amd64 descriptor-bind worker composition; admission matches retained-descriptor `fstatfs` and mount-ID type and fails closed unless the mount type is exactly ext4 | Exact candidate search cases passed on the measured profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Ext4-only enablement approved and implemented here. Other filesystems and launch profiles remain unavailable |
 
 ## Runner 13 trusted-host run (historical)
 
@@ -148,35 +148,43 @@ The archive was extracted and all `SHA256SUMS` entries were independently
 verified. The report's fixture summary matches the per-case records and
 manifest.
 
+The runner 14 archive predates the descriptor-mount-ID correction in this
+follow-up. Its filesystem magic values and recorded mount types are preserved
+as historical observations. Because the archive intentionally omits fixture
+paths, it cannot establish whether any path had a symlinked parent; the
+corrected runner now reads `statfs` from an opened fixture descriptor and
+matches mount information by that descriptor's mount ID. A synthetic
+regression test covers a symlinked parent pointing to tmpfs. No supplied
+artifact demonstrates that the earlier archive reported a wrong filesystem.
+
 ## Supported-profile evidence and approval status
 
-The accepted runner 14 evidence records trusted Linux amd64, Bubblewrap 0.9.0
-in actual `ro-bind-fd` mode, complete auth/settings owner coverage, successful
-composition of the fixed traversal and content workers, and ext4 fixture
-locations with the mount characteristics listed above. Other filesystems,
-bind modes, architectures, and non-Linux platforms remain unmeasured. This is
-evidence for review, not authorization to enable search.
+The ext4-scoped profile is trusted Linux amd64, Bubblewrap 0.9.0 in actual
+`ro-bind-fd` mode, complete auth/settings owner coverage, successful composition
+of the fixed traversal and content workers, and a selected directory whose
+retained descriptor has ext4 mount type and the measured statfs magic. The
+runner 14 archive recorded 51 fixture observations with ext4 mount type and
+`f_type=0xef53`; the path-matching limitation for that historical observer is
+documented above. Other filesystems, bind modes, architectures, and non-Linux
+platforms remain unsupported or unmeasured.
 
-For the next enablement review, propose Linux amd64 with trusted, root-owned
-Bubblewrap 0.9.0 using actual `ro-bind-fd`, complete protected-owner inventory,
-and an approved search directory on ext4 (`f_type=0xef53`). The current
-`SearchFilesAvailable`/`SearchProfilesAvailable` gate checks the Linux amd64
-descriptor-bind worker profile but does not inspect the selected directory's
-filesystem type. The enablement change must therefore either check the
-canonical selected directory's filesystem type during admission and refuse
-non-ext4 targets, or add native evidence and a separate explicit decision for
-additional filesystem types. Keep the public gate closed for unknown or
-unmeasured filesystems and for partial provenance. That change must also
-exercise the real composed Service/runtime availability, provider schema and
-instructions, admission, approval, and unsupported-profile refusal paths.
-This evidence applies to the worker/enforcement revision recorded above. The
-follow-up adds only a host-side filesystem eligibility check and the profile
-availability gate; traversal/content workers, worker protocol, seccomp
-profiles, and native assertions are unchanged. Focused tests exercise ext4
-admission and pre-approval refusal on procfs. These changes do not extend the
-native evidence to another filesystem or launch profile. The ext4-only
-enablement decision is recorded for this change; #318/#315 remain open until
-their other acceptance and closure criteria are completed.
+The current availability gate requires the measured Linux amd64 descriptor-
+bind worker profile. Admission reads statfs from the retained directory FD,
+obtains that FD's mount ID from procfs, and matches the ID to an exact `ext4`
+record in mountinfo. A failed or ambiguous lookup refuses search before once
+approval and is repeated during revalidation. The separate ext4-scoped
+enablement decision is recorded for this change; it does not expand the native
+evidence to another filesystem or launch profile.
+
+The follow-up adds the host-side filesystem eligibility check and profile
+availability gate; traversal/content workers, worker protocol, and seccomp
+profiles are unchanged. Focused tests exercise exact ext4 mount-type matching,
+shared ext-family magic refusal, ext4 admission, pre-approval refusal on
+procfs, and descriptor-based fixture provenance through a symlinked parent.
+These changes do not extend the native worker evidence to another filesystem
+or launch profile. The ext4-only enablement decision is recorded for this
+change; #318/#315 remain open until their other acceptance and closure
+criteria are completed.
 
 The version 11 historical harness included composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root

@@ -201,8 +201,6 @@ func (b *broker) PrepareSearchDirectoryWithOptions(root, target string, generati
 	return b.prepareDirectoryListWithOptions(root, target, generation, options, true)
 }
 
-const ext4FilesystemMagic = 0xef53
-
 func (b *broker) prepareDirectoryListWithOptions(root, target string, generation GenerationSet, options ListingOptions, search bool) (PreparedRead, error) {
 	if b == nil || b.registry == nil {
 		return nil, ErrUnavailable
@@ -238,14 +236,9 @@ func (b *broker) prepareDirectoryListWithOptions(root, target string, generation
 		return nil, errReadNotRegular
 	}
 	if search {
-		var filesystem unix.Statfs_t
-		if err := unix.Fstatfs(int(directory.Fd()), &filesystem); err != nil {
+		if err := validateExt4SearchDirectory(int(directory.Fd())); err != nil {
 			_ = directory.Close()
-			return nil, ErrUnsupportedFilesystem
-		}
-		if uint64(filesystem.Type) != ext4FilesystemMagic {
-			_ = directory.Close()
-			return nil, ErrUnsupportedFilesystem
+			return nil, err
 		}
 	}
 	class, protected := b.registry.ClassifyWithAncestors(target, id, nil)
@@ -1233,9 +1226,8 @@ func (b *broker) revalidateDirectoryList(prepared *preparedDirectoryList) error 
 		return ErrStaleReceipt
 	}
 	if prepared.search {
-		var filesystem unix.Statfs_t
-		if err := unix.Fstatfs(int(prepared.directory.Fd()), &filesystem); err != nil || uint64(filesystem.Type) != ext4FilesystemMagic {
-			return ErrUnsupportedFilesystem
+		if err := validateExt4SearchDirectory(int(prepared.directory.Fd())); err != nil {
+			return err
 		}
 	}
 	class, protected := b.registry.ClassifyWithAncestors(prepared.path, identity, nil)

@@ -112,7 +112,9 @@ aggregate process, CPU, or memory isolation and no cgroup quota is claimed.
 
 The measured search profile is trusted Linux amd64, Bubblewrap's actual
 `ro-bind-fd` mode, complete owner inventory, successful fixed-worker
-composition, and ext4 (`f_type=0xef53`) for the selected directory. Runner 13's
+composition, and ext4 mount type for the selected directory. The host verifies
+both the descriptor's statfs magic and its mount ID's exact filesystem type;
+the ext4-family magic alone is insufficient. Runner 13's
 classification, known-validation-refusal, independent worker-join, and
 descriptor-close assertions passed on the recorded candidate; see the
 [#318 completion record](issue-318-search-completion.md). Runner 14 captured
@@ -121,11 +123,12 @@ selected search/listing scopes, and nested mount fixtures, with path-free
 observations attached to each case. Its fresh trusted-host archive recorded 51
 observations, all ext4, including read-only nested mount boundaries. This
 evidence is limited to that fixture environment. Availability checks the
-measured launcher profile. Admission checks `fstatfs` on the retained selected
-directory descriptor before once approval and repeats the check at
-revalidation; a failed check refuses search. File-snapshot, other filesystems,
-other architectures, and non-Linux systems remain unavailable. The ext4-scoped enablement approval is recorded for this change; the code
-enforces the profile limits at availability and admission.
+measured launcher profile. Admission checks `fstatfs` and the mount type
+resolved from the retained descriptor's mount ID before once approval, and
+repeats both checks at revalidation; a failed check refuses search. File-snapshot,
+other filesystems, other architectures, and non-Linux systems remain
+unavailable. The ext4-scoped enablement approval is recorded for this change;
+the code enforces the profile limits at availability and admission.
 
 ## Worker operation profiles and tests
 

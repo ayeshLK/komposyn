@@ -117,11 +117,12 @@ acceptance record](issue-215-completion-tracking.md) and
 
 `search_files` is available conditionally for a narrow profile: trusted Linux
 amd64 Bubblewrap using the measured `ro-bind-fd` mode, complete owner coverage,
-and a selected directory whose retained descriptor reports ext4
-(`f_type=0xef53`).
-Admission checks that descriptor before the runtime can request once approval,
-and revalidates the filesystem profile before execution. Other filesystems,
-architectures, bind modes, and non-Linux platforms stay unavailable. The tool
+and a selected directory whose retained descriptor maps to an ext4 mount and
+reports the measured statfs magic (`f_type=0xef53`).
+Admission checks that descriptor's statfs magic and exact mount-ID filesystem
+type before the runtime can request once approval, and revalidates both before
+execution. Other filesystems, architectures, bind modes, and non-Linux
+platforms stay unavailable. The tool
 description states the ext4 requirement. The change opens availability only
 when the inspected launcher matches the measured worker profile; it does not
 enable search on listing evidence or version strings. The ext4-scoped
