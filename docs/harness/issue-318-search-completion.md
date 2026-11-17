@@ -55,6 +55,44 @@ case roles in the hashed report/manifest. This changes no historical archive;
 a fresh trusted-host run must exercise the instrumentation before any
 filesystem-specific support claim can be made.
 
+### Runner 14 availability attempt
+
+Clean candidate `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` was run with Go
+1.26.11 on Linux 7.0.0-42-generic amd64 as UID 1000. The local Bubblewrap
+binary was version 0.9.0, mode 0755, but owned by UID/GID 65534; the harness
+requires a root-owned backend and refused before backend probes or worker
+launch. The study process exited 0, but the report classified the profile as
+`native_unavailable`: seven synthetic controls passed, 33 native cases were
+unavailable, and there were zero fixture filesystem observations. This is
+not fresh enforcement evidence and establishes no fixture filesystem type.
+
+Archive: `/tmp/komposyn-issue215-stage6-20261117T194852Z-2.tar.gz`; SHA-256
+`e75894e42e32eb2310aa1fa58c8e60d5bab6edb94222596522314d696bc1e902`. Report
+SHA-256 `047d0ac989223262220176a661669ef5203a0aade8fb3a0482e1eb425642c707`;
+manifest SHA-256
+`fc2d0fada881a7798c6686fe2ec36544a80c56a68cca27a8414025221057b7cf`.
+All archive `SHA256SUMS` entries were independently verified. The report
+explicitly marks fixture provenance `unavailable`, with zero observations and
+no disclosed paths.
+
+To obtain the required measurement on a trusted regular-user Linux host, check
+out the exact clean candidate and run:
+
+```sh
+git checkout d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e
+go_root="$(go env GOROOT)"
+"$go_root/bin/go" version
+PATH="$go_root/bin:$PATH" python3 -B scripts/run-issue215-stage6.py \
+  --revision "$(git rev-parse HEAD)" \
+  --bwrap /usr/bin/bwrap \
+  --output-root /tmp
+```
+
+The host must already have Go 1.26.11 or newer and Bubblewrap satisfying the
+repository's root-ownership trust check. Preserve the resulting archive and
+send its path for review; do not infer fixture filesystem values from this
+availability attempt or fill the historical archive retroactively.
+
 ## Supported-profile evidence and approval status
 
 The last accepted search-specific evidence records trusted Linux amd64,
