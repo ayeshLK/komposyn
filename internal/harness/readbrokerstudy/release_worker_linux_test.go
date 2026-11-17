@@ -107,7 +107,7 @@ func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	runCtx, runCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer runCancel()
 	run := exec.CommandContext(runCtx, output,
-		"-test.run=^(TestStage6ReportClassifiesEveryCase|TestStage6SyntheticRuntimeReadForwarding|TestStage6ReadRefusedWithoutRootOrBackend|TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission)$",
+		"-test.run=^(TestStage6ReportClassifiesEveryCase|TestStage6FixtureFilesystemObservationUsesFixtureLocation|TestStage6FixtureFilesystemObservationReportsMissingLocation|TestStage6FixtureFilesystemObservationDoesNotSubstituteOutputFilesystem|TestStage6SyntheticRuntimeReadForwarding|TestStage6ReadRefusedWithoutRootOrBackend|TestStage6IncompleteOwnerInventoryBlocksRuntimeAdmission)$",
 		"-test.timeout=75s", "-test.count=1")
 	run.Env = append(os.Environ(),
 		"KOMPOSYN_STAGE6_REPORT="+reportPath,
@@ -125,7 +125,13 @@ func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	var report struct {
 		RunnerVersion string `json:"runner_version"`
 		Kernel        string `json:"kernel"`
-		Cases         []struct {
+		SchemaVersion int    `json:"schema_version"`
+		FixtureFS     struct {
+			Status         string `json:"status"`
+			Observations   int    `json:"observations"`
+			PathsDisclosed bool   `json:"paths_disclosed"`
+		} `json:"fixture_filesystem_evidence"`
+		Cases []struct {
 			ID           string `json:"case_id"`
 			Status       string `json:"status"`
 			EvidenceKind string `json:"evidence_kind"`
@@ -134,8 +140,11 @@ func TestStage6OverlayRunsSyntheticRuntimeControls(t *testing.T) {
 	if err := json.Unmarshal(reportData, &report); err != nil {
 		t.Fatalf("decode Stage 6 control report: %v", err)
 	}
-	if report.RunnerVersion != "13" || report.Kernel == "" {
-		t.Fatalf("Stage 6 report metadata runner_version=%q kernel=%q; want runner 13 and a kernel release", report.RunnerVersion, report.Kernel)
+	if report.RunnerVersion != "14" || report.SchemaVersion != 2 || report.Kernel == "" {
+		t.Fatalf("Stage 6 report metadata runner_version=%q schema=%d kernel=%q; want runner 14, schema 2, and a kernel release", report.RunnerVersion, report.SchemaVersion, report.Kernel)
+	}
+	if report.FixtureFS.Status != "unavailable" || report.FixtureFS.Observations != 0 || report.FixtureFS.PathsDisclosed {
+		t.Fatalf("unobserved Stage 6 fixture filesystem metadata was not explicit and path-free: %+v", report.FixtureFS)
 	}
 	want := map[string]bool{
 		"synthetic_once_authority_flow":        false,

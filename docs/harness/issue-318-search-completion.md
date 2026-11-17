@@ -49,19 +49,33 @@ cleanup confirmed.
 
 The archive, manifest and report do not record the filesystem containing the
 synthetic fixtures. Do not infer it from the kernel, Bubblewrap mode or host OS.
-This is an unresolved evidence limitation: the run supports only its observed
-host/profile and establishes no filesystem-specific portability claim. Capture
-fixture filesystem metadata contemporaneously on a future run before making a
-filesystem-specific support claim.
+Runner 14 now instruments `statfs` and the matched, allowlisted mount
+characteristics at the actual fixture paths and binds those observations to
+case roles in the hashed report/manifest. This changes no historical archive;
+a fresh trusted-host run must exercise the instrumentation before any
+filesystem-specific support claim can be made.
 
 ## Supported-profile evidence and approval status
 
-The search-specific evidence records trusted Linux amd64, Bubblewrap's actual
-`ro-bind-fd` mode, complete auth/settings owner coverage, and successful
-composition of the fixed traversal and content workers. The fixture filesystem
-was not recorded, so this does not establish filesystem-specific portability.
-Other bind modes, architectures, and non-Linux platforms remain unavailable.
-This is evidence for review, not authorization to enable search.
+The last accepted search-specific evidence records trusted Linux amd64,
+Bubblewrap's actual `ro-bind-fd` mode, complete auth/settings owner coverage,
+and successful composition of the fixed traversal and content workers. Its
+fixture filesystem was not recorded. Runner 14 adds the missing capture, but
+until a trusted-host run produces recorded fixture observations, no
+filesystem-specific portability claim is established. Other bind modes,
+architectures, and non-Linux platforms remain unavailable. This is evidence
+for review, not authorization to enable search.
+
+For the next enablement review, consider only Linux amd64 with a trusted,
+root-owned Bubblewrap installation using the measured `ro-bind-fd` launch
+profile and complete protected-owner inventory. Before opening the gate, use a
+fresh runner 14 archive to identify the filesystem type and selected mount
+characteristics at both the selected search scope and mount-boundary fixtures.
+The runtime gate must be able to recognize the accepted filesystem scope from
+the approved directory and refuse any unmeasured type; if that check is not
+implemented or the run reports partial/unknown provenance, keep search closed
+or gather narrower evidence. Do not treat this profile proposal as an
+enablement decision. `searchAccepted` remains false.
 
 The version 11 historical harness included composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root

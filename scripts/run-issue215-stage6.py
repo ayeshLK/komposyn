@@ -35,7 +35,7 @@ import time
 sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
 
-RUNNER_VERSION = "13"
+RUNNER_VERSION = "14"
 DEFAULT_BWRAP = "/usr/bin/bwrap"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 BUILD_TIMEOUT = 300
@@ -187,6 +187,8 @@ def summarize(report, build, run):
         "",
     ]
     worker_image = report.get("worker_image", {})
+    fixture_filesystems = report.get("fixture_filesystem_evidence", {})
+    lines.append(f"Fixture filesystem evidence: {fixture_filesystems.get('status', 'unknown')} ({fixture_filesystems.get('observations', 0)} observations).")
     if worker_image.get("profile") == "cmd-harness-worker-image":
         lines.extend(
             [
@@ -232,6 +234,58 @@ def summarize(report, build, run):
         ]
     )
     return "\n".join(lines)
+
+
+def validate_fixture_filesystem_report(report):
+    evidence = report.get("fixture_filesystem_evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("fixture filesystem evidence is missing")
+    if evidence.get("status") not in {"recorded", "partial", "unavailable"}:
+        raise ValueError("fixture filesystem evidence status is invalid")
+    observations = evidence.get("observations")
+    roles = evidence.get("roles_observed")
+    if not isinstance(observations, int) or observations < 0 or not isinstance(roles, list) or not all(isinstance(role, str) for role in roles):
+        raise ValueError("fixture filesystem evidence summary is malformed")
+    if evidence.get("paths_disclosed") is not False:
+        raise ValueError("fixture filesystem evidence must not disclose paths")
+    if evidence["status"] == "recorded" and observations == 0:
+        raise ValueError("recorded fixture filesystem evidence has no observations")
+    case_observations = 0
+    observed_roles = set()
+    for item in report.get("cases", []):
+        fixtures = item.get("fixture_filesystems", [])
+        if not isinstance(fixtures, list):
+            raise ValueError("case fixture filesystem observations are malformed")
+        for observation in fixtures:
+            if not isinstance(observation, dict) or observation.get("status") not in {"recorded", "partial", "failed", "unknown"}:
+                raise ValueError("case fixture filesystem observation is malformed")
+            if not observation.get("role") or "path" in observation or "mount_source" in observation:
+                raise ValueError("fixture filesystem observation has unsafe or missing metadata")
+            if observation.get("mount_status") not in {"recorded", "unavailable", "not_attempted", "unknown"}:
+                raise ValueError("fixture mount observation status is invalid")
+            if observation["status"] == "recorded":
+                if not re.fullmatch(r"0x[0-9a-f]{16}", str(observation.get("filesystem_type", ""))):
+                    raise ValueError("recorded fixture filesystem type is missing or malformed")
+                if not isinstance(observation.get("block_size_bytes"), int) or observation["block_size_bytes"] <= 0:
+                    raise ValueError("recorded fixture block size is missing or malformed")
+                if observation["mount_status"] != "recorded" or not observation.get("mount_filesystem_type") or observation.get("mount_root_scope") not in {"filesystem_root", "subtree"}:
+                    raise ValueError("recorded fixture mount characteristics are incomplete")
+                allowed_mount_options = {"ro", "rw", "nosuid", "nodev", "noexec", "relatime", "strictatime", "noatime", "lazytime", "sync", "dirsync"}
+                for option_key in ("mount_options", "superblock_options"):
+                    options = observation.get(option_key)
+                    if not isinstance(options, list) or any(option not in allowed_mount_options for option in options):
+                        raise ValueError("fixture mount options are missing or outside the allowlist")
+            elif not observation.get("observation_failure"):
+                raise ValueError("incomplete fixture observation has no failure reason")
+            case_observations += 1
+            observed_roles.add(observation["role"])
+    if case_observations != observations:
+        raise ValueError("fixture filesystem summary does not match case observations")
+    if observed_roles != set(roles):
+        raise ValueError("fixture filesystem summary roles do not match case observations")
+    if evidence["status"] == "unavailable" and observations != 0:
+        raise ValueError("unavailable fixture filesystem evidence contains observations")
+    return evidence
 
 
 def main():
@@ -282,6 +336,7 @@ def main():
         "requested_bind_mode": requested_bind_mode,
         "effective_bind_mode": args.bind_mode,
         "report": {"status": "not_produced"},
+        "fixture_filesystem_evidence": {"status": "not_available"},
         "classification": "incomplete",
         "limitations": [
             "This Stage 6 profile uses a test-only runtime/provider composition and does not validate real-provider or interactive-UI integration.",
@@ -460,8 +515,9 @@ def main():
                 if len(report_data) > 2 * 1024 * 1024:
                     raise ValueError("structured report exceeded 2 MiB")
                 report = json.loads(report_data)
-                if report.get("source_commit") != requested or report.get("schema_version") != 1:
+                if report.get("source_commit") != requested or report.get("schema_version") != 2:
                     raise ValueError("structured report provenance or schema mismatch")
+                manifest["fixture_filesystem_evidence"] = validate_fixture_filesystem_report(report)
                 if args.include_shipped_worker:
                     image_report = report.get("worker_image", {})
                     if (

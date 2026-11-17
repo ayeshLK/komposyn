@@ -136,9 +136,10 @@ The archive contains:
   `cmd/harness` worker-image hash/size/build status, bounded process status,
   and overall classification;
 - `stage6-report.json`: per-case observations from the test binary when
-  produced, including bounded, path-redacted worker startup diagnostics and
-  the parent-death helper's bounded stderr/exit status when a worker does not
-  reach readiness;
+  produced, including bounded, path-redacted worker startup diagnostics,
+  filesystem observations at actual fixture roots and selected listing/search
+  scopes, and the parent-death helper's bounded stderr/exit status when a
+  worker does not reach readiness;
 - bounded build, test and Go-version stdout/stderr logs;
 - `summary.md` and `SHA256SUMS`.
 
@@ -228,6 +229,33 @@ lifecycle/positive authorization, non-Linux enforcement, and production
 readiness remain unproven. A host trust refusal means none of the worker-path
 cases ran.
 
+## Fixture filesystem provenance (runner 14)
+
+The structured report schema 2 observes filesystem provenance at the fixture
+locations created by the Stage 6 test process. Each applicable case records
+stable roles (`synthetic_fixture_root`,
+`selected_listing_or_search_scope`, `nested_bind_mount_alias`, or
+`nested_mount_boundary`) and the result of `statfs` at that exact path. It
+records the Linux filesystem magic as a hexadecimal type, block size,
+allowlisted `statfs` flags, the matched mount's filesystem type and root scope,
+and separately selected per-mount and superblock options (`ro/rw`, `nosuid`,
+`nodev`, `noexec`, and selected timestamp or synchronous flags). It does not
+serialize fixture paths, mount sources, full
+mount tables, or fixture content. The selected mount entry is matched against
+`/proc/self/mountinfo` in the same test process that created/uses the fixture;
+the output directory and checkout are not used as substitutes.
+
+Failed `statfs` calls and unavailable mountinfo matches are represented as
+failed/partial observations, and the report summary becomes `partial` or
+`unavailable`. The runner requires summary counts and roles to agree with the
+per-case records and copies the summary into `manifest.json`; both files are
+covered by `SHA256SUMS`. A report without this metadata is malformed and
+cannot be classified as valid. Runner 14 does not claim complete mount
+configuration, filesystem portability, or that every possible fixture tree
+uses the same filesystem. The search mount-boundary child report is forwarded
+to its parent case so the nested mount observation remains associated with the
+case that exercised it.
+
 In `--include-shipped-worker` mode, each native-integrated read case uses the
 exact-digest sealed `cmd/harness` image; the report identifies that worker
 image and its digest without recording its temporary path. Parent-death
@@ -248,4 +276,7 @@ records search snapshot and candidate descriptor retirement, corrects the
 native-integrated case classification to 30 without reclassifying cases, and
 checks known final-policy refusal separately from uncertain cleanup. Historical
 archives remain bound to their original runner/source revisions; runner 12's
-failed report is not acceptance evidence for revision 13.
+failed report is not acceptance evidence for revision 13. Revision 14 adds
+sanitized filesystem provenance observations at actual fixture paths and
+requires the report and manifest summaries to agree. Historical archives
+remain unchanged and do not gain filesystem provenance retroactively.

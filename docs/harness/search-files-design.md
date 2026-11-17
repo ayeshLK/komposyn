@@ -112,12 +112,15 @@ The measured search profile is trusted Linux amd64, Bubblewrap's actual
 `ro-bind-fd` mode, complete owner inventory, and successful fixed-worker
 composition. Runner 13's classification, known-validation-refusal, independent
 worker-join, and descriptor-close assertions passed on the recorded candidate;
-see the [#318 completion record](issue-318-search-completion.md). The native
-archive does not identify the fixture filesystem. Filesystem-specific
-portability is therefore unestablished, and no broader filesystem support claim
-is made pending contemporaneous filesystem evidence. File-snapshot, other
-architectures, and non-Linux systems remain unavailable. Production search
-remains gated pending evidence review and a separate enablement decision.
+see the [#318 completion record](issue-318-search-completion.md). Runner 14
+captures filesystem type and selected mount characteristics at actual fixture
+roots, selected search/listing scopes, and nested mount fixtures, with
+path-free observations attached to each case. A fresh trusted-host runner 14
+archive is still required to obtain those values; historical archives are not
+rewritten. Until then, filesystem-specific portability is unestablished.
+File-snapshot, other architectures, and non-Linux systems remain unavailable.
+Production search remains gated pending evidence review and a separate
+enablement decision.
 
 ## Worker operation profiles and tests
 
