@@ -169,17 +169,17 @@ or mount ID is available because no worker started.
 
 ## Reproduction on a trusted Linux host
 
-After this branch is committed, export its commit as a bundle and copy that
-bundle to the trusted host. For example, from this checkout run
-`git bundle create /tmp/komposyn-issue-319-creation-feasibility.bundle work/issue-319-creation-feasibility`.
-Replace the bundle path and `candidate_commit` below with the transferred
-bundle and exact commit hash. The branch need not be pushed to GitHub.
+The implementation candidate is commit
+`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. Export it as a bundle and copy the
+bundle to the trusted host. The final review branch bundle is at
+`/tmp/komposyn-issue-319-creation-feasibility.bundle`; the branch need not be
+pushed to GitHub.
 
 ```sh
 set -eu
-repo="$HOME/projects/samples/komposyn-issue-319"
+repo="$HOME/projects/samples/komposyn-issue-319-8fdd943"
 candidate_bundle="/path/to/komposyn-issue-319-creation-feasibility.bundle"
-candidate_commit="<candidate-commit>"
+candidate_commit="8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8"
 mkdir -p "$HOME/projects/samples"
 if [ ! -d "$repo/.git" ]; then
   git clone https://github.com/ayeshLK/komposyn.git "$repo"
@@ -199,10 +199,35 @@ report="$(mktemp /tmp/komposyn-issue-319-report.XXXXXX.json)"
 trap 'rm -rf "$study_dir"' EXIT
 GOCACHE=/tmp/komposyn-issue-319-gocache CGO_ENABLED=0 \
   go build -buildvcs=false -trimpath -o "$study_dir/sandbox-study" ./cmd/sandbox-study
+set +e
 "$study_dir/sandbox-study" --bwrap /usr/bin/bwrap --commit "$(git rev-parse HEAD)" > "$report"
+run_status=$?
+set -e
+printf 'Study runner exit: %s\n' "$run_status"
 sha256sum "$study_dir/sandbox-study" "$report"
 jq -e --arg commit "$candidate_commit" '.host.repository_commit == $commit' "$report"
 jq '.observations[] | select(.case | startswith("create-one"))' "$report"
+capture_dir="$(mktemp -d /tmp/komposyn-issue-319-capture.XXXXXX)"
+cp "$report" "$capture_dir/report.json"
+study_binary_sha="$(sha256sum "$study_dir/sandbox-study" | cut -d ' ' -f 1)"
+report_sha="$(sha256sum "$capture_dir/report.json" | cut -d ' ' -f 1)"
+runner_sha="$(sha256sum /usr/bin/bwrap | cut -d ' ' -f 1)"
+runner_owner="$(stat -c '%U:%G' /usr/bin/bwrap)"
+runner_version="$(/usr/bin/bwrap --version)"
+cat > "$capture_dir/manifest.json" <<EOF
+{
+  "source_commit": "$candidate_commit",
+  "study_binary_sha256": "$study_binary_sha",
+  "report_sha256": "$report_sha",
+  "bubblewrap_version": "$runner_version",
+  "bubblewrap_owner": "$runner_owner",
+  "bubblewrap_sha256": "$runner_sha",
+  "runner_exit": $run_status
+}
+EOF
+tar -czf "$capture_dir.tar.gz" -C "$capture_dir" report.json manifest.json
+printf 'Evidence packet: %s.tar.gz\n' "$capture_dir"
+sha256sum "$capture_dir.tar.gz"
 ```
 
 The report records the filesystem magic and mount ID from the actual synthetic
