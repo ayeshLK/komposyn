@@ -139,12 +139,15 @@ pathname lookup and receives only the sealed content snapshot. Exact file reads
 keep their stricter existing profile; no listing or read profile is weakened
 for search. A prior trusted-host run measured all seven search-specific Stage
 6 cases as passes on Linux amd64 with Bubblewrap `ro-bind-fd`; this is historical
-evidence. The latest runner 13 run also passed the expanded search cases,
+evidence. The historical runner 13 run also passed the expanded search cases,
 including cancellation before the separate snapshot handoff and post-content
 ignore-rule changes with both worker joins and descriptor groups confirmed. The
 full Stage 6 profile remains incomplete because mutation and shell cases are
-outside its implemented scope. This change exposes search only for the
-approved ext4-scoped profile and takes effect when merged.
+outside its implemented scope. Merged PR #334 exposes search only for the
+approved ext4-scoped profile. The subsequent runner 14 run on clean merge
+`ed53e9e2e59a8d5a404ab284f83a2687e9420aff` passed all eight search cases and
+recorded 51 ext4 observations using the corrected descriptor-based observer;
+see the [merged-source acceptance record](issue-318-search-completion.md#merged-source-acceptance-run-runner-14).
 
 Behavioral tests exercise the runtime-to-provider seam with synthetic content;
 the Stage 6 fixture exercises the composed sandbox Service and provider

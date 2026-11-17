@@ -113,8 +113,8 @@ movement/replacement, owner rotation, mount boundaries and worker cleanup. The
 accepted run and profile-specific limits are in the [#317 completion and
 evidence matrix](issue-317-completion-tracking.md); runner and reproduction
 details are in the [Stage 6 runner guide](issue-215-stage6-runner.md).
-The bounded `search_files` implementation, trusted-host evidence, and
-ext4-scoped availability and evidence are tracked in the [#318 search completion
+The bounded `search_files` implementation, merged-source native acceptance,
+and ext4-scoped availability are tracked in the [#318 search completion
 record](issue-318-search-completion.md).
 
 Use `/cd <path>` in chat to change the working directory for future relative
@@ -484,9 +484,12 @@ dispatch but does not roll back completed effects or claim to terminate
 running work. Tool activity shows awaiting approval, authorized, running, and
 finished states, with the typed outcome and truncation status. Tool prompts,
 plans, grants, and activity exist only in memory. The two bundled conversation
-tools are always available on supported routes; `read_file` is the sole
-conditional host-backed capability. Filesystem mutation, process, web, and
-image tools remain unavailable.
+tools are always available on supported routes. The host-backed `read_file`,
+`list_files`, and `search_files` capabilities are conditional on their reviewed
+Linux enforcement profiles and require separate once approval per invocation.
+Search additionally requires an ext4 target directory. Filesystem mutation,
+process, web, and image tools remain unavailable. See the
+[capability availability guide](capability-availability.md) for profile limits.
 
 The first keyboard event after a dialog appears is consumed to prevent a
 composer key already in flight from accepting an option.
@@ -560,9 +563,11 @@ Implementation follows the official [Sign in with ChatGPT open-source flow](http
 and [UI/UX guidance](https://developers.openai.com/siwc/ui-ux-guidelines).
 # Filesystem enforcement foundation
 
-KompoSyn registers one bounded model-facing filesystem capability: Linux
-`read_file`, gated on trusted Bubblewrap inspection and a complete host-owned
-read lifecycle. It follows the approved opened-object contract; concurrent
+KompoSyn conditionally registers the bounded Linux filesystem capabilities
+`read_file`, `list_files`, and `search_files`, each gated on its reviewed
+trusted Bubblewrap profile and complete host-owned lifecycle. Search is
+restricted to the measured Linux amd64 descriptor-bind profile and ext4 target
+directories. These tools follow the approved opened-object contract; concurrent
 namespace changes mean it does not promise strict live pathname containment.
 Filesystem mutation and shell remain unavailable.
 See the [filesystem enforcement foundation](filesystem-enforcement-foundation.md)
@@ -587,8 +592,9 @@ a late protected alias, and a moved protected directory child. Those source
 scenarios do not count as native evidence until the selected revision runs with
 a trusted Bubblewrap backend. Protected-owner rotation, mount boundaries, a
 protected-ancestor race, and descendant cleanup remain limited or pending in
-that historical study. Current source separately enables only conditional
-`read_file` under the reviewed Stage 6 boundaries above. See the [scenario matrix](read-broker-native-actor.md)
+that historical study. Current source separately enables conditional reads,
+listing and search under their operation-specific Stage 6 boundaries above.
+See the [scenario matrix](read-broker-native-actor.md)
 and follow the [manual read-broker runner guide](read-broker-manual-runner.md) to produce a
 bounded, checksummed archive from a normal Linux host terminal.
 The [owner inventory and admission note](read-broker-owner-inventory.md)

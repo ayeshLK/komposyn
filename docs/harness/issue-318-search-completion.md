@@ -1,17 +1,22 @@
 # Issue #318 search implementation and acceptance
 
-Status: runner 14 measured all eight implemented #318 search cases as passes on
-clean commit `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` with trusted Bubblewrap
-0.9.0 and `ro-bind-fd`. All 51 fixture filesystem observations were recorded
-and identified ext4. The overall Stage 6 profile remains incomplete because
-mutation and shell profiles are unavailable and outside this search follow-up.
-The approved ext4-scoped enablement is implemented here: availability requires
-the measured Linux amd64 descriptor-bind worker profile, complete owner
-coverage, and the selected directory's retained descriptor to report ext4.
-Non-ext4 directories are refused before approval and again at execution
-revalidation. The maintainer approved this scoped enablement in the task
-conversation, and this implementation enables only the measured ext4-scoped
-profile. This record does not complete umbrella issue #315.
+Status: PRs #332 and #333 implemented and validated bounded search; merged
+PR #334 enabled the reviewed ext4-scoped profile. A fresh runner 14 run on
+clean merge commit `ed53e9e2e59a8d5a404ab284f83a2687e9420aff` passed all eight
+search cases using the corrected descriptor-based filesystem observer.
+All 51 filesystem observations were recorded and identified ext4. This
+completes the native search validation for the supported profile; the
+acceptance matrix below records the scoped #318 closeout. Issue closure
+follows review and merge of this documentation reconciliation.
+
+Availability requires the measured Linux amd64 descriptor-bind worker profile.
+Admission requires complete protected-owner coverage and verifies the retained
+selected directory's statfs magic and exact ext4 mount type before once approval
+and again at execution revalidation. The overall Stage 6 profile remains
+incomplete because mutation and shell are unavailable and outside this search scope.
+This record does not complete umbrella issue #315 or establish additional
+filesystems, architectures, launch modes, shipped-binary or live-provider
+acceptance.
 
 ## Acceptance matrix
 
@@ -27,13 +32,95 @@ profile. This record does not complete umbrella issue #315.
 | Keep known stale-policy refusal separate from uncertain cleanup | A joined scan with changed ignore policy returns a sanitized failed tool result, with no staged search content. Descriptor-close errors or unconfirmed joins remain unknown and interrupt continuation; cleanup ownership keeps admission blocked | `search_ignore_rules_changed_after_content` passed for nested and applicable ancestor mutations; both worker joins, both descriptor closures, two once-grant consumptions, sanitized continuations, and no disclosure were recorded | Measured on the candidate; cleanup uncertainty remains fail-closed |
 | Enable only the measured profile | Search availability requires trusted Linux amd64 descriptor-bind worker composition; admission matches retained-descriptor `fstatfs` and mount-ID type and fails closed unless the mount type is exactly ext4 | Exact candidate search cases passed on the measured profile; full Stage 6 remains incomplete because mutation and shell are outside this profile | Ext4-only enablement approved and implemented here. Other filesystems and launch profiles remain unavailable |
 
+## Merged-source acceptance run (runner 14)
+
+The accepted closeout run tested clean PR #334 merge commit
+`ed53e9e2e59a8d5a404ab284f83a2687e9420aff`. It used Go 1.26.11, Linux
+7.0.0-42-generic amd64, UID 1000, and trusted root-owned mode-0755 Bubblewrap
+0.9.0 (binary SHA-256
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`).
+Requested and actual bind modes were `ro-bind-fd`. Both build and study exited
+0 without timeout or incomplete output draining, with cleanup complete.
+
+The report records 38 measured passes, including all eight search cases, and
+two unavailable cases (`mutation_profile` and `shell_profile`). Consequently,
+the overall classification remains `stage6_profile_incomplete`; those two
+unimplemented profiles do not prevent scoped search acceptance. Search cases
+covered composed-Service positive search and protected aliases, candidate
+substitution/content changes, post-content nested and ancestor ignore changes,
+content-worker cancellation, selected-root movement, owner rotation,
+revocation, and mount-boundary exclusion. The ignore-change case independently
+recorded traversal/content worker joins, snapshot/candidate descriptor closure,
+two once-grant consumptions, sanitized failure continuations, and withheld
+stale disclosure. Default false evidence fields in other case rows must not
+be interpreted as measurements those rows did not record.
+
+The corrected observer uses one opened fixture descriptor for `fstatfs` and
+mount-ID lookup, avoiding the historical symlink-parent mismatch. All 51
+observations were `recorded`, with no failed, unknown or partial observations:
+29 fixture roots, 19 selected listing/search scopes, one nested bind alias and
+two nested mount boundaries. Each reported ext4 mount type, filesystem magic
+`0x000000000000ef53`, and 4096-byte blocks. These measurements establish only
+the recorded fixture environment and mount arrangements.
+
+Archive: `/tmp/komposyn-issue215-stage6-20261117T223956Z-1895310.tar.gz`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Archive | `304e8424d8fd208575634ee5cf371b229bf19e67f0a54aa3269b5e494c1b294e` |
+| Report | `1081d664438c2a4baa48a58b51624944913fbb6eb8c76b491c79cc65070dcf62` |
+| Manifest | `7520352c625485bfd499b071aa3a6c1d6455e24c74f85473a306362d7f7e7649` |
+| Source archive | `2fc27bc7b1fed1d5336d05653adabd294b269f6c336d6a22dc5dd78379c917ab` |
+| Runner script | `88fe08edd2db5707253f5efef9062ee0d210ec3185db366b8e99069c43373a51` |
+| Capture helper | `fade10f56a5b762489375c8c58e7f033ea50c1b37c7cc57dde81938b2560b7da` |
+| Stage 6 test | `68cd502ef2bc80c3f41f0c4c2de429ef49e17e26595b0d48b0a9870440c95a83` |
+| Runtime overlay | `1fbb3f6cb53e419eaec3ce32a7043469b51c16f9d3dc505d750d5889a1107db5` |
+
+All nine `SHA256SUMS` entries and the report hash referenced by the manifest
+were independently verified. The source archive, runner, capture helper,
+Stage 6 test and runtime overlay hashes match the recorded Git commit. The
+report's per-case filesystem observations agree with its summary and the
+manifest. This documentation is a later closeout change; it was not part of
+the measured source revision.
+
+Behavioral coverage remains at the existing runtime-to-UI/provider integration
+boundary and host/tool tests. It covers approval/query/options/destination
+binding, denial, route/profile gating, bounded parsing and matching, safe
+skips/incomplete results, and provider continuation. The native run supplements
+that coverage; it does not turn synthetic owner-refusal controls into native
+provider-source lifecycle evidence. It uses the Stage 6 test-binary worker and
+provider fixtures, without a live provider or interactive CLI acceptance run.
+Aggregate cgroup quotas and non-Linux enforcement remain unestablished.
+
+### Behavioral and repository validation
+
+The acceptance matrix is supported by these existing test seams:
+
+- [Runtime approval and publication tests](../../internal/harness/runtime/read_publication_test.go)
+  cover query/options/destination approval, once consumption, denial, sanitized
+  known failure, and provider continuation. [Admission tests](../../internal/harness/runtime/read_admission_test.go)
+  check the exact approval binding.
+- [Composed-Service tests](../../internal/harness/sandbox/service_linux_test.go)
+  check host-profile registration, ext4 admission, non-ext4 refusal before
+  approval, and rejection on a listing-only profile.
+- [Search filtering/publication tests](../../internal/harness/readbrokerstudy/search_execute_linux_test.go)
+  cover protected aliases/substitution, ignore changes, shared work allowance,
+  safe skips and result limits. [Literal matcher tests](../../internal/harness/readbrokerstudy/search_match_linux_test.go)
+  cover UTF-8, line handling, long snippets and matching budgets; [tool tests](../../plugins/tools/tools_test.go)
+  cover strict query/options parsing and encoded input limits.
+
+Repository validation for this closeout is recorded in the accompanying PR.
+The native run above is separate from ordinary Go/race tests. No new executor
+or enforcement change is introduced by this documentation reconciliation.
+
 ## Runner 13 trusted-host run (historical)
 
-The accepted search-case run used Go 1.26.11, Linux 7.0.0-42-generic amd64,
+The historical search-case run tested clean source
+`000c3e6fbcb453a4bad902de934311e93143b9be` and used Go 1.26.11, Linux 7.0.0-42-generic amd64,
 UID 1000, root-owned mode-755 Bubblewrap 0.9.0 (binary SHA-256
 `e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`), and
 measured `ro-bind-fd`. It built the fixed Stage 6 test-binary worker from the
-clean exact candidate commit above. The build and study both exited 0 with
+source commit recorded in this section. The build and study both exited 0 with
 cleanup complete. All 38 implemented cases passed; mutation and shell were the
 two unavailable cases, so the overall Stage 6 classification is
 `stage6_profile_incomplete`. This is not acceptance for those unavailable
@@ -56,9 +143,9 @@ The archive, manifest and report do not record the filesystem containing the
 synthetic fixtures. Do not infer it from the kernel, Bubblewrap mode or host OS.
 Runner 14 now instruments `statfs` and the matched, allowlisted mount
 characteristics at the actual fixture paths and binds those observations to
-case roles in the hashed report/manifest. This changes no historical archive;
-a fresh trusted-host run must exercise the instrumentation before any
-filesystem-specific support claim can be made.
+case roles in the hashed report/manifest. The later runs below and the
+merged-source acceptance run above exercise that instrumentation; historical
+archives remain unchanged.
 
 ### Earlier runner 14 availability attempt
 
@@ -98,7 +185,7 @@ The host must already have Go 1.26.11 or newer and Bubblewrap satisfying the
 repository's root-ownership trust check. Do not infer fixture filesystem
 values from this availability attempt or fill its archive retroactively.
 
-## Latest trusted-host run (runner 14)
+## Pre-enablement trusted-host run (runner 14, historical)
 
 The fresh run tested clean source commit
 `d097603542c5b5bbf5ba09bb5f1ddfc38b1f175e` on Linux
@@ -183,8 +270,9 @@ shared ext-family magic refusal, ext4 admission, pre-approval refusal on
 procfs, and descriptor-based fixture provenance through a symlinked parent.
 These changes do not extend the native worker evidence to another filesystem
 or launch profile. The ext4-only enablement decision is recorded for this
-change; #318/#315 remain open until their other acceptance and closure
-criteria are completed.
+change. The merged-source run above completes native validation of that
+profile; this documentation closeout reconciles #318 while #315 remains open
+for creation/editing research and gated patch delivery.
 
 The version 11 historical harness included composed-service positive search,
 protected-alias filtering, protected candidate substitution, selected-root
@@ -273,7 +361,8 @@ snapshot handoff, leaves no private result, and makes no provider continuation.
 The historical native evidence supports only its recorded candidates; the
 runner 13 evidence above applies only to its exact recorded candidate and
 profile. Runner 14 supplies the filesystem provenance for its own clean
-candidate; it does not retroactively change earlier archives. This follow-up
-opens search availability only for the approved ext4-scoped profile. This work does not close umbrella issue #315 or establish shipped-binary,
+candidate; it does not retroactively change earlier archives. Merged PR #334
+opened search availability only for the approved ext4-scoped profile. This
+closeout does not close umbrella issue #315 or establish shipped-binary,
 real-provider, file-snapshot, non-Linux, mutation, shell, or aggregate cgroup
 quota support. Listing evidence remains historical supporting context only.
