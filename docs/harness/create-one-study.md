@@ -170,9 +170,9 @@ or mount ID is available because no worker started.
 ## Reproduction on a trusted Linux host
 
 The implementation candidate is commit
-`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. Copy the candidate bundle
-`/tmp/komposyn-issue-319-creation-feasibility.bundle` to the trusted host, then
-run these checkout commands once:
+`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. The bundle also contains the
+capture wrapper. Copy `/tmp/komposyn-issue-319-creation-feasibility.bundle` to
+the trusted host, then run these checkout commands once:
 
 ```sh
 mkdir -p "$HOME/projects/samples/komposyn-issue-319"
@@ -180,6 +180,7 @@ git clone https://github.com/ayeshLK/komposyn.git "$HOME/projects/samples/kompos
 cd "$HOME/projects/samples/komposyn-issue-319"
 git fetch /path/to/komposyn-issue-319-creation-feasibility.bundle refs/heads/work/issue-319-creation-feasibility
 git checkout --detach FETCH_HEAD
+git merge-base --is-ancestor 8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8 HEAD
 ```
 
 Then run the study and send back the archive path it prints:
