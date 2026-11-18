@@ -201,16 +201,16 @@ It does not cover that probe. The previous case results still describe the
 unchanged test rows; recapture native evidence from the current clean branch
 before using it to assess descriptor isolation.
 
-An earlier probe revision was `3de61fc1b71b72b099ca2e9697148f263f888deb`.
+The current probe code is commit `9087d12bfc775f7ea86985cb5aba8028919ad742`.
 The wrapper built it successfully, but its local native attempt exited `3`
 because this environment's Bubblewrap is owned by `nobody:nogroup`; the trust
 check stopped the run before any native scenario. Its unavailable archive is
-`/tmp/komposyn-issue-319-native.yzqdUm.tar.gz` (SHA-256
-`ba0fab5337abc5048cd9b0c0f637574d231fc1cb67f292e6ecebc661ba980555`), with
+`/tmp/komposyn-issue-319-native.FR14mJ.tar.gz` (SHA-256
+`4c47032d63d02f0869282731610cb9b855980a2fe9cef3afde82b65f798d36b3`), with
 report SHA-256
-`eb5193937409bccf9f8ca868b1e049e42600f6932a07f7e36723f216612f104d` and
+`7c938983d79da1c1bf9a6bc72934e9c59aa59cb1a84a2c7676784fa574637cd4` and
 manifest SHA-256
-`25e0b2992fe53223508b53ad7ef4f121ad99fc2354585268748bc41f2e96dae0`. This is
+`13eecb76f4dfe7a6acd7aa869ce72bf8313e991afdab923d7841e0efe843ef56`. This is
 an unavailable preflight capture, not evidence about host proc-fd access.
 
 This is evidence for the candidate mechanism on one ext4 host, not production
