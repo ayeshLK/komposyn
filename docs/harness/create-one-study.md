@@ -222,6 +222,14 @@ SHA-256 is `7e9fda88ba26480876d680f2a3d6b19a639ce04c18b8265c97b8519b40b37486`.
 This is another unavailable preflight, not native evidence for the corrected
 probe.
 
+The wrapper also built source `4ef4073aaa9035f9209abdf7958cd33bec13e65e`
+after exact executable verification was added, but the local Bubblewrap trust
+check again stopped native execution. Archive
+`/tmp/komposyn-issue-319-native.7Drgn8.tar.gz` has SHA-256
+`69afefda79af2481531e589f3b0fed466468b7a56cbaafbd706f380729970147`; report
+SHA-256 is `c91cfd720ba38e3c7183edce7a5d7ebf60d1803cf5cb25cf3a2b7ca3266526a8`.
+This is an unavailable preflight only.
+
 The first trusted-host run with the host-proc-fd probe used source commit
 `2cd86bee281233fce36924975c51196121dc6ce5`. Archive
 `/tmp/komposyn-issue-319-native.xFmmLa.tar.gz` has SHA-256
