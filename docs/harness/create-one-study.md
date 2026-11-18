@@ -213,6 +213,19 @@ manifest SHA-256
 `13eecb76f4dfe7a6acd7aa869ce72bf8313e991afdab923d7841e0efe843ef56`. This is
 an unavailable preflight capture, not evidence about host proc-fd access.
 
+The first trusted-host run with the host-proc-fd probe used source commit
+`2cd86bee281233fce36924975c51196121dc6ce5`. Archive
+`/tmp/komposyn-issue-319-native.xFmmLa.tar.gz` has SHA-256
+`d34051395e618752453320d2f5613187262b9f4e984f42a133496034b9dc76d5`, and its
+report SHA-256 is
+`0e309aad3e8ea98e5f35adb787930ea95d4e85468195894fe6d60b4bfcf6aab2`. The
+manifest report hash matches the report. The new probe row is `unavailable`
+(`staged-fd-not-found`), not a pass. The probe selected Bubblewrap's
+intermediate PID-namespace reaper rather than the worker, so that row says
+nothing about host access to the staged descriptor. The other study rows and
+their host provenance remain recorded as captured; this archive must not be
+relabeled as evidence for the corrected probe.
+
 This is evidence for the candidate mechanism on one ext4 host, not production
 acceptance. Unsupported filesystems, other mount configurations, access to the
 worker descriptor through other process-inspection routes, protected-owner
@@ -274,8 +287,8 @@ owner coverage/rotation, approval and revocation synchronization, descriptor
 inspection by other actors, post-publication races, payload-limit validation,
 process-tree cleanup, and crash durability remain open.
 
-The immediate next step is to capture the new host-proc-fd probe on the same
-trusted Linux host using the current clean branch and the one-command wrapper.
+The immediate next step is to capture the corrected host-proc-fd probe on the
+same trusted Linux host using the refreshed bundle and one-command wrapper.
 If the actor can link or change the staged inode, record that as a candidate
 violation and stop treating O_TMPFILE as safe under this profile. If access is
 denied, the result is measured only for that host and still does not prove
@@ -288,18 +301,20 @@ review.
 
 ## Validation
 
-Go `1.26.11` was used. The full repository checks, including the race suite,
-passed after the host-proc-fd probe was added. After subsequent classification
-and test refinements, focused probe tests and `make check` also passed:
+Go `1.26.11` was used. After correcting worker discovery, the following checks
+passed:
 
 - `go mod verify`
 - `go vet ./...`
 - `go test ./...`
-- `go test -race ./...` (Token Logger package completed in 368.011 seconds)
+- `go test -race ./...` (Token Logger package completed in 280.892 seconds)
 - `make check`
 - Focused `go test ./internal/harness/sandboxstudy ./cmd/sandbox-study`
+- Focused `go test -race ./internal/harness/sandboxstudy`
 
-The previously returned trusted-host packet covers the unchanged study rows but
-not the new host-proc-fd probe. Capture that probe from the current clean source
-revision before drawing a conclusion about descriptor isolation. Ordinary Go
-and race checks do not establish filesystem enforcement.
+The first trusted-host packet's proc-fd row is unavailable because the probe
+selected Bubblewrap's intermediate reaper. The corrected bounded descendant
+lookup is in commit `91ccf2ef512a551dd9b7bb7b36d29dcca4e488f2`. Capture this
+corrected probe from the refreshed clean source bundle before drawing a
+conclusion about descriptor isolation. Ordinary Go and race checks do not
+establish filesystem enforcement.
