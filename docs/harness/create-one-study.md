@@ -170,65 +170,35 @@ or mount ID is available because no worker started.
 ## Reproduction on a trusted Linux host
 
 The implementation candidate is commit
-`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. Export it as a bundle and copy the
-bundle to the trusted host. The final review branch bundle is at
-`/tmp/komposyn-issue-319-creation-feasibility.bundle`; the branch need not be
-pushed to GitHub.
+`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. Copy the candidate bundle
+`/tmp/komposyn-issue-319-creation-feasibility.bundle` to the trusted host, then
+run these checkout commands once:
 
 ```sh
-set -eu
-repo="$HOME/projects/samples/komposyn-issue-319-8fdd943"
-candidate_bundle="/path/to/komposyn-issue-319-creation-feasibility.bundle"
-candidate_commit="8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8"
-mkdir -p "$HOME/projects/samples"
-if [ ! -d "$repo/.git" ]; then
-  git clone https://github.com/ayeshLK/komposyn.git "$repo"
-fi
-cd "$repo"
-git fetch "$candidate_bundle" refs/heads/work/issue-319-creation-feasibility:refs/remotes/study/issue-319-creation-feasibility
-git checkout --detach "$candidate_commit"
-test "$(git rev-parse HEAD)" = "$candidate_commit"
-test -z "$(git status --porcelain)"
-go version
-id
-stat -c '%U:%G %a %n' /usr/bin/bwrap
-/usr/bin/bwrap --version
-findmnt -T "$repo" -o TARGET,FSTYPE,OPTIONS
-study_dir="$(mktemp -d "$repo/.creation-study.XXXXXX")"
-report="$(mktemp /tmp/komposyn-issue-319-report.XXXXXX.json)"
-trap 'rm -rf "$study_dir"' EXIT
-GOCACHE=/tmp/komposyn-issue-319-gocache CGO_ENABLED=0 \
-  go build -buildvcs=false -trimpath -o "$study_dir/sandbox-study" ./cmd/sandbox-study
-set +e
-"$study_dir/sandbox-study" --bwrap /usr/bin/bwrap --commit "$(git rev-parse HEAD)" > "$report"
-run_status=$?
-set -e
-printf 'Study runner exit: %s\n' "$run_status"
-sha256sum "$study_dir/sandbox-study" "$report"
-jq -e --arg commit "$candidate_commit" '.host.repository_commit == $commit' "$report"
-jq '.observations[] | select(.case | startswith("create-one"))' "$report"
-capture_dir="$(mktemp -d /tmp/komposyn-issue-319-capture.XXXXXX)"
-cp "$report" "$capture_dir/report.json"
-study_binary_sha="$(sha256sum "$study_dir/sandbox-study" | cut -d ' ' -f 1)"
-report_sha="$(sha256sum "$capture_dir/report.json" | cut -d ' ' -f 1)"
-runner_sha="$(sha256sum /usr/bin/bwrap | cut -d ' ' -f 1)"
-runner_owner="$(stat -c '%U:%G' /usr/bin/bwrap)"
-runner_version="$(/usr/bin/bwrap --version)"
-cat > "$capture_dir/manifest.json" <<EOF
-{
-  "source_commit": "$candidate_commit",
-  "study_binary_sha256": "$study_binary_sha",
-  "report_sha256": "$report_sha",
-  "bubblewrap_version": "$runner_version",
-  "bubblewrap_owner": "$runner_owner",
-  "bubblewrap_sha256": "$runner_sha",
-  "runner_exit": $run_status
-}
-EOF
-tar -czf "$capture_dir.tar.gz" -C "$capture_dir" report.json manifest.json
-printf 'Evidence packet: %s.tar.gz\n' "$capture_dir"
-sha256sum "$capture_dir.tar.gz"
+mkdir -p "$HOME/projects/samples/komposyn-issue-319"
+git clone https://github.com/ayeshLK/komposyn.git "$HOME/projects/samples/komposyn-issue-319"
+cd "$HOME/projects/samples/komposyn-issue-319"
+git fetch /path/to/komposyn-issue-319-creation-feasibility.bundle refs/heads/work/issue-319-creation-feasibility
+git checkout --detach FETCH_HEAD
 ```
+
+Then run the study and send back the archive path it prints:
+
+```sh
+./scripts/run-create-one-study.sh
+```
+
+The script verifies a clean Linux checkout, builds the study, runs it with the
+required `/usr/bin/bwrap`, and packages the JSON report and host/build hashes
+into one `.tar.gz` archive under `/tmp`. Exit status 3 means prerequisites
+prevented native execution; the archive is still produced and should be sent
+back so the refusal can be reviewed. It does not change system ownership or
+install anything. The script records the commit it actually runs, so verify
+that it matches the candidate revision before interpreting results.
+
+The native runner may still refuse a host whose Bubblewrap fails its trust
+checks. Do not run as root or change Bubblewrap ownership to satisfy the
+preflight.
 
 The report records the filesystem magic and mount ID from the actual synthetic
 parent descriptor. Review every creation row and its `worker_reaped`,
