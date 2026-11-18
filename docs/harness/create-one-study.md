@@ -201,7 +201,7 @@ It does not cover that probe. The previous case results still describe the
 unchanged test rows; recapture native evidence from the current clean branch
 before using it to assess descriptor isolation.
 
-The current probe revision is `3de61fc1b71b72b099ca2e9697148f263f888deb`.
+An earlier probe revision was `3de61fc1b71b72b099ca2e9697148f263f888deb`.
 The wrapper built it successfully, but its local native attempt exited `3`
 because this environment's Bubblewrap is owned by `nobody:nogroup`; the trust
 check stopped the run before any native scenario. Its unavailable archive is
@@ -288,8 +288,9 @@ review.
 
 ## Validation
 
-Go `1.26.11` was used. After adding the host-proc-fd probe, all repository
-checks passed:
+Go `1.26.11` was used. The full repository checks, including the race suite,
+passed after the host-proc-fd probe was added. After subsequent classification
+and test refinements, focused probe tests and `make check` also passed:
 
 - `go mod verify`
 - `go vet ./...`

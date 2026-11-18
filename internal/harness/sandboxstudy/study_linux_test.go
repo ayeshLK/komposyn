@@ -370,6 +370,38 @@ func TestProcFDProbePublishesOnlyAnUnlinkedFixtureDescriptor(t *testing.T) {
 	}
 }
 
+func TestProcFDProbeClassificationRequiresKnownPublicationOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		probe         string
+		workerOutcome string
+		want          string
+	}{
+		{name: "denied-and-published", probe: "proc-fd-denied", workerOutcome: "succeeded", want: "measured_pass"},
+		{name: "denied-but-publication-failed", probe: "proc-fd-denied", workerOutcome: "failed", want: "unavailable"},
+		{name: "actor-published-stage", probe: "staged-payload-published-by-actor", workerOutcome: "failed", want: "observed_violation"},
+		{name: "unmatched-descriptor", probe: "staged-fd-linked-payload-mismatch", workerOutcome: "failed", want: "unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			scope := filepath.Join(root, "scope")
+			outside := filepath.Join(root, "outside")
+			for _, path := range []string{filepath.Join(scope, "parent"), outside} {
+				if err := os.MkdirAll(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(outside, "proc-fd-probe-result"), []byte(test.probe), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			actual, status := verifyObserved("create-one-otmpfile-proc-fd-access", scope, Observation{WorkerOutcome: test.workerOutcome, ActorReaped: true})
+			if status != test.want {
+				t.Fatalf("probe status=%q, effect=%q; want %q", status, actual, test.want)
+			}
+		})
+	}
+}
+
 func TestFixtureFilesystemUsesDescriptorMountID(t *testing.T) {
 	fstype, mountID := fixtureFilesystem(t.TempDir())
 	if fstype == "" || mountID == 0 {

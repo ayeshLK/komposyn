@@ -948,6 +948,9 @@ func verifyObserved(name, scope string, result Observation) (string, string) {
 		case "staged-payload-published-by-actor":
 			return "same-user actor linked the staged worker inode through host /proc/<pid>/fd into the protected fixture before worker publication", "observed_violation"
 		case "proc-fd-denied":
+			if result.WorkerOutcome != "succeeded" {
+				return "same-user actor proc-fd access was denied, but candidate publication did not succeed", "unavailable"
+			}
 			return "same-user actor could not publish the staged descriptor through host procfs under this host's access controls", "measured_pass"
 		case "staged-payload-modified-by-actor":
 			data, readErr := os.ReadFile(filepath.Join(scope, "parent", "new.txt"))
@@ -956,7 +959,7 @@ func verifyObserved(name, scope string, result Observation) (string, string) {
 			}
 			return "same-user actor reported a descriptor write but the published fixture did not match", "unavailable"
 		case "staged-fd-linked-payload-mismatch":
-			return "same-user actor linked a staged descriptor but its payload differed from the fixed fixture", "observed_violation"
+			return "same-user actor linked an unlinked descriptor but the fixture payload did not match, so the staged target was not confirmed", "unavailable"
 		default:
 			return "same-user actor could not identify or link the staged descriptor: " + sanitize(string(probe)), "unavailable"
 		}
