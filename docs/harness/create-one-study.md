@@ -213,6 +213,15 @@ manifest SHA-256
 `13eecb76f4dfe7a6acd7aa869ce72bf8313e991afdab923d7841e0efe843ef56`. This is
 an unavailable preflight capture, not evidence about host proc-fd access.
 
+After correcting worker discovery, the local wrapper built source
+`b125b58c4402c13d02bc73b6431ddb8169771936` but again stopped before native
+scenarios because local Bubblewrap ownership is `nobody:nogroup`. Archive
+`/tmp/komposyn-issue-319-native.ry6vrv.tar.gz` has SHA-256
+`efdfaa495762871d4e7a104945d80f284365a7a4fa926c30d75360cbe4b86b72`; report
+SHA-256 is `7e9fda88ba26480876d680f2a3d6b19a639ce04c18b8265c97b8519b40b37486`.
+This is another unavailable preflight, not native evidence for the corrected
+probe.
+
 The first trusted-host run with the host-proc-fd probe used source commit
 `2cd86bee281233fce36924975c51196121dc6ce5`. Archive
 `/tmp/komposyn-issue-319-native.xFmmLa.tar.gz` has SHA-256
