@@ -726,8 +726,11 @@ func sandboxWorkerPID(bwrapPID int) (int, error) {
 		queue = queue[1:]
 		if current.depth > 0 {
 			cmdlinePath := filepath.Join("/proc", strconv.Itoa(current.pid), "cmdline")
+			executablePath := filepath.Join("/proc", strconv.Itoa(current.pid), "exe")
 			if cmdline, err := os.ReadFile(cmdlinePath); err == nil && isSandboxStudyWorkerCmdline(cmdline) {
-				return current.pid, nil
+				if executable, err := os.Readlink(executablePath); err == nil && isSandboxStudyWorkerExecutable(executable) {
+					return current.pid, nil
+				}
 			}
 		}
 		if current.depth == maxDepth {
@@ -757,6 +760,10 @@ func isSandboxStudyWorkerCmdline(cmdline []byte) bool {
 		}
 	}
 	return false
+}
+
+func isSandboxStudyWorkerExecutable(executable string) bool {
+	return strings.TrimSuffix(executable, " (deleted)") == "/worker"
 }
 
 func readLineBounded(reader *bufio.Reader) (string, error) {

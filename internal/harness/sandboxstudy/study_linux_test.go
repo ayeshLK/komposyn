@@ -417,6 +417,17 @@ func TestSandboxStudyWorkerCmdlineRequiresExactArgument(t *testing.T) {
 	}
 }
 
+func TestSandboxStudyWorkerExecutableRequiresMountedWorker(t *testing.T) {
+	if !isSandboxStudyWorkerExecutable("/worker") || !isSandboxStudyWorkerExecutable("/worker (deleted)") {
+		t.Fatal("expected mounted worker executable to match")
+	}
+	for _, executable := range []string{"/usr/bin/bwrap", "/worker-helper", "worker", ""} {
+		if isSandboxStudyWorkerExecutable(executable) {
+			t.Fatalf("unexpected worker executable match for %q", executable)
+		}
+	}
+}
+
 func TestFixtureFilesystemUsesDescriptorMountID(t *testing.T) {
 	fstype, mountID := fixtureFilesystem(t.TempDir())
 	if fstype == "" || mountID == 0 {
