@@ -109,7 +109,7 @@ or prove aggregate CPU, memory, or process limits.
 | Competing destination and symlink at publication | Native no-replace collision and symlink rows | Both refused publication, preserved the existing object, discarded the unnamed stage, and reaped worker and actor |
 | Direct-create late alias hazard | Native direct-create control exposed the payload through an actor-created hard link | Observed violation; create-then-write is unsuitable for protected-owner safety |
 | Unnamed stage stays unpublished before `linkat` | Native staged checkpoint checked the leaf and protected alias before publication | Passed for the synthetic actor; does not cover host proc-fd inspection |
-| Same-user outside actor reaches staged inode through host `/proc/<pid>/fd` | Follow-up native actor attempts no-replace publication and, if that is denied, reopens the staged descriptor and changes one payload byte | Added after the recorded packet; native result required before assessing this boundary |
+| Same-user outside actor reaches staged inode through host `/proc/<pid>/fd` | Verified native run on the recorded Ubuntu/ext4 host found the actor reopened the staged descriptor and changed the payload before publication | `observed_violation`; the O_TMPFILE candidate fails this same-user boundary |
 | Protected-owner rotation, protected parent/alias transition and complete owner coverage | No production owner integration exists in this study | Missing; blocks eligibility |
 | Cancellation before release and after staging but before publication | Native staged cancellation and cleanup rows | No destination was published and the unnamed stage was discarded; production revocation ordering remains missing |
 | Cancellation after publication, worker/coordinator death, delayed join and resource retirement | Unknown-outcome classification and direct worker wait; no delegated cgroup/tree-kill boundary | Incomplete; never replay uncertain effects |
@@ -196,13 +196,12 @@ and failed-stage cleanup worked in the tested synthetic cases. The two
 `unknown` cases intentionally lost completion; the harness preserved the
 unknown classification and did not retry.
 
-This packet predates the host-proc-fd actor probe added in the current branch.
-It does not cover that probe. The previous case results still describe the
-unchanged test rows; recapture native evidence from the current clean branch
-before using it to assess descriptor isolation.
+This packet predates the host-proc-fd actor probe added later in this branch.
+It remains useful for its unchanged rows, but it does not establish descriptor
+isolation. Later captures below supersede it for that boundary.
 
-The current probe code is commit `9087d12bfc775f7ea86985cb5aba8028919ad742`.
-The wrapper built it successfully, but its local native attempt exited `3`
+An earlier probe revision is commit `9087d12bfc775f7ea86985cb5aba8028919ad742`.
+The wrapper built it successfully, but that local native attempt exited `3`
 because this environment's Bubblewrap is owned by `nobody:nogroup`; the trust
 check stopped the run before any native scenario. Its unavailable archive is
 `/tmp/komposyn-issue-319-native.FR14mJ.tar.gz` (SHA-256
@@ -301,13 +300,15 @@ Then run the study; the archive path it prints contains the new report:
 ./scripts/run-create-one-study.sh
 ```
 
-The script verifies a clean Linux checkout, builds the study, runs it with the
-required `/usr/bin/bwrap`, and packages the JSON report and host/build hashes
-into one `.tar.gz` archive under `/tmp`. Exit status 3 means prerequisites
-prevented native execution; the archive is still produced and should be sent
-back so the refusal can be reviewed. It does not change system ownership or
-install anything. The script records the commit it actually runs, so verify
-that it matches the candidate revision before interpreting results.
+The script verifies a clean Linux checkout, builds the study, and packages the
+JSON report and host/build hashes into one `.tar.gz` archive under `/tmp`. The
+study validates the Bubblewrap path before collecting its metadata or invoking
+it; validated backend metadata is in `report.json`. A test may override the
+path with `KOMPOSYN_STUDY_BWRAP`, but it remains subject to the same full trust
+validation and is never used as a fallback. Exit status 3 means prerequisites
+prevented native execution; the archive is still produced so the refusal can
+be reviewed. The script records the commit it actually runs, so verify that it
+matches the candidate revision before interpreting results.
 
 The native runner may still refuse a host whose Bubblewrap fails its trust
 checks. Do not run as root or change Bubblewrap ownership to satisfy the
@@ -353,10 +354,10 @@ passed:
 - Focused `go test ./internal/harness/sandboxstudy ./cmd/sandbox-study`
 - Focused `go test -race ./internal/harness/sandboxstudy`
 
-The first trusted-host packet's proc-fd row is unavailable because the probe
+The first trusted-host packet's proc-fd row was unavailable because the probe
 selected Bubblewrap's intermediate reaper. The bounded descendant lookup is in
 commit `91ccf2ef512a551dd9b7bb7b36d29dcca4e488f2`; exact executable
-verification was added in `11880381d9c5aefb703bcf7ab5bbccb0538cd2fd`. Capture
-this probe from the refreshed clean source bundle before drawing a conclusion
-about descriptor isolation. Ordinary Go and race checks do not establish
+verification was added in `11880381d9c5aefb703bcf7ab5bbccb0538cd2fd`. The
+final trusted-host capture documented above resolves that probe issue and
+records an observed violation. Ordinary Go and race checks do not establish
 filesystem enforcement.

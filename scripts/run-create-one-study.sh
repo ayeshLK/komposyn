@@ -28,12 +28,7 @@ if [[ -n $(git status --porcelain) ]]; then
   printf 'Checkout must be clean; refusing to study modified source.\n' >&2
   exit 2
 fi
-if [[ ! -x /usr/bin/bwrap ]]; then
-  printf 'Trusted Bubblewrap executable is missing at /usr/bin/bwrap.\n' >&2
-  exit 2
-fi
-
-for dependency in go sha256sum stat tar mktemp id uname awk; do
+for dependency in go sha256sum tar mktemp id uname; do
   command -v "$dependency" >/dev/null 2>&1 || {
     printf 'Required command is unavailable: %s\n' "$dependency" >&2
     exit 2
@@ -47,27 +42,23 @@ cleanup() { rm -rf -- "$build_dir"; }
 trap cleanup EXIT
 report=$out/report.json
 binary=$build_dir/sandbox-study
+bwrap_path=${KOMPOSYN_STUDY_BWRAP:-/usr/bin/bwrap}
 
 printf 'Source commit: %s\n' "$commit"
 printf 'User: %s\n' "$(id)"
 printf 'Go: %s\n' "$(go version)"
 printf 'Kernel: %s\n' "$(uname -srmo)"
-printf 'Bubblewrap: %s (%s)\n' "$(stat -c '%U:%G %a' /usr/bin/bwrap)" "$(/usr/bin/bwrap --version)"
 
 GOCACHE="${GOCACHE:-${TMPDIR:-/tmp}/komposyn-issue-319-gocache}" CGO_ENABLED=0 \
   go build -buildvcs=false -trimpath -o "$binary" ./cmd/sandbox-study
 
 set +e
-"$binary" --bwrap /usr/bin/bwrap --commit "$commit" >"$report"
+"$binary" --bwrap "$bwrap_path" --commit "$commit" >"$report"
 run_status=$?
 set -e
 
 go_version=$(go version)
 kernel=$(uname -srmo)
-bwrap_version=$(/usr/bin/bwrap --version)
-bwrap_owner=$(stat -c '%U:%G' /usr/bin/bwrap)
-bwrap_mode=$(stat -c '%a' /usr/bin/bwrap)
-bwrap_sha=$(sha256sum /usr/bin/bwrap | awk '{print $1}')
 binary_sha=$(sha256sum "$binary" | awk '{print $1}')
 report_sha=$(sha256sum "$report" | awk '{print $1}')
 cat >"$out/manifest.txt" <<EOF
@@ -76,11 +67,6 @@ runner_exit=$run_status
 go_version=$go_version
 kernel=$kernel
 user=$(id)
-bubblewrap_path=/usr/bin/bwrap
-bubblewrap_version=$bwrap_version
-bubblewrap_owner=$bwrap_owner
-bubblewrap_mode=$bwrap_mode
-bubblewrap_sha256=$bwrap_sha
 study_binary_sha256=$binary_sha
 report_sha256=$report_sha
 EOF
