@@ -235,6 +235,18 @@ nothing about host access to the staged descriptor. The other study rows and
 their host provenance remain recorded as captured; this archive must not be
 relabeled as evidence for the corrected probe.
 
+A second trusted-host run used commit
+`029b337db2de1906fafe34462cacc39ba39d85d7`. Its archive,
+`/tmp/komposyn-issue-319-native.vyFs95.tar.gz`, has SHA-256
+`7d70adacccd096aebc373f1d5c3628af7175e777888dd0ee8b3f5a0f5cd9acb1`, and its
+report SHA-256 is
+`2b9e43436e42e8b34e1d87e732a1d2ce25f577b123bd65036330c7a54c5f0bb5`; the
+manifest hash matches. The proc-fd row remains `unavailable` with
+`staged-fd-not-found`. Since this version selected by argv token alone, it may
+have selected a launcher/reaper carrying the worker argument. The next probe
+revision additionally requires `/proc/<pid>/exe` to resolve to the mounted
+`/worker` executable. Neither trusted-host run establishes descriptor access.
+
 This is evidence for the candidate mechanism on one ext4 host, not production
 acceptance. Unsupported filesystems, other mount configurations, access to the
 worker descriptor through other process-inspection routes, protected-owner
@@ -316,14 +328,15 @@ passed:
 - `go mod verify`
 - `go vet ./...`
 - `go test ./...`
-- `go test -race ./...` (Token Logger package completed in 280.892 seconds)
+- `go test -race ./...` (Token Logger package completed in 258.576 seconds)
 - `make check`
 - Focused `go test ./internal/harness/sandboxstudy ./cmd/sandbox-study`
 - Focused `go test -race ./internal/harness/sandboxstudy`
 
 The first trusted-host packet's proc-fd row is unavailable because the probe
-selected Bubblewrap's intermediate reaper. The corrected bounded descendant
-lookup is in commit `91ccf2ef512a551dd9b7bb7b36d29dcca4e488f2`. Capture this
-corrected probe from the refreshed clean source bundle before drawing a
-conclusion about descriptor isolation. Ordinary Go and race checks do not
-establish filesystem enforcement.
+selected Bubblewrap's intermediate reaper. The bounded descendant lookup is in
+commit `91ccf2ef512a551dd9b7bb7b36d29dcca4e488f2`; exact executable
+verification was added in `11880381d9c5aefb703bcf7ab5bbccb0538cd2fd`. Capture
+this probe from the refreshed clean source bundle before drawing a conclusion
+about descriptor isolation. Ordinary Go and race checks do not establish
+filesystem enforcement.
