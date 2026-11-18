@@ -196,6 +196,23 @@ and failed-stage cleanup worked in the tested synthetic cases. The two
 `unknown` cases intentionally lost completion; the harness preserved the
 unknown classification and did not retry.
 
+This packet predates the host-proc-fd actor probe added in the current branch.
+It does not cover that probe. The previous case results still describe the
+unchanged test rows; recapture native evidence from the current clean branch
+before using it to assess descriptor isolation.
+
+The current probe revision is `3de61fc1b71b72b099ca2e9697148f263f888deb`.
+The wrapper built it successfully, but its local native attempt exited `3`
+because this environment's Bubblewrap is owned by `nobody:nogroup`; the trust
+check stopped the run before any native scenario. Its unavailable archive is
+`/tmp/komposyn-issue-319-native.yzqdUm.tar.gz` (SHA-256
+`ba0fab5337abc5048cd9b0c0f637574d231fc1cb67f292e6ecebc661ba980555`), with
+report SHA-256
+`eb5193937409bccf9f8ca868b1e049e42600f6932a07f7e36723f216612f104d` and
+manifest SHA-256
+`25e0b2992fe53223508b53ad7ef4f121ad99fc2354585268748bc41f2e96dae0`. This is
+an unavailable preflight capture, not evidence about host proc-fd access.
+
 This is evidence for the candidate mechanism on one ext4 host, not production
 acceptance. Unsupported filesystems, other mount configurations, access to the
 worker descriptor through other process-inspection routes, protected-owner
