@@ -100,16 +100,16 @@ or prove aggregate CPU, memory, or process limits.
 | #319 requirement | Evidence in this branch | Disposition |
 | --- | --- | --- |
 | Bind parent, absent leaf, exact bytes, action/resource, provider destination, generations, once receipt | Contract specified above; existing study gate is only a model | Production preparation and approval binding missing; candidate ineligible |
-| Mounted-object movement and replacement | Existing direct-create report covered parent movement; new native rows add O_TMPFILE parent and root movement after preparation | New rows not run in this environment |
-| Competing destination, symlink and replacement at publication | New deterministic actor checkpoint before `linkat`; regular-file and symlink collision controls | Go behavior tests cover static collision; independent native race rows not run here |
-| Direct-create late alias hazard | Historical native report observed the alias and payload exposure | Candidate-specific negative result for create-then-write |
-| Unnamed stage stays unpublished before `linkat` | New staged checkpoint checks destination and synthetic protected alias absence | Not run natively here; does not cover `/proc` descriptor inspection by an actor |
+| Mounted-object movement and replacement | Native O_TMPFILE parent and root relocation rows on ext4 mount ID 33 | Both affected only the retained admitted object; former-path replacement stayed untouched |
+| Competing destination and symlink at publication | Native no-replace collision and symlink rows | Both refused publication, preserved the existing object, discarded the unnamed stage, and reaped worker and actor |
+| Direct-create late alias hazard | Native direct-create control exposed the payload through an actor-created hard link | Observed violation; create-then-write is unsuitable for protected-owner safety |
+| Unnamed stage stays unpublished before `linkat` | Native staged checkpoint checked the leaf and protected alias before publication | Passed for the synthetic actor; does not cover `/proc` descriptor inspection by another actor |
 | Protected-owner rotation, protected parent/alias transition and complete owner coverage | No production owner integration exists in this study | Missing; blocks eligibility |
-| Cancellation before release and after staging but before publication | Existing pre-release model; new worker protocol has a staged cancellation case that joins the launcher and checks no published leaf | New staged native row not run; production revocation ordering missing |
+| Cancellation before release and after staging but before publication | Native staged cancellation and cleanup rows | No destination was published and the unnamed stage was discarded; production revocation ordering remains missing |
 | Cancellation after publication, worker/coordinator death, delayed join and resource retirement | Unknown-outcome classification and direct worker wait; no delegated cgroup/tree-kill boundary | Incomplete; never replay uncertain effects |
 | Exact UTF-8 payload and 64 KiB limit | Worker has one fixed 25-byte UTF-8 fixture | Variable payload validation and limit boundary not exercised |
-| Partial, zero-byte, unsupported filesystem, publication failure and cleanup | Direct-create partial cases; new injected partial-stage write failure, cancellation and no-replace cases | Historical candidate support was measured once; new rows await trusted native run |
-| Filesystem provenance for the actual synthetic directory | New report records `fstatfs` magic and `statx` mount ID matched to `/proc/self/mountinfo` | New provenance instrumentation not yet captured in a native report |
+| Partial, zero-byte, unsupported filesystem, publication failure and cleanup | Native direct-create partial cases; O_TMPFILE stage-write failure and no-replace cleanup | Staging failure left no named leaf and discarded the unnamed inode; unsupported filesystems and durability were not tested |
+| Filesystem provenance for the actual synthetic directory | Native report records `fstatfs` ext4 magic and `statx` mount ID 33 matched to `/proc/self/mountinfo` | Established for this fixture and host only |
 | Model/provider/UI/runtime behavior | Deliberately not implemented or exposed | Remains unavailable by design |
 
 Go tests only validate the fixed worker, report classification, and fixture
@@ -119,7 +119,7 @@ coverage or rotation, cancellation/revocation synchronization, provider
 destination binding, stale publication suppression, process-tree cleanup,
 crash durability, or behavior on other filesystems/platforms.
 
-## Historical native evidence and current host
+## Historical and candidate native evidence
 
 A retained report at `/tmp/komposyn-sandbox-study-report.json` has SHA-256
 `fe5876710037fdbd78fd7058fba57098b50f10cdf8bd8d22da2f6561e3e7698a`. Its
@@ -136,8 +136,8 @@ manifest, does not report fixture mount-ID provenance, and does not cover the
 new publication checkpoints, owner lifecycle, or cancellation cases. Treat it
 as historical narrow evidence, not acceptance of this candidate revision.
 
-The current candidate build is commit
-`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. Its current-environment report is
+An earlier local attempt used implementation commit
+`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. Its unavailable report is
 `/tmp/komposyn-issue-319-native-unavailable-8fdd943.json` (SHA-256
 `601825f7e093ec89409b25af37a771fbc2609a980b75a70e47979af9b7d99d76`), and
 the packaged report plus manifest is
@@ -157,15 +157,46 @@ Earlier preflight-only reports remain distinct: for example,
 records `unavailable/not_executed` because backend trust failed at `/usr`.
 They are not negative filesystem results.
 
-For this run, the clean checkout is under `/tmp`; Go is 1.26.11, and
-`/usr/bin/bwrap` is version 0.9.0 with the same binary hash, but is owned by
-`nobody:nogroup` rather than root. `ValidateBackend` correctly refuses it, so
-no new native scenario ran. No ownership, privilege, or host security setting
-was changed. Bubblewrap SHA-256 was
-`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`, but its
-current owner is `nobody:nogroup`; a prior historical report's claim that the
-same binary was root-owned does not describe this run. No fixture filesystem
-or mount ID is available because no worker started.
+That earlier local attempt used a checkout under `/tmp`; Bubblewrap had the
+same binary hash but was owned by `nobody:nogroup`. `ValidateBackend` correctly
+refused it, so no native scenario ran. No ownership, privilege, or host setting
+was changed. This unavailable attempt is distinct from the trusted-host run
+below.
+
+The trusted-host archive
+`/tmp/komposyn-issue-319-native.tkioSL.tar.gz` has SHA-256
+`b927545ffd59d9a2ff1640968a2c4625d1068e6732923d65ccfb30c669f69c59`. It
+contains `report.json` with SHA-256
+`b873241c17db76cf9d8bcfc1ad8bfbc671dfb73ae480fad41fa35584e6dae5f7` and
+`manifest.txt` with SHA-256
+`7e86c9397c842a161a16107c377df380ef4777767657ff4c9066ec3335e1668e`; the
+manifest's report hash matches the extracted report. It records source commit `609f5343b0f8c449f0ade43506f6ceebf87e0da8`, which contains
+the tested study implementation from `8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`;
+subsequent changes were only capture-script/documentation changes. The run used
+Go 1.26.11, Ubuntu 24.04.5, Linux `7.0.0-42-generic` amd64, uid 1000 without
+root execution, and Bubblewrap 0.9.0 owned by root with mode 755 and SHA-256
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`. The
+actual fixture directory was ext4 (`0xef53`), mount ID 33. The runner exited 0.
+
+All 16 issue-319 rows are accounted for: 12 `measured_pass`, one successful
+O_TMPFILE publication marked `measured`, two deliberate lost-completion rows
+marked `unknown`, and one `observed_violation` in the direct-create
+create-then-write control. All workers were reaped. The violation is a useful
+negative result: the late hard link exposed payload bytes through a protected
+alias. It rules out direct named creation followed by writing for this
+candidate contract. O_TMPFILE publication, no-replace collision and symlink
+refusal, parent/root relocation, pre-publication invisibility, cancellation,
+and failed-stage cleanup worked in the tested synthetic cases. The two
+`unknown` cases intentionally lost completion; the harness preserved the
+unknown classification and did not retry.
+
+This is evidence for the candidate mechanism on one ext4 host, not production
+acceptance. Unsupported filesystems, other mount configurations, access to the
+worker descriptor through other process-inspection routes, protected-owner
+rotation/coverage, production approval and revocation synchronization,
+post-publication races, crash durability, and process-tree/cgroup guarantees
+remain unproven. Other issue-215 report rows also remain unavailable; a runner
+exit of 0 does not turn those into passes.
 
 ## Reproduction on a trusted Linux host
 
@@ -213,21 +244,20 @@ the preflight.
 ## Disposition
 
 **Unresolved feasibility; O_TMPFILE remains a candidate for independent
-review, not a supported or positively accepted mechanism.** Historical
-evidence shows one narrow publication attempt succeeded and explains why it
-avoids the direct-create late-write alias window. The new source adds targeted
-native cases and path-free descriptor filesystem provenance, but this
-environment cannot execute them. Even a successful trusted-host rerun would
-not close protected-owner coverage, production authorization/revocation
-synchronization, actor access through process descriptors, payload-limit
-validation, worker-tree cleanup, or filesystem portability.
+review, not a supported or positively accepted mechanism.** The trusted-host
+run supports the narrow O_TMPFILE publication behavior on ext4 and confirms
+the direct-create late-hardlink hazard. It does not establish production
+authorization or protected-owner safety. Unsupported filesystems, production
+owner coverage/rotation, approval and revocation synchronization, descriptor
+inspection by other actors, post-publication races, payload-limit validation,
+process-tree cleanup, and crash durability remain open.
 
-Next decision: obtain the checksummed native run from a trusted regular-user
-host, independently review its new publication rows, then decide whether to
-continue this candidate or record a candidate-specific limitation and evaluate
-other unprivileged mechanisms. Do not close #319, unblock #321, or expose
-creation/editing based on this study alone. Keep #320 editing research
-separate, and leave #315, #319, #321, and #267 open for review.
+Next, independently review this packet and decide whether to continue the
+O_TMPFILE candidate with those gaps explicitly scoped, or record a
+candidate-specific limitation and evaluate other unprivileged mechanisms. Do
+not close #319, unblock #321, or expose creation/editing based on this study
+alone. Keep #320 editing research separate, and leave #315, #319, #321, and
+#267 open for review.
 
 ## Validation
 
@@ -240,6 +270,7 @@ Go `1.26.11` was used. All repository checks passed on the committed source:
 - `make check`
 - Focused `go test ./internal/harness/sandboxstudy ./cmd/sandbox-study`
 
-The study binary built successfully. Its native command exited `3` after the
-unchanged backend trust check refused `/usr`; Bubblewrap scenarios did not
-execute. Ordinary Go and race checks do not establish filesystem enforcement.
+The study binary built successfully. This checkout's earlier native command
+exited `3` after the backend trust check refused `/usr`; the subsequently
+returned trusted-host packet above is the native evidence. Ordinary Go and race
+checks do not establish filesystem enforcement.
