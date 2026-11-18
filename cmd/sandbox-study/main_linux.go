@@ -78,6 +78,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-worker" {
 		os.Exit(sandboxstudy.WorkerMain(os.Args[2:], os.Stdin, os.Stdout))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-gate-a-target" {
+		os.Exit(sandboxstudy.StartupTargetMain())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-gate-a-actor" {
+		os.Exit(sandboxstudy.StartupActorMain(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--sandbox-study-actor" {
 		os.Exit(sandboxstudy.ActorMain(os.Args[2:]))
 	}
@@ -86,7 +92,50 @@ func main() {
 	}
 	backend := flag.String("bwrap", "/usr/bin/bwrap", "trusted absolute path to the system bubblewrap executable")
 	commit := flag.String("commit", "unknown", "repository commit under study")
+	gateAStartup := flag.Bool("gate-a-startup-exposure", false, "run only the synthetic pre-protection proc-fd retention probe; does not qualify a host profile")
 	flag.Parse()
+	if *gateAStartup {
+		executable, err := os.Executable()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "resolve study executable:", err)
+			os.Exit(2)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		observation, err := sandboxstudy.RunStartupExposureStudy(ctx, executable)
+		cancel()
+		packet := map[string]any{
+			"study":                  "issue-319 Gate A startup proc-fd retention synthetic control",
+			"source_commit":          *commit,
+			"go_version":             runtime.Version(),
+			"os":                     runtime.GOOS,
+			"architecture":           runtime.GOARCH,
+			"kernel":                 kernelRelease(),
+			"uid":                    os.Getuid(),
+			"gid":                    os.Getgid(),
+			"user_namespace":         namespaceLink("/proc/self/ns/user"),
+			"user_namespace_map":     readTrimmed("/proc/self/uid_map"),
+			"effective_capabilities": statusLine(readTrimmed("/proc/self/status"), "CapEff:"),
+			"ptrace_scope":           readTrimmed("/proc/sys/kernel/yama/ptrace_scope"),
+			"suid_dumpable":          readTrimmed("/proc/sys/fs/suid_dumpable"),
+			"original_user_namespace_and_cap_sys_ptrace_absence_verified": false,
+			"candidate_profile_eligible":                                  false,
+			"profile_limitation":                                          "the synthetic descriptor control does not establish an eligible original-user-namespace host or broker confinement",
+			"observation":                                                 observation,
+		}
+		if err != nil {
+			packet["error"] = err.Error()
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if encodeErr := encoder.Encode(packet); encodeErr != nil {
+			fmt.Fprintln(os.Stderr, encodeErr)
+			os.Exit(2)
+		}
+		if err != nil {
+			os.Exit(2)
+		}
+		return
+	}
 	if !filepath.IsAbs(*backend) {
 		fmt.Fprintln(os.Stderr, "--bwrap must be an absolute path")
 		os.Exit(2)
@@ -225,3 +274,19 @@ func currentCgroupPath(cgroup string) string {
 }
 
 func controlFileWritable(path string) bool { return unix.Access(path, unix.W_OK) == nil }
+
+func kernelRelease() string {
+	var uts unix.Utsname
+	if err := unix.Uname(&uts); err != nil {
+		return "unavailable: " + err.Error()
+	}
+	return strings.TrimRight(string(uts.Release[:]), "\x00")
+}
+
+func namespaceLink(path string) string {
+	value, err := os.Readlink(path)
+	if err != nil {
+		return "unavailable: " + err.Error()
+	}
+	return value
+}
