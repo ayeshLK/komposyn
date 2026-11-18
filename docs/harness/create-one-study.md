@@ -255,17 +255,34 @@ have selected a launcher/reaper carrying the worker argument. The next probe
 revision additionally requires `/proc/<pid>/exe` to resolve to the mounted
 `/worker` executable. Neither trusted-host run establishes descriptor access.
 
-This is evidence for the candidate mechanism on one ext4 host, not production
-acceptance. Unsupported filesystems, other mount configurations, access to the
-worker descriptor through other process-inspection routes, protected-owner
-rotation/coverage, production approval and revocation synchronization,
-post-publication races, crash durability, and process-tree/cgroup guarantees
-remain unproven. Other issue-215 report rows also remain unavailable; a runner
-exit of 0 does not turn those into passes.
+A third trusted-host run used commit
+`d9a7a7e28d6b340c91a3c3e537e5f650d3247510`. Archive
+`/tmp/komposyn-issue-319-native.0GvbQx.tar.gz` has SHA-256
+`e711fd65d7d592f75b9796d3c6ed1591f93eff6768edba02d7f43dde4aedd958`; report
+SHA-256 is `4137e276a2c043eac0b7068a068d2988d5ae412334a3b9c90088173d98e52db1`,
+matching the manifest. The corrected `create-one-otmpfile-proc-fd-access` row
+is `observed_violation`: a same-user actor reopened the staged descriptor via
+host procfs and changed its payload before publication. The worker then
+published the altered content. Worker and actor were both reaped. This confirms
+that O_TMPFILE hides the name, but does not protect the staged inode from a
+same-user process that can inspect the worker's host proc-fd entries. The
+direct-create late-hardlink violation remains independently confirmed. Across
+the 17 issue-319 rows, the statuses are 12 `measured_pass`, one `measured`, two
+`unknown`, and two `observed_violation`.
+
+This is evidence on one ext4 host, not production acceptance. It rejects the
+current O_TMPFILE candidate under the tested same-user threat profile. Whether
+another identity or isolation boundary can protect staged descriptors is a
+separate design and evidence question. Unsupported filesystems, other mount
+configurations, protected-owner rotation/coverage, production approval and
+revocation synchronization, post-publication races, crash durability, and
+process-tree/cgroup guarantees remain unproven. Other issue-215 report rows
+also remain unavailable; a runner exit of 0 does not turn those into passes.
 
 ## Reproduction on a trusted Linux host
 
-The candidate includes the host-proc-fd actor probe. Copy
+The candidate includes the host-proc-fd actor probe; the recorded run above
+already exercised it. To reproduce, copy
 `/tmp/komposyn-issue-319-creation-feasibility.bundle` to
 the trusted host, then run these checkout commands once:
 
@@ -278,7 +295,7 @@ git checkout --detach FETCH_HEAD
 git merge-base --is-ancestor 8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8 HEAD
 ```
 
-Then run the study and send back the archive path it prints:
+Then run the study; the archive path it prints contains the new report:
 
 ```sh
 ./scripts/run-create-one-study.sh
@@ -307,26 +324,21 @@ the preflight.
 
 ## Disposition
 
-**Unresolved feasibility; O_TMPFILE remains a candidate for independent
-review, not a supported or positively accepted mechanism.** The trusted-host
-run supports the narrow O_TMPFILE publication behavior on ext4 and confirms
-the direct-create late-hardlink hazard. It does not establish production
-authorization or protected-owner safety. Unsupported filesystems, production
-owner coverage/rotation, approval and revocation synchronization, descriptor
-inspection by other actors, post-publication races, payload-limit validation,
-process-tree cleanup, and crash durability remain open.
+**The tested O_TMPFILE candidate is rejected for a same-user host threat
+profile.** On the trusted ext4 host, a same-user actor used host procfs to
+modify the unnamed staged inode before publication. Direct named creation also
+failed its late-hardlink control. Neither mechanism may be described as safe
+for this profile based on the remaining successful rows. This study does not
+decide whether a stronger identity/isolation boundary or a different
+transactional mechanism could support creation.
 
-The immediate next step is to capture the corrected host-proc-fd probe on the
-same trusted Linux host using the refreshed bundle and one-command wrapper.
-If the actor can link or change the staged inode, record that as a candidate
-violation and stop treating O_TMPFILE as safe under this profile. If access is
-denied, the result is measured only for that host and still does not prove
-protected-owner lifecycle or production authorization. Then independently
-review the packet and decide whether to continue the candidate with its gaps
-explicitly scoped or evaluate another unprivileged mechanism. Do not close
-#319, unblock #321, or expose creation/editing based on this study alone. Keep
-#320 editing research separate, and leave #315, #319, #321, and #267 open for
-review.
+The next step is to decide whether issue #319 should investigate a design that
+prevents same-user access to staged worker descriptors or stop pursuing
+creation under the current threat model. Any new isolation or mechanism needs
+its own review and native evidence; the successful O_TMPFILE publication rows
+do not override this observed violation. Do not close #319, unblock #321, or
+expose creation/editing based on this study. Keep #320 editing research
+separate, and leave #315, #319, #321, and #267 open for review.
 
 ## Validation
 
