@@ -712,20 +712,51 @@ func unknownAfterRelease(action, target, reason string) Observation {
 }
 
 func sandboxWorkerPID(bwrapPID int) (int, error) {
-	path := filepath.Join("/proc", strconv.Itoa(bwrapPID), "task", strconv.Itoa(bwrapPID), "children")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, fmt.Errorf("read bubblewrap child list: %w", err)
+	type process struct {
+		pid   int
+		depth int
 	}
-	children := strings.Fields(string(data))
-	if len(children) != 1 {
-		return 0, fmt.Errorf("bubblewrap child count = %d; want exactly one worker", len(children))
+	const maxProcesses = 256
+	const maxDepth = 16
+
+	queue := []process{{pid: bwrapPID}}
+	visited := map[int]bool{bwrapPID: true}
+	for len(queue) > 0 && len(visited) <= maxProcesses {
+		current := queue[0]
+		queue = queue[1:]
+		if current.depth > 0 {
+			cmdlinePath := filepath.Join("/proc", strconv.Itoa(current.pid), "cmdline")
+			if cmdline, err := os.ReadFile(cmdlinePath); err == nil && isSandboxStudyWorkerCmdline(cmdline) {
+				return current.pid, nil
+			}
+		}
+		if current.depth == maxDepth {
+			continue
+		}
+		childrenPath := filepath.Join("/proc", strconv.Itoa(current.pid), "task", strconv.Itoa(current.pid), "children")
+		data, err := os.ReadFile(childrenPath)
+		if err != nil {
+			continue // processes may exit or be hidden while the actor walks the tree
+		}
+		for _, child := range strings.Fields(string(data)) {
+			pid, err := strconv.Atoi(child)
+			if err != nil || pid < 1 || visited[pid] {
+				continue
+			}
+			visited[pid] = true
+			queue = append(queue, process{pid: pid, depth: current.depth + 1})
+		}
 	}
-	pid, err := strconv.Atoi(children[0])
-	if err != nil || pid < 1 {
-		return 0, errors.New("bubblewrap child PID is invalid")
+	return 0, errors.New("sandbox study worker not found in bounded bubblewrap process tree")
+}
+
+func isSandboxStudyWorkerCmdline(cmdline []byte) bool {
+	for _, arg := range strings.Split(string(cmdline), "\x00") {
+		if arg == "--sandbox-study-worker" {
+			return true
+		}
 	}
-	return pid, nil
+	return false
 }
 
 func readLineBounded(reader *bufio.Reader) (string, error) {

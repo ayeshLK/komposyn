@@ -402,6 +402,21 @@ func TestProcFDProbeClassificationRequiresKnownPublicationOutcome(t *testing.T) 
 	}
 }
 
+func TestSandboxStudyWorkerCmdlineRequiresExactArgument(t *testing.T) {
+	if !isSandboxStudyWorkerCmdline([]byte("/worker\x00--sandbox-study-worker\x00")) {
+		t.Fatal("expected exact worker argument to match")
+	}
+	for _, cmdline := range [][]byte{
+		[]byte("/worker\x00--sandbox-study-worker-extra\x00"),
+		[]byte("/tmp/--sandbox-study-worker\x00"),
+		[]byte("/worker\x00"),
+	} {
+		if isSandboxStudyWorkerCmdline(cmdline) {
+			t.Fatalf("unexpected worker match for cmdline %q", cmdline)
+		}
+	}
+}
+
 func TestFixtureFilesystemUsesDescriptorMountID(t *testing.T) {
 	fstype, mountID := fixtureFilesystem(t.TempDir())
 	if fstype == "" || mountID == 0 {
