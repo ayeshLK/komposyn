@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestSeccompFilterIsArchitectureCheckedAndBounded(t *testing.T) {
@@ -330,6 +332,41 @@ func TestOTmpfileWorkerRefusesExistingDestinationWithoutChangingIt(t *testing.T)
 				t.Fatalf("symlink destination changed: info=%v err=%v", info, err)
 			}
 		})
+	}
+}
+
+func TestProcFDProbePublishesOnlyAnUnlinkedFixtureDescriptor(t *testing.T) {
+	root := t.TempDir()
+	scope := filepath.Join(root, "scope")
+	parent := filepath.Join(scope, "parent")
+	outside := filepath.Join(root, "outside")
+	protected := filepath.Join(outside, "protected")
+	for _, path := range []string{parent, protected} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fd, err := unix.Openat(unix.AT_FDCWD, parent, unix.O_TMPFILE|unix.O_WRONLY|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		t.Skipf("filesystem does not support O_TMPFILE: %v", err)
+	}
+	defer unix.Close(fd)
+	payload := []byte("synthetic create fixture\n")
+	if n, err := unix.Write(fd, payload); err != nil || n != len(payload) {
+		t.Fatalf("stage payload: wrote %d bytes, err=%v", n, err)
+	}
+
+	if err := probeOTmpfileProcFD(os.Getpid(), scope, outside); err != nil {
+		t.Fatal(err)
+	}
+	result, err := os.ReadFile(filepath.Join(outside, "proc-fd-probe-result"))
+	if err != nil || string(result) != "staged-payload-published-by-actor" {
+		t.Fatalf("probe result = %q, err=%v; want staged descriptor publication", result, err)
+	}
+	alias, err := os.ReadFile(filepath.Join(protected, "proc-fd-alias.txt"))
+	if err != nil || string(alias) != string(payload) {
+		t.Fatalf("published alias = %q, err=%v; want exact fixture payload", alias, err)
 	}
 }
 

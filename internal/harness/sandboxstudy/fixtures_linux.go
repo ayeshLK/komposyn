@@ -235,6 +235,18 @@ func setupCreateStagedProtected(scope, outside string, actor fixtureActor) (func
 	}, nil
 }
 
+func setupCreateProcFDProbe(scope, outside string) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(filepath.Join(outside, "protected"), 0o700); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		return "no mutation before the staged descriptor probe", nil
+	}, nil
+}
+
 func setupCreateCollision(scope, outside string, actor fixtureActor) (func() (string, error), error) {
 	if err := prepareCreateParent(scope); err != nil {
 		return nil, err

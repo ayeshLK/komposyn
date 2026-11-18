@@ -80,12 +80,17 @@ and [`linkat(2)` manual](https://man7.org/linux/man-pages/man2/linkat.2.html).
 The no-replace publication narrows the direct-create race: the new inode has
 no ordinary name while bytes are written, and a same-user actor cannot create
 the direct late-hardlink alias through the approved leaf before publication.
-This observation does not prove an actor cannot reach the worker descriptor
-through another process-inspection route, that a protected owner cannot race
-the release, or that a post-publication alias transition is prevented. Those
-remain explicit gaps. Direct `O_CREAT|O_EXCL` create-then-write remains a
-negative control: its name exists before the write and a same-user actor can
-hard-link it into the synthetic protected directory during that interval.
+That does not show that a same-user process outside the sandbox cannot reach
+the worker descriptor through the host's `/proc/<pid>/fd`. Linux gates those
+entries with ptrace-style access checks affected by credentials, user
+namespaces, capabilities, and active LSMs; the study must measure the actual
+cross-process link attempt rather than assume the private PID namespace blocks
+it. See [`proc_pid_fd(5)`](https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html)
+and [`ptrace(2)`](https://man7.org/linux/man-pages/man2/ptrace.2.html). A
+protected owner can also race release, and a post-publication alias transition
+is untested. Direct `O_CREAT|O_EXCL` create-then-write remains a negative
+control: its name exists before the write and a same-user actor can hard-link
+it into the synthetic protected directory during that interval.
 
 The candidate uses no shell, network, provider connection, credential or grant
 store, unrestricted host filesystem handle, or general executor. Bubblewrap
@@ -103,7 +108,8 @@ or prove aggregate CPU, memory, or process limits.
 | Mounted-object movement and replacement | Native O_TMPFILE parent and root relocation rows on ext4 mount ID 33 | Both affected only the retained admitted object; former-path replacement stayed untouched |
 | Competing destination and symlink at publication | Native no-replace collision and symlink rows | Both refused publication, preserved the existing object, discarded the unnamed stage, and reaped worker and actor |
 | Direct-create late alias hazard | Native direct-create control exposed the payload through an actor-created hard link | Observed violation; create-then-write is unsuitable for protected-owner safety |
-| Unnamed stage stays unpublished before `linkat` | Native staged checkpoint checked the leaf and protected alias before publication | Passed for the synthetic actor; does not cover `/proc` descriptor inspection by another actor |
+| Unnamed stage stays unpublished before `linkat` | Native staged checkpoint checked the leaf and protected alias before publication | Passed for the synthetic actor; does not cover host proc-fd inspection |
+| Same-user outside actor reaches staged inode through host `/proc/<pid>/fd` | Follow-up native actor attempts no-replace publication and, if that is denied, reopens the staged descriptor and changes one payload byte | Added after the recorded packet; native result required before assessing this boundary |
 | Protected-owner rotation, protected parent/alias transition and complete owner coverage | No production owner integration exists in this study | Missing; blocks eligibility |
 | Cancellation before release and after staging but before publication | Native staged cancellation and cleanup rows | No destination was published and the unnamed stage was discarded; production revocation ordering remains missing |
 | Cancellation after publication, worker/coordinator death, delayed join and resource retirement | Unknown-outcome classification and direct worker wait; no delegated cgroup/tree-kill boundary | Incomplete; never replay uncertain effects |
@@ -200,9 +206,8 @@ exit of 0 does not turn those into passes.
 
 ## Reproduction on a trusted Linux host
 
-The implementation candidate is commit
-`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. The bundle also contains the
-capture wrapper. Copy `/tmp/komposyn-issue-319-creation-feasibility.bundle` to
+The candidate includes the host-proc-fd actor probe. Copy
+`/tmp/komposyn-issue-319-creation-feasibility.bundle` to
 the trusted host, then run these checkout commands once:
 
 ```sh
@@ -252,25 +257,31 @@ owner coverage/rotation, approval and revocation synchronization, descriptor
 inspection by other actors, post-publication races, payload-limit validation,
 process-tree cleanup, and crash durability remain open.
 
-Next, independently review this packet and decide whether to continue the
-O_TMPFILE candidate with those gaps explicitly scoped, or record a
-candidate-specific limitation and evaluate other unprivileged mechanisms. Do
-not close #319, unblock #321, or expose creation/editing based on this study
-alone. Keep #320 editing research separate, and leave #315, #319, #321, and
-#267 open for review.
+The immediate next step is to capture the new host-proc-fd probe on the same
+trusted Linux host using the current clean branch and the one-command wrapper.
+If the actor can link or change the staged inode, record that as a candidate
+violation and stop treating O_TMPFILE as safe under this profile. If access is
+denied, the result is measured only for that host and still does not prove
+protected-owner lifecycle or production authorization. Then independently
+review the packet and decide whether to continue the candidate with its gaps
+explicitly scoped or evaluate another unprivileged mechanism. Do not close
+#319, unblock #321, or expose creation/editing based on this study alone. Keep
+#320 editing research separate, and leave #315, #319, #321, and #267 open for
+review.
 
 ## Validation
 
-Go `1.26.11` was used. All repository checks passed on the committed source:
+Go `1.26.11` was used. After adding the host-proc-fd probe, all repository
+checks passed:
 
 - `go mod verify`
 - `go vet ./...`
 - `go test ./...`
-- `go test -race ./...` (Token Logger package completed in 268.136 seconds)
+- `go test -race ./...` (Token Logger package completed in 368.011 seconds)
 - `make check`
 - Focused `go test ./internal/harness/sandboxstudy ./cmd/sandbox-study`
 
-The study binary built successfully. This checkout's earlier native command
-exited `3` after the backend trust check refused `/usr`; the subsequently
-returned trusted-host packet above is the native evidence. Ordinary Go and race
-checks do not establish filesystem enforcement.
+The previously returned trusted-host packet covers the unchanged study rows but
+not the new host-proc-fd probe. Capture that probe from the current clean source
+revision before drawing a conclusion about descriptor isolation. Ordinary Go
+and race checks do not establish filesystem enforcement.

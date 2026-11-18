@@ -108,7 +108,7 @@ func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observ
 		afterReady, err := test.setup(scope, outside)
 		if test.actorSetup != nil {
 			afterReady, err = test.actorSetup(scope, outside, func(action, actorScope, actorOutside string) error {
-				err := runFixtureActor(worker, action, actorScope, actorOutside)
+				err := runFixtureActor(worker, action, actorScope, actorOutside, 0)
 				actorReaped = err == nil
 				return err
 			})
@@ -119,9 +119,26 @@ func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observ
 		var result Observation
 		var runErr error
 		if test.afterCreateActor != "" {
-			actor := func() error {
-				err := runFixtureActor(worker, test.afterCreateActor, scope, outside)
-				actorReaped = err == nil
+			actor := func(bwrapPID int) error {
+				var err error
+				actorStarted := true
+				if test.afterCreateActor == "probe-otmpfile-proc-fd" {
+					var workerPID int
+					workerPID, err = sandboxWorkerPID(bwrapPID)
+					if err == nil {
+						err = runFixtureActor(worker, test.afterCreateActor, scope, outside, workerPID)
+					} else {
+						actorStarted = false
+						marker := filepath.Join(outside, "proc-fd-probe-result")
+						if writeErr := os.WriteFile(marker, []byte("worker-pid-unavailable"), 0o600); writeErr != nil {
+							return writeErr
+						}
+						err = nil
+					}
+				} else {
+					err = runFixtureActor(worker, test.afterCreateActor, scope, outside, 0)
+				}
+				actorReaped = actorStarted && err == nil
 				return err
 			}
 			result, runErr = runGatedWithCreateCheckpoint(ctx, backend, worker, scope, test.protected, test.action, test.path, afterReady, actor, test.cancelAfterStage)
@@ -148,6 +165,12 @@ func RunNativeSuite(ctx context.Context, bwrapPath, workerPath string) ([]Observ
 			fixtureParent = filepath.Join(outside, "moved-root", "parent")
 		}
 		result.FixtureFS, result.FixtureMount = fixtureFilesystem(fixtureParent)
+		if test.name == "create-one-otmpfile-proc-fd-access" {
+			probe, _ := os.ReadFile(filepath.Join(outside, "proc-fd-probe-result"))
+			if strings.TrimSpace(string(probe)) == "staged-payload-published-by-actor" {
+				result.StageDiscarded = false
+			}
+		}
 		if result.Status == "unknown" || result.Status == "unavailable" {
 			if test.name == "create-one-unknown-outcome" {
 				result.ActualEffect = verifyUnknownCreate(scope, result)
@@ -189,6 +212,7 @@ func scenarios() []scenario {
 		{name: "create-one-otmpfile-parent-relocation", action: "create-one-otmpfile", path: "parent/new.txt", setup: setupCreateEmptyParent, afterCreateActor: "move-parent"},
 		{name: "create-one-otmpfile-root-relocation", action: "create-one-otmpfile", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateRootRelocation},
 		{name: "create-one-otmpfile-staged-unpublished", action: "create-one-otmpfile", path: "parent/new.txt", setup: setupNoop, actorSetup: setupCreateStagedProtected, afterCreateActor: "check-stage-unpublished"},
+		{name: "create-one-otmpfile-proc-fd-access", action: "create-one-otmpfile", path: "parent/new.txt", setup: setupCreateProcFDProbe, afterCreateActor: "probe-otmpfile-proc-fd"},
 		{name: "create-one-otmpfile-cancel-before-publication", action: "create-one-otmpfile", path: "parent/new.txt", setup: setupCreateEmptyParent, cancelAfterStage: true},
 		{name: "create-one-otmpfile-stage-write-failure", action: "create-one-otmpfile-stage-write-failure", path: "parent/new.txt", setup: setupCreateEmptyParent},
 		{name: "create-one-otmpfile-unknown-outcome", action: "create-one-otmpfile-unknown", path: "parent/new.txt", setup: setupCreateEmptyParent},
@@ -213,13 +237,20 @@ func scenarios() []scenario {
 	}
 }
 
-func runFixtureActor(executable, action, scope, outside string) error {
+func runFixtureActor(executable, action, scope, outside string, targetPID int) error {
 	if !filepath.IsAbs(executable) {
 		return errors.New("actor executable path is not absolute")
 	}
+	args := []string{"--sandbox-study-actor", action, scope, outside}
+	if targetPID < 0 {
+		return errors.New("actor target PID cannot be negative")
+	}
+	if targetPID > 0 {
+		args = append(args, strconv.Itoa(targetPID))
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, executable, "--sandbox-study-actor", action, scope, outside)
+	command := exec.CommandContext(ctx, executable, args...)
 	command.Env = []string{}
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -231,17 +262,109 @@ func runFixtureActor(executable, action, scope, outside string) error {
 // ActorMain handles the study command's fixed same-user fixture mutations.
 // It accepts no arbitrary paths or operation text from a model/provider.
 func ActorMain(args []string) int {
-	if len(args) != 3 {
+	if len(args) != 3 && len(args) != 4 {
 		return 2
 	}
 	action, scope, outside := args[0], args[1], args[2]
 	if validateActorFixturePaths(scope, outside) != nil {
 		return 2
 	}
+	if action == "probe-otmpfile-proc-fd" {
+		if len(args) != 4 {
+			return 2
+		}
+		pid, err := strconv.Atoi(args[3])
+		if err != nil || pid < 1 {
+			return 2
+		}
+		if err := probeOTmpfileProcFD(pid, scope, outside); err != nil {
+			return 1
+		}
+		return 0
+	}
+	if len(args) != 3 {
+		return 2
+	}
 	if err := applyFixtureActor(action, scope, outside); err != nil {
 		return 1
 	}
 	return 0
+}
+
+// probeOTmpfileProcFD tries the same no-replace publication through the host
+// procfs entry for the staged worker. The paths and payload are fixed to the
+// disposable fixture; it never reads real provider data.
+func probeOTmpfileProcFD(workerPID int, scope, outside string) error {
+	resultPath := filepath.Join(outside, "proc-fd-probe-result")
+	result := "unavailable"
+	fdDir := filepath.Join("/proc", strconv.Itoa(workerPID), "fd")
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) || errors.Is(err, unix.EACCES) || errors.Is(err, unix.EPERM) {
+			result = "proc-fd-denied"
+		}
+		return os.WriteFile(resultPath, []byte(result), 0o600)
+	}
+
+	parent := filepath.Join(scope, "parent")
+	alias := filepath.Join(outside, "protected", "proc-fd-alias.txt")
+	var parentStat unix.Stat_t
+	if err := unix.Stat(parent, &parentStat); err != nil {
+		return os.WriteFile(resultPath, []byte(result), 0o600)
+	}
+	parentFD, err := unix.Open(filepath.Join(outside, "protected"), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return os.WriteFile(resultPath, []byte(result), 0o600)
+	}
+	defer unix.Close(parentFD)
+
+	result = "staged-fd-not-found"
+	fdStatDenied := false
+	payload := []byte("synthetic create fixture\n")
+	for _, entry := range entries {
+		fdPath := filepath.Join(fdDir, entry.Name())
+		var fdStat unix.Stat_t
+		if statErr := unix.Stat(fdPath, &fdStat); statErr != nil {
+			if errors.Is(statErr, unix.EACCES) || errors.Is(statErr, unix.EPERM) {
+				fdStatDenied = true
+			}
+			continue
+		}
+		if fdStat.Mode&unix.S_IFMT != unix.S_IFREG || fdStat.Nlink != 0 || fdStat.Dev != parentStat.Dev || fdStat.Size != int64(len(payload)) {
+			continue
+		}
+		err := unix.Linkat(unix.AT_FDCWD, fdPath, parentFD, filepath.Base(alias), unix.AT_SYMLINK_FOLLOW)
+		if err != nil {
+			stagedFD, openErr := unix.Open(fdPath, unix.O_WRONLY|unix.O_CLOEXEC, 0)
+			if openErr != nil {
+				if errors.Is(openErr, unix.EACCES) || errors.Is(openErr, unix.EPERM) {
+					result = "proc-fd-denied"
+				} else {
+					result = "proc-fd-open-unavailable"
+				}
+				break
+			}
+			written, writeErr := unix.Pwrite(stagedFD, []byte("X"), 0)
+			_ = unix.Close(stagedFD)
+			if writeErr == nil && written == 1 {
+				result = "staged-payload-modified-by-actor"
+			} else {
+				result = "proc-fd-opened-write-failed"
+			}
+			break
+		}
+		data, readErr := os.ReadFile(alias)
+		if readErr == nil && bytes.Equal(data, payload) {
+			result = "staged-payload-published-by-actor"
+		} else {
+			result = "staged-fd-linked-payload-mismatch"
+		}
+		break
+	}
+	if result == "staged-fd-not-found" && fdStatDenied {
+		result = "proc-fd-partial-denied"
+	}
+	return os.WriteFile(resultPath, []byte(result), 0o600)
 }
 
 func applyFixtureActor(action, scope, outside string) error {
@@ -318,7 +441,7 @@ func runGated(ctx context.Context, backend, worker, scope, protected, action, ta
 	return runGatedWithCreateCheckpoint(ctx, backend, worker, scope, protected, action, target, afterReady, nil, false)
 }
 
-func runGatedWithCreateCheckpoint(ctx context.Context, backend, worker, scope, protected, action, target string, afterReady func() (string, error), afterCreate func() error, cancelAfterStage bool) (Observation, error) {
+func runGatedWithCreateCheckpoint(ctx context.Context, backend, worker, scope, protected, action, target string, afterReady func() (string, error), afterCreate func(int) error, cancelAfterStage bool) (Observation, error) {
 	profile := Profile
 	profileName := "default-no-proc"
 	if isOTmpfileAction(action) {
@@ -438,7 +561,7 @@ func runGatedWithCreateCheckpoint(ctx context.Context, backend, worker, scope, p
 			return Observation{Attempt: action + " " + target, ActualEffect: "cancellation at the staged-before-publication checkpoint; unnamed staging descriptor closed and no destination published", ExpectedA: "no named destination before publication; cancellation retires the unnamed inode", ObservedB: "worker acknowledged cancellation before linkat; launcher wait completed", Status: "measured", WorkerOutcome: result.Status, WorkerReaped: true, StageDiscarded: true, Limitation: "study cancellation protocol only; does not establish production revocation synchronization"}, nil
 		}
 		if afterCreate != nil {
-			if err := afterCreate(); err != nil {
+			if err := afterCreate(cmd.Process.Pid); err != nil {
 				_ = stdin.Close()
 				_ = cmd.Process.Kill()
 				_ = cmd.Wait()
@@ -586,6 +709,23 @@ func unknownAfterRelease(action, target, reason string) Observation {
 		ExpectedA:    "classify as partial/unknown unless no-effect evidence exists",
 		ObservedB:    "not applicable", Status: "unknown", WorkerOutcome: "unknown",
 		Limitation: sanitize(reason)}
+}
+
+func sandboxWorkerPID(bwrapPID int) (int, error) {
+	path := filepath.Join("/proc", strconv.Itoa(bwrapPID), "task", strconv.Itoa(bwrapPID), "children")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read bubblewrap child list: %w", err)
+	}
+	children := strings.Fields(string(data))
+	if len(children) != 1 {
+		return 0, fmt.Errorf("bubblewrap child count = %d; want exactly one worker", len(children))
+	}
+	pid, err := strconv.Atoi(children[0])
+	if err != nil || pid < 1 {
+		return 0, errors.New("bubblewrap child PID is invalid")
+	}
+	return pid, nil
 }
 
 func readLineBounded(reader *bufio.Reader) (string, error) {
@@ -798,6 +938,28 @@ func verifyObserved(name, scope string, result Observation) (string, string) {
 			return "at the staged checkpoint, the independent actor observed no destination or protected alias before publication", "measured_pass"
 		}
 		return "staged checkpoint observation or actor join was missing", "unavailable"
+	case "create-one-otmpfile-proc-fd-access":
+		outside := filepath.Join(filepath.Dir(scope), "outside")
+		probe, err := os.ReadFile(filepath.Join(outside, "proc-fd-probe-result"))
+		if err != nil || !result.ActorReaped {
+			return "same-user actor proc-fd probe result or join was unavailable", "unavailable"
+		}
+		switch strings.TrimSpace(string(probe)) {
+		case "staged-payload-published-by-actor":
+			return "same-user actor linked the staged worker inode through host /proc/<pid>/fd into the protected fixture before worker publication", "observed_violation"
+		case "proc-fd-denied":
+			return "same-user actor could not publish the staged descriptor through host procfs under this host's access controls", "measured_pass"
+		case "staged-payload-modified-by-actor":
+			data, readErr := os.ReadFile(filepath.Join(scope, "parent", "new.txt"))
+			if readErr == nil && string(data) == "Xynthetic create fixture\n" {
+				return "same-user actor reopened the staged worker descriptor through host procfs and changed the payload before publication", "observed_violation"
+			}
+			return "same-user actor reported a descriptor write but the published fixture did not match", "unavailable"
+		case "staged-fd-linked-payload-mismatch":
+			return "same-user actor linked a staged descriptor but its payload differed from the fixed fixture", "observed_violation"
+		default:
+			return "same-user actor could not identify or link the staged descriptor: " + sanitize(string(probe)), "unavailable"
+		}
 	case "create-one-otmpfile-cancel-before-publication":
 		_, err := os.Lstat(filepath.Join(scope, "parent", "new.txt"))
 		if result.WorkerOutcome == "not_executed" && errors.Is(err, os.ErrNotExist) && result.WorkerReaped && result.StageDiscarded {
