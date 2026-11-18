@@ -1,90 +1,363 @@
-# One-file creation candidate study (#319)
+# One-file creation feasibility study (#319)
 
-This is a disposable native study only. It is not connected to the chat
-runtime, does not register a tool, and does not change filesystem policy. The
-study code is based on integration tip
-`9c16b8b2c9578909800ff937782a2c6f327b452e`. Build and run it on a trusted Linux
-host with the repository's existing `cmd/sandbox-study` mechanism:
+**Status: research only; creation stays unavailable.** This study does not add
+or register a chat tool, production authorization, mutation-scope UI, or an
+`apply_patch` implementation. The worker is a fixed synthetic experiment, not
+a creation executor.
+
+## Operation contract
+
+A future one-file create request would be eligible only when trusted host
+preparation has retained and bound all of the following:
+
+- The selected mutation-scope object and the approved parent directory object
+  beneath it, opened without symlink, magic-link, or mount-crossing resolution.
+- One absent destination leaf name relative to that retained parent. The
+  target is not an existing object: creating a new inode is authorized under
+  that exact parent and leaf pair.
+- The exact supported UTF-8 payload, at most 64 KiB, plus action/resource,
+  provider destination, scope and policy generations, and a once-approval
+  receipt for those same values.
+- Complete protected-owner coverage for credentials/auth, settings,
+  provider-owned source files, and owned Token Logger database, journal,
+  WAL/SHM, and backup objects. Unknown or incomplete coverage makes the
+  candidate ineligible; this study must not read real provider data to build
+  that coverage.
+
+The model may suggest a relative path and text. It cannot supply authoritative
+identities, digests, generations, owner coverage, or a receipt. Trusted host
+preparation must validate the schema, resolve the path beneath the selected
+scope, open and retain the parent, verify the leaf is absent, gather owner
+protection, and bind all effective values to approval. The `operationGate` in
+this package only models a small part of release ordering. It is not production
+runtime integration and does not establish that the values above are retained
+or consumed atomically.
+
+The proposed effect point is the successful no-replace `linkat` that publishes
+the fully written unnamed inode under the retained parent descriptor and
+approved leaf. An ordinary rename of the parent or selected root does not
+revoke mounted-object authority: publication should affect the retained
+directory object, while a replacement at the former pathname must remain
+untouched. A separate policy/scope generation change, owner registration or
+rotation, cancellation, service closure, or failed worker cleanup must block
+release or stale publication through a production synchronization protocol.
+That protocol is not part of this study. Once publication succeeds, later
+cancellation cannot undo it; a lost completion is `unknown` and must never be
+replayed automatically.
+
+Before publication, a failed or short write to an unnamed inode has no named
+destination if the worker closes its final descriptor. Failure after direct
+named creation may leave an empty or partial file and is `partial`. Failure at
+publication must preserve an existing destination. A coordinator or worker
+failure after publication may leave an effect whose completion is unknown.
+The study does not claim fsync durability, rollback, or whole-operation
+atomicity. `linkat` atomically adds a directory entry, but the current worker
+does not fsync the file and parent for crash durability.
+
+## Candidate mechanism
+
+The fixed worker opens the approved parent beneath `/scope` using `openat2`
+with `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_XDEV`.
+It stages the exact synthetic bytes with `O_TMPFILE|O_WRONLY|O_CLOEXEC` and
+mode `0600`, without `O_EXCL`: Linux documents that `O_EXCL` with `O_TMPFILE`
+prevents later linking. It writes before publication, pauses at a deterministic
+`STAGED` checkpoint, and then uses `linkat` from `/proc/self/fd/<fd>` with
+`AT_SYMLINK_FOLLOW` to the relative leaf and retained parent descriptor. That
+proc mount exists only in the study's explicitly named
+`otmpfile-private-pid-proc` profile, inside the already unshared PID namespace.
+The other rows do not mount proc. There is no fallback to direct create,
+absolute-path publication, a host proc mount, or an unrestricted worker.
+
+Linux documents that `O_TMPFILE` creates an unnamed inode that is discarded
+when its last descriptor closes unless it is linked, that a proc-fd path with
+`AT_SYMLINK_FOLLOW` can publish it without `CAP_DAC_READ_SEARCH`, and that only
+some filesystems support the operation. The new destination is relative to the
+directory FD; `linkat` does not overwrite an existing entry, so a collision or
+symlink at the leaf must fail. These API semantics do not prove production
+authorization or owner synchronization. See the Linux [`open(2)` manual](https://man7.org/linux/man-pages/man2/open.2.html)
+and [`linkat(2)` manual](https://man7.org/linux/man-pages/man2/linkat.2.html).
+
+The no-replace publication narrows the direct-create race: the new inode has
+no ordinary name while bytes are written, and a same-user actor cannot create
+the direct late-hardlink alias through the approved leaf before publication.
+That does not show that a same-user process outside the sandbox cannot reach
+the worker descriptor through the host's `/proc/<pid>/fd`. Linux gates those
+entries with ptrace-style access checks affected by credentials, user
+namespaces, capabilities, and active LSMs; the study must measure the actual
+cross-process link attempt rather than assume the private PID namespace blocks
+it. See [`proc_pid_fd(5)`](https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html)
+and [`ptrace(2)`](https://man7.org/linux/man-pages/man2/ptrace.2.html). A
+protected owner can also race release, and a post-publication alias transition
+is untested. Direct `O_CREAT|O_EXCL` create-then-write remains a negative
+control: its name exists before the write and a same-user actor can hard-link
+it into the synthetic protected directory during that interval.
+
+The candidate uses no shell, network, provider connection, credential or grant
+store, unrestricted host filesystem handle, or general executor. Bubblewrap
+setup refusal, unsupported `O_TMPFILE`, absent procfs, and `linkat` failure are
+`unavailable` or typed pre-publication failure, never success and never a
+weaker fallback. The study imposes a five-second worker deadline, 64 KiB
+protocol-line ceiling, and 16 MiB private `/tmp`; it does not configure cgroups
+or prove aggregate CPU, memory, or process limits.
+
+## Acceptance coverage
+
+| #319 requirement | Evidence in this branch | Disposition |
+| --- | --- | --- |
+| Bind parent, absent leaf, exact bytes, action/resource, provider destination, generations, once receipt | Contract specified above; existing study gate is only a model | Production preparation and approval binding missing; candidate ineligible |
+| Mounted-object movement and replacement | Native O_TMPFILE parent and root relocation rows on ext4 mount ID 33 | Both affected only the retained admitted object; former-path replacement stayed untouched |
+| Competing destination and symlink at publication | Native no-replace collision and symlink rows | Both refused publication, preserved the existing object, discarded the unnamed stage, and reaped worker and actor |
+| Direct-create late alias hazard | Native direct-create control exposed the payload through an actor-created hard link | Observed violation; create-then-write is unsuitable for protected-owner safety |
+| Unnamed stage stays unpublished before `linkat` | Native staged checkpoint checked the leaf and protected alias before publication | Passed for the synthetic actor; does not cover host proc-fd inspection |
+| Same-user outside actor reaches staged inode through host `/proc/<pid>/fd` | Verified native run on the recorded Ubuntu/ext4 host found the actor reopened the staged descriptor and changed the payload before publication | `observed_violation`; the O_TMPFILE candidate fails this same-user boundary |
+| Protected-owner rotation, protected parent/alias transition and complete owner coverage | No production owner integration exists in this study | Missing; blocks eligibility |
+| Cancellation before release and after staging but before publication | Native staged cancellation and cleanup rows | No destination was published and the unnamed stage was discarded; production revocation ordering remains missing |
+| Cancellation after publication, worker/coordinator death, delayed join and resource retirement | Unknown-outcome classification and direct worker wait; no delegated cgroup/tree-kill boundary | Incomplete; never replay uncertain effects |
+| Exact UTF-8 payload and 64 KiB limit | Worker has one fixed 25-byte UTF-8 fixture | Variable payload validation and limit boundary not exercised |
+| Partial, zero-byte, unsupported filesystem, publication failure and cleanup | Native direct-create partial cases; O_TMPFILE stage-write failure and no-replace cleanup | Staging failure left no named leaf and discarded the unnamed inode; unsupported filesystems and durability were not tested |
+| Filesystem provenance for the actual synthetic directory | Native report records `fstatfs` ext4 magic and `statx` mount ID 33 matched to `/proc/self/mountinfo` | Established for this fixture and host only |
+| Model/provider/UI/runtime behavior | Deliberately not implemented or exposed | Remains unavailable by design |
+
+Go tests only validate the fixed worker, report classification, and fixture
+construction. They do not establish Linux filesystem enforcement. The study
+does not verify production scope selection, once-grant consumption, owner
+coverage or rotation, cancellation/revocation synchronization, provider
+destination binding, stale publication suppression, process-tree cleanup,
+crash durability, or behavior on other filesystems/platforms.
+
+## Historical and candidate native evidence
+
+A retained report at `/tmp/komposyn-sandbox-study-report.json` has SHA-256
+`fe5876710037fdbd78fd7058fba57098b50f10cdf8bd8d22da2f6561e3e7698a`. Its
+reported source commit `80a1c4a99baab5095a8858d4b8efbf6292223341` is available
+upstream and was fetched for source inspection. Its host fields report Go
+1.26.11, Ubuntu 24.04.5, Linux `7.0.0-42-generic`, amd64, and root-owned
+Bubblewrap 0.9.0 with binary SHA-256
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`.
+The report records direct create collision and symlink refusal, a direct-create
+late-hardlink violation, and one successful unnamed write/publication using
+the private-PID-proc profile. That successful O_TMPFILE case used only the
+fixed 25-byte fixture. It does not include an archived capture packet or
+manifest, does not report fixture mount-ID provenance, and does not cover the
+new publication checkpoints, owner lifecycle, or cancellation cases. Treat it
+as historical narrow evidence, not acceptance of this candidate revision.
+
+An earlier local attempt used implementation commit
+`8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`. Its unavailable report is
+`/tmp/komposyn-issue-319-native-unavailable-8fdd943.json` (SHA-256
+`601825f7e093ec89409b25af37a771fbc2609a980b75a70e47979af9b7d99d76`), and
+the packaged report plus manifest is
+`/tmp/komposyn-issue-319-native-unavailable-8fdd943.tar.gz` (SHA-256
+`1c8df713d26820526b965fac13747f91c6a591b666294bbecc0b985b5d31329c`). The
+manifest SHA-256 is
+`d800946119a6f88c8845a2558a23158c5ea571c103081858b594a22fdeebf51b`.
+The report says `/usr` is not root-owned and marks the native suite
+`unavailable/not_executed`; its only creation row is the preflight failure.
+The study binary SHA-256 is
+`a442cc4d3007ba2e6d7739d68668038c3f70310bef5b91911746e48349d987ef`.
+This packet records a blocked attempt, not a native test pass or failure.
+
+Earlier preflight-only reports remain distinct: for example,
+`/tmp/komposyn-sandbox-study-319-followup.json` has SHA-256
+`e71249fe47d812ad9953080d660c60a821ad0273651a826f33c2bac34bb503b0` and
+records `unavailable/not_executed` because backend trust failed at `/usr`.
+They are not negative filesystem results.
+
+That earlier local attempt used a checkout under `/tmp`; Bubblewrap had the
+same binary hash but was owned by `nobody:nogroup`. `ValidateBackend` correctly
+refused it, so no native scenario ran. No ownership, privilege, or host setting
+was changed. This unavailable attempt is distinct from the trusted-host run
+below.
+
+The trusted-host archive
+`/tmp/komposyn-issue-319-native.tkioSL.tar.gz` has SHA-256
+`b927545ffd59d9a2ff1640968a2c4625d1068e6732923d65ccfb30c669f69c59`. It
+contains `report.json` with SHA-256
+`b873241c17db76cf9d8bcfc1ad8bfbc671dfb73ae480fad41fa35584e6dae5f7` and
+`manifest.txt` with SHA-256
+`7e86c9397c842a161a16107c377df380ef4777767657ff4c9066ec3335e1668e`; the
+manifest's report hash matches the extracted report. It records source commit `609f5343b0f8c449f0ade43506f6ceebf87e0da8`, which contains
+the tested study implementation from `8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8`;
+subsequent changes were only capture-script/documentation changes. The run used
+Go 1.26.11, Ubuntu 24.04.5, Linux `7.0.0-42-generic` amd64, uid 1000 without
+root execution, and Bubblewrap 0.9.0 owned by root with mode 755 and SHA-256
+`e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71`. The
+actual fixture directory was ext4 (`0xef53`), mount ID 33. The runner exited 0.
+
+All 16 issue-319 rows are accounted for: 12 `measured_pass`, one successful
+O_TMPFILE publication marked `measured`, two deliberate lost-completion rows
+marked `unknown`, and one `observed_violation` in the direct-create
+create-then-write control. All workers were reaped. The violation is a useful
+negative result: the late hard link exposed payload bytes through a protected
+alias. It rules out direct named creation followed by writing for this
+candidate contract. O_TMPFILE publication, no-replace collision and symlink
+refusal, parent/root relocation, pre-publication invisibility, cancellation,
+and failed-stage cleanup worked in the tested synthetic cases. The two
+`unknown` cases intentionally lost completion; the harness preserved the
+unknown classification and did not retry.
+
+This packet predates the host-proc-fd actor probe added later in this branch.
+It remains useful for its unchanged rows, but it does not establish descriptor
+isolation. Later captures below supersede it for that boundary.
+
+An earlier probe revision is commit `9087d12bfc775f7ea86985cb5aba8028919ad742`.
+The wrapper built it successfully, but that local native attempt exited `3`
+because this environment's Bubblewrap is owned by `nobody:nogroup`; the trust
+check stopped the run before any native scenario. Its unavailable archive is
+`/tmp/komposyn-issue-319-native.FR14mJ.tar.gz` (SHA-256
+`4c47032d63d02f0869282731610cb9b855980a2fe9cef3afde82b65f798d36b3`), with
+report SHA-256
+`7c938983d79da1c1bf9a6bc72934e9c59aa59cb1a84a2c7676784fa574637cd4` and
+manifest SHA-256
+`13eecb76f4dfe7a6acd7aa869ce72bf8313e991afdab923d7841e0efe843ef56`. This is
+an unavailable preflight capture, not evidence about host proc-fd access.
+
+After correcting worker discovery, the local wrapper built source
+`b125b58c4402c13d02bc73b6431ddb8169771936` but again stopped before native
+scenarios because local Bubblewrap ownership is `nobody:nogroup`. Archive
+`/tmp/komposyn-issue-319-native.ry6vrv.tar.gz` has SHA-256
+`efdfaa495762871d4e7a104945d80f284365a7a4fa926c30d75360cbe4b86b72`; report
+SHA-256 is `7e9fda88ba26480876d680f2a3d6b19a639ce04c18b8265c97b8519b40b37486`.
+This is another unavailable preflight, not native evidence for the corrected
+probe.
+
+The wrapper also built source `4ef4073aaa9035f9209abdf7958cd33bec13e65e`
+after exact executable verification was added, but the local Bubblewrap trust
+check again stopped native execution. Archive
+`/tmp/komposyn-issue-319-native.7Drgn8.tar.gz` has SHA-256
+`69afefda79af2481531e589f3b0fed466468b7a56cbaafbd706f380729970147`; report
+SHA-256 is `c91cfd720ba38e3c7183edce7a5d7ebf60d1803cf5cb25cf3a2b7ca3266526a8`.
+This is an unavailable preflight only.
+
+The first trusted-host run with the host-proc-fd probe used source commit
+`2cd86bee281233fce36924975c51196121dc6ce5`. Archive
+`/tmp/komposyn-issue-319-native.xFmmLa.tar.gz` has SHA-256
+`d34051395e618752453320d2f5613187262b9f4e984f42a133496034b9dc76d5`, and its
+report SHA-256 is
+`0e309aad3e8ea98e5f35adb787930ea95d4e85468195894fe6d60b4bfcf6aab2`. The
+manifest report hash matches the report. The new probe row is `unavailable`
+(`staged-fd-not-found`), not a pass. The probe selected Bubblewrap's
+intermediate PID-namespace reaper rather than the worker, so that row says
+nothing about host access to the staged descriptor. The other study rows and
+their host provenance remain recorded as captured; this archive must not be
+relabeled as evidence for the corrected probe.
+
+A second trusted-host run used commit
+`029b337db2de1906fafe34462cacc39ba39d85d7`. Its archive,
+`/tmp/komposyn-issue-319-native.vyFs95.tar.gz`, has SHA-256
+`7d70adacccd096aebc373f1d5c3628af7175e777888dd0ee8b3f5a0f5cd9acb1`, and its
+report SHA-256 is
+`2b9e43436e42e8b34e1d87e732a1d2ce25f577b123bd65036330c7a54c5f0bb5`; the
+manifest hash matches. The proc-fd row remains `unavailable` with
+`staged-fd-not-found`. Since this version selected by argv token alone, it may
+have selected a launcher/reaper carrying the worker argument. The next probe
+revision additionally requires `/proc/<pid>/exe` to resolve to the mounted
+`/worker` executable. Neither trusted-host run establishes descriptor access.
+
+A third trusted-host run used commit
+`d9a7a7e28d6b340c91a3c3e537e5f650d3247510`. Archive
+`/tmp/komposyn-issue-319-native.0GvbQx.tar.gz` has SHA-256
+`e711fd65d7d592f75b9796d3c6ed1591f93eff6768edba02d7f43dde4aedd958`; report
+SHA-256 is `4137e276a2c043eac0b7068a068d2988d5ae412334a3b9c90088173d98e52db1`,
+matching the manifest. The corrected `create-one-otmpfile-proc-fd-access` row
+is `observed_violation`: a same-user actor reopened the staged descriptor via
+host procfs and changed its payload before publication. The worker then
+published the altered content. Worker and actor were both reaped. This confirms
+that O_TMPFILE hides the name, but does not protect the staged inode from a
+same-user process that can inspect the worker's host proc-fd entries. The
+direct-create late-hardlink violation remains independently confirmed. Across
+the 17 issue-319 rows, the statuses are 12 `measured_pass`, one `measured`, two
+`unknown`, and two `observed_violation`.
+
+This is evidence on one ext4 host, not production acceptance. It rejects the
+current O_TMPFILE candidate under the tested same-user threat profile. Whether
+another identity or isolation boundary can protect staged descriptors is a
+separate design and evidence question. Unsupported filesystems, other mount
+configurations, protected-owner rotation/coverage, production approval and
+revocation synchronization, post-publication races, crash durability, and
+process-tree/cgroup guarantees remain unproven. Other issue-215 report rows
+also remain unavailable; a runner exit of 0 does not turn those into passes.
+
+## Reproduction on a trusted Linux host
+
+The candidate includes the host-proc-fd actor probe; the recorded run above
+already exercised it. To reproduce, copy
+`/tmp/komposyn-issue-319-creation-feasibility.bundle` to
+the trusted host, then run these checkout commands once:
 
 ```sh
-report_checkout="$HOME/projects/samples/komposyn-reporting"
-mkdir -p "$HOME/projects/samples"
-if [ ! -d "$report_checkout/.git" ]; then
-  git clone https://github.com/ayeshLK/komposyn.git "$report_checkout"
-fi
-cd "$report_checkout"
-git fetch origin issue-315-integration
-git checkout --detach 9c16b8b2c9578909800ff937782a2c6f327b452e
-study_dir="$(mktemp -d "$PWD/.sandbox-study.XXXXXX")"
-study_report="$(mktemp /tmp/komposyn-sandbox-study-report.XXXXXX.json)"
-trap 'rm -rf "$study_dir"' EXIT
-findmnt -T "$PWD" -o TARGET,FSTYPE,OPTIONS
-GOCACHE=/tmp/komposyn-study-gocache CGO_ENABLED=0 go build -buildvcs=false -trimpath -o "$study_dir/komposyn-sandbox-study" ./cmd/sandbox-study
-"$study_dir/komposyn-sandbox-study" --bwrap /usr/bin/bwrap --commit "$(git rev-parse HEAD)" > "$study_report"
-printf 'Study report: %s\n' "$study_report"
+mkdir -p "$HOME/projects/samples/komposyn-issue-319"
+git clone https://github.com/ayeshLK/komposyn.git "$HOME/projects/samples/komposyn-issue-319"
+cd "$HOME/projects/samples/komposyn-issue-319"
+git fetch /path/to/komposyn-issue-319-creation-feasibility.bundle refs/heads/work/issue-319-creation-feasibility
+git checkout --detach FETCH_HEAD
+git merge-base --is-ancestor 8fdd9435870e6b90e4cb83c7169878bb0e3a2bb8 HEAD
 ```
 
-Build the executable under the checkout after checking its mount with
-`findmnt`; temporary directories under `/tmp` may not permit execution. The
-report and Go build cache can remain under `/tmp`.
+Then run the study; the archive path it prints contains the new report:
 
-The runner requires a root-owned, non-group/world-writable absolute
-`/usr/bin/bwrap` (or explicit `--bwrap` path), all requested user/PID/IPC/UTS
-and network namespaces, and seccomp. Refusal is `unavailable`, never a pass or
-fallback. The report records commit, OS, kernel, Go version, architecture,
-backend identity/version where trusted, effective candidate profile and
-scenario outcomes. Record the fixture filesystem from `findmnt` beside the
-report when archiving evidence.
+```sh
+./scripts/run-create-one-study.sh
+```
 
-On the development host used for the initial attempt (Ubuntu 24.04.5, Linux
-`7.0.0-42-generic`, Go 1.26.11, amd64, `/tmp` ext4), `/usr/bin/bwrap` was mode
-0755 but UID 65534 owned; trusted backend validation stopped at `/usr` before
-launch. This environment therefore produced no native scenario row. The
-preflight report is `unavailable/not_executed`, not a positive or negative
-enforcement result. A trusted host must record its actual kernel, filesystem,
-architecture and backend owner from its own run.
+The script verifies a clean Linux checkout, builds the study, and packages the
+JSON report and host/build hashes into one `.tar.gz` archive under `/tmp`. The
+study validates the Bubblewrap path before collecting its metadata or invoking
+it; validated backend metadata is in `report.json`. A test may override the
+path with `KOMPOSYN_STUDY_BWRAP`, but it remains subject to the same full trust
+validation and is never used as a fallback. Exit status 3 means prerequisites
+prevented native execution; the archive is still produced so the refusal can
+be reviewed. The script records the commit it actually runs, so verify that it
+matches the candidate revision before interpreting results.
 
-The new typed worker cases use disposable synthetic bytes only. A separate
-same-user actor process pauses at deterministic readiness checkpoints to move
-the opened parent and install a replacement, insert a competing leaf or a
-symlink, or create a late hard-link alias after direct `O_EXCL` creation but
-before payload write. The direct candidate opens the parent beneath `/scope`
-with `openat2` resolution guards, then uses one `openat` with
-`O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC` for a single leaf. It never creates a
-directory or overwrites an existing entry. Parent relocation is assessed under
-mounted-object semantics: the retained descriptor continues to designate the
-approved object, while a replacement at the old pathname is a different
-object. Collision and symlink insertion must fail without following or
-overwriting the actor's entry.
+The native runner may still refuse a host whose Bubblewrap fails its trust
+checks. Do not run as root or change Bubblewrap ownership to satisfy the
+preflight.
 
-The late-alias row is intentionally expected to expose a limitation: after
-direct creation returns and before content is written, an independent actor can
-hard-link the new inode into a separate synthetic protected directory. The
-subsequent payload write then changes the alias too. This makes
-create-then-write unsuitable wherever protected aliases must remain excluded,
-even though parent/leaf selection was bound for the create syscall.
+The report records the filesystem magic and mount ID from the actual synthetic
+parent descriptor. Review every creation row and its `worker_reaped`,
+`actor_reaped`, and `unnamed_stage_discarded` fields. `unavailable`, missing
+provenance, missing joins, or a mismatched fixture assertion is not a pass.
+Build and report hashes alone do not authenticate the host; preserve the
+operator's `id`, Go, backend ownership/version, kernel, and filesystem output
+with the report. Do not run as root or change Bubblewrap ownership to satisfy
+the preflight.
 
-The `O_TMPFILE` candidate keeps a new inode unnamed while writing all synthetic
-bytes, then attempts no-replace publication with `linkat` from
-`/proc/self/fd/<fd>` to the approved leaf. It uses a separate study-only
-Bubblewrap profile that adds `--proc /proc` inside the already unshared PID
-namespace. Every other row uses the original no-proc profile. This exposes only
-the study worker's private PID namespace, not host `/proc`; it is not a
-production profile or a fallback. If the private mount, `O_TMPFILE`, or proc-fd
-publication is unsupported, the row remains unavailable. The runner does not
-retry with a weaker path or call unavailability enforcement evidence.
-Filesystem/kernel support and link permission requirements remain material;
-only a trusted-host native run can evaluate them.
-The corresponding report row labels this `otmpfile-private-pid-proc`; all
-other rows label `default-no-proc`.
+## Disposition
 
-Injected partial content is reported as `partial`. A worker that creates and
-writes a synthetic file but loses its result is reported as `unknown`; the
-coordinator inspects the synthetic fixture only to describe the uncertainty
-and issues no replay. Neither result claims rollback or atomic whole-file
-publication. A failure before any payload byte is written after named-file
-creation is also `partial`, because the empty destination itself is an effect.
-Native report rows remain unavailable until the trusted-backend
-gate succeeds. Go tests validate harness code and classification only; they do
-not establish native enforcement, protected-owner synchronization, or
-model-facing safety.
+**The tested O_TMPFILE candidate is rejected for a same-user host threat
+profile.** On the trusted ext4 host, a same-user actor used host procfs to
+modify the unnamed staged inode before publication. Direct named creation also
+failed its late-hardlink control. Neither mechanism may be described as safe
+for this profile based on the remaining successful rows. This study does not
+decide whether a stronger identity/isolation boundary or a different
+transactional mechanism could support creation.
+
+The next step is to decide whether issue #319 should investigate a design that
+prevents same-user access to staged worker descriptors or stop pursuing
+creation under the current threat model. Any new isolation or mechanism needs
+its own review and native evidence; the successful O_TMPFILE publication rows
+do not override this observed violation. Do not close #319, unblock #321, or
+expose creation/editing based on this study. Keep #320 editing research
+separate, and leave #315, #319, #321, and #267 open for review.
+
+## Validation
+
+Go `1.26.11` was used. After correcting worker discovery, the following checks
+passed:
+
+- `go mod verify`
+- `go vet ./...`
+- `go test ./...`
+- `go test -race ./...` (Token Logger package completed in 258.576 seconds)
+- `make check`
+- Focused `go test ./internal/harness/sandboxstudy ./cmd/sandbox-study`
+- Focused `go test -race ./internal/harness/sandboxstudy`
+
+The first trusted-host packet's proc-fd row was unavailable because the probe
+selected Bubblewrap's intermediate reaper. The bounded descendant lookup is in
+commit `91ccf2ef512a551dd9b7bb7b36d29dcca4e488f2`; exact executable
+verification was added in `11880381d9c5aefb703bcf7ab5bbccb0538cd2fd`. The
+final trusted-host capture documented above resolves that probe issue and
+records an observed violation. Ordinary Go and race checks do not establish
+filesystem enforcement.

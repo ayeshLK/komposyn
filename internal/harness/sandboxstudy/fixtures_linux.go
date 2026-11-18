@@ -208,6 +208,45 @@ func setupCreateParentRelocation(scope, outside string, actor fixtureActor) (fun
 	}, nil
 }
 
+func setupCreateRootRelocation(scope, outside string, actor fixtureActor) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		if err := actor("move-root", scope, outside); err != nil {
+			return "", err
+		}
+		return "independent actor moved the selected root and replaced its original pathname", nil
+	}, nil
+}
+
+func setupCreateStagedProtected(scope, outside string, actor fixtureActor) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(filepath.Join(outside, "protected"), 0o700); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		if err := actor("noop", scope, outside); err != nil {
+			return "", err
+		}
+		return "synthetic protected alias directory exists outside the worker mount", nil
+	}, nil
+}
+
+func setupCreateProcFDProbe(scope, outside string) (func() (string, error), error) {
+	if err := prepareCreateParent(scope); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(filepath.Join(outside, "protected"), 0o700); err != nil {
+		return nil, err
+	}
+	return func() (string, error) {
+		return "no mutation before the staged descriptor probe", nil
+	}, nil
+}
+
 func setupCreateCollision(scope, outside string, actor fixtureActor) (func() (string, error), error) {
 	if err := prepareCreateParent(scope); err != nil {
 		return nil, err

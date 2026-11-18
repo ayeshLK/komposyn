@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestSeccompFilterIsArchitectureCheckedAndBounded(t *testing.T) {
@@ -288,6 +290,152 @@ func verifyZeroByteCreateWorker(t *testing.T, scope string) (string, string) {
 		t.Fatalf("zero-byte effect file = %q, %v; want existing empty file", data, err)
 	}
 	return verifyObserved("create-one-zero-byte-write-failure", scope, Observation{WorkerOutcome: result.Status})
+}
+
+func TestOTmpfileWorkerRefusesExistingDestinationWithoutChangingIt(t *testing.T) {
+	for _, destination := range []string{"regular", "symlink"} {
+		t.Run(destination, func(t *testing.T) {
+			scope := t.TempDir()
+			parent := filepath.Join(scope, "parent")
+			if err := os.Mkdir(parent, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			leaf := filepath.Join(parent, "new.txt")
+			if destination == "regular" {
+				if err := os.WriteFile(leaf, []byte("actor collision fixture\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink("outside-target", leaf); err != nil {
+				t.Fatal(err)
+			}
+			var output strings.Builder
+			code := workerMainAt(scope, []string{"create-one-otmpfile", "parent/new.txt"}, strings.NewReader("RELEASE\nCONTINUE\n"), &output)
+			if code != 0 {
+				t.Fatalf("worker exit=%d output=%q", code, output.String())
+			}
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			result, err := parseWorkerResult(lines[len(lines)-1])
+			if err != nil {
+				t.Fatalf("decode worker result: %v (%q)", err, output.String())
+			}
+			if result.Status == "unavailable" || result.Status == "setup_refused" {
+				t.Skipf("host filesystem does not support O_TMPFILE publication: %s", result.Detail)
+			}
+			if result.Status != "failed" {
+				t.Fatalf("existing %s destination status=%q detail=%q", destination, result.Status, result.Detail)
+			}
+			if destination == "regular" {
+				if data, err := os.ReadFile(leaf); err != nil || string(data) != "actor collision fixture\n" {
+					t.Fatalf("regular destination changed: %q %v", data, err)
+				}
+			} else if info, err := os.Lstat(leaf); err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("symlink destination changed: info=%v err=%v", info, err)
+			}
+		})
+	}
+}
+
+func TestProcFDProbePublishesOnlyAnUnlinkedFixtureDescriptor(t *testing.T) {
+	root := t.TempDir()
+	scope := filepath.Join(root, "scope")
+	parent := filepath.Join(scope, "parent")
+	outside := filepath.Join(root, "outside")
+	protected := filepath.Join(outside, "protected")
+	for _, path := range []string{parent, protected} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fd, err := unix.Openat(unix.AT_FDCWD, parent, unix.O_TMPFILE|unix.O_WRONLY|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		t.Skipf("filesystem does not support O_TMPFILE: %v", err)
+	}
+	defer unix.Close(fd)
+	payload := []byte("synthetic create fixture\n")
+	if n, err := unix.Write(fd, payload); err != nil || n != len(payload) {
+		t.Fatalf("stage payload: wrote %d bytes, err=%v", n, err)
+	}
+
+	if err := probeOTmpfileProcFD(os.Getpid(), scope, outside); err != nil {
+		t.Fatal(err)
+	}
+	result, err := os.ReadFile(filepath.Join(outside, "proc-fd-probe-result"))
+	if err != nil || string(result) != "staged-payload-published-by-actor" {
+		t.Fatalf("probe result = %q, err=%v; want staged descriptor publication", result, err)
+	}
+	alias, err := os.ReadFile(filepath.Join(protected, "proc-fd-alias.txt"))
+	if err != nil || string(alias) != string(payload) {
+		t.Fatalf("published alias = %q, err=%v; want exact fixture payload", alias, err)
+	}
+}
+
+func TestProcFDProbeClassificationRequiresKnownPublicationOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		probe         string
+		workerOutcome string
+		want          string
+	}{
+		{name: "denied-and-published", probe: "proc-fd-denied", workerOutcome: "succeeded", want: "measured_pass"},
+		{name: "denied-but-publication-failed", probe: "proc-fd-denied", workerOutcome: "failed", want: "unavailable"},
+		{name: "actor-published-stage", probe: "staged-payload-published-by-actor", workerOutcome: "failed", want: "observed_violation"},
+		{name: "unmatched-descriptor", probe: "staged-fd-linked-payload-mismatch", workerOutcome: "failed", want: "unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			scope := filepath.Join(root, "scope")
+			outside := filepath.Join(root, "outside")
+			for _, path := range []string{filepath.Join(scope, "parent"), outside} {
+				if err := os.MkdirAll(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(outside, "proc-fd-probe-result"), []byte(test.probe), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			actual, status := verifyObserved("create-one-otmpfile-proc-fd-access", scope, Observation{WorkerOutcome: test.workerOutcome, ActorReaped: true})
+			if status != test.want {
+				t.Fatalf("probe status=%q, effect=%q; want %q", status, actual, test.want)
+			}
+		})
+	}
+}
+
+func TestSandboxStudyWorkerCmdlineRequiresExactArgument(t *testing.T) {
+	if !isSandboxStudyWorkerCmdline([]byte("/worker\x00--sandbox-study-worker\x00")) {
+		t.Fatal("expected exact worker argument to match")
+	}
+	for _, cmdline := range [][]byte{
+		[]byte("/worker\x00--sandbox-study-worker-extra\x00"),
+		[]byte("/tmp/--sandbox-study-worker\x00"),
+		[]byte("/worker\x00"),
+	} {
+		if isSandboxStudyWorkerCmdline(cmdline) {
+			t.Fatalf("unexpected worker match for cmdline %q", cmdline)
+		}
+	}
+}
+
+func TestSandboxStudyWorkerExecutableRequiresMountedWorker(t *testing.T) {
+	if !isSandboxStudyWorkerExecutable("/worker") || !isSandboxStudyWorkerExecutable("/worker (deleted)") {
+		t.Fatal("expected mounted worker executable to match")
+	}
+	for _, executable := range []string{"/usr/bin/bwrap", "/worker-helper", "worker", ""} {
+		if isSandboxStudyWorkerExecutable(executable) {
+			t.Fatalf("unexpected worker executable match for %q", executable)
+		}
+	}
+}
+
+func TestFixtureFilesystemUsesDescriptorMountID(t *testing.T) {
+	fstype, mountID := fixtureFilesystem(t.TempDir())
+	if fstype == "" || mountID == 0 {
+		t.Fatalf("fixture filesystem provenance unavailable: type=%q mount=%d", fstype, mountID)
+	}
+	if !strings.Contains(fstype, "magic:0x") {
+		t.Fatalf("filesystem magic missing from provenance: %q", fstype)
+	}
 }
 
 func TestPrivateHomeProbeProductionAndClassification(t *testing.T) {
