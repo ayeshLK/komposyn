@@ -172,14 +172,17 @@ Capture details for the working-tree run:
   synthetic behavior and `candidate_profile_eligible=false` for this host.
 
 The commit-bound capture used source `2cb48322d99bcdc1feaa440d6701f54a1ccad3b7`.
-Its JSON report is `/tmp/komposyn-issue-319-gate-a-startup.json`, SHA-256
-`36a6290f55357cee527109de580c40135c2deace36353253ea79decf8390065a`. The
-static study binary is `/tmp/komposyn-sandbox-study-gate-a`, SHA-256
+The exact JSON report is checked in at
+[`evidence/issue-319-gate-a-startup-report.json`](evidence/issue-319-gate-a-startup-report.json),
+SHA-256 `36a6290f55357cee527109de580c40135c2deace36353253ea79decf8390065a`.
+Its [manifest](evidence/issue-319-gate-a-startup-manifest.txt) records the
+source and binary hashes. The static study binary is
+`/tmp/komposyn-sandbox-study-gate-a`, SHA-256
 `29893394cab7175f326f5fc44cb671975c79586a01ebc3000fe2d4abd63f7d3d`. The
-capture archive is `/tmp/komposyn-issue-319-gate-a-capture.tar.gz`, SHA-256
-`0b0a86be6fd53978b3717f6f49f7d1d133f8fac2a744cf1a8d59bbc99f1ae51f`; it
-contains the binary, JSON report and manifest. The source hashes are recorded
-in that manifest. Do not reuse this host to claim mode-2 or mode-3 coverage.
+full capture archive, including that binary, remains at
+`/tmp/komposyn-issue-319-gate-a-capture.tar.gz`, SHA-256
+`0b0a86be6fd53978b3717f6f49f7d1d133f8fac2a744cf1a8d59bbc99f1ae51f`.
+Do not reuse this host to claim mode-2 or mode-3 coverage.
 
 ## Reproduction and validation
 

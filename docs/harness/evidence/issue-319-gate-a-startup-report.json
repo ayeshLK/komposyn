@@ -1,0 +1,30 @@
+{
+  "architecture": "amd64",
+  "candidate_profile_eligible": false,
+  "effective_capabilities": "0000000000000000",
+  "gid": 1000,
+  "go_version": "go1.26.11",
+  "kernel": "7.0.0-42-generic",
+  "observation": {
+    "initial_dumpable": 1,
+    "fixture_filesystem": "ext4(magic:0xef53)",
+    "fixture_mount_id": 6339,
+    "pre_protection_proc_fd_open": "opened while target reported dumpable=1",
+    "write_through_retained_descriptor": "write succeeded through the pre-protection descriptor after target dumpable=0",
+    "post_protection_proc_fd_open": "refused: permission denied",
+    "observed_synthetic_output": "SYNTHETIC_APPROVAL_DISPLAY_CHANNEL\n",
+    "target_reaped": true,
+    "actor_reaped": true,
+    "status": "observed_violation"
+  },
+  "original_user_namespace_and_cap_sys_ptrace_absence_verified": false,
+  "os": "linux",
+  "profile_limitation": "the synthetic descriptor control does not establish an eligible original-user-namespace host or broker confinement",
+  "ptrace_scope": "1",
+  "source_commit": "2cb48322d99bcdc1feaa440d6701f54a1ccad3b7",
+  "study": "issue-319 Gate A startup proc-fd retention synthetic control",
+  "suid_dumpable": "2",
+  "uid": 1000,
+  "user_namespace": "user:[4026533849]",
+  "user_namespace_map": "1000          0          1"
+}
