@@ -155,12 +155,24 @@ integration before any write is attempted.
    Obtain explicit once approval bound to object ID/generation, parent
    identity, absent leaf, bytes digest, scope/policy/owner generations,
    provider destination and call identity. No conversation grant applies.
-4. After approval and before staging, take the effect mutex and atomically
-   consume the once receipt in runtime admission. Revalidate service state,
+4. After approval, atomically consume the once receipt in runtime admission
+   and reserve the logical effect lease. Revalidate service state,
    scope/policy/owner generations, parent identity and displayed route, target
-   absence, and protected-owner checks. A detected change invalidates the
-   receipt and requires cancel or a new proposal and fresh approval.
-5. Create one random same-parent stage name with `openat2(parentFD, name,
+   absence, and protected-owner checks. The receipt is never restored. A
+   detected change requires cancellation or a new proposal and fresh approval.
+5. Acquire the separate transient-stage barrier and complete its read/list/search
+   drain **before creating any stage directory entry**. It closes new admission
+   before the stage name can affect visible names or counts. If admission
+   invalidation or draining fails after the gate closes, create no stage and
+   retain the blocked gate and cleanup ownership. If the barrier cannot be
+   acquired because the service is busy or closed, create no stage and release
+   only reservations actually acquired. In either case this consumed proposal
+   ends without effect; a retry requires a new proposal and approval. Once the
+   barrier is active, obtain a stage-entry permit from the
+   shared owner/effect-state coordinator. If an owner transition or cancellation
+   won first, create no stage and cleanly retire or retain the barrier as
+   required. If stage-entry admission won first, create one random same-parent
+   stage name with `openat2(parentFD, name,
    O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC, 0600)` and
    `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_XDEV`.
    The stage descriptor is `O_WRONLY|O_CLOEXEC`, owned by the process's
@@ -170,26 +182,33 @@ integration before any write is attempted.
    enforced with `fchmod` before publication. It is a regular file. No
    capabilities, procfs, directory creation, privilege change or temporary
    external store is used. Stage-name collision or creation failure is a
-   pre-publication failure; there is no retry of the save. Before writing
-   payload bytes, enter the separate transient-stage barrier described below.
-   It prevents concurrent KompoSyn read, listing and search operations from
-   observing the stage. This barrier is not generic protected-owner rotation:
+   pre-publication failure; there is no retry of the save. The barrier prevents
+   concurrent KompoSyn read, listing and search operations from observing the
+   stage. This barrier is not generic protected-owner rotation:
    it must not increment auth/settings owner, policy or coverage generations,
    invalidate its own consumed receipt, or invoke the generic `Protect` path.
    Retire the stage guard only after successful publication or cleanup is
    confirmed; an unjoined worker or uncertain stage keeps the read gate closed.
 6. Write the frozen byte slice with a bounded loop until complete or error;
    partial writes are handled as incomplete staging. `fsync(stageFD)`, close
-   the writable descriptor, then immediately recheck the proposal generations
-   and cancellation before the publication attempt. A stage write/sync/close
+   the writable descriptor. A stage write/sync/close
    failure removes the stage when its identity is still the one created by
    this request; cleanup failure is reported and admission remains blocked
    until cleanup is confirmed.
-7. Publish only with `renameat2(parentFD, stageName, parentFD, leaf,
+7. Immediately before publication, recheck filesystem state and obtain a
+   one-use publication-release permit from the same short-held coordinator
+   lock that records owner-transition-pending state. This atomic in-memory
+   transition is the ordering point: if owner transition or cancellation marks
+   pending first, no permit is issued and the stage is cleaned up; if release
+   wins first, the operation is potentially in flight and the owner transition
+   waits for its classified outcome. No lock is held across the syscall. A
+   cancellation racing after release may still precede or follow the syscall;
+   classify the observed result and never infer rollback.
+8. Publish only with `renameat2(parentFD, stageName, parentFD, leaf,
    RENAME_NOREPLACE)`. `EEXIST` is a collision even if the last observation
    found absence. Never retry as replace, truncate, append, link, or plain
    rename. Any unsupported flag/filesystem outcome refuses without fallback.
-8. After successful publication, open the leaf without following links and
+9. After successful publication, open the leaf without following links and
    compare its identity and bytes with the staged object/proposal; then
    `fsync(parentFD)`. This detects some discrepancies but cannot prove no
    intermediate mutation occurred. Failure after publication is partial or
@@ -406,6 +425,7 @@ receipt cannot fail closed through the existing composition seam.
 | Parent moved/replaced before post-approval revalidation | Retained object and displayed route are compared; detected change invalidates approval; no redirect to replacement | Parent identity is path-string-only |
 | Parent moves after final observation | Deterministic actor demonstrates documented residual race; outcome reports actual parent object affected | Report claims external exclusion or exact live-path containment |
 | Protected owner registered, rotated, aliased or made incomplete | Pending proposal invalidated; missing/stale coverage refuses before stage/publication | Any protected owner gap permits effect |
+| Owner transition between final filesystem validation and publication release | Shared coordinator orders pending transition against one-use release permit: transition-first means no permit/syscall; release-first means cancellation request plus wait and truthful outcome classification | An owner update is reported complete while a released effect remains unclassified, or a transition that won first still permits publication |
 | Stage self-registration after once-receipt consumption | Dedicated transient barrier stops admissions, drains existing readers, excludes the stage, retires only after cleanup, and leaves auth/policy/coverage generations and consumed receipt unchanged | Generic `Protect` invalidates its own save, or reads can observe stage |
 | Stage barrier drain/retirement incomplete | No stage write/publication if drain fails; after effect, keep affected reads closed, retain guard and cleanup ownership until confirmed | Admission reopens or stage guard retires before joins/cleanup |
 | Cancellation before publication / during publication | Before publication: stage cleanup confirmed; around/after syscall: truthful created/partial/unknown, never rollback | Incomplete join releases admission or triggers replay |

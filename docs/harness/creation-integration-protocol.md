@@ -72,12 +72,54 @@ Proposed states are `open`, `closing`, `draining`, `active`, `retiring`, and `bl
 2. Host marks pre-existing, not-yet-dispatched read admissions stale and closes their coordinator references. It cancels active readers/listings/searches that could observe the selected parent/scope and waits for each worker and its descriptors to join. No stage is created until this drain is complete. A prepared but unclaimed request must fail its next authority claim; it cannot launch after the barrier closes.
 3. A read worker that already completed before barrier acquisition has no live filesystem authority after join. Its immutable capture is not a stage observation and may proceed through the existing publication gate if its own read authorization generations remain current. The barrier does not alter those generations. A running worker is cancelled/joined rather than allowed to publish a potentially stage-observing capture. If the implementation cannot prove the worker completed before the barrier's admission linearization point, it is treated as active and drained.
 4. If any worker cannot join, any descriptor remains unaccounted, or any admission cannot be invalidated, transition to `blocked`; do not create the stage or release the read gate. Keep cleanup ownership and report unavailable/unknown. Do not wait while holding runtime, service, owner-update, effect-admission or barrier state mutexes.
-5. Once drained, transition to `active` and retain the barrier token. The create worker creates the stage while no KompoSyn reader can run. The token also records the temporary stage route/identity after creation; that record is private host exclusion metadata, not an owner-registration revision. Then write, sync, close and publish or clean up using the candidate mechanism.
-6. Real auth/settings/provider owner updates remain independent. An owner update first marks its owner transition pending and blocks affected create/read admissions under the owner coordinator; it cancels affected work and drains outside locks; then it registers/rotates routes and identities and advances owner/coverage generations. A create observes pending/update generation before effect and is cancelled/refused. The transient barrier never advances or refreshes owner, policy or coverage generations and never revives the consumed approval.
+5. Once drained, transition to `active` and retain the barrier token. Before creating the stage entry, host takes a short-lived stage-entry permit under the same coordinator that records owner-transition-pending state. If owner transition or cancellation wins that lock, no stage entry is created. If the stage-entry permit wins, the worker creates the stage while no KompoSyn reader can run. The token records the temporary route/identity after creation; this is private host exclusion metadata, not an owner-registration revision. Then write, sync, close and publish or clean up using the candidate mechanism.
+6. Real auth/settings/provider owner updates remain independent. An owner update first marks its transition pending under the shared effect-state coordinator, blocking new create/read admissions; it requests cancellation and drains outside locks, then registers/rotates routes and identities and advances owner/coverage generations. If pending wins before stage-entry permit, no stage is made. If stage-entry permit wins first, the update cancels the effect; it must still win the separate publication-release race before publication can be authorized. The transient barrier never advances or refreshes owner, policy or coverage generations and never revives the consumed approval.
 7. On confirmed publication or confirmed pre-publication cleanup, host closes stage/parent/worker descriptors and confirms the temporary name is absent (or is now the confirmed published leaf). It enters `retiring`; after all worker joins and result classification, it removes the temporary exclusion and atomically reopens read admissions if service, owner state and cleanup are healthy. Existing completed captures may publish only under their unchanged authorization bindings.
 8. If publication may have happened but identity/result processing is uncertain, preserve the one-shot outcome as `partial_or_unknown`; never delete a possible committed file or replay. If the helper cannot join, cleanup is incomplete, or a temporary entry may remain, transition to `blocked` and retain the token/ownership. Reads remain closed until an explicit host recovery operation proves the worker joined, descriptors closed and temporary entry disposition. No automatic sweeper or restart-time deletion is assumed. Service close sets `closing`, cancels and joins active workers, retires only confirmed resources, and returns an error while incomplete cleanup remains; process exit is not evidence of successful cleanup.
 
 The service-wide barrier excludes all in-process reads during its active interval, including requests through aliases or after namespace moves. It cannot prevent an external process from reading a same-user-visible stage, nor does it establish mutation isolation. That external race is part of the accepted #343 boundary. The transient route/identity record prevents future KompoSyn admission from treating the stage as ordinary data; it is not a substitute for owner coverage.
+
+### Owner transition and publication-release linearization
+
+The in-memory ordering point must be shared by owner transitions, cancellation,
+stage-entry admission and publication release. A final filesystem check performed
+outside the coordinator lock is only an observation; it cannot alone authorize
+publication. After those bounded checks, the worker requests a one-use release
+permit in a short critical section:
+
+```text
+AcquireStageEntry(token, expected generations):
+    lock effectState
+    reject if closed, cancelled, ownerTransitionPending, or generations changed
+    mark stageEntryAdmitted
+    unlock effectState
+
+ReleasePublication(token, expected generations):
+    lock effectState
+    reject if closed, cancelled, ownerTransitionPending, or generations changed
+    mark publicationReleased       // linearization point; one use only
+    unlock effectState
+    return permit
+
+BeginOwnerTransition(owner):
+    lock effectState
+    mark ownerTransitionPending; reject later stage/release permits
+    cancel affected effects
+    note any effect whose publicationReleased bit is already set
+    unlock effectState
+    wait for affected effect tokens and joins; classify released effects
+```
+
+If owner transition/cancellation wins before `ReleasePublication`, no permit is
+issued and the stage is cleaned up under the still-closed read barrier. If
+`ReleasePublication` wins first, the owner transition treats publication as
+potentially in flight, requests cancellation, and waits for the token's actual
+outcome before completing owner rotation. The worker may observe cancellation
+before calling the syscall or race with/invoke it; the permit does not claim to
+hold a lock across the syscall. A released permit is never reused. The outcome
+is classified from the worker and filesystem evidence; uncertainty remains
+`partial_or_unknown`, with no replay. This defines which internal transition
+wins without strengthening the accepted external-race boundary.
 
 ### Lock and wait order
 
@@ -86,11 +128,11 @@ Use a logical order, not nested long-lived locks:
 1. Runtime proposal/queue mutex: validate state and consume receipt; release before host calls.
 2. Host effect lease: acquired by reservation under the service coordinator lock; it is a logical exclusive token, not a mutex held while waiting.
 3. Barrier/admission state: briefly close admission and snapshot active workers; release before cancellation/join.
-4. Owner transition coordinator: mark pending and block new work briefly; release before joins/registration I/O. Effect final check observes pending/generation and refuses if it changed.
+4. Shared effect-state coordinator: atomically order owner-pending, cancellation, stage-entry admission and one-use publication release; release before joins, filesystem calls or registration I/O.
 5. Worker execution: filesystem operations and joins with no runtime/service/owner/barrier mutex held.
 6. Retirement: short coordinator transaction confirms joins, descriptor cleanup, owner state and outcome; then opens admissions.
 
-If an owner transition races an acquired effect lease, its pending marker prevents the next irreversible step; it requests cancellation and waits for lease retirement outside the owner lock. If publication has already happened, report the confirmed or unknown outcome and complete cleanup before the owner transition completes. Never wait for the create worker from that worker's own completion path. Never hold an effect mutex across user approval. The barrier is acquired only after the UI response and receipt consumption, and a failed barrier attempt does not restore the receipt.
+If an owner transition races an acquired effect lease, the shared coordinator determines whether stage-entry admission or publication release already won. A transition that wins first prevents the corresponding permit; a transition after publication release cancels and waits for lease retirement and outcome classification outside the lock. If publication has already happened, report the confirmed or unknown outcome and complete cleanup before owner rotation completes. Never wait for the create worker from that worker's own completion path. Never hold an effect mutex across user approval. The barrier is acquired only after the UI response and receipt consumption, and a failed barrier attempt does not restore the receipt.
 
 ## Cancellation, conflicts and publication outcomes
 
@@ -106,11 +148,11 @@ The worker/helper reports `not_executed` only when publication is known not to h
 | Stage self-registration invalidating its receipt | Temporary exclusion uses barrier-local token/identity and does not call `Protect` or advance owner/policy/coverage generations. | Implement and prove one-consumer receipt binding remains unchanged through stage lifecycle. |
 | Drain, cancellation, close and uncertain cleanup | Explicit `blocked` state retains gate and cleanup ownership; no reopen before join, descriptor closure and stage disposition. | Integration and native cases at each transition, incomplete join, service shutdown and uncertain publication. |
 | Protected owner coverage | Eligibility requires complete trusted manifest; absent, required, pending, stale, retired, unsupported or ambiguous states are distinct; unknown selected-root data fails closed. | Resolve provider-source and unknown-root scope completeness. Current production composition cannot make arbitrary scopes eligible. |
-| Auth/settings rotation ordering | Pending marker blocks admission; generation change invalidates proposals; drain occurs outside locks; no stale publication. | Implement owner/effect coordination and test rotation before and during drain/staging/publication. |
+| Auth/settings rotation ordering | Shared coordinator linearizes owner pending against stage-entry and publication-release permits; no state lock spans syscall/join. | Implement and test owner transition before stage permit, between final filesystem validation and release, after release but before syscall, and after publication. |
 | Creation approval path | Typed runtime receipt binds exact bytes, target, parent, destination and generations; one-consumer queue; no prompt under effect lock; fresh approval on detected conflict. | Add create-specific UI/runtime/provider integration and verify exact rendering, stale arguments and no replay. |
 | Stage-and-rename mechanism | Candidate has a single no-replace publication point; external races remain accepted. | Prototype authorization is separate; then native Linux amd64/ext4 evidence and reviewed implementation are required. |
 
-Behavioral evidence should use the real composed sandbox Service and runtime/UI/provider seam. Cases include eligible/ineligible profile/schema and instructions, unsupported argument rejection, basic reads unchanged, same-profile admission and execution, exact approval/destination, argument-binding rejection, alias and root/policy/owner changes, protected alias filtering, incomplete owner refusal before approval/worker, closed service, cancellation, stale publication, private metadata stripping and descriptor cleanup. Creation-specific deterministic cases also cover active/queued reads, completed capture publication, barrier before visible stage, owner rotation at each transition, failure to join, double execution, collision at publication, parent moves, exact bytes/limits, continuation failure/no replay and external mutation after final check.
+Behavioral evidence should use the real composed sandbox Service and runtime/UI/provider seam. Cases include eligible/ineligible profile/schema and instructions, unsupported argument rejection, basic reads unchanged, same-profile admission and execution, exact approval/destination, argument-binding rejection, alias and root/policy/owner changes, protected alias filtering, incomplete owner refusal before approval/worker, closed service, cancellation, stale publication, private metadata stripping and descriptor cleanup. Creation-specific deterministic cases also cover active/queued reads, completed capture publication, barrier before visible stage, an owner transition after final filesystem validation but before publication-release arbitration, both owner-transition-wins and release-wins orderings, cancellation after release but before syscall, owner rotation at each transition, failure to join, double execution, collision at publication, parent moves, exact bytes/limits, continuation failure/no replay and external mutation after final check.
 
 Native evidence is required for actual stage visibility, no-replace collision behavior, filesystem/kernel support, identity/cleanup and independent-actor residual races. Behavioral tests establish runtime/UI/provider composition and ordering only; ordinary tests and Go race tests do not prove native filesystem enforcement. Use synthetic disposable files and independent actors through the existing harness. Stop on missing coverage, unsupported primitive behavior, an unjoined worker or any need to change the accepted threat boundary. No evidence or experiment is performed by this document-only change.
 
