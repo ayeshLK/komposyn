@@ -1,7 +1,10 @@
 # Initial design investigation: issue #320 editing
 
 Status: **design only; no editing prototype or model-facing capability**. The
-existing-file edit gate remains unsatisfied. This proposal is intentionally
+existing-file edit gate remains unsatisfied. A scoped negative research
+disposition is proposed in
+[`issue-320-closeout.md`](issue-320-closeout.md); issue #320 remains open while
+that proposal is reviewed. This design is intentionally
 separate from the accepted negative closeout for creation in
 [`issue-319-closeout.md`](issue-319-closeout.md). Issue #319's closure and its
 creation counterexamples do not establish editing safety.
@@ -187,13 +190,13 @@ integration:
    existing runtime-to-UI/provider boundary, with preparation/execution using
    the real composed host service and no model-controlled identity/digest.
 
-The smallest immediate follow-up is a maintainer decision on whether to retain
-#267's mounted-object semantics and whether a new privileged kernel/filesystem
-or deployment boundary may even be researched. If no such boundary is
-authorized, keep #320 open with editing unavailable and do not build an
-executor, UI, or apply-patch prototype. If approved, first write a
-mechanism-specific design and native rejection protocol; only a later
-authorization may start implementation.
+The proposed closeout recommends closing #320 only as a scoped negative result
+after maintainer review. Whether to retain #267's mounted-object semantics and
+whether any new kernel/filesystem or deployment boundary may be researched are
+separate decisions. If no concrete candidate is authorized, keep editing
+unavailable and do not build an executor, UI, or apply-patch prototype. Any
+accepted candidate first needs a mechanism-specific design and native rejection
+protocol; only a later authorization may start implementation.
 
 ## Current tracker state
 
