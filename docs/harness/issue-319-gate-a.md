@@ -217,6 +217,7 @@ enforcement. This report does not close #319, unblock #321, close #267, or
 complete umbrella #315. Gate B and any creation enablement require a new
 reviewed decision.
 
-For a consolidated proposed disposition of all #319 creation candidates, see
+Subsequently, #319 closed on 2026-11-19 as negative research after PR #338
+merged. For the accepted disposition of the examined creation candidates, see
 the [#319 research closeout](issue-319-closeout.md). This Gate A report remains
 the source for its own historical capture and limitations.

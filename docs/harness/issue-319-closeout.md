@@ -1,11 +1,13 @@
-# Proposed research closeout: issue #319
+# Research closeout: issue #319
 
-Status: **proposal for maintainer review; issue remains open**. This document
-does not close the ticket, enable creation, or complete #315. It recommends
-closing #319 as a negative research result for the mechanisms actually tested,
-while keeping creation unavailable. Closing #319 resolves its native GitHub
-dependency from #321; #321's separate positive-evidence and explicit
-enablement gate remains unsatisfied.
+Status: **accepted negative research disposition; issue closed**.
+[Issue #319](https://github.com/ayeshLK/komposyn/issues/319) closed on
+2026-11-19 at 03:41:01 UTC, following the merge of
+[PR #338](https://github.com/ayeshLK/komposyn/pull/338) at
+`52fe3bec9a6a25cf017f3c7c47229046fb85b1c2`. This closes research for the
+mechanisms examined, while creation remains unavailable. The closure resolves
+#321's native GitHub dependency on #319; #321's separate positive-evidence and
+explicit enablement gate remains unsatisfied. Umbrella #315 remains open.
 
 ## Disposition
 
@@ -23,8 +25,8 @@ Three mechanism investigations have produced counterexamples:
 The result is a rejection of these candidates under their stated threat
 contracts, not a proof that all unprivileged creation is impossible. No
 positive creation mechanism, complete approval chain, or model-facing
-capability has been established. A negative closeout would satisfy #319's
-explicit negative-research completion clause; it would not deliver the
+capability has been established. This closeout uses #319's explicit
+negative-research completion clause; it does not deliver the
 creation user story, close #267 or #315, or satisfy #321's positive-evidence
 and enablement gate.
 
@@ -65,27 +67,26 @@ passed.
 | Use an operation-specific bounded worker and existing harness | **Demonstrated for the study only** | The fixed one-operation workers and independent actors ran in the existing native harness. This is not a production broker or a safe candidate. |
 | Exercise collisions, substitution, aliases, protection transitions, cancellation, cleanup and unknown outcomes | **Partly demonstrated; intentionally unreached after failed gates** | The #336 archive records candidate-specific collision, symlink, relocation, late-alias, stage, cancellation and unknown rows. The #337 synthetic control adds startup descriptor retention. Protected-owner lifecycle, complete revocation ordering, delayed/incomplete joins and the complete authority chain remain unavailable. |
 | Record source, host, backend, filesystem, outcome and limits | **Demonstrated for the accepted captures** | #336 source/report/archive and #337 source/report/archive provenance are recorded above and in the preserved manifests. The #337 host is explicitly ineligible for scope 2/3 acceptance. |
-| Deliver a reviewed mechanism or precise negative result and alternatives | **Negative research result ready for review** | The current selected broker candidate fails Gate A. Alternatives below require fresh decisions; none is selected or authorized. This criterion supports a narrow closeout, not #321 enablement. |
+| Deliver a reviewed mechanism or precise negative result and alternatives | **Accepted negative research result** | The selected broker candidate failed Gate A; PR #338 merged the consolidated findings and #319 is closed. Alternatives below require fresh decisions; none is selected or authorized. This is a narrow research closeout, not #321 enablement. |
 | Relate to #267 without closing/redefining it or changing host security | **Contract documented / preserved** | #267 remains open. No privileged loader, policy setting, host-security change or creation tool was added. |
 | Use the runtime/UI/provider seam and native harness | **Native study demonstrated; runtime/UI path intentionally unreached** | There is no production create operation to exercise at the runtime/UI/provider seam. The negative Gate A result required stopping before building that workflow. |
 | Required repository checks for implementation changes | **Demonstrated for merged research changes** | PR #336 and PR #337 report module verification, vet, full tests, race tests and `make check` passing. These checks validate code quality, not native enforcement. |
 
-## Proposed tracker reconciliation
+## Tracker reconciliation
 
-Recommendation: after maintainer review, close #319 with the draft text in
-`/tmp/komposyn-issue-319-tracker-drafts.md`, scoped explicitly to the rejected
-candidate path. Do not mark unmeasured positive acceptance cases as passed.
-The negative-result clause is the basis for closure; it does not imply the
-entire checkbox list represents demonstrated positive behavior.
+Issue #319 is closed. Its negative-result clause is the basis for the scoped
+disposition recorded here; unmeasured positive acceptance cases remain
+unmeasured. Closure does not mean the entire checkbox list represents
+demonstrated positive behavior. The historical draft tracker text is no longer
+an instruction to close an open issue.
 
-Closing #319 resolves #321's native GitHub dependency on #319. Keep #321's
+The closure resolves #321's native GitHub dependency on #319. Keep #321's
 positive-evidence entry gate and separate explicit enablement review
 unsatisfied until a new creation mechanism has positive operation-specific
 evidence and that review is recorded. Do not imply that the resolved native
 dependency itself remains blocking. If maintainers want a replacement native
 blocker, record that as a separate tracker action. Keep #267 and umbrella #315
-open. No tracker comments, body edits, dependency changes or issue state
-changes have been made.
+open. This documentation reconciliation makes no additional tracker changes.
 
 Possible future branches of work are decisions, not recommendations already
 accepted: investigate a different protected launch/I/O boundary; request a
@@ -106,4 +107,4 @@ evidence. Do not treat any as authorization to prototype or change host policy.
 - [Gate A report](issue-319-gate-a.md)
 - [Creation isolation design](creation-isolation-design.md)
 - [ADR-0005](../adr/0005-investigate-creation-broker-with-protected-authority-chain.md)
-- [Proposed ADR-0006](../adr/0006-proposed-negative-closeout-for-tested-file-creation-candidates.md)
+- [Accepted ADR-0006](../adr/0006-proposed-negative-closeout-for-tested-file-creation-candidates.md)

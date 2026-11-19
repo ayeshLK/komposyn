@@ -7,6 +7,12 @@ implementation and model-facing enablement remain separate work.
 The architectural tradeoff is recorded in
 [ADR-0005](../adr/0005-investigate-creation-broker-with-protected-authority-chain.md).
 
+**Subsequent disposition:** the selected candidate failed Gate A. Issue #319
+closed on 2026-11-19 as negative research after PR #338 merged; see the
+[accepted closeout](issue-319-closeout.md). The design and research gates below
+record the earlier agreement, not a new instruction to restart that candidate.
+Creation remains unavailable and #321's positive-evidence gate is unsatisfied.
+
 ## Agreed direction
 
 On 2026-11-18, the maintainer selected one bounded further investigation of
