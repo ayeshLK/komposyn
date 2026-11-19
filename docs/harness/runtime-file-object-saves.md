@@ -1,8 +1,10 @@
 # Runtime file objects and approved saves
 
-Status: proposed contract revision for review. The maintainer selected this
-direction on 2026-11-19; no save implementation or native acceptance exists.
-See [ADR-0008](../adr/0008-propose-runtime-file-objects-and-approved-saves.md).
+Status: accepted creation-boundary decision; no save implementation or native
+acceptance exists. PR #343 merged on 2026-11-19. The mechanism is specified
+separately in the [creation mechanism proposal](creation-mechanism-proposal.md)
+and remains under review. See
+[ADR-0008](../adr/0008-propose-runtime-file-objects-and-approved-saves.md).
 
 ## Intended boundary
 
@@ -23,16 +25,16 @@ a reduced guarantee, not a new enforcement mechanism for the old contract.
 ## Relationship to existing decisions
 
 Issues [#267](https://github.com/ayeshLK/komposyn/issues/267) and
-[#315](https://github.com/ayeshLK/komposyn/issues/315) currently require stronger
-exact-object/effect-point enforcement. The [deferral](mutation-deferral.md)
-and [creation closeout](issue-319-closeout.md) describe that contract. This PR
-proposes a scoped revision for creation; it does not retroactively accept any
-rejected candidate. Once the design is reviewed, reconcile the creation parts
-of #267/#315/#321 explicitly before implementation is authorized. Keep those
-issues open and keep unrelated rename/delete requirements unchanged.
+[#315](https://github.com/ayeshLK/komposyn/issues/315) retain their original
+published wording, with a creation-only applicability note to identify this
+accepted boundary. The [deferral](mutation-deferral.md) and [creation closeout](issue-319-closeout.md)
+preserve their historical contract and results. PR #343 accepts the
+concurrency/approval boundary only; it does not accept the mechanism proposed
+in this follow-up or retroactively accept a rejected candidate. Editing,
+rename and delete requirements are unchanged.
 
-Existing-file editing is a later independent operation. The proposed file
-object vocabulary can support it, but this decision does not supersede
+Existing-file editing remains a later independent operation. The file-object
+vocabulary may inform its future design, but this creation decision does not supersede
 [ADR-0007](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md)
 or meet #322's gate. No operation is enabled by this proposal.
 

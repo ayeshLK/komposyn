@@ -132,18 +132,20 @@ The source-level `F_SETLEASE(F_WRLCK)` candidate observations and their limits
 are recorded in the [existing-file edit feasibility study](file-lease-revision-binding-study.md).
 The scoped negative research disposition for existing-file editing was
 accepted when #320 closed on 2026-11-19 after PR #340. See the [#320 closeout
-record](issue-320-closeout.md). Creation and editing implementation are
-currently deferred under the existing authority contract; see the [mutation
-deferral and resumption conditions](mutation-deferral.md). Discovery remains
-delivered in its supported profiles. Editing remains unavailable; #321/#322's
+record](issue-320-closeout.md). Editing remains deferred under its existing
+authority contract; creation has an accepted boundary but no accepted
+mechanism. See the [mutation deferral and resumption conditions](mutation-deferral.md).
+Discovery remains delivered in its supported profiles. Editing remains unavailable; #321/#322's
 independent positive-evidence and explicit enablement gates remain unsatisfied,
 while #267 and #315 remain open.
 
-The [runtime file object and approved-save proposal](runtime-file-object-saves.md)
-records the maintainer's subsequent direction for creation: coordinate runtime
+The [runtime file object and approved-save decision](runtime-file-object-saves.md)
+records the accepted creation boundary from merged PR #343: coordinate runtime
 objects, request save-time approval and require fresh decisions for detected
-conflicts, with an explicit residual external-write race. This contract
-revision is pending review; no creation mechanism or enablement is accepted.
+conflicts, with an explicit residual external-write race. The
+[creation mechanism proposal](creation-mechanism-proposal.md) names a Linux
+stage-plus-no-replace candidate; that mechanism is pending review. No prototype,
+positive evidence or creation enablement is accepted.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).

@@ -36,7 +36,8 @@ _Avoid_: Working directory, blanket read permission.
 
 ## Proposed experimental chat saving
 
-These terms describe the design proposal, not an available capability.
+These terms describe the accepted creation boundary and proposed mechanism,
+not an available capability.
 
 **Runtime file object**:
 The conversation-local representation of one intended file, its observed
