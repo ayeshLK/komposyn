@@ -33,3 +33,23 @@ _Avoid_: A new read, ordinary directory selection.
 A directory bounding eligible lookups under a directory-scoped read policy.
 Selecting it does not grant permission to read files.
 _Avoid_: Working directory, blanket read permission.
+
+## Proposed experimental chat saving
+
+These terms describe the design proposal, not an available capability.
+
+**Runtime file object**:
+The conversation-local representation of one intended file, its observed
+baseline and proposed content. It coordinates KompoSyn's own access without
+claiming exclusive ownership of the external file.
+_Avoid_: Filesystem lock, isolated file.
+
+**Save proposal**:
+One complete proposed change to an identified target, presented for a user's
+once approval against a stated observed baseline.
+_Avoid_: Write grant, blanket overwrite permission.
+
+**Save conflict**:
+A detected difference between a save proposal's baseline and the target's
+current observed state, including an existing creation destination.
+_Avoid_: Automatic merge, permission to overwrite.

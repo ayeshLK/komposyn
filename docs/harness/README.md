@@ -139,6 +139,12 @@ delivered in its supported profiles. Editing remains unavailable; #321/#322's
 independent positive-evidence and explicit enablement gates remain unsatisfied,
 while #267 and #315 remain open.
 
+The [runtime file object and approved-save proposal](runtime-file-object-saves.md)
+records the maintainer's subsequent direction for creation: coordinate runtime
+objects, request save-time approval and require fresh decisions for detected
+conflicts, with an explicit residual external-write race. This contract
+revision is pending review; no creation mechanism or enablement is accepted.
+
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
 The separate Linux/amd64 generated-ABI write-barrier experiment is documented
