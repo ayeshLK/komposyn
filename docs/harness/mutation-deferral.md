@@ -1,5 +1,13 @@
 # Near-term mutation implementation deferral
 
+**Subsequent design proposal:** the maintainer has selected runtime file objects
+and save-time approval with detected-conflict review as a direction for
+creation. The [contract revision proposal](runtime-file-object-saves.md)
+explicitly accepts a residual external-write race. It is pending PR review
+and tracker reconciliation; it does not accept a mechanism, authorize a
+prototype or enable mutation. The original deferral below records the prior
+contract and remains applicable until that revision is reviewed.
+
 Status: **planning record for the near-term deferral; #315's current-delivery
 section tracks its publication and review state**.
 
