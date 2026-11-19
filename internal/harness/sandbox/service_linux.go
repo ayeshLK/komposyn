@@ -49,11 +49,37 @@ type linuxImplementation struct {
 	searchProfileAvailable  bool
 	revision                uint64
 	owners                  map[string]OwnerCoverage
+	ownerUpdating           map[string]bool
 	blocked                 map[string]string
 	readInvalidator         func(string)
 	closed                  bool
 	pendingOwners           atomic.Int32
+	creationBarrier         *creationBarrierLease
+	creationBarrierSequence uint64
 }
+
+// creationBarrierLease is an in-process, one-use token for the transient
+// service-wide read gate. It is deliberately separate from owner registrations
+// and their policy/coverage generations.
+type creationBarrierLease struct {
+	service             *linuxImplementation
+	sequence            uint64
+	state               creationBarrierState
+	stageEntryAdmitted  bool
+	publicationReleased bool
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	done                chan struct{}
+	doneOnce            sync.Once
+}
+
+type creationBarrierState uint8
+
+const (
+	creationBarrierClosing creationBarrierState = iota + 1
+	creationBarrierActive
+	creationBarrierBlocked
+)
 
 func newHostImplementation(bubblewrapPath string) (implementation, error) {
 	registry, err := readbrokerstudy.NewRegistry()
@@ -77,8 +103,9 @@ func newHostImplementation(bubblewrapPath string) (implementation, error) {
 func composeLinuxImplementation(registry *readbrokerstudy.Registry, launcher readbrokerstudy.WorkerLauncher, backendErr error) (*linuxImplementation, error) {
 	impl := &linuxImplementation{
 		registry: registry, launcher: launcher, backendErr: backendErr, revision: 1,
-		inventory: readbrokerstudy.NewChatCompositionInventory(),
-		blocked:   make(map[string]string),
+		inventory:     readbrokerstudy.NewChatCompositionInventory(),
+		blocked:       make(map[string]string),
+		ownerUpdating: make(map[string]bool),
 		owners: map[string]OwnerCoverage{
 			auth.SensitiveOwnerAuth:     {Owner: auth.SensitiveOwnerAuth, Class: auth.SensitiveClassAuth, State: OwnerRequired, Evidence: "cmd/harness auth.Store wiring", Reason: "effective route and protected identity must be registered"},
 			auth.SensitiveOwnerSettings: {Owner: auth.SensitiveOwnerSettings, Class: auth.SensitiveClassSettings, State: OwnerRequired, Evidence: "cmd/harness settings.Store wiring", Reason: "effective route and protected identity must be registered independently"},
@@ -141,24 +168,27 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 		return ErrServiceClosed
 	}
 	s.ownerUpdateMu.Lock()
-	defer s.ownerUpdateMu.Unlock()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return ErrServiceClosed
 	}
 	coverage, exists := s.owners[owner]
 	retryBlocked := s.blocked[owner] != "" && coverage.State == OwnerPending
-	if !exists || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !retryBlocked {
+	if s.ownerUpdating[owner] || !exists || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !retryBlocked {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return errors.New("owner is not required by the trusted chat composition")
 	}
 	resourceClass, ok := hostResourceClass(class)
 	if !ok || class != coverage.Class {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return errors.New("protected owner class does not match the trusted chat composition")
 	}
 	s.mu.Unlock()
+	s.ownerUpdateMu.Unlock()
 	cleanRoute, err := filepath.Abs(route)
 	if err != nil || !filepath.IsAbs(cleanRoute) || filepath.Clean(cleanRoute) != cleanRoute {
 		return errors.New("protected owner route is invalid")
@@ -189,34 +219,64 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 	// has been checked against the identity pinned by the registry. Keep a
 	// service-level pending latch because the coordinator may finish its own
 	// update before this final owner-descriptor check completes.
+	s.ownerUpdateMu.Lock()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return ErrServiceClosed
 	}
 	coverage, exists = s.owners[owner]
-	if !exists || coverage.Class != class || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !(s.blocked[owner] != "" && coverage.State == OwnerPending) {
+	retryBlocked = s.blocked[owner] != "" && coverage.State == OwnerPending
+	if s.ownerUpdating[owner] || !exists || coverage.Class != class || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !retryBlocked {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return errors.New("owner state changed before protected registration")
 	}
+	if s.ownerUpdating == nil {
+		s.ownerUpdating = make(map[string]bool)
+	}
+	s.ownerUpdating[owner] = true
 	if s.blocked[owner] == "" {
 		s.pendingOwners.Add(1)
 	}
 	s.blocked[owner] = "owner registration awaits cleanup, identity validation and lifecycle completion"
+	var effectDone <-chan struct{}
+	if effect := s.creationBarrier; effect != nil {
+		if effect.cancel != nil {
+			effect.cancel()
+		}
+		effectDone = effect.done
+	}
 	s.revision++
 	session, registry := s.session, s.registry
 	s.mu.Unlock()
+	s.ownerUpdateMu.Unlock()
+	defer func() {
+		s.ownerUpdateMu.Lock()
+		s.mu.Lock()
+		delete(s.ownerUpdating, owner)
+		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
+	}()
 	// Invalidate runtime captures and continuations globally, not only
 	// conversations with still-open admissions. A completed capture may have
 	// already retired its host admission while remaining eligible for handoff.
 	s.invalidateConversation("")
 	if session != nil {
 		err = session.InvalidateAdmissions(ctx)
-		if err == nil {
-			err = session.RegisterRotationContext(ctx, owner, registrations)
-		}
 	} else {
 		err = registry.RegisterRotation(owner, registrations)
+	}
+	if err == nil && effectDone != nil {
+		select {
+		case <-effectDone:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	}
+	if err == nil && session != nil {
+		err = session.RegisterRotationContext(ctx, owner, registrations)
 	}
 	if err != nil {
 		return err
@@ -225,8 +285,12 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 		return err
 	}
 	view := registry.View()
+	s.ownerUpdateMu.Lock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
+	}()
 	if s.closed || s.blocked[owner] == "" {
 		return ErrServiceClosed
 	}
@@ -515,6 +579,10 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 		}
 	}
 	s.mu.Lock()
+	if s.creationBarrier != nil {
+		s.mu.Unlock()
+		return runtime.FilesystemReadAdmission{}, ErrCreationBarrier
+	}
 	if s.closed || s.session == nil || s.backendErr != nil || s.launcher == nil {
 		s.mu.Unlock()
 		return runtime.FilesystemReadAdmission{}, readbrokerstudy.ErrUnavailable
@@ -540,7 +608,7 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 		return runtime.FilesystemReadAdmission{}, errors.Join(err, session.CloseAdmission(ctx, reference))
 	}
 	s.mu.Lock()
-	stillEligible := !s.closed && len(s.blocked) == 0 && s.session == session && s.owners[auth.SensitiveOwnerAuth].State == OwnerRegistered && s.owners[auth.SensitiveOwnerSettings].State == OwnerRegistered
+	stillEligible := !s.closed && s.creationBarrier == nil && len(s.blocked) == 0 && s.session == session && s.owners[auth.SensitiveOwnerAuth].State == OwnerRegistered && s.owners[auth.SensitiveOwnerSettings].State == OwnerRegistered
 	s.mu.Unlock()
 	if !stillEligible || coverageRevision != s.CoverageSnapshot().Revision {
 		return runtime.FilesystemReadAdmission{}, errors.Join(readbrokerstudy.ErrAdmissionStale, session.CloseAdmission(ctx, reference))
@@ -556,7 +624,7 @@ func (s *linuxImplementation) PrepareAdmittedFilesystemRead(ctx context.Context,
 		return nil, readbrokerstudy.ErrAdmissionStale
 	}
 	s.mu.Lock()
-	if s.closed || s.session == nil || s.backendErr != nil || s.launcher == nil || len(s.blocked) != 0 {
+	if s.creationBarrier != nil || s.closed || s.session == nil || s.backendErr != nil || s.launcher == nil || len(s.blocked) != 0 {
 		s.mu.Unlock()
 		return nil, readbrokerstudy.ErrAdmissionStale
 	}
@@ -576,6 +644,127 @@ func (s *linuxImplementation) PrepareAdmittedFilesystemRead(ctx context.Context,
 		return nil, errors.Join(readbrokerstudy.ErrAdmissionStale, prepared.Close(ctx))
 	}
 	return &linuxAdmissionPreparation{impl: s, inner: prepared}, nil
+}
+
+// beginCreationBarrier closes admission before invalidating existing work. The
+// state lock is released before runtime callbacks and coordinator draining.
+// On any drain failure the token remains installed in the blocked state so a
+// caller cannot accidentally reopen reads while cleanup is uncertain.
+func (s *linuxImplementation) beginCreationBarrier(ctx context.Context) (*creationBarrierLease, error) {
+	if ctx == nil {
+		return nil, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, ErrServiceClosed
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, ErrServiceClosed
+	}
+	if s.session == nil || s.backendErr != nil || s.launcher == nil {
+		s.mu.Unlock()
+		return nil, readbrokerstudy.ErrUnavailable
+	}
+	if s.creationBarrier != nil {
+		s.mu.Unlock()
+		return nil, ErrCreationBarrier
+	}
+	if len(s.blocked) != 0 || s.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || s.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
+		s.mu.Unlock()
+		return nil, ErrCoverageMissing
+	}
+	s.creationBarrierSequence++
+	effectContext, cancel := context.WithCancel(ctx)
+	lease := &creationBarrierLease{service: s, sequence: s.creationBarrierSequence, state: creationBarrierClosing, ctx: effectContext, cancel: cancel, done: make(chan struct{})}
+	s.creationBarrier = lease
+	session := s.session
+	s.mu.Unlock()
+
+	var drainErr error
+	for _, conversation := range session.AdmissionConversations() {
+		s.invalidateConversation(conversation)
+	}
+	drainErr = session.InvalidateAdmissions(ctx)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.creationBarrier != lease || lease.service != s {
+		return lease, ErrServiceClosed
+	}
+	if drainErr != nil || s.closed || len(s.blocked) != 0 {
+		lease.state = creationBarrierBlocked
+		if drainErr != nil {
+			return lease, drainErr
+		}
+		if s.closed {
+			return lease, ErrServiceClosed
+		}
+		return lease, ErrCoverageMissing
+	}
+	lease.state = creationBarrierActive
+	return lease, nil
+}
+
+// finishCreationBarrier reopens reads only after the caller confirms its
+// effect worker and stage disposition are complete. An incomplete cleanup
+// deliberately retains the gate and token for host-owned recovery.
+func (s *linuxImplementation) finishCreationBarrier(lease *creationBarrierLease, cleanupComplete bool) error {
+	if s == nil || lease == nil || lease.service != s {
+		return ErrCreationBarrier
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.creationBarrier != lease || lease.state == creationBarrierClosing {
+		return ErrCreationBarrier
+	}
+	if !cleanupComplete {
+		lease.state = creationBarrierBlocked
+		return ErrCreationBarrier
+	}
+	if s.session == nil || s.session.ActiveOperationCount() != 0 {
+		lease.state = creationBarrierBlocked
+		return readbrokerstudy.ErrCleanupPending
+	}
+	s.creationBarrier = nil
+	lease.state = creationBarrierBlocked // terminal; token cannot be reused
+	if lease.cancel != nil {
+		lease.cancel()
+	}
+	lease.doneOnce.Do(func() { close(lease.done) })
+	return nil
+}
+
+// admitCreationStage and releaseCreationPublication are the two short
+// linearization points shared with Protect's owner-pending transition. They
+// never hold the service mutex while the worker performs filesystem effects.
+func (s *linuxImplementation) admitCreationStage(lease *creationBarrierLease) error {
+	if s == nil || lease == nil || lease.service != s {
+		return ErrCreationBarrier
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.creationBarrier != lease || lease.state != creationBarrierActive || lease.stageEntryAdmitted || lease.ctx.Err() != nil || s.closed || len(s.blocked) != 0 || s.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || s.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
+		return ErrCoverageMissing
+	}
+	lease.stageEntryAdmitted = true
+	return nil
+}
+
+func (s *linuxImplementation) releaseCreationPublication(lease *creationBarrierLease) error {
+	if s == nil || lease == nil || lease.service != s {
+		return ErrCreationBarrier
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.creationBarrier != lease || lease.state != creationBarrierActive || !lease.stageEntryAdmitted || lease.publicationReleased || lease.ctx.Err() != nil || s.closed || len(s.blocked) != 0 || s.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || s.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
+		return ErrCoverageMissing
+	}
+	lease.publicationReleased = true
+	return nil
 }
 
 func (s *linuxImplementation) CloseFilesystemReadAdmission(ctx context.Context, admission runtime.FilesystemReadAdmission) error {
@@ -626,7 +815,7 @@ func (p *linuxAdmissionPreparation) WithAuthorityCommit(ctx context.Context, com
 	}
 	p.impl.mu.Lock()
 	defer p.impl.mu.Unlock()
-	if p.impl.closed || p.impl.session == nil || len(p.impl.blocked) != 0 {
+	if p.impl.closed || p.impl.creationBarrier != nil || p.impl.session == nil || len(p.impl.blocked) != 0 {
 		return readbrokerstudy.ErrAdmissionStale
 	}
 	if p.impl.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || p.impl.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
@@ -776,8 +965,19 @@ func (s *linuxImplementation) Close(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	s.closed = true
+	lease := s.creationBarrier
+	if lease != nil && lease.cancel != nil {
+		lease.cancel()
+	}
 	session, launcher, registry := s.session, s.launcher, s.registry
 	s.mu.Unlock()
+	if lease != nil {
+		select {
+		case <-lease.done:
+		case <-ctx.Done():
+			return errors.Join(readbrokerstudy.ErrCleanupPending, ctx.Err())
+		}
+	}
 	if session != nil {
 		err := session.Close(ctx)
 		if errors.Is(err, readbrokerstudy.ErrCleanupPending) || ctx.Err() != nil {

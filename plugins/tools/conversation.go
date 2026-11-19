@@ -48,11 +48,62 @@ const (
 	MaxSearchFilesInputBytes      = 8 << 10
 	MaxSearchFilesQueryBytes      = 512
 	MaxSearchFilesOptionsFrame    = 2048
+	MaxCreateFileContentBytes     = 64 << 10
+	MaxCreateFileInputBytes       = 72 << 10
+	MaxCreateFilePathBytes        = 2048
 )
 
 const ReadFileID ID = "read_file"
 const ListFilesID ID = "list_files"
 const SearchFilesID ID = "search_files"
+const CreateFileID ID = "apply_patch"
+
+// CreateFileInput is the bounded creation-only subset of apply_patch. The
+// content field contains the complete UTF-8 bytes to create, not patch hunks.
+type CreateFileInput struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+var createFileSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048},"content":{"type":"string","maxLength":65536}},"required":["path","content"],"additionalProperties":false}`)
+
+// CreateFileDefinition describes a fixed-purpose, creation-only prototype.
+// Production composition intentionally does not register it.
+func CreateFileDefinition() Definition {
+	return Definition{
+		ID:          CreateFileID,
+		Description: "Prototype only: create one UTF-8 text file beneath an explicitly selected existing scope after review of the complete file. Existing destinations are refused; editing, overwrite, append, merge, rename, deletion, and directory creation are unavailable.",
+		InputSchema: append(json.RawMessage(nil), createFileSchema...),
+		MaxInput:    MaxCreateFileInputBytes,
+	}
+}
+
+// ParseCreateFile strictly validates one relative target and complete frozen
+// UTF-8 content. Authority and parent resolution remain host-owned.
+func ParseCreateFile(raw []byte) (CreateFileInput, error) {
+	var input CreateFileInput
+	if !utf8.Valid(raw) {
+		return CreateFileInput{}, errors.New("creation request is not valid UTF-8")
+	}
+	if err := decodeStrictObject(raw, MaxCreateFileInputBytes, &input); err != nil {
+		return CreateFileInput{}, err
+	}
+	if input.Path == "" || len(input.Path) > MaxCreateFilePathBytes || strings.ContainsAny(input.Path, "\\\x00") || strings.HasPrefix(input.Path, "/") {
+		return CreateFileInput{}, errors.New("creation path is empty, absolute, or outside its input bound")
+	}
+	for _, component := range strings.Split(input.Path, "/") {
+		if component == "" || component == "." || component == ".." {
+			return CreateFileInput{}, errors.New("creation path contains an unsupported component")
+		}
+	}
+	if path.Clean(input.Path) != input.Path {
+		return CreateFileInput{}, errors.New("creation path is not canonical")
+	}
+	if !utf8.ValidString(input.Content) || strings.IndexByte(input.Content, 0) >= 0 || len(input.Content) > MaxCreateFileContentBytes {
+		return CreateFileInput{}, errors.New("creation content must be NUL-free UTF-8 text no larger than 64 KiB")
+	}
+	return input, nil
+}
 
 type ReadFileInput struct {
 	Path string `json:"path"`

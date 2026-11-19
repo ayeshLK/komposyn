@@ -36,6 +36,7 @@ var (
 	ErrUnknownRootData = errors.New("generic reads are unavailable because selected-root data coverage is unresolved")
 	ErrCoverageMissing = errors.New("required auth/settings protection is not registered")
 	ErrServiceClosed   = errors.New("sandbox composition service is closed")
+	ErrCreationBarrier = errors.New("filesystem admissions are paused by a creation barrier")
 )
 
 type OwnerState string

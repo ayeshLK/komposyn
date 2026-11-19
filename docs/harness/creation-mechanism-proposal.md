@@ -1,12 +1,16 @@
 # Proposed one-file creation mechanism
 
-**Status:** mechanism proposal remains unproven following merged PR #344 and
-the proposed [creation integration protocol](creation-integration-protocol.md), following the accepted
-creation-boundary decision in [ADR-0008](../adr/0008-propose-runtime-file-objects-and-approved-saves.md)
+**Status:** mechanism proposal remains unproven following merged PRs #344 and
+#345 and the accepted creation-boundary decision in
+[ADR-0008](../adr/0008-propose-runtime-file-objects-and-approved-saves.md)
 and [PR #343](https://github.com/ayeshLK/komposyn/pull/343), merged on
-2026-11-19. This document proposes a candidate only. No prototype is
-authorized; no creation evidence, supported mutation profile or model-facing
-capability exists.
+2026-11-19. A maintainer worker assignment authorizes the bounded disposable
+prototype only. Strict creation input parsing and an explicit opt-in
+runtime/approval seam have fixture coverage. The Linux sandbox implementation
+has a tested read barrier and owner-ordered one-use stage/publication permits,
+but no creation effect consumes them. The synthetic owner manifest and
+confined worker are not implemented. No native creation evidence, supported
+mutation profile or model-facing capability exists.
 
 This is a creation-only revision. It accepts external filesystem changes
 during approval and between the last check and publication. Approval is not a
@@ -401,13 +405,13 @@ owner coverage or approval semantics. PR #344 merged the mechanism proposal;
 it did not accept the mechanism as implementation-ready. The integration
 protocol proposal adds concrete sequencing but does not resolve production
 coverage: the current composition cannot attest complete coverage for
-arbitrary user-selected scopes. Prototype authorization remains a separate
-decision after review of both designs. Positive native and integration
-acceptance, then explicit model-facing enablement, remain separate decisions.
+arbitrary user-selected scopes. The current maintainer assignment explicitly
+authorizes only a bounded disposable prototype; it does not satisfy positive
+native/integration acceptance or model-facing enablement.
 
 ## Bounded follow-up prototype plan
 
-After a separate prototype authorization, implement only a disposable
+Under that bounded prototype authorization, implement only a disposable
 Linux/amd64/ext4 study fixture of the named stage plus no-replace publication,
 alongside the minimum create-specific runtime/UI/provider integration needed to
 exercise the real composition. No production tool exposure, editing, overwrite,

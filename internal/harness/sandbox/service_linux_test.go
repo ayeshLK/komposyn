@@ -384,6 +384,202 @@ func TestHostAdmissionAcceptsBoundedDirectoryListing(t *testing.T) {
 	}
 }
 
+func TestCreationBarrierClosesAndReopensReadAdmissionAroundDrain(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "barrier-fixture", Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{
+		ConversationID: "barrier-fixture", TurnID: "turn", ProviderCallID: "call",
+		ToolID: tools.ReadFileID, Arguments: []byte(`{"path":"` + target + `"}`),
+	}
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile")
+	if err != nil {
+		t.Fatalf("initial read admission: %v", err)
+	}
+	preparation, err := service.PrepareAdmittedFilesystemRead(context.Background(), admission, 1)
+	if err != nil {
+		t.Fatalf("prepare before barrier: %v", err)
+	}
+
+	impl := service.impl.(*linuxImplementation)
+	lease, err := impl.beginCreationBarrier(context.Background())
+	if err != nil {
+		t.Fatalf("begin barrier and drain: %v", err)
+	}
+	if lease.state != creationBarrierActive {
+		t.Fatalf("barrier state=%d, want active", lease.state)
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); !errors.Is(err, ErrCreationBarrier) {
+		t.Fatalf("new read admission passed the closed barrier: %v", err)
+	}
+	if _, err := service.PrepareAdmittedFilesystemRead(context.Background(), admission, 1); !errors.Is(err, readbrokerstudy.ErrAdmissionStale) {
+		t.Fatalf("pre-barrier admission survived the drain: %v", err)
+	}
+	commitCalled := false
+	if err := preparation.WithAuthorityCommit(context.Background(), func() error { commitCalled = true; return nil }); !errors.Is(err, readbrokerstudy.ErrAdmissionStale) || commitCalled {
+		t.Fatalf("pre-barrier prepared read retained its publication authority: called=%t err=%v", commitCalled, err)
+	}
+	if err := preparation.Close(context.Background()); err != nil {
+		t.Fatalf("close invalidated preparation: %v", err)
+	}
+	if err := impl.finishCreationBarrier(lease, false); !errors.Is(err, ErrCreationBarrier) {
+		t.Fatalf("incomplete cleanup released the barrier: %v", err)
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); !errors.Is(err, ErrCreationBarrier) {
+		t.Fatalf("read admission reopened after incomplete cleanup: %v", err)
+	}
+	if err := impl.finishCreationBarrier(lease, true); err != nil {
+		t.Fatalf("confirmed retirement: %v", err)
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); err != nil {
+		t.Fatalf("read admission did not reopen after confirmed retirement: %v", err)
+	}
+	if err := service.CloseFilesystemReadAdmission(context.Background(), admission); err != nil {
+		t.Fatalf("retire stale admission: %v", err)
+	}
+}
+
+func TestCreationBarrierOrdersOwnerPendingAgainstPublicationRelease(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		publicationFirst bool
+	}{
+		{name: "owner pending wins before publication release"},
+		{name: "publication release wins and owner waits", publicationFirst: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, err := newTestHostService()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := service.Close(context.Background()); err != nil {
+					t.Errorf("close service: %v", err)
+				}
+			})
+			if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+				t.Fatal(err)
+			}
+			impl := service.impl.(*linuxImplementation)
+			lease, err := impl.beginCreationBarrier(context.Background())
+			if err != nil {
+				t.Fatalf("begin barrier: %v", err)
+			}
+			if test.publicationFirst {
+				if err := impl.admitCreationStage(lease); err != nil {
+					t.Fatalf("admit stage: %v", err)
+				}
+				if err := impl.releaseCreationPublication(lease); err != nil {
+					t.Fatalf("release publication: %v", err)
+				}
+				if err := impl.releaseCreationPublication(lease); !errors.Is(err, ErrCoverageMissing) {
+					t.Fatalf("publication permit was reusable: %v", err)
+				}
+			}
+
+			rotationDone := make(chan error, 1)
+			go func() {
+				rotationDone <- service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings-rotated.json"), nil)
+			}()
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				impl.mu.Lock()
+				pending := impl.blocked[auth.SensitiveOwnerSettings] != ""
+				impl.mu.Unlock()
+				if pending {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("owner transition did not enter pending state")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if lease.ctx.Err() == nil {
+				t.Fatal("owner transition did not cancel the active effect context")
+			}
+			if !test.publicationFirst {
+				if err := impl.admitCreationStage(lease); !errors.Is(err, ErrCoverageMissing) {
+					t.Fatalf("stage permit passed after owner pending won: %v", err)
+				}
+				if err := impl.releaseCreationPublication(lease); !errors.Is(err, ErrCoverageMissing) {
+					t.Fatalf("publication passed after owner pending won: %v", err)
+				}
+			}
+			select {
+			case err := <-rotationDone:
+				t.Fatalf("owner transition completed before effect retirement: %v", err)
+			default:
+			}
+			if err := impl.finishCreationBarrier(lease, true); err != nil {
+				t.Fatalf("finish cancelled effect: %v", err)
+			}
+			select {
+			case err := <-rotationDone:
+				if err != nil {
+					t.Fatalf("owner transition after effect retirement: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("owner transition did not resume after effect retirement")
+			}
+		})
+	}
+}
+
+func TestServiceCloseWaitsForCreationBarrierRetirement(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	lease, err := impl.beginCreationBarrier(context.Background())
+	if err != nil {
+		t.Fatalf("begin barrier: %v", err)
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := service.Close(closeCtx); !errors.Is(err, readbrokerstudy.ErrCleanupPending) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("close did not report incomplete barrier cleanup: %v", err)
+	}
+	if lease.ctx.Err() == nil {
+		t.Fatal("service close did not cancel the effect context")
+	}
+	if err := impl.finishCreationBarrier(lease, true); err != nil {
+		t.Fatalf("retire barrier after effect cleanup: %v", err)
+	}
+	if err := service.Close(context.Background()); err != nil {
+		t.Fatalf("retry service close after cleanup: %v", err)
+	}
+}
+
 func TestHostSearchAdmissionRequiresMeasuredProfileAndExt4(t *testing.T) {
 	launcher := searchProfileTestWorkerLauncher{profileTestWorkerLauncher{mode: readbrokerstudy.BindModeDescriptor}}
 	service, err := newTestHostServiceWithLauncher(launcher)

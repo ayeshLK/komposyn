@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -231,6 +232,96 @@ func bundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clar
 	}
 }
 
+// WithBoundedCreationPrototype adds the creation-only apply_patch schema to an
+// explicitly supplied fixture composition. It is intentionally not called by
+// cmd/harness. The host must construct an exact once-approval request and only
+// return a preparation that owns the retained proposal and its cleanup.
+func WithBoundedCreationPrototype(config ToolRuntimeConfig, host FilesystemCreationPrototypeHost) ToolRuntimeConfig {
+	if host == nil || config.Registry == nil || config.Authorizer == nil || config.Enforcer == nil || config.Approval == nil {
+		return ToolRuntimeConfig{}
+	}
+	if config.Registry.Register(createFilePrototypeTool{}) != nil {
+		return ToolRuntimeConfig{}
+	}
+	config.Authorizer = filesystemCreationPrototypeAuthorizer{next: config.Authorizer, host: host}
+	config.Preparer = filesystemCreationPrototypePreparer{next: config.Preparer, host: host}
+	return config
+}
+
+type filesystemCreationPrototypeAuthorizer struct {
+	next ToolAuthorizer
+	host FilesystemCreationPrototypeHost
+}
+
+func (a filesystemCreationPrototypeAuthorizer) Prepare(ctx context.Context, invocation tools.Invocation) (permissions.Request, error) {
+	return a.PrepareForDestination(ctx, invocation, "")
+}
+
+func (a filesystemCreationPrototypeAuthorizer) PrepareForDestination(ctx context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
+	if invocation.ToolID != tools.CreateFileID {
+		return a.next.Prepare(ctx, invocation)
+	}
+	request, err := a.host.PrepareFilesystemCreation(ctx, cloneInvocation(invocation), destination)
+	if err != nil {
+		return permissions.Request{}, err
+	}
+	if request.Destination != destination || request.ConversationID != invocation.ConversationID || request.CallID != invocation.ProviderCallID || request.AdmissionBinding == "" || len(request.Requirements) != 2 {
+		return permissions.Request{}, errors.New("creation host returned incomplete approval metadata")
+	}
+	var action, resource bool
+	for _, requirement := range request.Requirements {
+		if requirement.ToolID != string(tools.CreateFileID) || requirement.Operation != permissions.OperationWrite || requirement.SessionAllowed {
+			return permissions.Request{}, errors.New("creation approval must be explicit and invocation-bound")
+		}
+		switch requirement.Kind {
+		case permissions.RequirementAction:
+			action = requirement.Key == "create" && requirement.ActionKey != ""
+		case permissions.RequirementResource:
+			resource = requirement.Key == "target" && requirement.Resource != nil && requirement.Resource.Kind == permissions.ResourceFilesystem && requirement.Resource.Target != "" && filepath.IsAbs(requirement.Resource.Target) && filepath.Clean(requirement.Resource.Target) == requirement.Resource.Target && requirement.Resource.Operation == permissions.OperationWrite
+		default:
+			return permissions.Request{}, errors.New("creation approval contains an unsupported requirement")
+		}
+	}
+	if !action || !resource {
+		return permissions.Request{}, errors.New("creation approval must bind both action and exact target")
+	}
+	request.RequireOnceKeys = []string{"create", "target"}
+	return request, nil
+}
+
+type filesystemCreationPrototypePreparer struct {
+	next ToolPreparer
+	host FilesystemCreationPrototypeHost
+}
+
+func (p filesystemCreationPrototypePreparer) Prepares(id tools.ID) bool {
+	return id == tools.CreateFileID || p.next != nil && p.next.Prepares(id)
+}
+
+func (p filesystemCreationPrototypePreparer) PrepareTool(ctx context.Context, tool tools.Tool, invocation tools.Invocation, request permissions.Request, revision uint64) (ToolPreparation, error) {
+	if invocation.ToolID == tools.CreateFileID {
+		if _, ok := tool.(createFilePrototypeTool); !ok {
+			return nil, errors.New("creation prototype tool identity mismatch")
+		}
+		return p.host.PrepareApprovedFilesystemCreation(ctx, cloneInvocation(invocation), clonePermissionRequest(request), revision)
+	}
+	if p.next == nil {
+		return nil, errors.New("tool preparation is unavailable")
+	}
+	return p.next.PrepareTool(ctx, tool, cloneInvocation(invocation), clonePermissionRequest(request), revision)
+}
+
+type createFilePrototypeTool struct{}
+
+func (createFilePrototypeTool) Definition() tools.Definition { return tools.CreateFileDefinition() }
+func (createFilePrototypeTool) ValidateArguments(raw json.RawMessage) error {
+	_, err := tools.ParseCreateFile(raw)
+	return err
+}
+func (createFilePrototypeTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
+	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "creation_dispatch_requires_host_preparation"}
+}
+
 type readFileTool struct{}
 
 func (readFileTool) Definition() tools.Definition { return tools.ReadFileDefinition() }
@@ -287,6 +378,18 @@ func (searchFilesTool) Execute(_ context.Context, invocation tools.Invocation) t
 func conversationToolActionKey(id tools.ID) string {
 	digest := sha256.Sum256([]byte("komposyn-conversation-tool-v1\x00" + string(id)))
 	return hex.EncodeToString(digest[:])
+}
+
+func clonePermissionRequest(request permissions.Request) permissions.Request {
+	request.RequireOnceKeys = append([]string(nil), request.RequireOnceKeys...)
+	request.Requirements = append([]permissions.Requirement(nil), request.Requirements...)
+	for index := range request.Requirements {
+		if resource := request.Requirements[index].Resource; resource != nil {
+			copy := *resource
+			request.Requirements[index].Resource = &copy
+		}
+	}
+	return request
 }
 
 type bundledConversationEnforcer struct{}
