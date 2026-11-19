@@ -1,6 +1,7 @@
 # Proposed one-file creation mechanism
 
-**Status:** mechanism proposal under review, following the accepted
+**Status:** mechanism proposal remains unproven following merged PR #344 and
+the proposed [creation integration protocol](creation-integration-protocol.md), following the accepted
 creation-boundary decision in [ADR-0008](../adr/0008-propose-runtime-file-objects-and-approved-saves.md)
 and [PR #343](https://github.com/ayeshLK/komposyn/pull/343), merged on
 2026-11-19. This document proposes a candidate only. No prototype is
@@ -365,17 +366,24 @@ enablement:
    protected-owner/policy/coverage generations. If cancellation, join or
    retirement is incomplete, keep the affected read gate closed and retain
    cleanup ownership. The current service has no such create-specific barrier
-   or complete read-worker drain contract. Its lock ordering and exact
-   integration remain a design blocker; do not use generic owner rotation or
-   skip invalidation as a shortcut.
+   or complete read-worker drain contract. The separate [integration
+   protocol proposal](creation-integration-protocol.md) specifies a
+   service-wide fail-closed barrier, lock/wait order, cancellation and
+   retirement states, and evidence cases. This resolves the design-description
+   gap only; implementing and proving the barrier remains a blocker. Do not use
+   generic owner rotation or skip invalidation as a shortcut.
 4. **Candidate evidence:** no native actor study or runtime/UI/provider
    creation journey has tested this stage-and-rename composition. `ext4`,
    amd64 and kernel prerequisites are a proposed pilot tuple only. No claim of
    correctness or support is inferred from #319 or the read studies.
 
 These are blockers, not assumptions to fill with tests that silently relax
-owner coverage or approval semantics. Prototype authorization is still a
-separate decision after review of this design. Positive native and integration
+owner coverage or approval semantics. PR #344 merged the mechanism proposal;
+it did not accept the mechanism as implementation-ready. The integration
+protocol proposal adds concrete sequencing but does not resolve production
+coverage: the current composition cannot attest complete coverage for
+arbitrary user-selected scopes. Prototype authorization remains a separate
+decision after review of both designs. Positive native and integration
 acceptance, then explicit model-facing enablement, remain separate decisions.
 
 ## Bounded follow-up prototype plan

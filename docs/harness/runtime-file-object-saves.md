@@ -3,7 +3,8 @@
 Status: accepted creation-boundary decision; no save implementation or native
 acceptance exists. PR #343 merged on 2026-11-19. The mechanism is specified
 separately in the [creation mechanism proposal](creation-mechanism-proposal.md)
-and remains under review. See
+and [integration protocol proposal](creation-integration-protocol.md); neither
+is mechanism acceptance or prototype authorization. See
 [ADR-0008](../adr/0008-propose-runtime-file-objects-and-approved-saves.md).
 
 ## Intended boundary
