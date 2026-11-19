@@ -3,7 +3,9 @@
 Status: **proposal for maintainer review; issue remains open**. This document
 does not close the ticket, enable creation, or complete #315. It recommends
 closing #319 as a negative research result for the mechanisms actually tested,
-while keeping creation unavailable and the dependent #321 gate unsatisfied.
+while keeping creation unavailable. Closing #319 resolves its native GitHub
+dependency from #321; #321's separate positive-evidence and explicit
+enablement gate remains unsatisfied.
 
 ## Disposition
 
@@ -23,8 +25,8 @@ contracts, not a proof that all unprivileged creation is impossible. No
 positive creation mechanism, complete approval chain, or model-facing
 capability has been established. A negative closeout would satisfy #319's
 explicit negative-research completion clause; it would not deliver the
-creation user story, close #267 or #315, or unblock #321's positive-evidence
-gate.
+creation user story, close #267 or #315, or satisfy #321's positive-evidence
+and enablement gate.
 
 ## Evidence and mechanism comparison
 
@@ -76,10 +78,14 @@ candidate path. Do not mark unmeasured positive acceptance cases as passed.
 The negative-result clause is the basis for closure; it does not imply the
 entire checkbox list represents demonstrated positive behavior.
 
-Keep #321 blocked by its existing dependency on #319 until a new creation
-mechanism has positive operation-specific evidence and a separate explicit
-enablement review. Keep #267 and umbrella #315 open. No tracker comments,
-body edits, dependency changes or issue state changes have been made.
+Closing #319 resolves #321's native GitHub dependency on #319. Keep #321's
+positive-evidence entry gate and separate explicit enablement review
+unsatisfied until a new creation mechanism has positive operation-specific
+evidence and that review is recorded. Do not imply that the resolved native
+dependency itself remains blocking. If maintainers want a replacement native
+blocker, record that as a separate tracker action. Keep #267 and umbrella #315
+open. No tracker comments, body edits, dependency changes or issue state
+changes have been made.
 
 Possible future branches of work are decisions, not recommendations already
 accepted: investigate a different protected launch/I/O boundary; request a

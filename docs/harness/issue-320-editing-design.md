@@ -108,6 +108,47 @@ semantics do not add atomic revision binding to user-space file writes.
 
 ## Candidate assessment
 
+### Cross-cutting startup and approval-chain prerequisite
+
+No candidate below solves the trusted startup and approval-input problem
+identified by #337. Its native Gate A probe observed a same-UID actor opening
+an inherited output pipe through host procfs before the target disabled
+dumpability, retaining that descriptor, and writing through it afterward.
+That is the measured pipe-descriptor result. The claim that Yama's ATTACH-class
+policy does not cover the READ-class proc-fd open, and the related `execve`
+dumpability discussion, are documented-semantics deductions. The report did
+not measure terminal/UI spoofing, nor did it establish mode-2/3 acceptance.
+The capture host was ineligible for that profile.
+
+This finding concerns the trustworthy delivery and display of the approval
+request and result; choosing an edit primitive does not repair it. A future
+mechanism would still need to bind the exact diff, target, read receipt,
+conversation, destination and effect attempt to host-owned preparation data,
+and ensure the UI receives that data over an integrity-protected channel before
+the once approval. The worker must not be able to alter the approval presented
+to the user or substitute its release input.
+
+Applied to each candidate:
+
+- **In-place write:** a retained target FD and lease do not protect the
+  approval display channel or its release input. Existing read/approval UI
+  startup assumptions remain unresolved, independently of the content race.
+- **Replacement rename:** retaining a parent FD does not establish trusted
+  approval presentation or release. The candidate also remains rejected for
+  changing the mounted object, as described below.
+- **Kernel/filesystem conditional edit:** even if a concrete primitive could
+  bind and apply a revision atomically, it would not authenticate the user's
+  approval or protect the request/result channel on its own.
+
+No editing-specific process-hardening or launch profile is accepted by this
+design. Any future proposal must separately review whether it needs Yama scope
+2/3, dumpability transitions, inherited-descriptor closure/retention rules,
+procfs restrictions, ptrace/pidfd/proc-memory controls, terminal/UI integrity,
+or other process isolation. The #337 capture does not prove those controls
+sufficient, available, or correctly ordered for editing. Do not treat them as
+current prerequisites satisfied by the recorded study; record and measure a
+concrete profile before relying on one.
+
 | Candidate | Effect and assumptions | Exact identity/revision and actor analysis | Assessment / decisive rejection |
 | --- | --- | --- | --- |
 | In-place write through a retained FD, optionally guarded by `F_SETLEASE` | Open and retain the exact regular-file object; validate UTF-8, permissions, bytes and context; write/truncate that same inode. A write lease requires filesystem support and suitable ownership/privilege. | A retained descriptor can continue to name the same object after a rename, which fits mounted-object authority. A host-recorded digest check followed by `pwrite` is still a check/write race unless a trusted mechanism excludes every concurrent writer atomically. Existing writable FD/mapping behavior can refuse lease acquisition; late hard-link creation succeeded while the lease was held. Root/parent moves and owner rotation were not tested for the edit operation. | **Not a viable supported candidate on current evidence.** The existing lease evidence does not satisfy hard-link refusal or revision-bound effects and leaves lease-break, unsupported-filesystem and partial/unknown handling unresolved. Minimal rejection control: after acquiring the lease on a disposable file, have an independent actor attempt late `linkat`; assert whether the target now has a second name before any write. The accepted study already observed that alias creation succeeds. A follow-up would also checkpoint a content update between read capture and lease acquisition, then race a second writer at the exact validation/write boundary. |
