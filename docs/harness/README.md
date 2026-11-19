@@ -588,6 +588,14 @@ pre-protection descriptor control found that a proc-fd opened before a
 dumpability transition remains usable afterward; the capture host was
 ineligible for Yama mode 2/3 acceptance. Creation remains unavailable, and no
 Gate B work is authorized by that report.
+The [proposed #319 research closeout](issue-319-closeout.md) consolidates the
+direct-create, `O_TMPFILE`, and Gate A counterexamples without claiming that
+all unprivileged creation is impossible. The independent [initial #320 editing
+design](issue-320-editing-design.md) records why current file-lease evidence
+does not provide revision-bound edit authority. Both are review documents;
+creation and editing remain unavailable. Their short offline decision records
+are [proposed ADR-0006](../adr/0006-proposed-negative-closeout-for-tested-file-creation-candidates.md)
+and [proposed ADR-0007](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md).
 
 The [brokered read feasibility harness](read-broker-feasibility.md) provides an
 experimental host-owned protected-object registry and fixed Bubblewrap worker.

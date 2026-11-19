@@ -216,3 +216,7 @@ Ordinary Go and race tests do not establish native process or filesystem
 enforcement. This report does not close #319, unblock #321, close #267, or
 complete umbrella #315. Gate B and any creation enablement require a new
 reviewed decision.
+
+For a consolidated proposed disposition of all #319 creation candidates, see
+the [#319 research closeout](issue-319-closeout.md). This Gate A report remains
+the source for its own historical capture and limitations.
