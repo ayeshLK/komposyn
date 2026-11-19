@@ -325,6 +325,11 @@ the preflight.
 
 ## Disposition
 
+**Subsequent closeout:** issue #319 closed on 2026-11-19 as negative research
+after PR #338 merged. The [accepted closeout](issue-319-closeout.md) records the
+current disposition; the study-time next steps below remain historical.
+Creation stays unavailable, and #321's positive-evidence gate is unsatisfied.
+
 **The tested O_TMPFILE candidate is rejected for a same-user host threat
 profile.** On the trusted ext4 host, a same-user actor used host procfs to
 modify the unnamed staged inode before publication. Direct named creation also

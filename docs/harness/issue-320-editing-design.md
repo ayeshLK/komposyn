@@ -2,9 +2,9 @@
 
 Status: **design only; no editing prototype or model-facing capability**. The
 existing-file edit gate remains unsatisfied. This proposal is intentionally
-separate from the proposed negative closeout for creation in
-[`issue-319-closeout.md`](issue-319-closeout.md). Neither closing #319 nor its
-creation counterexamples establish editing safety.
+separate from the accepted negative closeout for creation in
+[`issue-319-closeout.md`](issue-319-closeout.md). Issue #319's closure and its
+creation counterexamples do not establish editing safety.
 
 ## Required contract
 
