@@ -313,7 +313,27 @@ func waitStartupActorResult(ctx context.Context, path string) (string, error) {
 }
 
 func writeStartupResult(path, result string) error {
-	return os.WriteFile(path, []byte(result), 0o600)
+	return publishStartupResult(path, func(file io.Writer) error {
+		_, err := io.WriteString(file, result)
+		return err
+	})
+}
+
+func publishStartupResult(path string, write func(io.Writer) error) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".startup-result-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := write(temporary); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func readBoundedLine(reader *bufio.Reader) (string, error) {
