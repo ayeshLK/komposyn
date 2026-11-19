@@ -1,20 +1,21 @@
 # Near-term mutation implementation deferral
 
-**Subsequent design proposal:** the maintainer has selected runtime file objects
-and save-time approval with detected-conflict review as a direction for
-creation. The [contract revision proposal](runtime-file-object-saves.md)
-explicitly accepts a residual external-write race. It is pending PR review
-and tracker reconciliation; it does not accept a mechanism, authorize a
-prototype or enable mutation. The original deferral below records the prior
-contract and remains applicable until that revision is reviewed.
+**Subsequent creation decision:** PR #343 merged on 2026-11-19 and ADR-0008 is
+accepted for the creation concurrency/approval boundary only. The
+[runtime-file-object contract](runtime-file-object-saves.md) accepts a residual
+external-write race. The [mechanism proposal](creation-mechanism-proposal.md)
+is a separate pending review; it does not authorize a prototype or enable
+mutation. This record preserves the prior deferral and historical research.
 
 Status: **planning record for the near-term deferral; #315's current-delivery
 section tracks its publication and review state**.
 
-Creation and editing implementation are deferred for the near term under the
-existing authority contract. No currently reviewed creation or editing
-mechanism meets the retained contract and its separate evidence and enablement
-gates. Discovery remains delivered within its documented support profiles:
+Editing implementation remains deferred under its existing authority
+contract. Creation now has an accepted concurrency/approval boundary but no
+accepted mechanism; the candidate is proposed in
+[creation mechanism design](creation-mechanism-proposal.md). Neither operation
+has positive evidence or separate enablement. Discovery remains delivered
+within its documented support profiles:
 nonrecursive listing and recursive/filter listing on their recorded Linux
 profiles, and literal search on its recorded Linux amd64 ext4 profile.
 
@@ -36,9 +37,11 @@ authorized by this deferral.
 
 ## Conditions for resuming mutation work
 
-Resume only after a separate reviewed design decision names a concrete
-candidate and operation. A general request to make patching safe is not a
-candidate. The design must preserve the existing authority contract and cover
+For creation, the runtime-file-object boundary is accepted and a concrete
+stage-plus-no-replace candidate is under review. Prototype work still requires
+a separate explicit authorization after that design review. Editing has no
+accepted mechanism or contract change and remains gated by ADR-0007. A general
+request to make patching safe is not a candidate. For either operation, cover
 these matters for the operation under consideration:
 
 1. **Authority and effect.** For creation, bind the exact retained parent and
@@ -82,9 +85,10 @@ For each operation, keep these decisions separate and ordered:
 
 Any proposal that changes the authority contract, trusted boundary, deployment
 privileges or host settings needs a separate explicit decision before
-prototyping. This record selects no alternative and sets no deadline. It does
-not make rename, delete or other unrelated #267 operations prerequisites for
-reconsidering creation or editing.
+prototyping. This deferral record selects no mechanism and sets no deadline;
+the separate creation candidate is in [creation mechanism design](creation-mechanism-proposal.md).
+It does not make rename, delete or other unrelated #267 operations
+prerequisites for reconsidering creation or editing.
 
 ## Current records
 
