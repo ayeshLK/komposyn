@@ -132,3 +132,14 @@ GOCACHE=/tmp/komposyn-study-gocache CGO_ENABLED=0 go build -buildvcs=false -o "$
 "$study_dir/komposyn-sandbox-study" --commit e35ed70145dbab72974b4cd1c4ee3c7f95d57442 > "$study_report"
 printf 'Study report: %s\n' "$study_report"
 ```
+
+## Subsequent disposition (2026-11-19)
+
+Issue #320 later closed as accepted scoped negative research after PR #340
+merged; see the [closeout record](issue-320-closeout.md) and its
+[tracker comment](https://github.com/ayeshLK/komposyn/issues/320#issuecomment-7001344903).
+That disposition accepts no edit mechanism or profile and does not alter this
+study's historical observations, source revision, missing original report, or
+unmeasured cases. Editing remains unavailable; #322's positive-evidence and
+separate explicit enablement gate remains unsatisfied. #267 and #315 remain
+open.

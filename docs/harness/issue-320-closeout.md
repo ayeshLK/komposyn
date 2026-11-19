@@ -1,28 +1,31 @@
-# Proposed research closeout: issue #320
+# Research closeout: issue #320
 
-Status: **proposal for maintainer review; issue remains open**. This packet
-recommends a scoped negative research closeout for the editing candidates
-examined under #267's existing mounted-object contract. It does not claim that
-all unprivileged editing is impossible, enable mutation, close #267 or #315, or
-satisfy #322's positive-evidence gate.
+Status: **accepted scoped negative research disposition; issue closed**. Issue
+[#320](https://github.com/ayeshLK/komposyn/issues/320) closed on 2026-11-19 at
+06:11:49 UTC after the review and merge of [PR #340](https://github.com/ayeshLK/komposyn/pull/340).
+The [closeout comment](https://github.com/ayeshLK/komposyn/issues/320#issuecomment-7001344903)
+records the disposition. This accepts research completion only for the
+candidates examined under #267's existing mounted-object contract. It does not
+claim that all unprivileged editing is impossible, enable mutation, close #267
+or #315, or satisfy #322's positive-evidence gate.
 
-## Proposed disposition
+## Accepted disposition
 
-Issue #320 asks for either a reviewed candidate or a concrete infeasibility
-report and alternatives. The evidence below rejects the examined lease-guarded
-in-place candidate and replacement-by-rename under the accepted contract. It
-does not experimentally disprove a general kernel/filesystem-mediated
-conditional edit category; no concrete primitive in that category has been
-selected or studied. On that bounded basis, recommend closing #320 as a
-negative research result **after maintainer review of this proposal**. Do not
-describe the result as a proof that every possible unprivileged mechanism is
+Issue #320 permits either a reviewed candidate or a concrete infeasibility
+report and alternatives. The evidence below rejects the examined
+lease-guarded in-place candidate and replacement-by-rename under the retained
+contract. It does not experimentally disprove a general
+kernel/filesystem-mediated conditional-edit category; no concrete primitive in
+that category has been selected or studied. This is a bounded negative
+research result, not a proof that every possible unprivileged mechanism is
 infeasible.
 
 Editing remains unavailable. The retained-FD study did not implement an edit
 worker, exercise an actual edit, or pass the runtime-to-UI/provider approval
-path. A negative research closeout does not meet #322's independently stated
-entry gate for positive, reviewed editing evidence or its separate explicit
-enablement review.
+path. #322's independently stated entry gate for positive, reviewed editing
+evidence and its separate explicit enablement review remain unsatisfied. Its
+native GitHub dependency on #320 is resolved by the closure; that does not
+satisfy the independent gate.
 
 ## Contract retained
 
@@ -57,8 +60,8 @@ Any later candidate remains subject to the existing #267 and #320 contract:
   possible effect.
 
 These are requirements, not behavior established by the lease observations.
-The proposed contract remains recorded as **proposed** in
-[ADR-0007](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md).
+ADR-0007 accepts them as retained contract constraints; it does not accept a
+mechanism or enable editing. See [ADR-0007](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md).
 
 ## Current implementation boundary
 
@@ -193,13 +196,13 @@ decision before implementation.
 
 | #320 criterion | Disposition | Evidence and limit |
 | --- | --- | --- |
-| Specify prior-read host identity/revision and bind exact change at effect; model claims are not authority. | **Contract documented; effect binding unproved.** | #267, proposed ADR-0007 and `issue-320-editing-design.md` define the authority needed. There is no edit receipt or effect mechanism consuming it. |
+| Specify prior-read host identity/revision and bind exact change at effect; model claims are not authority. | **Contract accepted; effect binding unproved.** | #267, ADR-0007 and `issue-320-editing-design.md` define the authority needed. There is no edit receipt or effect mechanism consuming it. |
 | Investigate unprivileged editing of one bounded UTF-8 regular file, preserving metadata and refusing unsupported targets. | **One candidate investigated; editing behavior unmeasured.** | The F_SETLEASE study probes lease conditions on synthetic files. It writes no edit bytes and does not exercise encoding, permissions, line endings or target-type refusals. Replacement rename is rejected by the mounted-object contract. |
 | Address concurrent content changes, namespace replacement, late aliases and protected rotation. | **Partly observed; major cases unmeasured.** | Lease acquisition was refused with the tested open FD/mapping; late hard-link creation under a lease was observed. No effect-point content race, edit namespace replacement, protected-owner rotation or complete alias coverage was tested. |
 | Use a bounded operation-specific worker and independent actors through the native harness. | **Kernel probes demonstrated; edit worker not built.** | Existing `cmd/sandbox-study` lease actors are fixed synthetic same-user processes. The lease probes run outside Bubblewrap and are not an editing worker or enforcement acceptance. |
 | Cover target/parent/root movement, substitution, aliases, protection, revocation/cancellation, cleanup and stale publication. | **Partly demonstrated for lease mechanics; editing scenarios unavailable.** | Late alias and the tested lease break were exercised. Editing movement/substitution, owner transitions, release races, cleanup ownership, stale publication, suspension, death and delayed/incomplete joins remain unmeasured. |
 | State truthful failed/partial/unknown outcomes; no unsupported atomicity, rollback or replay claims. | **Contract documented; edit outcomes untested.** | Study row `in-place-partial-or-unknown` is `not_executed`. No actual edit or replay path exists to validate. |
-| Record source, host, filesystem, backend, outcomes and limitations; produce candidate or infeasibility result. | **Provenance recorded with an explicit gap; scoped report proposed.** | The available raw report hash/source/host are verified; the original report is missing. The corroborating artifact omits fixture filesystem and mount ID, so the contemporaneous `/tmp` ext4 note cannot be independently tied to that run. The closeout rejects only named candidates and does not claim universal infeasibility. |
+| Record source, host, filesystem, backend, outcomes and limitations; produce candidate or infeasibility result. | **Scoped negative research accepted; provenance gap retained.** | The available raw report hash/source/host are verified; the original report is missing. The corroborating artifact omits fixture filesystem and mount ID, so the contemporaneous `/tmp` ext4 note cannot be independently tied to that run. The closeout rejects only named candidates and does not claim universal infeasibility. |
 | Keep editing unexposed; relate to #267 without changing it or host security. | **Preserved.** | No tool, host setting, privileged component, identity or #267 contract change is included. #267 and #315 remain open. |
 | Use existing runtime-to-UI/provider boundary and existing native harness; no parallel executor. | **Not exercised for editing.** | No edit operation exists to traverse this seam. #337's synthetic startup probe is not an editing approval journey. This remains a prerequisite for any later positive candidate. |
 | Run repository checks for implementation changes; document behavior and limits. | **Implementation checks not applicable to this docs-only closeout.** | No Go implementation changed. The e35 study record says `go mod verify`, vet, tests and `make check` passed, while `go test -race ./...` was interrupted and remains pending for that revision. PR #336 CI passed on head `c2f549b58f85b0ba6b5fd1e238ae1544d86dcca6`; PR #337 CI passed on head `ac641cd1460615d48ac033519203a02723746225`. Those later results do not retroactively change the e35 race result or prove editing enforcement. |
@@ -208,20 +211,21 @@ decision before implementation.
 claim that every positive acceptance scenario passed. Unexecuted cases remain
 unmeasured and must not be checked off as successful enforcement.
 
-## Tracker disposition
+## Subsequent tracker disposition
 
-Issue #320 remains open while this proposal is reviewed. The proposed tracker
-comment and body/checklist reconciliation are saved in
-`/tmp/komposyn-issue-320-tracker-drafts.md`; no issue state, body, comment,
-label or dependency was changed for this PR.
+On 2026-11-19, after PR #340 merged, #320 was closed as completed scoped
+negative research. The closeout comment is at
+[issuecomment-7001344903](https://github.com/ayeshLK/komposyn/issues/320#issuecomment-7001344903);
+GitHub records the closure at 06:11:49 UTC. This dated note records the later
+tracker action without changing what was known when the studies were run.
 
-Closing #320 would resolve its native GitHub dependency from #322. #322's
-separate positive-evidence entry gate and explicit enablement review would
-remain unsatisfied; negative research does not satisfy them. A closed research
-ticket cannot remain a native blocker. If maintainers want a replacement
-native blocker, that is a separate proposed tracker action. Keep #267 and
-umbrella #315 open. This packet neither delivers the editing user story nor
-completes #315.
+The closure resolves #322's native GitHub dependency on #320. #322 remains
+open and its positive-evidence entry gate and separate explicit enablement
+review remain unsatisfied. No replacement blocker was added. Keep #267 and
+umbrella #315 open. This disposition neither delivers the editing user story
+nor completes #315. No edit mechanism, profile, prototype, privileged setup,
+or model-facing tool enablement is accepted. A future alternative requires a
+concrete design and separate decision before implementation.
 
 ## References
 
@@ -233,7 +237,7 @@ completes #315.
 - [File-lease revision-binding study](file-lease-revision-binding-study.md)
 - [#337 startup Gate A evidence](issue-319-gate-a.md)
 - [Creation isolation design](creation-isolation-design.md) (context only; not editing evidence)
-- [Proposed ADR-0007](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md)
+- [Accepted ADR-0007 contract](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md)
 - [Merged PR #336](https://github.com/ayeshLK/komposyn/pull/336)
 - [Merged PR #337](https://github.com/ayeshLK/komposyn/pull/337)
 - [Merged PR #338](https://github.com/ayeshLK/komposyn/pull/338)

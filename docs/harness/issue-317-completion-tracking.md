@@ -180,6 +180,7 @@ records 30 passing cases and two unavailable out-of-profile cases
 broader limitations listed above.
 
 Issue #317's accepted discovery scope is complete for this supported profile.
-Issue #315 remains open. Search (#318), mutation feasibility (#319/#320),
-patch-tool enablement (#321/#322), and the canonical mutation gate (#267)
-remain separate open work.
+Issue #315 remains open. Search (#318), patch-tool enablement (#321/#322),
+and the canonical mutation gate (#267) remain open. Creation (#319) and editing
+(#320) research closed with scoped negative dispositions; this does not satisfy
+either operation's positive-evidence or separate enablement gate.

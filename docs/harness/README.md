@@ -130,10 +130,11 @@ Mutation design is tracked separately in
 [issue #267](https://github.com/ayeshLK/komposyn/issues/267).
 The source-level `F_SETLEASE(F_WRLCK)` candidate observations and their limits
 are recorded in the [existing-file edit feasibility study](file-lease-revision-binding-study.md).
-The scoped negative research disposition for existing-file editing is
-proposed in the [#320 closeout record](issue-320-closeout.md); #320 remains
-open during review, editing remains unavailable, and this result does not
-satisfy #322's positive-evidence gate.
+The scoped negative research disposition for existing-file editing was
+accepted when #320 closed on 2026-11-19 after PR #340. See the [#320 closeout
+record](issue-320-closeout.md). Editing remains unavailable; #322's independent
+positive-evidence and explicit enablement gate remains unsatisfied, while #267
+and #315 remain open.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
@@ -597,11 +598,11 @@ direct-create, `O_TMPFILE`, and Gate A counterexamples without claiming that
 all unprivileged creation is impossible. The independent [initial #320 editing
 design](issue-320-editing-design.md) records why current file-lease evidence
 does not provide revision-bound edit authority. Issue #319 is closed as negative
-research; #320's editing design remains a proposal. Creation and editing remain
-unavailable, and #321's positive-evidence gate is unsatisfied despite resolution
-of its native dependency on #319. The decision records are
+research; #320 is closed as scoped negative editing research. Creation and editing
+remain unavailable, and #321's positive-evidence gate is unsatisfied despite
+resolution of its native dependency on #319. The decision records are
 [accepted ADR-0006](../adr/0006-proposed-negative-closeout-for-tested-file-creation-candidates.md)
-and [proposed ADR-0007](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md).
+and [accepted ADR-0007 contract](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md).
 
 The [brokered read feasibility harness](read-broker-feasibility.md) provides an
 experimental host-owned protected-object registry and fixed Bubblewrap worker.
