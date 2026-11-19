@@ -12,3 +12,5 @@ editing mechanism or prototype is selected and editing remains unavailable
 pending a separate trust/mechanism decision. The [#320 design investigation](../harness/issue-320-editing-design.md)
 records the contract, lease evidence, rejected candidates and missing evidence.
 This proposal does not close #267, #315 or #320, and does not unblock #322.
+The scoped negative research disposition proposed for #320 is recorded in the
+[#320 closeout](../harness/issue-320-closeout.md); this ADR remains proposed.
