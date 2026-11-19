@@ -3,9 +3,11 @@
 **Subsequent creation decision:** PR #343 merged on 2026-11-19 and ADR-0008 is
 accepted for the creation concurrency/approval boundary only. The
 [runtime-file-object contract](runtime-file-object-saves.md) accepts a residual
-external-write race. The [mechanism proposal](creation-mechanism-proposal.md)
-is a separate pending review; it does not authorize a prototype or enable
-mutation. This record preserves the prior deferral and historical research.
+external-write race. PR #344 merged the [mechanism proposal](creation-mechanism-proposal.md)
+as a proposal, and the [integration protocol](creation-integration-protocol.md)
+is proposed for review. Neither authorizes a prototype or enables mutation;
+production scope coverage remains unresolved. This record preserves the prior
+deferral and historical research.
 
 Status: **planning record for the near-term deferral; #315's current-delivery
 section tracks its publication and review state**.
