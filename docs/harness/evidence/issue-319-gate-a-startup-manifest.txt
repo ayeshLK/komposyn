@@ -1,0 +1,11 @@
+Issue #319 Gate A synthetic startup descriptor capture
+Source commit: 2cb48322d99bcdc1feaa440d6701f54a1ccad3b7
+Go version: go1.26.11 linux/amd64
+Kernel: Linux 7.0.0-42-generic amd64
+Fixture: ext4 magic 0xef53, mount ID 6339
+Profile: ineligible; Yama ptrace_scope=1; current user namespace user:[4026533849], uid_map 1000 0 1; original-user-namespace capability assumption unverified
+Classification: synthetic proc-fd retention observed_violation; candidate profile remains ineligible
+SHA-256 cmd/sandbox-study/main_linux.go: 0b109f41b7fd5bac011f0babeaeb48e54870a9e819a9d11f74638d2842534080
+SHA-256 internal/harness/sandboxstudy/startup_linux.go: b7a944889497f6185b99a2cc2d32570376277c4463851383fe3c4bfba2e3931a
+SHA-256 komposyn-sandbox-study-gate-a: 29893394cab7175f326f5fc44cb671975c79586a01ebc3000fe2d4abd63f7d3d
+SHA-256 report.json: 36a6290f55357cee527109de580c40135c2deace36353253ea79decf8390065a

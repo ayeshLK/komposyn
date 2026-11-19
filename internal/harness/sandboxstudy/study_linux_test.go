@@ -31,6 +31,41 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestStartupCheckpointPublicationWaitsForCompleteContents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "checkpoint")
+	started := make(chan struct{})
+	resume := make(chan struct{})
+	done := make(chan error, 1)
+	var release sync.Once
+	defer release.Do(func() { close(resume) })
+
+	go func() {
+		done <- publishStartupResult(path, func(writer io.Writer) error {
+			close(started)
+			<-resume
+			_, err := io.WriteString(writer, "complete checkpoint")
+			return err
+		})
+	}()
+	<-started
+
+	if _, err := os.ReadFile(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("checkpoint became visible before writing completed: data/error=%v", err)
+	}
+	release.Do(func() { close(resume) })
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "complete checkpoint" {
+		t.Fatalf("checkpoint contents = %q, want complete checkpoint", got)
+	}
+}
+
 func TestSeccompFilterIsArchitectureCheckedAndBounded(t *testing.T) {
 	filter, err := seccompFilter()
 	if err != nil {

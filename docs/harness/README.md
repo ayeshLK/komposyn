@@ -582,6 +582,13 @@ environment; it does not establish mutation or shell enforcement. The
 the later object-authority target and distinguish it from the historical strict
 pathname-containment gate in the earlier policy.
 
+The [issue #319 Gate A report](issue-319-gate-a.md) records the selected
+creation-broker startup and confinement investigation. Its synthetic
+pre-protection descriptor control found that a proc-fd opened before a
+dumpability transition remains usable afterward; the capture host was
+ineligible for Yama mode 2/3 acceptance. Creation remains unavailable, and no
+Gate B work is authorized by that report.
+
 The [brokered read feasibility harness](read-broker-feasibility.md) provides an
 experimental host-owned protected-object registry and fixed Bubblewrap worker.
 The memory-chat host composition now uses that coordinator for auth/settings
