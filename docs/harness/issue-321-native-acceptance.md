@@ -6,6 +6,35 @@ register creation, grant creation scope, or advertise its schema. The test uses
 synthetic auth/settings/provider-source/Token Logger owner coverage and only
 synthetic files. It makes no provider requests.
 
+## Recorded native run
+
+The accepted scoped run completed on 2026-11-20 against source commit
+`39279e93080a2306f5ed1a702bd83ab852eb1055` with test overlay SHA-256
+`560c845a55a0e52c4f76b8710407ce914113f168c41b14196432d47b0b66f5c4`.
+The archive was
+`/home/ayesh/projects/samples/komposyn-issue321-scratch/komposyn-composition-native-results.e9sr9ic5.tar.gz`
+(archive SHA-256
+`4a43e17e123e4fb6e2a0b55af42d276df7433092094ee0fb4b814e1b50047dfa`). Its
+manifest SHA-256 is
+`bdb9a10e800164cade52db33f9c3c73fe962511ba515c2ee64f7746b79159a0a`, and the
+native report SHA-256 is
+`d7547da9b89b3ad5bf56179d023bc7428e6ac05cabcc3858f5a2bd7dbcd920ec`.
+
+Measured environment: Go 1.26.11, Linux 7.0.0-42-generic amd64, regular user
+UID 1000, trusted root-owned Bubblewrap 0.9.0 mode `0755`, and the measured
+`ro-bind-fd` launch mode. The creation fixture ran on ext4, mount ID 33.
+All 10 recorded native cases passed, including exact created bytes and mode
+`0600`, stage cleanup, incumbent and late-collision preservation, and worker
+join. Unit checks, native build, native execution, and cleanup completed; no
+work was retained. The per-case creation record SHA-256 is
+`baf7151e28388d5296103784225096ae2432b55595c904365b98440102062645`.
+
+This establishes only the fixed worker and test fixture on that host, ext4
+mount, and measured Bubblewrap mode. It does not establish production owner
+coverage, shipped tool availability, other launch modes or filesystems, other
+platforms, or model-facing creation authorization. Separate explicit
+maintainer review remains required before any production enablement.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).
