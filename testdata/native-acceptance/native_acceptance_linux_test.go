@@ -268,7 +268,7 @@ func TestNativeServiceBoundedCreation(t *testing.T) {
 	if err != nil || result.Outcome != rb.CreationCreated || result.Bytes != uint32(len(content)) {
 		detail := f.tracked.lastFailureDetail()
 		if detail == "worker_missing" {
-			detail = creationEligibilitySummary(f.impl, identity)
+			detail = creationEligibilitySummary(f.impl, identity, filepath.Join(f.root, "created.txt"))
 		}
 		r.CreationFailureDetail = detail
 		t.Fatalf("confined create worker result outcome=%q bytes=%d err=%v worker=%s", result.Outcome, result.Bytes, err, detail)
@@ -339,10 +339,15 @@ func TestNativeServiceBoundedCreation(t *testing.T) {
 	r.CreationLateStageAbsent = true
 }
 
-func creationEligibilitySummary(impl *linuxImplementation, parent rb.FileIdentity) string {
+func creationEligibilitySummary(impl *linuxImplementation, parent rb.FileIdentity, target string) string {
 	impl.mu.Lock()
 	manifest := impl.creationManifest
 	closed := impl.closed
+	blocked := make([]string, 0, len(impl.blocked))
+	for owner := range impl.blocked {
+		blocked = append(blocked, owner)
+	}
+	barrierActive := impl.creationBarrier != nil
 	owners := map[string]OwnerState{
 		"auth":        impl.owners[auth.SensitiveOwnerAuth].State,
 		"settings":    impl.owners[auth.SensitiveOwnerSettings].State,
@@ -353,12 +358,25 @@ func creationEligibilitySummary(impl *linuxImplementation, parent rb.FileIdentit
 	coverage := impl.inventory.Snapshot()
 	policy := impl.registry.View()
 	if manifest == nil {
-		return fmt.Sprintf("worker_missing; manifest=missing closed=%t", closed)
+		return fmt.Sprintf("worker_missing; manifest=missing closed=%t blocked=%v barrier_active=%t", closed, blocked, barrierActive)
 	}
-	return fmt.Sprintf("worker_missing; closed=%t scope_complete=%t scope_matches=%t policy_matches=%t coverage_complete=%t coverage_revision_matches=%t policy_generation_matches=%t owner_states=%v manifest_owner_counts=%d/%d/%d/%d",
-		closed, manifest.scopeComplete, manifest.scopeParent == parent, policy.Generation == manifest.policyRevision,
+	ownerMatches := make(map[string]int, len(manifest.owners))
+	for owner, manifestOwner := range manifest.owners {
+		for route, identity := range manifestOwner.registrations {
+			for _, entry := range policy.Entries {
+				if entry.Owner == owner && entry.Class == manifestOwner.class && entry.Path == route && entry.Identity == identity && !entry.Directory && identity.Inode != 0 {
+					ownerMatches[owner]++
+					break
+				}
+			}
+		}
+	}
+	return fmt.Sprintf("worker_missing; eligible=%t target_unprotected=%t closed=%t blocked=%v barrier_active=%t scope_complete=%t scope_matches=%t coverage_complete=%t coverage_revision_matches=%t policy_generation_matches=%t owner_states=%v manifest_owner_counts=%d/%d/%d/%d registry_owner_matches=%v token_db_suffix_valid=%t",
+		impl.syntheticCreationManifestEligible(parent), impl.creationTargetUnprotected(target), closed, blocked, barrierActive,
+		manifest.scopeComplete, manifest.scopeParent == parent,
 		coverage.Complete, coverage.Revision == manifest.coverageRevision, policy.Generation == manifest.policyRevision,
-		owners, len(manifest.owners[auth.SensitiveOwnerAuth].registrations), len(manifest.owners[auth.SensitiveOwnerSettings].registrations), len(manifest.owners["tokenlogger-store"].registrations), len(manifest.owners["provider-source"].registrations))
+		owners, len(manifest.owners[auth.SensitiveOwnerAuth].registrations), len(manifest.owners[auth.SensitiveOwnerSettings].registrations), len(manifest.owners["tokenlogger-store"].registrations), len(manifest.owners["provider-source"].registrations), ownerMatches,
+		strings.HasSuffix(manifest.tokenDatabasePath, ".db"))
 }
 
 func creationFilesystemEvidence(t *testing.T, directory *os.File) (string, uint64) {
