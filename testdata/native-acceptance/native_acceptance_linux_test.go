@@ -694,6 +694,14 @@ type nativeTrackedWorker struct {
 	beforePublish func() error
 }
 
+func (w *nativeTrackedWorker) WorkerContext() context.Context {
+	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
+	if !ok {
+		return nil
+	}
+	return creation.WorkerContext()
+}
+
 func (w *nativeTrackedWorker) FailureDetail() string {
 	if worker, ok := w.SandboxWorker.(interface{ FailureDetail() string }); ok {
 		return worker.FailureDetail()
