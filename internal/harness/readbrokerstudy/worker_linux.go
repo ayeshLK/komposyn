@@ -935,11 +935,11 @@ func (w *sandboxWorker) Ready(ctx context.Context) error {
 		return fmt.Errorf("%w: worker startup acknowledgement unavailable: %s", ErrUnavailable, w.startupDiagnostic())
 	}
 	if len(packet) < 2 || packet[0] != frameReady {
-		return ErrProtocol
+		return fmt.Errorf("%w: unexpected worker startup response (%s)", ErrProtocol, workerResponseSummary(packet))
 	}
 	var probe WorkerProbe
 	if err := json.Unmarshal(packet[1:], &probe); err != nil {
-		return ErrProtocol
+		return fmt.Errorf("%w: worker startup probe was malformed (response length=%d)", ErrProtocol, len(packet))
 	}
 	w.mu.Lock()
 	w.probe = probe
@@ -1155,6 +1155,29 @@ func creationResponseSummary(packet []byte) string {
 			frame = "finish"
 		case frameRefused:
 			frame = "refused"
+		default:
+			frame = fmt.Sprintf("unknown_0x%02x", packet[0])
+		}
+	}
+	return fmt.Sprintf("frame=%s length=%d", frame, len(packet))
+}
+
+func workerResponseSummary(packet []byte) string {
+	frame := "empty"
+	if len(packet) > 0 {
+		switch packet[0] {
+		case frameReady:
+			frame = "ready"
+		case frameStarted:
+			frame = "started"
+		case frameCapabilityHeld:
+			frame = "capability_held"
+		case frameRefused:
+			frame = "refused"
+		case frameCreateStaged:
+			frame = "create_staged"
+		case frameCreateFinish:
+			frame = "create_finish"
 		default:
 			frame = fmt.Sprintf("unknown_0x%02x", packet[0])
 		}
