@@ -64,6 +64,7 @@ type nativeRecord struct {
 	CreationLateStageAbsent          bool                  `json:"creation_late_stage_absent,omitempty"`
 	CreationFilesystem               string                `json:"creation_filesystem,omitempty"`
 	CreationMountID                  uint64                `json:"creation_mount_id,omitempty"`
+	CreationFailureDetail            string                `json:"creation_failure_detail,omitempty"`
 	Case                             string                `json:"case"`
 	Status                           string                `json:"status"`
 	CleanupConfirmed                 bool                  `json:"cleanup_confirmed"`
@@ -264,7 +265,9 @@ func TestNativeServiceBoundedCreation(t *testing.T) {
 	content := []byte("synthetic native creation fixture\n")
 	result, err := f.impl.executeBoundedCreation(nativeContext(t), parent, identity, stageName, "created.txt", content)
 	if err != nil || result.Outcome != rb.CreationCreated || result.Bytes != uint32(len(content)) {
-		t.Fatal("confined create worker did not report the exact published fixture")
+		detail := f.tracked.lastFailureDetail()
+		r.CreationFailureDetail = detail
+		t.Fatalf("confined create worker result outcome=%q bytes=%d err=%v worker=%s", result.Outcome, result.Bytes, err, detail)
 	}
 	created := filepath.Join(f.root, "created.txt")
 	actual, err := os.ReadFile(created)
@@ -539,6 +542,13 @@ type nativeTrackedWorker struct {
 	beforePublish func() error
 }
 
+func (w *nativeTrackedWorker) FailureDetail() string {
+	if worker, ok := w.SandboxWorker.(interface{ FailureDetail() string }); ok {
+		return worker.FailureDetail()
+	}
+	return "worker_diagnostic_unavailable"
+}
+
 func (w *nativeTrackedWorker) StageCreation(ctx context.Context, parent *os.File, identity rb.FileIdentity, stageName, leaf string, content []byte) (rb.CreationStage, error) {
 	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
 	if !ok {
@@ -580,6 +590,19 @@ func (l *nativeTrackedLauncher) allJoined() bool {
 		}
 	}
 	return true
+}
+
+func (l *nativeTrackedLauncher) lastFailureDetail() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.workers) == 0 {
+		return "worker_missing"
+	}
+	worker, ok := l.workers[len(l.workers)-1].(interface{ FailureDetail() string })
+	if !ok {
+		return "worker_diagnostic_unavailable"
+	}
+	return worker.FailureDetail()
 }
 
 type nativeObservedProtector struct {
