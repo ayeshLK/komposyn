@@ -11,9 +11,8 @@ synthetic files. It makes no provider requests.
 The accepted scoped run completed on 2026-11-20 against source commit
 `39279e93080a2306f5ed1a702bd83ab852eb1055` with test overlay SHA-256
 `560c845a55a0e52c4f76b8710407ce914113f168c41b14196432d47b0b66f5c4`.
-The archive was
-`/home/ayesh/projects/samples/komposyn-issue321-scratch/komposyn-composition-native-results.e9sr9ic5.tar.gz`
-(archive SHA-256
+The operator-retained archive is named
+`komposyn-composition-native-results.e9sr9ic5.tar.gz` (archive SHA-256
 `4a43e17e123e4fb6e2a0b55af42d276df7433092094ee0fb4b814e1b50047dfa`). Its
 manifest SHA-256 is
 `bdb9a10e800164cade52db33f9c3c73fe962511ba515c2ee64f7746b79159a0a`, and the
