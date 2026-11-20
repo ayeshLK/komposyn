@@ -529,10 +529,14 @@ func (l *nativeTrackedLauncher) StartForOperation(ctx context.Context, operation
 	w, e := launcher.StartForOperation(ctx, operation)
 	if w != nil {
 		l.mu.Lock()
-		tracked := &nativeTrackedWorker{SandboxWorker: w, beforePublish: l.beforeCreationPublish}
-		l.workers = append(l.workers, tracked)
+		if operation == rb.AdmissionCreateFile {
+			tracked := &nativeTrackedWorker{SandboxWorker: w, beforePublish: l.beforeCreationPublish}
+			l.workers = append(l.workers, tracked)
+			l.mu.Unlock()
+			return tracked, e
+		}
+		l.workers = append(l.workers, w)
 		l.mu.Unlock()
-		return tracked, e
 	}
 	return w, e
 }
