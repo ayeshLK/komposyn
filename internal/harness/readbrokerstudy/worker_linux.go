@@ -1087,6 +1087,9 @@ func (w *sandboxWorker) StageCreation(ctx context.Context, directory *os.File, e
 	}
 	if len(packet) == 1+1+20+4 && packet[0] == frameCreateFinish {
 		result, parseErr := parseCreationResult(packet)
+		if parseErr != nil {
+			parseErr = fmt.Errorf("%w: invalid create finish response (%s)", parseErr, creationResponseSummary(packet))
+		}
 		return unknown, &CreationOperationError{Result: result, Cause: errors.Join(ErrUnavailable, parseErr)}
 	}
 	if len(packet) == 2 && packet[0] == frameRefused {
@@ -1096,11 +1099,11 @@ func (w *sandboxWorker) StageCreation(ctx context.Context, directory *os.File, e
 		}
 	}
 	if len(packet) != 1+20 || packet[0] != frameCreateStaged {
-		return unknown, ErrProtocol
+		return unknown, fmt.Errorf("%w: unexpected create stage response (%s)", ErrProtocol, creationResponseSummary(packet))
 	}
 	identity := FileIdentity{Device: binary.BigEndian.Uint64(packet[1:9]), Inode: binary.BigEndian.Uint64(packet[9:17]), Type: binary.BigEndian.Uint32(packet[17:21])}
 	if identity.Type != unix.S_IFREG || identity.Inode == 0 {
-		return unknown, ErrProtocol
+		return unknown, fmt.Errorf("%w: invalid create stage identity type=%d inode_present=%t", ErrProtocol, identity.Type, identity.Inode != 0)
 	}
 	w.mu.Lock()
 	w.creationStaged = true
@@ -1140,6 +1143,23 @@ func creationRefusalDescription(reason byte) string {
 	default:
 		return "creation worker rejected the request with an unknown reason"
 	}
+}
+
+func creationResponseSummary(packet []byte) string {
+	frame := "empty"
+	if len(packet) > 0 {
+		switch packet[0] {
+		case frameCreateStaged:
+			frame = "staged"
+		case frameCreateFinish:
+			frame = "finish"
+		case frameRefused:
+			frame = "refused"
+		default:
+			frame = fmt.Sprintf("unknown_0x%02x", packet[0])
+		}
+	}
+	return fmt.Sprintf("frame=%s length=%d", frame, len(packet))
 }
 
 func validCreationStageName(value string) bool {
