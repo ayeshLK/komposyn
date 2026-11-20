@@ -124,6 +124,11 @@ func (s *Service) Protect(ctx context.Context, owner, class, route string, objec
 	if s == nil || s.impl == nil {
 		return ErrServiceClosed
 	}
+	if invalidator, ok := s.impl.(interface{ invalidateCreationProposals() error }); ok {
+		if err := invalidator.invalidateCreationProposals(); err != nil {
+			return err
+		}
+	}
 	return s.impl.Protect(ctx, owner, class, route, object)
 }
 
@@ -138,7 +143,11 @@ func (s *Service) Close(ctx context.Context) error {
 	s.rootConversationID = ""
 	s.rootGeneration++
 	s.rootMu.Unlock()
-	return s.impl.Close(ctx)
+	var proposalErr error
+	if invalidator, ok := s.impl.(interface{ invalidateCreationProposals() error }); ok {
+		proposalErr = invalidator.invalidateCreationProposals()
+	}
+	return errors.Join(proposalErr, s.impl.Close(ctx))
 }
 
 // ValidateFilesystemRoot checks only the user-selected path for display and
@@ -189,6 +198,11 @@ func (s *Service) InvalidateFilesystemRoot(ctx context.Context, transition runti
 	s.rootPath = transition.Root
 	s.rootPending = true
 	s.rootMu.Unlock()
+	if invalidator, ok := s.impl.(interface{ invalidateCreationProposals() error }); ok {
+		if err := invalidator.invalidateCreationProposals(); err != nil {
+			return err
+		}
+	}
 	if impl, ok := s.impl.(readAdmissionImplementation); ok {
 		if err := impl.SelectFilesystemRoot(ctx, transition); err != nil {
 			return err

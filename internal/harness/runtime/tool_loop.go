@@ -1071,6 +1071,13 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	if err != nil || !lifecycleCurrent() {
 		return notExecuted("tool authorization requirements could not be prepared")
 	}
+	if creationCall {
+		if discarder, ok := r.authorizer.(FilesystemCreationProposalDiscarder); ok {
+			defer func() {
+				_ = discarder.DiscardFilesystemCreationProposal(context.Background(), cloneInvocation(invocation))
+			}()
+		}
+	}
 	if !r.checkReadAuthorityRevision(decision.Revision) {
 		return notExecuted("permission revision changed while read authority was retained")
 	}
@@ -1228,9 +1235,16 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	} else {
 		result, executionErr = r.enforcer.Execute(ctx, tool, cloneInvocation(invocation), prepared)
 	}
+	creationInvalidatedAfterExecution := creationCall && !lifecycleCurrent()
 	outcome := validateResultOutcome(result)
 	if executionErr != nil {
 		outcome = tools.OutcomeUnknown
+	}
+	if creationInvalidatedAfterExecution {
+		outcome = tools.OutcomeUnknown
+		result.Content = nil
+		result.Truncated = false
+		result.ErrorCode = "creation_authority_changed_after_dispatch"
 	}
 	if result.ProviderCallID != call.CallID {
 		outcome = tools.OutcomeUnknown
@@ -1247,7 +1261,8 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	activity.Message = toolOutcomeMessage(outcome)
 	update("finished")
 	isError := outcome != tools.OutcomeSucceeded && outcome != tools.OutcomeDeclined
-	return provider.ToolResult{CallID: call.CallID, Content: content, IsError: isError}, activity, "", ctx.Err() != nil || outcome == tools.OutcomeCancelled, nil
+	stopTurn := ctx.Err() != nil || outcome == tools.OutcomeCancelled || creationCall && outcome == tools.OutcomeUnknown
+	return provider.ToolResult{CallID: call.CallID, Content: content, IsError: isError}, activity, "", stopTurn, nil
 }
 
 func resolveFilesystemReadInvocation(invocation tools.Invocation, workingDirectory string) (tools.Invocation, error) {

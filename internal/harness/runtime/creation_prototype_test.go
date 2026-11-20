@@ -38,6 +38,7 @@ type creationRuntimeFixture struct {
 	prepared          []permissions.Request
 	executions        int
 	closes            int
+	discarded         int
 	changeOnReprepare bool
 }
 
@@ -74,6 +75,11 @@ func (h *creationRuntimeFixture) PrepareFilesystemCreation(_ context.Context, in
 	}
 	h.previews = append(h.previews, clonePermissionRequest(request))
 	return request, nil
+}
+
+func (h *creationRuntimeFixture) DiscardFilesystemCreationProposal(_ context.Context, invocation tools.Invocation) error {
+	h.discarded++
+	return nil
 }
 
 func (h *creationRuntimeFixture) PrepareApprovedFilesystemCreation(_ context.Context, _ tools.Invocation, request permissions.Request, _ uint64) (ToolPreparation, error) {
@@ -243,8 +249,8 @@ func TestCreationPrototypeDenialAndCancellationDoNotPrepareOrExecute(t *testing.
 			if err != nil || turn.Outcome != test.outcome {
 				t.Fatalf("turn=%+v err=%v; want outcome %s", turn, err, test.outcome)
 			}
-			if host.executions != 0 || len(host.prepared) != 0 || host.closes != 0 {
-				t.Fatalf("refused request progressed: previews=%d preparations=%d executions=%d closes=%d", len(host.previews), len(host.prepared), host.executions, host.closes)
+			if host.executions != 0 || len(host.prepared) != 0 || host.closes != 0 || host.discarded != 1 {
+				t.Fatalf("refused request lifecycle: previews=%d preparations=%d executions=%d closes=%d discarded=%d", len(host.previews), len(host.prepared), host.executions, host.closes, host.discarded)
 			}
 		})
 	}

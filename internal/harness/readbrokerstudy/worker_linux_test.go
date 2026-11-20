@@ -1209,6 +1209,22 @@ func TestWorkerSeccompProgramIncludesBootstrapAndProcessRestrictions(t *testing.
 			t.Errorf("listing seccomp policy denies required directory syscall %d", needed)
 		}
 	}
+	creationDenied := workerDeniedSyscallsForOperation(AdmissionCreateFile)
+	for _, required := range []uint32{unix.SYS_OPENAT, unix.SYS_GETDENTS64, unix.SYS_MLOCK, unix.SYS_SOCKET, unix.SYS_CLONE3, unix.SYS_EXECVE} {
+		if !slices.Contains(creationDenied, required) {
+			t.Errorf("creation seccomp policy does not deny syscall %d", required)
+		}
+	}
+	for _, needed := range []uint32{unix.SYS_OPENAT2, unix.SYS_NEWFSTATAT, unix.SYS_STATX} {
+		if slices.Contains(creationDenied, needed) {
+			t.Errorf("creation seccomp policy denies descriptor-relative creation syscall %d", needed)
+		}
+	}
+	for _, needed := range []uint32{unix.SYS_UNLINKAT, unix.SYS_RENAMEAT2, unix.SYS_FSYNC} {
+		if slices.Contains(creationDenied, needed) {
+			t.Errorf("creation seccomp policy denies cleanup/publication syscall %d", needed)
+		}
+	}
 	searchTraversal := workerDeniedSyscallsForOperation(AdmissionSearchFiles)
 	if slices.Contains(searchTraversal, unix.SYS_OPENAT2) || !slices.Contains(searchTraversal, unix.SYS_OPENAT) || !slices.Contains(searchTraversal, unix.SYS_MLOCK) {
 		t.Fatalf("search traversal syscall policy=%v", searchTraversal)
@@ -1221,11 +1237,222 @@ func TestWorkerSeccompProgramIncludesBootstrapAndProcessRestrictions(t *testing.
 	listingProfile, _ := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
 	searchTraversalProfile, _ := workerSeccompFilterBytesForOperation(AdmissionSearchFiles)
 	searchContentProfile, _ := workerSeccompFilterBytesForOperation(AdmissionSearchContent)
-	if bytes.Equal(searchTraversalProfile, listingProfile) || bytes.Equal(searchContentProfile, readProfile) || bytes.Equal(searchContentProfile, searchTraversalProfile) {
+	creationProfile, err := workerSeccompFilterBytesForOperation(AdmissionCreateFile)
+	if err != nil {
+		t.Fatalf("creation worker profile unavailable: %v", err)
+	}
+	if bytes.Equal(searchTraversalProfile, listingProfile) || bytes.Equal(searchContentProfile, readProfile) || bytes.Equal(searchContentProfile, searchTraversalProfile) || bytes.Equal(creationProfile, listingProfile) || bytes.Equal(creationProfile, readProfile) {
 		t.Fatal("search operations did not receive distinct seccomp profiles")
 	}
 	if _, err := workerSeccompFilterBytesForOperation(AdmissionOperation("unexpected")); err == nil {
 		t.Fatal("unknown worker operation received a seccomp profile")
+	}
+}
+
+func TestCreateWorkerStagePublishAndAbortProtocol(t *testing.T) {
+	t.Run("maximum bounded input fits one packet", func(t *testing.T) {
+		stageName, err := NewCreationStageName()
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf := strings.Repeat("x", maxCreationLeafBytes)
+		frame := makeCreationInputFrame(FileIdentity{Device: 1, Inode: 2, Type: unix.S_IFDIR}, stageName, leaf, bytes.Repeat([]byte("x"), maxCreationContentBytes))
+		if len(frame) > maxCreationPacketBytes || len(frame) != 1+20+1+1+4+len(stageName)+len(leaf)+maxCreationContentBytes {
+			t.Fatalf("max frame length=%d packet capacity=%d", len(frame), maxCreationPacketBytes)
+		}
+	})
+	t.Run("publishes exact bytes with no replace", func(t *testing.T) {
+		root := t.TempDir()
+		directory, err := os.Open(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer directory.Close()
+		content := []byte("prototype creation\n")
+		stageName, err := NewCreationStageName()
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, stageIdentity, exitCode := runCreationProtocol(t, directory, stageName, "created.txt", content, frameCreatePublish)
+		if exitCode != 0 || result.Outcome != CreationCreated || result.Bytes != uint32(len(content)) || result.Identity != stageIdentity {
+			t.Fatalf("create result=%+v stage=%+v exit=%d", result, stageIdentity, exitCode)
+		}
+		got, err := os.ReadFile(filepath.Join(root, "created.txt"))
+		if err != nil || !bytes.Equal(got, content) {
+			t.Fatalf("published content=%q err=%v", got, err)
+		}
+		info, err := os.Stat(filepath.Join(root, "created.txt"))
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("published mode=%v err=%v; want 0600", info.Mode(), err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, stageName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stage remained after publish: %v", err)
+		}
+	})
+
+	t.Run("collision leaves incumbent intact", func(t *testing.T) {
+		root := t.TempDir()
+		directory, err := os.Open(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer directory.Close()
+		incumbent := []byte("do not replace")
+		if err := os.WriteFile(filepath.Join(root, "exists.txt"), incumbent, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stageName, err := NewCreationStageName()
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, _, exitCode := runCreationProtocol(t, directory, stageName, "exists.txt", []byte("approved replacement"), frameCreatePublish)
+		if exitCode != 0 || result.Outcome != CreationConflict {
+			t.Fatalf("collision result=%+v exit=%d", result, exitCode)
+		}
+		got, err := os.ReadFile(filepath.Join(root, "exists.txt"))
+		if err != nil || !bytes.Equal(got, incumbent) {
+			t.Fatalf("incumbent changed to %q err=%v", got, err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, stageName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("collision stage was not cleaned: %v", err)
+		}
+	})
+
+	t.Run("abort removes private stage", func(t *testing.T) {
+		root := t.TempDir()
+		directory, err := os.Open(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer directory.Close()
+		stageName, err := NewCreationStageName()
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, _, exitCode := runCreationProtocol(t, directory, stageName, "aborted.txt", []byte("approved but cancelled"), frameCreateAbort)
+		if exitCode != 0 || result.Outcome != CreationNotCreated {
+			t.Fatalf("abort result=%+v exit=%d", result, exitCode)
+		}
+		if _, err := os.Lstat(filepath.Join(root, stageName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("abort stage remained: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, "aborted.txt")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("abort published target: %v", err)
+		}
+	})
+}
+
+func TestBoundedCreationWorkerReceiptIsOneUse(t *testing.T) {
+	root := t.TempDir()
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	parentIdentity, err := identityFromFile(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := os.NewFile(uintptr(pair[0]), "bounded-create-parent")
+	child := os.NewFile(uintptr(pair[1]), "bounded-create-worker")
+	worker := &sandboxWorker{control: parent, operation: AdmissionCreateFile, ready: true}
+	done := make(chan int, 1)
+	go func() { done <- receiveAndRead(int(child.Fd()), false, AdmissionCreateFile) }()
+	stageName, err := NewCreationStageName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := worker.StageCreation(context.Background(), directory, parentIdentity, stageName, "once.txt", []byte("one use"))
+	if err != nil {
+		t.Fatalf("stage creation: %v", err)
+	}
+	if stage.StageName() != stageName || stage.StageIdentity().Inode == 0 {
+		t.Fatalf("stage metadata is incomplete: name=%q identity=%+v", stage.StageName(), stage.StageIdentity())
+	}
+	result, err := worker.PublishCreation(context.Background(), stage)
+	if err != nil || result.Outcome != CreationCreated {
+		t.Fatalf("publish result=%+v err=%v", result, err)
+	}
+	if _, err := worker.PublishCreation(context.Background(), stage); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("creation stage receipt was reusable: %v", err)
+	}
+	if code := <-done; code != 0 {
+		t.Fatalf("worker exit code=%d", code)
+	}
+	_ = child.Close()
+	if err := worker.Wait(); err != nil {
+		t.Fatalf("join protocol worker: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "once.txt"))
+	if err != nil || string(got) != "one use" {
+		t.Fatalf("created bytes=%q err=%v", got, err)
+	}
+}
+
+func runCreationProtocol(t *testing.T, directory *os.File, stageName, leaf string, content []byte, decision byte) (CreationResult, FileIdentity, int) {
+	t.Helper()
+	parentIdentity, err := identityFromFile(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sockets, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(sockets[0])
+	workerControl := os.NewFile(uintptr(sockets[1]), "creation-worker-control")
+	defer workerControl.Close()
+	done := make(chan int, 1)
+	go func() { done <- receiveAndRead(int(workerControl.Fd()), false, AdmissionCreateFile) }()
+	request := makeCreationInputFrame(parentIdentity, stageName, leaf, content)
+	n, err := unix.SendmsgN(sockets[0], request, unix.UnixRights(int(directory.Fd())), nil, unix.MSG_NOSIGNAL)
+	clear(request)
+	if err != nil || n == 0 {
+		t.Fatalf("send create request bytes=%d err=%v", n, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	first, err := recvPacket(ctx, sockets[0], 64)
+	if err != nil {
+		t.Fatalf("receive stage acknowledgement: %v", err)
+	}
+	if len(first) == 1+1+20+4 && first[0] == frameCreateFinish {
+		result, parseErr := parseCreationResult(first)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		return result, FileIdentity{}, <-done
+	}
+	if len(first) != 1+20 || first[0] != frameCreateStaged {
+		t.Fatalf("stage response=%x", first)
+	}
+	stageIdentity := FileIdentity{Device: binary.BigEndian.Uint64(first[1:9]), Inode: binary.BigEndian.Uint64(first[9:17]), Type: binary.BigEndian.Uint32(first[17:21])}
+	info, err := os.Stat(filepath.Join(directory.Name(), stageName))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("stage stat=%v err=%v", info, err)
+	}
+	packet := identityFrame(decision, stageIdentity)
+	if err := sendPacket(sockets[0], packet); err != nil {
+		t.Fatalf("send stage decision: %v", err)
+	}
+	last, err := recvPacket(ctx, sockets[0], 64)
+	if err != nil {
+		t.Fatalf("receive create outcome: %v", err)
+	}
+	result, err := parseCreationResult(last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case exit := <-done:
+		return result, stageIdentity, exit
+	case <-ctx.Done():
+		t.Fatalf("worker did not finish: %v", ctx.Err())
+		return CreationResult{Outcome: CreationUnknown}, stageIdentity, -1
 	}
 }
 

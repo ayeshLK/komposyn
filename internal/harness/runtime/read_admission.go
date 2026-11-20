@@ -141,6 +141,14 @@ type FilesystemCreationPrototypeHost interface {
 	PrepareApprovedFilesystemCreation(context.Context, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error)
 }
 
+// FilesystemCreationProposalDiscarder lets the runtime release a retained
+// proposal descriptor when approval is denied, cancelled, stale or otherwise
+// never reaches preparation. Hosts without retained proposal state need not
+// implement it.
+type FilesystemCreationProposalDiscarder interface {
+	DiscardFilesystemCreationProposal(context.Context, tools.Invocation) error
+}
+
 type filesystemCreationDestinationAuthorizer interface {
 	PrepareForDestination(context.Context, tools.Invocation, string) (permissions.Request, error)
 }

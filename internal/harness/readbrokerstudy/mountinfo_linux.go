@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,16 @@ func validateExt4SearchDirectory(fd int) error {
 	}
 	filesystemType, err := mountFilesystemTypeForFD(fd)
 	if err != nil || !isSupportedSearchFilesystem(uint64(filesystem.Type), filesystemType) {
+		return ErrUnsupportedFilesystem
+	}
+	return nil
+}
+
+// ValidateCreationDirectoryDescriptor restricts the disposable creation
+// prototype to Linux amd64 on a descriptor whose mountinfo entry identifies
+// ext4. The statfs magic alone is ambiguous across ext filesystems.
+func ValidateCreationDirectoryDescriptor(fd int) error {
+	if runtime.GOARCH != "amd64" || validateExt4SearchDirectory(fd) != nil {
 		return ErrUnsupportedFilesystem
 	}
 	return nil

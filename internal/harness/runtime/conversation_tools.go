@@ -253,6 +253,14 @@ type filesystemCreationPrototypeAuthorizer struct {
 	host FilesystemCreationPrototypeHost
 }
 
+func (a filesystemCreationPrototypeAuthorizer) DiscardFilesystemCreationProposal(ctx context.Context, invocation tools.Invocation) error {
+	discarder, ok := a.host.(FilesystemCreationProposalDiscarder)
+	if !ok {
+		return nil
+	}
+	return discarder.DiscardFilesystemCreationProposal(ctx, cloneInvocation(invocation))
+}
+
 func (a filesystemCreationPrototypeAuthorizer) Prepare(ctx context.Context, invocation tools.Invocation) (permissions.Request, error) {
 	return a.PrepareForDestination(ctx, invocation, "")
 }
