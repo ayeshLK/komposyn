@@ -981,13 +981,18 @@ func (w *sandboxWorker) startupDiagnostic() string {
 }
 
 // FailureDetail is only surfaced by the study's sanitized JSON evidence. It
-// includes bounded stderr and, after Wait, the candidate process exit code.
+// includes bounded stderr and, after Wait, the candidate process exit code or
+// terminating signal.
 func (w *sandboxWorker) FailureDetail() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	message := w.startupDiagnostic()
 	if w.cmd != nil && w.cmd.ProcessState != nil {
-		message = strings.TrimSpace(message + " candidate_exit_code=" + strconv.Itoa(w.cmd.ProcessState.ExitCode()))
+		state := w.cmd.ProcessState
+		message = strings.TrimSpace(message + " candidate_exit_code=" + strconv.Itoa(state.ExitCode()))
+		if waitStatus, ok := state.Sys().(syscall.WaitStatus); ok && waitStatus.Signaled() {
+			message = strings.TrimSpace(message + " candidate_signal=" + waitStatus.Signal().String())
+		}
 	}
 	return boundedText(message, 768)
 }
