@@ -32,6 +32,7 @@ import (
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	rb "github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
+	"golang.org/x/sys/unix"
 )
 
 // The test binary is also the exact fixed worker image. Bootstrap precedes
@@ -266,6 +267,9 @@ func TestNativeServiceBoundedCreation(t *testing.T) {
 	result, err := f.impl.executeBoundedCreation(nativeContext(t), parent, identity, stageName, "created.txt", content)
 	if err != nil || result.Outcome != rb.CreationCreated || result.Bytes != uint32(len(content)) {
 		detail := f.tracked.lastFailureDetail()
+		if detail == "worker_missing" {
+			detail = creationEligibilitySummary(f.impl, identity)
+		}
 		r.CreationFailureDetail = detail
 		t.Fatalf("confined create worker result outcome=%q bytes=%d err=%v worker=%s", result.Outcome, result.Bytes, err, detail)
 	}
@@ -333,6 +337,28 @@ func TestNativeServiceBoundedCreation(t *testing.T) {
 	}
 	r.CreationLateCollisionRefused = true
 	r.CreationLateStageAbsent = true
+}
+
+func creationEligibilitySummary(impl *linuxImplementation, parent rb.FileIdentity) string {
+	impl.mu.Lock()
+	manifest := impl.creationManifest
+	closed := impl.closed
+	owners := map[string]OwnerState{
+		"auth":        impl.owners[auth.SensitiveOwnerAuth].State,
+		"settings":    impl.owners[auth.SensitiveOwnerSettings].State,
+		"tokenlogger": impl.owners["tokenlogger-store"].State,
+		"provider":    impl.owners["provider-source"].State,
+	}
+	impl.mu.Unlock()
+	coverage := impl.inventory.Snapshot()
+	policy := impl.registry.View()
+	if manifest == nil {
+		return fmt.Sprintf("worker_missing; manifest=missing closed=%t", closed)
+	}
+	return fmt.Sprintf("worker_missing; closed=%t scope_complete=%t scope_matches=%t policy_matches=%t coverage_complete=%t coverage_revision_matches=%t policy_generation_matches=%t owner_states=%v manifest_owner_counts=%d/%d/%d/%d",
+		closed, manifest.scopeComplete, manifest.scopeParent == parent, policy.Generation == manifest.policyRevision,
+		coverage.Complete, coverage.Revision == manifest.coverageRevision, policy.Generation == manifest.policyRevision,
+		owners, len(manifest.owners[auth.SensitiveOwnerAuth].registrations), len(manifest.owners[auth.SensitiveOwnerSettings].registrations), len(manifest.owners["tokenlogger-store"].registrations), len(manifest.owners["provider-source"].registrations))
 }
 
 func creationFilesystemEvidence(t *testing.T, directory *os.File) (string, uint64) {
@@ -437,6 +463,11 @@ func nativeRotation(t *testing.T, rotateAuth bool) {
 	}
 	store := f.settings
 	observer := &nativeObservedProtector{service: f.service, tracked: f.tracked, record: r}
+	defer func() {
+		if err := observer.Close(); err != nil {
+			t.Errorf("close retained owner-test descriptors: %v", err)
+		}
+	}()
 	store.Protection = observer
 	update := func() error {
 		if rotateAuth {
@@ -610,17 +641,28 @@ func (l *nativeTrackedLauncher) lastFailureDetail() string {
 }
 
 type nativeObservedProtector struct {
-	opened  []os.FileInfo
-	service *Service
-	tracked *nativeTrackedLauncher
-	record  *nativeRecord
+	opened      []os.FileInfo
+	openedFiles []*os.File
+	service     *Service
+	tracked     *nativeTrackedLauncher
+	record      *nativeRecord
 }
 
 func (p *nativeObservedProtector) Protect(ctx context.Context, owner, class, route string, object *os.File) error {
 	if object == nil {
 		return errors.New("rotation test did not supply an opened replacement")
 	}
-	st, e := object.Stat()
+	fd, e := unix.FcntlInt(object.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if e != nil {
+		return errors.New("could not retain replacement identity for observation")
+	}
+	retained := os.NewFile(uintptr(fd), "native-observed-replacement")
+	if retained == nil {
+		_ = unix.Close(fd)
+		return errors.New("could not retain replacement descriptor")
+	}
+	p.openedFiles = append(p.openedFiles, retained)
+	st, e := retained.Stat()
 	if e != nil || st.Size() != 0 {
 		return errors.New("replacement was not empty before registration")
 	}
@@ -638,6 +680,15 @@ func (p *nativeObservedProtector) Protect(ctx context.Context, owner, class, rou
 	p.record.EmptyReplacementObserved = true
 	p.record.WorkerJoinedBeforeOwnerWrite = true
 	return nil
+}
+
+func (p *nativeObservedProtector) Close() error {
+	var closeErr error
+	for _, file := range p.openedFiles {
+		closeErr = errors.Join(closeErr, file.Close())
+	}
+	p.openedFiles = nil
+	return closeErr
 }
 
 func TestNativeServiceRootChangeWhileHeld(t *testing.T)    { nativeInterruptedHold(t, "root") }
