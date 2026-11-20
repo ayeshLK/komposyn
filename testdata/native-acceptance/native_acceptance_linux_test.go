@@ -371,12 +371,111 @@ func creationEligibilitySummary(impl *linuxImplementation, parent rb.FileIdentit
 			}
 		}
 	}
-	return fmt.Sprintf("worker_missing; eligible=%t target_unprotected=%t closed=%t blocked=%v barrier_active=%t scope_complete=%t scope_matches=%t coverage_complete=%t coverage_revision_matches=%t policy_generation_matches=%t owner_states=%v manifest_owner_counts=%d/%d/%d/%d registry_owner_matches=%v token_db_suffix_valid=%t",
-		impl.syntheticCreationManifestEligible(parent), impl.creationTargetUnprotected(target), closed, blocked, barrierActive,
+	reasons := creationEligibilityReasons(impl, parent)
+	return fmt.Sprintf("worker_missing; eligible=%t reasons=%v target_unprotected=%t closed=%t blocked=%v barrier_active=%t scope_complete=%t scope_matches=%t coverage_complete=%t coverage_revision_matches=%t policy_generation_matches=%t owner_states=%v manifest_owner_counts=%d/%d/%d/%d registry_owner_matches=%v token_db_suffix_valid=%t",
+		impl.syntheticCreationManifestEligible(parent), reasons, impl.creationTargetUnprotected(target), closed, blocked, barrierActive,
 		manifest.scopeComplete, manifest.scopeParent == parent,
 		coverage.Complete, coverage.Revision == manifest.coverageRevision, policy.Generation == manifest.policyRevision,
 		owners, len(manifest.owners[auth.SensitiveOwnerAuth].registrations), len(manifest.owners[auth.SensitiveOwnerSettings].registrations), len(manifest.owners["tokenlogger-store"].registrations), len(manifest.owners["provider-source"].registrations), ownerMatches,
 		strings.HasSuffix(manifest.tokenDatabasePath, ".db"))
+}
+
+func creationEligibilityReasons(impl *linuxImplementation, parent rb.FileIdentity) []string {
+	impl.mu.Lock()
+	manifest := impl.creationManifest
+	closed := impl.closed
+	owners := make(map[string]OwnerCoverage, len(impl.owners))
+	for name, coverage := range impl.owners {
+		owners[name] = coverage
+	}
+	registry, inventory := impl.registry, impl.inventory
+	impl.mu.Unlock()
+	var reasons []string
+	if closed {
+		reasons = append(reasons, "service_closed")
+	}
+	if manifest == nil {
+		return append(reasons, "manifest_missing")
+	}
+	if !manifest.scopeComplete {
+		reasons = append(reasons, "scope_incomplete")
+	}
+	if manifest.scopeParent != parent {
+		reasons = append(reasons, "scope_parent_mismatch")
+	}
+	if registry == nil || inventory == nil {
+		return append(reasons, "registry_or_inventory_missing")
+	}
+	policy := registry.View()
+	coverage := inventory.Snapshot()
+	if !coverage.Complete {
+		reasons = append(reasons, "inventory_incomplete")
+	}
+	if policy.Generation != manifest.policyRevision {
+		reasons = append(reasons, "policy_generation_changed")
+	}
+	if coverage.Revision != manifest.coverageRevision {
+		reasons = append(reasons, "coverage_revision_changed")
+	}
+	if len(manifest.owners) != 4 {
+		reasons = append(reasons, "owner_set_size")
+	}
+	required := map[string]rb.ResourceClass{
+		auth.SensitiveOwnerAuth:     rb.ClassCredential,
+		auth.SensitiveOwnerSettings: rb.ClassSettings,
+		"tokenlogger-store":         rb.ClassTokenDatabase,
+		"provider-source":           rb.ClassProvider,
+	}
+	for owner, class := range required {
+		entry, exists := manifest.owners[owner]
+		if !exists {
+			reasons = append(reasons, "owner_missing:"+owner)
+			continue
+		}
+		if entry.class != class {
+			reasons = append(reasons, "owner_class:"+owner)
+		}
+		if len(entry.registrations) == 0 {
+			reasons = append(reasons, "owner_routes_empty:"+owner)
+		}
+		state, exists := owners[owner]
+		if !exists || state.State != OwnerRegistered {
+			reasons = append(reasons, "owner_state:"+owner)
+		}
+		minimum := 1
+		if owner == "tokenlogger-store" {
+			minimum = 5
+		}
+		if len(entry.registrations) < minimum {
+			reasons = append(reasons, "owner_identity_count:"+owner)
+		}
+		for route, identity := range entry.registrations {
+			found := false
+			for _, candidate := range policy.Entries {
+				if candidate.Owner == owner && candidate.Class == class && candidate.Path == route && candidate.Identity == identity && !candidate.Directory && identity.Inode != 0 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				reasons = append(reasons, "owner_registration_mismatch:"+owner)
+				break
+			}
+		}
+	}
+	tokenDB, ok := manifest.owners["tokenlogger-store"]
+	if !ok || !strings.HasSuffix(manifest.tokenDatabasePath, ".db") {
+		reasons = append(reasons, "token_database_path_invalid")
+	}
+	if ok {
+		for _, suffix := range []string{"", "-wal", "-shm", "-journal", ".backup"} {
+			if _, exists := tokenDB.registrations[manifest.tokenDatabasePath+suffix]; !exists {
+				reasons = append(reasons, "token_database_identity_missing")
+				break
+			}
+		}
+	}
+	return reasons
 }
 
 func creationFilesystemEvidence(t *testing.T, directory *os.File) (string, uint64) {
