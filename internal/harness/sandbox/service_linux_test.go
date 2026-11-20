@@ -1072,7 +1072,8 @@ func installSyntheticCreationManifest(t *testing.T, service *Service, root strin
 	} {
 		manifest := syntheticCreationOwner{class: owner.class, registrations: make(map[string]readbrokerstudy.FileIdentity)}
 		for _, entry := range view.Entries {
-			if entry.Owner == owner.name && entry.Class == owner.class && !entry.Directory {
+			// Route-only records have no pinned inode and do not belong in the identity manifest.
+			if entry.Owner == owner.name && entry.Class == owner.class && !entry.Directory && entry.Identity.Inode != 0 {
 				manifest.registrations[entry.Path] = entry.Identity
 			}
 		}
