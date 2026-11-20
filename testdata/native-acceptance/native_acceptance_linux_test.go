@@ -21,8 +21,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,6 +57,13 @@ type nativeRecord struct {
 	WorkerJoinedBeforeOwnerWrite     bool                  `json:"worker_joined_before_owner_write"`
 	RetiredAliasRefused              bool                  `json:"retired_alias_refused"`
 	VerifiedReturnedBytes            bool                  `json:"verified_returned_bytes"`
+	CreationVerifiedBytes            bool                  `json:"creation_verified_bytes,omitempty"`
+	CreationVerifiedMode             bool                  `json:"creation_verified_mode,omitempty"`
+	CreationStageAbsent              bool                  `json:"creation_stage_absent,omitempty"`
+	CreationLateCollisionRefused     bool                  `json:"creation_late_collision_refused,omitempty"`
+	CreationLateStageAbsent          bool                  `json:"creation_late_stage_absent,omitempty"`
+	CreationFilesystem               string                `json:"creation_filesystem,omitempty"`
+	CreationMountID                  uint64                `json:"creation_mount_id,omitempty"`
 	Case                             string                `json:"case"`
 	Status                           string                `json:"status"`
 	CleanupConfirmed                 bool                  `json:"cleanup_confirmed"`
@@ -234,6 +243,127 @@ func TestNativeServicePositiveRead(t *testing.T) {
 	}
 	r.VerifiedReturnedBytes = true
 }
+
+func TestNativeServiceBoundedCreation(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	installSyntheticCreationManifest(t, f.service, f.root)
+	parent, err := os.Open(f.root)
+	if err != nil {
+		t.Fatal("could not open synthetic creation parent")
+	}
+	defer parent.Close()
+	identity := identityFromInfo(t, f.root)
+	filesystem, mountID := creationFilesystemEvidence(t, parent)
+	r.CreationFilesystem = filesystem
+	r.CreationMountID = mountID
+	stageName, err := rb.NewCreationStageName()
+	if err != nil {
+		t.Fatal("could not generate private stage name")
+	}
+	content := []byte("synthetic native creation fixture\n")
+	result, err := f.impl.executeBoundedCreation(nativeContext(t), parent, identity, stageName, "created.txt", content)
+	if err != nil || result.Outcome != rb.CreationCreated || result.Bytes != uint32(len(content)) {
+		t.Fatal("confined create worker did not report the exact published fixture")
+	}
+	created := filepath.Join(f.root, "created.txt")
+	actual, err := os.ReadFile(created)
+	if err != nil || !bytes.Equal(actual, content) {
+		t.Fatal("published fixture bytes did not match the approved bytes")
+	}
+	info, err := os.Stat(created)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("published fixture mode was not 0600")
+	}
+	r.CreationVerifiedBytes = true
+	r.CreationVerifiedMode = true
+	if _, err := os.Lstat(filepath.Join(f.root, stageName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("private stage remained after publication")
+	}
+	r.CreationStageAbsent = true
+	if !f.tracked.allJoined() {
+		t.Fatal("create worker was not joined")
+	}
+	// The primitive must refuse a collision without replacing its bytes.
+	collisionName, err := rb.NewCreationStageName()
+	if err != nil {
+		t.Fatal("could not generate collision stage name")
+	}
+	incumbent := []byte("independent actor fixture\n")
+	if err := os.WriteFile(filepath.Join(f.root, "collision.txt"), incumbent, 0600); err != nil {
+		t.Fatal("could not prepare collision fixture")
+	}
+	collision, err := f.impl.executeBoundedCreation(nativeContext(t), parent, identity, collisionName, "collision.txt", content)
+	if err != nil || collision.Outcome != rb.CreationConflict {
+		t.Fatal("existing target did not produce a no-replace conflict")
+	}
+	after, err := os.ReadFile(filepath.Join(f.root, "collision.txt"))
+	if err != nil || !bytes.Equal(after, incumbent) {
+		t.Fatal("no-replace conflict changed the incumbent bytes")
+	}
+	lateStageName, err := rb.NewCreationStageName()
+	if err != nil {
+		t.Fatal("could not generate late-collision stage name")
+	}
+	lateIncumbent := []byte("independent actor after final observation\n")
+	f.tracked.mu.Lock()
+	f.tracked.beforeCreationPublish = func() error {
+		return os.WriteFile(filepath.Join(f.root, "late-collision.txt"), lateIncumbent, 0600)
+	}
+	f.tracked.mu.Unlock()
+	lateCollision, err := f.impl.executeBoundedCreation(nativeContext(t), parent, identity, lateStageName, "late-collision.txt", content)
+	f.tracked.mu.Lock()
+	f.tracked.beforeCreationPublish = nil
+	f.tracked.mu.Unlock()
+	if err != nil || lateCollision.Outcome != rb.CreationConflict {
+		t.Fatal("no-replace publication did not classify the post-observation actor as a conflict")
+	}
+	lateActual, err := os.ReadFile(filepath.Join(f.root, "late-collision.txt"))
+	if err != nil || !bytes.Equal(lateActual, lateIncumbent) {
+		t.Fatal("publication-time collision changed the independent actor's file")
+	}
+	if _, err := os.Lstat(filepath.Join(f.root, lateStageName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("stage remained after publication-time collision")
+	}
+	if !f.tracked.allJoined() {
+		t.Fatal("late-collision worker was not joined")
+	}
+	r.CreationLateCollisionRefused = true
+	r.CreationLateStageAbsent = true
+}
+
+func creationFilesystemEvidence(t *testing.T, directory *os.File) (string, uint64) {
+	t.Helper()
+	fdInfo, err := os.ReadFile(filepath.Join("/proc/self/fdinfo", fmt.Sprint(directory.Fd())))
+	if err != nil {
+		t.Fatal("could not inspect retained parent mount ID")
+	}
+	var mountID uint64
+	for _, line := range strings.Split(string(fdInfo), "\n") {
+		if _, err := fmt.Sscanf(line, "mnt_id:\t%d", &mountID); err == nil && mountID != 0 {
+			break
+		}
+	}
+	if mountID == 0 {
+		t.Fatal("retained parent mount ID was unavailable")
+	}
+	mountInfo, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		t.Fatal("could not inspect mount table")
+	}
+	for _, line := range strings.Split(string(mountInfo), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 10 && fields[0] == fmt.Sprint(mountID) {
+			for i, field := range fields {
+				if field == "-" && i+1 < len(fields) {
+					return fields[i+1], mountID
+				}
+			}
+		}
+	}
+	t.Fatal("retained parent mount type was unavailable")
+	return "", 0
+}
 func TestNativeServiceProtectedRoutesAndAliases(t *testing.T) {
 	r := nativeReport(t)
 	f := newNativeFixture(t, r)
@@ -373,9 +503,10 @@ func TestNativeServicePostCaptureRevocation(t *testing.T) {
 
 // This wrapper records real worker state; it never replaces worker behavior.
 type nativeTrackedLauncher struct {
-	mu       sync.Mutex
-	delegate rb.WorkerLauncher
-	workers  []rb.SandboxWorker
+	mu                    sync.Mutex
+	delegate              rb.WorkerLauncher
+	workers               []rb.SandboxWorker
+	beforeCreationPublish func() error
 }
 
 func (l *nativeTrackedLauncher) Start(ctx context.Context) (rb.SandboxWorker, error) {
@@ -386,6 +517,55 @@ func (l *nativeTrackedLauncher) Start(ctx context.Context) (rb.SandboxWorker, er
 		l.mu.Unlock()
 	}
 	return w, e
+}
+func (l *nativeTrackedLauncher) StartForOperation(ctx context.Context, operation rb.AdmissionOperation) (rb.SandboxWorker, error) {
+	launcher, ok := l.delegate.(rb.OperationWorkerLauncher)
+	if !ok {
+		return nil, rb.ErrUnavailable
+	}
+	w, e := launcher.StartForOperation(ctx, operation)
+	if w != nil {
+		l.mu.Lock()
+		tracked := &nativeTrackedWorker{SandboxWorker: w, beforePublish: l.beforeCreationPublish}
+		l.workers = append(l.workers, tracked)
+		l.mu.Unlock()
+		return tracked, e
+	}
+	return w, e
+}
+
+type nativeTrackedWorker struct {
+	rb.SandboxWorker
+	beforePublish func() error
+}
+
+func (w *nativeTrackedWorker) StageCreation(ctx context.Context, parent *os.File, identity rb.FileIdentity, stageName, leaf string, content []byte) (rb.CreationStage, error) {
+	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
+	if !ok {
+		return rb.CreationStage{}, rb.ErrProtocol
+	}
+	return creation.StageCreation(ctx, parent, identity, stageName, leaf, content)
+}
+
+func (w *nativeTrackedWorker) PublishCreation(ctx context.Context, stage rb.CreationStage) (rb.CreationResult, error) {
+	if w.beforePublish != nil {
+		if err := w.beforePublish(); err != nil {
+			return rb.CreationResult{Outcome: rb.CreationUnknown}, err
+		}
+	}
+	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
+	if !ok {
+		return rb.CreationResult{Outcome: rb.CreationUnknown}, rb.ErrProtocol
+	}
+	return creation.PublishCreation(ctx, stage)
+}
+
+func (w *nativeTrackedWorker) AbortCreation(ctx context.Context, stage rb.CreationStage) (rb.CreationResult, error) {
+	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
+	if !ok {
+		return rb.CreationResult{Outcome: rb.CreationUnknown}, rb.ErrProtocol
+	}
+	return creation.AbortCreation(ctx, stage)
 }
 func (l *nativeTrackedLauncher) Close() error { return l.delegate.Close() }
 func (l *nativeTrackedLauncher) allJoined() bool {

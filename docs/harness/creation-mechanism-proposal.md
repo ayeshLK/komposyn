@@ -5,10 +5,13 @@ the worker assignment. The Linux service now consumes its barrier and
 owner-ordered stage/publication permits through a retained-parent creation
 path. An operation-specific worker protocol stages exact bytes and publishes
 with `RENAME_NOREPLACE`; synthetic manifest checks and focused behavior tests
-are present. The native study, independent-actor race matrix, and full
-runtime/UI/provider lifecycle acceptance remain pending. This is not native
-enforcement evidence and does not create a supported mutation profile or
-model-facing capability. Normal production composition remains closed.
+are present. The existing native acceptance runner now includes a real
+Bubblewrap creation case for a disposable ext4 fixture, exact bytes/mode,
+no-replace incumbent preservation, stage cleanup and worker join. That native
+case has not yet run on an eligible host; publication-time independent-actor
+timing and the remaining runtime lifecycle matrix also remain pending. This
+does not create a supported mutation profile or model-facing capability.
+Normal production composition remains closed.
 
 This is a creation-only revision. It accepts external filesystem changes
 during approval and between the last check and publication. Approval is not a
