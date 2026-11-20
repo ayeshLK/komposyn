@@ -60,6 +60,10 @@ const (
 	frameCreatePublish         byte = 'P'
 	frameCreateAbort           byte = 'A'
 	frameCreateFinish          byte = 'Z'
+	createRefusalEnvelope      byte = 1
+	createRefusalParent        byte = 2
+	createRefusalPayload       byte = 3
+	createRefusalInput         byte = 4
 	workerBootstrapMode             = "--readbrokerstudy-bootstrap"
 	workerHoldBootstrapArg          = "--hold-capability-before-read"
 	workerStderrLimit               = 4 << 10
@@ -1085,6 +1089,12 @@ func (w *sandboxWorker) StageCreation(ctx context.Context, directory *os.File, e
 		result, parseErr := parseCreationResult(packet)
 		return unknown, &CreationOperationError{Result: result, Cause: errors.Join(ErrUnavailable, parseErr)}
 	}
+	if len(packet) == 2 && packet[0] == frameRefused {
+		return unknown, &CreationOperationError{
+			Result: CreationResult{Outcome: CreationNotCreated},
+			Cause:  fmt.Errorf("%w: %s", ErrProtocol, creationRefusalDescription(packet[1])),
+		}
+	}
 	if len(packet) != 1+20 || packet[0] != frameCreateStaged {
 		return unknown, ErrProtocol
 	}
@@ -1115,6 +1125,21 @@ func makeCreationInputFrame(parent FileIdentity, stageName, leaf string, content
 	frame = append(frame, leaf...)
 	frame = append(frame, content...)
 	return frame
+}
+
+func creationRefusalDescription(reason byte) string {
+	switch reason {
+	case createRefusalEnvelope:
+		return "creation worker rejected the descriptor envelope"
+	case createRefusalParent:
+		return "creation worker rejected the parent descriptor identity or access mode"
+	case createRefusalPayload:
+		return "creation worker rejected the bounded request payload length"
+	case createRefusalInput:
+		return "creation worker rejected the stage name, target name, or content encoding"
+	default:
+		return "creation worker rejected the request with an unknown reason"
+	}
 }
 
 func validCreationStageName(value string) bool {
@@ -1865,12 +1890,12 @@ func receiveAndRead(control int, holdCapability bool, operation AdmissionOperati
 		oobBytes := oob[:min(max(oobn, 0), len(oob))]
 		files, parseErr := parseExactlyOneReceivedFD(oobBytes)
 		if parseErr != nil {
-			return sendRefusal(control)
+			return refuseWorkerInput(control, operation, createRefusalEnvelope)
 		}
 		capability := files[0]
 		if n < 1+20 || n > len(packet) || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
 			_ = unix.Close(capability)
-			return sendRefusal(control)
+			return refuseWorkerInput(control, operation, createRefusalEnvelope)
 		}
 		var result int
 		switch packet[0] {
@@ -1909,11 +1934,19 @@ func receiveAndRead(control int, holdCapability bool, operation AdmissionOperati
 			result = createTransferredFile(control, capability, packet[1:1+20], packet[1+20:n])
 		default:
 			_ = unix.Close(capability)
-			return sendRefusal(control)
+			return refuseWorkerInput(control, operation, createRefusalEnvelope)
 		}
 		_ = unix.Close(capability)
 		return result
 	}
+}
+
+func refuseWorkerInput(control int, operation AdmissionOperation, reason byte) int {
+	if operation == AdmissionCreateFile {
+		_ = sendPacket(control, []byte{frameRefused, reason})
+		return 71
+	}
+	return sendRefusal(control)
 }
 
 func createTransferredFile(control, parentFD int, expectedFrame, payload []byte) int {
@@ -1922,22 +1955,22 @@ func createTransferredFile(control, parentFD int, expectedFrame, payload []byte)
 	flags, flagErr := unix.FcntlInt(uintptr(parentFD), unix.F_GETFL, 0)
 	if flagErr != nil || flags&unix.O_ACCMODE != unix.O_RDONLY || unix.Fstat(parentFD, &parentStat) != nil ||
 		parentStat.Mode&unix.S_IFMT != unix.S_IFDIR || !sameIdentity(expectedFrame, identityFromStat(&parentStat)) {
-		_ = sendPacket(control, []byte{frameRefused})
+		_ = sendPacket(control, []byte{frameRefused, createRefusalParent})
 		return 74
 	}
 	if len(payload) < 6 {
-		return sendRefusal(control)
+		return refuseWorkerInput(control, AdmissionCreateFile, createRefusalPayload)
 	}
 	stageLen, leafLen := int(payload[0]), int(payload[1])
 	contentLen := int(binary.BigEndian.Uint32(payload[2:6]))
 	if stageLen == 0 || stageLen > maxCreationStageNameBytes || leafLen == 0 || leafLen > maxCreationLeafBytes || contentLen == 0 || contentLen > maxCreationContentBytes || len(payload) != 6+stageLen+leafLen+contentLen {
-		return sendRefusal(control)
+		return refuseWorkerInput(control, AdmissionCreateFile, createRefusalPayload)
 	}
 	stageName := string(payload[6 : 6+stageLen])
 	leaf := string(payload[6+stageLen : 6+stageLen+leafLen])
 	content := payload[6+stageLen+leafLen:]
 	if !validCreationStageName(stageName) || !validCreationLeaf(leaf) || !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
-		return sendRefusal(control)
+		return refuseWorkerInput(control, AdmissionCreateFile, createRefusalInput)
 	}
 	defer clear(content)
 	resolve := uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS)
