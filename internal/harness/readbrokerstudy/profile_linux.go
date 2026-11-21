@@ -144,7 +144,7 @@ func workerSeccompFilterBytesForOperation(operation AdmissionOperation) ([]byte,
 	if operation == "" {
 		operation = AdmissionReadFile
 	}
-	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent {
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent && operation != AdmissionCreateFile {
 		return nil, fmt.Errorf("unsupported worker seccomp operation %q", operation)
 	}
 	arch, err := workerAuditArch(runtime.GOARCH)
@@ -239,11 +239,31 @@ func workerDeniedSyscallsForOperation(operation AdmissionOperation) []uint32 {
 		}
 		denied = filtered
 	}
+	if operation == AdmissionCreateFile {
+		// Creation uses only descriptor-relative openat2 with strict resolution,
+		// metadata checks and renameat2 publication. Ordinary path opens remain
+		// denied; the worker has no directory pathname capability.
+		allowedForCreation := map[uint32]struct{}{
+			unix.SYS_OPENAT2: {}, unix.SYS_NEWFSTATAT: {}, unix.SYS_STATX: {},
+		}
+		filtered := denied[:0]
+		for _, number := range denied {
+			if _, allowed := allowedForCreation[number]; !allowed {
+				filtered = append(filtered, number)
+			}
+		}
+		denied = filtered
+	}
 	if operation == AdmissionSearchFiles || operation == AdmissionSearchContent {
 		// Search workers do not need memory locking. Keeping this prohibition in
 		// their operation-specific profile produces a distinct, inspectable
 		// filter while preserving the reviewed read and traversal surfaces.
 		denied = append(denied, unix.SYS_MLOCK, unix.SYS_MLOCK2, unix.SYS_MUNLOCK, unix.SYS_MUNLOCKALL)
+	}
+	if operation == AdmissionCreateFile {
+		// A one-file writer does not enumerate directories or lock memory.
+		// These denials keep its traversal surface narrower than listing.
+		denied = append(denied, unix.SYS_GETDENTS64, unix.SYS_MLOCK, unix.SYS_MLOCK2, unix.SYS_MUNLOCK, unix.SYS_MUNLOCKALL)
 	}
 	return append(denied, workerArchDeniedSyscalls()...)
 }

@@ -17,22 +17,31 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/plugins/tools"
+	"golang.org/x/sys/unix"
 )
 
 const defaultBubblewrapPath = "/usr/bin/bwrap"
@@ -49,11 +58,75 @@ type linuxImplementation struct {
 	searchProfileAvailable  bool
 	revision                uint64
 	owners                  map[string]OwnerCoverage
+	ownerUpdating           map[string]bool
 	blocked                 map[string]string
 	readInvalidator         func(string)
 	closed                  bool
 	pendingOwners           atomic.Int32
+	creationBarrier         *creationBarrierLease
+	creationBarrierSequence uint64
+	creationManifest        *syntheticCreationOwnerManifest
+	creationProposals       map[string]*serviceCreationProposal
+	selectedRoot            string
+	selectedConversation    string
+	selectedRootGeneration  uint64
 }
+
+type creationRootBinding struct {
+	root, conversation string
+	generation         uint64
+}
+
+type serviceCreationProposal struct {
+	invocation       tools.Invocation
+	request          permissions.Request
+	input            tools.CreateFileInput
+	parent           *os.File
+	parentIdentity   readbrokerstudy.FileIdentity
+	root             string
+	rootGeneration   uint64
+	coverageRevision uint64
+	policyRevision   uint64
+	stageName        string
+	consumed         bool
+}
+
+// creationBarrierLease is an in-process, one-use token for the transient
+// service-wide read gate. It is deliberately separate from owner registrations
+// and their policy/coverage generations.
+type creationBarrierLease struct {
+	service             *linuxImplementation
+	sequence            uint64
+	state               creationBarrierState
+	stageEntryAdmitted  bool
+	publicationReleased bool
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	done                chan struct{}
+	doneOnce            sync.Once
+}
+
+type creationBarrierState uint8
+
+type syntheticCreationOwnerManifest struct {
+	scopeParent       readbrokerstudy.FileIdentity
+	scopeComplete     bool
+	policyRevision    uint64
+	coverageRevision  uint64
+	tokenDatabasePath string
+	owners            map[string]syntheticCreationOwner
+}
+
+type syntheticCreationOwner struct {
+	class         readbrokerstudy.ResourceClass
+	registrations map[string]readbrokerstudy.FileIdentity
+}
+
+const (
+	creationBarrierClosing creationBarrierState = iota + 1
+	creationBarrierActive
+	creationBarrierBlocked
+)
 
 func newHostImplementation(bubblewrapPath string) (implementation, error) {
 	registry, err := readbrokerstudy.NewRegistry()
@@ -77,8 +150,10 @@ func newHostImplementation(bubblewrapPath string) (implementation, error) {
 func composeLinuxImplementation(registry *readbrokerstudy.Registry, launcher readbrokerstudy.WorkerLauncher, backendErr error) (*linuxImplementation, error) {
 	impl := &linuxImplementation{
 		registry: registry, launcher: launcher, backendErr: backendErr, revision: 1,
-		inventory: readbrokerstudy.NewChatCompositionInventory(),
-		blocked:   make(map[string]string),
+		inventory:         readbrokerstudy.NewChatCompositionInventory(),
+		creationProposals: make(map[string]*serviceCreationProposal),
+		blocked:           make(map[string]string),
+		ownerUpdating:     make(map[string]bool),
 		owners: map[string]OwnerCoverage{
 			auth.SensitiveOwnerAuth:     {Owner: auth.SensitiveOwnerAuth, Class: auth.SensitiveClassAuth, State: OwnerRequired, Evidence: "cmd/harness auth.Store wiring", Reason: "effective route and protected identity must be registered"},
 			auth.SensitiveOwnerSettings: {Owner: auth.SensitiveOwnerSettings, Class: auth.SensitiveClassSettings, State: OwnerRequired, Evidence: "cmd/harness settings.Store wiring", Reason: "effective route and protected identity must be registered independently"},
@@ -141,24 +216,27 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 		return ErrServiceClosed
 	}
 	s.ownerUpdateMu.Lock()
-	defer s.ownerUpdateMu.Unlock()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return ErrServiceClosed
 	}
 	coverage, exists := s.owners[owner]
 	retryBlocked := s.blocked[owner] != "" && coverage.State == OwnerPending
-	if !exists || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !retryBlocked {
+	if s.ownerUpdating[owner] || !exists || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !retryBlocked {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return errors.New("owner is not required by the trusted chat composition")
 	}
 	resourceClass, ok := hostResourceClass(class)
 	if !ok || class != coverage.Class {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return errors.New("protected owner class does not match the trusted chat composition")
 	}
 	s.mu.Unlock()
+	s.ownerUpdateMu.Unlock()
 	cleanRoute, err := filepath.Abs(route)
 	if err != nil || !filepath.IsAbs(cleanRoute) || filepath.Clean(cleanRoute) != cleanRoute {
 		return errors.New("protected owner route is invalid")
@@ -189,34 +267,64 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 	// has been checked against the identity pinned by the registry. Keep a
 	// service-level pending latch because the coordinator may finish its own
 	// update before this final owner-descriptor check completes.
+	s.ownerUpdateMu.Lock()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return ErrServiceClosed
 	}
 	coverage, exists = s.owners[owner]
-	if !exists || coverage.Class != class || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !(s.blocked[owner] != "" && coverage.State == OwnerPending) {
+	retryBlocked = s.blocked[owner] != "" && coverage.State == OwnerPending
+	if s.ownerUpdating[owner] || !exists || coverage.Class != class || coverage.State != OwnerRequired && coverage.State != OwnerRegistered && !retryBlocked {
 		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
 		return errors.New("owner state changed before protected registration")
 	}
+	if s.ownerUpdating == nil {
+		s.ownerUpdating = make(map[string]bool)
+	}
+	s.ownerUpdating[owner] = true
 	if s.blocked[owner] == "" {
 		s.pendingOwners.Add(1)
 	}
 	s.blocked[owner] = "owner registration awaits cleanup, identity validation and lifecycle completion"
+	var effectDone <-chan struct{}
+	if effect := s.creationBarrier; effect != nil {
+		if effect.cancel != nil {
+			effect.cancel()
+		}
+		effectDone = effect.done
+	}
 	s.revision++
 	session, registry := s.session, s.registry
 	s.mu.Unlock()
+	s.ownerUpdateMu.Unlock()
+	defer func() {
+		s.ownerUpdateMu.Lock()
+		s.mu.Lock()
+		delete(s.ownerUpdating, owner)
+		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
+	}()
 	// Invalidate runtime captures and continuations globally, not only
 	// conversations with still-open admissions. A completed capture may have
 	// already retired its host admission while remaining eligible for handoff.
 	s.invalidateConversation("")
 	if session != nil {
 		err = session.InvalidateAdmissions(ctx)
-		if err == nil {
-			err = session.RegisterRotationContext(ctx, owner, registrations)
-		}
 	} else {
 		err = registry.RegisterRotation(owner, registrations)
+	}
+	if err == nil && effectDone != nil {
+		select {
+		case <-effectDone:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	}
+	if err == nil && session != nil {
+		err = session.RegisterRotationContext(ctx, owner, registrations)
 	}
 	if err != nil {
 		return err
@@ -225,8 +333,12 @@ func (s *linuxImplementation) Protect(ctx context.Context, owner, class, route s
 		return err
 	}
 	view := registry.View()
+	s.ownerUpdateMu.Lock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		s.mu.Unlock()
+		s.ownerUpdateMu.Unlock()
+	}()
 	if s.closed || s.blocked[owner] == "" {
 		return ErrServiceClosed
 	}
@@ -471,8 +583,20 @@ func (s *linuxImplementation) SelectFilesystemRoot(ctx context.Context, transiti
 		s.mu.Unlock()
 		return ErrServiceClosed
 	}
+	s.selectedRoot, s.selectedConversation, s.selectedRootGeneration = transition.Root, transition.ConversationID, transition.Generation
+	lease := s.creationBarrier
+	if lease != nil && lease.cancel != nil {
+		lease.cancel()
+	}
 	session := s.session
 	s.mu.Unlock()
+	if lease != nil {
+		select {
+		case <-lease.done:
+		case <-ctx.Done():
+			return errors.Join(readbrokerstudy.ErrCleanupPending, ctx.Err())
+		}
+	}
 	if session == nil {
 		return nil
 	}
@@ -515,6 +639,10 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 		}
 	}
 	s.mu.Lock()
+	if s.creationBarrier != nil {
+		s.mu.Unlock()
+		return runtime.FilesystemReadAdmission{}, ErrCreationBarrier
+	}
 	if s.closed || s.session == nil || s.backendErr != nil || s.launcher == nil {
 		s.mu.Unlock()
 		return runtime.FilesystemReadAdmission{}, readbrokerstudy.ErrUnavailable
@@ -540,7 +668,7 @@ func (s *linuxImplementation) AdmitFilesystemRead(ctx context.Context, invocatio
 		return runtime.FilesystemReadAdmission{}, errors.Join(err, session.CloseAdmission(ctx, reference))
 	}
 	s.mu.Lock()
-	stillEligible := !s.closed && len(s.blocked) == 0 && s.session == session && s.owners[auth.SensitiveOwnerAuth].State == OwnerRegistered && s.owners[auth.SensitiveOwnerSettings].State == OwnerRegistered
+	stillEligible := !s.closed && s.creationBarrier == nil && len(s.blocked) == 0 && s.session == session && s.owners[auth.SensitiveOwnerAuth].State == OwnerRegistered && s.owners[auth.SensitiveOwnerSettings].State == OwnerRegistered
 	s.mu.Unlock()
 	if !stillEligible || coverageRevision != s.CoverageSnapshot().Revision {
 		return runtime.FilesystemReadAdmission{}, errors.Join(readbrokerstudy.ErrAdmissionStale, session.CloseAdmission(ctx, reference))
@@ -556,7 +684,7 @@ func (s *linuxImplementation) PrepareAdmittedFilesystemRead(ctx context.Context,
 		return nil, readbrokerstudy.ErrAdmissionStale
 	}
 	s.mu.Lock()
-	if s.closed || s.session == nil || s.backendErr != nil || s.launcher == nil || len(s.blocked) != 0 {
+	if s.creationBarrier != nil || s.closed || s.session == nil || s.backendErr != nil || s.launcher == nil || len(s.blocked) != 0 {
 		s.mu.Unlock()
 		return nil, readbrokerstudy.ErrAdmissionStale
 	}
@@ -576,6 +704,738 @@ func (s *linuxImplementation) PrepareAdmittedFilesystemRead(ctx context.Context,
 		return nil, errors.Join(readbrokerstudy.ErrAdmissionStale, prepared.Close(ctx))
 	}
 	return &linuxAdmissionPreparation{impl: s, inner: prepared}, nil
+}
+
+// beginCreationBarrier closes admission before invalidating existing work. The
+// state lock is released before runtime callbacks and coordinator draining.
+// On any drain failure the token remains installed in the blocked state so a
+// caller cannot accidentally reopen reads while cleanup is uncertain.
+func (s *linuxImplementation) beginCreationBarrier(ctx context.Context, rootBinding ...creationRootBinding) (*creationBarrierLease, error) {
+	if ctx == nil {
+		return nil, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, ErrServiceClosed
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, ErrServiceClosed
+	}
+	if s.session == nil || s.backendErr != nil || s.launcher == nil {
+		s.mu.Unlock()
+		return nil, readbrokerstudy.ErrUnavailable
+	}
+	if s.creationBarrier != nil {
+		s.mu.Unlock()
+		return nil, ErrCreationBarrier
+	}
+	if len(rootBinding) > 0 && (len(rootBinding) != 1 || s.selectedRoot != rootBinding[0].root || s.selectedConversation != rootBinding[0].conversation || s.selectedRootGeneration != rootBinding[0].generation) {
+		s.mu.Unlock()
+		return nil, runtime.ErrFilesystemRootStale
+	}
+	if len(s.blocked) != 0 || s.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || s.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
+		s.mu.Unlock()
+		return nil, ErrCoverageMissing
+	}
+	s.creationBarrierSequence++
+	effectContext, cancel := context.WithCancel(ctx)
+	lease := &creationBarrierLease{service: s, sequence: s.creationBarrierSequence, state: creationBarrierClosing, ctx: effectContext, cancel: cancel, done: make(chan struct{})}
+	s.creationBarrier = lease
+	session := s.session
+	s.mu.Unlock()
+
+	// A creation barrier only closes host admission and drains retained workers.
+	// Calling the runtime read invalidator here would advance its authority epoch
+	// and cancel the conversation that owns this create call, invalidating the
+	// create result along with any immutable read captures already completed.
+	// Trust, root and owner transitions keep using the stronger invalidation path.
+	drainErr := session.InvalidateAdmissions(ctx)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.creationBarrier != lease || lease.service != s {
+		return lease, ErrServiceClosed
+	}
+	if drainErr != nil || s.closed || len(s.blocked) != 0 {
+		lease.state = creationBarrierBlocked
+		if drainErr != nil {
+			return lease, drainErr
+		}
+		if s.closed {
+			return lease, ErrServiceClosed
+		}
+		return lease, ErrCoverageMissing
+	}
+	lease.state = creationBarrierActive
+	return lease, nil
+}
+
+// finishCreationBarrier reopens reads only after the caller confirms its
+// effect worker and stage disposition are complete. An incomplete cleanup
+// deliberately retains the gate and token for host-owned recovery.
+func (s *linuxImplementation) finishCreationBarrier(lease *creationBarrierLease, cleanupComplete bool) error {
+	if s == nil || lease == nil || lease.service != s {
+		return ErrCreationBarrier
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.creationBarrier != lease || lease.state == creationBarrierClosing {
+		return ErrCreationBarrier
+	}
+	if !cleanupComplete {
+		lease.state = creationBarrierBlocked
+		return ErrCreationBarrier
+	}
+	if s.session == nil || s.session.ActiveOperationCount() != 0 {
+		lease.state = creationBarrierBlocked
+		return readbrokerstudy.ErrCleanupPending
+	}
+	s.creationBarrier = nil
+	lease.state = creationBarrierBlocked // terminal; token cannot be reused
+	if lease.cancel != nil {
+		lease.cancel()
+	}
+	lease.doneOnce.Do(func() { close(lease.done) })
+	return nil
+}
+
+// admitCreationStage and releaseCreationPublication are the two short
+// linearization points shared with Protect's owner-pending transition. They
+// never hold the service mutex while the worker performs filesystem effects.
+func (s *linuxImplementation) admitCreationStage(lease *creationBarrierLease) error {
+	if s == nil || lease == nil || lease.service != s {
+		return ErrCreationBarrier
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.creationBarrier != lease || lease.state != creationBarrierActive || lease.stageEntryAdmitted || lease.ctx.Err() != nil || s.closed || len(s.blocked) != 0 || s.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || s.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
+		return ErrCoverageMissing
+	}
+	lease.stageEntryAdmitted = true
+	return nil
+}
+
+func (s *linuxImplementation) releaseCreationPublication(lease *creationBarrierLease) error {
+	if s == nil || lease == nil || lease.service != s {
+		return ErrCreationBarrier
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.creationBarrier != lease || lease.state != creationBarrierActive || !lease.stageEntryAdmitted || lease.publicationReleased || lease.ctx.Err() != nil || s.closed || len(s.blocked) != 0 || s.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || s.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
+		return ErrCoverageMissing
+	}
+	lease.publicationReleased = true
+	return nil
+}
+
+// executeBoundedCreation is the Linux host-owned effect path for one frozen,
+// already-approved create proposal. It accepts only a retained parent
+// descriptor and the exact leaf/content tuple; it never resolves a model path.
+// Normal command composition does not expose this method or the create schema.
+func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent *os.File, parentIdentity readbrokerstudy.FileIdentity, stageName, leaf string, content []byte, rootBinding ...creationRootBinding) (readbrokerstudy.CreationResult, error) {
+	unknown := readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationUnknown}
+	if ctx == nil || parent == nil || !validCreationStageName(stageName) || !validCreationLeaf(leaf) || len(content) > readbrokerstudy.MaxReadBytes || !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, readbrokerstudy.ErrProtocol
+	}
+	if err := ctx.Err(); err != nil {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, err
+	}
+	var parentStat syscall.Stat_t
+	if err := syscall.Fstat(int(parent.Fd()), &parentStat); err != nil {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, readbrokerstudy.ErrStaleReceipt
+	}
+	actualParent := readbrokerstudy.FileIdentity{Device: uint64(parentStat.Dev), Inode: parentStat.Ino, Type: uint32(parentStat.Mode & syscall.S_IFMT)}
+	if actualParent != parentIdentity || parentStat.Mode&syscall.S_IFMT != syscall.S_IFDIR {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, readbrokerstudy.ErrStaleReceipt
+	}
+	if err := readbrokerstudy.ValidateCreationDirectoryDescriptor(int(parent.Fd())); err != nil {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, err
+	}
+	if !s.syntheticCreationManifestEligible(parentIdentity) {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, ErrCoverageMissing
+	}
+	rootPath := parent.Name()
+	if len(rootBinding) == 1 && rootBinding[0].root != "" {
+		rootPath = rootBinding[0].root
+	}
+	if !s.creationTargetUnprotected(filepath.Join(rootPath, leaf)) {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, ErrCoverageMissing
+	}
+
+	lease, err := s.beginCreationBarrier(ctx, rootBinding...)
+	if err != nil {
+		if lease != nil {
+			_ = s.finishCreationBarrier(lease, true)
+		}
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, err
+	}
+	barrierRetired := false
+	finishBarrier := func(clean bool) error {
+		if barrierRetired {
+			return nil
+		}
+		barrierRetired = true
+		if finishErr := s.finishCreationBarrier(lease, clean); finishErr != nil {
+			return finishErr
+		}
+		return nil
+	}
+	defer func() {
+		if !barrierRetired {
+			_ = finishBarrier(false)
+		}
+	}()
+	if !s.syntheticCreationManifestEligible(parentIdentity) {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(ErrCoverageMissing, finishBarrier(true))
+	}
+	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationConflict}, finishBarrier(true)
+		}
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(true))
+	}
+
+	s.mu.Lock()
+	launcher, available := s.launcher.(readbrokerstudy.OperationWorkerLauncher)
+	stillOpen := !s.closed && s.creationBarrier == lease
+	s.mu.Unlock()
+	if !stillOpen || !available {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(readbrokerstudy.ErrUnavailable, finishBarrier(true))
+	}
+	worker, err := launcher.StartForOperation(lease.ctx, readbrokerstudy.AdmissionCreateFile)
+	if err != nil {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(true))
+	}
+	joined := false
+	stopAndJoin := func() bool {
+		_ = worker.Terminate()
+		_ = worker.Wait()
+		joined = worker.Joined()
+		return joined
+	}
+	if err := worker.Ready(lease.ctx); err != nil {
+		joined = stopAndJoin()
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(joined))
+	}
+	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
+		joined = stopAndJoin()
+		outcome := readbrokerstudy.CreationNotCreated
+		if errors.Is(err, unix.EEXIST) {
+			outcome = readbrokerstudy.CreationConflict
+		}
+		if outcome == readbrokerstudy.CreationConflict && joined {
+			return readbrokerstudy.CreationResult{Outcome: outcome}, finishBarrier(true)
+		}
+		return readbrokerstudy.CreationResult{Outcome: outcome}, errors.Join(err, finishBarrier(joined))
+	}
+	creationWorker, ok := worker.(readbrokerstudy.BoundedCreationWorker)
+	if !ok {
+		joined = stopAndJoin()
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(readbrokerstudy.ErrProtocol, finishBarrier(joined))
+	}
+	if err := s.admitCreationStage(lease); err != nil {
+		joined = stopAndJoin()
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(joined))
+	}
+	stage, err := creationWorker.StageCreation(lease.ctx, parent, parentIdentity, stageName, leaf, content)
+	if err != nil {
+		if stage.StageIdentity().Inode != 0 {
+			result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
+			_ = worker.Wait()
+			joined = worker.Joined()
+			clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
+			if !clean {
+				result = unknown
+			}
+			return result, errors.Join(err, abortErr, finishBarrier(clean))
+		}
+		var operationError *readbrokerstudy.CreationOperationError
+		knownNoStage := errors.As(err, &operationError) && operationError.Result.Outcome == readbrokerstudy.CreationNotCreated
+		if !knownNoStage {
+			_ = stopAndJoin()
+			return unknown, errors.Join(err, finishBarrier(false))
+		}
+		_ = stopAndJoin()
+		joined = worker.Joined()
+		if !joined {
+			return unknown, errors.Join(err, finishBarrier(false))
+		}
+		finishErr := finishBarrier(true)
+		if errors.Is(operationError.Cause, context.Canceled) || errors.Is(operationError.Cause, context.DeadlineExceeded) {
+			return operationError.Result, errors.Join(operationError.Cause, finishErr)
+		}
+		return operationError.Result, finishErr
+	}
+	if lease.ctx.Err() != nil {
+		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
+		_ = worker.Wait()
+		joined = worker.Joined()
+		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
+		if !clean {
+			result = unknown
+		}
+		return result, errors.Join(lease.ctx.Err(), abortErr, finishBarrier(clean))
+	}
+	if !s.syntheticCreationManifestEligible(parentIdentity) {
+		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
+		_ = worker.Wait()
+		joined = worker.Joined()
+		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
+		if !clean {
+			result = unknown
+		}
+		return result, errors.Join(ErrCoverageMissing, abortErr, finishBarrier(clean))
+	}
+	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
+		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
+		_ = worker.Wait()
+		joined = worker.Joined()
+		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
+		outcome := readbrokerstudy.CreationNotCreated
+		if errors.Is(err, unix.EEXIST) {
+			outcome = readbrokerstudy.CreationConflict
+		}
+		if !clean {
+			outcome = readbrokerstudy.CreationUnknown
+		}
+		result = readbrokerstudy.CreationResult{Outcome: outcome}
+		if outcome == readbrokerstudy.CreationConflict && clean {
+			return result, errors.Join(abortErr, finishBarrier(true))
+		}
+		return result, errors.Join(err, abortErr, finishBarrier(clean))
+	}
+	if err := s.releaseCreationPublication(lease); err != nil {
+		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
+		_ = worker.Wait()
+		joined = worker.Joined()
+		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
+		if !clean {
+			result = unknown
+		}
+		return result, errors.Join(err, abortErr, finishBarrier(clean))
+	}
+	result, publishErr := creationWorker.PublishCreation(creationWorker.WorkerContext(), stage)
+	_ = worker.Wait()
+	joined = worker.Joined()
+	if !joined || publishErr != nil || result.Outcome == readbrokerstudy.CreationUnknown {
+		return unknown, errors.Join(publishErr, finishBarrier(false))
+	}
+	return result, errors.Join(publishErr, finishBarrier(true))
+}
+
+// PrepareFilesystemCreation implements the explicit fixture-only runtime seam.
+// Normal cmd/harness composition never wraps the runtime with this service.
+func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
+	if ctx == nil || s == nil || s.impl == nil || invocation.ToolID != tools.CreateFileID || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
+		return permissions.Request{}, ErrServiceClosed
+	}
+	input, err := tools.ParseCreateFile(invocation.Arguments)
+	if err != nil {
+		return permissions.Request{}, err
+	}
+	// This prototype intentionally supports one existing parent and one leaf;
+	// it does not create directories or resolve a model-selected scope.
+	if strings.Contains(input.Path, "/") {
+		return permissions.Request{}, errors.New("creation prototype accepts a single leaf beneath the selected scope")
+	}
+	s.rootMu.Lock()
+	if s.rootClosed || s.rootPending || s.rootPath == "" || invocation.ConversationID != s.rootConversationID {
+		s.rootMu.Unlock()
+		return permissions.Request{}, ErrCoverageMissing
+	}
+	root, rootGeneration := s.rootPath, s.rootGeneration
+	s.rootMu.Unlock()
+	parent, err := os.Open(root)
+	if err != nil {
+		return permissions.Request{}, ErrCoverageMissing
+	}
+	var st unix.Stat_t
+	if err = unix.Fstat(int(parent.Fd()), &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		_ = parent.Close()
+		return permissions.Request{}, ErrCoverageMissing
+	}
+	identity := identityFromUnixStat(&st)
+	if err := readbrokerstudy.ValidateCreationDirectoryDescriptor(int(parent.Fd())); err != nil {
+		_ = parent.Close()
+		return permissions.Request{}, err
+	}
+	impl, ok := s.impl.(*linuxImplementation)
+	if !ok || !impl.syntheticCreationManifestEligible(identity) {
+		_ = parent.Close()
+		return permissions.Request{}, ErrCoverageMissing
+	}
+	target := filepath.Join(root, input.Path)
+	if !impl.creationTargetUnprotected(target) {
+		_ = parent.Close()
+		return permissions.Request{}, ErrCoverageMissing
+	}
+	if err = validateCreationParentAndAbsentLeaf(parent, identity, input.Path); err != nil {
+		_ = parent.Close()
+		if errors.Is(err, unix.EEXIST) {
+			return permissions.Request{}, errors.New("creation destination already exists; a new proposal is required")
+		}
+		return permissions.Request{}, err
+	}
+	coverageRevision := s.CoverageSnapshot().Revision
+	policyRevision := impl.registry.View().Generation
+	stageName, err := readbrokerstudy.NewCreationStageName()
+	if err != nil {
+		_ = parent.Close()
+		return permissions.Request{}, err
+	}
+	requestData, _ := json.Marshal(struct {
+		ConversationID, TurnID, CallID, Destination, Root, Target, Content string
+		RootGeneration, PolicyRevision, CoverageRevision                   uint64
+		Parent                                                             readbrokerstudy.FileIdentity
+	}{invocation.ConversationID, invocation.TurnID, invocation.ProviderCallID, destination, root, target, input.Content, rootGeneration, policyRevision, coverageRevision, identity})
+	digest := sha256.Sum256(requestData)
+	diff := creationApprovalDiff(target, destination, []byte(input.Content))
+	request := permissions.Request{ConversationID: invocation.ConversationID, CallID: invocation.ProviderCallID, Destination: destination, AdmissionBinding: hex.EncodeToString(digest[:]), RequireOnceKeys: []string{"create", "target"}, Requirements: []permissions.Requirement{
+		{Kind: permissions.RequirementAction, Key: "create", ToolID: string(tools.CreateFileID), Description: diff, Operation: permissions.OperationWrite, ActionKey: "bounded-create-once"},
+		{Kind: permissions.RequirementResource, Key: "target", ToolID: string(tools.CreateFileID), Description: "Create this exact target once", Operation: permissions.OperationWrite, Resource: &permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: target, Operation: permissions.OperationWrite}},
+	}}
+	proposal := &serviceCreationProposal{invocation: invocation, request: request, input: input, parent: parent, parentIdentity: identity, root: root, rootGeneration: rootGeneration, coverageRevision: coverageRevision, policyRevision: policyRevision, stageName: stageName}
+	impl.mu.Lock()
+	if impl.closed || impl.creationManifest == nil {
+		impl.mu.Unlock()
+		_ = parent.Close()
+		return permissions.Request{}, ErrCoverageMissing
+	}
+	key := invocation.ConversationID + "\x00" + invocation.ProviderCallID
+	previous := impl.creationProposals[key]
+	delete(impl.creationProposals, key)
+	impl.mu.Unlock()
+	if previous != nil && previous.parent != nil {
+		if err := previous.parent.Close(); err != nil {
+			impl.mu.Lock()
+			if impl.creationProposals[key] == nil {
+				impl.creationProposals[key] = previous
+			}
+			impl.mu.Unlock()
+			_ = parent.Close()
+			return permissions.Request{}, errors.Join(readbrokerstudy.ErrCleanupPending, err)
+		}
+	}
+	impl.mu.Lock()
+	if impl.closed || impl.creationManifest == nil || impl.creationProposals[key] != nil {
+		impl.mu.Unlock()
+		_ = parent.Close()
+		return permissions.Request{}, runtime.ErrFilesystemRootStale
+	}
+	impl.creationProposals[key] = proposal
+	impl.mu.Unlock()
+	return request, nil
+}
+
+// PrepareApprovedFilesystemCreation consumes the retained proposal exactly
+// once after the runtime has accepted the exact once-only approval request.
+func (s *Service) PrepareApprovedFilesystemCreation(ctx context.Context, invocation tools.Invocation, request permissions.Request, _ uint64) (runtime.ToolPreparation, error) {
+	if ctx == nil || s == nil || s.impl == nil {
+		return nil, ErrServiceClosed
+	}
+	impl, ok := s.impl.(*linuxImplementation)
+	if !ok {
+		return nil, ErrCoverageMissing
+	}
+	key := invocation.ConversationID + "\x00" + invocation.ProviderCallID
+	impl.mu.Lock()
+	proposal := impl.creationProposals[key]
+	expectedRequest := permissions.Request{}
+	if proposal != nil {
+		expectedRequest = proposal.request
+		expectedRequest.Binding = request.Binding
+	}
+	if proposal == nil || proposal.consumed || !reflect.DeepEqual(expectedRequest, request) || proposal.request.ConversationID != invocation.ConversationID || proposal.request.CallID != invocation.ProviderCallID || proposal.invocation.TurnID != invocation.TurnID || !bytes.Equal(proposal.invocation.Arguments, invocation.Arguments) {
+		impl.mu.Unlock()
+		return nil, runtime.ErrFilesystemRootStale
+	}
+	proposal.consumed = true
+	delete(impl.creationProposals, key)
+	impl.mu.Unlock()
+	s.rootMu.Lock()
+	current := !s.rootClosed && !s.rootPending && s.rootPath == proposal.root && s.rootConversationID == invocation.ConversationID && s.rootGeneration == proposal.rootGeneration
+	s.rootMu.Unlock()
+	if !current || s.CoverageSnapshot().Revision != proposal.coverageRevision || impl.registry.View().Generation != proposal.policyRevision || !impl.syntheticCreationManifestEligible(proposal.parentIdentity) {
+		_ = proposal.parent.Close()
+		return nil, runtime.ErrFilesystemRootStale
+	}
+	return &serviceCreationPreparation{service: s, impl: impl, proposal: proposal}, nil
+}
+
+func (s *Service) DiscardFilesystemCreationProposal(_ context.Context, invocation tools.Invocation) error {
+	if s == nil || s.impl == nil {
+		return ErrServiceClosed
+	}
+	impl, ok := s.impl.(*linuxImplementation)
+	if !ok {
+		return ErrCoverageMissing
+	}
+	key := invocation.ConversationID + "\x00" + invocation.ProviderCallID
+	impl.mu.Lock()
+	proposal := impl.creationProposals[key]
+	if proposal == nil {
+		impl.mu.Unlock()
+		return nil
+	}
+	if !bytes.Equal(proposal.invocation.Arguments, invocation.Arguments) {
+		impl.mu.Unlock()
+		return runtime.ErrFilesystemRootStale
+	}
+	delete(impl.creationProposals, key)
+	impl.mu.Unlock()
+	if proposal.parent == nil {
+		return nil
+	}
+	if err := proposal.parent.Close(); err != nil {
+		impl.mu.Lock()
+		if impl.creationProposals[key] == nil {
+			impl.creationProposals[key] = proposal
+		}
+		impl.mu.Unlock()
+		return errors.Join(readbrokerstudy.ErrCleanupPending, err)
+	}
+	return nil
+}
+
+type serviceCreationPreparation struct {
+	service          *Service
+	impl             *linuxImplementation
+	proposal         *serviceCreationProposal
+	mu               sync.Mutex
+	executed, closed bool
+}
+
+func (s *linuxImplementation) invalidateCreationProposals() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	proposals := make(map[string]*serviceCreationProposal, len(s.creationProposals))
+	for key, proposal := range s.creationProposals {
+		proposals[key] = proposal
+	}
+	s.mu.Unlock()
+	var closeErr error
+	closed := make(map[string]bool, len(proposals))
+	for key, proposal := range proposals {
+		if proposal != nil && proposal.parent != nil {
+			err := proposal.parent.Close()
+			closeErr = errors.Join(closeErr, err)
+			closed[key] = err == nil
+		} else {
+			closed[key] = true
+		}
+	}
+	s.mu.Lock()
+	for key, proposal := range proposals {
+		if closed[key] && s.creationProposals[key] == proposal {
+			delete(s.creationProposals, key)
+		}
+	}
+	s.mu.Unlock()
+	return closeErr
+}
+
+func (p *serviceCreationPreparation) Execute(ctx context.Context) (tools.Result, error) {
+	p.mu.Lock()
+	if p.closed || p.executed {
+		p.mu.Unlock()
+		return tools.Result{Outcome: tools.OutcomeNotExecuted, ErrorCode: "creation_receipt_consumed"}, runtime.ErrFilesystemRootStale
+	}
+	p.executed = true
+	p.mu.Unlock()
+	result, err := p.impl.executeBoundedCreation(ctx, p.proposal.parent, p.proposal.parentIdentity, p.proposal.stageName, p.proposal.input.Path, []byte(p.proposal.input.Content), creationRootBinding{root: p.proposal.root, conversation: p.proposal.invocation.ConversationID, generation: p.proposal.rootGeneration})
+	cancelledWithoutEffect := result.Outcome == readbrokerstudy.CreationNotCreated && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+	toolResult := tools.Result{Outcome: tools.OutcomeNotExecuted, ErrorCode: "creation_not_created"}
+	switch result.Outcome {
+	case readbrokerstudy.CreationCreated:
+		toolResult.Outcome = tools.OutcomeSucceeded
+		toolResult.Content = []tools.Content{{Kind: tools.ContentText, Text: fmt.Sprintf("Created %s (%d bytes)", filepath.Join(p.proposal.root, p.proposal.input.Path), result.Bytes)}}
+	case readbrokerstudy.CreationConflict:
+		toolResult.Outcome = tools.OutcomeFailed
+		toolResult.ErrorCode = "creation_conflict"
+	case readbrokerstudy.CreationNotCreated:
+		toolResult.Outcome = tools.OutcomeFailed
+		if cancelledWithoutEffect {
+			toolResult.Outcome = tools.OutcomeCancelled
+			toolResult.ErrorCode = "creation_cancelled"
+		}
+	case readbrokerstudy.CreationUnknown:
+		toolResult.Outcome = tools.OutcomeUnknown
+		toolResult.ErrorCode = "creation_outcome_unknown"
+	}
+	toolResult.ProviderCallID = p.proposal.invocation.ProviderCallID
+	if cancelledWithoutEffect {
+		return toolResult, nil
+	}
+	return toolResult, err
+}
+func (p *serviceCreationPreparation) Close(context.Context) error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
+	p.closed = true
+	parent := p.proposal.parent
+	p.mu.Unlock()
+	if parent == nil {
+		return nil
+	}
+	return parent.Close()
+}
+
+func (s *linuxImplementation) syntheticCreationManifestEligible(parent readbrokerstudy.FileIdentity) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	manifest := s.creationManifest
+	registry, inventory := s.registry, s.inventory
+	owners := make(map[string]OwnerCoverage, len(s.owners))
+	for owner, coverage := range s.owners {
+		owners[owner] = coverage
+	}
+	closed := s.closed
+	s.mu.Unlock()
+	if closed || manifest == nil || !manifest.scopeComplete || manifest.scopeParent != parent || registry == nil || inventory == nil {
+		return false
+	}
+	policy := registry.View()
+	coverage := inventory.Snapshot()
+	if !coverage.Complete || policy.Generation != manifest.policyRevision || coverage.Revision != manifest.coverageRevision {
+		return false
+	}
+	const minimumTokenIdentities = 5 // DB, WAL, SHM, journal, and backup.
+	if len(manifest.owners) != 4 {
+		return false
+	}
+	required := map[string]readbrokerstudy.ResourceClass{
+		auth.SensitiveOwnerAuth:     readbrokerstudy.ClassCredential,
+		auth.SensitiveOwnerSettings: readbrokerstudy.ClassSettings,
+		"tokenlogger-store":         readbrokerstudy.ClassTokenDatabase,
+		"provider-source":           readbrokerstudy.ClassProvider,
+	}
+	for owner, class := range required {
+		entry, exists := manifest.owners[owner]
+		if !exists || entry.class != class || len(entry.registrations) == 0 {
+			return false
+		}
+		coverageState, exists := owners[owner]
+		if !exists || coverageState.State != OwnerRegistered {
+			return false
+		}
+		minimum := 1
+		if owner == "tokenlogger-store" {
+			minimum = minimumTokenIdentities
+		}
+		if len(entry.registrations) < minimum {
+			return false
+		}
+		for route, identity := range entry.registrations {
+			found := false
+			for _, candidate := range policy.Entries {
+				if candidate.Owner == owner && candidate.Class == class && candidate.Path == route && candidate.Identity == identity && !candidate.Directory && identity.Inode != 0 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+	}
+	tokenDB, ok := manifest.owners["tokenlogger-store"]
+	if !ok || !strings.HasSuffix(manifest.tokenDatabasePath, ".db") {
+		return false
+	}
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal", ".backup"} {
+		if _, exists := tokenDB.registrations[manifest.tokenDatabasePath+suffix]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *linuxImplementation) creationTargetUnprotected(target string) bool {
+	if s == nil || !filepath.IsAbs(target) || filepath.Clean(target) != target {
+		return false
+	}
+	s.mu.Lock()
+	registry, closed := s.registry, s.closed
+	s.mu.Unlock()
+	if closed || registry == nil {
+		return false
+	}
+	_, protected := registry.ClassifyRoute(target)
+	return !protected
+}
+
+func validateCreationParentAndAbsentLeaf(parent *os.File, expected readbrokerstudy.FileIdentity, leaf string) error {
+	if parent == nil || !validCreationLeaf(leaf) {
+		return readbrokerstudy.ErrStaleReceipt
+	}
+	var parentStat unix.Stat_t
+	if err := unix.Fstat(int(parent.Fd()), &parentStat); err != nil || identityFromUnixStat(&parentStat) != expected || parentStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return readbrokerstudy.ErrStaleReceipt
+	}
+	flags, err := unix.FcntlInt(parent.Fd(), unix.F_GETFL, 0)
+	if err != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
+		return readbrokerstudy.ErrStaleReceipt
+	}
+	var targetStat unix.Stat_t
+	if err := unix.Fstatat(int(parent.Fd()), leaf, &targetStat, unix.AT_SYMLINK_NOFOLLOW); err == nil {
+		return unix.EEXIST
+	} else if !errors.Is(err, unix.ENOENT) {
+		return readbrokerstudy.ErrUnavailable
+	}
+	return nil
+}
+
+func identityFromUnixStat(stat *unix.Stat_t) readbrokerstudy.FileIdentity {
+	if stat == nil {
+		return readbrokerstudy.FileIdentity{}
+	}
+	return readbrokerstudy.FileIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Type: stat.Mode & unix.S_IFMT}
+}
+
+func validCreationStageName(value string) bool {
+	const prefix = ".komposyn-stage-"
+	if len(value) != len(prefix)+32 || !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	for _, char := range value[len(prefix):] {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validCreationLeaf(value string) bool {
+	return value != "" && len(value) <= 255 && value != "." && value != ".." && !strings.ContainsAny(value, "/\\\x00") && utf8.ValidString(value)
+}
+
+func creationApprovalDiff(target, destination string, content []byte) string {
+	var diff strings.Builder
+	fmt.Fprintf(&diff, "Create %s (%d bytes) for %s. Complete diff:\n--- /dev/null\n+++ %s\n", target, len(content), destination, target)
+	text := string(content)
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		if index == len(lines)-1 && line == "" {
+			break
+		}
+		diff.WriteByte('+')
+		diff.WriteString(line)
+		if index < len(lines)-1 {
+			diff.WriteByte('\n')
+		}
+	}
+	return diff.String()
 }
 
 func (s *linuxImplementation) CloseFilesystemReadAdmission(ctx context.Context, admission runtime.FilesystemReadAdmission) error {
@@ -626,7 +1486,7 @@ func (p *linuxAdmissionPreparation) WithAuthorityCommit(ctx context.Context, com
 	}
 	p.impl.mu.Lock()
 	defer p.impl.mu.Unlock()
-	if p.impl.closed || p.impl.session == nil || len(p.impl.blocked) != 0 {
+	if p.impl.closed || p.impl.creationBarrier != nil || p.impl.session == nil || len(p.impl.blocked) != 0 {
 		return readbrokerstudy.ErrAdmissionStale
 	}
 	if p.impl.owners[auth.SensitiveOwnerAuth].State != OwnerRegistered || p.impl.owners[auth.SensitiveOwnerSettings].State != OwnerRegistered {
@@ -776,8 +1636,19 @@ func (s *linuxImplementation) Close(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	s.closed = true
+	lease := s.creationBarrier
+	if lease != nil && lease.cancel != nil {
+		lease.cancel()
+	}
 	session, launcher, registry := s.session, s.launcher, s.registry
 	s.mu.Unlock()
+	if lease != nil {
+		select {
+		case <-lease.done:
+		case <-ctx.Done():
+			return errors.Join(readbrokerstudy.ErrCleanupPending, ctx.Err())
+		}
+	}
 	if session != nil {
 		err := session.Close(ctx)
 		if errors.Is(err, readbrokerstudy.ErrCleanupPending) || ctx.Err() != nil {

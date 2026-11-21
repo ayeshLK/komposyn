@@ -21,8 +21,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +32,7 @@ import (
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	rb "github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
+	"golang.org/x/sys/unix"
 )
 
 // The test binary is also the exact fixed worker image. Bootstrap precedes
@@ -55,6 +58,14 @@ type nativeRecord struct {
 	WorkerJoinedBeforeOwnerWrite     bool                  `json:"worker_joined_before_owner_write"`
 	RetiredAliasRefused              bool                  `json:"retired_alias_refused"`
 	VerifiedReturnedBytes            bool                  `json:"verified_returned_bytes"`
+	CreationVerifiedBytes            bool                  `json:"creation_verified_bytes,omitempty"`
+	CreationVerifiedMode             bool                  `json:"creation_verified_mode,omitempty"`
+	CreationStageAbsent              bool                  `json:"creation_stage_absent,omitempty"`
+	CreationLateCollisionRefused     bool                  `json:"creation_late_collision_refused,omitempty"`
+	CreationLateStageAbsent          bool                  `json:"creation_late_stage_absent,omitempty"`
+	CreationFilesystem               string                `json:"creation_filesystem,omitempty"`
+	CreationMountID                  uint64                `json:"creation_mount_id,omitempty"`
+	CreationFailureDetail            string                `json:"creation_failure_detail,omitempty"`
 	Case                             string                `json:"case"`
 	Status                           string                `json:"status"`
 	CleanupConfirmed                 bool                  `json:"cleanup_confirmed"`
@@ -234,6 +245,271 @@ func TestNativeServicePositiveRead(t *testing.T) {
 	}
 	r.VerifiedReturnedBytes = true
 }
+
+func TestNativeServiceBoundedCreation(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	installSyntheticCreationManifest(t, f.service, f.root)
+	parent, err := os.Open(f.root)
+	if err != nil {
+		t.Fatal("could not open synthetic creation parent")
+	}
+	defer parent.Close()
+	identity := identityFromInfo(t, f.root)
+	filesystem, mountID := creationFilesystemEvidence(t, parent)
+	r.CreationFilesystem = filesystem
+	r.CreationMountID = mountID
+	stageName, err := rb.NewCreationStageName()
+	if err != nil {
+		t.Fatal("could not generate private stage name")
+	}
+	content := []byte("synthetic native creation fixture\n")
+	result, err := f.impl.executeBoundedCreation(nativeContext(t), parent, identity, stageName, "created.txt", content)
+	if err != nil || result.Outcome != rb.CreationCreated || result.Bytes != uint32(len(content)) {
+		detail := f.tracked.lastFailureDetail()
+		if detail == "worker_missing" {
+			detail = creationEligibilitySummary(f.impl, identity, filepath.Join(f.root, "created.txt"))
+		}
+		r.CreationFailureDetail = detail
+		t.Fatalf("confined create worker result outcome=%q bytes=%d err=%v worker=%s", result.Outcome, result.Bytes, err, detail)
+	}
+	created := filepath.Join(f.root, "created.txt")
+	actual, err := os.ReadFile(created)
+	if err != nil || !bytes.Equal(actual, content) {
+		t.Fatal("published fixture bytes did not match the approved bytes")
+	}
+	info, err := os.Stat(created)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("published fixture mode was not 0600")
+	}
+	r.CreationVerifiedBytes = true
+	r.CreationVerifiedMode = true
+	if _, err := os.Lstat(filepath.Join(f.root, stageName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("private stage remained after publication")
+	}
+	r.CreationStageAbsent = true
+	if !f.tracked.allJoined() {
+		t.Fatal("create worker was not joined")
+	}
+	// The primitive must refuse a collision without replacing its bytes.
+	collisionName, err := rb.NewCreationStageName()
+	if err != nil {
+		t.Fatal("could not generate collision stage name")
+	}
+	incumbent := []byte("independent actor fixture\n")
+	if err := os.WriteFile(filepath.Join(f.root, "collision.txt"), incumbent, 0600); err != nil {
+		t.Fatal("could not prepare collision fixture")
+	}
+	collision, err := f.impl.executeBoundedCreation(nativeContext(t), parent, identity, collisionName, "collision.txt", content)
+	if err != nil || collision.Outcome != rb.CreationConflict {
+		t.Fatal("existing target did not produce a no-replace conflict")
+	}
+	after, err := os.ReadFile(filepath.Join(f.root, "collision.txt"))
+	if err != nil || !bytes.Equal(after, incumbent) {
+		t.Fatal("no-replace conflict changed the incumbent bytes")
+	}
+	lateStageName, err := rb.NewCreationStageName()
+	if err != nil {
+		t.Fatal("could not generate late-collision stage name")
+	}
+	lateIncumbent := []byte("independent actor after final observation\n")
+	f.tracked.mu.Lock()
+	f.tracked.beforeCreationPublish = func() error {
+		return os.WriteFile(filepath.Join(f.root, "late-collision.txt"), lateIncumbent, 0600)
+	}
+	f.tracked.mu.Unlock()
+	lateCollision, err := f.impl.executeBoundedCreation(nativeContext(t), parent, identity, lateStageName, "late-collision.txt", content)
+	f.tracked.mu.Lock()
+	f.tracked.beforeCreationPublish = nil
+	f.tracked.mu.Unlock()
+	if err != nil || lateCollision.Outcome != rb.CreationConflict {
+		t.Fatal("no-replace publication did not classify the post-observation actor as a conflict")
+	}
+	lateActual, err := os.ReadFile(filepath.Join(f.root, "late-collision.txt"))
+	if err != nil || !bytes.Equal(lateActual, lateIncumbent) {
+		t.Fatal("publication-time collision changed the independent actor's file")
+	}
+	if _, err := os.Lstat(filepath.Join(f.root, lateStageName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("stage remained after publication-time collision")
+	}
+	if !f.tracked.allJoined() {
+		t.Fatal("late-collision worker was not joined")
+	}
+	r.CreationLateCollisionRefused = true
+	r.CreationLateStageAbsent = true
+}
+
+func creationEligibilitySummary(impl *linuxImplementation, parent rb.FileIdentity, target string) string {
+	impl.mu.Lock()
+	manifest := impl.creationManifest
+	closed := impl.closed
+	blocked := make([]string, 0, len(impl.blocked))
+	for owner := range impl.blocked {
+		blocked = append(blocked, owner)
+	}
+	barrierActive := impl.creationBarrier != nil
+	owners := map[string]OwnerState{
+		"auth":        impl.owners[auth.SensitiveOwnerAuth].State,
+		"settings":    impl.owners[auth.SensitiveOwnerSettings].State,
+		"tokenlogger": impl.owners["tokenlogger-store"].State,
+		"provider":    impl.owners["provider-source"].State,
+	}
+	impl.mu.Unlock()
+	coverage := impl.inventory.Snapshot()
+	policy := impl.registry.View()
+	if manifest == nil {
+		return fmt.Sprintf("worker_missing; manifest=missing closed=%t blocked=%v barrier_active=%t", closed, blocked, barrierActive)
+	}
+	ownerMatches := make(map[string]int, len(manifest.owners))
+	for owner, manifestOwner := range manifest.owners {
+		for route, identity := range manifestOwner.registrations {
+			for _, entry := range policy.Entries {
+				if entry.Owner == owner && entry.Class == manifestOwner.class && entry.Path == route && entry.Identity == identity && !entry.Directory && identity.Inode != 0 {
+					ownerMatches[owner]++
+					break
+				}
+			}
+		}
+	}
+	reasons := creationEligibilityReasons(impl, parent)
+	return fmt.Sprintf("worker_missing; eligible=%t reasons=%v target_unprotected=%t closed=%t blocked=%v barrier_active=%t scope_complete=%t scope_matches=%t coverage_complete=%t coverage_revision_matches=%t policy_generation_matches=%t owner_states=%v manifest_owner_counts=%d/%d/%d/%d registry_owner_matches=%v token_db_suffix_valid=%t",
+		impl.syntheticCreationManifestEligible(parent), reasons, impl.creationTargetUnprotected(target), closed, blocked, barrierActive,
+		manifest.scopeComplete, manifest.scopeParent == parent,
+		coverage.Complete, coverage.Revision == manifest.coverageRevision, policy.Generation == manifest.policyRevision,
+		owners, len(manifest.owners[auth.SensitiveOwnerAuth].registrations), len(manifest.owners[auth.SensitiveOwnerSettings].registrations), len(manifest.owners["tokenlogger-store"].registrations), len(manifest.owners["provider-source"].registrations), ownerMatches,
+		strings.HasSuffix(manifest.tokenDatabasePath, ".db"))
+}
+
+func creationEligibilityReasons(impl *linuxImplementation, parent rb.FileIdentity) []string {
+	impl.mu.Lock()
+	manifest := impl.creationManifest
+	closed := impl.closed
+	owners := make(map[string]OwnerCoverage, len(impl.owners))
+	for name, coverage := range impl.owners {
+		owners[name] = coverage
+	}
+	registry, inventory := impl.registry, impl.inventory
+	impl.mu.Unlock()
+	var reasons []string
+	if closed {
+		reasons = append(reasons, "service_closed")
+	}
+	if manifest == nil {
+		return append(reasons, "manifest_missing")
+	}
+	if !manifest.scopeComplete {
+		reasons = append(reasons, "scope_incomplete")
+	}
+	if manifest.scopeParent != parent {
+		reasons = append(reasons, "scope_parent_mismatch")
+	}
+	if registry == nil || inventory == nil {
+		return append(reasons, "registry_or_inventory_missing")
+	}
+	policy := registry.View()
+	coverage := inventory.Snapshot()
+	if !coverage.Complete {
+		reasons = append(reasons, "inventory_incomplete")
+	}
+	if policy.Generation != manifest.policyRevision {
+		reasons = append(reasons, "policy_generation_changed")
+	}
+	if coverage.Revision != manifest.coverageRevision {
+		reasons = append(reasons, "coverage_revision_changed")
+	}
+	if len(manifest.owners) != 4 {
+		reasons = append(reasons, "owner_set_size")
+	}
+	required := map[string]rb.ResourceClass{
+		auth.SensitiveOwnerAuth:     rb.ClassCredential,
+		auth.SensitiveOwnerSettings: rb.ClassSettings,
+		"tokenlogger-store":         rb.ClassTokenDatabase,
+		"provider-source":           rb.ClassProvider,
+	}
+	for owner, class := range required {
+		entry, exists := manifest.owners[owner]
+		if !exists {
+			reasons = append(reasons, "owner_missing:"+owner)
+			continue
+		}
+		if entry.class != class {
+			reasons = append(reasons, "owner_class:"+owner)
+		}
+		if len(entry.registrations) == 0 {
+			reasons = append(reasons, "owner_routes_empty:"+owner)
+		}
+		state, exists := owners[owner]
+		if !exists || state.State != OwnerRegistered {
+			reasons = append(reasons, "owner_state:"+owner)
+		}
+		minimum := 1
+		if owner == "tokenlogger-store" {
+			minimum = 5
+		}
+		if len(entry.registrations) < minimum {
+			reasons = append(reasons, "owner_identity_count:"+owner)
+		}
+		for route, identity := range entry.registrations {
+			found := false
+			for _, candidate := range policy.Entries {
+				if candidate.Owner == owner && candidate.Class == class && candidate.Path == route && candidate.Identity == identity && !candidate.Directory && identity.Inode != 0 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				reasons = append(reasons, "owner_registration_mismatch:"+owner)
+				break
+			}
+		}
+	}
+	tokenDB, ok := manifest.owners["tokenlogger-store"]
+	if !ok || !strings.HasSuffix(manifest.tokenDatabasePath, ".db") {
+		reasons = append(reasons, "token_database_path_invalid")
+	}
+	if ok {
+		for _, suffix := range []string{"", "-wal", "-shm", "-journal", ".backup"} {
+			if _, exists := tokenDB.registrations[manifest.tokenDatabasePath+suffix]; !exists {
+				reasons = append(reasons, "token_database_identity_missing")
+				break
+			}
+		}
+	}
+	return reasons
+}
+
+func creationFilesystemEvidence(t *testing.T, directory *os.File) (string, uint64) {
+	t.Helper()
+	fdInfo, err := os.ReadFile(filepath.Join("/proc/self/fdinfo", fmt.Sprint(directory.Fd())))
+	if err != nil {
+		t.Fatal("could not inspect retained parent mount ID")
+	}
+	var mountID uint64
+	for _, line := range strings.Split(string(fdInfo), "\n") {
+		if _, err := fmt.Sscanf(line, "mnt_id:\t%d", &mountID); err == nil && mountID != 0 {
+			break
+		}
+	}
+	if mountID == 0 {
+		t.Fatal("retained parent mount ID was unavailable")
+	}
+	mountInfo, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		t.Fatal("could not inspect mount table")
+	}
+	for _, line := range strings.Split(string(mountInfo), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 10 && fields[0] == fmt.Sprint(mountID) {
+			for i, field := range fields {
+				if field == "-" && i+1 < len(fields) {
+					return fields[i+1], mountID
+				}
+			}
+		}
+	}
+	t.Fatal("retained parent mount type was unavailable")
+	return "", 0
+}
 func TestNativeServiceProtectedRoutesAndAliases(t *testing.T) {
 	r := nativeReport(t)
 	f := newNativeFixture(t, r)
@@ -304,6 +580,11 @@ func nativeRotation(t *testing.T, rotateAuth bool) {
 	}
 	store := f.settings
 	observer := &nativeObservedProtector{service: f.service, tracked: f.tracked, record: r}
+	defer func() {
+		if err := observer.Close(); err != nil {
+			t.Errorf("close retained owner-test descriptors: %v", err)
+		}
+	}()
 	store.Protection = observer
 	update := func() error {
 		if rotateAuth {
@@ -373,9 +654,10 @@ func TestNativeServicePostCaptureRevocation(t *testing.T) {
 
 // This wrapper records real worker state; it never replaces worker behavior.
 type nativeTrackedLauncher struct {
-	mu       sync.Mutex
-	delegate rb.WorkerLauncher
-	workers  []rb.SandboxWorker
+	mu                    sync.Mutex
+	delegate              rb.WorkerLauncher
+	workers               []rb.SandboxWorker
+	beforeCreationPublish func() error
 }
 
 func (l *nativeTrackedLauncher) Start(ctx context.Context) (rb.SandboxWorker, error) {
@@ -386,6 +668,74 @@ func (l *nativeTrackedLauncher) Start(ctx context.Context) (rb.SandboxWorker, er
 		l.mu.Unlock()
 	}
 	return w, e
+}
+func (l *nativeTrackedLauncher) StartForOperation(ctx context.Context, operation rb.AdmissionOperation) (rb.SandboxWorker, error) {
+	launcher, ok := l.delegate.(rb.OperationWorkerLauncher)
+	if !ok {
+		return nil, rb.ErrUnavailable
+	}
+	w, e := launcher.StartForOperation(ctx, operation)
+	if w != nil {
+		l.mu.Lock()
+		if operation == rb.AdmissionCreateFile {
+			tracked := &nativeTrackedWorker{SandboxWorker: w, beforePublish: l.beforeCreationPublish}
+			l.workers = append(l.workers, tracked)
+			l.mu.Unlock()
+			return tracked, e
+		}
+		l.workers = append(l.workers, w)
+		l.mu.Unlock()
+	}
+	return w, e
+}
+
+type nativeTrackedWorker struct {
+	rb.SandboxWorker
+	beforePublish func() error
+}
+
+func (w *nativeTrackedWorker) WorkerContext() context.Context {
+	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
+	if !ok {
+		return nil
+	}
+	return creation.WorkerContext()
+}
+
+func (w *nativeTrackedWorker) FailureDetail() string {
+	if worker, ok := w.SandboxWorker.(interface{ FailureDetail() string }); ok {
+		return worker.FailureDetail()
+	}
+	return "worker_diagnostic_unavailable"
+}
+
+func (w *nativeTrackedWorker) StageCreation(ctx context.Context, parent *os.File, identity rb.FileIdentity, stageName, leaf string, content []byte) (rb.CreationStage, error) {
+	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
+	if !ok {
+		return rb.CreationStage{}, rb.ErrProtocol
+	}
+	return creation.StageCreation(ctx, parent, identity, stageName, leaf, content)
+}
+
+func (w *nativeTrackedWorker) PublishCreation(ctx context.Context, stage rb.CreationStage) (rb.CreationResult, error) {
+	if w.beforePublish != nil {
+		if err := w.beforePublish(); err != nil {
+			return rb.CreationResult{Outcome: rb.CreationUnknown}, err
+		}
+	}
+	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
+	if !ok {
+		return rb.CreationResult{Outcome: rb.CreationUnknown}, rb.ErrProtocol
+	}
+	return creation.PublishCreation(ctx, stage)
+}
+
+func (w *nativeTrackedWorker) AbortCreation(ctx context.Context, stage rb.CreationStage) (rb.CreationResult, error) {
+	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
+	if !ok {
+		return rb.CreationResult{Outcome: rb.CreationUnknown}, rb.ErrProtocol
+	}
+	return creation.AbortCreation(ctx, stage)
 }
 func (l *nativeTrackedLauncher) Close() error { return l.delegate.Close() }
 func (l *nativeTrackedLauncher) allJoined() bool {
@@ -402,18 +752,42 @@ func (l *nativeTrackedLauncher) allJoined() bool {
 	return true
 }
 
+func (l *nativeTrackedLauncher) lastFailureDetail() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.workers) == 0 {
+		return "worker_missing"
+	}
+	worker, ok := l.workers[len(l.workers)-1].(interface{ FailureDetail() string })
+	if !ok {
+		return "worker_diagnostic_unavailable"
+	}
+	return worker.FailureDetail()
+}
+
 type nativeObservedProtector struct {
-	opened  []os.FileInfo
-	service *Service
-	tracked *nativeTrackedLauncher
-	record  *nativeRecord
+	opened      []os.FileInfo
+	openedFiles []*os.File
+	service     *Service
+	tracked     *nativeTrackedLauncher
+	record      *nativeRecord
 }
 
 func (p *nativeObservedProtector) Protect(ctx context.Context, owner, class, route string, object *os.File) error {
 	if object == nil {
 		return errors.New("rotation test did not supply an opened replacement")
 	}
-	st, e := object.Stat()
+	fd, e := unix.FcntlInt(object.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if e != nil {
+		return errors.New("could not retain replacement identity for observation")
+	}
+	retained := os.NewFile(uintptr(fd), "native-observed-replacement")
+	if retained == nil {
+		_ = unix.Close(fd)
+		return errors.New("could not retain replacement descriptor")
+	}
+	p.openedFiles = append(p.openedFiles, retained)
+	st, e := retained.Stat()
 	if e != nil || st.Size() != 0 {
 		return errors.New("replacement was not empty before registration")
 	}
@@ -431,6 +805,15 @@ func (p *nativeObservedProtector) Protect(ctx context.Context, owner, class, rou
 	p.record.EmptyReplacementObserved = true
 	p.record.WorkerJoinedBeforeOwnerWrite = true
 	return nil
+}
+
+func (p *nativeObservedProtector) Close() error {
+	var closeErr error
+	for _, file := range p.openedFiles {
+		closeErr = errors.Join(closeErr, file.Close())
+	}
+	p.openedFiles = nil
+	return closeErr
 }
 
 func TestNativeServiceRootChangeWhileHeld(t *testing.T)    { nativeInterruptedHold(t, "root") }

@@ -1,12 +1,17 @@
 # Proposed one-file creation mechanism
 
-**Status:** mechanism proposal remains unproven following merged PR #344 and
-the proposed [creation integration protocol](creation-integration-protocol.md), following the accepted
-creation-boundary decision in [ADR-0008](../adr/0008-propose-runtime-file-objects-and-approved-saves.md)
-and [PR #343](https://github.com/ayeshLK/komposyn/pull/343), merged on
-2026-11-19. This document proposes a candidate only. No prototype is
-authorized; no creation evidence, supported mutation profile or model-facing
-capability exists.
+**Status:** a bounded disposable-fixture prototype is being implemented under
+the worker assignment. The Linux service now consumes its barrier and
+owner-ordered stage/publication permits through a retained-parent creation
+path. An operation-specific worker protocol stages exact bytes and publishes
+with `RENAME_NOREPLACE`; synthetic manifest checks and focused behavior tests
+are present. The existing native acceptance runner now includes a real
+Bubblewrap creation case for a disposable ext4 fixture, exact bytes/mode,
+no-replace incumbent preservation, stage cleanup and worker join. That native
+case has not yet run on an eligible host; publication-time independent-actor
+timing and the remaining runtime lifecycle matrix also remain pending. This
+does not create a supported mutation profile or model-facing capability.
+Normal production composition remains closed.
 
 This is a creation-only revision. It accepts external filesystem changes
 during approval and between the last check and publication. Approval is not a
@@ -76,10 +81,12 @@ The host runtime would own an in-memory `CreationObject` with:
 - Lifecycle state: prepared, awaiting approval, executing, created, conflict,
   failed, partial/unknown, or retired.
 
-There is not yet a production creation object. The existing
-`PrivateReadCapture` and retained read admission describe a completed read; they
-do not retain a writable parent, absent leaf, proposed bytes or creation
-generation and must not be repurposed as a ready-made save object.
+There is not yet a production creation object. The fixture-only service now
+retains an in-memory proposal with a parent descriptor, absent leaf, exact
+bytes, destination and captured generations. The existing `PrivateReadCapture`
+and retained read admission describe a completed read; they do not retain a
+writable parent, absent leaf, proposed bytes or creation generation and must
+not be repurposed as a ready-made save object.
 
 Each object owns its parent descriptor from preparation until execution has
 joined and final result handling completes. On every terminal path, the owner
@@ -88,14 +95,14 @@ joined, it retains cleanup ownership and blocks affected admission. Proposals,
 bytes and activity stay in memory and are retired with the conversation or
 service.
 
-Serialize internal creation effects with one host-service-wide effect mutex,
-held from final generation/revalidation checks through publication and outcome
-capture. Do not hold it while the trusted UI waits for a user. This deliberately
-serializes unrelated paths too: it avoids string-key locks missing two runtime
-objects that reach the same parent/leaf through path aliases, bind aliases or
-namespace renames. After a queued request obtains the mutex, it rechecks its
-object state and exact leaf at the primitive. This mutex coordinates only
-KompoSyn operations in this service; it neither locks the filesystem nor
+Serialize internal creation effects with one host-service-wide barrier and
+one active effect lease, held from final generation/revalidation checks
+through publication and outcome capture. The current prototype rejects a
+second simultaneous create while the lease is active; it does not queue it.
+Do not hold the effect lease while the trusted UI waits for a user. A service
+wide lease avoids string-key locks missing two runtime objects that reach the
+same parent/leaf through path aliases, bind aliases or namespace renames. This
+lease coordinates only KompoSyn operations in this service; it neither locks the filesystem nor
 coordinates another process.
 
 ## 2. Preparation and scope
@@ -364,13 +371,15 @@ enablement:
    auth/settings lifecycle for reads, but its generic-root-data gate is
    unresolved and it declares provider-source and Token Logger ownership
    limitations. A trusted mutation-scope inventory and fail-closed coverage
-   contract are not implemented. Creation must stay unavailable until this
-   composition question is resolved for each proposed scope.
-2. **Trusted approval/release integration:** the existing read approval bridge
-   is not yet a create-specific receipt/effect admission, and its integrity
-   against same-user interference is not proven. The revised boundary accepts
-   this residual risk but the prototype must define exactly what the trusted
-   UI displays and what receipt the runtime consumes.
+   contract are not implemented for production scopes. The prototype uses
+   only a synthetic test manifest and remains unavailable in normal
+   composition.
+2. **Trusted approval/release integration:** the explicit runtime seam and
+   service proposal binding now build an exact once request and consume a
+   retained proposal once. Full real-worker runtime/UI/provider execution and
+   integrity against same-user interference are not yet established. The
+   revised boundary accepts this residual risk but does not waive those
+   integration tests.
 3. **Transient-stage/read lifecycle:** `linuxImplementation.Protect` advances
    `s.revision`, invalidates read continuations and admissions, and registers
    owner rotations. It cannot be reused for a stage created by the save that
@@ -384,13 +393,15 @@ enablement:
    state and must not refresh or reconsume the approval receipt or mutate
    protected-owner/policy/coverage generations. If cancellation, join or
    retirement is incomplete, keep the affected read gate closed and retain
-   cleanup ownership. The current service has no such create-specific barrier
-   or complete read-worker drain contract. The separate [integration
+   cleanup ownership. The Linux fixture now has a create-specific barrier and
+   owner-ordered stage/publication permits; focused tests cover selected state
+   transitions. The full read-worker lifecycle/race matrix remains pending.
+   The separate [integration
    protocol proposal](creation-integration-protocol.md) specifies a
    service-wide fail-closed barrier, lock/wait order, cancellation and
    retirement states, and evidence cases. This resolves the design-description
-   gap only; implementing and proving the barrier remains a blocker. Do not use
-   generic owner rotation or skip invalidation as a shortcut.
+   sequencing; completing and proving lifecycle behavior remains a blocker.
+   Do not use generic owner rotation or skip invalidation as a shortcut.
 4. **Candidate evidence:** no native actor study or runtime/UI/provider
    creation journey has tested this stage-and-rename composition. `ext4`,
    amd64 and kernel prerequisites are a proposed pilot tuple only. No claim of
@@ -401,13 +412,13 @@ owner coverage or approval semantics. PR #344 merged the mechanism proposal;
 it did not accept the mechanism as implementation-ready. The integration
 protocol proposal adds concrete sequencing but does not resolve production
 coverage: the current composition cannot attest complete coverage for
-arbitrary user-selected scopes. Prototype authorization remains a separate
-decision after review of both designs. Positive native and integration
-acceptance, then explicit model-facing enablement, remain separate decisions.
+arbitrary user-selected scopes. The current maintainer assignment explicitly
+authorizes only a bounded disposable prototype; it does not satisfy positive
+native/integration acceptance or model-facing enablement.
 
 ## Bounded follow-up prototype plan
 
-After a separate prototype authorization, implement only a disposable
+Under that bounded prototype authorization, implement only a disposable
 Linux/amd64/ext4 study fixture of the named stage plus no-replace publication,
 alongside the minimum create-specific runtime/UI/provider integration needed to
 exercise the real composition. No production tool exposure, editing, overwrite,

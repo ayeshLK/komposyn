@@ -5,7 +5,8 @@ accepted for the creation concurrency/approval boundary only. The
 [runtime-file-object contract](runtime-file-object-saves.md) accepts a residual
 external-write race. PR #344 merged the [mechanism proposal](creation-mechanism-proposal.md)
 as a proposal, and the [integration protocol](creation-integration-protocol.md)
-is proposed for review. Neither authorizes a prototype or enables mutation;
+records the separately authorized bounded fixture prototype and its partial
+implementation. Neither design nor fixture evidence enables mutation;
 production scope coverage remains unresolved. This record preserves the prior
 deferral and historical research.
 
@@ -13,10 +14,10 @@ Status: **planning record for the near-term deferral; #315's current-delivery
 section tracks its publication and review state**.
 
 Editing implementation remains deferred under its existing authority
-contract. Creation now has an accepted concurrency/approval boundary but no
-accepted mechanism; the candidate is proposed in
+contract. Creation has an accepted concurrency/approval boundary and a bounded
+stage-plus-no-replace prototype in progress; its candidate and evidence are in
 [creation mechanism design](creation-mechanism-proposal.md). Neither operation
-has positive evidence or separate enablement. Discovery remains delivered
+has accepted native positive evidence or separate enablement. Discovery remains delivered
 within its documented support profiles:
 nonrecursive listing and recursive/filter listing on their recorded Linux
 profiles, and literal search on its recorded Linux amd64 ext4 profile.
@@ -33,15 +34,16 @@ enforcement is the only possible future solution.
 Issues #267, #321 and #322 remain open as unfinished contract and enablement
 gates. Their native research dependencies are resolved; that does not meet the
 independent positive-evidence and explicit model-facing enablement conditions.
-Creation and editing remain unavailable. No alternative mechanism, prototype,
-privileged setup, relaxed permission, host-policy change or tool enablement is
-authorized by this deferral.
+Creation and editing remain unavailable in normal composition. The disposable
+creation fixture prototype is separately authorized; this deferral does not
+authorize production enablement, privileged setup, relaxed permission or
+host-policy change.
 
 ## Conditions for resuming mutation work
 
-For creation, the runtime-file-object boundary is accepted and a concrete
-stage-plus-no-replace candidate is under review. Prototype work still requires
-a separate explicit authorization after that design review. Editing has no
+For creation, the runtime-file-object boundary is accepted and the
+stage-plus-no-replace candidate is being exercised in a disposable fixture.
+Editing has no
 accepted mechanism or contract change and remains gated by ADR-0007. A general
 request to make patching safe is not a candidate. For either operation, cover
 these matters for the operation under consideration:

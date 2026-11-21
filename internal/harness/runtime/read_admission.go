@@ -131,6 +131,28 @@ type FilesystemSearchAvailability interface {
 	SearchFilesAvailable() bool
 }
 
+// FilesystemCreationPrototypeHost is an explicit, non-production composition
+// seam for a fixed-purpose creation fixture. The caller must opt in by
+// wrapping a ToolRuntimeConfig; normal cmd/harness composition never does so.
+// The host owns proposal identity, protected coverage, retained parent state,
+// barrier acquisition, worker execution and cleanup.
+type FilesystemCreationPrototypeHost interface {
+	PrepareFilesystemCreation(context.Context, tools.Invocation, string) (permissions.Request, error)
+	PrepareApprovedFilesystemCreation(context.Context, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error)
+}
+
+// FilesystemCreationProposalDiscarder lets the runtime release a retained
+// proposal descriptor when approval is denied, cancelled, stale or otherwise
+// never reaches preparation. Hosts without retained proposal state need not
+// implement it.
+type FilesystemCreationProposalDiscarder interface {
+	DiscardFilesystemCreationProposal(context.Context, tools.Invocation) error
+}
+
+type filesystemCreationDestinationAuthorizer interface {
+	PrepareForDestination(context.Context, tools.Invocation, string) (permissions.Request, error)
+}
+
 type filesystemReadExecutionAuthority struct {
 	runtime *toolRuntime
 	ref     *ReadExecutionReference

@@ -19,6 +19,7 @@ package readbrokerstudy
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -54,6 +55,15 @@ const (
 	frameCapabilityHeld        byte = 'C'
 	frameReleaseRead           byte = 'L'
 	frameSearchSnapshot        byte = 'Q'
+	frameCreateInput           byte = 'M'
+	frameCreateStaged          byte = 'T'
+	frameCreatePublish         byte = 'P'
+	frameCreateAbort           byte = 'A'
+	frameCreateFinish          byte = 'Z'
+	createRefusalEnvelope      byte = 1
+	createRefusalParent        byte = 2
+	createRefusalPayload       byte = 3
+	createRefusalInput         byte = 4
 	workerBootstrapMode             = "--readbrokerstudy-bootstrap"
 	workerHoldBootstrapArg          = "--hold-capability-before-read"
 	workerStderrLimit               = 4 << 10
@@ -63,6 +73,10 @@ const (
 	backendProbeOutputLimit         = 64 << 10
 	maxWorkerSnapshotBytes          = 14 << 20
 	maxSearchWorkerResultBytes      = 1 << 20
+	maxCreationContentBytes         = 64 << 10
+	maxCreationLeafBytes            = 255
+	maxCreationStageNameBytes       = 64
+	maxCreationPacketBytes          = 1 + 20 + 1 + 1 + 4 + maxCreationStageNameBytes + maxCreationLeafBytes + maxCreationContentBytes
 	workerRootSizeBytes             = 16 << 20
 	maxSCMRightsFDs                 = 253
 )
@@ -725,25 +739,29 @@ func (l *workerLauncher) Close() error {
 }
 
 type sandboxWorker struct {
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	control   *os.File
-	ctx       context.Context
-	cancel    context.CancelFunc
-	stderr    *limitedOutput
-	ready     bool
-	sent      bool
-	started   bool
-	holdMode  bool
-	operation AdmissionOperation
-	held      bool
-	released  bool
-	finished  bool
-	expected  FileIdentity
-	probe     WorkerProbe
-	waitOnce  sync.Once
-	waitErr   error
-	joined    bool
+	mu             sync.Mutex
+	cmd            *exec.Cmd
+	control        *os.File
+	ctx            context.Context
+	cancel         context.CancelFunc
+	stderr         *limitedOutput
+	ready          bool
+	sent           bool
+	started        bool
+	holdMode       bool
+	operation      AdmissionOperation
+	held           bool
+	released       bool
+	finished       bool
+	creationStaged bool
+	stageName      string
+	stageLeaf      string
+	stageIdentity  FileIdentity
+	expected       FileIdentity
+	probe          WorkerProbe
+	waitOnce       sync.Once
+	waitErr        error
+	joined         bool
 }
 
 type limitedOutput struct {
@@ -790,7 +808,7 @@ func (l *workerLauncher) StartForOperation(ctx context.Context, operation Admiss
 	if operation == "" {
 		operation = AdmissionReadFile
 	}
-	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent {
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent && operation != AdmissionCreateFile {
 		return nil, fmt.Errorf("%w: unsupported worker operation", ErrUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
@@ -849,7 +867,14 @@ func (l *workerLauncher) StartForOperation(ctx context.Context, operation Admiss
 	if l.holdBeforeRead {
 		watchdog = time.Duration(capabilityHoldWorkerDeadline)
 	}
-	workerCtx, cancel := context.WithTimeout(ctx, watchdog)
+	workerParentContext := ctx
+	if operation == AdmissionCreateFile {
+		// Creation cancellation is coordinated by the host: it must send the
+		// worker an abort and classify cleanup before retiring the read barrier.
+		// The detached process still has a strict watchdog deadline.
+		workerParentContext = context.Background()
+	}
+	workerCtx, cancel := context.WithTimeout(workerParentContext, watchdog)
 	args := effectiveBubblewrapArguments(l.capability.BindMode, l.holdBeforeRead)
 	if l.inheritUserNS {
 		updatedArgs := make([]string, 0, len(args))
@@ -910,11 +935,11 @@ func (w *sandboxWorker) Ready(ctx context.Context) error {
 		return fmt.Errorf("%w: worker startup acknowledgement unavailable: %s", ErrUnavailable, w.startupDiagnostic())
 	}
 	if len(packet) < 2 || packet[0] != frameReady {
-		return ErrProtocol
+		return fmt.Errorf("%w: unexpected worker startup response (%s)", ErrProtocol, workerResponseSummary(packet))
 	}
 	var probe WorkerProbe
 	if err := json.Unmarshal(packet[1:], &probe); err != nil {
-		return ErrProtocol
+		return fmt.Errorf("%w: worker startup probe was malformed (response length=%d)", ErrProtocol, len(packet))
 	}
 	w.mu.Lock()
 	w.probe = probe
@@ -960,13 +985,18 @@ func (w *sandboxWorker) startupDiagnostic() string {
 }
 
 // FailureDetail is only surfaced by the study's sanitized JSON evidence. It
-// includes bounded stderr and, after Wait, the candidate process exit code.
+// includes bounded stderr and, after Wait, the candidate process exit code or
+// terminating signal.
 func (w *sandboxWorker) FailureDetail() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	message := w.startupDiagnostic()
 	if w.cmd != nil && w.cmd.ProcessState != nil {
-		message = strings.TrimSpace(message + " candidate_exit_code=" + strconv.Itoa(w.cmd.ProcessState.ExitCode()))
+		state := w.cmd.ProcessState
+		message = strings.TrimSpace(message + " candidate_exit_code=" + strconv.Itoa(state.ExitCode()))
+		if waitStatus, ok := state.Sys().(syscall.WaitStatus); ok && waitStatus.Signaled() {
+			message = strings.TrimSpace(message + " candidate_signal=" + waitStatus.Signal().String())
+		}
 	}
 	return boundedText(message, 768)
 }
@@ -1008,6 +1038,273 @@ func (w *sandboxWorker) TransferDirectoryCapabilityWithOptions(ctx context.Conte
 		return ErrProtocol
 	}
 	return w.transferCapability(ctx, file, expected, frameDirectoryHandoff, unix.S_IFDIR, encoded)
+}
+
+func (w *sandboxWorker) StageCreation(ctx context.Context, directory *os.File, expected FileIdentity, stageName, leaf string, content []byte) (CreationStage, error) {
+	unknown := CreationStage{name: stageName, worker: w, leaf: leaf}
+	if w == nil || w.operation != AdmissionCreateFile || directory == nil || ctx == nil || !validCreationStageName(stageName) || !validCreationLeaf(leaf) || len(content) > maxCreationContentBytes || !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+		return CreationStage{}, ErrProtocol
+	}
+	w.mu.Lock()
+	if !w.ready || w.sent || w.finished || w.creationStaged {
+		w.mu.Unlock()
+		return CreationStage{}, ErrProtocol
+	}
+	if err := ctx.Err(); err != nil {
+		w.mu.Unlock()
+		return unknown, &CreationOperationError{Result: CreationResult{Outcome: CreationNotCreated}, Cause: err}
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(directory.Fd()), &stat); err != nil || identityFromStat(&stat) != expected || stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		w.mu.Unlock()
+		return CreationStage{}, ErrStaleReceipt
+	}
+	flags, err := unix.FcntlInt(directory.Fd(), unix.F_GETFL, 0)
+	if err != nil || flags&unix.O_ACCMODE != unix.O_RDONLY {
+		w.mu.Unlock()
+		return CreationStage{}, ErrStaleReceipt
+	}
+	message := makeCreationInputFrame(expected, stageName, leaf, content)
+	n, sendErr := unix.SendmsgN(int(w.control.Fd()), message, unix.UnixRights(int(directory.Fd())), nil, unix.MSG_DONTWAIT|unix.MSG_NOSIGNAL)
+	if sendErr != nil || n != len(message) {
+		w.mu.Unlock()
+		return unknown, fmt.Errorf("%w: bounded create request handoff failed", ErrUnavailable)
+	}
+	w.sent = true
+	w.expected = expected
+	w.mu.Unlock()
+
+	packet, err := recvPacket(ctx, int(w.control.Fd()), 64)
+	var interrupted error
+	if err != nil && ctx.Err() != nil {
+		interrupted = ctx.Err()
+		// The worker may have made a stage before the host observed cancellation.
+		// Drain its bounded receipt so the caller can abort by exact inode identity.
+		packet, err = recvPacket(w.ctx, int(w.control.Fd()), 64)
+	}
+	if err != nil {
+		return unknown, fmt.Errorf("%w: create stage result is unavailable", ErrUnavailable)
+	}
+	if len(packet) == 1+1+20+4 && packet[0] == frameCreateFinish {
+		result, parseErr := parseCreationResult(packet)
+		if parseErr != nil {
+			parseErr = fmt.Errorf("%w: invalid create finish response (%s)", parseErr, creationResponseSummary(packet))
+		}
+		return unknown, &CreationOperationError{Result: result, Cause: errors.Join(ErrUnavailable, parseErr)}
+	}
+	if len(packet) == 2 && packet[0] == frameRefused {
+		return unknown, &CreationOperationError{
+			Result: CreationResult{Outcome: CreationNotCreated},
+			Cause:  fmt.Errorf("%w: %s", ErrProtocol, creationRefusalDescription(packet[1])),
+		}
+	}
+	if len(packet) != 1+20 || packet[0] != frameCreateStaged {
+		return unknown, fmt.Errorf("%w: unexpected create stage response (%s)", ErrProtocol, creationResponseSummary(packet))
+	}
+	identity := FileIdentity{Device: binary.BigEndian.Uint64(packet[1:9]), Inode: binary.BigEndian.Uint64(packet[9:17]), Type: binary.BigEndian.Uint32(packet[17:21])}
+	if identity.Type != unix.S_IFREG || identity.Inode == 0 {
+		return unknown, fmt.Errorf("%w: invalid create stage identity type=%d inode_present=%t", ErrProtocol, identity.Type, identity.Inode != 0)
+	}
+	w.mu.Lock()
+	w.creationStaged = true
+	w.stageName = stageName
+	w.stageLeaf = leaf
+	w.stageIdentity = identity
+	w.mu.Unlock()
+	unknown.identity = identity
+	if interrupted != nil {
+		return unknown, interrupted
+	}
+	return unknown, nil
+}
+
+func makeCreationInputFrame(parent FileIdentity, stageName, leaf string, content []byte) []byte {
+	frame := identityFrame(frameCreateInput, parent)
+	frame = append(frame, byte(len(stageName)), byte(len(leaf)))
+	var contentLength [4]byte
+	binary.BigEndian.PutUint32(contentLength[:], uint32(len(content)))
+	frame = append(frame, contentLength[:]...)
+	frame = append(frame, stageName...)
+	frame = append(frame, leaf...)
+	frame = append(frame, content...)
+	return frame
+}
+
+func creationRefusalDescription(reason byte) string {
+	switch reason {
+	case createRefusalEnvelope:
+		return "creation worker rejected the descriptor envelope"
+	case createRefusalParent:
+		return "creation worker rejected the parent descriptor identity or access mode"
+	case createRefusalPayload:
+		return "creation worker rejected the bounded request payload length"
+	case createRefusalInput:
+		return "creation worker rejected the stage name, target name, or content encoding"
+	default:
+		return "creation worker rejected the request with an unknown reason"
+	}
+}
+
+func creationResponseSummary(packet []byte) string {
+	frame := "empty"
+	if len(packet) > 0 {
+		switch packet[0] {
+		case frameCreateStaged:
+			frame = "staged"
+		case frameCreateFinish:
+			frame = "finish"
+		case frameRefused:
+			frame = "refused"
+		default:
+			frame = fmt.Sprintf("unknown_0x%02x", packet[0])
+		}
+	}
+	return fmt.Sprintf("frame=%s length=%d", frame, len(packet))
+}
+
+func workerResponseSummary(packet []byte) string {
+	frame := "empty"
+	if len(packet) > 0 {
+		switch packet[0] {
+		case frameReady:
+			frame = "ready"
+		case frameStarted:
+			frame = "started"
+		case frameCapabilityHeld:
+			frame = "capability_held"
+		case frameRefused:
+			frame = "refused"
+		case frameCreateStaged:
+			frame = "create_staged"
+		case frameCreateFinish:
+			frame = "create_finish"
+		default:
+			frame = fmt.Sprintf("unknown_0x%02x", packet[0])
+		}
+	}
+	return fmt.Sprintf("frame=%s length=%d", frame, len(packet))
+}
+
+func validCreationStageName(value string) bool {
+	const prefix = ".komposyn-stage-"
+	if len(value) != len(prefix)+32 || len(value) > maxCreationStageNameBytes || !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	for _, char := range value[len(prefix):] {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validCreationLeaf(value string) bool {
+	return value != "" && len(value) <= maxCreationLeafBytes && value != "." && value != ".." &&
+		utf8.ValidString(value) && !strings.ContainsAny(value, "/\\\x00")
+}
+
+func (w *sandboxWorker) finishCreation(ctx context.Context, stage CreationStage, frame byte) (CreationResult, error) {
+	if w == nil || ctx == nil || stage.worker != w || !validCreationStageName(stage.name) || !validCreationLeaf(stage.leaf) {
+		return CreationResult{Outcome: CreationUnknown}, ErrProtocol
+	}
+	w.mu.Lock()
+	if w.operation != AdmissionCreateFile || !w.ready || !w.creationStaged || w.finished || stage.identity.Inode == 0 || w.stageName != stage.name || w.stageLeaf != stage.leaf || w.stageIdentity != stage.identity {
+		w.mu.Unlock()
+		return CreationResult{Outcome: CreationUnknown}, ErrProtocol
+	}
+	if err := ctx.Err(); err != nil {
+		w.mu.Unlock()
+		return CreationResult{Outcome: CreationUnknown}, err
+	}
+	w.finished = true
+	w.mu.Unlock()
+	message := identityFrame(frame, stage.identity)
+	if err := sendPacket(int(w.control.Fd()), message); err != nil {
+		return CreationResult{Outcome: CreationUnknown}, fmt.Errorf("%w: create completion request was not acknowledged", ErrUnavailable)
+	}
+	operationContext := w.ctx
+	if operationContext == nil {
+		operationContext = ctx
+	}
+	packet, err := recvPacket(operationContext, int(w.control.Fd()), 64)
+	if err != nil || len(packet) != 1+1+20+4 || packet[0] != frameCreateFinish {
+		return CreationResult{Outcome: CreationUnknown}, fmt.Errorf("%w: create outcome is unclassified", ErrUnavailable)
+	}
+	result, err := parseCreationResult(packet)
+	if err != nil {
+		return CreationResult{Outcome: CreationUnknown}, err
+	}
+	return result, nil
+}
+
+func parseCreationResult(packet []byte) (CreationResult, error) {
+	if len(packet) != 1+1+20+4 || packet[0] != frameCreateFinish {
+		return CreationResult{Outcome: CreationUnknown}, ErrProtocol
+	}
+	outcome, ok := decodeCreationOutcome(packet[1])
+	if !ok {
+		return CreationResult{Outcome: CreationUnknown}, ErrProtocol
+	}
+	result := CreationResult{
+		Outcome:  outcome,
+		Identity: FileIdentity{Device: binary.BigEndian.Uint64(packet[2:10]), Inode: binary.BigEndian.Uint64(packet[10:18]), Type: binary.BigEndian.Uint32(packet[18:22])},
+		Bytes:    binary.BigEndian.Uint32(packet[22:26]),
+	}
+	return result, nil
+}
+
+func encodeCreationOutcome(outcome CreationOutcome) byte {
+	switch outcome {
+	case CreationCreated:
+		return 'C'
+	case CreationConflict:
+		return 'X'
+	case CreationNotCreated:
+		return 'N'
+	default:
+		return 'U'
+	}
+}
+
+func decodeCreationOutcome(value byte) (CreationOutcome, bool) {
+	switch value {
+	case 'C':
+		return CreationCreated, true
+	case 'X':
+		return CreationConflict, true
+	case 'N':
+		return CreationNotCreated, true
+	case 'U':
+		return CreationUnknown, true
+	default:
+		return CreationUnknown, false
+	}
+}
+
+// NewCreationStageName returns a collision-resistant hidden sibling name for
+// the one fixed stage worker. The name grants no authority and is bound to a
+// retained parent descriptor by StageCreation.
+func NewCreationStageName() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("%w: stage name generation failed", ErrUnavailable)
+	}
+	return ".komposyn-stage-" + hex.EncodeToString(nonce[:]), nil
+}
+
+func (w *sandboxWorker) PublishCreation(ctx context.Context, stage CreationStage) (CreationResult, error) {
+	return w.finishCreation(ctx, stage, frameCreatePublish)
+}
+
+func (w *sandboxWorker) AbortCreation(ctx context.Context, stage CreationStage) (CreationResult, error) {
+	return w.finishCreation(ctx, stage, frameCreateAbort)
+}
+
+func (w *sandboxWorker) WorkerContext() context.Context {
+	if w == nil || w.ctx == nil {
+		return context.Background()
+	}
+	return w.ctx
 }
 
 func (w *sandboxWorker) transferCapability(ctx context.Context, file *os.File, expected FileIdentity, frame byte, fileType uint32, extra []byte) error {
@@ -1497,7 +1794,8 @@ func installWorkerSeccompProfile(fd int) (AdmissionOperation, error) {
 	expectedListing, listingErr := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
 	expectedSearch, searchErr := workerSeccompFilterBytesForOperation(AdmissionSearchFiles)
 	expectedSearchContent, contentErr := workerSeccompFilterBytesForOperation(AdmissionSearchContent)
-	if readErr != nil || listingErr != nil || searchErr != nil || contentErr != nil || !bytes.Equal(data, expectedRead) && !bytes.Equal(data, expectedListing) && !bytes.Equal(data, expectedSearch) && !bytes.Equal(data, expectedSearchContent) {
+	expectedCreation, creationErr := workerSeccompFilterBytesForOperation(AdmissionCreateFile)
+	if readErr != nil || listingErr != nil || searchErr != nil || contentErr != nil || creationErr != nil || !bytes.Equal(data, expectedRead) && !bytes.Equal(data, expectedListing) && !bytes.Equal(data, expectedSearch) && !bytes.Equal(data, expectedSearchContent) && !bytes.Equal(data, expectedCreation) {
 		return "", ErrProtocol
 	}
 	operation := AdmissionReadFile
@@ -1507,6 +1805,8 @@ func installWorkerSeccompProfile(fd int) (AdmissionOperation, error) {
 		operation = AdmissionSearchFiles
 	} else if bytes.Equal(data, expectedSearchContent) {
 		operation = AdmissionSearchContent
+	} else if bytes.Equal(data, expectedCreation) {
+		operation = AdmissionCreateFile
 	}
 	filters := make([]unix.SockFilter, len(data)/unix.SizeofSockFilter)
 	for index := range filters {
@@ -1613,7 +1913,11 @@ func probeError(ok bool, message string) error {
 }
 
 func receiveAndRead(control int, holdCapability bool, operation AdmissionOperation) int {
-	packet := make([]byte, 4096)
+	packetSize := 4096
+	if operation == AdmissionCreateFile {
+		packetSize = maxCreationPacketBytes
+	}
+	packet := make([]byte, packetSize)
 	// Linux limits one SCM_RIGHTS message to SCM_MAX_FD (253). Receive enough
 	// ancillary space to account for every descriptor so even an over-counted
 	// frame can be rejected after closing all descriptors the kernel installed.
@@ -1629,12 +1933,12 @@ func receiveAndRead(control int, holdCapability bool, operation AdmissionOperati
 		oobBytes := oob[:min(max(oobn, 0), len(oob))]
 		files, parseErr := parseExactlyOneReceivedFD(oobBytes)
 		if parseErr != nil {
-			return sendRefusal(control)
+			return refuseWorkerInput(control, operation, createRefusalEnvelope)
 		}
 		capability := files[0]
 		if n < 1+20 || n > len(packet) || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
 			_ = unix.Close(capability)
-			return sendRefusal(control)
+			return refuseWorkerInput(control, operation, createRefusalEnvelope)
 		}
 		var result int
 		switch packet[0] {
@@ -1665,13 +1969,209 @@ func receiveAndRead(control int, holdCapability bool, operation AdmissionOperati
 				}
 			}
 			result = listTransferredDirectory(control, capability, packet[1:1+20], holdCapability, options, operation)
+		case frameCreateInput:
+			if operation != AdmissionCreateFile {
+				_ = unix.Close(capability)
+				return sendRefusal(control)
+			}
+			result = createTransferredFile(control, capability, packet[1:1+20], packet[1+20:n])
 		default:
 			_ = unix.Close(capability)
-			return sendRefusal(control)
+			return refuseWorkerInput(control, operation, createRefusalEnvelope)
 		}
 		_ = unix.Close(capability)
 		return result
 	}
+}
+
+func refuseWorkerInput(control int, operation AdmissionOperation, reason byte) int {
+	if operation == AdmissionCreateFile {
+		_ = sendPacket(control, []byte{frameRefused, reason})
+		return 71
+	}
+	return sendRefusal(control)
+}
+
+func createTransferredFile(control, parentFD int, expectedFrame, payload []byte) int {
+	unix.CloseOnExec(parentFD)
+	var parentStat unix.Stat_t
+	flags, flagErr := unix.FcntlInt(uintptr(parentFD), unix.F_GETFL, 0)
+	if flagErr != nil || flags&unix.O_ACCMODE != unix.O_RDONLY || unix.Fstat(parentFD, &parentStat) != nil ||
+		parentStat.Mode&unix.S_IFMT != unix.S_IFDIR || !sameIdentity(expectedFrame, identityFromStat(&parentStat)) {
+		_ = sendPacket(control, []byte{frameRefused, createRefusalParent})
+		return 74
+	}
+	if len(payload) < 6 {
+		return refuseWorkerInput(control, AdmissionCreateFile, createRefusalPayload)
+	}
+	stageLen, leafLen := int(payload[0]), int(payload[1])
+	contentLen := int(binary.BigEndian.Uint32(payload[2:6]))
+	if stageLen == 0 || stageLen > maxCreationStageNameBytes || leafLen == 0 || leafLen > maxCreationLeafBytes || contentLen > maxCreationContentBytes || len(payload) != 6+stageLen+leafLen+contentLen {
+		return refuseWorkerInput(control, AdmissionCreateFile, createRefusalPayload)
+	}
+	stageName := string(payload[6 : 6+stageLen])
+	leaf := string(payload[6+stageLen : 6+stageLen+leafLen])
+	content := payload[6+stageLen+leafLen:]
+	if !validCreationStageName(stageName) || !validCreationLeaf(leaf) || !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+		return refuseWorkerInput(control, AdmissionCreateFile, createRefusalInput)
+	}
+	defer clear(content)
+	resolve := uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS)
+	how := &unix.OpenHow{Flags: uint64(unix.O_WRONLY | unix.O_CREAT | unix.O_EXCL | unix.O_CLOEXEC | unix.O_NOFOLLOW), Mode: 0o600, Resolve: resolve}
+	stageFD, err := unix.Openat2(parentFD, stageName, how)
+	if err != nil {
+		return sendCreationOutcome(control, CreationNotCreated, FileIdentity{}, 0)
+	}
+	var stageStat unix.Stat_t
+	if unix.Fstat(stageFD, &stageStat) != nil {
+		_ = unix.Close(stageFD)
+		return sendCreationOutcome(control, CreationUnknown, FileIdentity{}, 0)
+	}
+	stageIdentity := identityFromStat(&stageStat)
+	if unix.Fchmod(stageFD, 0o600) != nil || unix.Fstat(stageFD, &stageStat) != nil || stageStat.Mode&unix.S_IFMT != unix.S_IFREG || stageStat.Mode&0o777 != 0o600 || stageStat.Uid != uint32(os.Geteuid()) || stageStat.Nlink != 1 {
+		closeErr := unix.Close(stageFD)
+		cleanupOK := cleanupCreationStage(parentFD, stageName, stageIdentity)
+		if closeErr != nil || !cleanupOK {
+			return sendCreationOutcome(control, CreationUnknown, stageIdentity, 0)
+		}
+		return sendCreationOutcome(control, CreationNotCreated, stageIdentity, 0)
+	}
+	written, writeErr := writeCreationBytes(stageFD, content)
+	syncErr := error(nil)
+	if writeErr == nil && written == len(content) {
+		syncErr = unix.Fsync(stageFD)
+	} else if writeErr == nil {
+		writeErr = io.ErrShortWrite
+	}
+	closeErr := unix.Close(stageFD)
+	if writeErr != nil || syncErr != nil || closeErr != nil {
+		cleanupOK := cleanupCreationStage(parentFD, stageName, stageIdentity)
+		if !cleanupOK {
+			return sendCreationOutcome(control, CreationUnknown, stageIdentity, uint32(max(written, 0)))
+		}
+		return sendCreationOutcome(control, CreationNotCreated, stageIdentity, uint32(max(written, 0)))
+	}
+	if err := sendPacket(control, identityFrame(frameCreateStaged, stageIdentity)); err != nil {
+		_ = cleanupCreationStage(parentFD, stageName, stageIdentity)
+		return 75
+	}
+	command, err := recvPacket(context.Background(), control, 64)
+	if err != nil || len(command) != 1+20 || !sameIdentity(command[1:], stageIdentity) {
+		if cleanupCreationStage(parentFD, stageName, stageIdentity) {
+			return sendCreationOutcome(control, CreationNotCreated, stageIdentity, uint32(len(content)))
+		}
+		return sendCreationOutcome(control, CreationUnknown, stageIdentity, uint32(len(content)))
+	}
+	switch command[0] {
+	case frameCreateAbort:
+		if cleanupCreationStage(parentFD, stageName, stageIdentity) {
+			return sendCreationOutcome(control, CreationNotCreated, stageIdentity, uint32(len(content)))
+		}
+		return sendCreationOutcome(control, CreationUnknown, stageIdentity, uint32(len(content)))
+	case frameCreatePublish:
+	default:
+		if cleanupCreationStage(parentFD, stageName, stageIdentity) {
+			return sendCreationOutcome(control, CreationNotCreated, stageIdentity, uint32(len(content)))
+		}
+		return sendCreationOutcome(control, CreationUnknown, stageIdentity, uint32(len(content)))
+	}
+	if err := unix.Renameat2(parentFD, stageName, parentFD, leaf, unix.RENAME_NOREPLACE); err != nil {
+		if cleanupCreationStage(parentFD, stageName, stageIdentity) {
+			if errors.Is(err, unix.EEXIST) {
+				return sendCreationOutcome(control, CreationConflict, stageIdentity, uint32(len(content)))
+			}
+			return sendCreationOutcome(control, CreationNotCreated, stageIdentity, uint32(len(content)))
+		}
+		return sendCreationOutcome(control, CreationUnknown, stageIdentity, uint32(len(content)))
+	}
+	if err := unix.Fsync(parentFD); err != nil {
+		return sendCreationOutcome(control, CreationUnknown, stageIdentity, uint32(len(content)))
+	}
+	if verifyPublishedCreation(parentFD, leaf, stageIdentity, content) {
+		return sendCreationOutcome(control, CreationCreated, stageIdentity, uint32(len(content)))
+	}
+	return sendCreationOutcome(control, CreationUnknown, stageIdentity, uint32(len(content)))
+}
+
+func writeCreationBytes(fd int, content []byte) (int, error) {
+	written := 0
+	for written < len(content) {
+		count, err := unix.Write(fd, content[written:])
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return written, err
+		}
+		if count <= 0 {
+			return written, io.ErrShortWrite
+		}
+		written += count
+	}
+	return written, nil
+}
+
+func cleanupCreationStage(parentFD int, name string, expected FileIdentity) bool {
+	if expected.Inode == 0 || !validCreationStageName(name) {
+		return false
+	}
+	fd, err := unix.Openat2(parentFD, name, &unix.OpenHow{Flags: uint64(unix.O_PATH | unix.O_CLOEXEC | unix.O_NOFOLLOW), Resolve: uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS)})
+	if err != nil {
+		return false
+	}
+	var stat unix.Stat_t
+	valid := unix.Fstat(fd, &stat) == nil && identityFromStat(&stat) == expected && stat.Mode&unix.S_IFMT == unix.S_IFREG
+	closeErr := unix.Close(fd)
+	if !valid || closeErr != nil {
+		return false
+	}
+	return unix.Unlinkat(parentFD, name, 0) == nil
+}
+
+func verifyPublishedCreation(parentFD int, leaf string, expected FileIdentity, content []byte) bool {
+	if !validCreationLeaf(leaf) {
+		return false
+	}
+	fd, err := unix.Openat2(parentFD, leaf, &unix.OpenHow{Flags: uint64(unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW), Resolve: uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS)})
+	if err != nil {
+		return false
+	}
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if unix.Fstat(fd, &stat) != nil || identityFromStat(&stat) != expected || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o777 != 0o600 || stat.Size != int64(len(content)) {
+		return false
+	}
+	readback := make([]byte, len(content))
+	for offset := 0; offset < len(readback); {
+		count, readErr := unix.Read(fd, readback[offset:])
+		if readErr == unix.EINTR {
+			continue
+		}
+		if readErr != nil || count == 0 {
+			clear(readback)
+			return false
+		}
+		offset += count
+	}
+	var extra [1]byte
+	n, readErr := unix.Read(fd, extra[:])
+	match := readErr == nil && n == 0 && bytes.Equal(readback, content)
+	clear(readback)
+	return match
+}
+
+func sendCreationOutcome(control int, outcome CreationOutcome, identity FileIdentity, contentBytes uint32) int {
+	packet := make([]byte, 1+1+20+4)
+	packet[0] = frameCreateFinish
+	packet[1] = encodeCreationOutcome(outcome)
+	binary.BigEndian.PutUint64(packet[2:10], identity.Device)
+	binary.BigEndian.PutUint64(packet[10:18], identity.Inode)
+	binary.BigEndian.PutUint32(packet[18:22], identity.Type)
+	binary.BigEndian.PutUint32(packet[22:26], contentBytes)
+	if err := sendPacket(control, packet); err != nil {
+		return 76
+	}
+	return 0
 }
 
 func listTransferredDirectory(control, fd int, expected []byte, holdCapability bool, options ListingOptions, operation AdmissionOperation) int {

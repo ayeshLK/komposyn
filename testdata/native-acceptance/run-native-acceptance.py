@@ -21,7 +21,7 @@ BASELINE = 'd43a7dd7005ae6ccc8102936d00bd2920bbd9fcf'
 EXPECTED = ['TestNativeShippedGenericReadGate', 'TestNativeServicePositiveRead',
             'TestNativeServiceProtectedRoutesAndAliases', 'TestNativeServiceRotationJoinsHeldWorker',
             'TestNativeServicePostCaptureRevocation', 'TestNativeServiceAuthRotationJoinsHeldWorker',
-            'TestNativeServiceRootChangeWhileHeld','TestNativeServiceCancellationWhileHeld',
+            'TestNativeServiceBoundedCreation', 'TestNativeServiceRootChangeWhileHeld','TestNativeServiceCancellationWhileHeld',
             'TestNativeServiceShutdownRetryWhileHeld']
 
 def digest(path):
@@ -36,6 +36,8 @@ def main():
     parser.add_argument('--repo', type=Path, default=Path.cwd())
     parser.add_argument('--revision', default=BASELINE)
     parser.add_argument('--bwrap', type=Path, default=Path('/usr/bin/bwrap'))
+    parser.add_argument('--scratch-dir', type=Path, default=Path('/tmp'),
+        help='existing writable directory on the filesystem used for disposable fixtures and result bundle')
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('Run on a normal Linux host; do not use sudo.')
@@ -43,6 +45,9 @@ def main():
         parser.error('Run as your normal user, not root/sudo')
     if not args.bwrap.is_absolute():
         parser.error('--bwrap must be an absolute path')
+    scratch_dir=args.scratch_dir.resolve()
+    if not scratch_dir.is_dir() or not os.access(scratch_dir, os.W_OK | os.X_OK):
+        parser.error('--scratch-dir must be an existing writable directory')
     if not shutil.which('go') or not shutil.which('git'):
         parser.error('Go and Git must be installed')
     os.umask(0o077)
@@ -54,8 +59,8 @@ def main():
     if not re.fullmatch(r'[0-9a-fA-F]{40}',args.revision):
         parser.error('--revision must be a full commit hash')
     revision=args.revision.lower()
-    out = Path(tempfile.mkdtemp(prefix='komposyn-composition-native-results.', dir='/tmp'))
-    work = Path(tempfile.mkdtemp(prefix='komposyn-composition-native-work.', dir='/tmp'))
+    out = Path(tempfile.mkdtemp(prefix='komposyn-composition-native-results.', dir=scratch_dir))
+    work = Path(tempfile.mkdtemp(prefix='komposyn-composition-native-work.', dir=scratch_dir))
     records = out/'native-records'; records.mkdir()
     source = work/'source'; source.mkdir()
     fixture_tmp = work/'fixtures'; fixture_tmp.mkdir()
@@ -63,7 +68,8 @@ def main():
         'runner_sha256':digest(Path(__file__)), 'overlay_sha256':digest(overlay),
         'python_version':sys.version.split()[0],
         'run_time_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'scope':'PR #243 service fixture and coordinator publication; no model-facing reads/provider network',
+        'scope':'PR #243 service fixtures and bounded #321 creation worker; no production creation enablement/provider network',
+        'scratch_directory_configured':True,
         'stages':{}, 'status':'incomplete', 'work_retained':True}
     clean = True
     exit_code = 1

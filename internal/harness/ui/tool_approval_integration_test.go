@@ -19,7 +19,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +39,8 @@ type approvalTestProvider struct {
 	mu     sync.Mutex
 	calls  int
 	target string
+	toolID tools.ID
+	args   json.RawMessage
 }
 
 func (*approvalTestProvider) ID() modelprovider.ID { return modelprovider.OpenAI }
@@ -60,11 +64,63 @@ func (p *approvalTestProvider) StreamChat(_ context.Context, req modelprovider.C
 	defer p.mu.Unlock()
 	p.calls++
 	if p.calls == 1 {
-		args, _ := json.Marshal(map[string]string{"target": p.target})
-		native, _ := json.Marshal(map[string]any{"type": "function_call", "id": "item-call", "call_id": "call", "name": "lookup", "arguments": string(args), "status": "completed"})
-		return modelprovider.Result{Outcome: modelprovider.OutcomeCompleted, Completion: modelprovider.CompletionToolCalls, Native: []json.RawMessage{native}, ToolCalls: []modelprovider.ToolCall{{CallID: "call", ToolID: "lookup", Arguments: args}}}, nil
+		toolID, args := p.toolID, append(json.RawMessage(nil), p.args...)
+		if toolID == "" {
+			toolID = "lookup"
+			args, _ = json.Marshal(map[string]string{"target": p.target})
+		}
+		native, _ := json.Marshal(map[string]any{"type": "function_call", "id": "item-call", "call_id": "call", "name": string(toolID), "arguments": string(args), "status": "completed"})
+		return modelprovider.Result{Outcome: modelprovider.OutcomeCompleted, Completion: modelprovider.CompletionToolCalls, Native: []json.RawMessage{native}, ToolCalls: []modelprovider.ToolCall{{CallID: "call", ToolID: toolID, Arguments: args}}}, nil
 	}
 	return modelprovider.Result{Outcome: modelprovider.OutcomeCompleted, Completion: modelprovider.CompletionFinal, Text: "done", Native: []json.RawMessage{json.RawMessage(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}`)}}, nil
+}
+
+type creationApprovalFixture struct {
+	root     string
+	prepared int
+	executed int
+	closed   int
+}
+
+func (h *creationApprovalFixture) PrepareFilesystemCreation(_ context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
+	input, err := tools.ParseCreateFile(invocation.Arguments)
+	if err != nil {
+		return permissions.Request{}, err
+	}
+	target := filepath.Join(h.root, filepath.FromSlash(input.Path))
+	description := fmt.Sprintf("Create exact target %s (%d bytes) for %s. Complete diff:\n--- /dev/null\n+++ %s\n+%s", target, len(input.Content), destination, target, input.Content)
+	digest := sha256.Sum256([]byte(invocation.ConversationID + "\x00" + invocation.ProviderCallID + "\x00" + destination + "\x00" + target + "\x00" + input.Content))
+	return permissions.Request{
+		ConversationID: invocation.ConversationID, CallID: invocation.ProviderCallID, Destination: destination,
+		AdmissionBinding: hex.EncodeToString(digest[:]),
+		Requirements: []permissions.Requirement{
+			{Kind: permissions.RequirementAction, Key: "create", ToolID: string(tools.CreateFileID), Description: description, Operation: permissions.OperationWrite, ActionKey: "fixture-create-once"},
+			{Kind: permissions.RequirementResource, Key: "target", ToolID: string(tools.CreateFileID), Description: "Create this exact target once", Operation: permissions.OperationWrite, Resource: &permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: target, Operation: permissions.OperationWrite}},
+		},
+	}, nil
+}
+
+func (h *creationApprovalFixture) PrepareApprovedFilesystemCreation(_ context.Context, invocation tools.Invocation, request permissions.Request, _ uint64) (hruntime.ToolPreparation, error) {
+	if request.CallID != invocation.ProviderCallID || request.Destination == "" || request.Binding == "" {
+		return nil, fmt.Errorf("approved creation binding is incomplete")
+	}
+	h.prepared++
+	return &creationApprovalPreparation{host: h, callID: invocation.ProviderCallID}, nil
+}
+
+type creationApprovalPreparation struct {
+	host   *creationApprovalFixture
+	callID string
+}
+
+func (p *creationApprovalPreparation) Execute(context.Context) (tools.Result, error) {
+	p.host.executed++
+	return tools.Result{ProviderCallID: p.callID, Outcome: tools.OutcomeSucceeded, Content: []tools.Content{{Kind: tools.ContentText, Text: "fixture creation completed"}}}, nil
+}
+
+func (p *creationApprovalPreparation) Close(context.Context) error {
+	p.host.closed++
+	return nil
 }
 
 type approvalTestTool struct {
@@ -193,5 +249,88 @@ func TestInjectedToolApprovalFlowsThroughUIAdapterExactlyOnce(t *testing.T) {
 	cleared, err := client.ClearPermissions(context.Background())
 	if err != nil || cleared != 1 {
 		t.Fatalf("clear grants=%d err=%v", cleared, err)
+	}
+}
+
+func TestCreationPrototypeShowsExactDiffAndDestinationForOnceApproval(t *testing.T) {
+	bridge := NewApprovalBridge()
+	root := t.TempDir()
+	input, err := json.Marshal(tools.CreateFileInput{Path: "nested/new.txt", Content: "synthetic approved text\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeProvider := &approvalTestProvider{toolID: tools.CreateFileID, args: input}
+	providers, err := model.NewRegistry(fakeProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clarification := hruntime.ToolClarificationFunc(func(context.Context, hruntime.ClarificationRequest) (hruntime.ClarificationResponse, error) {
+		return hruntime.ClarificationResponse{}, fmt.Errorf("not expected")
+	})
+	base := hruntime.BundledConversationToolRuntimeConfig(bridge, clarification)
+	host := &creationApprovalFixture{root: root}
+	config := hruntime.WithBoundedCreationPrototype(base, host)
+	if config.Registry == nil {
+		t.Fatal("explicit prototype composition was rejected")
+	}
+	store := auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	chat := hruntime.NewChatWithToolRuntime(providers, store, nil, config)
+	t.Cleanup(chat.Close)
+	if err := chat.AddProfile(context.Background(), "fixture", "openai", "Fixture", "fake-key", nil); err != nil {
+		t.Fatal(err)
+	}
+	discovery := chat.Discover(context.Background())
+	if len(discovery.Models) != 1 {
+		t.Fatalf("models=%+v", discovery)
+	}
+	if err := chat.Select(context.Background(), discovery.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	client := Client{Chat: chat, ProfileStore: store, Approval: bridge}
+	type sendResult struct {
+		turn frontend.Turn
+		err  error
+	}
+	done := make(chan sendResult, 1)
+	go func() {
+		turn, err := client.Send(context.Background(), "create the approved fixture", nil)
+		done <- sendResult{turn, err}
+	}()
+	var request frontend.ApprovalRequest
+	select {
+	case event := <-client.ApprovalEvents():
+		if event.Request == nil {
+			t.Fatal("creation approval request missing")
+		}
+		request = *event.Request
+	case <-time.After(time.Second):
+		t.Fatal("creation approval was not delivered")
+	}
+	target := filepath.Join(root, "nested", "new.txt")
+	if request.ToolID != string(tools.CreateFileID) || len(request.Requirements) != 2 || request.Requirements[1].ResourceScope != target || request.AllowConversation {
+		t.Fatalf("creation approval did not bind once to exact target: %+v", request)
+	}
+	if request.Provider != "openai" || request.Model != "fixture-model" || request.AuthProfile != "fixture" || !strings.Contains(request.Requirements[0].Description, "Complete diff") || !strings.Contains(request.Requirements[0].Description, "synthetic approved text") || !strings.Contains(request.Requirements[0].Description, target) {
+		t.Fatalf("approval omitted the exact diff or provider destination: %+v", request)
+	}
+	if err := client.RespondApproval(frontend.ApprovalResponse{ID: request.ID, Choice: frontend.ApprovalConversation}); err == nil {
+		t.Fatal("conversation-level approval was accepted for creation")
+	}
+	if err := client.RespondApproval(frontend.ApprovalResponse{ID: request.ID, Choice: frontend.ApprovalOnce}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		if result.err != nil || result.turn.Outcome != modelprovider.OutcomeCompleted || len(result.turn.ToolActivities) != 1 || result.turn.ToolActivities[0].Outcome != string(tools.OutcomeSucceeded) {
+			t.Fatalf("creation fixture turn=%+v err=%v", result.turn, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("provider continuation did not complete")
+	}
+	if host.prepared != 1 || host.executed != 1 || host.closed != 1 {
+		t.Fatalf("creation fixture lifecycle prepared=%d executed=%d closed=%d", host.prepared, host.executed, host.closed)
+	}
+	if event := <-client.ApprovalEvents(); event.DismissedID != request.ID {
+		t.Fatalf("creation approval dismissal=%+v", event)
 	}
 }

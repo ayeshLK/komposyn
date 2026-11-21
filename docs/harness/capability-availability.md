@@ -134,6 +134,20 @@ shipped-binary acceptance. See [the search design note](search-files-design.md)
 and [#318 completion matrix](issue-318-search-completion.md) for exact
 provenance and profile limits.
 
+`create_file` is not available in any provider route or production runtime.
+Issue #321's fixture-only prototype has a retained-parent proposal path, a
+synthetic complete-owner gate, a read barrier, and a fixed Linux worker using
+stage-plus-`RENAME_NOREPLACE`. The native acceptance runner now includes a
+real Bubblewrap creation case for disposable synthetic files on ext4, but that
+case is pending execution on an eligible host. Even a passing fixture run
+would not enable the production capability: completed-capture interactions,
+cleanup-failure retention, remaining cancellation/owner race transitions,
+provider continuation/no-replay, and native execution of the deterministic
+post-observation actor case remain open. Production owner coverage and separate enablement
+approval have not been recorded. See [the issue #321 native acceptance
+procedure](issue-321-native-acceptance.md) and
+[creation integration protocol](creation-integration-protocol.md).
+
 ## Runtime and UI reasons
 
 The runtime snapshot carries availability for all three capabilities through

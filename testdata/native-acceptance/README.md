@@ -1,4 +1,4 @@
-# Native acceptance of the #243 sandbox composition
+# Native acceptance of sandbox composition and bounded creation
 
 Run as your normal Ubuntu/Linux user, without sudo or host security changes. Requires Go 1.26.11+, Git, Python 3.12+ (Python 3.11.8+ with tar extraction filters also works), and a trusted system Bubblewrap with the required namespace/seccomp capabilities.
 
@@ -9,18 +9,33 @@ The hash-pinned runner and test overlay are kept together in
 - `run-native-acceptance.py`
 - `native_acceptance_linux_test.go`
 
-From a clean checkout of this repository, run:
+The runner includes one #321 creation case. It composes the real host service
+with the real Bubblewrap worker, injects only the synthetic complete owner
+manifest used by fixtures, publishes a synthetic file, checks exact bytes and
+mode `0600`, verifies stage cleanup and worker join, and confirms an existing
+target is not replaced. It also injects a host-side independent actor after
+the service's final target observation and immediately before the worker's
+publication request, then checks that `RENAME_NOREPLACE` preserves the actor's
+file and removes the stage. This measures one deterministic residual-race
+checkpoint, not every possible syscall interleaving. It does not use a
+provider, enable the production tool, or authorize arbitrary roots.
+
+From the candidate checkout, use the exact candidate commit and an existing
+scratch directory on local ext4. The issue-specific procedure is documented
+in [issue-321-native-acceptance.md](../../docs/harness/issue-321-native-acceptance.md).
+The general invocation is:
 
 ```sh
 scripts/native-acceptance/run-native-acceptance.sh \
   --repo "$PWD" \
-  --revision d43a7dd7005ae6ccc8102936d00bd2920bbd9fcf \
-  --bwrap /usr/bin/bwrap
+  --revision "$(git rev-parse HEAD)" \
+  --bwrap /usr/bin/bwrap \
+  --scratch-dir /path/to/writable/ext4/scratch
 ```
 
 The command reads only the selected committed revision into its own temporary
 source tree. It does not modify or clean the checkout. By default, the runner
-uses the same reviewed baseline commit shown above.
+uses the reviewed baseline commit configured in the runner.
 
 The script reads a Git archive of that exact commit. If it is absent locally, it fetches the commit from the public repository into a disposable scratch repository. It never checks out, fetches into, edits or cleans your actual worktree.
 
@@ -37,7 +52,7 @@ Builds and native tests use an isolated source directory with one **test-only ov
 - Root change while a worker is held must first return cleanup_pending; after the old read settles, a fresh invocation under the new root must succeed. Cancellation while held must join without reading or publishing. Shutdown is forced to report incomplete cleanup at the held-operation boundary, then a fresh shutdown retry must drain it. This deterministic coordination case is not a natural kernel-hang test.
 - Separately labelled existing unit tests cover independent path overrides, pending-coverage recovery, runtime preparation/grant ordering, data suppression and bounded shutdown/retry. They are not counted as native enforcement.
 
-No provider network request is made. “Publication” here means the coordinator's private result sink, not a live selected LLM. The suite does not establish the unknown-file policy, filesystem tool enablement, all Bubblewrap modes, all platforms, every resource limit, arbitrary descendants, natural unjoinable processes, or all missing issue #215 gates. It does not simulate a kernel hang or claim native proof of incomplete-cleanup cases covered only by unit tests.
+No provider network request is made. “Publication” here means the coordinator's private result sink, not a live selected LLM. The suite does not establish the unknown-file policy, filesystem tool enablement, all Bubblewrap modes, all platforms, every resource limit, arbitrary descendants, natural unjoinable processes, or all missing issue #215 gates. It does not simulate a kernel hang or claim native proof of incomplete-cleanup cases covered only by unit tests. The #321 case covers stage, sync, no-replace publication, exact bytes and mode, incumbent preservation, a deterministic independent-actor mutation after final observation, cleanup, and join on the actual tested filesystem and selected Bubblewrap bind mode. Interrupted syscalls, other independent-actor timings, cross-filesystem behavior, arbitrary descendants, and production owner coverage remain unestablished.
 
 ## Results
 

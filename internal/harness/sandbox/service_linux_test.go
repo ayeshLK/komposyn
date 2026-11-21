@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,14 +28,17 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	"github.com/ayeshLK/komposyn/internal/harness/model"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
+	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/tools"
 	"golang.org/x/sys/unix"
 )
@@ -382,6 +386,853 @@ func TestHostAdmissionAcceptsBoundedDirectoryListing(t *testing.T) {
 	if err := service.CloseFilesystemReadAdmission(context.Background(), admission); err != nil {
 		t.Fatalf("retire listing admission: %v", err)
 	}
+}
+
+func TestCreationBarrierClosesAndReopensReadAdmissionAroundDrain(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(target, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "barrier-fixture", Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{
+		ConversationID: "barrier-fixture", TurnID: "turn", ProviderCallID: "call",
+		ToolID: tools.ReadFileID, Arguments: []byte(`{"path":"` + target + `"}`),
+	}
+	admission, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile")
+	if err != nil {
+		t.Fatalf("initial read admission: %v", err)
+	}
+	preparation, err := service.PrepareAdmittedFilesystemRead(context.Background(), admission, 1)
+	if err != nil {
+		t.Fatalf("prepare before barrier: %v", err)
+	}
+
+	impl := service.impl.(*linuxImplementation)
+	lease, err := impl.beginCreationBarrier(context.Background())
+	if err != nil {
+		t.Fatalf("begin barrier and drain: %v", err)
+	}
+	if lease.state != creationBarrierActive {
+		t.Fatalf("barrier state=%d, want active", lease.state)
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); !errors.Is(err, ErrCreationBarrier) {
+		t.Fatalf("new read admission passed the closed barrier: %v", err)
+	}
+	if _, err := service.PrepareAdmittedFilesystemRead(context.Background(), admission, 1); !errors.Is(err, readbrokerstudy.ErrAdmissionStale) {
+		t.Fatalf("pre-barrier admission survived the drain: %v", err)
+	}
+	commitCalled := false
+	if err := preparation.WithAuthorityCommit(context.Background(), func() error { commitCalled = true; return nil }); !errors.Is(err, readbrokerstudy.ErrAdmissionStale) || commitCalled {
+		t.Fatalf("pre-barrier prepared read retained its publication authority: called=%t err=%v", commitCalled, err)
+	}
+	if err := preparation.Close(context.Background()); err != nil {
+		t.Fatalf("close invalidated preparation: %v", err)
+	}
+	if err := impl.finishCreationBarrier(lease, false); !errors.Is(err, ErrCreationBarrier) {
+		t.Fatalf("incomplete cleanup released the barrier: %v", err)
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); !errors.Is(err, ErrCreationBarrier) {
+		t.Fatalf("read admission reopened after incomplete cleanup: %v", err)
+	}
+	if err := impl.finishCreationBarrier(lease, true); err != nil {
+		t.Fatalf("confirmed retirement: %v", err)
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), invocation, "openai/gpt-test/profile"); err != nil {
+		t.Fatalf("read admission did not reopen after confirmed retirement: %v", err)
+	}
+	if err := service.CloseFilesystemReadAdmission(context.Background(), admission); err != nil {
+		t.Fatalf("retire stale admission: %v", err)
+	}
+}
+
+func TestCreationBarrierOrdersOwnerPendingAgainstPublicationRelease(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		publicationFirst bool
+	}{
+		{name: "owner pending wins before publication release"},
+		{name: "publication release wins and owner waits", publicationFirst: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, err := newTestHostService()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := service.Close(context.Background()); err != nil {
+					t.Errorf("close service: %v", err)
+				}
+			})
+			if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+				t.Fatal(err)
+			}
+			impl := service.impl.(*linuxImplementation)
+			lease, err := impl.beginCreationBarrier(context.Background())
+			if err != nil {
+				t.Fatalf("begin barrier: %v", err)
+			}
+			if test.publicationFirst {
+				if err := impl.admitCreationStage(lease); err != nil {
+					t.Fatalf("admit stage: %v", err)
+				}
+				if err := impl.releaseCreationPublication(lease); err != nil {
+					t.Fatalf("release publication: %v", err)
+				}
+				if err := impl.releaseCreationPublication(lease); !errors.Is(err, ErrCoverageMissing) {
+					t.Fatalf("publication permit was reusable: %v", err)
+				}
+			}
+
+			rotationDone := make(chan error, 1)
+			go func() {
+				rotationDone <- service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings-rotated.json"), nil)
+			}()
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				impl.mu.Lock()
+				pending := impl.blocked[auth.SensitiveOwnerSettings] != ""
+				impl.mu.Unlock()
+				if pending {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("owner transition did not enter pending state")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if lease.ctx.Err() == nil {
+				t.Fatal("owner transition did not cancel the active effect context")
+			}
+			if !test.publicationFirst {
+				if err := impl.admitCreationStage(lease); !errors.Is(err, ErrCoverageMissing) {
+					t.Fatalf("stage permit passed after owner pending won: %v", err)
+				}
+				if err := impl.releaseCreationPublication(lease); !errors.Is(err, ErrCoverageMissing) {
+					t.Fatalf("publication passed after owner pending won: %v", err)
+				}
+			}
+			select {
+			case err := <-rotationDone:
+				t.Fatalf("owner transition completed before effect retirement: %v", err)
+			default:
+			}
+			if err := impl.finishCreationBarrier(lease, true); err != nil {
+				t.Fatalf("finish cancelled effect: %v", err)
+			}
+			select {
+			case err := <-rotationDone:
+				if err != nil {
+					t.Fatalf("owner transition after effect retirement: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("owner transition did not resume after effect retirement")
+			}
+		})
+	}
+}
+
+func TestServiceCloseWaitsForCreationBarrierRetirement(t *testing.T) {
+	service, err := newTestHostService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	lease, err := impl.beginCreationBarrier(context.Background())
+	if err != nil {
+		t.Fatalf("begin barrier: %v", err)
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := service.Close(closeCtx); !errors.Is(err, readbrokerstudy.ErrCleanupPending) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("close did not report incomplete barrier cleanup: %v", err)
+	}
+	if lease.ctx.Err() == nil {
+		t.Fatal("service close did not cancel the effect context")
+	}
+	if err := impl.finishCreationBarrier(lease, true); err != nil {
+		t.Fatalf("retire barrier after effect cleanup: %v", err)
+	}
+	if err := service.Close(context.Background()); err != nil {
+		t.Fatalf("retry service close after cleanup: %v", err)
+	}
+}
+
+func TestServiceCreationPathHoldsBarrierThroughWorkerRetirement(t *testing.T) {
+	launcher := &testCreationWorkerLauncher{}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher.service = service
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	root := t.TempDir()
+	authPath := filepath.Join(root, ".fixture-auth.json")
+	settingsPath := filepath.Join(root, ".fixture-settings.json")
+	for _, path := range []string{authPath, settingsPath} {
+		if err := os.WriteFile(path, []byte("synthetic protected owner"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authFile, err := os.Open(authPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, authPath, authFile); err != nil {
+		_ = authFile.Close()
+		t.Fatal(err)
+	}
+	if err := authFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	settingsFile, err := os.Open(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, settingsPath, settingsFile); err != nil {
+		_ = settingsFile.Close()
+		t.Fatal(err)
+	}
+	if err := settingsFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "existing.txt")
+	if err := os.WriteFile(target, []byte("ordinary fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "creation-service-fixture", Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal(err)
+	}
+	installSyntheticCreationManifest(t, service, root)
+	launcher.invocation = tools.Invocation{ConversationID: "creation-service-fixture", TurnID: "turn", ProviderCallID: "call", ToolID: tools.ReadFileID, Arguments: []byte(`{"path":"` + target + `"}`)}
+	parent, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	parentInfo, err := parent.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := parentInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("parent identity unavailable")
+	}
+	identity := readbrokerstudy.FileIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Type: uint32(stat.Mode & syscall.S_IFMT)}
+	stageName, err := readbrokerstudy.NewCreationStageName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.impl.(*linuxImplementation).executeBoundedCreation(context.Background(), parent, identity, stageName, "new.txt", []byte("approved fixture"))
+	if err != nil || result.Outcome != readbrokerstudy.CreationCreated {
+		t.Fatalf("creation result=%+v err=%v", result, err)
+	}
+	if !launcher.readsBlockedDuringStage || !launcher.readsBlockedDuringPublish || !launcher.workerJoined {
+		t.Fatalf("barrier/worker lifecycle: stage_blocked=%t publish_blocked=%t joined=%t events=%v", launcher.readsBlockedDuringStage, launcher.readsBlockedDuringPublish, launcher.workerJoined, launcher.events)
+	}
+	if got := strings.Join(launcher.events, ","); got != "launch,ready,stage,publish,wait" {
+		t.Fatalf("creation worker order=%q", got)
+	}
+	admission, err := service.AdmitFilesystemRead(context.Background(), launcher.invocation, "openai/gpt-test/profile")
+	if err != nil {
+		t.Fatalf("read barrier did not reopen after worker retirement: %v", err)
+	}
+	if err := service.CloseFilesystemReadAdmission(context.Background(), admission); err != nil {
+		t.Fatalf("close post-creation read admission: %v", err)
+	}
+	beforeConflict := len(launcher.events)
+	conflictName, err := readbrokerstudy.NewCreationStageName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict, err := service.impl.(*linuxImplementation).executeBoundedCreation(context.Background(), parent, identity, conflictName, "existing.txt", []byte("must not replace"))
+	if err != nil || conflict.Outcome != readbrokerstudy.CreationConflict {
+		t.Fatalf("existing target outcome=%+v err=%v", conflict, err)
+	}
+	if len(launcher.events) != beforeConflict {
+		t.Fatalf("existing-target conflict launched worker: events=%v", launcher.events[beforeConflict:])
+	}
+	incumbent, err := os.ReadFile(target)
+	if err != nil || string(incumbent) != "ordinary fixture" {
+		t.Fatalf("existing destination changed: bytes=%q err=%v", incumbent, err)
+	}
+}
+
+func TestRootTransitionCancelsAndJoinsCreationBeforeChangingScope(t *testing.T) {
+	launcher := &blockingCreationWorkerLauncher{stageStarted: make(chan struct{})}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	root := t.TempDir()
+	for owner, class := range map[string]string{auth.SensitiveOwnerAuth: auth.SensitiveClassAuth, auth.SensitiveOwnerSettings: auth.SensitiveClassSettings} {
+		path := filepath.Join(root, "."+owner+".json")
+		if err := os.WriteFile(path, []byte("synthetic protected owner"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.Protect(context.Background(), owner, class, path, file); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conversation := "root-transition-fixture"
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: conversation, Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal(err)
+	}
+	installSyntheticCreationManifest(t, service, root)
+	parent, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	identity := identityFromInfo(t, root)
+	stageName, err := readbrokerstudy.NewCreationStageName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	creationDone := make(chan error, 1)
+	go func() {
+		result, createErr := service.impl.(*linuxImplementation).executeBoundedCreation(context.Background(), parent, identity, stageName, "cancelled.txt", []byte("never published"), creationRootBinding{root: root, conversation: conversation, generation: 1})
+		if result.Outcome != readbrokerstudy.CreationNotCreated {
+			creationDone <- fmt.Errorf("cancelled creation outcome=%s", result.Outcome)
+			return
+		}
+		creationDone <- createErr
+	}()
+	select {
+	case <-launcher.stageStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("creation did not reach stage admission")
+	}
+	transitionDone := make(chan error, 1)
+	go func() {
+		transitionDone <- service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: conversation, Root: root, Generation: 2, Reason: runtime.FilesystemRootSelected})
+	}()
+	select {
+	case err := <-transitionDone:
+		if err != nil {
+			t.Fatalf("root transition: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("root transition did not wait for creation cleanup")
+	}
+	if err := <-creationDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("creation cancellation result=%v", err)
+	}
+	if !launcher.joined {
+		t.Fatal("root transition completed before worker join")
+	}
+	if _, err := os.Lstat(filepath.Join(root, "cancelled.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled creation published target: %v", err)
+	}
+	if service.rootGeneration != 2 || service.rootPending {
+		t.Fatalf("root state after joined cancellation: generation=%d pending=%t", service.rootGeneration, service.rootPending)
+	}
+}
+
+func TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce(t *testing.T) {
+	service, err := newTestHostServiceWithLauncher(&testCreationWorkerLauncher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	root := t.TempDir()
+	for owner, class := range map[string]string{auth.SensitiveOwnerAuth: auth.SensitiveClassAuth, auth.SensitiveOwnerSettings: auth.SensitiveClassSettings} {
+		path := filepath.Join(root, "."+owner+".json")
+		if err := os.WriteFile(path, []byte("synthetic protected owner"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.Protect(context.Background(), owner, class, path, file); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "create-proposal", Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal(err)
+	}
+	installSyntheticCreationManifest(t, service, root)
+	input := tools.CreateFileInput{Path: "approved.txt", Content: "exact approved bytes\nsecond line\n"}
+	arguments, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "create-proposal", TurnID: "turn-1", ProviderCallID: "call-1", ToolID: tools.CreateFileID, Arguments: arguments}
+	destination := "openai/model-a/profile"
+	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination)
+	if err != nil {
+		t.Fatalf("prepare proposal: %v", err)
+	}
+	if request.Destination != destination || request.AdmissionBinding == "" || len(request.Requirements) != 2 || len(request.RequireOnceKeys) != 2 || request.RequireOnceKeys[0] != "create" || request.RequireOnceKeys[1] != "target" {
+		t.Fatalf("incomplete once approval request: %+v", request)
+	}
+	target := filepath.Join(root, input.Path)
+	if request.Requirements[0].Description == "" || !strings.Contains(request.Requirements[0].Description, target) || !strings.Contains(request.Requirements[0].Description, "+exact approved bytes\n+second line\n") || !strings.Contains(request.Requirements[0].Description, destination) {
+		t.Fatalf("approval omits exact target/content/destination: %+v", request.Requirements[0])
+	}
+	changed := invocation
+	changed.Arguments = []byte(`{"path":"approved.txt","content":"changed"}`)
+	if _, err := service.PrepareApprovedFilesystemCreation(context.Background(), changed, request, 1); !errors.Is(err, runtime.ErrFilesystemRootStale) {
+		t.Fatalf("changed arguments reused proposal: %v", err)
+	}
+	changed = invocation
+	changed.TurnID = "different-turn"
+	if _, err := service.PrepareApprovedFilesystemCreation(context.Background(), changed, request, 1); !errors.Is(err, runtime.ErrFilesystemRootStale) {
+		t.Fatalf("changed turn reused proposal: %v", err)
+	}
+	prepared, err := service.PrepareApprovedFilesystemCreation(context.Background(), invocation, request, 1)
+	if err != nil {
+		t.Fatalf("prepare exact approved proposal: %v", err)
+	}
+	if _, err := service.PrepareApprovedFilesystemCreation(context.Background(), invocation, request, 1); !errors.Is(err, runtime.ErrFilesystemRootStale) {
+		t.Fatalf("proposal was not consumed once: %v", err)
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatalf("close retained parent: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("incumbent"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invocation.ProviderCallID = "call-2"
+	if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination); err == nil {
+		t.Fatal("existing destination was offered for approval")
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "incumbent" {
+		t.Fatalf("existing file changed: %q err=%v", got, err)
+	}
+	authRoute := filepath.Join(root, "."+auth.SensitiveOwnerAuth+".json")
+	if err := os.Remove(authRoute); err != nil {
+		t.Fatal(err)
+	}
+	invocation.ProviderCallID = "call-3"
+	invocation.Arguments, err = json.Marshal(tools.CreateFileInput{Path: filepath.Base(authRoute), Content: "must not claim a protected route"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination); !errors.Is(err, ErrCoverageMissing) {
+		t.Fatalf("absent reserved protected route was offered: %v", err)
+	}
+}
+
+func TestCreationRuntimeServiceCompositionReachesBoundedWorkerWithoutPublishingOnRefusal(t *testing.T) {
+	root := t.TempDir()
+	launcher := &refusingCreationWorkerLauncher{}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for owner, class := range map[string]string{auth.SensitiveOwnerAuth: auth.SensitiveClassAuth, auth.SensitiveOwnerSettings: auth.SensitiveClassSettings} {
+		path := filepath.Join(root, "."+owner+".json")
+		if err := os.WriteFile(path, []byte("synthetic protected owner"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.Protect(context.Background(), owner, class, path, file); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var approval permissions.PendingApproval
+	base := runtime.BundledConversationToolRuntimeConfig(runtime.ToolApprovalFunc(func(_ context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approval = pending
+		return permissions.ApprovalOnce, "", nil
+	}), runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+	}))
+	config := runtime.WithBoundedCreationPrototype(base, service)
+	config.ReadAdmission = service
+	config.RootHost = service
+	fp := &creationServiceProvider{}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := runtime.NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic credential", nil); err != nil {
+		t.Fatal(err)
+	}
+	selection := chat.Discover(context.Background())
+	if len(selection.Models) == 0 {
+		t.Fatalf("provider discovery=%+v", selection)
+	}
+	if err := chat.Select(context.Background(), selection.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	installSyntheticCreationManifest(t, service, root)
+	t.Cleanup(func() {
+		chat.Close()
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	input := tools.CreateFileInput{Path: "runtime-created.txt", Content: "exact approved bytes\n"}
+	fp.input = input
+	turn, err := chat.Send(context.Background(), "create the approved synthetic file", nil)
+	if err != nil {
+		t.Fatalf("runtime turn: %v", err)
+	}
+	if turn.Outcome != provider.OutcomeCompleted || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeFailed || fp.calls != 2 {
+		t.Fatalf("unexpected runtime turn after injected pre-stage refusal: %+v", turn)
+	}
+	if approval.Request.Destination == "" || len(approval.Request.Requirements) != 2 || !strings.Contains(approval.Request.Requirements[0].Description, filepath.Join(root, input.Path)) || !strings.Contains(approval.Request.Requirements[0].Description, input.Content) {
+		t.Fatalf("real service approval omitted exact target/content/destination: %+v", approval.Request)
+	}
+	if _, err := os.Lstat(filepath.Join(root, input.Path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused operation published a file: err=%v", err)
+	}
+	if !launcher.joined || strings.Join(launcher.events, ",") != "launch,ready,stage,terminate,wait" {
+		t.Fatalf("worker retirement/order: joined=%t events=%v", launcher.joined, launcher.events)
+	}
+}
+
+type creationServiceProvider struct {
+	input tools.CreateFileInput
+	calls int
+}
+
+func (*creationServiceProvider) ID() provider.ID { return provider.OpenAI }
+func (*creationServiceProvider) AuthMethods() []provider.AuthMethod {
+	return []provider.AuthMethod{provider.AuthAPIKey}
+}
+func (*creationServiceProvider) Authenticate(context.Context, provider.Credential) (provider.AuthResult, error) {
+	return provider.AuthResult{Provider: provider.OpenAI}, nil
+}
+func (*creationServiceProvider) ListModels(context.Context, provider.Credential) ([]provider.Model, error) {
+	return []provider.Model{{ID: "model-a", DisplayName: "Model A", Compatibility: provider.CompatibilitySupported}}, nil
+}
+func (*creationServiceProvider) RouteCapabilities(provider.AuthMethod) provider.RouteCapabilities {
+	return provider.RouteCapabilities{ClientTools: provider.SupportSupported}
+}
+func (p *creationServiceProvider) StreamChat(_ context.Context, _ provider.ChatRequest, _ func(string)) (provider.Result, error) {
+	p.calls++
+	if p.calls > 1 {
+		message, _ := json.Marshal(map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "done"}}})
+		return provider.Result{Outcome: provider.OutcomeCompleted, Completion: provider.CompletionFinal, Text: "done", Native: []json.RawMessage{message}}, nil
+	}
+	arguments, _ := json.Marshal(p.input)
+	callRaw, _ := json.Marshal(map[string]any{"type": "function_call", "id": "item-create-call", "call_id": "create-call", "name": string(tools.CreateFileID), "arguments": string(arguments), "status": "completed"})
+	return provider.Result{Outcome: provider.OutcomeCompleted, Completion: provider.CompletionToolCalls, Text: "create", Native: []json.RawMessage{callRaw}, ToolCalls: []provider.ToolCall{{CallID: "create-call", ToolID: tools.CreateFileID, Arguments: arguments}}}, nil
+}
+
+type refusingCreationWorkerLauncher struct {
+	events []string
+	joined bool
+}
+
+func (*refusingCreationWorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
+	return nil, readbrokerstudy.ErrUnavailable
+}
+func (l *refusingCreationWorkerLauncher) StartForOperation(_ context.Context, operation readbrokerstudy.AdmissionOperation) (readbrokerstudy.SandboxWorker, error) {
+	if operation != readbrokerstudy.AdmissionCreateFile {
+		return nil, readbrokerstudy.ErrProtocol
+	}
+	l.events = append(l.events, "launch")
+	return &refusingCreationSandboxWorker{launcher: l}, nil
+}
+func (*refusingCreationWorkerLauncher) Close() error { return nil }
+
+type refusingCreationSandboxWorker struct {
+	launcher *refusingCreationWorkerLauncher
+	joined   bool
+}
+
+func (w *refusingCreationSandboxWorker) Ready(context.Context) error {
+	w.launcher.events = append(w.launcher.events, "ready")
+	return nil
+}
+func (*refusingCreationSandboxWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{}
+}
+func (*refusingCreationSandboxWorker) TransferCapability(context.Context, *os.File, readbrokerstudy.FileIdentity) error {
+	return readbrokerstudy.ErrProtocol
+}
+func (*refusingCreationSandboxWorker) AwaitReadStarted(context.Context) error {
+	return readbrokerstudy.ErrProtocol
+}
+func (*refusingCreationSandboxWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{}, readbrokerstudy.ErrProtocol
+}
+func (w *refusingCreationSandboxWorker) StageCreation(context.Context, *os.File, readbrokerstudy.FileIdentity, string, string, []byte) (readbrokerstudy.CreationStage, error) {
+	w.launcher.events = append(w.launcher.events, "stage")
+	return readbrokerstudy.CreationStage{}, &readbrokerstudy.CreationOperationError{Result: readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, Cause: errors.New("injected stage refusal")}
+}
+func (*refusingCreationSandboxWorker) PublishCreation(context.Context, readbrokerstudy.CreationStage) (readbrokerstudy.CreationResult, error) {
+	return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationUnknown}, readbrokerstudy.ErrProtocol
+}
+func (*refusingCreationSandboxWorker) AbortCreation(context.Context, readbrokerstudy.CreationStage) (readbrokerstudy.CreationResult, error) {
+	return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, nil
+}
+func (w *refusingCreationSandboxWorker) Terminate() error {
+	w.launcher.events = append(w.launcher.events, "terminate")
+	return nil
+}
+func (w *refusingCreationSandboxWorker) Wait() error {
+	w.launcher.events = append(w.launcher.events, "wait")
+	w.joined = true
+	w.launcher.joined = true
+	return nil
+}
+func (w *refusingCreationSandboxWorker) Joined() bool                 { return w.joined }
+func (*refusingCreationSandboxWorker) WorkerContext() context.Context { return context.Background() }
+
+func installSyntheticCreationManifest(t *testing.T, service *Service, root string) {
+	t.Helper()
+	impl := service.impl.(*linuxImplementation)
+	ownerDir := filepath.Join(root, ".synthetic-owned")
+	if err := os.Mkdir(ownerDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tokenDB := filepath.Join(ownerDir, "events.db")
+	paths := []string{tokenDB, tokenDB + "-wal", tokenDB + "-shm", tokenDB + "-journal", tokenDB + ".backup"}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("synthetic protected identity"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := impl.registry.Register(readbrokerstudy.OwnerRegistration{Owner: "tokenlogger-store", Class: readbrokerstudy.ClassTokenDatabase, Path: path}); err != nil {
+			t.Fatalf("register Token Logger fixture identity %s: %v", filepath.Base(path), err)
+		}
+	}
+	providerPath := filepath.Join(ownerDir, "provider-source.snapshot")
+	if err := os.WriteFile(providerPath, []byte("synthetic provider source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.registry.Register(readbrokerstudy.OwnerRegistration{Owner: "provider-source", Class: readbrokerstudy.ClassProvider, Path: providerPath}); err != nil {
+		t.Fatal(err)
+	}
+	view := impl.registry.View()
+	entries := make(map[string]syntheticCreationOwner)
+	for _, owner := range []struct {
+		name  string
+		class readbrokerstudy.ResourceClass
+	}{
+		{auth.SensitiveOwnerAuth, readbrokerstudy.ClassCredential},
+		{auth.SensitiveOwnerSettings, readbrokerstudy.ClassSettings},
+		{"tokenlogger-store", readbrokerstudy.ClassTokenDatabase},
+		{"provider-source", readbrokerstudy.ClassProvider},
+	} {
+		manifest := syntheticCreationOwner{class: owner.class, registrations: make(map[string]readbrokerstudy.FileIdentity)}
+		for _, entry := range view.Entries {
+			// Route-only records have no pinned inode and do not belong in the identity manifest.
+			if entry.Owner == owner.name && entry.Class == owner.class && !entry.Directory && entry.Identity.Inode != 0 {
+				manifest.registrations[entry.Path] = entry.Identity
+			}
+		}
+		entries[owner.name] = manifest
+	}
+	impl.mu.Lock()
+	impl.owners["tokenlogger-store"] = OwnerCoverage{Owner: "tokenlogger-store", Class: "token_database", State: OwnerRegistered, Routes: 5, Identities: 5, Evidence: "synthetic creation fixture"}
+	impl.owners["provider-source"] = OwnerCoverage{Owner: "provider-source", Class: "provider_source", State: OwnerRegistered, Routes: 1, Identities: 1, Evidence: "synthetic creation fixture"}
+	impl.creationManifest = &syntheticCreationOwnerManifest{
+		scopeParent:       identityFromInfo(t, root),
+		scopeComplete:     true,
+		policyRevision:    view.Generation,
+		coverageRevision:  impl.inventory.Snapshot().Revision,
+		tokenDatabasePath: tokenDB,
+		owners:            entries,
+	}
+	impl.mu.Unlock()
+}
+
+func identityFromInfo(t *testing.T, path string) readbrokerstudy.FileIdentity {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("fixture identity unavailable")
+	}
+	return readbrokerstudy.FileIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Type: uint32(stat.Mode & syscall.S_IFMT)}
+}
+
+type testCreationWorkerLauncher struct {
+	service                   *Service
+	invocation                tools.Invocation
+	events                    []string
+	readsBlockedDuringStage   bool
+	readsBlockedDuringPublish bool
+	workerJoined              bool
+}
+
+func (l *testCreationWorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
+	return nil, readbrokerstudy.ErrUnavailable
+}
+
+func (l *testCreationWorkerLauncher) StartForOperation(_ context.Context, operation readbrokerstudy.AdmissionOperation) (readbrokerstudy.SandboxWorker, error) {
+	if operation != readbrokerstudy.AdmissionCreateFile {
+		return nil, readbrokerstudy.ErrProtocol
+	}
+	l.events = append(l.events, "launch")
+	return &testCreationSandboxWorker{launcher: l}, nil
+}
+
+func (*testCreationWorkerLauncher) Close() error { return nil }
+
+type testCreationSandboxWorker struct {
+	launcher *testCreationWorkerLauncher
+	joined   bool
+}
+
+type blockingCreationWorkerLauncher struct {
+	inertWorkerLauncher
+	stageStarted chan struct{}
+	joined       bool
+}
+
+func (l *blockingCreationWorkerLauncher) StartForOperation(_ context.Context, operation readbrokerstudy.AdmissionOperation) (readbrokerstudy.SandboxWorker, error) {
+	if operation != readbrokerstudy.AdmissionCreateFile {
+		return nil, readbrokerstudy.ErrProtocol
+	}
+	return &blockingCreationSandboxWorker{launcher: l}, nil
+}
+
+type blockingCreationSandboxWorker struct {
+	launcher *blockingCreationWorkerLauncher
+	joined   bool
+}
+
+func (*blockingCreationSandboxWorker) Ready(context.Context) error { return nil }
+func (*blockingCreationSandboxWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{}
+}
+func (*blockingCreationSandboxWorker) TransferCapability(context.Context, *os.File, readbrokerstudy.FileIdentity) error {
+	return readbrokerstudy.ErrProtocol
+}
+func (*blockingCreationSandboxWorker) AwaitReadStarted(context.Context) error {
+	return readbrokerstudy.ErrProtocol
+}
+func (*blockingCreationSandboxWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{}, readbrokerstudy.ErrProtocol
+}
+func (w *blockingCreationSandboxWorker) StageCreation(ctx context.Context, _ *os.File, _ readbrokerstudy.FileIdentity, _ string, _ string, _ []byte) (readbrokerstudy.CreationStage, error) {
+	close(w.launcher.stageStarted)
+	<-ctx.Done()
+	return readbrokerstudy.CreationStage{}, &readbrokerstudy.CreationOperationError{Result: readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, Cause: ctx.Err()}
+}
+func (*blockingCreationSandboxWorker) PublishCreation(context.Context, readbrokerstudy.CreationStage) (readbrokerstudy.CreationResult, error) {
+	return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationUnknown}, readbrokerstudy.ErrProtocol
+}
+func (*blockingCreationSandboxWorker) AbortCreation(context.Context, readbrokerstudy.CreationStage) (readbrokerstudy.CreationResult, error) {
+	return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, nil
+}
+func (*blockingCreationSandboxWorker) Terminate() error { return nil }
+func (w *blockingCreationSandboxWorker) Wait() error {
+	w.joined = true
+	w.launcher.joined = true
+	return nil
+}
+func (w *blockingCreationSandboxWorker) Joined() bool                 { return w.joined }
+func (*blockingCreationSandboxWorker) WorkerContext() context.Context { return context.Background() }
+
+func (w *testCreationSandboxWorker) Ready(context.Context) error {
+	w.launcher.events = append(w.launcher.events, "ready")
+	return nil
+}
+func (*testCreationSandboxWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{}
+}
+func (*testCreationSandboxWorker) TransferCapability(context.Context, *os.File, readbrokerstudy.FileIdentity) error {
+	return readbrokerstudy.ErrProtocol
+}
+func (*testCreationSandboxWorker) AwaitReadStarted(context.Context) error {
+	return readbrokerstudy.ErrProtocol
+}
+func (*testCreationSandboxWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	return readbrokerstudy.WorkerResult{}, readbrokerstudy.ErrProtocol
+}
+func (*testCreationSandboxWorker) Terminate() error { return nil }
+func (w *testCreationSandboxWorker) Wait() error {
+	w.launcher.events = append(w.launcher.events, "wait")
+	w.joined = true
+	w.launcher.workerJoined = true
+	return nil
+}
+func (w *testCreationSandboxWorker) Joined() bool                 { return w.joined }
+func (*testCreationSandboxWorker) WorkerContext() context.Context { return context.Background() }
+func (w *testCreationSandboxWorker) StageCreation(_ context.Context, _ *os.File, _ readbrokerstudy.FileIdentity, stageName, leaf string, content []byte) (readbrokerstudy.CreationStage, error) {
+	w.launcher.events = append(w.launcher.events, "stage")
+	if stageName == "" || leaf != "new.txt" || string(content) != "approved fixture" {
+		return readbrokerstudy.CreationStage{}, readbrokerstudy.ErrProtocol
+	}
+	_, err := w.launcher.service.AdmitFilesystemRead(context.Background(), w.launcher.invocation, "openai/gpt-test/profile")
+	w.launcher.readsBlockedDuringStage = errors.Is(err, ErrCreationBarrier)
+	return readbrokerstudy.CreationStage{}, nil
+}
+func (w *testCreationSandboxWorker) PublishCreation(context.Context, readbrokerstudy.CreationStage) (readbrokerstudy.CreationResult, error) {
+	w.launcher.events = append(w.launcher.events, "publish")
+	_, err := w.launcher.service.AdmitFilesystemRead(context.Background(), w.launcher.invocation, "openai/gpt-test/profile")
+	w.launcher.readsBlockedDuringPublish = errors.Is(err, ErrCreationBarrier)
+	return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationCreated, Bytes: uint32(len("approved fixture"))}, nil
+}
+func (*testCreationSandboxWorker) AbortCreation(context.Context, readbrokerstudy.CreationStage) (readbrokerstudy.CreationResult, error) {
+	return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, nil
 }
 
 func TestHostSearchAdmissionRequiresMeasuredProfileAndExt4(t *testing.T) {

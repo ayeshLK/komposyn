@@ -299,6 +299,56 @@ func TestListFilesDefinitionLimitsDisclosureToOneDirectory(t *testing.T) {
 	}
 }
 
+func TestCreateFileDefinitionAndStrictArguments(t *testing.T) {
+	definition := CreateFileDefinition()
+	if definition.ID != CreateFileID || definition.MaxInput != MaxCreateFileInputBytes || json.Unmarshal(definition.InputSchema, new(map[string]any)) != nil {
+		t.Fatalf("invalid creation definition: %+v", definition)
+	}
+	valid := []byte(`{"path":"nested/new.txt","content":"hello\n"}`)
+	input, err := ParseCreateFile(valid)
+	if err != nil || input.Path != "nested/new.txt" || input.Content != "hello\n" {
+		t.Fatalf("ParseCreateFile(valid)=(%+v,%v)", input, err)
+	}
+	empty, err := ParseCreateFile([]byte(`{"path":"empty.txt","content":""}`))
+	if err != nil || empty.Path != "empty.txt" || empty.Content != "" {
+		t.Fatalf("ParseCreateFile(explicit empty content)=(%+v,%v)", empty, err)
+	}
+	for _, raw := range []string{
+		`{"path":"empty.txt"}`,
+		`{"path":"empty.txt","content":null}`,
+		`{"path":"empty.txt","content":0}`,
+		`{"path":"empty.txt","content":[]}`,
+	} {
+		if _, err := ParseCreateFile([]byte(raw)); err == nil {
+			t.Errorf("ParseCreateFile(%s) unexpectedly accepted a missing or non-string content field", raw)
+		}
+	}
+	for _, raw := range []string{
+		`{"path":"../escape","content":"x"}`,
+		`{"path":"/absolute","content":"x"}`,
+		`{"path":"nested//file","content":"x"}`,
+		`{"path":"nested\\file","content":"x"}`,
+		`{"path":"file","content":"x","scope":"/tmp"}`,
+	} {
+		if _, err := ParseCreateFile([]byte(raw)); err == nil {
+			t.Errorf("ParseCreateFile(%s) unexpectedly succeeded", raw)
+		}
+	}
+	if _, err := ParseCreateFile([]byte(`{"path":"file","content":"\u0000"}`)); err == nil {
+		t.Fatal("NUL content unexpectedly accepted")
+	}
+	if _, err := ParseCreateFile([]byte(`{"path":"file","content":""` + strings.Repeat(" ", MaxCreateFileInputBytes))); err == nil {
+		t.Fatal("oversized input unexpectedly accepted")
+	}
+	tooLarge, err := json.Marshal(CreateFileInput{Path: "file", Content: strings.Repeat("a", MaxCreateFileContentBytes+1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseCreateFile(tooLarge); err == nil {
+		t.Fatal("oversized content unexpectedly accepted")
+	}
+}
+
 func TestReadFileDescriptionSeparatesResolutionContextFromReadEligibility(t *testing.T) {
 	description := strings.ToLower(ReadFileDefinition().Description)
 	for _, phrase := range []string{
