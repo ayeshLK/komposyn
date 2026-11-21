@@ -608,6 +608,352 @@ func TestCreationBarrierWaitsForRuntimeAdmittedReadWorkerToJoin(t *testing.T) {
 	}
 }
 
+func TestCreationBarrierDrainsRuntimeAdmittedDirectoryWorkers(t *testing.T) {
+	for _, operation := range []tools.ID{tools.ListFilesID, tools.SearchFilesID} {
+		t.Run(string(operation), func(t *testing.T) {
+			root := t.TempDir()
+			if operation == tools.SearchFilesID {
+				var filesystem unix.Statfs_t
+				if err := unix.Statfs(root, &filesystem); err != nil {
+					t.Fatal(err)
+				}
+				if uint64(filesystem.Type) != 0xef53 {
+					t.Skipf("search worker requires an ext4 fixture, got filesystem magic %#x", uint64(filesystem.Type))
+				}
+			}
+			launcher := &searchDrainWorkerLauncher{
+				traversalStarted: make(chan struct{}), releaseTraversal: make(chan struct{}),
+			}
+			creationLauncher := &filesystemCreationFixtureLauncher{}
+			launcher.creation = creationLauncher
+			service, err := newTestHostServiceWithLauncher(launcher)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if operation == tools.SearchFilesID && !service.SearchFilesAvailable() {
+				_ = service.Close(context.Background())
+				t.Skip("search profile is unavailable on this host")
+			}
+			readDone := make(chan error, 1)
+			readSettled := false
+			var chat *runtime.Chat
+			t.Cleanup(func() {
+				launcher.releaseHeldTraversal()
+				if !readSettled {
+					select {
+					case <-readDone:
+					case <-time.After(3 * time.Second):
+						t.Error("directory worker did not settle during cleanup")
+					}
+				}
+				if chat != nil {
+					chat.Close()
+				}
+				if err := service.Close(context.Background()); err != nil {
+					t.Errorf("close directory drain service: %v", err)
+				}
+			})
+			for owner, class := range map[string]string{auth.SensitiveOwnerAuth: auth.SensitiveClassAuth, auth.SensitiveOwnerSettings: auth.SensitiveClassSettings} {
+				path := filepath.Join(root, "."+owner+".json")
+				if err := os.WriteFile(path, []byte("synthetic protected owner"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				file, err := os.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := service.Protect(context.Background(), owner, class, path, file); err != nil {
+					_ = file.Close()
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fp := &creationBarrierCaptureProvider{}
+			providers, err := model.NewRegistry(fp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(
+				runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+					return permissions.ApprovalOnce, "", nil
+				}),
+				runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+					return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+				}), service)
+			chat = runtime.NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+			if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic credential", nil); err != nil {
+				t.Fatal(err)
+			}
+			selection := chat.Discover(context.Background())
+			if len(selection.Models) == 0 {
+				t.Fatal("provider discovery returned no model")
+			}
+			if err := chat.Select(context.Background(), selection.Models[0].Key(), false); err != nil {
+				t.Fatal(err)
+			}
+			if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+				t.Fatal(err)
+			}
+			installSyntheticCreationManifest(t, service, root)
+			var arguments []byte
+			if operation == tools.ListFilesID {
+				arguments, err = json.Marshal(tools.ListFilesInput{Path: root})
+			} else {
+				arguments, err = json.Marshal(tools.SearchFilesInput{Path: root, Query: "synthetic"})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			invocation := tools.Invocation{TurnID: "turn", ProviderCallID: "active-" + string(operation), ToolID: operation, Arguments: arguments}
+			go func() {
+				capture, readErr := chat.ExecuteFilesystemRead(context.Background(), invocation, selection.Models[0].Key())
+				if capture != nil {
+					readErr = errors.Join(readErr, chat.DiscardPrivateReadCapture(capture))
+				}
+				readDone <- readErr
+			}()
+			select {
+			case <-launcher.traversalStarted:
+			case <-time.After(3 * time.Second):
+				t.Fatal("runtime-admitted directory operation did not transfer its directory capability")
+			}
+			workers := launcher.workerSnapshot()
+			if len(workers) != 1 || !workers[0].hasCapability() {
+				t.Fatalf("active %s worker did not receive the directory capability: workers=%d received=%t", operation, len(workers), len(workers) == 1 && workers[0].hasCapability())
+			}
+			impl := service.impl.(*linuxImplementation)
+			parent, err := os.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer parent.Close()
+			identity := identityFromInfo(t, root)
+			stageName, err := readbrokerstudy.NewCreationStageName()
+			if err != nil {
+				t.Fatal(err)
+			}
+			impl.mu.Lock()
+			conversation, rootGeneration := impl.selectedConversation, impl.selectedRootGeneration
+			impl.mu.Unlock()
+			creationDone := make(chan struct {
+				result readbrokerstudy.CreationResult
+				err    error
+			}, 1)
+			go func() {
+				result, createErr := impl.executeBoundedCreation(context.Background(), parent, identity, stageName, "created-after-drain.txt", []byte("created after directory worker join"), creationRootBinding{root: root, conversation: conversation, generation: rootGeneration})
+				creationDone <- struct {
+					result readbrokerstudy.CreationResult
+					err    error
+				}{result, createErr}
+			}()
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				impl.mu.Lock()
+				closed := impl.creationBarrier != nil
+				impl.mu.Unlock()
+				if closed {
+					break
+				}
+				if time.Now().After(deadline) {
+					select {
+					case result := <-creationDone:
+						t.Fatalf("creation returned before creating its barrier: result=%+v err=%v", result.result, result.err)
+					default:
+						t.Fatal("creation did not close listing/search admission before draining")
+					}
+				}
+				time.Sleep(time.Millisecond)
+			}
+			blocked := tools.Invocation{ConversationID: impl.selectedConversation, TurnID: "new", ProviderCallID: "new-" + string(operation), ToolID: operation, Arguments: arguments}
+			if _, err := service.AdmitFilesystemRead(context.Background(), blocked, selection.Models[0].Key()); !errors.Is(err, ErrCreationBarrier) {
+				t.Fatalf("new %s admission passed while creation drained the existing worker: %v", operation, err)
+			}
+			for _, event := range creationLauncher.events {
+				if event == "stage" || event == "publish" {
+					t.Fatalf("creation reached %q before the active %s worker joined", event, operation)
+				}
+			}
+			if _, err := os.Lstat(filepath.Join(root, "created-after-drain.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("creation destination became visible before active %s worker joined: %v", operation, err)
+			}
+			select {
+			case result := <-creationDone:
+				t.Fatalf("creation passed the active %s worker before join: result=%+v err=%v", operation, result.result, result.err)
+			default:
+			}
+			launcher.releaseHeldTraversal()
+			select {
+			case result := <-creationDone:
+				if result.err != nil || result.result.Outcome != readbrokerstudy.CreationCreated {
+					t.Fatalf("creation did not complete after %s join: result=%+v err=%v", operation, result.result, result.err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("creation did not finish after active %s operation settled", operation)
+			}
+			select {
+			case readErr := <-readDone:
+				readSettled = true
+				if readErr == nil {
+					t.Fatalf("cancelled %s unexpectedly completed", operation)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("cancelled %s did not settle", operation)
+			}
+			workers = launcher.workerSnapshot()
+			joined := len(workers) == 1 && workers[0].Joined()
+			if !joined || impl.session.ActiveOperationCount() != 0 {
+				t.Fatalf("active %s worker did not join: joined=%t workers=%d active=%d", operation, joined, len(workers), impl.session.ActiveOperationCount())
+			}
+			if len(creationLauncher.workers) != 1 || !creationLauncher.workers[0].Joined() {
+				t.Fatalf("create worker did not launch and join after active %s worker: workers=%d", operation, len(creationLauncher.workers))
+			}
+			if got, err := os.ReadFile(filepath.Join(root, "created-after-drain.txt")); err != nil || string(got) != "created after directory worker join" {
+				t.Fatalf("create result after active %s worker join=%q err=%v", operation, got, err)
+			}
+		})
+	}
+}
+
+func TestCreationBarrierJoinsRuntimeAdmittedSearchContentWorker(t *testing.T) {
+	root := t.TempDir()
+	var filesystem unix.Statfs_t
+	if err := unix.Statfs(root, &filesystem); err != nil {
+		t.Fatal(err)
+	}
+	if uint64(filesystem.Type) != 0xef53 {
+		t.Skipf("search content worker requires an ext4 fixture, got filesystem magic %#x", uint64(filesystem.Type))
+	}
+	launcher := &searchDrainWorkerLauncher{contentStarted: make(chan struct{}), releaseContent: make(chan struct{})}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !service.SearchFilesAvailable() {
+		_ = service.Close(context.Background())
+		t.Skip("search profile is unavailable on this host")
+	}
+	for owner, class := range map[string]string{auth.SensitiveOwnerAuth: auth.SensitiveClassAuth, auth.SensitiveOwnerSettings: auth.SensitiveClassSettings} {
+		if err := service.Protect(context.Background(), owner, class, filepath.Join(t.TempDir(), owner+".json"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fp := &creationBarrierCaptureProvider{}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(
+		runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalOnce, "", nil
+		}),
+		runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+			return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+		}), service)
+	chat := runtime.NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic credential", nil); err != nil {
+		t.Fatal(err)
+	}
+	selection := chat.Discover(context.Background())
+	if len(selection.Models) == 0 {
+		t.Fatal("provider discovery returned no model")
+	}
+	if err := chat.Select(context.Background(), selection.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		launcher.releaseHeldContent()
+		chat.Close()
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close search content service: %v", err)
+		}
+	})
+	arguments, err := json.Marshal(tools.SearchFilesInput{Path: root, Query: "synthetic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{TurnID: "turn", ProviderCallID: "active-search-content", ToolID: tools.SearchFilesID, Arguments: arguments}
+	readDone := make(chan error, 1)
+	go func() {
+		capture, readErr := chat.ExecuteFilesystemRead(context.Background(), invocation, selection.Models[0].Key())
+		if capture != nil {
+			readErr = errors.Join(readErr, chat.DiscardPrivateReadCapture(capture))
+		}
+		readDone <- readErr
+	}()
+	select {
+	case <-launcher.contentStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("search did not reach its content worker after traversal completed")
+	}
+	workers := launcher.workerSnapshot()
+	if len(workers) != 2 || !workers[0].Joined() || workers[1].Joined() {
+		t.Fatalf("search worker phases before barrier: workers=%d traversal_joined=%t content_joined=%t", len(workers), len(workers) > 0 && workers[0].Joined(), len(workers) > 1 && workers[1].Joined())
+	}
+	impl := service.impl.(*linuxImplementation)
+	barrierDone := make(chan struct {
+		lease *creationBarrierLease
+		err   error
+	}, 1)
+	go func() {
+		lease, beginErr := impl.beginCreationBarrier(context.Background())
+		barrierDone <- struct {
+			lease *creationBarrierLease
+			err   error
+		}{lease, beginErr}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		impl.mu.Lock()
+		closed := impl.creationBarrier != nil
+		impl.mu.Unlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("creation did not close admission while search content worker was held")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case result := <-barrierDone:
+		t.Fatalf("barrier passed before active search content worker joined: lease=%v err=%v", result.lease, result.err)
+	default:
+	}
+	launcher.releaseHeldContent()
+	var barrier struct {
+		lease *creationBarrierLease
+		err   error
+	}
+	select {
+	case barrier = <-barrierDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("barrier did not finish after search content worker joined")
+	}
+	workers = launcher.workerSnapshot()
+	if barrier.err != nil || barrier.lease == nil || len(workers) != 2 || !workers[0].Joined() || !workers[1].Joined() {
+		t.Fatalf("search drain did not join traversal and content workers: lease=%v err=%v workers=%d", barrier.lease, barrier.err, len(workers))
+	}
+	select {
+	case readErr := <-readDone:
+		if readErr == nil {
+			t.Fatal("cancelled search unexpectedly published a result")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled search did not settle")
+	}
+	if impl.session.ActiveOperationCount() != 0 {
+		t.Fatalf("search operation remained active after worker joins: %d", impl.session.ActiveOperationCount())
+	}
+	if err := impl.finishCreationBarrier(barrier.lease, true); err != nil {
+		t.Fatalf("retire barrier after search content worker join: %v", err)
+	}
+}
+
 func TestCreationBarrierOrdersOwnerPendingAgainstPublicationRelease(t *testing.T) {
 	for _, test := range []struct {
 		name             string
@@ -694,6 +1040,104 @@ func TestCreationBarrierOrdersOwnerPendingAgainstPublicationRelease(t *testing.T
 				t.Fatal("owner transition did not resume after effect retirement")
 			}
 		})
+	}
+}
+
+func TestCreationOwnerTransitionWinsAfterFinalValidationBeforePublicationRelease(t *testing.T) {
+	root := t.TempDir()
+	launcher := &filesystemCreationFixtureLauncher{}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := registerCreationFixtureOwners(t, service, root, "pre-release-owner-race"); err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	finalValidated, release := make(chan struct{}), make(chan struct{})
+	impl.creationBeforePublicationReleaseHook = func() {
+		close(finalValidated)
+		<-release
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	parent, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	identity := identityFromInfo(t, root)
+	stageName, err := readbrokerstudy.NewCreationStageName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	type creationResult struct {
+		result readbrokerstudy.CreationResult
+		err    error
+	}
+	created := make(chan creationResult, 1)
+	go func() {
+		result, createErr := impl.executeBoundedCreation(context.Background(), parent, identity, stageName, "must-not-publish.txt", []byte("owner transition wins"))
+		created <- creationResult{result: result, err: createErr}
+	}()
+	select {
+	case <-finalValidated:
+	case <-time.After(3 * time.Second):
+		t.Fatal("creation did not reach final validation before publication release")
+	}
+	ownerDone := make(chan error, 1)
+	go func() {
+		ownerDone <- service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings-rotated.json"), nil)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		impl.mu.Lock()
+		pending := impl.blocked[auth.SensitiveOwnerSettings] != ""
+		lease := impl.creationBarrier
+		impl.mu.Unlock()
+		if pending {
+			if lease == nil || lease.ctx.Err() == nil {
+				t.Fatal("owner-pending winner did not cancel the unreleased creation")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owner transition did not reach pending state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	select {
+	case result := <-created:
+		if result.result.Outcome != readbrokerstudy.CreationNotCreated || !errors.Is(result.err, ErrCoverageMissing) {
+			t.Fatalf("owner-pending winner did not prevent publication: result=%+v err=%v", result.result, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("creation did not retire after owner transition prevented publication")
+	}
+	if _, err := os.Lstat(filepath.Join(root, "must-not-publish.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owner-pending winner published a destination: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, stageName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owner-pending winner left an unretired stage: %v", err)
+	}
+	select {
+	case err := <-ownerDone:
+		if err != nil {
+			t.Fatalf("owner transition after confirmed pre-release cleanup: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("owner transition did not resume after stage cleanup")
 	}
 }
 
@@ -1156,6 +1600,18 @@ func TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked(t *testing.T)
 	if !retained {
 		t.Fatal("unjoined worker ownership was not retained in the blocked barrier")
 	}
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	closeErr := service.Close(closeCtx)
+	cancelClose()
+	if !errors.Is(closeErr, readbrokerstudy.ErrCleanupPending) {
+		t.Fatalf("service close discarded or concealed the delayed worker ownership: %v", closeErr)
+	}
+	impl.mu.Lock()
+	retainedDuringClose := impl.creationBarrier == lease && lease.state == creationBarrierBlocked && lease.worker == launcher.worker
+	impl.mu.Unlock()
+	if !retainedDuringClose {
+		t.Fatal("service close discarded creation worker ownership before delayed Wait completed")
+	}
 	close(launcher.releaseWait)
 	deadline := time.Now().Add(3 * time.Second)
 	for !launcher.worker.Joined() && time.Now().Before(deadline) {
@@ -1164,8 +1620,8 @@ func TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked(t *testing.T)
 	if !launcher.worker.Joined() {
 		t.Fatal("delayed worker did not eventually join")
 	}
-	closeCtx, cancelClose := context.WithTimeout(context.Background(), 25*time.Millisecond)
-	closeErr := service.Close(closeCtx)
+	closeCtx, cancelClose = context.WithTimeout(context.Background(), 25*time.Millisecond)
+	closeErr = service.Close(closeCtx)
 	cancelClose()
 	if !errors.Is(closeErr, readbrokerstudy.ErrCleanupPending) {
 		t.Fatalf("unsupported automatic recovery did not remain explicit at close: %v", closeErr)
@@ -1516,6 +1972,170 @@ func TestRootTransitionCancelsAndJoinsCreationBeforeChangingScope(t *testing.T) 
 	}
 }
 
+func TestRootTransitionRetainsPendingGateDuringDelayedCreationRetirement(t *testing.T) {
+	root := t.TempDir()
+	newRoot := t.TempDir()
+	conversation := "root-transition-delayed-creation"
+	launcher := &delayedJoinCreationLauncher{
+		stageStarted: make(chan struct{}), continueStage: make(chan struct{}),
+		waitStarted: make(chan struct{}), releaseWait: make(chan struct{}),
+	}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parent *os.File
+	t.Cleanup(func() {
+		if parent != nil {
+			_ = parent.Close()
+		}
+	})
+	var stageReleased, waitReleased bool
+	releaseStage := func() {
+		if !stageReleased {
+			close(launcher.continueStage)
+			stageReleased = true
+		}
+	}
+	releaseWait := func() {
+		if !waitReleased {
+			close(launcher.releaseWait)
+			waitReleased = true
+		}
+	}
+	var creationDone <-chan struct {
+		result readbrokerstudy.CreationResult
+		err    error
+	}
+	creationStarted := false
+	creationCompleted := false
+	t.Cleanup(func() {
+		releaseStage()
+		releaseWait()
+		if creationStarted && !creationCompleted {
+			select {
+			case <-creationDone:
+			case <-time.After(3 * time.Second):
+				t.Errorf("creation goroutine did not stop during test cleanup")
+			}
+		}
+		if err := service.Close(context.Background()); err != nil && !errors.Is(err, readbrokerstudy.ErrCleanupPending) {
+			t.Errorf("close delayed-root service during cleanup: %v", err)
+		}
+	})
+	if err := registerCreationFixtureOwners(t, service, root, conversation); err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	parent, err = os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentIdentity := identityFromInfo(t, root)
+	stageName, err := readbrokerstudy.NewCreationStageName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct {
+		result readbrokerstudy.CreationResult
+		err    error
+	}, 1)
+	creationDone = done
+	creationStarted = true
+	go func() {
+		result, createErr := impl.executeBoundedCreation(context.Background(), parent, parentIdentity, stageName, "cancelled.txt", []byte("must not publish"), creationRootBinding{root: root, conversation: conversation, generation: 1})
+		done <- struct {
+			result readbrokerstudy.CreationResult
+			err    error
+		}{result, createErr}
+	}()
+	select {
+	case <-launcher.stageStarted:
+	case <-time.After(3 * time.Second):
+		releaseStage()
+		t.Fatal("creation did not reach the held staging checkpoint")
+	}
+	impl.mu.Lock()
+	lease := impl.creationBarrier
+	impl.mu.Unlock()
+	if lease == nil {
+		releaseStage()
+		t.Fatal("creation barrier was absent during delayed staging")
+	}
+	transitionCtx, cancelTransition := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	transitionErr := service.InvalidateFilesystemRoot(transitionCtx, runtime.FilesystemRootTransition{ConversationID: conversation, Root: newRoot, Generation: 2, Reason: runtime.FilesystemRootSelected})
+	cancelTransition()
+	if !errors.Is(transitionErr, context.DeadlineExceeded) || !errors.Is(transitionErr, readbrokerstudy.ErrCleanupPending) {
+		releaseStage()
+		t.Fatalf("root transition did not report bounded delayed retirement: %v", transitionErr)
+	}
+	if lease.ctx.Err() == nil {
+		releaseStage()
+		t.Fatal("root transition did not cancel the active create effect")
+	}
+	service.rootMu.Lock()
+	rootPending, rootGeneration := service.rootPending, service.rootGeneration
+	service.rootMu.Unlock()
+	if !rootPending || rootGeneration != 2 {
+		releaseStage()
+		t.Fatalf("root transition gate was not retained: pending=%t generation=%d", rootPending, rootGeneration)
+	}
+	impl.mu.Lock()
+	retained := impl.creationBarrier == lease && (lease.state == creationBarrierActive || lease.state == creationBarrierBlocked)
+	impl.mu.Unlock()
+	if !retained {
+		releaseStage()
+		t.Fatal("root transition discarded creation ownership before worker cleanup")
+	}
+	releaseStage()
+	select {
+	case <-launcher.waitStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled stage did not enter delayed worker retirement")
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), tools.Invocation{ConversationID: conversation, TurnID: "replacement", ProviderCallID: "blocked", ToolID: tools.ReadFileID, Arguments: []byte(`{"path":"replacement.txt"}`)}, "openai/model/profile"); err == nil {
+		t.Fatal("root transition admitted replacement read work while the create worker remained unjoined")
+	}
+	releaseWait()
+	var completed struct {
+		result readbrokerstudy.CreationResult
+		err    error
+	}
+	select {
+	case completed = <-creationDone:
+		creationCompleted = true
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled create did not finish after its worker joined")
+	}
+	if completed.result.Outcome != readbrokerstudy.CreationNotCreated || !errors.Is(completed.err, context.Canceled) || !launcher.worker.Joined() {
+		t.Fatalf("cancellation outcome after confirmed retirement=%+v err=%v joined=%t", completed.result, completed.err, launcher.worker.Joined())
+	}
+	if _, err := os.Lstat(filepath.Join(root, "cancelled.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled creation published its destination: %v", err)
+	}
+	impl.mu.Lock()
+	leaseRetired := impl.creationBarrier == nil
+	impl.mu.Unlock()
+	service.rootMu.Lock()
+	rootPending = service.rootPending
+	service.rootMu.Unlock()
+	if !leaseRetired || !rootPending {
+		t.Fatalf("effect lease did not retire independently of pending root gate: lease_retired=%t root_pending=%t", leaseRetired, rootPending)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: conversation, Root: newRoot, Generation: 2, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatalf("retry root transition after effect retirement: %v", err)
+	}
+	service.rootMu.Lock()
+	rootPending, rootGeneration = service.rootPending, service.rootGeneration
+	service.rootMu.Unlock()
+	if rootPending || rootGeneration != 2 {
+		t.Fatalf("root transition did not clear its pending gate after retry: pending=%t generation=%d", rootPending, rootGeneration)
+	}
+	if err := service.Close(context.Background()); err != nil {
+		t.Fatalf("close service after delayed root transition: %v", err)
+	}
+}
+
 func TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce(t *testing.T) {
 	service, err := newTestHostServiceWithLauncher(&testCreationWorkerLauncher{})
 	if err != nil {
@@ -1751,9 +2371,9 @@ func TestComposedCreationSuccessAndContinuationFailureDoNotReplay(t *testing.T) 
 	fp.script = func(index int) (tools.CreateFileInput, error) {
 		switch index {
 		case 0:
-			return tools.CreateFileInput{Path: "first.txt", Content: "approved first bytes\n"}, nil
+			return tools.CreateFileInput{Path: "first.txt", Content: strings.Repeat("x", tools.MaxCreateFileContentBytes)}, nil
 		case 2:
-			return tools.CreateFileInput{Path: "second.txt", Content: "new turn bytes\n"}, nil
+			return tools.CreateFileInput{Path: "second.txt", Content: ""}, nil
 		default:
 			return tools.CreateFileInput{}, nil
 		}
@@ -1771,15 +2391,15 @@ func TestComposedCreationSuccessAndContinuationFailureDoNotReplay(t *testing.T) 
 		t.Fatalf("first effect/failed continuation truth: turn=%+v err=%v", first, firstErr)
 	}
 	firstBytes, err := os.ReadFile(filepath.Join(root, "first.txt"))
-	if err != nil || string(firstBytes) != "approved first bytes\n" {
-		t.Fatalf("confirmed creation missing after continuation failure: bytes=%q err=%v", firstBytes, err)
+	if err != nil || len(firstBytes) != tools.MaxCreateFileContentBytes || string(firstBytes) != strings.Repeat("x", tools.MaxCreateFileContentBytes) {
+		t.Fatalf("confirmed exact-64-KiB creation missing after continuation failure: bytes=%d err=%v", len(firstBytes), err)
 	}
 	second, secondErr := chat.Send(context.Background(), "create a different file", nil)
 	if secondErr != nil || second.Outcome != provider.OutcomeCompleted || len(second.ToolActivities) != 1 || second.ToolActivities[0].Outcome != tools.OutcomeSucceeded {
 		t.Fatalf("new turn did not complete independently: turn=%+v err=%v", second, secondErr)
 	}
 	secondBytes, err := os.ReadFile(filepath.Join(root, "second.txt"))
-	if err != nil || string(secondBytes) != "new turn bytes\n" {
+	if err != nil || len(secondBytes) != 0 {
 		t.Fatalf("new proposal was not created exactly: bytes=%q err=%v", secondBytes, err)
 	}
 	if len(approvals) != 2 || len(launcher.workers) != 2 || len(fp.callIDs) != 2 || fp.callIDs[0] == fp.callIDs[1] {
@@ -1794,6 +2414,148 @@ func TestComposedCreationSuccessAndContinuationFailureDoNotReplay(t *testing.T) 
 		// fails later on the deliberately absent selected-root read coordinator.
 	} else if errors.Is(err, ErrCreationBarrier) {
 		t.Fatalf("creation barrier remained closed after confirmed worker retirement: %v", err)
+	}
+}
+
+func TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall(t *testing.T) {
+	root := t.TempDir()
+	launcher := &filesystemCreationFixtureLauncher{
+		effectCommitted: make(chan struct{}), releaseEffectResult: make(chan struct{}),
+	}
+	var releaseEffectOnce sync.Once
+	releaseEffect := func() { releaseEffectOnce.Do(func() { close(launcher.releaseEffectResult) }) }
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root2 := t.TempDir()
+	for owner, class := range map[string]string{auth.SensitiveOwnerAuth: auth.SensitiveClassAuth, auth.SensitiveOwnerSettings: auth.SensitiveClassSettings} {
+		path := filepath.Join(root, "."+owner+".json")
+		if err := os.WriteFile(path, []byte("synthetic protected owner"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.Protect(context.Background(), owner, class, path, file); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	approvalCount := 0
+	base := runtime.BundledConversationToolRuntimeConfig(runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approvalCount++
+		return permissions.ApprovalOnce, "", nil
+	}), runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+	}))
+	config := runtime.WithBoundedCreationPrototype(base, service)
+	config.ReadAdmission = service
+	config.RootHost = service
+	fp := &creationServiceProvider{input: tools.CreateFileInput{Path: "effect-unknown.txt", Content: "effect committed before stale result"}, repeatCallID: "same-approved-call"}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := runtime.NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic credential", nil); err != nil {
+		t.Fatal(err)
+	}
+	selection := chat.Discover(context.Background())
+	if len(selection.Models) == 0 {
+		t.Fatal("provider discovery returned no model")
+	}
+	if err := chat.Select(context.Background(), selection.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	installSyntheticCreationManifest(t, service, root)
+	t.Cleanup(func() {
+		releaseEffect()
+		chat.Close()
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close creation service: %v", err)
+		}
+	})
+	firstDone := make(chan struct {
+		turn runtime.Turn
+		err  error
+	}, 1)
+	go func() {
+		turn, sendErr := chat.Send(context.Background(), "create the approved fixture", nil)
+		firstDone <- struct {
+			turn runtime.Turn
+			err  error
+		}{turn: turn, err: sendErr}
+	}()
+	select {
+	case <-launcher.effectCommitted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("create worker did not commit the filesystem effect")
+	}
+	actual, err := os.ReadFile(filepath.Join(root, "effect-unknown.txt"))
+	if err != nil || string(actual) != "effect committed before stale result" {
+		t.Fatalf("effect was not committed before result publication: bytes=%q err=%v", actual, err)
+	}
+	ownerDone := make(chan error, 1)
+	go func() {
+		ownerDone <- service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(root2, "settings-rotated.json"), nil)
+	}()
+	impl := service.impl.(*linuxImplementation)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		impl.mu.Lock()
+		pending := impl.blocked[auth.SensitiveOwnerSettings] != ""
+		lease := impl.creationBarrier
+		impl.mu.Unlock()
+		if pending {
+			if lease == nil || lease.ctx.Err() == nil {
+				t.Fatal("owner transition did not invalidate the post-effect creation")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owner transition did not enter pending state after the effect")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	releaseEffect()
+	var first struct {
+		turn runtime.Turn
+		err  error
+	}
+	select {
+	case first = <-firstDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("creation turn did not classify after released effect")
+	}
+	if first.err != nil || first.turn.Outcome != provider.OutcomeInterrupted || len(first.turn.ToolActivities) != 1 || first.turn.ToolActivities[0].Outcome != tools.OutcomeUnknown {
+		t.Fatalf("owner change leaked stale success after possible effect: turn=%+v err=%v", first.turn, first.err)
+	}
+	if fp.calls != 1 || len(launcher.workers) != 1 {
+		t.Fatalf("unknown effect was sent through provider continuation or replayed: provider requests=%d workers=%d", fp.calls, len(launcher.workers))
+	}
+	select {
+	case err := <-ownerDone:
+		if err != nil {
+			t.Fatalf("owner transition after creation classification: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("owner transition did not resume after effect classification")
+	}
+
+	second, secondErr := chat.Send(context.Background(), "retry the same approved tool call", nil)
+	if secondErr != nil || second.Outcome != provider.OutcomeUnsupported {
+		t.Fatalf("duplicate provider call was not rejected: turn=%+v err=%v", second, secondErr)
+	}
+	if fp.calls != 2 || len(launcher.workers) != 1 || approvalCount != 1 || len(fp.callIDs) != 2 || fp.callIDs[0] != fp.callIDs[1] {
+		t.Fatalf("duplicate call restored approval or dispatched a second effect: requests=%d workers=%d approvals=%d callIDs=%v", fp.calls, len(launcher.workers), approvalCount, fp.callIDs)
 	}
 }
 
@@ -1970,12 +2732,14 @@ func (p *creationBarrierCaptureProvider) StreamChat(ctx context.Context, request
 }
 
 type filesystemCreationFixtureLauncher struct {
-	service        *Service
-	events         []string
-	workers        []*filesystemCreationFixtureWorker
-	waitErr        error
-	publishEntered chan struct{}
-	releasePublish chan struct{}
+	service             *Service
+	events              []string
+	workers             []*filesystemCreationFixtureWorker
+	waitErr             error
+	publishEntered      chan struct{}
+	releasePublish      chan struct{}
+	effectCommitted     chan struct{}
+	releaseEffectResult chan struct{}
 }
 
 func (*filesystemCreationFixtureLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
@@ -2087,6 +2851,10 @@ func (w *filesystemCreationFixtureWorker) PublishCreation(_ context.Context, sta
 	}
 	if err := unix.Fsync(int(w.parent.Fd())); err != nil {
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationUnknown}, err
+	}
+	if w.launcher.effectCommitted != nil {
+		close(w.launcher.effectCommitted)
+		<-w.launcher.releaseEffectResult
 	}
 	return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationCreated, Identity: identity, Bytes: uint32(len(w.content))}, nil
 }
@@ -2263,6 +3031,7 @@ type creationServiceProvider struct {
 	calls                 int
 	callIDs               []string
 	continuationFailureAt int
+	repeatCallID          string
 	script                func(int) (tools.CreateFileInput, error)
 }
 
@@ -2285,7 +3054,7 @@ func (p *creationServiceProvider) StreamChat(_ context.Context, _ provider.ChatR
 	if callIndex == p.continuationFailureAt && p.continuationFailureAt > 0 {
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeService}
 	}
-	if p.script == nil && p.calls > 1 || p.script != nil && (callIndex == 1 || callIndex == 3) {
+	if p.repeatCallID == "" && (p.script == nil && p.calls > 1 || p.script != nil && (callIndex == 1 || callIndex == 3)) {
 		message, _ := json.Marshal(map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "done"}}})
 		return provider.Result{Outcome: provider.OutcomeCompleted, Completion: provider.CompletionFinal, Text: "done", Native: []json.RawMessage{message}}, nil
 	}
@@ -2298,6 +3067,9 @@ func (p *creationServiceProvider) StreamChat(_ context.Context, _ provider.ChatR
 		}
 	}
 	callID := fmt.Sprintf("create-call-%d", callIndex)
+	if p.repeatCallID != "" {
+		callID = p.repeatCallID
+	}
 	p.callIDs = append(p.callIDs, callID)
 	arguments, _ := json.Marshal(input)
 	callRaw, _ := json.Marshal(map[string]any{"type": "function_call", "id": "item-" + callID, "call_id": callID, "name": string(tools.CreateFileID), "arguments": string(arguments), "status": "completed"})
@@ -3759,6 +4531,174 @@ type stage4WorkerLauncher struct {
 	mu          sync.Mutex
 	lastWorker  *stage4Worker
 }
+
+type searchStage4WorkerLauncher struct{ *stage4WorkerLauncher }
+
+func (searchStage4WorkerLauncher) SearchProfilesAvailable() bool {
+	return goruntime.GOARCH == "amd64"
+}
+
+type searchDrainWorkerLauncher struct {
+	inertWorkerLauncher
+	contentStarted      chan struct{}
+	releaseContent      chan struct{}
+	releaseContentOnce  sync.Once
+	traversalStarted    chan struct{}
+	releaseTraversal    chan struct{}
+	releaseTraverseOnce sync.Once
+	creation            *filesystemCreationFixtureLauncher
+	mu                  sync.Mutex
+	workers             []*searchDrainWorker
+}
+
+func (l *searchDrainWorkerLauncher) SearchProfilesAvailable() bool {
+	return goruntime.GOARCH == "amd64"
+}
+
+func (l *searchDrainWorkerLauncher) StartForOperation(ctx context.Context, operation readbrokerstudy.AdmissionOperation) (readbrokerstudy.SandboxWorker, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if operation == readbrokerstudy.AdmissionCreateFile && l.creation != nil {
+		return l.creation.StartForOperation(ctx, operation)
+	}
+	worker := &searchDrainWorker{launcher: l, operation: operation}
+	l.mu.Lock()
+	l.workers = append(l.workers, worker)
+	l.mu.Unlock()
+	return worker, nil
+}
+
+func (l *searchDrainWorkerLauncher) releaseHeldContent() {
+	if l.releaseContent != nil {
+		l.releaseContentOnce.Do(func() { close(l.releaseContent) })
+	}
+}
+
+func (l *searchDrainWorkerLauncher) releaseHeldTraversal() {
+	if l.releaseTraversal != nil {
+		l.releaseTraverseOnce.Do(func() { close(l.releaseTraversal) })
+	}
+}
+
+func (l *searchDrainWorkerLauncher) workerSnapshot() []*searchDrainWorker {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]*searchDrainWorker(nil), l.workers...)
+}
+
+type searchDrainWorker struct {
+	launcher   *searchDrainWorkerLauncher
+	operation  readbrokerstudy.AdmissionOperation
+	mu         sync.Mutex
+	capability *os.File
+	result     []byte
+	joined     atomic.Bool
+}
+
+func (w *searchDrainWorker) Ready(ctx context.Context) error { return ctx.Err() }
+
+func (w *searchDrainWorker) Probe() readbrokerstudy.WorkerProbe {
+	return readbrokerstudy.WorkerProbe{
+		NoNewPrivs: true, SeccompMode: 2, SocketCreationDenied: true,
+		PathOpenDenied: true, ReadCapabilityInitiallyAbsent: true,
+		OnlyProtocolDescriptor: true, EnvironmentCleared: true,
+		DirectoryTraversalSyscallsAllowed: w.operation == readbrokerstudy.AdmissionListDirectory || w.operation == readbrokerstudy.AdmissionSearchFiles,
+	}
+}
+
+func (w *searchDrainWorker) TransferCapability(_ context.Context, file *os.File, _ readbrokerstudy.FileIdentity) error {
+	return w.retainCapability(file)
+}
+
+func (w *searchDrainWorker) TransferDirectoryCapability(_ context.Context, file *os.File, _ readbrokerstudy.FileIdentity) error {
+	if w.operation != readbrokerstudy.AdmissionListDirectory && w.operation != readbrokerstudy.AdmissionSearchFiles {
+		return readbrokerstudy.ErrProtocol
+	}
+	if err := w.retainCapability(file); err != nil {
+		return err
+	}
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(int(w.capability.Fd()), &stat); err != nil {
+		return err
+	}
+	w.result, _ = json.Marshal(struct {
+		Examined int   `json:"examined"`
+		Returned int   `json:"returned"`
+		MtimeNS  int64 `json:"mtime_ns"`
+		CtimeNS  int64 `json:"ctime_ns"`
+	}{MtimeNS: stat.Mtim.Sec*1e9 + stat.Mtim.Nsec, CtimeNS: stat.Ctim.Sec*1e9 + stat.Ctim.Nsec})
+	return nil
+}
+
+func (w *searchDrainWorker) TransferSearchSnapshot(_ context.Context, file *os.File, _ readbrokerstudy.FileIdentity) error {
+	if w.operation != readbrokerstudy.AdmissionSearchContent {
+		return readbrokerstudy.ErrProtocol
+	}
+	if err := w.retainCapability(file); err != nil {
+		return err
+	}
+	w.result = []byte(`{"matches":[],"incomplete":false,"skipped":0}`)
+	return nil
+}
+
+func (w *searchDrainWorker) retainCapability(file *os.File) error {
+	fd, err := unix.FcntlInt(file.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	capability := os.NewFile(uintptr(fd), "search-drain-worker-capability")
+	if capability == nil {
+		_ = unix.Close(fd)
+		return readbrokerstudy.ErrProtocol
+	}
+	w.mu.Lock()
+	w.capability = capability
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *searchDrainWorker) AwaitReadStarted(ctx context.Context) error {
+	if (w.operation == readbrokerstudy.AdmissionListDirectory || w.operation == readbrokerstudy.AdmissionSearchFiles) && w.launcher.traversalStarted != nil {
+		close(w.launcher.traversalStarted)
+		<-w.launcher.releaseTraversal
+		return ctx.Err()
+	}
+	if w.operation == readbrokerstudy.AdmissionSearchContent {
+		close(w.launcher.contentStarted)
+		<-w.launcher.releaseContent
+	}
+	return ctx.Err()
+}
+
+func (w *searchDrainWorker) hasCapability() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.capability != nil
+}
+
+func (*searchDrainWorker) AwaitCapabilityHeld(ctx context.Context) error { return ctx.Err() }
+
+func (w *searchDrainWorker) ReadResult(context.Context) (readbrokerstudy.WorkerResult, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return readbrokerstudy.WorkerResult{Outcome: readbrokerstudy.ReadSucceeded, Bytes: append([]byte(nil), w.result...)}, nil
+}
+
+func (*searchDrainWorker) Terminate() error { return nil }
+
+func (w *searchDrainWorker) Wait() error {
+	w.mu.Lock()
+	if w.capability != nil {
+		_ = w.capability.Close()
+		w.capability = nil
+	}
+	w.mu.Unlock()
+	w.joined.Store(true)
+	return nil
+}
+
+func (w *searchDrainWorker) Joined() bool { return w.joined.Load() }
 
 func (l *stage4WorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
 	l.starts.Add(1)

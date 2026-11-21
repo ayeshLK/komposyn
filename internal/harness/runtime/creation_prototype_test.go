@@ -40,6 +40,9 @@ type creationRuntimeFixture struct {
 	closes            int
 	discarded         int
 	changeOnReprepare bool
+	executionOutcome  tools.Outcome
+	executionContent  []tools.Content
+	executionErr      error
 }
 
 func (h *creationRuntimeFixture) PrepareFilesystemCreation(_ context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
@@ -97,7 +100,15 @@ type creationRuntimePreparation struct {
 
 func (p *creationRuntimePreparation) Execute(context.Context) (tools.Result, error) {
 	p.host.executions++
-	return tools.Result{ProviderCallID: p.callID, Outcome: tools.OutcomeSucceeded, Content: []tools.Content{{Kind: tools.ContentText, Text: "creation fixture completed"}}}, nil
+	outcome := p.host.executionOutcome
+	if outcome == "" {
+		outcome = tools.OutcomeSucceeded
+	}
+	content := p.host.executionContent
+	if content == nil {
+		content = []tools.Content{{Kind: tools.ContentText, Text: "creation fixture completed"}}
+	}
+	return tools.Result{ProviderCallID: p.callID, Outcome: outcome, Content: content}, p.host.executionErr
 }
 
 func (p *creationRuntimePreparation) Close(context.Context) error {
@@ -235,6 +246,60 @@ func TestCreationPrototypeRejectsMissingOrNullContentBeforeApproval(t *testing.T
 	}
 }
 
+func TestCreationPrototypeEnforcesContentAndSerializedArgumentLimitsBeforeApproval(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		content   string
+		wantValid bool
+	}{
+		{name: "exact content limit", content: strings.Repeat("x", tools.MaxCreateFileContentBytes), wantValid: true},
+		{name: "content over limit", content: strings.Repeat("x", tools.MaxCreateFileContentBytes+1)},
+		{name: "serialized arguments over limit", content: strings.Repeat("\x01", tools.MaxCreateFileInputBytes/6+1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			arguments, err := json.Marshal(tools.CreateFileInput{Path: "bounded.txt", Content: test.content})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "content over limit" && len(arguments) >= tools.MaxCreateFileInputBytes {
+				t.Fatalf("content boundary fixture also exceeds serialized argument limit: bytes=%d", len(arguments))
+			}
+			if test.name == "serialized arguments over limit" && len(arguments) <= tools.MaxCreateFileInputBytes {
+				t.Fatalf("serialized boundary fixture is not over the argument limit: bytes=%d", len(arguments))
+			}
+			approvals := 0
+			base := BundledConversationToolRuntimeConfig(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+				approvals++
+				return permissions.ApprovalOnce, "", nil
+			}), ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+				return ClarificationResponse{}, errors.New("not expected")
+			}))
+			host := &creationRuntimeFixture{root: t.TempDir()}
+			config := WithBoundedCreationPrototype(base, host)
+			fp := &toolLoopProvider{step: func(index int, _ provider.ChatRequest) (provider.Result, error) {
+				if index == 0 {
+					return creationProviderCallArguments(t, "boundary-"+strings.ReplaceAll(test.name, " ", "-"), arguments), nil
+				}
+				return finalResult("done"), nil
+			}}
+			chat := newCreationRuntimeChat(t, fp, config)
+			turn, turnErr := chat.Send(context.Background(), "create a bounded fixture", nil)
+			if test.wantValid {
+				if turnErr != nil || turn.Outcome != provider.OutcomeCompleted || approvals != 1 || len(host.prepared) != 1 || host.executions != 1 {
+					t.Fatalf("exact-limit request did not reach once approval and execution: turn=%+v approvals=%d prepared=%d executed=%d err=%v", turn, approvals, len(host.prepared), host.executions, turnErr)
+				}
+				if !strings.Contains(host.previews[0].Requirements[0].Description, test.content) {
+					t.Fatal("approval did not preserve the complete exact-limit UTF-8 content")
+				}
+				return
+			}
+			if approvals != 0 || len(host.previews) != 0 || len(host.prepared) != 0 || host.executions != 0 {
+				t.Fatalf("invalid bounded request reached approval/effect: approvals=%d previews=%d prepared=%d executed=%d", approvals, len(host.previews), len(host.prepared), host.executions)
+			}
+		})
+	}
+}
+
 func TestCreationPrototypeRejectsChangedProposalBeforeExecution(t *testing.T) {
 	base := BundledConversationToolRuntimeConfig(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
 		return permissions.ApprovalOnce, "", nil
@@ -256,6 +321,33 @@ func TestCreationPrototypeRejectsChangedProposalBeforeExecution(t *testing.T) {
 	}
 	if host.executions != 0 || len(host.prepared) != 0 {
 		t.Fatalf("stale proposal reached execution: executions=%d preparations=%d", host.executions, len(host.prepared))
+	}
+}
+
+func TestCreationUnknownOutcomeStopsProviderContinuation(t *testing.T) {
+	base := BundledConversationToolRuntimeConfig(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}), ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+		return ClarificationResponse{}, errors.New("not expected")
+	}))
+	host := &creationRuntimeFixture{
+		root: t.TempDir(), executionOutcome: tools.OutcomeUnknown,
+		executionContent: []tools.Content{{Kind: tools.ContentText, Text: "unconfirmed file was created"}},
+	}
+	config := WithBoundedCreationPrototype(base, host)
+	fp := &toolLoopProvider{step: func(index int, _ provider.ChatRequest) (provider.Result, error) {
+		if index != 0 {
+			t.Fatalf("provider received continuation after an unknown creation outcome at request %d", index+1)
+		}
+		return creationProviderCall(t, "unknown-create", tools.CreateFileInput{Path: "uncertain.txt", Content: "synthetic"}), nil
+	}}
+	chat := newCreationRuntimeChat(t, fp, config)
+	turn, err := chat.Send(context.Background(), "create a synthetic fixture", nil)
+	if err != nil || turn.Outcome != provider.OutcomeInterrupted || host.executions != 1 || len(fp.captured()) != 1 {
+		t.Fatalf("unknown creation continued or replayed: turn=%+v executions=%d requests=%d err=%v", turn, host.executions, len(fp.captured()), err)
+	}
+	if len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeUnknown {
+		t.Fatalf("unknown creation was not reported truthfully: %+v", turn.ToolActivities)
 	}
 }
 

@@ -9,48 +9,61 @@ Focused tests use the real composed sandbox service and runtime seam where appli
 | Lifecycle claim | Evidence |
 | --- | --- |
 | Barrier closes admission before stage creation and drains active reads | `TestCreationBarrierWaitsForActiveReadWorkerToJoin`; active worker is cancelled and joined without changing read generations. |
+| Runtime-admitted list and search cannot overlap stage creation | `TestCreationBarrierDrainsRuntimeAdmittedDirectoryWorkers` exercises composed list and search admission against the real sandbox service while an actual bounded creation execution waits on its barrier. It holds after directory capability transfer, asserts the worker received the descriptor, proves the stage/destination are absent until join, and confirms creation proceeds afterward. Search cases skip when `Service.SearchFilesAvailable()` is false or the fixture is not ext4. `TestCreationBarrierJoinsRuntimeAdmittedSearchContentWorker` additionally holds the content worker. Injected workers establish lifecycle control flow, not kernel enforcement. |
 | Completed private read captures remain publishable | `TestCompletedReadCaptureSurvivesTransientCreationBarrierBeforeProviderHandoff`; the transient barrier does not revoke already completed captures. |
 | Effect remains one-shot across continuation failure | `TestComposedCreationSuccessAndContinuationFailureDoNotReplay`; a later turn requires its own call and approval. |
 | Cleanup uncertainty blocks admission and retains ownership | `TestCreationCleanupFailureRetainsBarrierAndDoesNotRetry`; `TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked`. |
+| Service close and root transition preserve pending ownership while creation retires | `TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked` checks bounded close with a held worker; `TestRootTransitionRetainsPendingGateDuringDelayedCreationRetirement` verifies replacement admission remains blocked until cleanup and a retry completes the root transition. |
 | Lost completion classification cannot replay | `TestCreationCompletionLossAfterPublicationIsUnknownAndNeverReplayed`. |
-| Owner transition and publication release are ordered | `TestOwnerTransitionAfterPublicationReleaseWaitsForCreationClassification`; a concurrent alias attempt fails closed and owner rotation waits for classification. |
+| Owner transition and publication release are ordered | `TestCreationOwnerTransitionWinsAfterFinalValidationBeforePublicationRelease` pauses the actual execution path after final validation; `TestOwnerTransitionAfterPublicationReleaseWaitsForCreationClassification` covers the release-wins path and a concurrent alias attempt. |
+| Effect committed before runtime/provider publication | `TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall` holds the composed worker after the filesystem effect, rotates an owner, and verifies the outcome is unknown with no provider continuation or second dispatch. |
 
-Existing creation tests continue to cover once binding, retained-parent checks, root/service transitions, worker protocol, byte limits and collision behavior. These tests establish control-flow and lifecycle behavior; they do not establish kernel/filesystem enforcement.
+Existing creation tests continue to cover once binding, retained-parent checks, root/service transitions, worker protocol, byte limits and collision behavior. `TestCreationPrototypeEnforcesContentAndSerializedArgumentLimitsBeforeApproval` checks exact 64 KiB content and over-limit content/serialized arguments before approval; the composed service success test also exercises exact-limit and empty-file effects. `TestCreationUnknownOutcomeStopsProviderContinuation` confirms uncertain completion ends the provider turn without replay. These tests establish control-flow and lifecycle behavior; they do not establish kernel/filesystem enforcement.
+
+The joined-search-worker race run exposed an ordering defect: the asynchronous
+join waiter could retire an operation before the caller finished closing and
+validating its private search snapshot. Operation completion now waits until
+the execution path returns; the waiter still retains cleanup ownership and
+completes a returned, cleanup-pending operation after join. This keeps snapshot
+cleanup and final evidence updates inside the operation lifetime.
 
 ## Acceptance matrix
 
 | Area | Existing evidence / candidate action | Observed result |
 | --- | --- | --- |
-| A. Barrier: queued/prepared and active read, list, search | Barrier invalidates pending read admissions and drains active read workers. New dedicated test covers active read. Separate active list/search cancellation case is not added. | Read case passes; list/search-specific cancellation coverage remains incomplete. |
+| A. Barrier: queued/prepared and active read, list, search | Runtime-admitted read, list and search cases exercise the composed admission path. Search also holds the content worker while the barrier waits for join. | Focused cases pass. The injected list/search workers establish coordinator/drain behavior, not native kernel cancellation. |
 | A. Completed capture, aliases, concurrent same-leaf create | Completed capture/provider handoff and same-parent alias/concurrent attempt are covered by composed tests; root/policy/owner invalidation remains covered by existing authority tests. | Covered cases pass; not every alias/leaf interleaving is exhaustively enumerated. |
 | B. Drain/join/cleanup/publication uncertainty | Injected cleanup error, delayed join, and completion loss after publish assert unknown/blocked/no replay. | Covered cases pass; no recovery operation exists, so the gate remains blocked. |
-| B. Close/root transitions and ownership | Existing close/root transition tests plus after-release owner transition ordering. Active creation close at every delayed-retirement boundary is not separately covered. | Existing and new cases pass; the additional lifecycle boundary remains open. |
-| C. Cancellation and owner arbitration | Existing permit winner tests plus new publication-release winner test. Native syscall interruption and every before/after permit timing are not controlled by the behavioral fixtures. | Selected deterministic cases pass; other checkpoints remain incomplete. |
-| D. Successful composition and no replay | Real Service/runtime/provider fixture proves success followed by continuation failure and a separate approved next turn; worker test covers exact bytes/mode and empty input. Lost response/cancel/duplicate dispatch and full composed size boundaries are not all exercised together. | Covered cases pass; additional outcome combinations remain incomplete. |
-| Native: worker, collision, parent movement | Existing pinned native cases retained; runner adds a separate same-UID actor moving the parent and substituting the old route. Interrupted write/sync/close/publication syscalls are not controllably induced. | Build completed; native execution unavailable on this host, so candidate native cases are pending. |
+| B. Close/root transitions and ownership | Delayed creation retirement is exercised across bounded service close and root transition; after-release owner transition ordering remains covered separately. | Selected cases pass; all scheduling interleavings are not exhaustively enumerated. |
+| C. Cancellation and owner arbitration | `TestCreationOwnerTransitionWinsAfterFinalValidationBeforePublicationRelease` pauses the execution path after final filesystem validation; `TestOwnerTransitionAfterPublicationReleaseWaitsForCreationClassification` covers a release winner; the composed post-effect test covers invalidation before runtime/provider publication. | Selected deterministic cases pass. Native syscall interruption and exhaustive schedules remain untested. |
+| D. Successful composition and no replay | Real Service/runtime/provider fixture proves success followed by continuation failure and a separate approved next turn; exact 64 KiB and empty-file outcomes are exercised. `TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall` covers a possible effect before a stale result and the identical provider call retry. | Unknown/stale output is withheld; repeated call identity is rejected before another approval or worker. A new distinct proposal still requires fresh approval. |
+| Native: worker, collision, parent movement | Trusted-host run for source `dbfd90974f0979832a9abc60e32aeb3c87399840` passed all 12/12 scoped native cases, including bounded creation and independent-actor parent movement/substitution. Interrupted write/sync/close/publication syscalls are not controllably induced. | Recorded `scoped_native_pass`; evidence is limited to the measured Linux amd64/local ext4/Bubblewrap profile below. |
+
+### Named concurrency checkpoints
+
+This is a finite scenario set, not an exhaustive enumeration of scheduler
+interleavings:
+
+| Checkpoint | Deterministic evidence | Outcome |
+| --- | --- | --- |
+| Before / during barrier drain | `TestCreationBarrierClosesAndReopensReadAdmissionAroundDrain`; `TestCreationBarrierWaitsForRuntimeAdmittedReadWorkerToJoin`; runtime-admitted list/search cases in `TestCreationBarrierDrainsRuntimeAdmittedDirectoryWorkers` | New admission closes; stale/prepared work cannot publish; held workers must join before the actual creation stage can start. |
+| Search traversal and content-worker joins | `TestCreationBarrierJoinsRuntimeAdmittedSearchContentWorker` | Barrier remains pending while the content worker is held, then joins both phases without publishing stale output. |
+| Stage entry versus owner pending | `TestCreationBarrierOrdersOwnerPendingAgainstPublicationRelease` (owner-pending-wins subcase) | Stage/publication permits fail after owner pending wins. |
+| Final revalidation versus publication release | `TestCreationOwnerTransitionWinsAfterFinalValidationBeforePublicationRelease` | Owner pending cancels the lease before release; stage is removed and target remains absent. |
+| Stage in progress versus root transition | `TestRootTransitionCancelsAndJoinsCreationBeforeChangingScope`; `TestRootTransitionRetainsPendingGateDuringDelayedCreationRetirement` | Transition cancels and joins; delayed retirement keeps replacement admissions blocked and retains effect ownership. |
+| Publication release versus owner transition | `TestCreationBarrierOrdersOwnerPendingAgainstPublicationRelease` (release-wins subcase); `TestOwnerTransitionAfterPublicationReleaseWaitsForCreationClassification` | Release winner is classified before transition returns; confirmed effect is not falsely described as absent. |
+| Post-effect completion uncertainty / stale publication | `TestCreationPublicationDelayedJoinClassifiesUnknownWithoutRace`; `TestCreationCompletionLossAfterPublicationIsUnknownAndNeverReplayed`; `TestCreationUnknownOutcomeStopsProviderContinuation`; `TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall` | Published bytes remain; result is unknown, stale success is withheld, gate ownership stays blocked where cleanup is uncertain, and provider continuation/replay stops. |
+| Close during delayed retirement | `TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked`; `TestCreationPublicationDelayedJoinClassifiesUnknownWithoutRace` | Bounded close returns cleanup pending without discarding ownership. |
+| Duplicate approved preparation / dispatch boundary | `TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce`; `TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall`; `TestComposedCreationSuccessAndContinuationFailureDoNotReplay` | Changed arguments fail binding; same call identity after a possible effect is rejected before a second approval/worker; a genuinely new call requires fresh approval. |
 
 ## Native evidence and limits
 
-The previous accepted run is historical evidence only: source `39279e93080a2306f5ed1a702bd83ab852eb1055`, overlay SHA-256 `560c845a55a0e52c4f76b8710407ce914113f168c41b14196432d47b0b66f5c4`, archive SHA-256 `4a43e17e123e4fb6e2a0b55af42d276df7433092094ee0fb4b814e1b50047dfa`. It does not include the lifecycle changes in this branch.
+The earlier accepted run at source `39279e93080a2306f5ed1a702bd83ab852eb1055` remains historical. The intervening `native_unavailable` run at `e7c5fbd884682916602a23a9909c0f81938d3f4e` is also preserved in its original record and is not treated as a pass.
 
-The candidate runner adds a separate-actor parent move/substitution case. It is not executed here: this host's Bubblewrap ownership is `nobody:nogroup 755`, which fails the trusted-root-owned prerequisite. The new case and the existing native creation cases therefore remain pending on an eligible regular-user Linux/ext4 host. Run the exact committed candidate using the steps in [native acceptance](issue-321-native-acceptance.md); do not alter host ownership or permissions.
+The later trusted-host run tested source `dbfd90974f0979832a9abc60e32aeb3c87399840` and recorded 12/12 `scoped_native_pass`. Environment: Go 1.26.11, Linux 7.0.0-42-generic amd64, regular UID 1000, trusted root-owned Bubblewrap 0.9.0, `ro-bind-fd`, local ext4 (mount ID 33). Archive SHA-256 `3d76449b95ba037db17d46b3404d36f398d993cd0af3c940904857be305236dc`; manifest SHA-256 `1822336d698e55d533cc71a3a54738885e99fdaff64b81b0cb51e9c3173d9a02`; report SHA-256 `ac66529ef8a9a8e562505c5964d080d01aeb040122be804fabe86959b82f7ce6`. The supplied archive is `komposyn-composition-native-results.ah0j_t7n.tar.gz` (and the preceding run is `komposyn-composition-native-results.y0n88dnv.tar.gz`). This run predates the coordinator completion-ordering guard added in this branch. The guard prevents a joined-worker waiter from publishing completion while caller-owned search snapshot cleanup and evidence updates are still running. The run remains evidence for the unchanged worker enforcement, worker image, native protocol and measured host profile; it does not exercise or prove the new coordinator ordering. The new lifecycle and coordinator cases are covered by behavioral tests and the Go race suite. They do not widen the native claim.
 
-The candidate runner was built and reached its native preflight against source
-`e7c5fbd884682916602a23a9909c0f81938d3f4e`. It recorded `native_unavailable`,
-not a native pass. Archive:
-`/tmp/komposyn-composition-native-results.nyjn6xql.tar.gz` (SHA-256
-`5cbc1ac735826def9e34d6bad67fda1546be5a04376be07d4fb6d8f6df65b3cd`);
-manifest SHA-256
-`99844cd67fa49e9485294adb43a07c6577a2978addc33597f5a1010a5b0d595d`.
-The Go 1.26.11/Linux 7.0.0-42-generic amd64, UID 1000 run completed unit
-checks and native binary build, skipped all backend-dependent cases because
-the configured Bubblewrap was untrusted (UID 65534, mode 0755), and confirmed
-cleanup. Overlay SHA-256 is
-`cdf1712739ea9ea179550a6ee59ef53273afe9ad4e95cd2191d5d15948e65747`; runner
-SHA-256 is `088837dc7d2de35588a80959193b7a5d5b0f673a13f35154e6ef2aa855b4fa3d`.
-
-Remaining evidence gaps include native execution of the new parent-move case and syscall-level interruption behavior. Behavioral gaps include a dedicated active list/search cancellation case, full composed byte-limit boundary coverage, and every possible owner/cancellation checkpoint. The present work does not close those gaps by inference.
+Remaining gaps include syscall-level interruption behavior, exhaustive owner/cancellation timing, service-wide production owner coverage, and broader hosts/filesystems/platforms. The Go tests add runtime control-flow evidence; they do not widen the native claim.
 
 ## Enablement boundary
 
-No production capability is enabled. The accepted prototype remains synthetic and fixture-only. Production owner coverage, the supported profile decision, native acceptance for this candidate, and explicit maintainer enablement approval remain separate gates. Issues #267, #315, #321 and #322 remain open.
+No production capability is enabled. The accepted prototype remains synthetic and fixture-only. The scoped native profile evidence does not establish production owner coverage or maintainer enablement approval. Issues #267, #315, #321 and #322 remain open pending their separate closeout criteria.

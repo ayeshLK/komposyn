@@ -1,5 +1,14 @@
 # Near-term mutation implementation deferral
 
+**Evidence update — 2026-11-21:** the disposable creation prototype now has
+selected runtime lifecycle tests and a trusted-host native run with 12/12
+scoped cases on its recorded Linux amd64/local-ext4/Bubblewrap profile. These
+results close those prototype evidence steps only. Production owner coverage,
+broader platform/filesystem support and explicit model-facing enablement remain
+open; neither creation nor editing is available in normal composition. See
+the [issue #321 lifecycle acceptance record](issue-321-lifecycle-acceptance.md)
+for provenance and limits.
+
 **Subsequent creation decision:** PR #343 merged on 2026-11-19 and ADR-0008 is
 accepted for the creation concurrency/approval boundary only. The
 [runtime-file-object contract](runtime-file-object-saves.md) accepts a residual
@@ -14,11 +23,11 @@ Status: **planning record for the near-term deferral; #315's current-delivery
 section tracks its publication and review state**.
 
 Editing implementation remains deferred under its existing authority
-contract. Creation has an accepted concurrency/approval boundary and a bounded
-stage-plus-no-replace prototype in progress; its candidate and evidence are in
-[creation mechanism design](creation-mechanism-proposal.md). Neither operation
-has accepted native positive evidence or separate enablement. Discovery remains delivered
-within its documented support profiles:
+contract. Creation has an accepted concurrency/approval boundary, a bounded
+stage-plus-no-replace fixture prototype, and scoped positive native evidence;
+its mechanism and evidence are in [creation mechanism design](creation-mechanism-proposal.md).
+Editing has no positive native mechanism evidence. Neither operation has
+separate model-facing enablement. Discovery remains delivered within its documented support profiles:
 nonrecursive listing and recursive/filter listing on their recorded Linux
 profiles, and literal search on its recorded Linux amd64 ext4 profile.
 
@@ -42,7 +51,8 @@ host-policy change.
 ## Conditions for resuming mutation work
 
 For creation, the runtime-file-object boundary is accepted and the
-stage-plus-no-replace candidate is being exercised in a disposable fixture.
+stage-plus-no-replace candidate has been exercised in a disposable fixture and
+the recorded native profile.
 Editing has no
 accepted mechanism or contract change and remains gated by ADR-0007. A general
 request to make patching safe is not a candidate. For either operation, cover

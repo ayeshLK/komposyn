@@ -70,10 +70,13 @@ type readOperation struct {
 	cleanupRequired    bool
 	cleanupObligation  bool
 	evidenceRecorded   bool
-	completed          bool
-	done               chan struct{}
-	probe              WorkerProbe
-	evidence           ReadEvidence
+	// executionReturned prevents a join goroutine from publishing final evidence
+	// while the caller still owns post-worker cleanup and filtering.
+	executionReturned bool
+	completed         bool
+	done              chan struct{}
+	probe             WorkerProbe
+	evidence          ReadEvidence
 }
 
 // workerLifecycle belongs to one child process. A single authorized operation
@@ -1260,7 +1263,7 @@ func (s *fixtureSession) startWorkerWait(op *readOperation, worker *workerLifecy
 			if op.worker == worker {
 				op.workerJoined = joined
 			}
-			if joined && op.cleanupObligation && !op.completed && op.worker == worker {
+			if joined && op.executionReturned && op.cleanupObligation && !op.completed && op.worker == worker {
 				s.completeJoinedLocked(op, WorkerResult{Outcome: ReadUnknown, Detail: "worker joined after the execution deadline; result suppressed"})
 			}
 			s.mu.Unlock()
@@ -1311,6 +1314,7 @@ func (s *fixtureSession) terminateAndWaitContext(ctx context.Context, op *readOp
 func (s *fixtureSession) finish(op *readOperation, result WorkerResult) {
 	var terminate []SandboxWorker
 	s.mu.Lock()
+	op.executionReturned = true
 	if op.cleanupRequired && !op.workerJoined {
 		s.cleanupBlocked = true
 		op.cleanupObligation = true
@@ -1467,7 +1471,7 @@ func (s *fixtureSession) Close(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	for _, op := range activeOps {
-		if !op.completed && op.cleanupRequired && op.workerJoined {
+		if !op.completed && op.executionReturned && op.cleanupRequired && op.workerJoined {
 			s.completeJoinedLocked(op, WorkerResult{Outcome: ReadUnknown})
 		}
 	}

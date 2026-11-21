@@ -1,15 +1,16 @@
 # Proposed one-file creation mechanism
 
-**Status:** a bounded disposable-fixture prototype is being implemented under
-the worker assignment. The Linux service now consumes its barrier and
+**Status:** the bounded disposable-fixture prototype and selected lifecycle
+acceptance are implemented. The Linux service consumes its barrier and
 owner-ordered stage/publication permits through a retained-parent creation
 path. An operation-specific worker protocol stages exact bytes and publishes
 with `RENAME_NOREPLACE`; synthetic manifest checks and focused behavior tests
-are present. The existing native acceptance runner now includes a real
+are present. Runtime/UI approval and provider continuation boundaries have
+focused integration evidence. The existing native acceptance runner includes a real
 Bubblewrap creation case for a disposable ext4 fixture, exact bytes/mode,
-no-replace incumbent preservation, stage cleanup and worker join. That native
-cases have not yet run on an eligible host; native lifecycle acceptance and
-remaining boundary evidence are tracked in the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md). This
+no-replace incumbent preservation, stage cleanup and worker join. A trusted
+host recorded 12/12 scoped native cases; provenance, test profile and remaining
+gaps are tracked in the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md). This
 does not create a supported mutation profile or model-facing capability.
 Normal production composition remains closed.
 
@@ -32,10 +33,12 @@ overwrite or append. The selected parent directory object is retained by
 descriptor, so renaming a parent does not redirect the operation to a
 replacement directory.
 
-The first proposed native pilot is Linux amd64, local ext4, with Linux 5.6 or
-newer for `openat2` path resolution and a filesystem/kernel pair that accepts
-`RENAME_NOREPLACE`. This is a test candidate, not a supported profile: no
-evidence has been collected for this composition. `openat2` resolution uses
+The measured scoped native profile is Linux amd64 on local ext4 with the
+recorded trusted Bubblewrap `ro-bind-fd` launch mode; the accepted run recorded
+12/12 cases. This is evidence for the bounded fixture prototype on that host,
+not a supported profile or production enablement. Linux 5.6 or newer is the
+minimum kernel requirement for `openat2` path resolution, and the filesystem
+and kernel must accept `RENAME_NOREPLACE`. `openat2` resolution uses
 `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`; descendant resolution also uses
 `RESOLVE_BENEATH | RESOLVE_NO_XDEV`. Unsupported flags, syscall or filesystem
 behavior cause refusal. There is no path-based, procfs, `O_TMPFILE`, rename
@@ -376,10 +379,10 @@ enablement:
    composition.
 2. **Trusted approval/release integration:** the explicit runtime seam and
    service proposal binding now build an exact once request and consume a
-   retained proposal once. Full real-worker runtime/UI/provider execution and
-   integrity against same-user interference are not yet established. The
-   revised boundary accepts this residual risk but does not waive those
-   integration tests.
+   retained proposal once. The fixture approval/provider flow has integration
+   evidence, and native worker evidence covers the recorded profile. Integrity
+   against same-user interference remains outside the accepted boundary and
+   is not established.
 3. **Transient-stage/read lifecycle:** `linuxImplementation.Protect` advances
    `s.revision`, invalidates read continuations and admissions, and registers
    owner rotations. It cannot be reused for a stage created by the save that
@@ -394,22 +397,26 @@ enablement:
    protected-owner/policy/coverage generations. If cancellation, join or
    retirement is incomplete, keep the affected read gate closed and retain
    cleanup ownership. The Linux fixture now has a create-specific barrier and
-   owner-ordered stage/publication permits; focused tests cover selected state
-   transitions. The full read-worker lifecycle/race matrix remains pending.
+   owner-ordered stage/publication permits; focused tests cover read/list/search
+   drain, held search-content join, close, root transition, cleanup uncertainty
+   and selected publication transitions. The full read-worker lifecycle/race
+   matrix is not exhaustive.
    The separate [integration
    protocol proposal](creation-integration-protocol.md) specifies a
    service-wide fail-closed barrier, lock/wait order, cancellation and
    retirement states, and evidence cases. This resolves the design-description
-   sequencing; completing and proving lifecycle behavior remains a blocker.
+   sequencing; selected lifecycle behavior now has focused evidence, with the
+   remaining gaps recorded in the acceptance matrix.
    Do not use generic owner rotation or skip invalidation as a shortcut.
-4. **Candidate evidence:** no native actor study or runtime/UI/provider
-   creation journey has tested this stage-and-rename composition. `ext4`,
-   amd64 and kernel prerequisites are a proposed pilot tuple only. No claim of
-   correctness or support is inferred from #319 or the read studies.
+4. **Candidate evidence:** the trusted-host study exercises the stage-and-rename
+   worker on its recorded Linux amd64/local-ext4/Bubblewrap profile, including
+   an independent actor. It does not establish other filesystems/platforms,
+   production owner coverage, syscall interruption behavior or generalized
+   correctness. See the acceptance record for hashes and the precise claim.
 
 These are blockers, not assumptions to fill with tests that silently relax
 owner coverage or approval semantics. PR #344 merged the mechanism proposal;
-it did not accept the mechanism as implementation-ready. The integration
+it did not enable creation. The integration
 protocol proposal adds concrete sequencing but does not resolve production
 coverage: the current composition cannot attest complete coverage for
 arbitrary user-selected scopes. The current maintainer assignment explicitly
