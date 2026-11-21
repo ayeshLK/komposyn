@@ -152,6 +152,10 @@ has behavioral lifecycle evidence recorded in
 [issue-321 lifecycle acceptance](issue-321-lifecycle-acceptance.md), while
 candidate-specific native acceptance and production enablement remain pending.
 The normal chat composition does not expose creation.
+The proposed [host-managed creation scope and owner-coverage decision](../adr/0009-proposed-host-managed-creation-scope.md)
+compares arbitrary directories, a fresh per-conversation output folder, and
+continued unavailability. It is pending maintainer review; it does not enable
+creation or establish production coverage.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).

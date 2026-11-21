@@ -148,6 +148,9 @@ or general same-user isolation. Separate enablement approval has not been
 recorded, and the production capability remains closed. See [the issue #321
 native acceptance procedure](issue-321-native-acceptance.md) and
 [creation integration protocol](creation-integration-protocol.md).
+The next proposed scope/owner-coverage decision is documented in
+[ADR-0009](../adr/0009-proposed-host-managed-creation-scope.md); it is not
+accepted and does not change this unavailable status.
 
 ## Runtime and UI reasons
 
