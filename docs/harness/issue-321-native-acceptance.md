@@ -86,6 +86,32 @@ were unavailable. Unit checks, native build, process cleanup, and temporary
 work cleanup completed. This validates the regression test on this candidate;
 it does not replace the full trusted-host acceptance run.
 
+## Trusted-host follow-up
+
+The maintainer then ran the full candidate on the trusted host using source
+commit `7f7807ce21365e5cf0bbe4fc26712c71573313e1`. Archive SHA-256:
+`0d7169f618c98fa7ae6de89585011917bc2c3a3a1c348c3b0a5eb78e3e612deb`;
+manifest SHA-256:
+`a4280dd01e0ec863d9718ccd206759220a0941ec107a1cd070e7287f0264f6d1`;
+native report SHA-256:
+`ee63d3ee59c134c0f275a30208532bda583ee736fa7e24646e8ef0ade8898284`.
+Environment: Go 1.26.11, Linux 7.0.0-42-generic amd64, regular UID 1000,
+trusted root-owned Bubblewrap 0.9.0, `ro-bind-fd`, ext4 mount ID 33. Build and
+unit stages passed; ten cases measured pass and two failed: the new actor
+dispatch regression and the retained-parent move case. The runner reaped its
+child, confirmed no remaining descendants, and removed temporary work.
+
+This run exposed an additional constraint after the startup dispatch was
+fixed. The study runner places fixtures under its configured ext4 scratch
+directory, while `NewNativeActor` starts with an empty environment. The actor
+therefore defaulted `TMPDIR` to `/tmp`; its existing private-temp-root check
+refused the fixture under the separate scratch mount before READY. The
+follow-up now supplies only `TMPDIR=<fixture-root-parent>` to the actor. It
+continues to discard all inherited environment variables and credentials, and
+retains the existing root validation and bounded actor protocol. Full native
+acceptance must be rerun against the updated PR head; this failed archive is
+preserved as evidence and is not a pass.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).

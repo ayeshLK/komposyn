@@ -38,8 +38,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The test binary is also the exact fixed worker image. Bootstrap precedes
-// testing initialization and never initializes credentials or providers.
+// The test binary is also the exact fixed worker image. Worker and actor modes
+// run before testing initialization and never initialize credentials/providers.
 func init() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -125,7 +125,7 @@ func nativeContext(t *testing.T) context.Context {
 
 // This process-level check uses the compiled acceptance test binary as the
 // exact actor executable. It intentionally does not require Bubblewrap: it
-// verifies that the fixed actor mode is dispatched before testing parses argv.
+// verifies early actor dispatch and runs with only the fixture TMPDIR set.
 func TestNativeActorModeDispatch(t *testing.T) {
 	r := nativeReport(t)
 	root := filepath.Join(t.TempDir(), "actor-root")

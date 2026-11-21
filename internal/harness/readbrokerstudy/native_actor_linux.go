@@ -86,7 +86,14 @@ func NewNativeActor(ctx context.Context, executable, fixtureRoot string, action 
 	if err != nil {
 		return nil, err
 	}
-	return startNativeActor(ctx, executable, args, nil)
+	return startNativeActor(ctx, executable, args, nativeActorEnvironment(fixtureRoot))
+}
+
+// nativeActorEnvironment keeps the actor's environment isolated while letting
+// its root validation use the same private temporary parent as the coordinator.
+// This matters when the study scratch directory is on ext4 outside /tmp.
+func nativeActorEnvironment(fixtureRoot string) []string {
+	return []string{"TMPDIR=" + filepath.Dir(fixtureRoot)}
 }
 
 func nativeActorArgs(executable, fixtureRoot string, action NativeActorAction, sourceRelative, targetRelative string) ([]string, error) {
