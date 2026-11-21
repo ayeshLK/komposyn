@@ -88,6 +88,16 @@ func ParseCreateFile(raw []byte) (CreateFileInput, error) {
 	if err := decodeStrictObject(raw, MaxCreateFileInputBytes, &input); err != nil {
 		return CreateFileInput{}, err
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return CreateFileInput{}, errors.New("creation request is not a JSON object")
+	}
+	contentRaw, present := fields["content"]
+	var content *string
+	if !present || json.Unmarshal(contentRaw, &content) != nil || content == nil {
+		return CreateFileInput{}, errors.New("creation content must be explicitly provided as a string")
+	}
+	input.Content = *content
 	if input.Path == "" || len(input.Path) > MaxCreateFilePathBytes || strings.ContainsAny(input.Path, "\\\x00") || strings.HasPrefix(input.Path, "/") {
 		return CreateFileInput{}, errors.New("creation path is empty, absolute, or outside its input bound")
 	}

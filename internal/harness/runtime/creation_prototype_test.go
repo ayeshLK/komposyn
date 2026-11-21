@@ -111,11 +111,16 @@ func creationProviderCall(t *testing.T, callID string, input tools.CreateFileInp
 	if err != nil {
 		t.Fatal(err)
 	}
+	return creationProviderCallArguments(t, callID, arguments)
+}
+
+func creationProviderCallArguments(t *testing.T, callID string, arguments json.RawMessage) provider.Result {
+	t.Helper()
 	callRaw, err := json.Marshal(map[string]any{"type": "function_call", "id": "item-" + callID, "call_id": callID, "name": string(tools.CreateFileID), "arguments": string(arguments), "status": "completed"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return provider.Result{Outcome: provider.OutcomeCompleted, Completion: provider.CompletionToolCalls, Text: "creating", Native: []json.RawMessage{callRaw}, ToolCalls: []provider.ToolCall{{CallID: callID, ToolID: tools.CreateFileID, Arguments: arguments}}}
+	return provider.Result{Outcome: provider.OutcomeCompleted, Completion: provider.CompletionToolCalls, Text: "creating", Native: []json.RawMessage{callRaw}, ToolCalls: []provider.ToolCall{{CallID: callID, ToolID: tools.CreateFileID, Arguments: append(json.RawMessage(nil), arguments...)}}}
 }
 
 func newCreationRuntimeChat(t *testing.T, fp *toolLoopProvider, config ToolRuntimeConfig) *Chat {
@@ -194,6 +199,39 @@ func TestCreationPrototypeRequiresExplicitCompositionAndOnceApproval(t *testing.
 	requests := fp.captured()
 	if len(requests) < 1 || !strings.Contains(requests[0].Instructions, "creation prototype") || strings.Contains(requests[0].Instructions, "No filesystem write") {
 		t.Fatalf("provider instructions do not match the explicitly composed capability: %+v", requests)
+	}
+}
+
+func TestCreationPrototypeRejectsMissingOrNullContentBeforeApproval(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		arguments string
+	}{
+		{name: "missing", arguments: `{"path":"empty.txt"}`},
+		{name: "null", arguments: `{"path":"empty.txt","content":null}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			approvals := 0
+			base := BundledConversationToolRuntimeConfig(ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+				approvals++
+				return permissions.ApprovalOnce, "", nil
+			}), ToolClarificationFunc(func(context.Context, ClarificationRequest) (ClarificationResponse, error) {
+				return ClarificationResponse{}, errors.New("not expected")
+			}))
+			host := &creationRuntimeFixture{root: t.TempDir()}
+			config := WithBoundedCreationPrototype(base, host)
+			fp := &toolLoopProvider{step: func(index int, _ provider.ChatRequest) (provider.Result, error) {
+				if index == 0 {
+					return creationProviderCallArguments(t, "invalid-"+test.name, json.RawMessage(test.arguments)), nil
+				}
+				return finalResult("done"), nil
+			}}
+			chat := newCreationRuntimeChat(t, fp, config)
+			turn, err := chat.Send(context.Background(), "create an empty fixture", nil)
+			if err != nil || turn.Outcome != provider.OutcomeCompleted || approvals != 0 || len(host.previews) != 0 || len(host.prepared) != 0 || host.executions != 0 {
+				t.Fatalf("invalid content reached approval or host: turn=%+v approvals=%d previews=%d prepared=%d executions=%d err=%v", turn, approvals, len(host.previews), len(host.prepared), host.executions, err)
+			}
+		})
 	}
 }
 
