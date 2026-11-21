@@ -34,6 +34,45 @@ coverage, shipped tool availability, other launch modes or filesystems, other
 platforms, or model-facing creation authorization. Separate explicit
 maintainer review remains required before any production enablement.
 
+## Native actor dispatch follow-up
+
+The later baseline run used merged PR #347 source commit
+`480f37a06b467455281f05c0f8d2ebeb55a63017`. Its retained archive was
+`/tmp/komposyn-native-scratch.ZPKDWe/komposyn-composition-native-results.64hbmz2u.tar.gz`
+(archive SHA-256
+`d52b448a1e1e3248055516a849f757561e0bbedf64ae214785c531c313edb037`). The
+manifest SHA-256 was
+`d6521b6ecf4b2041bb668f04b978a505bfac032bf8a617dc1c3033fe879f0daa`, and the
+native report SHA-256 was
+`f8506ed6f54165634e414a35bed86db57712a313e9a426dfcfc0ccb95f095283`. The
+overlay SHA-256 was
+`cdf1712739ea9ea179550a6ee59ef53273afe9ad4e95cd2191d5d15948e65747`, and the
+runner SHA-256 was
+`088837dc7d2de35588a80959193b7a5d5b0f673a13f35154e6ef2aa855b4fa3d`. It
+completed 10 of 11 cases; the retained-parent creation case was
+`failed_or_incomplete`. The child process rejected
+`-readbrokerstudy-actor` because the overlay's `init()` dispatched worker
+bootstrap but not the fixed native actor mode. Cleanup was confirmed. This
+report is a failure record, not evidence of the candidate fix.
+
+The follow-up adds early dispatch for the exact fixed actor mode and a
+Bubblewrap-independent `TestNativeActorModeDispatch`. That test starts the
+compiled acceptance test binary with an empty environment, verifies READY,
+releases one fixed directory move-and-replace action, and checks the retained
+object identity, marker, transition acknowledgement, and joined child. It
+also appears in the runner's expected case list. The test does not alter
+production worker code or the existing creation contract. The focused test
+passed in the development checkout. A full candidate native run is still
+required on an eligible trusted-Bubblewrap host; this environment's
+`/usr/bin/bwrap` is owned by `nobody:nogroup`, so it does not meet the host
+trust requirement above. Do not change its ownership or permissions to obtain
+a pass.
+
+This correction establishes only that the exact acceptance test binary
+dispatches its fixed actor mode before Go's testing argument parser. It does
+not convert the failed baseline into a pass, prove the full native suite, or
+change any production enablement decision.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).

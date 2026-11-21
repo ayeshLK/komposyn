@@ -41,10 +41,21 @@ import (
 // The test binary is also the exact fixed worker image. Bootstrap precedes
 // testing initialization and never initializes credentials or providers.
 func init() {
-	if len(os.Args) > 1 && os.Args[1] == "--readbrokerstudy-bootstrap" {
-		handled, code := WorkerBootstrap(os.Args[1:])
-		if handled {
-			os.Exit(code)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--readbrokerstudy-bootstrap":
+			handled, code := WorkerBootstrap(os.Args[1:])
+			if handled {
+				os.Exit(code)
+			}
+		case "--readbrokerstudy-actor":
+			handled, err := rb.RunNativeActorMode(os.Args[1:])
+			if handled {
+				if err != nil {
+					os.Exit(2)
+				}
+				os.Exit(0)
+			}
 		}
 	}
 }
@@ -110,6 +121,57 @@ func nativeContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// This process-level check uses the compiled acceptance test binary as the
+// exact actor executable. It intentionally does not require Bubblewrap: it
+// verifies that the fixed actor mode is dispatched before testing parses argv.
+func TestNativeActorModeDispatch(t *testing.T) {
+	r := nativeReport(t)
+	root := filepath.Join(t.TempDir(), "actor-root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal("create private actor root", err)
+	}
+	parent := filepath.Join(root, "parent")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal("create actor source directory", err)
+	}
+	marker := []byte("native actor dispatch fixture\n")
+	if err := os.WriteFile(filepath.Join(parent, "marker.fixture"), marker, 0o600); err != nil {
+		t.Fatal("create actor marker", err)
+	}
+	before, err := os.Stat(parent)
+	if err != nil {
+		t.Fatal("stat actor source directory", err)
+	}
+	actor, err := rb.NewNativeActor(nativeContext(t), os.Args[0], root, rb.NativeActorMoveAndReplaceDirectory, "parent", "moved-parent")
+	if err != nil {
+		t.Fatal("start actor from exact test binary", err)
+	}
+	defer func() {
+		if err := actor.Close(); err != nil {
+			t.Errorf("join native actor: %v", err)
+		}
+		r.CleanupConfirmed = actor.Joined()
+	}()
+	if !actor.Ready() {
+		t.Fatal("native actor did not report READY")
+	}
+	if err := actor.Run(nativeContext(t)); err != nil {
+		t.Fatal("run native actor transition", err)
+	}
+	moved, err := os.Stat(filepath.Join(root, "moved-parent"))
+	if err != nil || !os.SameFile(before, moved) {
+		t.Fatalf("moved directory identity mismatch: moved=%v err=%v", moved, err)
+	}
+	replacement, err := os.Stat(parent)
+	if err != nil || os.SameFile(before, replacement) || !actor.TransitionCompleted() || !actor.Joined() {
+		t.Fatalf("actor transition incomplete: replacement=%v err=%v changed=%t joined=%t", replacement, err, actor.TransitionCompleted(), actor.Joined())
+	}
+	got, err := os.ReadFile(filepath.Join(root, "moved-parent", "marker.fixture"))
+	if err != nil || !bytes.Equal(got, marker) {
+		t.Fatalf("moved directory marker=%q err=%v", got, err)
+	}
 }
 
 type nativeFixture struct {
