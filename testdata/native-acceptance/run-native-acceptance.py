@@ -17,11 +17,11 @@ import tarfile
 import tempfile
 import time
 
-BASELINE = 'd43a7dd7005ae6ccc8102936d00bd2920bbd9fcf'
 EXPECTED = ['TestNativeShippedGenericReadGate', 'TestNativeServicePositiveRead',
             'TestNativeServiceProtectedRoutesAndAliases', 'TestNativeServiceRotationJoinsHeldWorker',
             'TestNativeServicePostCaptureRevocation', 'TestNativeServiceAuthRotationJoinsHeldWorker',
-            'TestNativeServiceBoundedCreation', 'TestNativeServiceRootChangeWhileHeld','TestNativeServiceCancellationWhileHeld',
+            'TestNativeServiceBoundedCreation', 'TestNativeServiceCreationUsesRetainedParentAfterIndependentMove',
+            'TestNativeServiceRootChangeWhileHeld','TestNativeServiceCancellationWhileHeld',
             'TestNativeServiceShutdownRetryWhileHeld']
 
 def digest(path):
@@ -34,7 +34,7 @@ def write_json(path, value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path.cwd())
-    parser.add_argument('--revision', default=BASELINE)
+    parser.add_argument('--revision', required=True, help='full source commit containing the candidate under test')
     parser.add_argument('--bwrap', type=Path, default=Path('/usr/bin/bwrap'))
     parser.add_argument('--scratch-dir', type=Path, default=Path('/tmp'),
         help='existing writable directory on the filesystem used for disposable fixtures and result bundle')

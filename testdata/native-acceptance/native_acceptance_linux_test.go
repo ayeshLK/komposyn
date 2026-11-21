@@ -19,6 +19,8 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -66,6 +69,15 @@ type nativeRecord struct {
 	CreationFilesystem               string                `json:"creation_filesystem,omitempty"`
 	CreationMountID                  uint64                `json:"creation_mount_id,omitempty"`
 	CreationFailureDetail            string                `json:"creation_failure_detail,omitempty"`
+	CreationParentMovePublished      bool                  `json:"creation_parent_move_published_to_retained_object,omitempty"`
+	CreationParentMoveFilesystem     string                `json:"creation_parent_move_filesystem,omitempty"`
+	CreationParentMoveMountID        uint64                `json:"creation_parent_move_mount_id,omitempty"`
+	CreationActorPID                 int                   `json:"creation_actor_pid,omitempty"`
+	CreationActorUID                 int                   `json:"creation_actor_uid,omitempty"`
+	CreationActorExecution           string                `json:"creation_actor_execution,omitempty"`
+	CreationParentIdentitySHA256     string                `json:"creation_parent_identity_sha256,omitempty"`
+	CreationMovedIdentitySHA256      string                `json:"creation_moved_identity_sha256,omitempty"`
+	CreationSubstituteIdentitySHA256 string                `json:"creation_substitute_identity_sha256,omitempty"`
 	Case                             string                `json:"case"`
 	Status                           string                `json:"status"`
 	CleanupConfirmed                 bool                  `json:"cleanup_confirmed"`
@@ -337,6 +349,104 @@ func TestNativeServiceBoundedCreation(t *testing.T) {
 	}
 	r.CreationLateCollisionRefused = true
 	r.CreationLateStageAbsent = true
+}
+
+func TestNativeServiceCreationUsesRetainedParentAfterIndependentMove(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	scope := filepath.Join(f.root, "creation-scope")
+	if err := os.Mkdir(scope, 0o700); err != nil {
+		t.Fatal("create synthetic creation scope", err)
+	}
+	installSyntheticCreationManifest(t, f.service, scope)
+	parent, err := os.Open(scope)
+	if err != nil {
+		t.Fatal("open retained synthetic parent", err)
+	}
+	defer parent.Close()
+	parentIdentity := identityFromInfo(t, scope)
+	filesystem, mountID := creationFilesystemEvidence(t, parent)
+	r.CreationParentMoveFilesystem = filesystem
+	r.CreationParentMoveMountID = mountID
+	r.CreationParentIdentitySHA256 = creationIdentityHash(t, scope)
+	actor, err := rb.NewNativeActor(nativeContext(t), os.Args[0], f.root, rb.NativeActorMoveAndReplaceDirectory, "creation-scope", "moved-creation-scope")
+	if err != nil {
+		t.Fatal("start independent same-user parent actor", err)
+	}
+	defer func() {
+		if err := actor.Close(); err != nil {
+			t.Errorf("join parent actor: %v", err)
+		}
+	}()
+	r.CreationActorPID = actor.PID()
+	r.CreationActorUID = os.Geteuid()
+	r.CreationActorExecution = "separate process; same effective UID; no shell; shared host mount namespace; fixed rename-and-mkdir action"
+	stageName, err := rb.NewCreationStageName()
+	if err != nil {
+		t.Fatal("generate private stage name", err)
+	}
+	content := []byte("created through the retained parent after its pathname moved\n")
+	f.tracked.mu.Lock()
+	f.tracked.beforeCreationStage = func() error {
+		return actor.Run(nativeContext(t))
+	}
+	f.tracked.mu.Unlock()
+	result, createErr := f.impl.executeBoundedCreation(nativeContext(t), parent, parentIdentity, stageName, "retained-parent.txt", content)
+	f.tracked.mu.Lock()
+	f.tracked.beforeCreationStage = nil
+	f.tracked.mu.Unlock()
+	if createErr != nil || result.Outcome != rb.CreationCreated || !actor.TransitionCompleted() || !actor.Joined() {
+		t.Fatalf("retained-parent creation result=%+v err=%v actor_changed=%t actor_joined=%t", result, createErr, actor.TransitionCompleted(), actor.Joined())
+	}
+	movedScope := filepath.Join(f.root, "moved-creation-scope")
+	replacementInfo, err := os.Stat(scope)
+	if err != nil {
+		t.Fatal("stat substitute parent", err)
+	}
+	movedInfo, err := os.Stat(movedScope)
+	if err != nil {
+		t.Fatal("stat moved parent", err)
+	}
+	r.CreationMovedIdentitySHA256 = creationIdentityHash(t, movedScope)
+	r.CreationSubstituteIdentitySHA256 = creationIdentityHash(t, scope)
+	if !os.SameFile(parentInfo(t, parent), movedInfo) || os.SameFile(replacementInfo, movedInfo) {
+		t.Fatal("independent actor did not preserve the retained parent identity while substituting its old route")
+	}
+	actual, err := os.ReadFile(filepath.Join(movedScope, "retained-parent.txt"))
+	if err != nil || !bytes.Equal(actual, content) {
+		t.Fatalf("creation did not publish to the retained parent object: bytes=%q err=%v", actual, err)
+	}
+	if _, err := os.Lstat(filepath.Join(scope, "retained-parent.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("creation redirected to substitute pathname: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(movedScope, stageName)); !errors.Is(err, os.ErrNotExist) || !f.tracked.allJoined() {
+		t.Fatalf("parent-move stage or worker cleanup incomplete: stage_err=%v joined=%t", err, f.tracked.allJoined())
+	}
+	r.CreationParentMovePublished = true
+}
+
+func parentInfo(t *testing.T, parent *os.File) os.FileInfo {
+	t.Helper()
+	info, err := parent.Stat()
+	if err != nil {
+		t.Fatal("stat retained parent", err)
+	}
+	return info
+}
+
+func creationIdentityHash(t *testing.T, path string) string {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal("stat synthetic identity", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("synthetic object identity unavailable")
+	}
+	encoded := fmt.Sprintf("%d:%d:%d", stat.Dev, stat.Ino, stat.Mode&syscall.S_IFMT)
+	digest := sha256.Sum256([]byte(encoded))
+	return hex.EncodeToString(digest[:])
 }
 
 func creationEligibilitySummary(impl *linuxImplementation, parent rb.FileIdentity, target string) string {
@@ -657,6 +767,7 @@ type nativeTrackedLauncher struct {
 	mu                    sync.Mutex
 	delegate              rb.WorkerLauncher
 	workers               []rb.SandboxWorker
+	beforeCreationStage   func() error
 	beforeCreationPublish func() error
 }
 
@@ -678,7 +789,7 @@ func (l *nativeTrackedLauncher) StartForOperation(ctx context.Context, operation
 	if w != nil {
 		l.mu.Lock()
 		if operation == rb.AdmissionCreateFile {
-			tracked := &nativeTrackedWorker{SandboxWorker: w, beforePublish: l.beforeCreationPublish}
+			tracked := &nativeTrackedWorker{SandboxWorker: w, beforeStage: l.beforeCreationStage, beforePublish: l.beforeCreationPublish}
 			l.workers = append(l.workers, tracked)
 			l.mu.Unlock()
 			return tracked, e
@@ -691,6 +802,7 @@ func (l *nativeTrackedLauncher) StartForOperation(ctx context.Context, operation
 
 type nativeTrackedWorker struct {
 	rb.SandboxWorker
+	beforeStage   func() error
 	beforePublish func() error
 }
 
@@ -710,6 +822,11 @@ func (w *nativeTrackedWorker) FailureDetail() string {
 }
 
 func (w *nativeTrackedWorker) StageCreation(ctx context.Context, parent *os.File, identity rb.FileIdentity, stageName, leaf string, content []byte) (rb.CreationStage, error) {
+	if w.beforeStage != nil {
+		if err := w.beforeStage(); err != nil {
+			return rb.CreationStage{}, &rb.CreationOperationError{Result: rb.CreationResult{Outcome: rb.CreationNotCreated}, Cause: err}
+		}
+	}
 	creation, ok := w.SandboxWorker.(rb.BoundedCreationWorker)
 	if !ok {
 		return rb.CreationStage{}, rb.ErrProtocol

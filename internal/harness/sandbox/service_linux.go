@@ -100,6 +100,8 @@ type creationBarrierLease struct {
 	state               creationBarrierState
 	stageEntryAdmitted  bool
 	publicationReleased bool
+	worker              readbrokerstudy.SandboxWorker
+	stage               readbrokerstudy.CreationStage
 	ctx                 context.Context
 	cancel              context.CancelFunc
 	done                chan struct{}
@@ -127,6 +129,8 @@ const (
 	creationBarrierActive
 	creationBarrierBlocked
 )
+
+const creationWorkerJoinTimeout = 2 * time.Second
 
 func newHostImplementation(bubblewrapPath string) (implementation, error) {
 	registry, err := readbrokerstudy.NewRegistry()
@@ -753,7 +757,19 @@ func (s *linuxImplementation) beginCreationBarrier(ctx context.Context, rootBind
 	// and cancel the conversation that owns this create call, invalidating the
 	// create result along with any immutable read captures already completed.
 	// Trust, root and owner transitions keep using the stronger invalidation path.
-	drainErr := session.InvalidateAdmissions(ctx)
+	invalidateErr := session.InvalidateAdmissions(ctx)
+	drainErr := invalidateErr
+	// Retiring an admission can report cleanup-pending while its worker is
+	// still active. Drain those workers anyway, then retry admission retirement
+	// so the barrier can proceed only after both obligations are confirmed.
+	if invalidateErr == nil || errors.Is(invalidateErr, readbrokerstudy.ErrCleanupPending) {
+		drainer, ok := session.(readbrokerstudy.ActiveReadDrainer)
+		if !ok {
+			drainErr = readbrokerstudy.ErrUnavailable
+		} else if drainErr = drainer.DrainActiveReads(ctx); drainErr == nil && invalidateErr != nil {
+			drainErr = session.InvalidateAdmissions(ctx)
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -796,6 +812,8 @@ func (s *linuxImplementation) finishCreationBarrier(lease *creationBarrierLease,
 	}
 	s.creationBarrier = nil
 	lease.state = creationBarrierBlocked // terminal; token cannot be reused
+	lease.worker = nil
+	lease.stage = readbrokerstudy.CreationStage{}
 	if lease.cancel != nil {
 		lease.cancel()
 	}
@@ -910,11 +928,42 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	if err != nil {
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(true))
 	}
+	s.mu.Lock()
+	if s.creationBarrier == lease {
+		lease.worker = worker
+	}
+	s.mu.Unlock()
 	joined := false
+	var workerWaitErr error
+	waitDone := make(chan error, 1)
+	waitStarted := false
+	waitCompleted := false
+	waitAndConfirm := func() bool {
+		if worker.Joined() {
+			return true
+		}
+		if !waitStarted {
+			waitStarted = true
+			go func() {
+				waitDone <- worker.Wait()
+			}()
+		}
+		if waitCompleted {
+			return worker.Joined()
+		}
+		timer := time.NewTimer(creationWorkerJoinTimeout)
+		defer timer.Stop()
+		select {
+		case workerWaitErr = <-waitDone:
+			waitCompleted = true
+			return worker.Joined()
+		case <-timer.C:
+			return false
+		}
+	}
 	stopAndJoin := func() bool {
 		_ = worker.Terminate()
-		_ = worker.Wait()
-		joined = worker.Joined()
+		joined = waitAndConfirm()
 		return joined
 	}
 	if err := worker.Ready(lease.ctx); err != nil {
@@ -944,9 +993,13 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	stage, err := creationWorker.StageCreation(lease.ctx, parent, parentIdentity, stageName, leaf, content)
 	if err != nil {
 		if stage.StageIdentity().Inode != 0 {
+			s.mu.Lock()
+			if s.creationBarrier == lease {
+				lease.stage = stage
+			}
+			s.mu.Unlock()
 			result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
-			_ = worker.Wait()
-			joined = worker.Joined()
+			joined = waitAndConfirm()
 			clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
 			if !clean {
 				result = unknown
@@ -970,10 +1023,14 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 		}
 		return operationError.Result, finishErr
 	}
+	s.mu.Lock()
+	if s.creationBarrier == lease {
+		lease.stage = stage
+	}
+	s.mu.Unlock()
 	if lease.ctx.Err() != nil {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
-		_ = worker.Wait()
-		joined = worker.Joined()
+		joined = waitAndConfirm()
 		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
 		if !clean {
 			result = unknown
@@ -982,8 +1039,7 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	}
 	if !s.syntheticCreationManifestEligible(parentIdentity) {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
-		_ = worker.Wait()
-		joined = worker.Joined()
+		joined = waitAndConfirm()
 		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
 		if !clean {
 			result = unknown
@@ -992,8 +1048,7 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	}
 	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
-		_ = worker.Wait()
-		joined = worker.Joined()
+		joined = waitAndConfirm()
 		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
 		outcome := readbrokerstudy.CreationNotCreated
 		if errors.Is(err, unix.EEXIST) {
@@ -1010,8 +1065,7 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	}
 	if err := s.releaseCreationPublication(lease); err != nil {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
-		_ = worker.Wait()
-		joined = worker.Joined()
+		joined = waitAndConfirm()
 		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
 		if !clean {
 			result = unknown
@@ -1019,10 +1073,9 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 		return result, errors.Join(err, abortErr, finishBarrier(clean))
 	}
 	result, publishErr := creationWorker.PublishCreation(creationWorker.WorkerContext(), stage)
-	_ = worker.Wait()
-	joined = worker.Joined()
-	if !joined || publishErr != nil || result.Outcome == readbrokerstudy.CreationUnknown {
-		return unknown, errors.Join(publishErr, finishBarrier(false))
+	joined = waitAndConfirm()
+	if !joined || workerWaitErr != nil || publishErr != nil || result.Outcome == readbrokerstudy.CreationUnknown {
+		return unknown, errors.Join(workerWaitErr, publishErr, finishBarrier(false))
 	}
 	return result, errors.Join(publishErr, finishBarrier(true))
 }

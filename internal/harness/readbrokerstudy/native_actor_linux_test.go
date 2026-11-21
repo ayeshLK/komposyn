@@ -145,6 +145,40 @@ func TestNativeActorReplaceKeepsTheApprovedObjectAvailable(t *testing.T) {
 	}
 }
 
+func TestNativeActorMovesAndSubstitutesDirectoryObject(t *testing.T) {
+	root := privateNativeActorTestRoot(t)
+	source := filepath.Join(root, "parent")
+	target := filepath.Join(root, "moved-parent")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(source, "marker.fixture")
+	if err := os.WriteFile(marker, []byte("synthetic parent identity control\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := startTestNativeActor(t, root, NativeActorMoveAndReplaceDirectory, "parent", "moved-parent")
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	if err := actor.Run(ctx); err != nil {
+		t.Fatalf("move/substitute actor: %v", err)
+	}
+	moved, err := os.Stat(target)
+	if err != nil || !os.SameFile(before, moved) {
+		t.Fatalf("moved parent identity changed: before=%v moved=%v err=%v", before, moved, err)
+	}
+	replacement, err := os.Stat(source)
+	if err != nil || os.SameFile(before, replacement) || !actor.TransitionCompleted() || !actor.Joined() || actor.PID() <= 0 {
+		t.Fatalf("substitute parent was not a distinct joined actor result: replacement=%v err=%v changed=%t joined=%t pid=%d", replacement, err, actor.TransitionCompleted(), actor.Joined(), actor.PID())
+	}
+	if content, err := os.ReadFile(filepath.Join(target, "marker.fixture")); err != nil || string(content) != "synthetic parent identity control\n" {
+		t.Fatalf("moved parent marker=%q err=%v", content, err)
+	}
+}
+
 func TestNativeActorPathAndActionValidation(t *testing.T) {
 	root := privateNativeActorTestRoot(t)
 	source := filepath.Join(root, "source.fixture")

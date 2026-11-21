@@ -599,6 +599,43 @@ func (s *fixtureSession) InvalidateAdmissions(ctx context.Context) error {
 	return s.retireAdmissionRecords(ctx, records)
 }
 
+// DrainActiveReads cancels only operations that still own filesystem workers.
+// It deliberately leaves generation counters unchanged so a completed private
+// capture awaiting its existing runtime publication gate is not invalidated
+// merely because creation temporarily closes new admission.
+func (s *fixtureSession) DrainActiveReads(ctx context.Context) error {
+	if ctx == nil {
+		return context.Canceled
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrSessionClosed
+	}
+	workers := s.invalidateLocked(func(*readOperation) bool { return true })
+	active := make([]*readOperation, 0, len(s.active))
+	for _, op := range s.active {
+		active = append(active, op)
+	}
+	s.mu.Unlock()
+
+	terminateErr := terminateWorkers(workers)
+	for _, op := range active {
+		select {
+		case <-op.done:
+		case <-ctx.Done():
+			return errors.Join(terminateErr, ErrCleanupPending, ctx.Err())
+		}
+		s.mu.Lock()
+		joined := op.workerJoined || op.worker == nil || op.worker.worker == nil
+		s.mu.Unlock()
+		if !joined {
+			return errors.Join(terminateErr, ErrCleanupPending)
+		}
+	}
+	return terminateErr
+}
+
 func (s *fixtureSession) InvalidateConversationReads(ctx context.Context, conversationID string) error {
 	if ctx == nil || conversationID == "" {
 		return context.Canceled

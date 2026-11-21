@@ -443,6 +443,14 @@ type HostCoordinator interface {
 	Close(context.Context) error
 }
 
+// ActiveReadDrainer cancels and joins currently executing filesystem reads
+// without advancing publication generations. Creation uses this narrow seam
+// after closing admission so already completed immutable captures keep their
+// original authorization bindings.
+type ActiveReadDrainer interface {
+	DrainActiveReads(context.Context) error
+}
+
 // FixtureSession is retained for the disposable study command and its
 // evidence-oriented test hooks.
 type FixtureSession interface {

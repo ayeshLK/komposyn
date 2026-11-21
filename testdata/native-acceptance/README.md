@@ -9,7 +9,7 @@ The hash-pinned runner and test overlay are kept together in
 - `run-native-acceptance.py`
 - `native_acceptance_linux_test.go`
 
-The runner includes one #321 creation case. It composes the real host service
+The runner includes two #321 creation cases. It composes the real host service
 with the real Bubblewrap worker, injects only the synthetic complete owner
 manifest used by fixtures, publishes a synthetic file, checks exact bytes and
 mode `0600`, verifies stage cleanup and worker join, and confirms an existing
@@ -17,8 +17,14 @@ target is not replaced. It also injects a host-side independent actor after
 the service's final target observation and immediately before the worker's
 publication request, then checks that `RENAME_NOREPLACE` preserves the actor's
 file and removes the stage. This measures one deterministic residual-race
-checkpoint, not every possible syscall interleaving. It does not use a
-provider, enable the production tool, or authorize arbitrary roots.
+checkpoint, not every possible syscall interleaving. The second case starts a
+separate same-UID fixed-purpose actor process that moves the synthetic parent
+directory and creates a substitute at the old pathname immediately before
+worker staging. It records actor PID/UID, the retained and substitute parent
+identity hashes, the mount ID/filesystem, stage disposition and worker join.
+The actor has no shell or arbitrary command interface and shares the host mount
+namespace. The study does not use a provider, enable the production tool, or
+authorize arbitrary roots.
 
 From the candidate checkout, use the exact candidate commit and an existing
 scratch directory on local ext4. The issue-specific procedure is documented
@@ -34,8 +40,8 @@ scripts/native-acceptance/run-native-acceptance.sh \
 ```
 
 The command reads only the selected committed revision into its own temporary
-source tree. It does not modify or clean the checkout. By default, the runner
-uses the reviewed baseline commit configured in the runner.
+source tree. It does not modify or clean the checkout. `--revision` is
+required, so a run cannot silently fall back to an old runner baseline.
 
 The script reads a Git archive of that exact commit. If it is absent locally, it fetches the commit from the public repository into a disposable scratch repository. It never checks out, fetches into, edits or cleans your actual worktree.
 
@@ -52,7 +58,7 @@ Builds and native tests use an isolated source directory with one **test-only ov
 - Root change while a worker is held must first return cleanup_pending; after the old read settles, a fresh invocation under the new root must succeed. Cancellation while held must join without reading or publishing. Shutdown is forced to report incomplete cleanup at the held-operation boundary, then a fresh shutdown retry must drain it. This deterministic coordination case is not a natural kernel-hang test.
 - Separately labelled existing unit tests cover independent path overrides, pending-coverage recovery, runtime preparation/grant ordering, data suppression and bounded shutdown/retry. They are not counted as native enforcement.
 
-No provider network request is made. “Publication” here means the coordinator's private result sink, not a live selected LLM. The suite does not establish the unknown-file policy, filesystem tool enablement, all Bubblewrap modes, all platforms, every resource limit, arbitrary descendants, natural unjoinable processes, or all missing issue #215 gates. It does not simulate a kernel hang or claim native proof of incomplete-cleanup cases covered only by unit tests. The #321 case covers stage, sync, no-replace publication, exact bytes and mode, incumbent preservation, a deterministic independent-actor mutation after final observation, cleanup, and join on the actual tested filesystem and selected Bubblewrap bind mode. Interrupted syscalls, other independent-actor timings, cross-filesystem behavior, arbitrary descendants, and production owner coverage remain unestablished.
+No provider network request is made. “Publication” here means the coordinator's private result sink, not a live selected LLM. The suite does not establish the unknown-file policy, filesystem tool enablement, all Bubblewrap modes, all platforms, every resource limit, arbitrary descendants, natural unjoinable processes, or all missing issue #215 gates. It does not simulate a kernel hang or claim native proof of incomplete-cleanup cases covered only by unit tests. The #321 cases cover stage, sync, no-replace publication, exact bytes and mode, incumbent preservation, one deterministic independent-actor mutation after final observation, retained-parent movement/substitution, cleanup, and join on the actual tested filesystem and selected Bubblewrap bind mode. Interrupted write/sync/close/publication syscalls and other independent-actor timings remain unestablished. Deterministic injected protocol failures in the behavioral suite are not native syscall interruption evidence.
 
 ## Results
 
