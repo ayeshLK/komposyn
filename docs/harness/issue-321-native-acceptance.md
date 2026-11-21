@@ -128,9 +128,9 @@ work cleanup complete. This validates actor startup with the explicit fixture
 case and full native matrix.
 
 The maintainer reran the complete candidate on source commit
-`dbfd90974f0979832a9abc60e32aeb3c87399840`. The archive is
-`/home/ayesh/projects/samples/komposyn-issue321-native/komposyn-composition-native-results.ah0j_t7n.tar.gz`
-(SHA-256 `3d76449b95ba037db17d46b3404d36f398d993cd0af3c940904857be305236dc`).
+`dbfd90974f0979832a9abc60e32aeb3c87399840`. The archive
+`komposyn-composition-native-results.ah0j_t7n.tar.gz` has SHA-256
+`3d76449b95ba037db17d46b3404d36f398d993cd0af3c940904857be305236dc`.
 Its manifest SHA-256 is
 `1822336d698e55d533cc71a3a54738885e99fdaff64b81b0cb51e9c3173d9a02`, and the
 native report SHA-256 is
