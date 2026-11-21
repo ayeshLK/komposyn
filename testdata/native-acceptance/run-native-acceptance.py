@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 import time
 
-EXPECTED = ['TestNativeShippedGenericReadGate', 'TestNativeServicePositiveRead',
+EXPECTED = ['TestNativeActorModeDispatch', 'TestNativeShippedGenericReadGate', 'TestNativeServicePositiveRead',
             'TestNativeServiceProtectedRoutesAndAliases', 'TestNativeServiceRotationJoinsHeldWorker',
             'TestNativeServicePostCaptureRevocation', 'TestNativeServiceAuthRotationJoinsHeldWorker',
             'TestNativeServiceBoundedCreation', 'TestNativeServiceCreationUsesRetainedParentAfterIndependentMove',

@@ -239,6 +239,14 @@ func TestNativeActorRequiresPrivateSubdirectoryOfTempRoot(t *testing.T) {
 	}
 }
 
+func TestNativeActorEnvironmentContainsOnlyFixtureTempParent(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "mnt", "native-scratch", "fixtures", "actor-root")
+	environment := nativeActorEnvironment(root)
+	if len(environment) != 1 || environment[0] != "TMPDIR="+filepath.Dir(root) {
+		t.Fatalf("native actor environment=%q, want only its fixture TMPDIR", environment)
+	}
+}
+
 func TestNativeActorTimeoutKillsAndJoinsActor(t *testing.T) {
 	root := privateNativeActorTestRoot(t)
 	source := filepath.Join(root, "source.fixture")

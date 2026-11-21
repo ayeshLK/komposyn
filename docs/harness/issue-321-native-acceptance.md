@@ -34,6 +34,118 @@ coverage, shipped tool availability, other launch modes or filesystems, other
 platforms, or model-facing creation authorization. Separate explicit
 maintainer review remains required before any production enablement.
 
+## Native actor dispatch follow-up
+
+The later baseline run used merged PR #347 source commit
+`480f37a06b467455281f05c0f8d2ebeb55a63017`. Its retained archive was
+`/tmp/komposyn-native-scratch.ZPKDWe/komposyn-composition-native-results.64hbmz2u.tar.gz`
+(archive SHA-256
+`d52b448a1e1e3248055516a849f757561e0bbedf64ae214785c531c313edb037`). The
+manifest SHA-256 was
+`d6521b6ecf4b2041bb668f04b978a505bfac032bf8a617dc1c3033fe879f0daa`, and the
+native report SHA-256 was
+`f8506ed6f54165634e414a35bed86db57712a313e9a426dfcfc0ccb95f095283`. The
+overlay SHA-256 was
+`cdf1712739ea9ea179550a6ee59ef53273afe9ad4e95cd2191d5d15948e65747`, and the
+runner SHA-256 was
+`088837dc7d2de35588a80959193b7a5d5b0f673a13f35154e6ef2aa855b4fa3d`. It
+completed 10 of 11 cases; the retained-parent creation case was
+`failed_or_incomplete`. The child process rejected
+`-readbrokerstudy-actor` because the overlay's `init()` dispatched worker
+bootstrap but not the fixed native actor mode. Cleanup was confirmed. This
+report is a failure record, not evidence of the candidate fix.
+
+The follow-up adds early dispatch for the exact fixed actor mode and a
+Bubblewrap-independent `TestNativeActorModeDispatch`. That test starts the
+compiled acceptance test binary with an empty environment, verifies READY,
+releases one fixed directory move-and-replace action, and checks the retained
+object identity, marker, transition acknowledgement, and joined child. It
+also appears in the runner's expected case list. The test does not alter
+production worker code or the existing creation contract. The focused test
+passed in the development checkout. A full candidate native run is still
+required on an eligible trusted-Bubblewrap host; this environment's
+`/usr/bin/bwrap` is owned by `nobody:nogroup`, so it does not meet the host
+trust requirement above. Do not change its ownership or permissions to obtain
+a pass.
+
+This correction establishes only that the exact acceptance test binary
+dispatches its fixed actor mode before Go's testing argument parser. It does
+not convert the failed baseline into a pass, prove the full native suite, or
+change any production enablement decision.
+
+The candidate runner completed on source commit
+`8f0fde4cd580159e9433fe10c5711d2ae7101886`. Its archive is
+`/tmp/komposyn-composition-native-results.23cx7fjs.tar.gz` (SHA-256
+`fd1a4e269e9ce98a1eed3675832fae9e635298e1f29f0289a83cabe9e1711b37`), manifest
+SHA-256 `2cdced99f2757edb33571c6607c4d10bd65cf69814e74e994ec91adf94ae5233`,
+and native report SHA-256
+`9b924d7e038b73d974df7d235d891e77efc52a39eeb9275eee1b8a3144e53615`. The
+runner status is `native_unavailable`: the new actor-dispatch case and shipped
+generic-read gate were measured passes, while the Bubblewrap-dependent cases
+were unavailable. Unit checks, native build, process cleanup, and temporary
+work cleanup completed. This validates the regression test on this candidate;
+it does not replace the full trusted-host acceptance run.
+
+## Trusted-host follow-up
+
+The maintainer then ran the full candidate on the trusted host using source
+commit `7f7807ce21365e5cf0bbe4fc26712c71573313e1`. Archive SHA-256:
+`0d7169f618c98fa7ae6de89585011917bc2c3a3a1c348c3b0a5eb78e3e612deb`;
+manifest SHA-256:
+`a4280dd01e0ec863d9718ccd206759220a0941ec107a1cd070e7287f0264f6d1`;
+native report SHA-256:
+`ee63d3ee59c134c0f275a30208532bda583ee736fa7e24646e8ef0ade8898284`.
+Environment: Go 1.26.11, Linux 7.0.0-42-generic amd64, regular UID 1000,
+trusted root-owned Bubblewrap 0.9.0, `ro-bind-fd`, ext4 mount ID 33. Build and
+unit stages passed; ten cases measured pass and two failed: the new actor
+dispatch regression and the retained-parent move case. The runner reaped its
+child, confirmed no remaining descendants, and removed temporary work.
+
+This run exposed an additional constraint after the startup dispatch was
+fixed. The study runner places fixtures under its configured ext4 scratch
+directory, while `NewNativeActor` starts with an empty environment. The actor
+therefore defaulted `TMPDIR` to `/tmp`; its existing private-temp-root check
+refused the fixture under the separate scratch mount before READY. The
+follow-up now supplies only `TMPDIR=<fixture-root-parent>` to the actor. It
+continues to discard all inherited environment variables and credentials, and
+retains the existing root validation and bounded actor protocol. Full native
+acceptance must be rerun against the updated PR head; this failed archive is
+preserved as evidence and is not a pass.
+
+After that change, the candidate runner on commit
+`8d872823fef76c11cc7fe229c3c6a85ef5eb60df` recorded
+`TestNativeActorModeDispatch` and the shipped generic-read gate as measured
+passes. The other ten worker cases were unavailable because this execution
+environment's Bubblewrap is untrusted. Archive SHA-256:
+`d58399b2fc7ebef0c681beb9f5e7bb30b5893727237e5f7ffbc3a48054a95c55`;
+manifest SHA-256:
+`2f9733a19298592583abf567d87b9dcd0e1263b51f18969cd6d02e45abc8b8ff`;
+native report SHA-256:
+`c8d76a261684c4605fe24b4d27a6389ae5e1b62dda4dc4a80af44c9ff45b6156`.
+The runner reported `native_unavailable`, with process cleanup and temporary
+work cleanup complete. This validates actor startup with the explicit fixture
+`TMPDIR`; the trusted-host run remains necessary to recheck the retained-parent
+case and full native matrix.
+
+The maintainer reran the complete candidate on source commit
+`dbfd90974f0979832a9abc60e32aeb3c87399840`. The archive
+`komposyn-composition-native-results.ah0j_t7n.tar.gz` has SHA-256
+`3d76449b95ba037db17d46b3404d36f398d993cd0af3c940904857be305236dc`.
+Its manifest SHA-256 is
+`1822336d698e55d533cc71a3a54738885e99fdaff64b81b0cb51e9c3173d9a02`, and the
+native report SHA-256 is
+`ac66529ef8a9a8e562505c5964d080d01aeb040122be804fabe86959b82f7ce6`.
+Environment: Go 1.26.11, Linux 7.0.0-42-generic amd64, regular UID 1000,
+trusted root-owned Bubblewrap 0.9.0, `ro-bind-fd`, ext4 mount ID 33. All 12
+native cases, including actor dispatch and retained-parent creation, measured
+pass; build, unit checks, process cleanup and temporary-work cleanup completed.
+The runner status is `scoped_native_pass`. Some held-worker lifecycle records
+report an unknown operation outcome after a deadline or wait error; the tests
+pass by confirming result suppression, cleanup, and any required fresh retry.
+This evidence remains limited to the fixed worker and tested host/profile; it
+does not enable production creation or establish other filesystems, launch
+modes, platforms, or arbitrary descendants.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).
