@@ -748,20 +748,12 @@ func (s *linuxImplementation) beginCreationBarrier(ctx context.Context, rootBind
 	session := s.session
 	s.mu.Unlock()
 
-	var drainErr error
-	invalidated := make(map[string]struct{})
-	if len(rootBinding) == 1 && rootBinding[0].conversation != "" {
-		s.invalidateConversation(rootBinding[0].conversation)
-		invalidated[rootBinding[0].conversation] = struct{}{}
-	}
-	for _, conversation := range session.AdmissionConversations() {
-		if _, exists := invalidated[conversation]; exists {
-			continue
-		}
-		s.invalidateConversation(conversation)
-		invalidated[conversation] = struct{}{}
-	}
-	drainErr = session.InvalidateAdmissions(ctx)
+	// A creation barrier only closes host admission and drains retained workers.
+	// Calling the runtime read invalidator here would advance its authority epoch
+	// and cancel the conversation that owns this create call, invalidating the
+	// create result along with any immutable read captures already completed.
+	// Trust, root and owner transitions keep using the stronger invalidation path.
+	drainErr := session.InvalidateAdmissions(ctx)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -846,7 +838,7 @@ func (s *linuxImplementation) releaseCreationPublication(lease *creationBarrierL
 // Normal command composition does not expose this method or the create schema.
 func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent *os.File, parentIdentity readbrokerstudy.FileIdentity, stageName, leaf string, content []byte, rootBinding ...creationRootBinding) (readbrokerstudy.CreationResult, error) {
 	unknown := readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationUnknown}
-	if ctx == nil || parent == nil || !validCreationStageName(stageName) || !validCreationLeaf(leaf) || len(content) == 0 || len(content) > readbrokerstudy.MaxReadBytes || !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+	if ctx == nil || parent == nil || !validCreationStageName(stageName) || !validCreationLeaf(leaf) || len(content) > readbrokerstudy.MaxReadBytes || !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, readbrokerstudy.ErrProtocol
 	}
 	if err := ctx.Err(); err != nil {

@@ -898,6 +898,7 @@ func TestCreationRuntimeServiceCompositionReachesBoundedWorkerWithoutPublishingO
 		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
 	}))
 	config := runtime.WithBoundedCreationPrototype(base, service)
+	config.ReadAdmission = service
 	config.RootHost = service
 	fp := &creationServiceProvider{}
 	providers, err := model.NewRegistry(fp)

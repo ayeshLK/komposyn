@@ -1042,7 +1042,7 @@ func (w *sandboxWorker) TransferDirectoryCapabilityWithOptions(ctx context.Conte
 
 func (w *sandboxWorker) StageCreation(ctx context.Context, directory *os.File, expected FileIdentity, stageName, leaf string, content []byte) (CreationStage, error) {
 	unknown := CreationStage{name: stageName, worker: w, leaf: leaf}
-	if w == nil || w.operation != AdmissionCreateFile || directory == nil || ctx == nil || !validCreationStageName(stageName) || !validCreationLeaf(leaf) || len(content) == 0 || len(content) > maxCreationContentBytes || !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+	if w == nil || w.operation != AdmissionCreateFile || directory == nil || ctx == nil || !validCreationStageName(stageName) || !validCreationLeaf(leaf) || len(content) > maxCreationContentBytes || !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
 		return CreationStage{}, ErrProtocol
 	}
 	w.mu.Lock()
@@ -2006,7 +2006,7 @@ func createTransferredFile(control, parentFD int, expectedFrame, payload []byte)
 	}
 	stageLen, leafLen := int(payload[0]), int(payload[1])
 	contentLen := int(binary.BigEndian.Uint32(payload[2:6]))
-	if stageLen == 0 || stageLen > maxCreationStageNameBytes || leafLen == 0 || leafLen > maxCreationLeafBytes || contentLen == 0 || contentLen > maxCreationContentBytes || len(payload) != 6+stageLen+leafLen+contentLen {
+	if stageLen == 0 || stageLen > maxCreationStageNameBytes || leafLen == 0 || leafLen > maxCreationLeafBytes || contentLen > maxCreationContentBytes || len(payload) != 6+stageLen+leafLen+contentLen {
 		return refuseWorkerInput(control, AdmissionCreateFile, createRefusalPayload)
 	}
 	stageName := string(payload[6 : 6+stageLen])

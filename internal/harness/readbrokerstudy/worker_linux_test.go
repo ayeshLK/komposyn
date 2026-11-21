@@ -1393,6 +1393,27 @@ func TestBoundedCreationWorkerReceiptIsOneUse(t *testing.T) {
 	}
 }
 
+func TestBoundedCreationWorkerCreatesEmptyFile(t *testing.T) {
+	root := t.TempDir()
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	stageName, err := NewCreationStageName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, exitCode := runCreationProtocol(t, directory, stageName, "empty.txt", nil, frameCreatePublish)
+	if exitCode != 0 || result.Outcome != CreationCreated || result.Bytes != 0 {
+		t.Fatalf("empty creation result=%+v exit=%d", result, exitCode)
+	}
+	info, err := os.Stat(filepath.Join(root, "empty.txt"))
+	if err != nil || !info.Mode().IsRegular() || info.Size() != 0 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("empty file stat=%v err=%v", info, err)
+	}
+}
+
 func runCreationProtocol(t *testing.T, directory *os.File, stageName, leaf string, content []byte, decision byte) (CreationResult, FileIdentity, int) {
 	t.Helper()
 	parentIdentity, err := identityFromFile(directory)
