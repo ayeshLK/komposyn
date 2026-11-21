@@ -23,11 +23,11 @@ Status: **planning record for the near-term deferral; #315's current-delivery
 section tracks its publication and review state**.
 
 Editing implementation remains deferred under its existing authority
-contract. Creation has an accepted concurrency/approval boundary and a bounded
-stage-plus-no-replace fixture prototype with selected evidence; its candidate and evidence are in
-[creation mechanism design](creation-mechanism-proposal.md). Neither operation
-has accepted native positive evidence or separate enablement. Discovery remains delivered
-within its documented support profiles:
+contract. Creation has an accepted concurrency/approval boundary, a bounded
+stage-plus-no-replace fixture prototype, and scoped positive native evidence;
+its mechanism and evidence are in [creation mechanism design](creation-mechanism-proposal.md).
+Editing has no positive native mechanism evidence. Neither operation has
+separate model-facing enablement. Discovery remains delivered within its documented support profiles:
 nonrecursive listing and recursive/filter listing on their recorded Linux
 profiles, and literal search on its recorded Linux amd64 ext4 profile.
 

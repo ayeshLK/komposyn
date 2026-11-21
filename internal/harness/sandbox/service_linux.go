@@ -67,9 +67,11 @@ type linuxImplementation struct {
 	creationBarrierSequence uint64
 	creationManifest        *syntheticCreationOwnerManifest
 	creationProposals       map[string]*serviceCreationProposal
-	selectedRoot            string
-	selectedConversation    string
-	selectedRootGeneration  uint64
+	// creationBeforePublicationReleaseHook is a deterministic in-package test checkpoint.
+	creationBeforePublicationReleaseHook func()
+	selectedRoot                         string
+	selectedConversation                 string
+	selectedRootGeneration               uint64
 }
 
 type creationRootBinding struct {
@@ -1062,6 +1064,9 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 			return result, errors.Join(abortErr, finishBarrier(true))
 		}
 		return result, errors.Join(err, abortErr, finishBarrier(clean))
+	}
+	if hook := s.creationBeforePublicationReleaseHook; hook != nil {
+		hook()
 	}
 	if err := s.releaseCreationPublication(lease); err != nil {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
