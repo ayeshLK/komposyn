@@ -54,3 +54,9 @@ _Avoid_: Write grant, blanket overwrite permission.
 A detected difference between a save proposal's baseline and the target's
 current observed state, including an existing creation destination.
 _Avoid_: Automatic merge, permission to overwrite.
+
+**Creation scope** (proposed):
+A user-selected location in which one-file creation proposals may be prepared
+after trusted host eligibility checks. Selecting a creation scope does not
+approve any file creation.
+_Avoid_: Write grant, working directory, blanket mutation permission.
