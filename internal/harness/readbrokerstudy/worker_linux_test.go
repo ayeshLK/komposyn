@@ -1414,6 +1414,57 @@ func TestBoundedCreationWorkerCreatesEmptyFile(t *testing.T) {
 	}
 }
 
+func TestBoundedCreationWorkerStagesEmptyFile(t *testing.T) {
+	root := t.TempDir()
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	parentIdentity, err := identityFromFile(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := os.NewFile(uintptr(pair[0]), "bounded-create-empty-parent")
+	child := os.NewFile(uintptr(pair[1]), "bounded-create-empty-worker")
+	defer child.Close()
+	worker := &sandboxWorker{control: parent, operation: AdmissionCreateFile, ready: true}
+	defer func() {
+		if !worker.Joined() {
+			_ = worker.Terminate()
+			_ = worker.Wait()
+		}
+	}()
+	done := make(chan int, 1)
+	go func() { done <- receiveAndRead(int(child.Fd()), false, AdmissionCreateFile) }()
+	stageName, err := NewCreationStageName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := worker.StageCreation(context.Background(), directory, parentIdentity, stageName, "empty.txt", nil)
+	if err != nil {
+		t.Fatalf("stage empty creation: %v", err)
+	}
+	result, err := worker.PublishCreation(context.Background(), stage)
+	if err != nil || result.Outcome != CreationCreated || result.Bytes != 0 {
+		t.Fatalf("publish empty file result=%+v err=%v", result, err)
+	}
+	if code := <-done; code != 0 {
+		t.Fatalf("worker exit code=%d", code)
+	}
+	if err := worker.Wait(); err != nil {
+		t.Fatalf("join protocol worker: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(root, "empty.txt"))
+	if err != nil || !info.Mode().IsRegular() || info.Size() != 0 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("empty file stat=%v err=%v", info, err)
+	}
+}
+
 func runCreationProtocol(t *testing.T, directory *os.File, stageName, leaf string, content []byte, decision byte) (CreationResult, FileIdentity, int) {
 	t.Helper()
 	parentIdentity, err := identityFromFile(directory)
