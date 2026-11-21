@@ -147,8 +147,11 @@ conflicts, with an explicit residual external-write race. The
 stage-plus-no-replace candidate. PR #344 merged that proposal without accepting
 it as implementation-ready. The [creation integration protocol](creation-integration-protocol.md)
 specifies a proposed read barrier, owner-coverage contract and typed approval
-path; production scope coverage remains unresolved. No prototype, positive
-evidence or creation enablement is accepted.
+path; production scope coverage remains unresolved. The disposable prototype
+has behavioral lifecycle evidence recorded in
+[issue-321 lifecycle acceptance](issue-321-lifecycle-acceptance.md), while
+candidate-specific native acceptance and production enablement remain pending.
+The normal chat composition does not expose creation.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).

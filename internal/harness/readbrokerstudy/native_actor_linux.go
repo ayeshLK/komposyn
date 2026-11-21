@@ -52,9 +52,10 @@ var (
 type NativeActorAction string
 
 const (
-	NativeActorRename   NativeActorAction = "rename"
-	NativeActorHardlink NativeActorAction = "hardlink"
-	NativeActorReplace  NativeActorAction = "replace"
+	NativeActorRename                  NativeActorAction = "rename"
+	NativeActorHardlink                NativeActorAction = "hardlink"
+	NativeActorReplace                 NativeActorAction = "replace"
+	NativeActorMoveAndReplaceDirectory NativeActorAction = "move-and-replace-directory"
 )
 
 // NativeActor is a separate same-user fixture process waiting for one RUN
@@ -102,7 +103,7 @@ func nativeActorArgs(executable, fixtureRoot string, action NativeActorAction, s
 	if err := validateNativeActorRoot(fixtureRoot); err != nil {
 		return nil, err
 	}
-	if action != NativeActorRename && action != NativeActorHardlink && action != NativeActorReplace {
+	if action != NativeActorRename && action != NativeActorHardlink && action != NativeActorReplace && action != NativeActorMoveAndReplaceDirectory {
 		return nil, errors.New("native fixture actor action is not allowlisted")
 	}
 	if _, err := nativeActorFixturePath(fixtureRoot, sourceRelative); err != nil {
@@ -198,6 +199,19 @@ func (a *NativeActor) Joined() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.joined
+}
+
+// PID reports the independent fixture actor process ID while it is retained.
+func (a *NativeActor) PID() int {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cmd == nil || a.cmd.Process == nil {
+		return 0
+	}
+	return a.cmd.Process.Pid
 }
 
 // Run releases the prepared actor exactly once and waits for its bounded DONE
@@ -381,7 +395,7 @@ func RunNativeActorMode(args []string) (bool, error) {
 	if _, err := nativeActorFixturePath(root, targetRelative); err != nil {
 		return true, ErrNativeActorProtocol
 	}
-	if action != NativeActorRename && action != NativeActorHardlink && action != NativeActorReplace {
+	if action != NativeActorRename && action != NativeActorHardlink && action != NativeActorReplace && action != NativeActorMoveAndReplaceDirectory {
 		return true, ErrNativeActorProtocol
 	}
 	rootFD, err := openNativeActorRoot(root)
@@ -478,6 +492,23 @@ func runNativeActorActionAtRoot(rootFD int, sourceRelative, targetRelative strin
 		if writeErr != nil || written != len(replacement) || closeErr != nil {
 			_ = unix.Unlinkat(sourceParent, sourceLeaf, 0)
 			_ = unix.Renameat2(targetParent, targetLeaf, sourceParent, sourceLeaf, unix.RENAME_NOREPLACE)
+			return ErrNativeActorProtocol
+		}
+		return nil
+	case NativeActorMoveAndReplaceDirectory:
+		if sourceStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+			return ErrNativeActorProtocol
+		}
+		if err := unix.Renameat2(sourceParent, sourceLeaf, targetParent, targetLeaf, unix.RENAME_NOREPLACE); err != nil {
+			return ErrNativeActorProtocol
+		}
+		if err := unix.Mkdirat(sourceParent, sourceLeaf, 0o700); err != nil {
+			_ = unix.Renameat2(targetParent, targetLeaf, sourceParent, sourceLeaf, unix.RENAME_NOREPLACE)
+			return ErrNativeActorProtocol
+		}
+		moved, movedErr := nativeActorEntry(targetParent, targetLeaf)
+		replacement, replacementErr := nativeActorEntry(sourceParent, sourceLeaf)
+		if movedErr != nil || replacementErr != nil || identityFromStat(&moved) != sourceIdentity || identityFromStat(&replacement) == sourceIdentity || moved.Mode&unix.S_IFMT != unix.S_IFDIR || replacement.Mode&unix.S_IFMT != unix.S_IFDIR {
 			return ErrNativeActorProtocol
 		}
 		return nil
