@@ -1,6 +1,6 @@
 # Temporary chat capability availability
 
-Evidence reviewed 2026-11-15. This matrix describes the bundled temporary
+Evidence reviewed 2026-11-21. This matrix describes the bundled temporary
 chat routes and its current four capabilities. “Supported” describes the
 provider protocol implementation and fixture-backed contract; it does not
 grant permission to execute a tool. Runtime availability also requires the
@@ -137,15 +137,16 @@ provenance and profile limits.
 `create_file` is not available in any provider route or production runtime.
 Issue #321's fixture-only prototype has a retained-parent proposal path, a
 synthetic complete-owner gate, a read barrier, and a fixed Linux worker using
-stage-plus-`RENAME_NOREPLACE`. The native acceptance runner now includes a
-real Bubblewrap creation case for disposable synthetic files on ext4, but that
-case is pending execution on an eligible host. Even a passing fixture run
-would not enable the production capability: completed-capture interactions,
-cleanup-failure retention, remaining cancellation/owner race transitions,
-provider continuation/no-replay, and native execution of the deterministic
-post-observation actor case remain open. Production owner coverage and separate enablement
-approval have not been recorded. See [the issue #321 native acceptance
-procedure](issue-321-native-acceptance.md) and
+stage-plus-`RENAME_NOREPLACE`. A trusted-host run recorded 12/12 scoped native
+cases on Linux amd64/local ext4 with root-owned Bubblewrap 0.9.0 and
+`ro-bind-fd`; see the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md)
+for source, report, manifest and archive hashes. Runtime tests additionally
+cover read/list/search draining, delayed close/root retirement, exact content
+limits and unknown-outcome no-replay. This evidence does not establish
+production owner coverage, other filesystems/platforms, syscall interruption,
+or general same-user isolation. Separate enablement approval has not been
+recorded, and the production capability remains closed. See [the issue #321
+native acceptance procedure](issue-321-native-acceptance.md) and
 [creation integration protocol](creation-integration-protocol.md).
 
 ## Runtime and UI reasons
