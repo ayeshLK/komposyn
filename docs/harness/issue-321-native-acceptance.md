@@ -73,6 +73,19 @@ dispatches its fixed actor mode before Go's testing argument parser. It does
 not convert the failed baseline into a pass, prove the full native suite, or
 change any production enablement decision.
 
+The candidate runner completed on source commit
+`8f0fde4cd580159e9433fe10c5711d2ae7101886`. Its archive is
+`/tmp/komposyn-composition-native-results.23cx7fjs.tar.gz` (SHA-256
+`fd1a4e269e9ce98a1eed3675832fae9e635298e1f29f0289a83cabe9e1711b37`), manifest
+SHA-256 `2cdced99f2757edb33571c6607c4d10bd65cf69814e74e994ec91adf94ae5233`,
+and native report SHA-256
+`9b924d7e038b73d974df7d235d891e77efc52a39eeb9275eee1b8a3144e53615`. The
+runner status is `native_unavailable`: the new actor-dispatch case and shipped
+generic-read gate were measured passes, while the Bubblewrap-dependent cases
+were unavailable. Unit checks, native build, process cleanup, and temporary
+work cleanup completed. This validates the regression test on this candidate;
+it does not replace the full trusted-host acceptance run.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).
