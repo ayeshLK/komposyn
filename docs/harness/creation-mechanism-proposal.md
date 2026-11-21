@@ -33,10 +33,12 @@ overwrite or append. The selected parent directory object is retained by
 descriptor, so renaming a parent does not redirect the operation to a
 replacement directory.
 
-The first proposed native pilot is Linux amd64, local ext4, with Linux 5.6 or
-newer for `openat2` path resolution and a filesystem/kernel pair that accepts
-`RENAME_NOREPLACE`. This is a test candidate, not a supported profile: no
-evidence has been collected for this composition. `openat2` resolution uses
+The measured scoped native profile is Linux amd64 on local ext4 with the
+recorded trusted Bubblewrap `ro-bind-fd` launch mode; the accepted run recorded
+12/12 cases. This is evidence for the bounded fixture prototype on that host,
+not a supported profile or production enablement. Linux 5.6 or newer is the
+minimum kernel requirement for `openat2` path resolution, and the filesystem
+and kernel must accept `RENAME_NOREPLACE`. `openat2` resolution uses
 `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`; descendant resolution also uses
 `RESOLVE_BENEATH | RESOLVE_NO_XDEV`. Unsupported flags, syscall or filesystem
 behavior cause refusal. There is no path-based, procfs, `O_TMPFILE`, rename
