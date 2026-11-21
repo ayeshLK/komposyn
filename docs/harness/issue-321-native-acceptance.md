@@ -8,7 +8,7 @@ synthetic files. It makes no provider requests.
 
 ## Recorded native run
 
-The accepted scoped run completed on 2026-11-20 against source commit
+The accepted historical scoped run completed on 2026-11-20 against source commit
 `39279e93080a2306f5ed1a702bd83ab852eb1055` with test overlay SHA-256
 `560c845a55a0e52c4f76b8710407ce914113f168c41b14196432d47b0b66f5c4`.
 The operator-retained archive is named
@@ -107,14 +107,19 @@ and report it as unavailable.
 
    The runner uses a temporary source archive and test overlay, without
    modifying the checkout. It runs selected unit checks, builds the native
-   test binary, and then executes the native cases. The #321 case verifies
-   exact published bytes, mode `0600`, no-replace collision preservation,
-   private-stage cleanup and worker join. The report identifies the actual
-   filesystem type and mount ID observed from the retained parent descriptor.
+   test binary, and then executes the native cases. The #321 bounded-creation
+   case verifies exact published bytes, mode `0600`, no-replace collision
+   preservation, private-stage cleanup and worker join. The retained-parent
+   case moves the parent with a separate same-UID actor and substitutes a new
+   directory at its former path; it verifies creation is relative to the
+   retained parent descriptor. Both reports include the actual filesystem
+   type and mount ID observed from retained descriptors.
 
 6. Read the `Results archive: ...` path printed by the runner. Inspect
    `summary.txt`, `manifest.json`, `native-report.json`, the
-   `TestNativeServiceBoundedCreation` record, and `SHA256SUMS`. Send back the
+   `TestNativeServiceBoundedCreation` and
+   `TestNativeServiceCreationUsesRetainedParentAfterIndependentMove` records,
+   and `SHA256SUMS`. Send back the
    archive path and the command's exit status.
 
 ## Result interpretation
