@@ -127,6 +127,25 @@ work cleanup complete. This validates actor startup with the explicit fixture
 `TMPDIR`; the trusted-host run remains necessary to recheck the retained-parent
 case and full native matrix.
 
+The maintainer reran the complete candidate on source commit
+`dbfd90974f0979832a9abc60e32aeb3c87399840`. The archive is
+`/home/ayesh/projects/samples/komposyn-issue321-native/komposyn-composition-native-results.ah0j_t7n.tar.gz`
+(SHA-256 `3d76449b95ba037db17d46b3404d36f398d993cd0af3c940904857be305236dc`).
+Its manifest SHA-256 is
+`1822336d698e55d533cc71a3a54738885e99fdaff64b81b0cb51e9c3173d9a02`, and the
+native report SHA-256 is
+`ac66529ef8a9a8e562505c5964d080d01aeb040122be804fabe86959b82f7ce6`.
+Environment: Go 1.26.11, Linux 7.0.0-42-generic amd64, regular UID 1000,
+trusted root-owned Bubblewrap 0.9.0, `ro-bind-fd`, ext4 mount ID 33. All 12
+native cases, including actor dispatch and retained-parent creation, measured
+pass; build, unit checks, process cleanup and temporary-work cleanup completed.
+The runner status is `scoped_native_pass`. Some held-worker lifecycle records
+report an unknown operation outcome after a deadline or wait error; the tests
+pass by confirming result suppression, cleanup, and any required fresh retry.
+This evidence remains limited to the fixed worker and tested host/profile; it
+does not enable production creation or establish other filesystems, launch
+modes, platforms, or arbitrary descendants.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).
