@@ -463,48 +463,27 @@ func TestCreationBarrierClosesAndReopensReadAdmissionAroundDrain(t *testing.T) {
 	}
 }
 
-func TestCreationBarrierWaitsForActiveReadWorkerToJoin(t *testing.T) {
+func TestCreationBarrierWaitsForRuntimeAdmittedReadWorkerToJoin(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "active-read.txt")
 	if err := os.WriteFile(target, []byte("must not overlap creation staging"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	launcher := &stage4WorkerLauncher{}
-	registry, err := readbrokerstudy.NewRegistry()
+	service, err := newTestHostServiceWithLauncher(launcher)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inventory := readbrokerstudy.NewChatCompositionInventory()
-	grants := readbrokerstudy.NewOnceGrantFixture()
-	session, err := readbrokerstudy.NewHostCoordinator(registry, readbrokerstudy.NewBroker(registry), launcher, grants, inventory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, requirement := range readbrokerstudy.ChatCompositionRequirements() {
-		if err := session.DeclareCoverageOwner(requirement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	impl := &linuxImplementation{registry: registry, launcher: launcher, session: session, inventory: inventory, revision: 1,
-		owners: map[string]OwnerCoverage{
-			auth.SensitiveOwnerAuth:     {Owner: auth.SensitiveOwnerAuth, Class: auth.SensitiveClassAuth, State: OwnerRequired},
-			auth.SensitiveOwnerSettings: {Owner: auth.SensitiveOwnerSettings, Class: auth.SensitiveClassSettings, State: OwnerRequired},
-		}, blocked: make(map[string]string)}
-	service := &Service{impl: impl}
 	for owner, class := range map[string]string{auth.SensitiveOwnerAuth: auth.SensitiveClassAuth, auth.SensitiveOwnerSettings: auth.SensitiveClassSettings} {
 		path := filepath.Join(t.TempDir(), owner+".json")
 		if err := service.Protect(context.Background(), owner, class, path, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "active-read-barrier", Root: root, Generation: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if err := grants.ApproveOnce("active-read"); err != nil {
-		t.Fatal(err)
-	}
 	entered, release := make(chan struct{}), make(chan struct{})
-	session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
+	var releaseOnce sync.Once
+	releaseHeld := func() { releaseOnce.Do(func() { close(release) }) }
+	service.impl.(*linuxImplementation).session.SetCheckpointHook(func(checkpoint readbrokerstudy.Checkpoint) error {
 		if checkpoint == readbrokerstudy.CheckpointAfterCapabilityHeld {
 			close(entered)
 			<-release
@@ -512,23 +491,59 @@ func TestCreationBarrierWaitsForActiveReadWorkerToJoin(t *testing.T) {
 		}
 		return nil
 	})
-	readDone := make(chan struct {
-		result readbrokerstudy.WorkerResult
-		err    error
-	}, 1)
+
+	fp := &creationBarrierCaptureProvider{path: target, callID: "unused", want: "unused"}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalOnce, "", nil
+	}), runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+	}), service)
+	chat := runtime.NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic credential", nil); err != nil {
+		t.Fatal(err)
+	}
+	selection := chat.Discover(context.Background())
+	if len(selection.Models) == 0 {
+		t.Fatal("provider discovery returned no model")
+	}
+	if err := chat.Select(context.Background(), selection.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.SelectFilesystemRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		releaseHeld()
+		chat.Close()
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close active-read barrier service: %v", err)
+		}
+	})
+
+	arguments, err := json.Marshal(map[string]string{"path": target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readDone := make(chan error, 1)
 	go func() {
-		result, readErr := session.Read(context.Background(), root, target, "active-read")
-		readDone <- struct {
-			result readbrokerstudy.WorkerResult
-			err    error
-		}{result, readErr}
+		capture, readErr := chat.ExecuteFilesystemRead(context.Background(), tools.Invocation{TurnID: "turn", ProviderCallID: "active-runtime-read", ToolID: tools.ReadFileID, Arguments: arguments}, selection.Models[0].Key())
+		if capture != nil {
+			_ = chat.DiscardPrivateReadCapture(capture)
+		}
+		readDone <- readErr
 	}()
 	select {
 	case <-entered:
 	case <-time.After(3 * time.Second):
-		t.Fatal("read worker did not reach held-capability checkpoint")
+		t.Fatal("runtime-admitted read did not reach held-capability checkpoint")
 	}
-	generationBeforeDrain := session.GenerationSnapshot()
+
+	impl := service.impl.(*linuxImplementation)
+	generationBeforeDrain := impl.session.GenerationSnapshot()
 	barrierDone := make(chan struct {
 		lease *creationBarrierLease
 		err   error
@@ -553,20 +568,15 @@ func TestCreationBarrierWaitsForActiveReadWorkerToJoin(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	arguments, err := json.Marshal(map[string]string{"path": target})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.AdmitFilesystemRead(context.Background(), tools.Invocation{ConversationID: "active-read-barrier", TurnID: "new", ProviderCallID: "new-read", ToolID: tools.ReadFileID, Arguments: arguments}, "openai/model/profile"); !errors.Is(err, ErrCreationBarrier) {
-		close(release)
+	if _, err := service.AdmitFilesystemRead(context.Background(), tools.Invocation{ConversationID: impl.selectedConversation, TurnID: "new", ProviderCallID: "new-read", ToolID: tools.ReadFileID, Arguments: arguments}, selection.Models[0].Key()); !errors.Is(err, ErrCreationBarrier) {
 		t.Fatalf("new admission passed before active-worker drain: %v", err)
 	}
 	select {
-	case <-barrierDone:
-		t.Fatal("barrier completed before active read worker joined")
+	case result := <-barrierDone:
+		t.Fatalf("barrier completed before runtime-admitted read joined: lease=%v err=%v", result.lease, result.err)
 	default:
 	}
-	close(release)
+	releaseHeld()
 	var barrier struct {
 		lease *creationBarrierLease
 		err   error
@@ -574,31 +584,27 @@ func TestCreationBarrierWaitsForActiveReadWorkerToJoin(t *testing.T) {
 	select {
 	case barrier = <-barrierDone:
 	case <-time.After(3 * time.Second):
-		t.Fatal("barrier did not finish after active worker settled")
+		t.Fatal("barrier did not finish after runtime read settled")
 	}
 	if barrier.err != nil || barrier.lease == nil || barrier.lease.state != creationBarrierActive {
 		t.Fatalf("barrier drain result lease=%v err=%v", barrier.lease, barrier.err)
 	}
-	var read struct {
-		result readbrokerstudy.WorkerResult
-		err    error
-	}
 	select {
-	case read = <-readDone:
+	case readErr := <-readDone:
+		if readErr == nil {
+			t.Fatal("cancelled runtime-admitted read unexpectedly succeeded")
+		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("cancelled active read did not settle")
+		t.Fatal("cancelled runtime-admitted read did not settle")
 	}
-	if read.result.Outcome != readbrokerstudy.ReadCancelled || len(read.result.Bytes) != 0 || launcher.starts.Load() != 1 || session.ActiveOperationCount() != 0 {
-		t.Fatalf("active read crossed barrier or failed to join: result=%+v err=%v starts=%d active=%d", read.result, read.err, launcher.starts.Load(), session.ActiveOperationCount())
+	if !launcher.lastWorker.Joined() || impl.session.ActiveOperationCount() != 0 {
+		t.Fatalf("runtime-admitted worker did not join: joined=%t active=%d", launcher.lastWorker.Joined(), impl.session.ActiveOperationCount())
 	}
-	if got := session.GenerationSnapshot(); got != generationBeforeDrain {
-		t.Fatalf("transient creation drain changed read authorization generations: before=%+v after=%+v", generationBeforeDrain, got)
+	if got := impl.session.GenerationSnapshot(); got != generationBeforeDrain {
+		t.Fatalf("transient creation drain changed read generations: before=%+v after=%+v", generationBeforeDrain, got)
 	}
 	if err := impl.finishCreationBarrier(barrier.lease, true); err != nil {
 		t.Fatalf("retire barrier after confirmed worker join: %v", err)
-	}
-	if err := service.Close(context.Background()); err != nil {
-		t.Fatalf("close service after joined read: %v", err)
 	}
 }
 
@@ -1178,6 +1184,157 @@ func TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked(t *testing.T)
 	}
 }
 
+func TestCreationPublicationDelayedJoinClassifiesUnknownWithoutRace(t *testing.T) {
+	root := t.TempDir()
+	launcher := &publicationDelayedJoinLauncher{waitStarted: make(chan struct{}), releaseWait: make(chan struct{}), waitReturned: make(chan struct{})}
+	t.Cleanup(launcher.release)
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerCreationFixtureOwners(t, service, root, "creation-publication-delayed-join"); err != nil {
+		t.Fatal(err)
+	}
+	impl := service.impl.(*linuxImplementation)
+	parent, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentIdentity := identityFromInfo(t, root)
+	stageName, err := readbrokerstudy.NewCreationStageName()
+	if err != nil {
+		_ = parent.Close()
+		t.Fatal(err)
+	}
+	done := make(chan struct {
+		result readbrokerstudy.CreationResult
+		err    error
+	}, 1)
+	go func() {
+		result, executeErr := impl.executeBoundedCreation(context.Background(), parent, parentIdentity, stageName, "published-unknown.txt", []byte("published before delayed join"))
+		done <- struct {
+			result readbrokerstudy.CreationResult
+			err    error
+		}{result, executeErr}
+	}()
+	select {
+	case <-launcher.waitStarted:
+	case <-time.After(3 * time.Second):
+		launcher.release()
+		_ = parent.Close()
+		t.Fatal("published worker did not reach delayed Wait")
+	}
+	joinDeadline := time.NewTimer(creationWorkerJoinTimeout + 100*time.Millisecond)
+	defer joinDeadline.Stop()
+	var completed struct {
+		result readbrokerstudy.CreationResult
+		err    error
+	}
+	select {
+	case completed = <-done:
+	case <-joinDeadline.C:
+		launcher.release()
+		_ = parent.Close()
+		t.Fatal("bounded join did not classify the published effect before the actor release deadline")
+	}
+	if completed.result.Outcome != readbrokerstudy.CreationUnknown || !errors.Is(completed.err, ErrCreationBarrier) {
+		t.Fatalf("delayed post-publication join was not unknown: result=%+v err=%v", completed.result, completed.err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "published-unknown.txt")); err != nil || string(got) != "published before delayed join" {
+		t.Fatalf("published bytes after uncertain join=%q err=%v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, stageName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("published file left a stage entry: %v", err)
+	}
+	impl.mu.Lock()
+	lease := impl.creationBarrier
+	retained := lease != nil && lease.state == creationBarrierBlocked && lease.worker == launcher.worker
+	impl.mu.Unlock()
+	if !retained {
+		t.Fatal("barrier did not retain the delayed worker after publication")
+	}
+	readArguments, err := json.Marshal(map[string]string{"path": filepath.Join(root, "published-unknown.txt")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AdmitFilesystemRead(context.Background(), tools.Invocation{ConversationID: "creation-publication-delayed-join", TurnID: "read", ProviderCallID: "blocked", ToolID: tools.ReadFileID, Arguments: readArguments}, "openai/model/profile"); !errors.Is(err, ErrCreationBarrier) {
+		t.Fatalf("admission reopened while Wait had not returned: %v", err)
+	}
+	launcher.release()
+	select {
+	case <-launcher.waitReturned:
+	case <-time.After(3 * time.Second):
+		_ = parent.Close()
+		t.Fatal("delayed Wait did not return after release")
+	}
+	if !launcher.worker.Joined() {
+		t.Fatal("worker completion was not confirmed")
+	}
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	closeErr := service.Close(closeCtx)
+	cancelClose()
+	if !errors.Is(closeErr, readbrokerstudy.ErrCleanupPending) {
+		t.Fatalf("service close discarded blocked creation ownership: %v", closeErr)
+	}
+	if err := parent.Close(); err != nil {
+		t.Errorf("close retained parent: %v", err)
+	}
+	if err := impl.session.Close(context.Background()); err != nil {
+		t.Errorf("close joined fixture coordinator: %v", err)
+	}
+	if err := impl.launcher.Close(); err != nil {
+		t.Errorf("close fixture launcher: %v", err)
+	}
+	if err := impl.registry.Close(); err != nil {
+		t.Errorf("close fixture registry: %v", err)
+	}
+}
+
+type publicationDelayedJoinLauncher struct {
+	inertWorkerLauncher
+	waitStarted  chan struct{}
+	releaseWait  chan struct{}
+	waitReturned chan struct{}
+	worker       *publicationDelayedJoinWorker
+	releaseOnce  sync.Once
+}
+
+func (l *publicationDelayedJoinLauncher) StartForOperation(_ context.Context, operation readbrokerstudy.AdmissionOperation) (readbrokerstudy.SandboxWorker, error) {
+	if operation != readbrokerstudy.AdmissionCreateFile {
+		return nil, readbrokerstudy.ErrProtocol
+	}
+	base := &filesystemCreationFixtureWorker{launcher: &filesystemCreationFixtureLauncher{}}
+	l.worker = &publicationDelayedJoinWorker{filesystemCreationFixtureWorker: base, launcher: l}
+	return l.worker, nil
+}
+
+func (*publicationDelayedJoinLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
+	return nil, readbrokerstudy.ErrUnavailable
+}
+
+func (l *publicationDelayedJoinLauncher) release() {
+	l.releaseOnce.Do(func() { close(l.releaseWait) })
+}
+
+func (l *publicationDelayedJoinLauncher) Close() error { return nil }
+
+type publicationDelayedJoinWorker struct {
+	*filesystemCreationFixtureWorker
+	launcher *publicationDelayedJoinLauncher
+	joined   atomic.Bool
+}
+
+func (w *publicationDelayedJoinWorker) Wait() error {
+	close(w.launcher.waitStarted)
+	<-w.launcher.releaseWait
+	waitErr := w.filesystemCreationFixtureWorker.Wait()
+	w.joined.Store(true)
+	close(w.launcher.waitReturned)
+	return errors.Join(waitErr, errors.New("injected delayed completion classification"))
+}
+
+func (w *publicationDelayedJoinWorker) Joined() bool { return w.joined.Load() }
+
 func TestCreationCompletionLossAfterPublicationIsUnknownAndNeverReplayed(t *testing.T) {
 	root := t.TempDir()
 	launcher := &filesystemCreationFixtureLauncher{waitErr: errors.New("injected worker completion loss")}
@@ -1678,7 +1835,33 @@ func TestCompletedReadCaptureSurvivesTransientCreationBarrierBeforeProviderHando
 	if err := grants.ApproveOnce(callID); err != nil {
 		t.Fatal(err)
 	}
-	fp := &creationBarrierCaptureProvider{service: service, impl: impl, path: target, callID: callID, want: "synthetic completed capture"}
+	fp := &creationBarrierCaptureProvider{path: target, callID: callID, want: "synthetic completed capture"}
+	barrierHost := &creationCaptureBarrierHost{Service: service}
+	barrierHost.afterCapture = func() error {
+		if fp.requests != 1 {
+			return fmt.Errorf("provider continuation began before capture barrier: requests=%d", fp.requests)
+		}
+		generation := impl.session.GenerationSnapshot()
+		lease, err := impl.beginCreationBarrier(context.Background())
+		if err != nil {
+			return err
+		}
+		arguments, err := json.Marshal(map[string]string{"path": target})
+		if err != nil {
+			return err
+		}
+		if _, err := service.AdmitFilesystemRead(context.Background(), tools.Invocation{ConversationID: impl.selectedConversation, TurnID: "after-capture", ProviderCallID: "new-read", ToolID: tools.ReadFileID, Arguments: arguments}, "openai/model/profile"); !errors.Is(err, ErrCreationBarrier) {
+			return fmt.Errorf("new read was not blocked while stage could become visible: %w", err)
+		}
+		if err := impl.finishCreationBarrier(lease, true); err != nil {
+			return err
+		}
+		if after := impl.session.GenerationSnapshot(); after != generation {
+			return fmt.Errorf("creation barrier changed read generations: before=%+v after=%+v", generation, after)
+		}
+		fp.barrierRetired = true
+		return nil
+	}
 	providers, err := model.NewRegistry(fp)
 	if err != nil {
 		t.Fatal(err)
@@ -1692,7 +1875,7 @@ func TestCompletedReadCaptureSurvivesTransientCreationBarrierBeforeProviderHando
 		return permissions.ApprovalOnce, "", nil
 	}), runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
 		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
-	}), service)
+	}), barrierHost)
 	chat := runtime.NewChatWithToolRuntime(providers, auth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}, nil, config)
 	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic credential", nil); err != nil {
 		t.Fatal(err)
@@ -1717,19 +1900,36 @@ func TestCompletedReadCaptureSurvivesTransientCreationBarrierBeforeProviderHando
 	if err != nil || turn.Outcome != provider.OutcomeCompleted || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded {
 		t.Fatalf("completed capture/provider continuation: turn=%+v err=%v", turn, err)
 	}
-	if approvalCount != 1 || !fp.capturePublished || !fp.barrierRetired || !launcher.lastWorker.Joined() {
-		t.Fatalf("capture lifecycle approvals=%d published=%t barrier_retired=%t joined=%t", approvalCount, fp.capturePublished, fp.barrierRetired, launcher.lastWorker.Joined())
+	if approvalCount != 1 || !fp.capturePublished || fp.captureCount != 1 || !fp.barrierRetired || !launcher.lastWorker.Joined() {
+		t.Fatalf("capture lifecycle approvals=%d published=%t publication_count=%d barrier_retired=%t joined=%t", approvalCount, fp.capturePublished, fp.captureCount, fp.barrierRetired, launcher.lastWorker.Joined())
 	}
 }
 
 type creationBarrierCaptureProvider struct {
-	service          *Service
-	impl             *linuxImplementation
 	path, callID     string
 	want             string
 	requests         int
 	capturePublished bool
+	captureCount     int
 	barrierRetired   bool
+}
+
+type creationCaptureBarrierHost struct {
+	*Service
+	afterCapture func() error
+}
+
+func (h *creationCaptureBarrierHost) ExecuteAdmittedFilesystemRead(ctx context.Context, admission runtime.FilesystemReadAdmission, preparation runtime.FilesystemReadPreparation, reference *runtime.ReadExecutionReference, authority runtime.FilesystemReadExecutionAuthority) (*runtime.PrivateReadCapture, error) {
+	capture, err := h.Service.ExecuteAdmittedFilesystemRead(ctx, admission, preparation, reference, authority)
+	if err != nil || capture == nil {
+		return capture, err
+	}
+	if h.afterCapture != nil {
+		if hookErr := h.afterCapture(); hookErr != nil {
+			return capture, hookErr
+		}
+	}
+	return capture, nil
 }
 
 func (*creationBarrierCaptureProvider) ID() provider.ID { return provider.OpenAI }
@@ -1756,29 +1956,14 @@ func (p *creationBarrierCaptureProvider) StreamChat(ctx context.Context, request
 	for _, message := range request.Messages {
 		if message.ToolResult != nil && message.ToolResult.CallID == p.callID && strings.Contains(message.ToolResult.Content, p.want) && !message.ToolResult.IsError {
 			p.capturePublished = true
+			p.captureCount++
 		}
 	}
 	if !p.capturePublished {
 		return provider.Result{}, errors.New("completed read capture was not present at provider continuation")
 	}
-	generation := p.impl.session.GenerationSnapshot()
-	lease, err := p.impl.beginCreationBarrier(ctx)
-	if err != nil {
-		return provider.Result{}, err
-	}
-	arguments, err := json.Marshal(map[string]string{"path": p.path})
-	if err != nil {
-		return provider.Result{}, err
-	}
-	if _, err := p.service.AdmitFilesystemRead(ctx, tools.Invocation{ConversationID: p.service.rootConversationID, TurnID: "after-capture", ProviderCallID: "new-read", ToolID: tools.ReadFileID, Arguments: arguments}, "openai/model/profile"); !errors.Is(err, ErrCreationBarrier) {
-		return provider.Result{}, fmt.Errorf("new read was not blocked while stage could become visible: %w", err)
-	}
-	if err := p.impl.finishCreationBarrier(lease, true); err != nil {
-		return provider.Result{}, err
-	}
-	p.barrierRetired = true
-	if after := p.impl.session.GenerationSnapshot(); after != generation {
-		return provider.Result{}, fmt.Errorf("creation barrier changed read generations: before=%+v after=%+v", generation, after)
+	if p.captureCount != 1 || !p.barrierRetired {
+		return provider.Result{}, fmt.Errorf("private capture did not survive one transient barrier before handoff: count=%d barrier_retired=%t", p.captureCount, p.barrierRetired)
 	}
 	message, _ := json.Marshal(map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "continued"}}})
 	return provider.Result{Outcome: provider.OutcomeCompleted, Completion: provider.CompletionFinal, Text: "continued", Native: []json.RawMessage{message}}, nil

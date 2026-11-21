@@ -757,13 +757,17 @@ func (s *linuxImplementation) beginCreationBarrier(ctx context.Context, rootBind
 	// and cancel the conversation that owns this create call, invalidating the
 	// create result along with any immutable read captures already completed.
 	// Trust, root and owner transitions keep using the stronger invalidation path.
-	drainErr := session.InvalidateAdmissions(ctx)
-	if drainErr == nil {
+	invalidateErr := session.InvalidateAdmissions(ctx)
+	drainErr := invalidateErr
+	// Retiring an admission can report cleanup-pending while its worker is
+	// still active. Drain those workers anyway, then retry admission retirement
+	// so the barrier can proceed only after both obligations are confirmed.
+	if invalidateErr == nil || errors.Is(invalidateErr, readbrokerstudy.ErrCleanupPending) {
 		drainer, ok := session.(readbrokerstudy.ActiveReadDrainer)
 		if !ok {
 			drainErr = readbrokerstudy.ErrUnavailable
-		} else {
-			drainErr = drainer.DrainActiveReads(ctx)
+		} else if drainErr = drainer.DrainActiveReads(ctx); drainErr == nil && invalidateErr != nil {
+			drainErr = session.InvalidateAdmissions(ctx)
 		}
 	}
 
@@ -931,8 +935,9 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	s.mu.Unlock()
 	joined := false
 	var workerWaitErr error
-	waitDone := make(chan struct{})
+	waitDone := make(chan error, 1)
 	waitStarted := false
+	waitCompleted := false
 	waitAndConfirm := func() bool {
 		if worker.Joined() {
 			return true
@@ -940,14 +945,17 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 		if !waitStarted {
 			waitStarted = true
 			go func() {
-				workerWaitErr = worker.Wait()
-				close(waitDone)
+				waitDone <- worker.Wait()
 			}()
+		}
+		if waitCompleted {
+			return worker.Joined()
 		}
 		timer := time.NewTimer(creationWorkerJoinTimeout)
 		defer timer.Stop()
 		select {
-		case <-waitDone:
+		case workerWaitErr = <-waitDone:
+			waitCompleted = true
 			return worker.Joined()
 		case <-timer.C:
 			return false
