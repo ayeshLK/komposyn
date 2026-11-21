@@ -147,15 +147,14 @@ conflicts, with an explicit residual external-write race. The
 stage-plus-no-replace candidate. PR #344 merged that proposal without accepting
 it as implementation-ready. The [creation integration protocol](creation-integration-protocol.md)
 specifies a proposed read barrier, owner-coverage contract and typed approval
-path; production scope coverage remains unresolved. The disposable prototype
-has behavioral lifecycle evidence recorded in
-[issue-321 lifecycle acceptance](issue-321-lifecycle-acceptance.md), while
-candidate-specific native acceptance and production enablement remain pending.
-The normal chat composition does not expose creation.
-The proposed [host-managed creation scope and owner-coverage decision](../adr/0009-proposed-host-managed-creation-scope.md)
-compares arbitrary directories, a fresh per-conversation output folder, and
-continued unavailability. It is pending maintainer review; it does not enable
-creation or establish production coverage.
+path. The disposable prototype has behavioral lifecycle evidence recorded in
+[issue-321 lifecycle acceptance](issue-321-lifecycle-acceptance.md) and historical
+scoped native evidence. The accepted [startup-directory creation scope decision](../adr/0009-startup-directory-creation-scope.md)
+selects the fixed CLI startup directory and existing subdirectories, with
+composition-owned protected-resource coverage and per-file once approval.
+That scope and coverage design still require gated implementation and new
+native evidence before a separate enablement PR. The normal chat composition
+does not expose creation.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
