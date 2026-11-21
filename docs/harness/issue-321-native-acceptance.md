@@ -112,6 +112,21 @@ retains the existing root validation and bounded actor protocol. Full native
 acceptance must be rerun against the updated PR head; this failed archive is
 preserved as evidence and is not a pass.
 
+After that change, the candidate runner on commit
+`8d872823fef76c11cc7fe229c3c6a85ef5eb60df` recorded
+`TestNativeActorModeDispatch` and the shipped generic-read gate as measured
+passes. The other ten worker cases were unavailable because this execution
+environment's Bubblewrap is untrusted. Archive SHA-256:
+`d58399b2fc7ebef0c681beb9f5e7bb30b5893727237e5f7ffbc3a48054a95c55`;
+manifest SHA-256:
+`2f9733a19298592583abf567d87b9dcd0e1263b51f18969cd6d02e45abc8b8ff`;
+native report SHA-256:
+`c8d76a261684c4605fe24b4d27a6389ae5e1b62dda4dc4a80af44c9ff45b6156`.
+The runner reported `native_unavailable`, with process cleanup and temporary
+work cleanup complete. This validates actor startup with the explicit fixture
+`TMPDIR`; the trusted-host run remains necessary to recheck the retained-parent
+case and full native matrix.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).

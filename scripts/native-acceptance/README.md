@@ -26,6 +26,6 @@ documented in [the #321 acceptance guide](../../docs/harness/issue-321-native-ac
 Runner SHA-256:
 `c6b44530e473e1de6089deae402968391251196df10ed7f2dc1847b8bc7c27b0`.
 Overlay SHA-256:
-`fba6391595341f236c89765460aed72a5d8172d584120d3d893a485e499d6be5`.
+`e61b66665dde953113b3b5f0df17f6238bffa543494acf9471dba0e84b636f14`.
 The tracked host-independent results are in
 [`docs/harness/read-broker-composition-native-acceptance.md`](../../docs/harness/read-broker-composition-native-acceptance.md).
