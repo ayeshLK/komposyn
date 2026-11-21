@@ -14,6 +14,15 @@ gaps are tracked in the [lifecycle acceptance record](issue-321-lifecycle-accept
 does not create a supported mutation profile or model-facing capability.
 Normal production composition remains closed.
 
+The accepted [startup-directory scope decision](../adr/0009-startup-directory-creation-scope.md)
+now defines the next production design: fixed startup scope, existing nested
+parents and composition-owned protected-resource coverage. It supersedes the
+earlier creation-only requirement to classify all selected-root data. The
+current fixture mechanism and its native evidence do not establish that new
+scope contract; gated implementation and new evidence precede separate
+enablement. Other statements below about unresolved production coverage refer
+to implementation/evidence, not an undecided scope product choice.
+
 This is a creation-only revision. It accepts external filesystem changes
 during approval and between the last check and publication. Approval is not a
 lock, and this candidate does not establish isolation against hostile

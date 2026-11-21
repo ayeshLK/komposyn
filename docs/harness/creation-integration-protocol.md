@@ -20,15 +20,33 @@ The trusted composition's declared owners are:
 | Provider source | Unsupported; no source identity/open lifecycle is registered in chat composition | No route/identity completeness | Any scope whose eligibility depends on excluding provider-owned sources is unavailable. |
 | Unknown root data | Unsupported; `ErrUnknownRootData` remains the host authorizer result | No generic user-tree completeness | Arbitrary selected scopes cannot currently be declared complete. |
 
-An empty registration list or an `OwnerAbsent` declaration is not a coverage proof for arbitrary user data. Eligibility requires a complete owner manifest for the selected scope and target, supplied by trusted composition owners, plus stable route/identity generations. Coverage includes canonical routes, pinned object identities, aliases and protected ancestors supplied by those owners. No machine-wide scan, transcript scan, ignore rule or path deny-list may fill missing coverage. User approval cannot override a known protected object or unsupported/missing owner.
+An empty registration list or absent path is not proof of coverage for an
+applicable required owner. The accepted creation-only contract in
+[ADR-0009](../adr/0009-startup-directory-creation-scope.md) requires a complete
+manifest for the sensitive components actually instantiated by the running
+chat, plus stable route/identity generations. Coverage includes their effective
+routes, pinned identities, aliases and owner-designated protected ancestors.
+Only trusted composition wiring can declare a component uninstantiated. No
+machine-wide scan, transcript scan, ignore rule, path-prefix rule or approval
+can substitute for missing applicable owner coverage or override a known
+protected resource.
 
-The current composition therefore has **no generally eligible creation scope**. A future prototype may test a disposable fixture composition with explicit synthetic auth and settings owners, a declared complete synthetic provider-source inventory, a declared Token Logger owner with DB/WAL/SHM/journal/backup identities, and an explicit complete-scope manifest. That fixture validates protocol behavior only; it does not prove shipped host coverage. Before any real scope becomes eligible, maintainers must decide which trusted component can attest provider-source and unknown-root coverage for a user-selected scope. The choices are to keep all scopes unavailable until such registration exists, or to approve a narrower, clearly bounded scope contract with its own completeness evidence. The present design chooses no exception.
+The current implementation still has **no generally eligible creation scope**.
+ADR-0009 selects the CLI startup directory, fixed for that run, including
+existing subdirectories. Its accepted eligibility rule allows ordinary existing
+project content without inventorying or classifying every entry. This
+supersedes the earlier creation-only unknown-root requirement to attest all
+selected-root data; it leaves read/discovery authorization unchanged. The
+synthetic complete-owner manifest remains fixture evidence only. The typed
+production owner profile, startup identity capture, nested-parent handling and
+new native scope evidence must be implemented before separate model-facing
+enablement review.
 
 ## Proposed typed creation and approval path
 
 The intended path reuses the existing composition seam rather than adding a provider-facing filesystem executor:
 
-1. Trusted UI selects a mutation scope independently of working-directory navigation. Host records the selected scope identity and generation. Selection itself grants no access.
+1. Trusted CLI composition captures the startup directory and its identity as the creation scope for that run, independently of later working-directory navigation. UI shows the scope and availability. Starting there selects scope but grants no file access; every creation still needs exact once approval. No runtime scope picker is introduced in the initial version.
 2. Provider submits only a strict relative target and complete UTF-8 content. Runtime ignores model-supplied scope, identity, digest and generation. Host resolves one existing parent and observes an absent basename leaf. The runtime retains immutable bytes, digest, parent identity/descriptor, route, baseline, scope/policy/owner generations, conversation/turn/call identity and provider/model/auth-profile destination.
 3. Host refuses before prompting if profile, service, owner completeness, parent, target or generations are unavailable or ambiguous. Known protected resources are never approvable.
 4. Trusted UI receives a typed approval view containing exact target, operation, complete diff/content, byte count and exact provider/model/auth-profile destination. It returns an explicit once decision. It is bound to the immutable proposal and all identities/generations above. No conversation-level permission substitutes for this receipt.
@@ -147,7 +165,7 @@ The worker/helper reports `not_executed` only when publication is known not to h
 | Stage visibility during read/list/search | Service-wide admission barrier closes before stage creation; runtime-admitted read/list/search workers are drained, search content join is held, prepared work is invalidated and completed captures retain their read binding. See lifecycle acceptance record. | Behavioral cases pass; trusted-host scoped native acceptance is recorded. Injected workers establish coordination behavior, not native cancellation of arbitrary syscall schedules. |
 | Stage self-registration invalidating its receipt | Temporary exclusion uses barrier-local token/identity and does not call `Protect` or advance owner/policy/coverage generations. | Implement and prove one-consumer receipt binding remains unchanged through stage lifecycle. |
 | Drain, cancellation, close and uncertain cleanup | Explicit `blocked` state retains gate and cleanup ownership; bounded join timeout and lost completion are classified unknown without reopening. Close and root transition are tested during delayed retirement. | Selected behavioral cases pass; exhaustive scheduling and syscall interruption remain unproven. Scoped native acceptance is recorded. |
-| Protected owner coverage | Eligibility requires complete trusted manifest; absent, required, pending, stale, retired, unsupported or ambiguous states are distinct; unknown selected-root data fails closed. | Resolve provider-source and unknown-root scope completeness. Current production composition cannot make arbitrary scopes eligible. |
+| Protected owner coverage | ADR-0009 requires a trusted manifest for applicable composed owners, distinguishing uninstantiated, required, pending, stale, retired and unsupported states. Ordinary project entries do not require a whole-scope census. | Implement the accepted startup-scope and composition-owned coverage contract; known protection and incomplete applicable-owner checks still fail closed. |
 | Auth/settings rotation ordering | Shared coordinator linearizes owner pending against stage-entry and publication-release permits; after-release ordering and delayed root retirement are covered behaviorally. | Selected cases pass; every transition checkpoint is not exhaustively enumerated. Scoped native acceptance does not establish production owner coverage. |
 | Creation approval path | Typed runtime receipt binds exact bytes, target, parent, destination and generations; one-consumer queue; no prompt under effect lock; fresh approval on detected conflict. | Add create-specific UI/runtime/provider integration and verify exact rendering, stale arguments and no replay. |
 | Stage-and-rename mechanism | Candidate has a single no-replace publication point; external races remain accepted. | Prototype authorization is separate; then native Linux amd64/ext4 evidence and reviewed implementation are required. |
