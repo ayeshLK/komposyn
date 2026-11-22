@@ -379,6 +379,19 @@ func TestCreationApprovalShowsCompleteDiffAndDestinationInScrollablePanel(t *tes
 		screen.InjectKey(key, 0, tcell.ModNone)
 		time.Sleep(30 * time.Millisecond)
 	}
+	scrollUntilVisible := func(expected string) string {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			visible := approvalDetailsOnScreen(safe)
+			if strings.Contains(strings.Join(strings.Fields(visible), ""), expected) {
+				return visible
+			}
+			press(tcell.KeyPgDn)
+		}
+		visible := approvalDetailsOnScreen(safe)
+		t.Fatalf("approval detail %q did not become visible while scrolling: %q", expected, visible)
+		return ""
+	}
 	press(tcell.KeyEnd)
 	press(tcell.KeyEnd)
 	waitForScreen(t, safe, "approved line 24", "")
@@ -389,13 +402,12 @@ func TestCreationApprovalShowsCompleteDiffAndDestinationInScrollablePanel(t *tes
 		t.Fatalf("scrollable creation approval omitted the end of the complete diff or exact target: %q", visibleBottom)
 	}
 	press(tcell.KeyHome)
-	press(tcell.KeyPgDn)
-	visibleHeader := strings.Join(strings.Fields(approvalDetailsOnScreen(safe)), "")
+	waitForApprovalDetailsAbsent(t, safe, "approvedline24")
+	visibleHeader := strings.Join(strings.Fields(scrollUntilVisible("---/dev/null")), "")
 	if !strings.Contains(visibleHeader, "---/dev/null") || !strings.Contains(visibleHeader, "+++") {
 		t.Fatalf("scrolling omitted the creation diff header: %q", visibleHeader)
 	}
-	press(tcell.KeyPgDn)
-	visibleTop := strings.NewReplacer("\\\\", "\\").Replace(approvalDetailsOnScreen(safe))
+	visibleTop := strings.NewReplacer("\\\\", "\\").Replace(scrollUntilVisible("approvedline01"))
 	visibleTopCompact := strings.Join(strings.Fields(visibleTop), "")
 	if !strings.Contains(visibleTopCompact, "approvedline01") {
 		t.Fatalf("scrolling to the beginning omitted the creation diff header/content: %q", visibleTop)
@@ -424,6 +436,22 @@ func waitForExactTarget(t *testing.T, screen *synchronizedSimulation, target str
 	visibleWithoutWhitespace := strings.Join(strings.Fields(visible), "")
 	if !strings.Contains(visibleWithoutWhitespace, targetWithoutSpaces) {
 		t.Fatalf("screen did not show the exact target %q across line wrapping: %q", target, visible)
+	}
+}
+
+func waitForApprovalDetailsAbsent(t *testing.T, screen *synchronizedSimulation, unexpected string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		visible := strings.Join(strings.Fields(approvalDetailsOnScreen(screen)), "")
+		if !strings.Contains(visible, unexpected) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	visible := approvalDetailsOnScreen(screen)
+	if strings.Contains(strings.Join(strings.Fields(visible), ""), unexpected) {
+		t.Fatalf("approval detail %q remained visible after scrolling to the top: %q", unexpected, visible)
 	}
 }
 
