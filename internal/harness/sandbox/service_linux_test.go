@@ -144,6 +144,243 @@ func TestHostCompositionRegistersIndependentAuthAndSettingsRoutes(t *testing.T) 
 	}
 }
 
+func TestCreationFoundationUsesTrustedOwnersAndFixedStartupScope(t *testing.T) {
+	startup := t.TempDir()
+	service, err := newTestHostServiceWithStartupDirectory(startup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+
+	initial := service.CreationFoundationSnapshot()
+	if initial.OwnerCoverageComplete || initial.CapabilityRegistered {
+		t.Fatalf("unregistered owners or disabled capability reported eligible: %+v", initial)
+	}
+	runtimeConfig := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(nil, nil, service)
+	if _, registered := runtimeConfig.Registry.Lookup(tools.CreateFileID); registered {
+		t.Fatal("production conversation registered creation from foundation metadata")
+	}
+	if initial.StartupScope.State != StartupScopeIdentityDeferred || initial.StartupScope.RunBinding == "" || initial.StartupScope.Generation != 1 {
+		t.Fatalf("startup scope identity deferral was not explicit: %+v", initial.StartupScope)
+	}
+	if strings.Contains(initial.StartupScope.Reason, startup) {
+		t.Fatal("startup scope snapshot exposed a private path in its reason")
+	}
+	wantDisposition := map[string]CreationOwnerDisposition{
+		auth.SensitiveOwnerAuth:     CreationOwnerRequired,
+		auth.SensitiveOwnerSettings: CreationOwnerRequired,
+		"tokenlogger-store":         CreationOwnerNotInstantiated,
+		"provider-source":           CreationOwnerNotInstantiated,
+	}
+	for _, owner := range initial.Owners {
+		if want, ok := wantDisposition[owner.Owner]; !ok || owner.Disposition != want {
+			t.Errorf("unexpected production owner declaration: %+v", owner)
+		}
+	}
+	if len(initial.Owners) != len(wantDisposition) {
+		t.Fatalf("owner profile=%+v; want exactly the trusted current composition", initial.Owners)
+	}
+	requiredInventoryOwners := service.CoverageSnapshot().RequiredOwners
+	if len(requiredInventoryOwners) != 2 || requiredInventoryOwners[0] != auth.SensitiveOwnerAuth || requiredInventoryOwners[1] != auth.SensitiveOwnerSettings {
+		t.Fatalf("trusted inventory requirements=%v; want auth and settings only", requiredInventoryOwners)
+	}
+
+	// Ordinary project content does not require a scope-wide inventory. This
+	// foundation remains unavailable only because identity validation is deferred.
+	if err := os.WriteFile(filepath.Join(startup, "ordinary-project-file.txt"), []byte("project content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth.json"), nil); err != nil {
+		t.Fatalf("register absent auth route: %v", err)
+	}
+	authOnly := service.CreationFoundationSnapshot()
+	if authOnly.OwnerCoverageComplete {
+		t.Fatal("auth registration alone was treated as complete owner coverage")
+	}
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(t.TempDir(), "settings.json"), nil); err != nil {
+		t.Fatalf("register absent settings route: %v", err)
+	}
+	completeOwners := service.CreationFoundationSnapshot()
+	if !completeOwners.OwnerCoverageComplete {
+		t.Fatalf("registered absent auth/settings routes were not covered: %+v", completeOwners)
+	}
+	if completeOwners.CoverageRevision <= initial.CoverageRevision {
+		t.Fatalf("owner registrations did not advance coverage: before=%d after=%d", initial.CoverageRevision, completeOwners.CoverageRevision)
+	}
+	if completeOwners.CapabilityRegistered {
+		t.Fatal("complete metadata registered the production creation capability")
+	}
+	for _, owner := range completeOwners.Owners {
+		if owner.Disposition == CreationOwnerRequired && (owner.State != OwnerRegistered || owner.Routes == 0 || owner.Identities != 0) {
+			t.Errorf("required absent route did not remain protected: %+v", owner)
+		}
+	}
+	oldCoverageRevision := completeOwners.CoverageRevision
+	if err := service.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(t.TempDir(), "auth-rotated.json"), nil); err != nil {
+		t.Fatalf("rotate auth owner route: %v", err)
+	}
+	afterRotation := service.CreationFoundationSnapshot()
+	if afterRotation.CoverageRevision <= oldCoverageRevision || !afterRotation.OwnerCoverageComplete {
+		t.Fatalf("owner rotation did not refresh current coverage: before=%+v after=%+v", completeOwners, afterRotation)
+	}
+	if afterRotation.StartupScope.RunBinding != completeOwners.StartupScope.RunBinding || afterRotation.StartupScope.Generation != completeOwners.StartupScope.Generation {
+		t.Fatalf("owner rotation silently recaptured startup scope: before=%+v after=%+v", completeOwners.StartupScope, afterRotation.StartupScope)
+	}
+
+	root := t.TempDir()
+	for generation, transition := range []runtime.FilesystemRootTransition{
+		{ConversationID: "conversation-one", Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected},
+		{ConversationID: "conversation-two", Root: startup, Generation: 2, Reason: runtime.FilesystemRootConversationReset},
+	} {
+		if err := service.InvalidateFilesystemRoot(context.Background(), transition); err != nil {
+			t.Fatalf("runtime root transition %d: %v", generation+1, err)
+		}
+	}
+	afterNavigation := service.CreationFoundationSnapshot()
+	if afterNavigation.StartupScope.RunBinding != initial.StartupScope.RunBinding || afterNavigation.StartupScope.Generation != initial.StartupScope.Generation {
+		t.Fatalf("navigation/reset recaptured startup scope: before=%+v after=%+v", initial.StartupScope, afterNavigation.StartupScope)
+	}
+	// A newly composed sensitive owner cannot silently inherit an absent status.
+	impl := service.impl.(*linuxImplementation)
+	impl.mu.Lock()
+	impl.owners["future-sensitive-store"] = OwnerCoverage{Owner: "future-sensitive-store", Class: "future-class", State: OwnerRequired, Reason: "test owner has no trusted profile declaration"}
+	impl.mu.Unlock()
+	withUndeclaredOwner := service.CreationFoundationSnapshot()
+	if withUndeclaredOwner.OwnerCoverageComplete {
+		t.Fatal("unknown sensitive owner silently counted as uninstantiated")
+	}
+	foundUnknown := false
+	for _, owner := range withUndeclaredOwner.Owners {
+		if owner.Owner == "future-sensitive-store" && owner.Disposition == CreationOwnerUnknown {
+			foundUnknown = true
+		}
+	}
+	if !foundUnknown {
+		t.Fatalf("unknown owner was not surfaced in the snapshot: %+v", withUndeclaredOwner.Owners)
+	}
+}
+
+func TestCreationFoundationRejectsStaleCoordinatorOwnerAndRefreshes(t *testing.T) {
+	service, err := newTestHostServiceWithStartupDirectory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+	for owner, class := range map[string]string{
+		auth.SensitiveOwnerAuth:     auth.SensitiveClassAuth,
+		auth.SensitiveOwnerSettings: auth.SensitiveClassSettings,
+	} {
+		if err := service.Protect(context.Background(), owner, class, filepath.Join(t.TempDir(), owner+".json"), nil); err != nil {
+			t.Fatalf("register %s owner: %v", owner, err)
+		}
+	}
+	baseline := service.CreationFoundationSnapshot()
+	if !baseline.OwnerCoverageComplete {
+		t.Fatalf("test precondition is not complete owner coverage: %+v", baseline)
+	}
+
+	impl := service.impl.(*linuxImplementation)
+	impl.mu.Lock()
+	coordinator := impl.session
+	impl.mu.Unlock()
+	coordinatorBaseline := coordinator.CoverageSnapshot()
+	if !coordinatorBaseline.Complete {
+		t.Fatalf("authoritative coordinator precondition is incomplete: %+v", coordinatorBaseline)
+	}
+	// CoverageInventory currently has no recoverable stale state of its own.
+	// Exercise the host adapter with a coordinator-published stale snapshot after
+	// real registrations, then publish a newer complete snapshot for recovery.
+	// This keeps the tested status authoritative to Service.CoverageSnapshot
+	// without mutating linuxImplementation.owners behind that coordinator.
+	staleSnapshot := coordinatorBaseline
+	staleSnapshot.Revision++
+	staleSnapshot.Complete = false
+	staleSnapshot.Requirements = append([]readbrokerstudy.OwnerCoverage(nil), coordinatorBaseline.Requirements...)
+	foundAuth := false
+	for index := range staleSnapshot.Requirements {
+		owner := &staleSnapshot.Requirements[index]
+		if owner.Owner == auth.SensitiveOwnerAuth {
+			owner.Complete = false
+			owner.UnavailableReason = "authoritative owner revision is stale"
+			foundAuth = true
+		}
+	}
+	if !foundAuth {
+		t.Fatalf("auth missing from coordinator baseline: %+v", coordinatorBaseline)
+	}
+	override := &coverageSnapshotCoordinator{HostCoordinator: coordinator, snapshot: staleSnapshot}
+	impl.mu.Lock()
+	impl.session = override
+	impl.mu.Unlock()
+
+	staleCoverage := service.CoverageSnapshot()
+	assertOwnerState(t, staleCoverage, OwnerStale)
+	stale := service.CreationFoundationSnapshot()
+	if stale.OwnerCoverageComplete {
+		t.Fatalf("stale authoritative owner coverage was accepted: %+v", stale)
+	}
+	assertCreationOwnerStatus(t, stale, auth.SensitiveOwnerAuth, OwnerStale)
+
+	refreshedSnapshot := coordinatorBaseline
+	refreshedSnapshot.Revision = staleSnapshot.Revision + 1
+	override.snapshot = refreshedSnapshot
+	refreshed := service.CreationFoundationSnapshot()
+	if !refreshed.OwnerCoverageComplete || refreshed.CoverageRevision <= stale.CoverageRevision {
+		t.Fatalf("successful authoritative refresh did not restore current coverage: stale=%+v refreshed=%+v", stale, refreshed)
+	}
+	assertCreationOwnerStatus(t, refreshed, auth.SensitiveOwnerAuth, OwnerRegistered)
+}
+
+type coverageSnapshotCoordinator struct {
+	readbrokerstudy.HostCoordinator
+	snapshot readbrokerstudy.CoverageSnapshot
+}
+
+func (c *coverageSnapshotCoordinator) CoverageSnapshot() readbrokerstudy.CoverageSnapshot {
+	snapshot := c.snapshot
+	snapshot.Requirements = append([]readbrokerstudy.OwnerCoverage(nil), c.snapshot.Requirements...)
+	return snapshot
+}
+
+func assertCreationOwnerStatus(t *testing.T, snapshot CreationFoundationSnapshot, owner string, want OwnerState) {
+	t.Helper()
+	for _, status := range snapshot.Owners {
+		if status.Owner == owner {
+			if status.State != want {
+				t.Fatalf("creation owner %q state=%q want=%q snapshot=%+v", owner, status.State, want, snapshot)
+			}
+			return
+		}
+	}
+	t.Fatalf("creation owner %q missing from snapshot: %+v", owner, snapshot)
+}
+
+func TestUnsupportedStartupCreationProfileDoesNotBlockHostStartup(t *testing.T) {
+	service, err := NewHostServiceWithStartupDirectory(filepath.Join(t.TempDir(), "missing-bubblewrap"), t.TempDir())
+	if err != nil {
+		t.Fatalf("unsupported creation profile made host composition fatal: %v", err)
+	}
+	snapshot := service.CreationFoundationSnapshot()
+	if snapshot.StartupScope.State != StartupScopeUnavailable || snapshot.CapabilityRegistered {
+		t.Fatalf("unsupported backend did not remain unavailable: %+v", snapshot)
+	}
+	if err := service.Close(context.Background()); err != nil {
+		t.Fatalf("close unsupported service: %v", err)
+	}
+	closed := service.CreationFoundationSnapshot()
+	if closed.StartupScope.State != StartupScopeClosed || closed.OwnerCoverageComplete || closed.CapabilityRegistered {
+		t.Fatalf("closed service exposed current creation coverage: %+v", closed)
+	}
+}
+
 func TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate(t *testing.T) {
 	service, err := newTestHostService()
 	if err != nil {
@@ -3750,6 +3987,16 @@ func TestFailedOwnerIdentityValidationStaysPendingUntilSuccessfulRetry(t *testin
 					t.Fatal("owner update unexpectedly completed")
 				}
 				assertOwnerState(t, service.CoverageSnapshot(), OwnerPending)
+				pendingSnapshot := service.CreationFoundationSnapshot()
+				if pendingSnapshot.OwnerCoverageComplete {
+					t.Fatal("pending owner update was reported as complete creation coverage")
+				}
+				// Snapshot values are detached observations, not a mutable input to
+				// the host. Forging one cannot clear the lifecycle's pending latch.
+				pendingSnapshot.OwnerCoverageComplete = true
+				if current := service.CreationFoundationSnapshot(); current.OwnerCoverageComplete {
+					t.Fatal("forged detached snapshot cleared pending owner coverage")
+				}
 
 				// A fresh replacement at its current pathname is required to clear
 				// the failure latch; the previous pathname pin cannot do so.
@@ -3796,6 +4043,15 @@ func assertOwnerState(t *testing.T, snapshot CoverageSnapshot, want OwnerState) 
 
 func newTestHostService() (*Service, error) {
 	return newTestHostServiceWithLauncher(inertWorkerLauncher{})
+}
+
+func newTestHostServiceWithStartupDirectory(path string) (*Service, error) {
+	service, err := newTestHostService()
+	if err != nil {
+		return nil, err
+	}
+	service.captureStartupDirectory(path)
+	return service, nil
 }
 
 func newTestHostServiceWithLauncher(launcher readbrokerstudy.WorkerLauncher) (*Service, error) {

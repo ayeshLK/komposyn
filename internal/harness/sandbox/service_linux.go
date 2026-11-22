@@ -1566,14 +1566,21 @@ func (s *linuxImplementation) CoverageSnapshot() CoverageSnapshot {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var missingServiceOwners []OwnerCoverage
+	var requiredOwners []string
 	if s.session != nil {
 		study := s.session.CoverageSnapshot()
 		if study.Revision > s.revision {
 			s.revision = study.Revision
 		}
 		for _, owner := range study.Requirements {
+			requiredOwners = append(requiredOwners, owner.Owner)
 			coverage, exists := s.owners[owner.Owner]
 			if !exists {
+				missingServiceOwners = append(missingServiceOwners, OwnerCoverage{
+					Owner: owner.Owner, Class: string(owner.Class), State: OwnerRequired,
+					Reason: "required owner has no production service lifecycle registration",
+				})
 				continue
 			}
 			coverage.Routes = owner.RegisteredRoutes
@@ -1606,8 +1613,10 @@ func (s *linuxImplementation) CoverageSnapshot() CoverageSnapshot {
 	for _, owner := range s.owners {
 		owners = append(owners, owner)
 	}
+	owners = append(owners, missingServiceOwners...)
 	sortOwnerCoverage(owners)
-	return CoverageSnapshot{Revision: s.revision, Composition: "komposyn-memory-chat", Capability: "linux-exact-file-typed-read", UnknownRootDataGate: true, Owners: owners}
+	slices.Sort(requiredOwners)
+	return CoverageSnapshot{Revision: s.revision, Composition: "komposyn-memory-chat", Capability: "linux-exact-file-typed-read", UnknownRootDataGate: true, RequiredOwners: requiredOwners, Owners: owners}
 }
 
 func (s *linuxImplementation) BackendStatus() (bool, string) {

@@ -153,8 +153,13 @@ The accepted scope/owner-coverage design is recorded in
 startup directory and existing subdirectories, with required coverage for
 components actually instantiated by the running chat. Ordinary existing
 project content does not require a scope-wide inventory. This design still
-needs gated implementation, new scope-specific evidence and a separate
-enablement PR; creation remains unavailable.
+has a first gated owner-profile/startup-input foundation: auth and settings
+are required, Token Logger/provider-source ingestion are explicitly declared
+not instantiated by trusted composition, and the launch directory is bound
+before runtime navigation. Retained directory identity and movement checks,
+new scope-specific evidence and separate enablement remain outstanding;
+creation remains unregistered and unavailable. See the [owner-profile
+foundation](issue-321-owner-profile.md).
 
 ## Runtime and UI reasons
 

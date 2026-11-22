@@ -642,6 +642,10 @@ bounded, checksummed archive from a normal Linux host terminal.
 The [owner inventory and admission note](read-broker-owner-inventory.md)
 records the Token Logger/provider lifecycle gaps and explains why a complete
 synthetic fixture profile does not establish production coverage.
+The [issue #321 production owner-profile foundation](issue-321-owner-profile.md)
+records the fixed trusted chat owner declarations and startup-scope snapshot;
+the scope identity and movement checks remain deferred and creation is not
+registered.
 
 ## Native study prerequisite
 
