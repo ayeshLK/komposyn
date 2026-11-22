@@ -141,8 +141,8 @@ func TestFilesystemRootStartsUnsetAndSelectionIsNotPermission(t *testing.T) {
 }
 
 func TestCreationStatusKeepsTrustedStartupScopeSeparateFromNavigation(t *testing.T) {
-	startup := t.TempDir()
-	working := t.TempDir()
+	startup := canonicalFilesystemRootFixture(t, t.TempDir())
+	working := canonicalFilesystemRootFixture(t, t.TempDir())
 	host := &fixedCreationScopeHostFixture{
 		filesystemRootHostFixture: &filesystemRootHostFixture{available: true, backendStatus: "fixture"},
 		status:                    FixedCreationScopeStatus{StartupDirectory: startup, State: "identity-retained", Generation: 1, OwnerCoverageComplete: true, Reason: "creation is not registered"},
