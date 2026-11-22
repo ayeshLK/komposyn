@@ -381,6 +381,8 @@ func TestCreationApprovalShowsCompleteDiffAndDestinationInScrollablePanel(t *tes
 	}
 	press(tcell.KeyEnd)
 	press(tcell.KeyEnd)
+	waitForScreen(t, safe, "approved line 24", "")
+	waitForExactTarget(t, safe, target)
 	visibleBottom := strings.NewReplacer("\\\\", "\\").Replace(approvalDetailsOnScreen(safe))
 	visibleBottomCompact := strings.Join(strings.Fields(visibleBottom), "")
 	if !strings.Contains(visibleBottomCompact, "approvedline24") || !strings.Contains(visibleBottomCompact, strings.ReplaceAll(target, " ", "")) {
