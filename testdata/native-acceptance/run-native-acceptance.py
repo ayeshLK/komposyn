@@ -21,6 +21,7 @@ EXPECTED = ['TestNativeActorModeDispatch', 'TestNativeShippedGenericReadGate', '
             'TestNativeServiceProtectedRoutesAndAliases', 'TestNativeServiceRotationJoinsHeldWorker',
             'TestNativeServicePostCaptureRevocation', 'TestNativeServiceAuthRotationJoinsHeldWorker',
             'TestNativeServiceBoundedCreation', 'TestNativeServiceCreationUsesRetainedParentAfterIndependentMove',
+            'TestNativeServiceNestedCreationUsesStartupScope', 'TestNativeServiceStartupRootMovementIsTerminal',
             'TestNativeServiceRootChangeWhileHeld','TestNativeServiceCancellationWhileHeld',
             'TestNativeServiceShutdownRetryWhileHeld']
 
@@ -120,7 +121,7 @@ def main():
             print(name+': '+('completed' if ok else 'failed/incomplete'),flush=True)
             return ok
         # Unit/coordinator checks remain a separately labelled evidence stage.
-        unit_ok=stage('unit-checks',['go','test','-json','-count=1','-timeout=90s','-run','^Test(HostComposition|FailedOwner|PreparationRefusal|CancellationAfterPreparation|UnconfirmedPreparation|ChatCloseContext)','./internal/harness/sandbox','./internal/harness/runtime'],180)
+        unit_ok=stage('unit-checks',['go','test','-json','-count=1','-timeout=90s','-run','^Test(HostComposition|FailedOwner|PreparationRefusal|CancellationAfterPreparation|UnconfirmedPreparation|ChatCloseContext|StartupScopeMovement|CreationResolvesNested|StartupRootMoveAtPublication|ClassifyFromRetainedDirectory)','./internal/harness/sandbox','./internal/harness/readbrokerstudy','./internal/harness/runtime'],180)
         binary=work/'native-service-tests'
         build_ok=stage('build-native',['go','test','-c','-buildvcs=false','-o',str(binary),'./internal/harness/sandbox'],300)
         if build_ok:

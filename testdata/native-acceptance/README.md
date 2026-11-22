@@ -9,22 +9,28 @@ The hash-pinned runner and test overlay are kept together in
 - `run-native-acceptance.py`
 - `native_acceptance_linux_test.go`
 
-The runner includes two #321 creation cases. It composes the real host service
-with the real Bubblewrap worker, injects only the synthetic complete owner
-manifest used by fixtures, publishes a synthetic file, checks exact bytes and
-mode `0600`, verifies stage cleanup and worker join, and confirms an existing
-target is not replaced. It also injects a host-side independent actor after
-the service's final target observation and immediately before the worker's
-publication request, then checks that `RENAME_NOREPLACE` preserves the actor's
-file and removes the stage. This measures one deterministic residual-race
+The runner includes four #321 creation cases. It composes the real host service
+with the real Bubblewrap worker. The earlier bounded-worker cases use the
+synthetic complete owner manifest used by fixtures; the new startup-scope
+cases use actual auth/settings owner registrations and a separate internal
+test-only preparation gate. The suite publishes a synthetic file, checks exact
+bytes and mode `0600`, verifies stage cleanup and worker join, and confirms an
+existing target is not replaced. It also injects a host-side independent actor
+after the service's final target observation and immediately before the
+worker's publication request, then checks that `RENAME_NOREPLACE` preserves
+the actor's file and removes the stage. This measures one deterministic residual-race
 checkpoint, not every possible syscall interleaving. The second case starts a
 separate same-UID fixed-purpose actor process that moves the synthetic parent
 directory and creates a substitute at the old pathname immediately before
 worker staging. It records actor PID/UID, the retained and substitute parent
 identity hashes, the mount ID/filesystem, stage disposition and worker join.
 The actor has no shell or arbitrary command interface and shares the host mount
-namespace. The study does not use a provider, enable the production tool, or
-authorize arbitrary roots.
+namespace. Additional cases capture the service's fixed startup scope, publish
+beneath an existing nested parent, and move/replace the startup path with a
+fixed same-UID actor. They verify that movement is detected before worker
+launch and remains terminal after the original object is restored. These are
+new candidate cases and have not yet been run on a trusted host. The study does
+not use a provider, enable the production tool, or authorize arbitrary roots.
 
 From the candidate checkout, use the exact candidate commit and an existing
 scratch directory on local ext4. The issue-specific procedure is documented

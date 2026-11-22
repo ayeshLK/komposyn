@@ -225,13 +225,20 @@ and report it as unavailable.
    case moves the parent with a separate same-UID actor and substitutes a new
    directory at its former path; it verifies creation is relative to the
    retained parent descriptor. Both reports include the actual filesystem
-   type and mount ID observed from retained descriptors.
+   type and mount ID observed from retained descriptors. The candidate adds
+   `TestNativeServiceNestedCreationUsesStartupScope` and
+   `TestNativeServiceStartupRootMovementIsTerminal`; these test nested
+   publication beneath the fixed startup scope and terminal refusal after the
+   startup directory is moved/replaced/restored. They require a fresh trusted
+   host run and are not covered by the historical records above.
 
 6. Read the `Results archive: ...` path printed by the runner. Inspect
    `summary.txt`, `manifest.json`, `native-report.json`, the
-   `TestNativeServiceBoundedCreation` and
-   `TestNativeServiceCreationUsesRetainedParentAfterIndependentMove` records,
-   and `SHA256SUMS`. Send back the
+   `TestNativeServiceBoundedCreation`,
+   `TestNativeServiceCreationUsesRetainedParentAfterIndependentMove`,
+   `TestNativeServiceNestedCreationUsesStartupScope`, and
+   `TestNativeServiceStartupRootMovementIsTerminal` records, and `SHA256SUMS`.
+   Send back the
    archive path and the command's exit status.
 
 ## Result interpretation

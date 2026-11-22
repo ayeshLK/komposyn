@@ -34,7 +34,9 @@ import (
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	rb "github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
+	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
+	"github.com/ayeshLK/komposyn/plugins/tools"
 	"golang.org/x/sys/unix"
 )
 
@@ -89,6 +91,13 @@ type nativeRecord struct {
 	CreationParentIdentitySHA256     string                `json:"creation_parent_identity_sha256,omitempty"`
 	CreationMovedIdentitySHA256      string                `json:"creation_moved_identity_sha256,omitempty"`
 	CreationSubstituteIdentitySHA256 string                `json:"creation_substitute_identity_sha256,omitempty"`
+	CreationNestedPublished          bool                  `json:"creation_nested_published,omitempty"`
+	CreationStartupFilesystem        string                `json:"creation_startup_filesystem,omitempty"`
+	CreationStartupMountID           uint64                `json:"creation_startup_mount_id,omitempty"`
+	StartupMoveActorPID              int                   `json:"startup_move_actor_pid,omitempty"`
+	StartupMoveActorUID              int                   `json:"startup_move_actor_uid,omitempty"`
+	StartupMoveDetected              bool                  `json:"startup_move_detected,omitempty"`
+	StartupMoveTerminalAfterRestore  bool                  `json:"startup_move_terminal_after_restore,omitempty"`
 	Case                             string                `json:"case"`
 	Status                           string                `json:"status"`
 	CleanupConfirmed                 bool                  `json:"cleanup_confirmed"`
@@ -487,6 +496,131 @@ func TestNativeServiceCreationUsesRetainedParentAfterIndependentMove(t *testing.
 	r.CreationParentMovePublished = true
 }
 
+func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	nested := filepath.Join(f.root, "existing", "nested")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal("create existing nested parent", err)
+	}
+	f.service.captureStartupDirectory(f.root)
+	if f.service.CreationFoundationSnapshot().StartupScope.State != StartupScopeIdentityRetained {
+		r.Status = "unavailable"
+		t.Skip("trusted startup identity profile unavailable")
+	}
+	enableCreationPrototypeForTest(f.service)
+	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
+		t.Fatal("real auth/settings owner lifecycle is not complete")
+	}
+	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: "native-nested", Root: f.root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal("select runtime lookup directory", err)
+	}
+	parent, err := os.Open(nested)
+	if err != nil {
+		t.Fatal("open nested evidence parent", err)
+	}
+	filesystem, mountID := creationFilesystemEvidence(t, parent)
+	_ = parent.Close()
+	r.CreationStartupFilesystem = filesystem
+	r.CreationStartupMountID = mountID
+	input := tools.CreateFileInput{Path: "existing/nested/created.txt", Content: "startup scope nested creation\n"}
+	arguments, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal("encode synthetic creation request", err)
+	}
+	invocation := tools.Invocation{ConversationID: "native-nested", TurnID: "turn", ProviderCallID: "nested-create", ToolID: tools.CreateFileID, Arguments: arguments}
+	request, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile")
+	if err != nil {
+		t.Fatal("prepare nested creation through service", err)
+	}
+	want := filepath.Join(f.root, filepath.FromSlash(input.Path))
+	if request.Requirements[1].Resource == nil || request.Requirements[1].Resource.Target != want {
+		t.Fatal("approval was not bound to the exact nested target")
+	}
+	prepared, err := f.service.PrepareApprovedFilesystemCreation(nativeContext(t), invocation, request, 1)
+	if err != nil {
+		t.Fatal("prepare approved nested creation", err)
+	}
+	result, executeErr := prepared.Execute(nativeContext(t))
+	closeErr := prepared.Close(context.Background())
+	if executeErr != nil || closeErr != nil || result.Outcome != tools.OutcomeSucceeded {
+		t.Fatalf("nested creation outcome=%q execute=%v close=%v", result.Outcome, executeErr, closeErr)
+	}
+	actual, err := os.ReadFile(want)
+	if err != nil || !bytes.Equal(actual, []byte(input.Content)) {
+		t.Fatalf("nested file bytes=%q err=%v", actual, err)
+	}
+	if !f.tracked.allJoined() {
+		t.Fatal("nested creation worker was not joined")
+	}
+	r.CreationNestedPublished = true
+}
+
+func TestNativeServiceStartupRootMovementIsTerminal(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	f.service.captureStartupDirectory(f.root)
+	if f.service.CreationFoundationSnapshot().StartupScope.State != StartupScopeIdentityRetained {
+		r.Status = "unavailable"
+		t.Skip("trusted startup identity profile unavailable")
+	}
+	enableCreationPrototypeForTest(f.service)
+	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
+		t.Fatal("real auth/settings owner lifecycle is not complete")
+	}
+	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: "native-root-move", Root: f.root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal("select runtime lookup directory", err)
+	}
+	input := tools.CreateFileInput{Path: "never-created.txt", Content: "synthetic movement refusal"}
+	arguments, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal("encode movement request", err)
+	}
+	invocation := tools.Invocation{ConversationID: "native-root-move", TurnID: "turn", ProviderCallID: "move-call", ToolID: tools.CreateFileID, Arguments: arguments}
+	request, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile")
+	if err != nil {
+		t.Fatal("prepare before independent root move", err)
+	}
+	actorRoot := filepath.Dir(f.root)
+	sourceName, targetName := filepath.Base(f.root), "moved-startup-root"
+	actor, err := rb.NewNativeActor(nativeContext(t), os.Args[0], actorRoot, rb.NativeActorMoveAndReplaceDirectory, sourceName, targetName)
+	if err != nil {
+		t.Fatal("start independent startup-root actor", err)
+	}
+	r.StartupMoveActorPID = actor.PID()
+	r.StartupMoveActorUID = os.Geteuid()
+	if !actor.Ready() {
+		t.Fatal("startup-root actor did not report READY")
+	}
+	if err := actor.Run(nativeContext(t)); err != nil {
+		t.Fatal("move and replace startup root", err)
+	}
+	if err := actor.Close(); err != nil || !actor.Joined() {
+		t.Fatalf("startup-root actor cleanup: err=%v joined=%t", err, actor.Joined())
+	}
+	prepared, prepareErr := f.service.PrepareApprovedFilesystemCreation(nativeContext(t), invocation, request, 1)
+	if prepareErr == nil {
+		_ = prepared.Close(context.Background())
+		t.Fatal("startup-root replacement reused approved preparation")
+	}
+	r.StartupMoveDetected = errors.Is(prepareErr, ErrStartupScopeMoved)
+	if !r.StartupMoveDetected || len(f.tracked.workers) != 0 {
+		t.Fatal("startup-root movement was not detected before worker launch")
+	}
+	if err := os.Remove(f.root); err != nil {
+		t.Fatal("remove substitute startup root", err)
+	}
+	if err := os.Rename(filepath.Join(actorRoot, targetName), f.root); err != nil {
+		t.Fatal("restore original startup object", err)
+	}
+	invocation.ProviderCallID = "move-call-after-restore"
+	invocation.Arguments, _ = json.Marshal(tools.CreateFileInput{Path: "after-restore.txt", Content: "no replay"})
+	if _, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile"); !errors.Is(err, ErrStartupScopeMoved) {
+		t.Fatalf("restored root cleared terminal movement state: %v", err)
+	}
+	r.StartupMoveTerminalAfterRestore = true
+}
+
 func parentInfo(t *testing.T, parent *os.File) os.FileInfo {
 	t.Helper()
 	info, err := parent.Stat()
@@ -860,6 +994,10 @@ func (l *nativeTrackedLauncher) StartForOperation(ctx context.Context, operation
 		l.mu.Unlock()
 	}
 	return w, e
+}
+func (l *nativeTrackedLauncher) CreationProfileAvailable() bool {
+	profile, ok := l.delegate.(interface{ CreationProfileAvailable() bool })
+	return ok && profile.CreationProfileAvailable()
 }
 
 type nativeTrackedWorker struct {

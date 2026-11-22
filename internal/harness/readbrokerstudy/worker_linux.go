@@ -365,6 +365,18 @@ func (l *workerLauncher) SearchProfilesAvailable() bool {
 	return traversalErr == nil && contentErr == nil
 }
 
+// CreationProfileAvailable reports whether this trusted launcher uses the
+// measured descriptor bind mode and has the operation-specific create worker
+// profile. Filesystem eligibility is checked separately against the retained
+// startup and target-parent descriptors.
+func (l *workerLauncher) CreationProfileAvailable() bool {
+	if l == nil || runtime.GOARCH != "amd64" || l.capability.BindMode != BindModeDescriptor {
+		return false
+	}
+	_, err := workerSeccompFilterBytesForOperation(AdmissionCreateFile)
+	return err == nil
+}
+
 // NewWorkerLauncher constructs the only launch path in this feasibility
 // package. Modern Bubblewrap receives the held descriptor for the currently
 // executing image through its /proc/self/fd interface and verifies the

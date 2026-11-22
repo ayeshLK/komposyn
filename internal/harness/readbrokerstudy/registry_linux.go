@@ -283,6 +283,23 @@ func (r *Registry) ClassifyWithAncestors(path string, identity FileIdentity, anc
 	return matched, matched != ""
 }
 
+// ClassifyFromRetainedDirectory checks route rules and protected identities on
+// the actual ancestry of a retained target parent. Unlike Classify, it never
+// reopens the parent by pathname; callers must supply the descriptor used for
+// target preparation. An ancestry inspection failure is returned so mutation
+// callers can fail closed.
+func (r *Registry) ClassifyFromRetainedDirectory(path string, identity FileIdentity, parentFD int) (ResourceClass, bool, error) {
+	if r == nil || parentFD < 0 || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", false, ErrStaleReceipt
+	}
+	ancestors, err := directoryAncestors(parentFD)
+	if err != nil {
+		return "", false, err
+	}
+	class, protected := r.ClassifyWithAncestors(path, identity, ancestors)
+	return class, protected, nil
+}
+
 // DirectoryCoverageIncomplete conservatively refuses unpinned file objects
 // that share a device with any protected directory object or registered
 // directory location. A directory pin is not a descendant inventory: on the
