@@ -10,13 +10,15 @@ The hash-pinned runner and test overlay are kept together in
 - `native_acceptance_linux_test.go`
 
 The runner includes four #321 creation cases. It composes the real host service
-with the real Bubblewrap worker, injects only the synthetic complete owner
-manifest used by fixtures, publishes a synthetic file, checks exact bytes and
-mode `0600`, verifies stage cleanup and worker join, and confirms an existing
-target is not replaced. It also injects a host-side independent actor after
-the service's final target observation and immediately before the worker's
-publication request, then checks that `RENAME_NOREPLACE` preserves the actor's
-file and removes the stage. This measures one deterministic residual-race
+with the real Bubblewrap worker. The earlier bounded-worker cases use the
+synthetic complete owner manifest used by fixtures; the new startup-scope
+cases use actual auth/settings owner registrations and a separate internal
+test-only preparation gate. The suite publishes a synthetic file, checks exact
+bytes and mode `0600`, verifies stage cleanup and worker join, and confirms an
+existing target is not replaced. It also injects a host-side independent actor
+after the service's final target observation and immediately before the
+worker's publication request, then checks that `RENAME_NOREPLACE` preserves
+the actor's file and removes the stage. This measures one deterministic residual-race
 checkpoint, not every possible syscall interleaving. The second case starts a
 separate same-UID fixed-purpose actor process that moves the synthetic parent
 directory and creates a substitute at the old pathname immediately before

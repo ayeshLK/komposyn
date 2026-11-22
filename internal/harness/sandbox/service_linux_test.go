@@ -502,6 +502,120 @@ func captureTestStartupScope(t *testing.T, service *Service, root string) {
 	}
 }
 
+func TestRetainedStartupPreparationUsesCurrentAuthSettingsOwners(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		for _, rotatingOwner := range []string{auth.SensitiveOwnerAuth, auth.SensitiveOwnerSettings} {
+			name := "absent-routes/" + rotatingOwner
+			if present {
+				name = "present-routes/" + rotatingOwner
+			}
+			t.Run(name, func(t *testing.T) {
+				root := t.TempDir()
+				nested := filepath.Join(root, "nested")
+				if err := os.Mkdir(nested, 0700); err != nil {
+					t.Fatal(err)
+				}
+				service, err := newTestHostServiceWithLauncher(&testCreationWorkerLauncher{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				captureTestStartupScope(t, service, root)
+				t.Cleanup(func() {
+					if err := service.Close(context.Background()); err != nil {
+						t.Errorf("close service: %v", err)
+					}
+				})
+				for owner, class := range map[string]string{
+					auth.SensitiveOwnerAuth:     auth.SensitiveClassAuth,
+					auth.SensitiveOwnerSettings: auth.SensitiveClassSettings,
+				} {
+					path := filepath.Join(t.TempDir(), owner+".json")
+					var object *os.File
+					if present {
+						if err := os.WriteFile(path, []byte("synthetic protected owner"), 0600); err != nil {
+							t.Fatal(err)
+						}
+						object, err = os.Open(path)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := service.Protect(context.Background(), owner, class, path, object); err != nil {
+						if object != nil {
+							_ = object.Close()
+						}
+						t.Fatalf("register real %s route: %v", owner, err)
+					}
+					if object != nil {
+						if err := object.Close(); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "current-owner-profile", Root: nested, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+					t.Fatal(err)
+				}
+				enableCreationPrototypeForTest(service)
+				if !service.CreationFoundationSnapshot().OwnerCoverageComplete {
+					t.Fatalf("trusted current auth/settings owner profile incomplete: %+v", service.CreationFoundationSnapshot())
+				}
+				destination := "openai/model/profile"
+				makeInvocation := func(call string) tools.Invocation {
+					arguments, err := json.Marshal(tools.CreateFileInput{Path: "new.txt", Content: "approved fixture"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return tools.Invocation{ConversationID: "current-owner-profile", TurnID: "turn", ProviderCallID: call, ToolID: tools.CreateFileID, Arguments: arguments}
+				}
+				invocation := makeInvocation("real-profile-approved")
+				request, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination)
+				if err != nil {
+					t.Fatalf("prepare with real %t auth/settings routes: %v", present, err)
+				}
+				if got, want := request.Requirements[1].Resource.Target, filepath.Join(nested, "new.txt"); got != want {
+					t.Fatalf("approved target=%q want=%q", got, want)
+				}
+				prepared, err := service.PrepareApprovedFilesystemCreation(context.Background(), invocation, request, 1)
+				if err != nil {
+					t.Fatalf("approve with current owner profile: %v", err)
+				}
+				if err := prepared.Close(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+
+				staleInvocation := makeInvocation("owner-rotation-invalidates-proposal")
+				staleRequest, err := service.PrepareFilesystemCreation(context.Background(), staleInvocation, destination)
+				if err != nil {
+					t.Fatalf("prepare before %s rotation: %v", rotatingOwner, err)
+				}
+				rotatedPath := filepath.Join(t.TempDir(), "rotated-"+rotatingOwner+".json")
+				class := auth.SensitiveClassAuth
+				if rotatingOwner == auth.SensitiveOwnerSettings {
+					class = auth.SensitiveClassSettings
+				}
+				if err := service.Protect(context.Background(), rotatingOwner, class, rotatedPath, nil); err != nil {
+					t.Fatalf("rotate %s through the service lifecycle: %v", rotatingOwner, err)
+				}
+				if _, err := service.PrepareApprovedFilesystemCreation(context.Background(), staleInvocation, staleRequest, 1); !errors.Is(err, runtime.ErrFilesystemRootStale) {
+					t.Fatalf("%s rotation reused old preparation: %v", rotatingOwner, err)
+				}
+				if _, err := os.Lstat(filepath.Join(nested, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("preparation-only test created a target: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// enableCreationPrototypeForTest unlocks only the package-private preparation
+// seam; production composition never sets this internal fixture gate.
+func enableCreationPrototypeForTest(service *Service) {
+	impl := service.impl.(*linuxImplementation)
+	impl.mu.Lock()
+	impl.creationPrototypeEnabled = true
+	impl.mu.Unlock()
+}
+
 func TestCreationFoundationRejectsStaleCoordinatorOwnerAndRefreshes(t *testing.T) {
 	service, err := newTestHostServiceWithStartupDirectory(t.TempDir())
 	if err != nil {
@@ -3657,6 +3771,7 @@ func installSyntheticCreationManifest(t *testing.T, service *Service, root strin
 		entries[owner.name] = manifest
 	}
 	impl.mu.Lock()
+	impl.creationPrototypeEnabled = true
 	impl.owners["tokenlogger-store"] = OwnerCoverage{Owner: "tokenlogger-store", Class: "token_database", State: OwnerRegistered, Routes: 5, Identities: 5, Evidence: "synthetic creation fixture"}
 	impl.owners["provider-source"] = OwnerCoverage{Owner: "provider-source", Class: "provider_source", State: OwnerRegistered, Routes: 1, Identities: 1, Evidence: "synthetic creation fixture"}
 	impl.creationManifest = &syntheticCreationOwnerManifest{

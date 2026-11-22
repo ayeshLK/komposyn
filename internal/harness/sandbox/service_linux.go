@@ -66,7 +66,10 @@ type linuxImplementation struct {
 	creationBarrier         *creationBarrierLease
 	creationBarrierSequence uint64
 	creationManifest        *syntheticCreationOwnerManifest
-	creationProposals       map[string]*serviceCreationProposal
+	// creationPrototypeEnabled is an internal fixture gate. Production chat
+	// composition never enables the unregistered creation operation.
+	creationPrototypeEnabled bool
+	creationProposals        map[string]*serviceCreationProposal
 	// creationBeforePublicationReleaseHook is a deterministic in-package test checkpoint.
 	creationBeforePublicationReleaseHook func()
 	selectedRoot                         string
@@ -81,6 +84,7 @@ type creationRootBinding struct {
 	scopeGeneration     uint64
 	scopeIdentity       readbrokerstudy.FileIdentity
 	validateScope       func() error
+	validateOwners      func() error
 	validateStartupRoot func() error
 }
 
@@ -1092,13 +1096,22 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 		}
 		validateScope = rootBinding[0].validateScope
 	}
+	validateOwners := func() error {
+		if len(rootBinding) == 1 && rootBinding[0].validateOwners != nil {
+			return rootBinding[0].validateOwners()
+		}
+		if s.syntheticCreationManifestEligible(scopeIdentity) {
+			return nil
+		}
+		return ErrCoverageMissing
+	}
 	if validateScope != nil {
 		if err := validateScope(); err != nil {
 			return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, err
 		}
 	}
-	if !s.syntheticCreationManifestEligible(scopeIdentity) {
-		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, ErrCoverageMissing
+	if err := validateOwners(); err != nil {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, err
 	}
 	if !s.creationTargetUnprotectedAt(target, parent) {
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, ErrCoverageMissing
@@ -1132,8 +1145,8 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 			return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(true))
 		}
 	}
-	if !s.syntheticCreationManifestEligible(scopeIdentity) {
-		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(ErrCoverageMissing, finishBarrier(true))
+	if err := validateOwners(); err != nil {
+		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(true))
 	}
 	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
 		if errors.Is(err, unix.EEXIST) {
@@ -1279,14 +1292,14 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 			return result, errors.Join(err, abortErr, finishBarrier(clean))
 		}
 	}
-	if !s.syntheticCreationManifestEligible(scopeIdentity) {
+	if err := validateOwners(); err != nil {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
 		joined = waitAndConfirm()
 		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
 		if !clean {
 			result = unknown
 		}
-		return result, errors.Join(ErrCoverageMissing, abortErr, finishBarrier(clean))
+		return result, errors.Join(err, abortErr, finishBarrier(clean))
 	}
 	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
@@ -1418,7 +1431,10 @@ func (s *Service) validateCreationProposal(proposal *serviceCreationProposal) er
 		return runtime.ErrFilesystemRootStale
 	}
 	impl, ok := s.impl.(*linuxImplementation)
-	if !ok || s.CoverageSnapshot().Revision != proposal.coverageRevision || impl.registry.View().Generation != proposal.policyRevision || !s.CreationFoundationSnapshot().OwnerCoverageComplete || !impl.syntheticCreationManifestEligible(proposal.scopeIdentity) {
+	if !ok || s.CoverageSnapshot().Revision != proposal.coverageRevision || impl.registry.View().Generation != proposal.policyRevision {
+		return ErrCoverageMissing
+	}
+	if err := s.validateCreationOwnerProfile(proposal.scopeIdentity); err != nil {
 		return ErrCoverageMissing
 	}
 	scopeRoot, _, _, _, _, err := s.creationScopeForInvocation(proposal.root)
@@ -1439,6 +1455,82 @@ func (s *Service) validateCreationProposal(proposal *serviceCreationProposal) er
 		return err
 	}
 	if !impl.creationTargetUnprotectedAt(proposal.target, parent) {
+		return ErrCoverageMissing
+	}
+	return nil
+}
+
+// validateCreationOwnerProfile consumes current trusted composition and
+// coordinator state. The exported foundation snapshot remains descriptive and
+// is deliberately not an authorization input. Synthetic manifests are an
+// additional fixture constraint; retained production-profile scopes use the
+// real auth/settings owner lifecycle.
+func (s *Service) validateCreationOwnerProfile(scopeIdentity readbrokerstudy.FileIdentity) error {
+	impl, ok := s.impl.(*linuxImplementation)
+	if !ok || impl == nil {
+		return ErrCoverageMissing
+	}
+	impl.mu.Lock()
+	enabled, closed := impl.creationPrototypeEnabled, impl.closed
+	manifest := impl.creationManifest
+	session, inventory, registry := impl.session, impl.inventory, impl.registry
+	blockedOwners := len(impl.blocked)
+	impl.mu.Unlock()
+	if !enabled || closed || session == nil || inventory == nil || registry == nil || blockedOwners != 0 || impl.pendingOwners.Load() != 0 {
+		return ErrCoverageMissing
+	}
+	if manifest != nil {
+		if !impl.syntheticCreationManifestEligible(scopeIdentity) {
+			return ErrCoverageMissing
+		}
+		return nil
+	}
+
+	impl.mu.Lock()
+	startupOwnersRegistered := impl.owners[auth.SensitiveOwnerAuth].State == OwnerRegistered && impl.owners[auth.SensitiveOwnerSettings].State == OwnerRegistered
+	impl.mu.Unlock()
+	s.startupScopeMu.Lock()
+	startupScopeCurrent := s.startupScope.State == StartupScopeIdentityRetained && s.startupScopeIdentity == scopeIdentity
+	s.startupScopeMu.Unlock()
+	if !startupScopeCurrent || !startupOwnersRegistered {
+		return ErrCoverageMissing
+	}
+
+	// The current host coordinator and its fixed inventory are authoritative:
+	// both auth/settings route reservations must be declared, complete and
+	// backed by matching policy entries. The profile intentionally has exactly
+	// these two required owners; unknown new requirements fail closed.
+	const expectedOwners = 2
+	coverage := session.CoverageSnapshot()
+	inventorySnapshot := inventory.Snapshot()
+	if !coverage.Complete || !inventorySnapshot.Complete || coverage.Revision != inventorySnapshot.Revision || len(coverage.Requirements) != expectedOwners {
+		return ErrCoverageMissing
+	}
+	policy := registry.View()
+	expected := map[string]readbrokerstudy.ResourceClass{
+		auth.SensitiveOwnerAuth:     readbrokerstudy.ClassCredential,
+		auth.SensitiveOwnerSettings: readbrokerstudy.ClassSettings,
+	}
+	for _, requirement := range coverage.Requirements {
+		class, required := expected[requirement.Owner]
+		if !required || requirement.Class != class || requirement.Evidence != readbrokerstudy.OwnerEvidenceComposition || requirement.Lifecycle != readbrokerstudy.LifecyclePinnedReplacement || !requirement.Declared || !requirement.Complete || requirement.PendingUpdate || requirement.Retired || requirement.RegisteredRoutes == 0 {
+			return ErrCoverageMissing
+		}
+		routes, identities := 0, 0
+		for _, entry := range policy.Entries {
+			if entry.Owner == requirement.Owner && entry.Class == class && !entry.Directory {
+				routes++
+				if entry.Identity.Inode != 0 {
+					identities++
+				}
+			}
+		}
+		if routes < requirement.RegisteredRoutes || identities < requirement.PinnedIdentities {
+			return ErrCoverageMissing
+		}
+		delete(expected, requirement.Owner)
+	}
+	if len(expected) != 0 {
 		return ErrCoverageMissing
 	}
 	return nil
@@ -1470,7 +1562,7 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 	if !ok {
 		return permissions.Request{}, ErrCoverageMissing
 	}
-	if !s.CreationFoundationSnapshot().OwnerCoverageComplete || !impl.syntheticCreationManifestEligible(scopeIdentity) {
+	if err := s.validateCreationOwnerProfile(scopeIdentity); err != nil {
 		return permissions.Request{}, ErrCoverageMissing
 	}
 	target := filepath.Clean(filepath.Join(workingDirectory, filepath.FromSlash(input.Path)))
@@ -1518,7 +1610,7 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 	proposal := &serviceCreationProposal{invocation: invocation, request: request, input: input, parent: parent, parentIdentity: parentIdentity, root: workingDirectory, rootGeneration: rootGeneration, target: target, scopeRoot: scopeRoot, parentRelative: parentRelative, leaf: leaf, scopeGeneration: scopeGeneration, scopeIdentity: scopeIdentity, startupScope: startupScope, coverageRevision: coverageRevision, policyRevision: policyRevision, stageName: stageName}
 	key := invocation.ConversationID + "\x00" + invocation.ProviderCallID
 	impl.mu.Lock()
-	if impl.closed || impl.creationManifest == nil || impl.creationBarrier != nil {
+	if impl.closed || !impl.creationPrototypeEnabled || impl.creationBarrier != nil {
 		impl.mu.Unlock()
 		return permissions.Request{}, ErrCoverageMissing
 	}
@@ -1536,7 +1628,7 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 		}
 	}
 	impl.mu.Lock()
-	if impl.closed || impl.creationManifest == nil || impl.creationBarrier != nil || impl.creationProposals[key] != nil {
+	if impl.closed || !impl.creationPrototypeEnabled || impl.creationBarrier != nil || impl.creationProposals[key] != nil {
 		impl.mu.Unlock()
 		return permissions.Request{}, runtime.ErrFilesystemRootStale
 	}
@@ -1665,7 +1757,8 @@ func (p *serviceCreationPreparation) Execute(ctx context.Context) (tools.Result,
 	result, err := p.impl.executeBoundedCreation(ctx, p.proposal.parent, p.proposal.parentIdentity, p.proposal.stageName, p.proposal.leaf, []byte(p.proposal.input.Content), creationRootBinding{
 		root: p.proposal.root, conversation: p.proposal.invocation.ConversationID, target: p.proposal.target, generation: p.proposal.rootGeneration,
 		scopeGeneration: p.proposal.scopeGeneration, scopeIdentity: p.proposal.scopeIdentity,
-		validateScope: func() error { return p.service.validateCreationProposal(p.proposal) },
+		validateScope:  func() error { return p.service.validateCreationProposal(p.proposal) },
+		validateOwners: func() error { return p.service.validateCreationOwnerProfile(p.proposal.scopeIdentity) },
 		validateStartupRoot: func() error {
 			if !p.proposal.startupScope {
 				return nil
@@ -1718,6 +1811,7 @@ func (s *linuxImplementation) syntheticCreationManifestEligible(parent readbroke
 		return false
 	}
 	s.mu.Lock()
+	prototypeEnabled := s.creationPrototypeEnabled
 	manifest := s.creationManifest
 	registry, inventory := s.registry, s.inventory
 	owners := make(map[string]OwnerCoverage, len(s.owners))
@@ -1726,7 +1820,7 @@ func (s *linuxImplementation) syntheticCreationManifestEligible(parent readbroke
 	}
 	closed := s.closed
 	s.mu.Unlock()
-	if closed || manifest == nil || !manifest.scopeComplete || manifest.scopeParent != parent || registry == nil || inventory == nil {
+	if !prototypeEnabled || closed || manifest == nil || !manifest.scopeComplete || manifest.scopeParent != parent || registry == nil || inventory == nil {
 		return false
 	}
 	policy := registry.View()

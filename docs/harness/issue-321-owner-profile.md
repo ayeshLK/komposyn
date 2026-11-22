@@ -46,6 +46,15 @@ the retained startup descriptor, checks their protected-owner ancestry, and
 revalidates the exact scope and parent before execution. It does not register
 the model-facing tool or enable production creation.
 
+The preparation prototype has a separate package-private test gate that
+normal composition never sets. For retained startup scopes, owner eligibility
+comes from the live coordinator's complete auth/settings requirements,
+service lifecycle state, and matching policy registrations, including
+reserved absent routes. Token Logger and provider-source coverage is not
+fabricated: those components remain trusted-not-instantiated in this chat.
+The synthetic four-owner manifest remains confined to earlier fixture cases
+and is not required to exercise the retained-startup owner profile.
+
 ## Established and deferred
 
 This slice establishes the composition's owner applicability declarations,

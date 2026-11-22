@@ -508,9 +508,9 @@ func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
 		r.Status = "unavailable"
 		t.Skip("trusted startup identity profile unavailable")
 	}
-	installSyntheticCreationManifest(t, f.service, f.root)
-	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: "native-nested", Root: f.root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
-		t.Fatal("select runtime lookup directory", err)
+	enableCreationPrototypeForTest(f.service)
+	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
+		t.Fatal("real auth/settings owner lifecycle is not complete")
 	}
 	parent, err := os.Open(nested)
 	if err != nil {
@@ -520,7 +520,7 @@ func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
 	_ = parent.Close()
 	r.CreationStartupFilesystem = filesystem
 	r.CreationStartupMountID = mountID
-	input := tools.CreateFileInput{Path: "created.txt", Content: "startup scope nested creation\n"}
+	input := tools.CreateFileInput{Path: "existing/nested/created.txt", Content: "startup scope nested creation\n"}
 	arguments, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal("encode synthetic creation request", err)
@@ -561,7 +561,10 @@ func TestNativeServiceStartupRootMovementIsTerminal(t *testing.T) {
 		r.Status = "unavailable"
 		t.Skip("trusted startup identity profile unavailable")
 	}
-	installSyntheticCreationManifest(t, f.service, f.root)
+	enableCreationPrototypeForTest(f.service)
+	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
+		t.Fatal("real auth/settings owner lifecycle is not complete")
+	}
 	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: "native-root-move", Root: f.root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
 		t.Fatal("select runtime lookup directory", err)
 	}
