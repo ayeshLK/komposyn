@@ -96,6 +96,9 @@ func (i *composerInput) SetChangedFunc(handler func(string)) *composerInput {
 }
 
 const usageWideThreshold = 100
+const compactHeaderWidth = 72
+const compactHeaderRows = 4
+const expandedHeaderRows = 5
 
 type credentialOperation struct {
 	ctx     context.Context
@@ -240,7 +243,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.commands = supportedCommands()
 	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 4, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, expandedHeaderRows, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
@@ -777,7 +780,7 @@ func (u *terminal) updateBanner() {
 		creationScope = "unavailable"
 	}
 	if u.terminalWidth > 0 {
-		if u.terminalWidth <= 72 {
+		if u.terminalWidth <= compactHeaderWidth {
 			workingDirectory = compactHeaderPath(workingDirectory, 11)
 			creationScope = compactHeaderPath(creationScope, 11)
 			planDetail := compactHeaderCapabilityDetail(snapshot.UpdatePlanAvailability)
@@ -1117,6 +1120,13 @@ func (u *terminal) setTerminalWidth(width int) {
 	wide := width >= usageWideThreshold
 	u.terminalWidth = width
 	u.updateBanner()
+	if u.layout != nil && u.header != nil {
+		headerRows := expandedHeaderRows
+		if width > 0 && width <= compactHeaderWidth {
+			headerRows = compactHeaderRows
+		}
+		u.layout.ResizeItem(u.header, headerRows, 0)
+	}
 	if u.body == nil || u.usagePane == nil {
 		return
 	}

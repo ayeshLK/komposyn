@@ -1877,6 +1877,56 @@ func TestNarrowBannerKeepsCapabilityReasonVisible(t *testing.T) {
 	}
 }
 
+func TestBannerLayoutShowsCreationStatusAtWideAndNarrowWidths(t *testing.T) {
+	client := &clientStub{
+		readAvailability:         ui.FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads require explicit once approval."},
+		updatePlanAvailability:   ui.CapabilityAvailability{Available: true, State: "available"},
+		requestInputAvailability: ui.CapabilityAvailability{Available: true, State: "available"},
+		creationAvailability: ui.FilesystemCreationAvailability{
+			CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "The creation capability is not registered."},
+			Scope:                  ui.FilesystemCreationScope{StartupDirectory: "/tmp/synthetic-startup", State: "identity-retained"},
+		},
+		workingDirectory: "/tmp/synthetic-working-directory",
+	}
+	for _, test := range []struct {
+		name     string
+		width    int
+		rows     int
+		wantRow  int
+		wantText string
+	}{
+		{name: "wide", width: 240, rows: expandedHeaderRows, wantRow: 4, wantText: "File creation unavailable"},
+		{name: "narrow", width: 50, rows: compactHeaderRows, wantRow: 3, wantText: "Creation: not registered"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			header := tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
+			layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(header, expandedHeaderRows, 0, false)
+			u := &terminal{client: client, header: header, layout: layout}
+			u.setTerminalWidth(test.width)
+
+			screen := tcell.NewSimulationScreen("UTF-8")
+			if err := screen.Init(); err != nil {
+				t.Fatal(err)
+			}
+			screen.SetSize(test.width, test.rows)
+			layout.SetRect(0, 0, test.width, test.rows)
+			layout.Draw(screen)
+			screen.Show()
+			cells, width, _ := screen.GetContents()
+			var row strings.Builder
+			for x := 0; x < width; x++ {
+				cell := cells[test.wantRow*width+x]
+				if len(cell.Runes) > 0 {
+					row.WriteString(string(cell.Runes))
+				}
+			}
+			if got := row.String(); !strings.Contains(got, test.wantText) {
+				t.Fatalf("creation status is clipped from rendered %s banner row %d: %q", test.name, test.wantRow, got)
+			}
+		})
+	}
+}
+
 func TestHelpShowsFullAvailabilityReasons(t *testing.T) {
 	client := &clientStub{
 		readAvailability:         ui.FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."},
