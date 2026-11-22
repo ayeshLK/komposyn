@@ -3,15 +3,15 @@
 **Status:** first gated implementation slice; production creation remains
 unavailable and unregistered.
 
-The trusted `cmd/harness` composition now passes the launch directory to the
-host sandbox before initializing the runtime's navigable working directory.
-The host records a per-run opaque binding and an immutable startup-scope
-generation. This snapshot is separate from the runtime filesystem root, so
-`/cd` and conversation reset do not replace it. The current snapshot reports
-`identity-validation-deferred`: this slice retains no directory descriptor and
-does not establish object identity, movement detection, or creation eligibility.
-Unsupported host profiles keep this future capability unavailable without
-changing ordinary text-chat startup.
+The trusted `cmd/harness` composition passes the launch directory to the host
+sandbox before initializing the runtime's navigable working directory. The
+host retains an opened startup directory and its identity and mount binding
+only when the active trusted Linux creation profile and ext4 check succeed.
+`/cd` and conversation reset do not replace this retained startup scope. If the
+original path stops naming that object, the service latches a terminal moved
+state, invalidates proposals, and drains affected creation work. Restoring the
+old pathname does not restore eligibility. Unsupported profiles keep this
+future capability unavailable without changing ordinary text-chat startup.
 
 The typed creation-owner profile follows the current trusted composition:
 
@@ -40,21 +40,25 @@ It exposes no path, descriptor or filesystem capability. It is informational:
 no runtime operation consumes it as permission, and it cannot enable a tool.
 Creation registration remains absent even when auth and settings coverage is
 complete. Existing read/discovery admission and its unknown-root gate are
-unchanged; ordinary project entries are not inventoried by this profile.
+unchanged; ordinary project entries are not inventoried by this profile. This
+slice permits fixture proposals to resolve existing nested parents beneath
+the retained startup descriptor, checks their protected-owner ancestry, and
+revalidates the exact scope and parent before execution. It does not register
+the model-facing tool or enable production creation.
 
 ## Established and deferred
 
 This slice establishes the composition's owner applicability declarations,
-reuse of existing auth/settings registration and rotation state, a fixed
-startup input captured before navigation, and observable fail-closed snapshot
-behavior. Existing tests exercise auth/settings default and override routes,
-absent-route reservation, protected-object replacement, pending/stale
-coverage, and cleanup through their existing lifecycle hooks.
+reuse of existing auth/settings registration and rotation state, retained
+startup directory identity, fixed-scope nested parent resolution, protected
+owner classification from retained descriptors, and terminal movement
+detection. Runtime/service tests exercise replacement, restoration, nested
+targets, stale parents, refusal before dispatch, and existing owner lifecycle
+behavior.
 
-Still deferred are retained startup-directory identity capture, movement and
-replacement detection, nested existing-parent resolution, protected-target
-checks for creation, scope/owner transition enforcement at creation, new
-scope-specific native evidence, and separate explicit model-facing enablement.
-Historical fixture/native creation evidence does not establish these claims.
-The snapshot contract and tests here do not claim end-to-end startup identity
-enforcement.
+Still deferred are new trusted-host native evidence for startup-scope creation
+and movement, broader filesystems and launch profiles, production creation
+registration, and separate explicit model-facing enablement. The fixture
+tests establish control flow, not native filesystem enforcement. Historical
+fixture/native evidence does not establish these new claims. Creation remains
+unavailable in the normal CLI composition.

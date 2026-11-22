@@ -31,15 +31,17 @@ import (
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
+	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/plugins/tools"
 )
 
 var (
-	ErrUnknownRootData = errors.New("generic reads are unavailable because selected-root data coverage is unresolved")
-	ErrCoverageMissing = errors.New("required auth/settings protection is not registered")
-	ErrServiceClosed   = errors.New("sandbox composition service is closed")
-	ErrCreationBarrier = errors.New("filesystem admissions are paused by a creation barrier")
+	ErrUnknownRootData   = errors.New("generic reads are unavailable because selected-root data coverage is unresolved")
+	ErrCoverageMissing   = errors.New("required auth/settings protection is not registered")
+	ErrServiceClosed     = errors.New("sandbox composition service is closed")
+	ErrCreationBarrier   = errors.New("filesystem admissions are paused by a creation barrier")
+	ErrStartupScopeMoved = errors.New("startup creation scope moved or was replaced; restart the chat before creating files")
 )
 
 type OwnerState string
@@ -101,12 +103,14 @@ type StartupScopeState string
 const (
 	StartupScopeUnavailable      StartupScopeState = "unavailable"
 	StartupScopeIdentityDeferred StartupScopeState = "identity-validation-deferred"
+	StartupScopeIdentityRetained StartupScopeState = "identity-retained"
+	StartupScopeMoved            StartupScopeState = "moved-or-replaced"
 	StartupScopeClosed           StartupScopeState = "closed"
 )
 
 // StartupScopeSnapshot is a non-authorizing, path-free snapshot of the scope
-// captured by trusted CLI composition. The directory identity and movement
-// checks are deliberately not claimed by this foundation slice.
+// captured by trusted CLI composition. Retained identity is host-private; this
+// view reports only its lifecycle state.
 type StartupScopeSnapshot struct {
 	RunBinding       string
 	Generation       uint64
@@ -169,16 +173,28 @@ type readAdmissionImplementation interface {
 // constructor fixes the production profile; callers cannot submit owner
 // applicability or a generic-read completeness assertion.
 type Service struct {
-	impl               implementation
-	rootMu             sync.Mutex
-	rootClosed         bool
-	rootConversationID string
-	rootGeneration     uint64
-	rootPath           string
-	rootPending        bool
-	startupScopeMu     sync.Mutex
-	startupScopePath   string
-	startupScope       StartupScopeSnapshot
+	impl                 implementation
+	rootMu               sync.Mutex
+	rootClosed           bool
+	rootConversationID   string
+	rootGeneration       uint64
+	rootPath             string
+	rootPending          bool
+	startupScopeMu       sync.Mutex
+	startupScopePath     string
+	startupScopeRoot     *os.File
+	startupScopeInfo     os.FileInfo
+	startupScopeIdentity readbrokerstudy.FileIdentity
+	startupScopeMountID  uint64
+	startupScopeCaptured bool
+	startupScope         StartupScopeSnapshot
+}
+
+type startupScopeBackend interface {
+	openCreationStartupRoot(string) (*os.File, error)
+	creationStartupProfileAvailable(int) bool
+	creationStartupIdentity(int) (readbrokerstudy.FileIdentity, error)
+	creationStartupMountID(int) (uint64, error)
 }
 
 var _ auth.SensitiveFileProtector = (*Service)(nil)
@@ -193,13 +209,13 @@ func NewHostService(bubblewrapPath string) (*Service, error) {
 	}
 	service := &Service{impl: impl}
 	service.startupScope = unavailableStartupScope("trusted startup directory was not supplied by CLI composition")
+	service.startupScopeCaptured = true
 	return service, nil
 }
 
 // NewHostServiceWithStartupDirectory captures the trusted launch directory
-// before runtime navigation can change it. It deliberately does not claim a
-// retained directory identity; that validation is a later implementation
-// slice, so the resulting scope remains unavailable for creation.
+// before runtime navigation can change it. The retained handle is private to
+// the host and is available only for the measured creation profile.
 func NewHostServiceWithStartupDirectory(bubblewrapPath, startupDirectory string) (*Service, error) {
 	impl, err := newHostImplementation(bubblewrapPath)
 	if err != nil {
@@ -215,30 +231,79 @@ func unavailableStartupScope(reason string) StartupScopeSnapshot {
 }
 
 func (s *Service) captureStartupDirectory(path string) {
+	s.startupScopeMu.Lock()
+	if s.startupScopeCaptured {
+		s.startupScopeMu.Unlock()
+		return
+	}
+	s.startupScopeCaptured = true
+	s.startupScopeMu.Unlock()
 	var binding [16]byte
 	if _, err := rand.Read(binding[:]); err != nil {
-		s.startupScope = unavailableStartupScope("startup run binding could not be initialized")
+		s.setStartupScopeUnavailable("startup run binding could not be initialized")
 		return
 	}
 	canonical, err := runtime.CanonicalFilesystemRoot(context.Background(), path)
 	if err != nil {
-		s.startupScope = unavailableStartupScope("trusted startup directory is unavailable")
+		s.setStartupScopeUnavailable("trusted startup directory is unavailable")
+		return
+	}
+	available, _ := s.impl.BackendStatus()
+	if !available {
+		s.setStartupScopeSnapshot(StartupScopeSnapshot{
+			RunBinding: hex.EncodeToString(binding[:]), Generation: 1,
+			State: StartupScopeUnavailable, Reason: "host filesystem enforcement profile is unavailable",
+		})
+		return
+	}
+	backend, ok := s.impl.(startupScopeBackend)
+	if !ok {
+		s.setStartupScopeSnapshot(StartupScopeSnapshot{RunBinding: hex.EncodeToString(binding[:]), Generation: 1, State: StartupScopeUnavailable, Reason: "host filesystem profile does not support retained creation scope identity"})
+		return
+	}
+	root, err := backend.openCreationStartupRoot(canonical)
+	if err != nil {
+		s.setStartupScopeSnapshot(StartupScopeSnapshot{RunBinding: hex.EncodeToString(binding[:]), Generation: 1, State: StartupScopeUnavailable, Reason: "trusted startup directory identity could not be retained"})
+		return
+	}
+	info, err := root.Stat()
+	identity, identityErr := backend.creationStartupIdentity(int(root.Fd()))
+	mountID, mountErr := backend.creationStartupMountID(int(root.Fd()))
+	if err != nil || !info.IsDir() || identityErr != nil || mountErr != nil || !backend.creationStartupProfileAvailable(int(root.Fd())) {
+		_ = root.Close()
+		s.setStartupScopeSnapshot(StartupScopeSnapshot{RunBinding: hex.EncodeToString(binding[:]), Generation: 1, State: StartupScopeUnavailable, Reason: "startup directory does not match the verified creation profile"})
+		return
+	}
+	s.startupScopeMu.Lock()
+	if s.startupScope.State == StartupScopeClosed {
+		s.startupScopeMu.Unlock()
+		_ = root.Close()
 		return
 	}
 	s.startupScopePath = canonical
-	available, _ := s.impl.BackendStatus()
-	if !available {
-		s.startupScope = StartupScopeSnapshot{
-			RunBinding: hex.EncodeToString(binding[:]), Generation: 1,
-			State: StartupScopeUnavailable, Reason: "host filesystem enforcement profile is unavailable",
-		}
-		return
-	}
+	s.startupScopeRoot = root
+	s.startupScopeInfo = info
+	s.startupScopeIdentity = identity
+	s.startupScopeMountID = mountID
 	s.startupScope = StartupScopeSnapshot{
 		RunBinding: hex.EncodeToString(binding[:]), Generation: 1,
-		State:  StartupScopeIdentityDeferred,
-		Reason: "retained directory identity and movement validation are deferred",
+		State:  StartupScopeIdentityRetained,
+		Reason: "startup directory identity is retained; creation remains unavailable until separate enablement",
 	}
+	s.startupScopeMu.Unlock()
+}
+
+func (s *Service) setStartupScopeUnavailable(reason string) {
+	s.setStartupScopeSnapshot(unavailableStartupScope(reason))
+}
+
+func (s *Service) setStartupScopeSnapshot(snapshot StartupScopeSnapshot) {
+	s.startupScopeMu.Lock()
+	defer s.startupScopeMu.Unlock()
+	if s.startupScope.State == StartupScopeClosed {
+		return
+	}
+	s.startupScope = snapshot
 }
 
 // WorkerBootstrap handles only the fixed internal re-exec entry used by the
@@ -282,7 +347,18 @@ func (s *Service) Close(ctx context.Context) error {
 	if invalidator, ok := s.impl.(interface{ invalidateCreationProposals() error }); ok {
 		proposalErr = invalidator.invalidateCreationProposals()
 	}
-	return errors.Join(proposalErr, s.impl.Close(ctx))
+	implementationErr := s.impl.Close(ctx)
+	var scopeErr error
+	if implementationErr == nil {
+		s.startupScopeMu.Lock()
+		if s.startupScopeRoot != nil {
+			scopeErr = s.startupScopeRoot.Close()
+			s.startupScopeRoot = nil
+			s.startupScopeInfo = nil
+		}
+		s.startupScopeMu.Unlock()
+	}
+	return errors.Join(proposalErr, implementationErr, scopeErr)
 }
 
 // ValidateFilesystemRoot checks only the user-selected path for display and
@@ -425,7 +501,7 @@ func (s *Service) CreationFoundationSnapshot() CreationFoundationSnapshot {
 	result := CreationFoundationSnapshot{
 		ProfileRevision: 1, CoverageRevision: coverage.Revision,
 		OwnerCoverageComplete: true, CapabilityRegistered: false,
-		Reason: "production creation remains disabled pending scope identity enforcement, evidence, and separate enablement",
+		Reason: "normal composition remains unregistered; separate reviewed evidence and enablement are required",
 	}
 	for _, declaration := range declarations {
 		known[declaration.owner] = struct{}{}
@@ -476,6 +552,8 @@ func (s *Service) CreationFoundationSnapshot() CreationFoundationSnapshot {
 	if result.StartupScope.State == StartupScopeClosed {
 		result.OwnerCoverageComplete = false
 		result.Reason = "host service is closed"
+	} else if result.StartupScope.State == StartupScopeMoved {
+		result.Reason = ErrStartupScopeMoved.Error()
 	}
 	s.startupScopeMu.Unlock()
 	slices.SortFunc(result.Owners, func(left, right CreationOwnerStatus) int {

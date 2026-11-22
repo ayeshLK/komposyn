@@ -1,6 +1,6 @@
 # Issue #321 creation lifecycle acceptance
 
-This record tracks behavioral lifecycle evidence separately from native filesystem evidence and production enablement. The implementation is a disposable-fixture prototype; the normal `cmd/harness` composition does not register creation and production owner coverage remains unresolved.
+This record tracks behavioral lifecycle evidence separately from native filesystem evidence and production enablement. The normal `cmd/harness` composition does not register creation. Startup-scope preparation and terminal movement behavior now have focused behavioral coverage; new trusted-host native evidence for those claims and separate production enablement remain outstanding.
 
 ## Behavioral evidence
 
@@ -17,6 +17,9 @@ Focused tests use the real composed sandbox service and runtime seam where appli
 | Lost completion classification cannot replay | `TestCreationCompletionLossAfterPublicationIsUnknownAndNeverReplayed`. |
 | Owner transition and publication release are ordered | `TestCreationOwnerTransitionWinsAfterFinalValidationBeforePublicationRelease` pauses the actual execution path after final validation; `TestOwnerTransitionAfterPublicationReleaseWaitsForCreationClassification` covers the release-wins path and a concurrent alias attempt. |
 | Effect committed before runtime/provider publication | `TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall` holds the composed worker after the filesystem effect, rotates an owner, and verifies the outcome is unknown with no provider continuation or second dispatch. |
+| Startup scope is retained across navigation and movement is terminal | `TestStartupScopeMovementIsTerminalAfterReplacementAndRestore` moves/replaces the startup root, restores the original object, and verifies navigation/reset do not clear the latch. This is a fake-worker behavioral test, not native filesystem evidence. |
+| Existing nested parents remain scoped; changed parents and invalid targets refuse before approval | `TestCreationResolvesNestedTargetFromFixedStartupScopeAndRejectsChangedParent` and `TestCreationPreparationRejectsUnsupportedTargetsBeforeApproval` cover ordinary project files, nested lookup, stale-parent refusal, escapes, symlink components/leaves, missing/non-directory parents and collisions. |
+| Startup-root replacement at the release checkpoint prevents publication and joins the worker | `TestStartupRootMoveAtPublicationCheckpointAbortsPreparedCreation` observes the real preparation/execution boundary with a deterministic fake worker; the separate native actor case remains outstanding. |
 
 Existing creation tests continue to cover once binding, retained-parent checks, root/service transitions, worker protocol, byte limits and collision behavior. `TestCreationPrototypeEnforcesContentAndSerializedArgumentLimitsBeforeApproval` checks exact 64 KiB content and over-limit content/serialized arguments before approval; the composed service success test also exercises exact-limit and empty-file effects. `TestCreationUnknownOutcomeStopsProviderContinuation` confirms uncertain completion ends the provider turn without replay. These tests establish control-flow and lifecycle behavior; they do not establish kernel/filesystem enforcement.
 

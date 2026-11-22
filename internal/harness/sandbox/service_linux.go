@@ -75,8 +75,13 @@ type linuxImplementation struct {
 }
 
 type creationRootBinding struct {
-	root, conversation string
-	generation         uint64
+	root, conversation  string
+	target              string
+	generation          uint64
+	scopeGeneration     uint64
+	scopeIdentity       readbrokerstudy.FileIdentity
+	validateScope       func() error
+	validateStartupRoot func() error
 }
 
 type serviceCreationProposal struct {
@@ -87,6 +92,13 @@ type serviceCreationProposal struct {
 	parentIdentity   readbrokerstudy.FileIdentity
 	root             string
 	rootGeneration   uint64
+	target           string
+	scopeRoot        string
+	parentRelative   string
+	leaf             string
+	scopeGeneration  uint64
+	scopeIdentity    readbrokerstudy.FileIdentity
+	startupScope     bool
 	coverageRevision uint64
 	policyRevision   uint64
 	stageName        string
@@ -113,6 +125,7 @@ type creationBarrierLease struct {
 type creationBarrierState uint8
 
 type syntheticCreationOwnerManifest struct {
+	scopePath         string
 	scopeParent       readbrokerstudy.FileIdentity
 	scopeComplete     bool
 	policyRevision    uint64
@@ -151,6 +164,198 @@ func newHostImplementation(bubblewrapPath string) (implementation, error) {
 		return composeLinuxImplementation(registry, nil, fmt.Errorf("%w: %s", readbrokerstudy.ErrUnavailable, safeBackendDiagnostic(workerErr)))
 	}
 	return composeLinuxImplementation(registry, launcher, nil)
+}
+
+func (s *linuxImplementation) openCreationStartupRoot(path string) (*os.File, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, readbrokerstudy.ErrStaleReceipt
+	}
+	anchor, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	relative := strings.TrimPrefix(path, "/")
+	fd := -1
+	if relative == "" {
+		fd, err = unix.FcntlInt(uintptr(anchor), unix.F_DUPFD_CLOEXEC, 0)
+	} else {
+		fd, err = unix.Openat2(anchor, relative, &unix.OpenHow{
+			Flags:   uint64(unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC),
+			Resolve: uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS),
+		})
+	}
+	_ = unix.Close(anchor)
+	if err != nil {
+		return nil, err
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		_ = unix.Close(fd)
+		if err != nil {
+			return nil, err
+		}
+		return nil, readbrokerstudy.ErrStaleReceipt
+	}
+	return os.NewFile(uintptr(fd), "creation-startup-root"), nil
+}
+
+func (s *linuxImplementation) creationStartupIdentity(fd int) (readbrokerstudy.FileIdentity, error) {
+	if fd < 0 {
+		return readbrokerstudy.FileIdentity{}, readbrokerstudy.ErrStaleReceipt
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return readbrokerstudy.FileIdentity{}, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return readbrokerstudy.FileIdentity{}, readbrokerstudy.ErrStaleReceipt
+	}
+	return identityFromUnixStat(&stat), nil
+}
+
+func (s *linuxImplementation) creationStartupMountID(fd int) (uint64, error) {
+	if fd < 0 {
+		return 0, readbrokerstudy.ErrStaleReceipt
+	}
+	var stat unix.Statx_t
+	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &stat); err != nil || stat.Mask&unix.STATX_MNT_ID == 0 || stat.Mnt_id == 0 {
+		if err != nil {
+			return 0, err
+		}
+		return 0, readbrokerstudy.ErrUnavailable
+	}
+	return stat.Mnt_id, nil
+}
+
+func (s *linuxImplementation) creationStartupProfileAvailable(fd int) bool {
+	if s == nil || fd < 0 || readbrokerstudy.ValidateCreationDirectoryDescriptor(fd) != nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.backendErr != nil || s.session == nil || s.launcher == nil {
+		return false
+	}
+	profile, ok := s.launcher.(interface{ CreationProfileAvailable() bool })
+	return ok && profile.CreationProfileAvailable()
+}
+
+func openCreationParent(root *os.File, relativeTarget string) (*os.File, readbrokerstudy.FileIdentity, string, string, error) {
+	if root == nil || relativeTarget == "" || len(relativeTarget) > tools.MaxCreateFilePathBytes || filepath.IsAbs(relativeTarget) || filepath.Clean(relativeTarget) != relativeTarget || strings.ContainsAny(relativeTarget, "\\\x00") {
+		return nil, readbrokerstudy.FileIdentity{}, "", "", readbrokerstudy.ErrStaleReceipt
+	}
+	parentRelative, leaf := filepath.Split(relativeTarget)
+	parentRelative = strings.TrimSuffix(parentRelative, string(filepath.Separator))
+	if parentRelative == "" {
+		parentRelative = "."
+	}
+	if !validCreationLeaf(leaf) {
+		return nil, readbrokerstudy.FileIdentity{}, "", "", readbrokerstudy.ErrStaleReceipt
+	}
+	fd := -1
+	var err error
+	if parentRelative == "." {
+		fd, err = unix.FcntlInt(root.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	} else {
+		fd, err = unix.Openat2(int(root.Fd()), parentRelative, &unix.OpenHow{
+			Flags:   uint64(unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC),
+			Resolve: uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV),
+		})
+	}
+	if err != nil {
+		return nil, readbrokerstudy.FileIdentity{}, "", "", err
+	}
+	parent := os.NewFile(uintptr(fd), "creation-target-parent")
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		_ = parent.Close()
+		if err != nil {
+			return nil, readbrokerstudy.FileIdentity{}, "", "", err
+		}
+		return nil, readbrokerstudy.FileIdentity{}, "", "", readbrokerstudy.ErrStaleReceipt
+	}
+	identity := identityFromUnixStat(&stat)
+	if err := readbrokerstudy.ValidateCreationDirectoryDescriptor(fd); err != nil {
+		_ = parent.Close()
+		return nil, readbrokerstudy.FileIdentity{}, "", "", err
+	}
+	return parent, identity, parentRelative, leaf, nil
+}
+
+// validateStartupScopeIdentity latches any detected path movement or
+// replacement. The retained descriptor remains owned until service shutdown;
+// no replacement at the original pathname can revive the run's scope.
+func (s *Service) validateStartupScopeIdentity(generation uint64, identity readbrokerstudy.FileIdentity) error {
+	if s == nil {
+		return ErrServiceClosed
+	}
+	s.startupScopeMu.Lock()
+	state := s.startupScope.State
+	if state == StartupScopeMoved {
+		s.startupScopeMu.Unlock()
+		return ErrStartupScopeMoved
+	}
+	if state == StartupScopeClosed || s.startupScopeRoot == nil {
+		s.startupScopeMu.Unlock()
+		return ErrServiceClosed
+	}
+	if state != StartupScopeIdentityRetained || generation != s.startupScope.Generation || identity == (readbrokerstudy.FileIdentity{}) || identity != s.startupScopeIdentity {
+		s.startupScopeMu.Unlock()
+		return ErrCoverageMissing
+	}
+	path, retainedInfo, expectedMountID := s.startupScopePath, s.startupScopeInfo, s.startupScopeMountID
+	fd, err := unix.FcntlInt(s.startupScopeRoot.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	s.startupScopeMu.Unlock()
+	if err != nil {
+		return s.latchStartupScopeMoved()
+	}
+	retained := os.NewFile(uintptr(fd), "creation-startup-root-check")
+	defer retained.Close()
+	var stat unix.Stat_t
+	impl, ok := s.impl.(*linuxImplementation)
+	if !ok {
+		return ErrCoverageMissing
+	}
+	mountID, mountErr := impl.creationStartupMountID(fd)
+	if err := unix.Fstat(fd, &stat); err != nil || identityFromUnixStat(&stat) != identity || mountErr != nil || mountID != expectedMountID || !impl.creationStartupProfileAvailable(fd) {
+		return s.latchStartupScopeMoved()
+	}
+	current, err := impl.openCreationStartupRoot(path)
+	if err != nil {
+		return s.latchStartupScopeMoved()
+	}
+	defer current.Close()
+	currentInfo, err := current.Stat()
+	currentMountID, mountErr := impl.creationStartupMountID(int(current.Fd()))
+	if err != nil || mountErr != nil || currentMountID != expectedMountID || retainedInfo == nil || !os.SameFile(retainedInfo, currentInfo) {
+		return s.latchStartupScopeMoved()
+	}
+	return nil
+}
+
+func (s *Service) latchStartupScopeMoved() error {
+	s.startupScopeMu.Lock()
+	if s.startupScope.State == StartupScopeIdentityRetained {
+		s.startupScope.State = StartupScopeMoved
+		s.startupScope.Generation++
+		s.startupScope.Reason = "startup directory movement or replacement was detected; restart is required"
+	}
+	state := s.startupScope.State
+	s.startupScopeMu.Unlock()
+	if state == StartupScopeClosed {
+		return ErrServiceClosed
+	}
+	if invalidator, ok := s.impl.(interface{ invalidateCreationProposals() error }); ok {
+		_ = invalidator.invalidateCreationProposals()
+	}
+	if impl, ok := s.impl.(*linuxImplementation); ok {
+		impl.mu.Lock()
+		if lease := impl.creationBarrier; lease != nil && lease.cancel != nil {
+			lease.cancel()
+		}
+		impl.mu.Unlock()
+	}
+	return ErrStartupScopeMoved
 }
 
 func composeLinuxImplementation(registry *readbrokerstudy.Registry, launcher readbrokerstudy.WorkerLauncher, backendErr error) (*linuxImplementation, error) {
@@ -875,14 +1080,27 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	if err := readbrokerstudy.ValidateCreationDirectoryDescriptor(int(parent.Fd())); err != nil {
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, err
 	}
-	if !s.syntheticCreationManifestEligible(parentIdentity) {
+	scopeIdentity := parentIdentity
+	validateScope := (func() error)(nil)
+	target := filepath.Join(parent.Name(), leaf)
+	if len(rootBinding) == 1 {
+		if rootBinding[0].scopeIdentity != (readbrokerstudy.FileIdentity{}) {
+			scopeIdentity = rootBinding[0].scopeIdentity
+		}
+		if rootBinding[0].target != "" {
+			target = rootBinding[0].target
+		}
+		validateScope = rootBinding[0].validateScope
+	}
+	if validateScope != nil {
+		if err := validateScope(); err != nil {
+			return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, err
+		}
+	}
+	if !s.syntheticCreationManifestEligible(scopeIdentity) {
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, ErrCoverageMissing
 	}
-	rootPath := parent.Name()
-	if len(rootBinding) == 1 && rootBinding[0].root != "" {
-		rootPath = rootBinding[0].root
-	}
-	if !s.creationTargetUnprotected(filepath.Join(rootPath, leaf)) {
+	if !s.creationTargetUnprotectedAt(target, parent) {
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, ErrCoverageMissing
 	}
 
@@ -909,7 +1127,12 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 			_ = finishBarrier(false)
 		}
 	}()
-	if !s.syntheticCreationManifestEligible(parentIdentity) {
+	if validateScope != nil {
+		if err := validateScope(); err != nil {
+			return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(true))
+		}
+	}
+	if !s.syntheticCreationManifestEligible(scopeIdentity) {
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(ErrCoverageMissing, finishBarrier(true))
 	}
 	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
@@ -971,6 +1194,12 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	if err := worker.Ready(lease.ctx); err != nil {
 		joined = stopAndJoin()
 		return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(joined))
+	}
+	if validateScope != nil {
+		if err := validateScope(); err != nil {
+			joined = stopAndJoin()
+			return readbrokerstudy.CreationResult{Outcome: readbrokerstudy.CreationNotCreated}, errors.Join(err, finishBarrier(joined))
+		}
 	}
 	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
 		joined = stopAndJoin()
@@ -1039,7 +1268,18 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 		}
 		return result, errors.Join(lease.ctx.Err(), abortErr, finishBarrier(clean))
 	}
-	if !s.syntheticCreationManifestEligible(parentIdentity) {
+	if validateScope != nil {
+		if err := validateScope(); err != nil {
+			result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
+			joined = waitAndConfirm()
+			clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
+			if !clean {
+				result = unknown
+			}
+			return result, errors.Join(err, abortErr, finishBarrier(clean))
+		}
+	}
+	if !s.syntheticCreationManifestEligible(scopeIdentity) {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
 		joined = waitAndConfirm()
 		clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
@@ -1068,6 +1308,17 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	if hook := s.creationBeforePublicationReleaseHook; hook != nil {
 		hook()
 	}
+	if validateScope != nil {
+		if err := validateScope(); err != nil {
+			result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
+			joined = waitAndConfirm()
+			clean := joined && abortErr == nil && result.Outcome == readbrokerstudy.CreationNotCreated
+			if !clean {
+				result = unknown
+			}
+			return result, errors.Join(err, abortErr, finishBarrier(clean))
+		}
+	}
 	if err := s.releaseCreationPublication(lease); err != nil {
 		result, abortErr := creationWorker.AbortCreation(creationWorker.WorkerContext(), stage)
 		joined = waitAndConfirm()
@@ -1080,13 +1331,121 @@ func (s *linuxImplementation) executeBoundedCreation(ctx context.Context, parent
 	result, publishErr := creationWorker.PublishCreation(creationWorker.WorkerContext(), stage)
 	joined = waitAndConfirm()
 	if !joined || workerWaitErr != nil || publishErr != nil || result.Outcome == readbrokerstudy.CreationUnknown {
+		if joined && len(rootBinding) == 1 && rootBinding[0].validateStartupRoot != nil {
+			_ = rootBinding[0].validateStartupRoot()
+		}
 		return unknown, errors.Join(workerWaitErr, publishErr, finishBarrier(false))
+	}
+	if len(rootBinding) == 1 && rootBinding[0].validateStartupRoot != nil {
+		// Publication already has a classified result. A movement detected now
+		// latches future creation off without rewriting that known effect.
+		_ = rootBinding[0].validateStartupRoot()
 	}
 	return result, errors.Join(publishErr, finishBarrier(true))
 }
 
-// PrepareFilesystemCreation implements the explicit fixture-only runtime seam.
-// Normal cmd/harness composition never wraps the runtime with this service.
+// creationScopeForInvocation uses the launch-time retained scope in production.
+// The selected-root fallback is reachable only with the package-private
+// synthetic owner manifest used by the fixture/native acceptance harness.
+func (s *Service) creationScopeForInvocation(selectedRoot string) (*os.File, string, readbrokerstudy.FileIdentity, uint64, bool, error) {
+	s.startupScopeMu.Lock()
+	state, generation, path, identity := s.startupScope.State, s.startupScope.Generation, s.startupScopePath, s.startupScopeIdentity
+	if state == StartupScopeMoved {
+		s.startupScopeMu.Unlock()
+		return nil, "", readbrokerstudy.FileIdentity{}, 0, false, ErrStartupScopeMoved
+	}
+	if state == StartupScopeIdentityRetained && s.startupScopeRoot != nil {
+		fd, err := unix.FcntlInt(s.startupScopeRoot.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+		s.startupScopeMu.Unlock()
+		if err != nil {
+			return nil, "", readbrokerstudy.FileIdentity{}, 0, false, ErrCoverageMissing
+		}
+		if err := s.validateStartupScopeIdentity(generation, identity); err != nil {
+			_ = unix.Close(fd)
+			return nil, "", readbrokerstudy.FileIdentity{}, 0, false, err
+		}
+		return os.NewFile(uintptr(fd), "creation-startup-scope"), path, identity, generation, true, nil
+	}
+	s.startupScopeMu.Unlock()
+	impl, ok := s.impl.(*linuxImplementation)
+	if !ok || selectedRoot == "" {
+		return nil, "", readbrokerstudy.FileIdentity{}, 0, false, ErrCoverageMissing
+	}
+	impl.mu.Lock()
+	manifestPath := ""
+	if impl.creationManifest != nil {
+		manifestPath = impl.creationManifest.scopePath
+	}
+	impl.mu.Unlock()
+	if manifestPath == "" {
+		return nil, "", readbrokerstudy.FileIdentity{}, 0, false, ErrCoverageMissing
+	}
+	root, err := impl.openCreationStartupRoot(manifestPath)
+	if err != nil {
+		return nil, "", readbrokerstudy.FileIdentity{}, 0, false, ErrCoverageMissing
+	}
+	rootIdentity, err := impl.creationStartupIdentity(int(root.Fd()))
+	if err != nil || !impl.syntheticCreationManifestEligible(rootIdentity) {
+		_ = root.Close()
+		return nil, "", readbrokerstudy.FileIdentity{}, 0, false, ErrCoverageMissing
+	}
+	return root, manifestPath, rootIdentity, 1, false, nil
+}
+
+func (s *Service) validateCreationProposal(proposal *serviceCreationProposal) error {
+	if proposal == nil || proposal.parent == nil {
+		return runtime.ErrFilesystemRootStale
+	}
+	if proposal.startupScope {
+		if err := s.validateStartupScopeIdentity(proposal.scopeGeneration, proposal.scopeIdentity); err != nil {
+			return err
+		}
+	} else {
+		root, err := s.impl.(*linuxImplementation).openCreationStartupRoot(proposal.scopeRoot)
+		if err != nil {
+			return runtime.ErrFilesystemRootStale
+		}
+		identity, identityErr := s.impl.(*linuxImplementation).creationStartupIdentity(int(root.Fd()))
+		_ = root.Close()
+		if identityErr != nil || identity != proposal.scopeIdentity {
+			return runtime.ErrFilesystemRootStale
+		}
+	}
+	s.rootMu.Lock()
+	rootCurrent := !s.rootClosed && !s.rootPending && s.rootPath == proposal.root && s.rootConversationID == proposal.invocation.ConversationID && s.rootGeneration == proposal.rootGeneration
+	s.rootMu.Unlock()
+	if !rootCurrent {
+		return runtime.ErrFilesystemRootStale
+	}
+	impl, ok := s.impl.(*linuxImplementation)
+	if !ok || s.CoverageSnapshot().Revision != proposal.coverageRevision || impl.registry.View().Generation != proposal.policyRevision || !s.CreationFoundationSnapshot().OwnerCoverageComplete || !impl.syntheticCreationManifestEligible(proposal.scopeIdentity) {
+		return ErrCoverageMissing
+	}
+	scopeRoot, _, _, _, _, err := s.creationScopeForInvocation(proposal.root)
+	if err != nil {
+		return err
+	}
+	defer scopeRoot.Close()
+	relativeTarget := filepath.Join(proposal.parentRelative, proposal.leaf)
+	parent, identity, _, _, err := openCreationParent(scopeRoot, relativeTarget)
+	if err != nil {
+		return runtime.ErrFilesystemRootStale
+	}
+	defer parent.Close()
+	if identity != proposal.parentIdentity {
+		return runtime.ErrFilesystemRootStale
+	}
+	if err := validateCreationParentAndAbsentLeaf(proposal.parent, proposal.parentIdentity, proposal.leaf); err != nil {
+		return err
+	}
+	if !impl.creationTargetUnprotectedAt(proposal.target, parent) {
+		return ErrCoverageMissing
+	}
+	return nil
+}
+
+// PrepareFilesystemCreation is the explicit fixture-only runtime seam. The
+// normal cmd/harness composition never registers or wraps this operation.
 func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
 	if ctx == nil || s == nil || s.impl == nil || invocation.ToolID != tools.CreateFileID || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
 		return permissions.Request{}, ErrServiceClosed
@@ -1095,75 +1454,74 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 	if err != nil {
 		return permissions.Request{}, err
 	}
-	// This prototype intentionally supports one existing parent and one leaf;
-	// it does not create directories or resolve a model-selected scope.
-	if strings.Contains(input.Path, "/") {
-		return permissions.Request{}, errors.New("creation prototype accepts a single leaf beneath the selected scope")
-	}
 	s.rootMu.Lock()
 	if s.rootClosed || s.rootPending || s.rootPath == "" || invocation.ConversationID != s.rootConversationID {
 		s.rootMu.Unlock()
 		return permissions.Request{}, ErrCoverageMissing
 	}
-	root, rootGeneration := s.rootPath, s.rootGeneration
+	workingDirectory, rootGeneration := s.rootPath, s.rootGeneration
 	s.rootMu.Unlock()
-	parent, err := os.Open(root)
+	scope, scopeRoot, scopeIdentity, scopeGeneration, startupScope, err := s.creationScopeForInvocation(workingDirectory)
 	if err != nil {
-		return permissions.Request{}, ErrCoverageMissing
-	}
-	var st unix.Stat_t
-	if err = unix.Fstat(int(parent.Fd()), &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR {
-		_ = parent.Close()
-		return permissions.Request{}, ErrCoverageMissing
-	}
-	identity := identityFromUnixStat(&st)
-	if err := readbrokerstudy.ValidateCreationDirectoryDescriptor(int(parent.Fd())); err != nil {
-		_ = parent.Close()
 		return permissions.Request{}, err
 	}
+	defer scope.Close()
 	impl, ok := s.impl.(*linuxImplementation)
-	if !ok || !impl.syntheticCreationManifestEligible(identity) {
-		_ = parent.Close()
+	if !ok {
 		return permissions.Request{}, ErrCoverageMissing
 	}
-	target := filepath.Join(root, input.Path)
-	if !impl.creationTargetUnprotected(target) {
-		_ = parent.Close()
+	if !s.CreationFoundationSnapshot().OwnerCoverageComplete || !impl.syntheticCreationManifestEligible(scopeIdentity) {
 		return permissions.Request{}, ErrCoverageMissing
 	}
-	if err = validateCreationParentAndAbsentLeaf(parent, identity, input.Path); err != nil {
-		_ = parent.Close()
+	target := filepath.Clean(filepath.Join(workingDirectory, filepath.FromSlash(input.Path)))
+	relativeTarget, err := filepath.Rel(scopeRoot, target)
+	if err != nil || relativeTarget == "." || relativeTarget == ".." || strings.HasPrefix(relativeTarget, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeTarget) {
+		return permissions.Request{}, errors.New("creation target is outside the fixed startup directory")
+	}
+	relativeTarget = filepath.ToSlash(relativeTarget)
+	parent, parentIdentity, parentRelative, leaf, err := openCreationParent(scope, relativeTarget)
+	if err != nil {
+		return permissions.Request{}, err
+	}
+	cleanupParent := true
+	defer func() {
+		if cleanupParent {
+			_ = parent.Close()
+		}
+	}()
+	if err := validateCreationParentAndAbsentLeaf(parent, parentIdentity, leaf); err != nil {
 		if errors.Is(err, unix.EEXIST) {
 			return permissions.Request{}, errors.New("creation destination already exists; a new proposal is required")
 		}
 		return permissions.Request{}, err
 	}
+	if !impl.creationTargetUnprotectedAt(target, parent) {
+		return permissions.Request{}, ErrCoverageMissing
+	}
 	coverageRevision := s.CoverageSnapshot().Revision
 	policyRevision := impl.registry.View().Generation
 	stageName, err := readbrokerstudy.NewCreationStageName()
 	if err != nil {
-		_ = parent.Close()
 		return permissions.Request{}, err
 	}
 	requestData, _ := json.Marshal(struct {
-		ConversationID, TurnID, CallID, Destination, Root, Target, Content string
-		RootGeneration, PolicyRevision, CoverageRevision                   uint64
-		Parent                                                             readbrokerstudy.FileIdentity
-	}{invocation.ConversationID, invocation.TurnID, invocation.ProviderCallID, destination, root, target, input.Content, rootGeneration, policyRevision, coverageRevision, identity})
+		ConversationID, TurnID, CallID, Destination, WorkingDirectory, ScopeRoot, Target, Content string
+		RootGeneration, ScopeGeneration, PolicyRevision, CoverageRevision                         uint64
+		ScopeIdentity, ParentIdentity                                                             readbrokerstudy.FileIdentity
+	}{invocation.ConversationID, invocation.TurnID, invocation.ProviderCallID, destination, workingDirectory, scopeRoot, target, input.Content, rootGeneration, scopeGeneration, policyRevision, coverageRevision, scopeIdentity, parentIdentity})
 	digest := sha256.Sum256(requestData)
 	diff := creationApprovalDiff(target, destination, []byte(input.Content))
 	request := permissions.Request{ConversationID: invocation.ConversationID, CallID: invocation.ProviderCallID, Destination: destination, AdmissionBinding: hex.EncodeToString(digest[:]), RequireOnceKeys: []string{"create", "target"}, Requirements: []permissions.Requirement{
 		{Kind: permissions.RequirementAction, Key: "create", ToolID: string(tools.CreateFileID), Description: diff, Operation: permissions.OperationWrite, ActionKey: "bounded-create-once"},
 		{Kind: permissions.RequirementResource, Key: "target", ToolID: string(tools.CreateFileID), Description: "Create this exact target once", Operation: permissions.OperationWrite, Resource: &permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: target, Operation: permissions.OperationWrite}},
 	}}
-	proposal := &serviceCreationProposal{invocation: invocation, request: request, input: input, parent: parent, parentIdentity: identity, root: root, rootGeneration: rootGeneration, coverageRevision: coverageRevision, policyRevision: policyRevision, stageName: stageName}
+	proposal := &serviceCreationProposal{invocation: invocation, request: request, input: input, parent: parent, parentIdentity: parentIdentity, root: workingDirectory, rootGeneration: rootGeneration, target: target, scopeRoot: scopeRoot, parentRelative: parentRelative, leaf: leaf, scopeGeneration: scopeGeneration, scopeIdentity: scopeIdentity, startupScope: startupScope, coverageRevision: coverageRevision, policyRevision: policyRevision, stageName: stageName}
+	key := invocation.ConversationID + "\x00" + invocation.ProviderCallID
 	impl.mu.Lock()
-	if impl.closed || impl.creationManifest == nil {
+	if impl.closed || impl.creationManifest == nil || impl.creationBarrier != nil {
 		impl.mu.Unlock()
-		_ = parent.Close()
 		return permissions.Request{}, ErrCoverageMissing
 	}
-	key := invocation.ConversationID + "\x00" + invocation.ProviderCallID
 	previous := impl.creationProposals[key]
 	delete(impl.creationProposals, key)
 	impl.mu.Unlock()
@@ -1174,18 +1532,17 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 				impl.creationProposals[key] = previous
 			}
 			impl.mu.Unlock()
-			_ = parent.Close()
 			return permissions.Request{}, errors.Join(readbrokerstudy.ErrCleanupPending, err)
 		}
 	}
 	impl.mu.Lock()
-	if impl.closed || impl.creationManifest == nil || impl.creationProposals[key] != nil {
+	if impl.closed || impl.creationManifest == nil || impl.creationBarrier != nil || impl.creationProposals[key] != nil {
 		impl.mu.Unlock()
-		_ = parent.Close()
 		return permissions.Request{}, runtime.ErrFilesystemRootStale
 	}
 	impl.creationProposals[key] = proposal
 	impl.mu.Unlock()
+	cleanupParent = false
 	return request, nil
 }
 
@@ -1214,12 +1571,11 @@ func (s *Service) PrepareApprovedFilesystemCreation(ctx context.Context, invocat
 	proposal.consumed = true
 	delete(impl.creationProposals, key)
 	impl.mu.Unlock()
-	s.rootMu.Lock()
-	current := !s.rootClosed && !s.rootPending && s.rootPath == proposal.root && s.rootConversationID == invocation.ConversationID && s.rootGeneration == proposal.rootGeneration
-	s.rootMu.Unlock()
-	if !current || s.CoverageSnapshot().Revision != proposal.coverageRevision || impl.registry.View().Generation != proposal.policyRevision || !impl.syntheticCreationManifestEligible(proposal.parentIdentity) {
-		_ = proposal.parent.Close()
-		return nil, runtime.ErrFilesystemRootStale
+	if err := s.validateCreationProposal(proposal); err != nil {
+		if closeErr := proposal.parent.Close(); closeErr != nil {
+			return nil, errors.Join(readbrokerstudy.ErrCleanupPending, err, closeErr)
+		}
+		return nil, err
 	}
 	return &serviceCreationPreparation{service: s, impl: impl, proposal: proposal}, nil
 }
@@ -1306,13 +1662,23 @@ func (p *serviceCreationPreparation) Execute(ctx context.Context) (tools.Result,
 	}
 	p.executed = true
 	p.mu.Unlock()
-	result, err := p.impl.executeBoundedCreation(ctx, p.proposal.parent, p.proposal.parentIdentity, p.proposal.stageName, p.proposal.input.Path, []byte(p.proposal.input.Content), creationRootBinding{root: p.proposal.root, conversation: p.proposal.invocation.ConversationID, generation: p.proposal.rootGeneration})
+	result, err := p.impl.executeBoundedCreation(ctx, p.proposal.parent, p.proposal.parentIdentity, p.proposal.stageName, p.proposal.leaf, []byte(p.proposal.input.Content), creationRootBinding{
+		root: p.proposal.root, conversation: p.proposal.invocation.ConversationID, target: p.proposal.target, generation: p.proposal.rootGeneration,
+		scopeGeneration: p.proposal.scopeGeneration, scopeIdentity: p.proposal.scopeIdentity,
+		validateScope: func() error { return p.service.validateCreationProposal(p.proposal) },
+		validateStartupRoot: func() error {
+			if !p.proposal.startupScope {
+				return nil
+			}
+			return p.service.validateStartupScopeIdentity(p.proposal.scopeGeneration, p.proposal.scopeIdentity)
+		},
+	})
 	cancelledWithoutEffect := result.Outcome == readbrokerstudy.CreationNotCreated && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 	toolResult := tools.Result{Outcome: tools.OutcomeNotExecuted, ErrorCode: "creation_not_created"}
 	switch result.Outcome {
 	case readbrokerstudy.CreationCreated:
 		toolResult.Outcome = tools.OutcomeSucceeded
-		toolResult.Content = []tools.Content{{Kind: tools.ContentText, Text: fmt.Sprintf("Created %s (%d bytes)", filepath.Join(p.proposal.root, p.proposal.input.Path), result.Bytes)}}
+		toolResult.Content = []tools.Content{{Kind: tools.ContentText, Text: fmt.Sprintf("Created %s (%d bytes)", p.proposal.target, result.Bytes)}}
 	case readbrokerstudy.CreationConflict:
 		toolResult.Outcome = tools.OutcomeFailed
 		toolResult.ErrorCode = "creation_conflict"
@@ -1431,6 +1797,20 @@ func (s *linuxImplementation) creationTargetUnprotected(target string) bool {
 	}
 	_, protected := registry.ClassifyRoute(target)
 	return !protected
+}
+
+func (s *linuxImplementation) creationTargetUnprotectedAt(target string, parent *os.File) bool {
+	if s == nil || parent == nil || !filepath.IsAbs(target) || filepath.Clean(target) != target {
+		return false
+	}
+	s.mu.Lock()
+	registry, closed := s.registry, s.closed
+	s.mu.Unlock()
+	if closed || registry == nil {
+		return false
+	}
+	_, protected, err := registry.ClassifyFromRetainedDirectory(target, readbrokerstudy.FileIdentity{}, int(parent.Fd()))
+	return err == nil && !protected
 }
 
 func validateCreationParentAndAbsentLeaf(parent *os.File, expected readbrokerstudy.FileIdentity, leaf string) error {

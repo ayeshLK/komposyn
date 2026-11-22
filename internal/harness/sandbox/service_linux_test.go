@@ -164,8 +164,8 @@ func TestCreationFoundationUsesTrustedOwnersAndFixedStartupScope(t *testing.T) {
 	if _, registered := runtimeConfig.Registry.Lookup(tools.CreateFileID); registered {
 		t.Fatal("production conversation registered creation from foundation metadata")
 	}
-	if initial.StartupScope.State != StartupScopeIdentityDeferred || initial.StartupScope.RunBinding == "" || initial.StartupScope.Generation != 1 {
-		t.Fatalf("startup scope identity deferral was not explicit: %+v", initial.StartupScope)
+	if initial.StartupScope.State != StartupScopeUnavailable || initial.StartupScope.RunBinding == "" || initial.StartupScope.Generation != 1 {
+		t.Fatalf("unsupported test launcher did not keep the startup scope unavailable: %+v", initial.StartupScope)
 	}
 	if strings.Contains(initial.StartupScope.Reason, startup) {
 		t.Fatal("startup scope snapshot exposed a private path in its reason")
@@ -261,6 +261,244 @@ func TestCreationFoundationUsesTrustedOwnersAndFixedStartupScope(t *testing.T) {
 	}
 	if !foundUnknown {
 		t.Fatalf("unknown owner was not surfaced in the snapshot: %+v", withUndeclaredOwner.Owners)
+	}
+}
+
+func TestStartupScopeMovementIsTerminalAfterReplacementAndRestore(t *testing.T) {
+	root := t.TempDir()
+	service, err := newTestHostServiceWithLauncher(&testCreationWorkerLauncher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureTestStartupScope(t, service, root)
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	identity := service.startupScopeIdentity
+	moved := root + "-moved"
+	if err := os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.validateStartupScopeIdentity(1, identity); !errors.Is(err, ErrStartupScopeMoved) {
+		t.Fatalf("replacement at startup route returned %v; want terminal movement refusal", err)
+	}
+	if snapshot := service.CreationFoundationSnapshot().StartupScope; snapshot.State != StartupScopeMoved || snapshot.Generation != 2 {
+		t.Fatalf("startup movement was not latched: %+v", snapshot)
+	}
+	if err := os.Remove(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, root); err != nil {
+		t.Fatal(err)
+	}
+	for _, transition := range []runtime.FilesystemRootTransition{
+		{ConversationID: "movement", Root: root, Generation: 1, Reason: runtime.FilesystemRootSelected},
+		{ConversationID: "reset", Root: root, Generation: 2, Reason: runtime.FilesystemRootConversationReset},
+	} {
+		if err := service.InvalidateFilesystemRoot(context.Background(), transition); err != nil {
+			t.Fatalf("navigation/reset transition: %v", err)
+		}
+	}
+	if err := service.validateStartupScopeIdentity(1, identity); !errors.Is(err, ErrStartupScopeMoved) {
+		t.Fatalf("restored startup object cleared movement latch: %v", err)
+	}
+	if snapshot := service.CreationFoundationSnapshot().StartupScope; snapshot.State != StartupScopeMoved {
+		t.Fatalf("navigation/reset restored startup scope: %+v", snapshot)
+	}
+}
+
+func TestCreationResolvesNestedTargetFromFixedStartupScopeAndRejectsChangedParent(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ordinary-project-file"), []byte("ordinary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	service, err := newTestHostServiceWithLauncher(&testCreationWorkerLauncher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureTestStartupScope(t, service, root)
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := registerCreationFixtureOwners(t, service, root, "nested-create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{ConversationID: "nested-create", Root: nested, PreviousGeneration: 1, Generation: 2, Reason: runtime.FilesystemRootReplaced}); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(tools.CreateFileInput{Path: "new.txt", Content: "nested exact bytes\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "nested-create", TurnID: "turn", ProviderCallID: "nested-call", ToolID: tools.CreateFileID, Arguments: arguments}
+	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile")
+	if err != nil {
+		t.Fatalf("prepare nested creation: %v", err)
+	}
+	wantTarget := filepath.Join(nested, "new.txt")
+	if got := request.Requirements[1].Resource.Target; got != wantTarget {
+		t.Fatalf("approved target = %q; want runtime-relative nested target %q", got, wantTarget)
+	}
+	moved := filepath.Join(root, "nested-moved")
+	if err := os.Rename(nested, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PrepareApprovedFilesystemCreation(context.Background(), invocation, request, 1); !errors.Is(err, runtime.ErrFilesystemRootStale) {
+		t.Fatalf("replaced nested parent reused proposal: %v", err)
+	}
+	if _, err := os.Lstat(wantTarget); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("changed parent received an effect: %v", err)
+	}
+	if state := service.CreationFoundationSnapshot().StartupScope.State; state != StartupScopeIdentityRetained {
+		t.Fatalf("operation-specific nested parent change disabled startup scope: %q", state)
+	}
+}
+
+func TestCreationPreparationRejectsUnsupportedTargetsBeforeApproval(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ordinary := filepath.Join(root, "ordinary-project-file")
+	if err := os.WriteFile(ordinary, []byte("ordinary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(nested, filepath.Join(root, "parent-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "leaf-link")); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &testCreationWorkerLauncher{}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureTestStartupScope(t, service, root)
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := registerCreationFixtureOwners(t, service, root, "invalid-targets"); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		path string
+	}{
+		{name: "scope escape", path: "../outside.txt"},
+		{name: "symlinked parent", path: "parent-link/new.txt"},
+		{name: "symlink leaf", path: "leaf-link"},
+		{name: "missing parent", path: "missing/new.txt"},
+		{name: "non-directory parent", path: "ordinary-project-file/new.txt"},
+		{name: "existing leaf", path: "ordinary-project-file"},
+	}
+	for i, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			arguments, err := json.Marshal(tools.CreateFileInput{Path: test.path, Content: "must not be written"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			invocation := tools.Invocation{ConversationID: "invalid-targets", TurnID: "turn", ProviderCallID: fmt.Sprintf("invalid-%d", i), ToolID: tools.CreateFileID, Arguments: arguments}
+			if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile"); err == nil {
+				t.Fatal("unsupported target was offered for approval")
+			}
+		})
+	}
+	if len(launcher.events) != 0 {
+		t.Fatalf("worker launched while rejecting preparation: %v", launcher.events)
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "outside" {
+		t.Fatalf("outside symlink target changed: %q err=%v", got, err)
+	}
+}
+
+func TestStartupRootMoveAtPublicationCheckpointAbortsPreparedCreation(t *testing.T) {
+	root := t.TempDir()
+	launcher := &testCreationWorkerLauncher{}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureTestStartupScope(t, service, root)
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	if err := registerCreationFixtureOwners(t, service, root, "move-before-release"); err != nil {
+		t.Fatal(err)
+	}
+	launcher.service = service
+	arguments, err := json.Marshal(tools.CreateFileInput{Path: "new.txt", Content: "approved fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "move-before-release", TurnID: "turn", ProviderCallID: "move-call", ToolID: tools.CreateFileID, Arguments: arguments}
+	launcher.invocation = invocation
+	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.PrepareApprovedFilesystemCreation(context.Background(), invocation, request, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := root + "-moved"
+	service.impl.(*linuxImplementation).creationBeforePublicationReleaseHook = func() {
+		if err := os.Rename(root, moved); err != nil {
+			t.Errorf("move startup root at release checkpoint: %v", err)
+			return
+		}
+		if err := os.Mkdir(root, 0700); err != nil {
+			t.Errorf("replace startup root at release checkpoint: %v", err)
+		}
+	}
+	result, err := prepared.Execute(context.Background())
+	if !errors.Is(err, ErrStartupScopeMoved) || result.Outcome != tools.OutcomeFailed {
+		t.Fatalf("root move result=(%+v,%v); want terminal refusal before publication", result, err)
+	}
+	if !launcher.workerJoined {
+		t.Fatal("creation worker was not joined after startup-root invalidation")
+	}
+	for _, path := range []string{filepath.Join(root, "new.txt"), filepath.Join(moved, "new.txt")} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("startup movement published to %q: %v", path, err)
+		}
+	}
+	if state := service.CreationFoundationSnapshot().StartupScope.State; state != StartupScopeMoved {
+		t.Fatalf("startup root movement did not remain terminal: %q", state)
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func captureTestStartupScope(t *testing.T, service *Service, root string) {
+	t.Helper()
+	service.captureStartupDirectory(root)
+	if state := service.CreationFoundationSnapshot().StartupScope.State; state != StartupScopeIdentityRetained {
+		t.Skipf("startup scope test requires an ext4 fixture; observed state %q", state)
 	}
 }
 
@@ -3422,6 +3660,7 @@ func installSyntheticCreationManifest(t *testing.T, service *Service, root strin
 	impl.owners["tokenlogger-store"] = OwnerCoverage{Owner: "tokenlogger-store", Class: "token_database", State: OwnerRegistered, Routes: 5, Identities: 5, Evidence: "synthetic creation fixture"}
 	impl.owners["provider-source"] = OwnerCoverage{Owner: "provider-source", Class: "provider_source", State: OwnerRegistered, Routes: 1, Identities: 1, Evidence: "synthetic creation fixture"}
 	impl.creationManifest = &syntheticCreationOwnerManifest{
+		scopePath:         root,
 		scopeParent:       identityFromInfo(t, root),
 		scopeComplete:     true,
 		policyRevision:    view.Generation,
@@ -3457,6 +3696,13 @@ type testCreationWorkerLauncher struct {
 	readsBlockedDuringStage   bool
 	readsBlockedDuringPublish bool
 	workerJoined              bool
+}
+
+// CreationProfileAvailable is a test-adapter declaration used only to reach
+// startup-scope behavior with deterministic fake workers. It is not native or
+// production-profile evidence.
+func (*testCreationWorkerLauncher) CreationProfileAvailable() bool {
+	return goruntime.GOARCH == "amd64"
 }
 
 func (l *testCreationWorkerLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {

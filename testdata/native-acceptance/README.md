@@ -9,7 +9,7 @@ The hash-pinned runner and test overlay are kept together in
 - `run-native-acceptance.py`
 - `native_acceptance_linux_test.go`
 
-The runner includes two #321 creation cases. It composes the real host service
+The runner includes four #321 creation cases. It composes the real host service
 with the real Bubblewrap worker, injects only the synthetic complete owner
 manifest used by fixtures, publishes a synthetic file, checks exact bytes and
 mode `0600`, verifies stage cleanup and worker join, and confirms an existing
@@ -23,8 +23,12 @@ directory and creates a substitute at the old pathname immediately before
 worker staging. It records actor PID/UID, the retained and substitute parent
 identity hashes, the mount ID/filesystem, stage disposition and worker join.
 The actor has no shell or arbitrary command interface and shares the host mount
-namespace. The study does not use a provider, enable the production tool, or
-authorize arbitrary roots.
+namespace. Additional cases capture the service's fixed startup scope, publish
+beneath an existing nested parent, and move/replace the startup path with a
+fixed same-UID actor. They verify that movement is detected before worker
+launch and remains terminal after the original object is restored. These are
+new candidate cases and have not yet been run on a trusted host. The study does
+not use a provider, enable the production tool, or authorize arbitrary roots.
 
 From the candidate checkout, use the exact candidate commit and an existing
 scratch directory on local ext4. The issue-specific procedure is documented

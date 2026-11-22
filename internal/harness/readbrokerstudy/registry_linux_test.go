@@ -31,6 +31,42 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestClassifyFromRetainedDirectoryProtectsMovedOwnerAncestor(t *testing.T) {
+	root := t.TempDir()
+	ownerDir := filepath.Join(root, "owner")
+	if err := os.Mkdir(ownerDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Register(OwnerRegistration{Owner: "settings", Class: ClassSettings, Path: ownerDir, Directory: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(ownerDir, filepath.Join(root, "moved-owner")); err != nil {
+		t.Fatal(err)
+	}
+	parentPath := filepath.Join(root, "moved-owner", "nested")
+	if err := os.Mkdir(parentPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := os.Open(parentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+
+	class, protected, err := registry.ClassifyFromRetainedDirectory(filepath.Join(parentPath, "new.json"), FileIdentity{}, int(parent.Fd()))
+	if err != nil || !protected || class != ClassSettings {
+		t.Fatalf("moved protected ancestor classification = (%q, %t, %v); want settings protection", class, protected, err)
+	}
+	if _, _, err := registry.ClassifyFromRetainedDirectory(filepath.Join(parentPath, "new.json"), FileIdentity{}, -1); err == nil {
+		t.Fatal("invalid retained parent descriptor was treated as unprotected")
+	}
+}
+
 func TestExactFileRoutesAndPinnedIdentitiesUseCapturedClassification(t *testing.T) {
 	root := t.TempDir()
 	ordinary := filepath.Join(root, "ordinary.fixture")

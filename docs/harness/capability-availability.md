@@ -152,14 +152,15 @@ The accepted scope/owner-coverage design is recorded in
 [ADR-0009](../adr/0009-startup-directory-creation-scope.md): use the fixed CLI
 startup directory and existing subdirectories, with required coverage for
 components actually instantiated by the running chat. Ordinary existing
-project content does not require a scope-wide inventory. This design still
-has a first gated owner-profile/startup-input foundation: auth and settings
-are required, Token Logger/provider-source ingestion are explicitly declared
-not instantiated by trusted composition, and the launch directory is bound
-before runtime navigation. Retained directory identity and movement checks,
-new scope-specific evidence and separate enablement remain outstanding;
-creation remains unregistered and unavailable. See the [owner-profile
-foundation](issue-321-owner-profile.md).
+project content does not require a scope-wide inventory. The gated owner
+profile now retains a startup directory descriptor and checks fixed-scope
+identity, nested existing parents, protected-owner ancestry, and terminal
+movement for creation proposals. It applies only to the trusted Linux ext4
+profile with the operation-specific descriptor-bind worker profile. These
+changes are not model-facing: creation remains unregistered and unavailable.
+New trusted-host evidence for these claims and separate enablement approval
+remain outstanding. See the [owner-profile foundation](issue-321-owner-profile.md)
+and [native acceptance procedure](issue-321-native-acceptance.md).
 
 ## Runtime and UI reasons
 
