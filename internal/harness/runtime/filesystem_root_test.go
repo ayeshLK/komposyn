@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +34,15 @@ type filesystemRootHostFixture struct {
 	transitions   []FilesystemRootTransition
 	validate      func(context.Context, string) (string, error)
 	invalidate    func(context.Context, FilesystemRootTransition) error
+}
+
+type fixedCreationScopeHostFixture struct {
+	*filesystemRootHostFixture
+	status FixedCreationScopeStatus
+}
+
+func (h *fixedCreationScopeHostFixture) FixedCreationScopeStatus() FixedCreationScopeStatus {
+	return h.status
 }
 
 func (h *filesystemRootHostFixture) ValidateFilesystemRoot(ctx context.Context, path string) (string, error) {
@@ -67,7 +77,8 @@ func (h *filesystemRootHostFixture) transitionsSnapshot() []FilesystemRootTransi
 
 func newFilesystemRootTestChat(t *testing.T, host FilesystemRootHost) *Chat {
 	t.Helper()
-	chat, _ := makeChat(t, &fakeProvider{id: "openai"})
+	fp := &fakeProvider{id: "openai"}
+	chat, _ := makeChat(t, fp)
 	chat.toolRuntime = newToolRuntime(ToolRuntimeConfig{Registry: tools.NewRegistry(), RootHost: host})
 	return chat
 }
@@ -126,6 +137,52 @@ func TestFilesystemRootStartsUnsetAndSelectionIsNotPermission(t *testing.T) {
 	transitions := host.transitionsSnapshot()
 	if len(transitions) != 1 || transitions[0].Reason != FilesystemRootSelected || transitions[0].Root != canonicalRoot {
 		t.Fatalf("root transitions=%+v", transitions)
+	}
+}
+
+func TestCreationStatusKeepsTrustedStartupScopeSeparateFromNavigation(t *testing.T) {
+	startup := t.TempDir()
+	working := t.TempDir()
+	host := &fixedCreationScopeHostFixture{
+		filesystemRootHostFixture: &filesystemRootHostFixture{available: true, backendStatus: "fixture"},
+		status:                    FixedCreationScopeStatus{StartupDirectory: startup, State: "identity-retained", Generation: 1, OwnerCoverageComplete: true, Reason: "creation is not registered"},
+	}
+	fp := &fakeProvider{id: "openai"}
+	chat, _ := makeChat(t, fp)
+	chat.toolRuntime = newToolRuntime(ToolRuntimeConfig{Registry: tools.NewRegistry(), RootHost: host})
+	selectFirst(t, chat)
+	defer chat.Close()
+	if err := chat.InitializeWorkingDirectory(context.Background(), startup); err != nil {
+		t.Fatal(err)
+	}
+	before := chat.Snapshot()
+	if before.FilesystemCreationAvailability.Available || before.FilesystemCreationAvailability.State != "not_registered" {
+		t.Fatalf("unregistered creation status=%+v", before.FilesystemCreationAvailability)
+	}
+	if before.WorkingDirectory != startup || before.FilesystemCreationAvailability.Scope.StartupDirectory != startup {
+		t.Fatalf("startup and working directories were not represented independently: %+v", before)
+	}
+	if err := chat.ChangeWorkingDirectory(context.Background(), working); err != nil {
+		t.Fatal(err)
+	}
+	afterNavigation := chat.Snapshot()
+	if afterNavigation.WorkingDirectory != working || afterNavigation.FilesystemCreationAvailability.Scope.StartupDirectory != startup {
+		t.Fatalf("navigation changed the fixed creation scope: %+v", afterNavigation)
+	}
+	if _, err := chat.Send(context.Background(), "complete a turn before reset", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range fp.captured() {
+		if strings.Contains(request.Instructions, startup) {
+			t.Fatal("local startup-scope display path was sent to the provider")
+		}
+	}
+	if err := chat.ReplaceProfile(context.Background(), "profile", "Test profile", "replacement synthetic key", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	afterReset := chat.Snapshot()
+	if afterReset.FilesystemCreationAvailability.Scope.StartupDirectory != startup {
+		t.Fatalf("conversation reset recaptured creation scope: %+v", afterReset.FilesystemCreationAvailability.Scope)
 	}
 }
 

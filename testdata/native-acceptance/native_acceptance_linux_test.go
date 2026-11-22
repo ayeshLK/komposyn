@@ -529,7 +529,7 @@ func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
 		t.Fatal("encode synthetic creation request", err)
 	}
 	invocation := tools.Invocation{ConversationID: "native-nested", TurnID: "turn", ProviderCallID: "nested-create", ToolID: tools.CreateFileID, Arguments: arguments}
-	request, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile")
+	request, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile", "")
 	if err != nil {
 		t.Fatal("prepare nested creation through service", err)
 	}
@@ -577,7 +577,7 @@ func TestNativeServiceStartupRootMovementIsTerminal(t *testing.T) {
 		t.Fatal("encode movement request", err)
 	}
 	invocation := tools.Invocation{ConversationID: "native-root-move", TurnID: "turn", ProviderCallID: "move-call", ToolID: tools.CreateFileID, Arguments: arguments}
-	request, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile")
+	request, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile", "")
 	if err != nil {
 		t.Fatal("prepare before independent root move", err)
 	}
@@ -615,7 +615,7 @@ func TestNativeServiceStartupRootMovementIsTerminal(t *testing.T) {
 	}
 	invocation.ProviderCallID = "move-call-after-restore"
 	invocation.Arguments, _ = json.Marshal(tools.CreateFileInput{Path: "after-restore.txt", Content: "no replay"})
-	if _, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile"); !errors.Is(err, ErrStartupScopeMoved) {
+	if _, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile", ""); !errors.Is(err, ErrStartupScopeMoved) {
 		t.Fatalf("restored root cleared terminal movement state: %v", err)
 	}
 	r.StartupMoveTerminalAfterRestore = true

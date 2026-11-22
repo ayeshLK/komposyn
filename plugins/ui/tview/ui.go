@@ -772,10 +772,24 @@ func (u *terminal) updateBanner() {
 		readLabel += " · " + reason
 	}
 	toolStatus := renderToolAvailability(snapshot.UpdatePlanAvailability, snapshot.RequestInputAvailability, u.terminalWidth)
-	if u.terminalWidth > 0 {
-		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
+	creationScope := snapshot.FilesystemCreationAvailability.Scope.StartupDirectory
+	if creationScope == "" {
+		creationScope = "unavailable"
 	}
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(toolStatus)))
+	if u.terminalWidth > 0 {
+		if u.terminalWidth <= 72 {
+			workingDirectory = compactHeaderPath(workingDirectory, 11)
+			creationScope = compactHeaderPath(creationScope, 11)
+			planDetail := compactHeaderCapabilityDetail(snapshot.UpdatePlanAvailability)
+			creationDetail := compactHeaderCapabilityDetail(snapshot.FilesystemCreationAvailability.CapabilityAvailability)
+			u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working: %s · Scope: %s[-]\n[gray]Plan: %s · Creation: %s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(safeTerminalText(creationScope)), tv.Escape(planDetail), tv.Escape(creationDetail)))
+			return
+		}
+		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
+		creationScope = compactHeaderPath(creationScope, u.terminalWidth-20)
+	}
+	creationLabel := renderFilesystemCreationAvailability(snapshot.FilesystemCreationAvailability)
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]Creation scope: %s[-]\n[gray]%s[-] · [gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(safeTerminalText(creationScope)), tv.Escape(toolStatus), tv.Escape(creationLabel)))
 }
 
 func renderToolAvailability(plan, input ui.CapabilityAvailability, terminalWidth int) string {
@@ -815,6 +829,14 @@ func compactHeaderCapabilityDetail(status ui.CapabilityAvailability) string {
 		return "no model"
 	case "not_implemented":
 		return "not in build"
+	case "not_registered":
+		return "not registered"
+	case "scope_unavailable":
+		return "scope unavailable"
+	case "coverage_incomplete":
+		return "coverage incomplete"
+	case "startup_scope_moved":
+		return "restart required"
 	}
 	return "unavailable"
 }
@@ -890,6 +912,16 @@ func renderFilesystemReadAvailability(status ui.FilesystemReadAvailability) stri
 		return "File reading unavailable · availability has not been inspected."
 	}
 	return "File reading unavailable · " + safeTerminalText(status.Reason)
+}
+
+func renderFilesystemCreationAvailability(status ui.FilesystemCreationAvailability) string {
+	if status.Available {
+		return "File creation available · explicit once approval required"
+	}
+	if status.Reason == "" {
+		return "File creation unavailable · capability is not enabled"
+	}
+	return "File creation unavailable · " + safeTerminalText(status.Reason)
 }
 
 func renderPlan(steps []ui.PlanStep) string {
@@ -1294,9 +1326,14 @@ func (u *terminal) runCommand(text string) {
 	case "help":
 		snapshot := u.client.Snapshot()
 		readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
+		creationStatus := renderFilesystemCreationAvailability(snapshot.FilesystemCreationAvailability)
+		creationScope := snapshot.FilesystemCreationAvailability.Scope.StartupDirectory
+		if creationScope == "" {
+			creationScope = "unavailable"
+		}
 		planStatus := renderCapabilityAvailability("update_plan", snapshot.UpdatePlanAvailability)
 		inputStatus := renderCapabilityAvailability("request_user_input", snapshot.RequestInputAvailability)
-		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nFile reading: " + readStatus + " Each read needs once approval; approved contents may be sent to the provider and may recur.\nTool availability: " + planStatus + "; " + inputStatus + ". No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\nThe launch directory is the working directory for relative file requests. Use /cd <path>; selecting a directory grants no read permission.\n")
+		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nFile reading: " + readStatus + " Each read needs once approval; approved contents may be sent to the provider and may recur.\n" + creationStatus + "\nCreation scope: " + safeTerminalText(creationScope) + " (fixed at launch; /cd and conversation reset do not change it).\nTool availability: " + planStatus + "; " + inputStatus + ". No write/delete/shell capability is registered in normal chat.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\nThe working directory resolves relative paths. Selecting or displaying a directory grants no file access or write permission.\n")
 	case "working-directory":
 		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cd"))
 		if path == "" {

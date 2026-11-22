@@ -159,19 +159,32 @@ type CapabilityAvailability struct {
 	Reason    string
 }
 type FilesystemReadAvailability = CapabilityAvailability
+type FilesystemCreationScope struct {
+	StartupDirectory      string
+	State                 string
+	Generation            uint64
+	OwnerCoverageComplete bool
+	HostReady             bool
+	Reason                string
+}
+type FilesystemCreationAvailability struct {
+	CapabilityAvailability
+	Scope FilesystemCreationScope
+}
 type Snapshot struct {
-	Selected                   *Model
-	Turns                      []Turn
-	Usage                      []ModelUsage
-	Active                     bool
-	ActiveRequestID            string
-	ToolActivities             []ToolActivity
-	Plan                       []PlanStep
-	UpdatePlanAvailability     CapabilityAvailability
-	RequestInputAvailability   CapabilityAvailability
-	FilesystemReadAvailability FilesystemReadAvailability
-	WorkingDirectory           string
-	Version                    string
+	Selected                       *Model
+	Turns                          []Turn
+	Usage                          []ModelUsage
+	Active                         bool
+	ActiveRequestID                string
+	ToolActivities                 []ToolActivity
+	Plan                           []PlanStep
+	UpdatePlanAvailability         CapabilityAvailability
+	RequestInputAvailability       CapabilityAvailability
+	FilesystemReadAvailability     FilesystemReadAvailability
+	FilesystemCreationAvailability FilesystemCreationAvailability
+	WorkingDirectory               string
+	Version                        string
 }
 
 type Client interface {

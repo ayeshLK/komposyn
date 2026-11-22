@@ -82,12 +82,15 @@ type creationApprovalFixture struct {
 	closed   int
 }
 
-func (h *creationApprovalFixture) PrepareFilesystemCreation(_ context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
+func (h *creationApprovalFixture) PrepareFilesystemCreation(_ context.Context, invocation tools.Invocation, destination, workingDirectory string) (permissions.Request, error) {
 	input, err := tools.ParseCreateFile(invocation.Arguments)
 	if err != nil {
 		return permissions.Request{}, err
 	}
-	target := filepath.Join(h.root, filepath.FromSlash(input.Path))
+	if workingDirectory == "" {
+		workingDirectory = h.root
+	}
+	target := filepath.Join(workingDirectory, filepath.FromSlash(input.Path))
 	description := fmt.Sprintf("Create exact target %s (%d bytes) for %s. Complete diff:\n--- /dev/null\n+++ %s\n+%s", target, len(input.Content), destination, target, input.Content)
 	digest := sha256.Sum256([]byte(invocation.ConversationID + "\x00" + invocation.ProviderCallID + "\x00" + destination + "\x00" + target + "\x00" + input.Content))
 	return permissions.Request{

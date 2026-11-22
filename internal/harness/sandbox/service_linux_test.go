@@ -38,8 +38,10 @@ import (
 	"github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
+	harnessui "github.com/ayeshLK/komposyn/internal/harness/ui"
 	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/tools"
+	frontend "github.com/ayeshLK/komposyn/plugins/ui"
 	"golang.org/x/sys/unix"
 )
 
@@ -342,7 +344,7 @@ func TestCreationResolvesNestedTargetFromFixedStartupScopeAndRejectsChangedParen
 		t.Fatal(err)
 	}
 	invocation := tools.Invocation{ConversationID: "nested-create", TurnID: "turn", ProviderCallID: "nested-call", ToolID: tools.CreateFileID, Arguments: arguments}
-	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile")
+	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile", "")
 	if err != nil {
 		t.Fatalf("prepare nested creation: %v", err)
 	}
@@ -420,7 +422,7 @@ func TestCreationPreparationRejectsUnsupportedTargetsBeforeApproval(t *testing.T
 				t.Fatal(err)
 			}
 			invocation := tools.Invocation{ConversationID: "invalid-targets", TurnID: "turn", ProviderCallID: fmt.Sprintf("invalid-%d", i), ToolID: tools.CreateFileID, Arguments: arguments}
-			if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile"); err == nil {
+			if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile", ""); err == nil {
 				t.Fatal("unsupported target was offered for approval")
 			}
 		})
@@ -456,7 +458,7 @@ func TestStartupRootMoveAtPublicationCheckpointAbortsPreparedCreation(t *testing
 	}
 	invocation := tools.Invocation{ConversationID: "move-before-release", TurnID: "turn", ProviderCallID: "move-call", ToolID: tools.CreateFileID, Arguments: arguments}
 	launcher.invocation = invocation
-	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile")
+	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +570,7 @@ func TestRetainedStartupPreparationUsesCurrentAuthSettingsOwners(t *testing.T) {
 					return tools.Invocation{ConversationID: "current-owner-profile", TurnID: "turn", ProviderCallID: call, ToolID: tools.CreateFileID, Arguments: arguments}
 				}
 				invocation := makeInvocation("real-profile-approved")
-				request, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination)
+				request, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination, "")
 				if err != nil {
 					t.Fatalf("prepare with real %t auth/settings routes: %v", present, err)
 				}
@@ -584,7 +586,7 @@ func TestRetainedStartupPreparationUsesCurrentAuthSettingsOwners(t *testing.T) {
 				}
 
 				staleInvocation := makeInvocation("owner-rotation-invalidates-proposal")
-				staleRequest, err := service.PrepareFilesystemCreation(context.Background(), staleInvocation, destination)
+				staleRequest, err := service.PrepareFilesystemCreation(context.Background(), staleInvocation, destination, "")
 				if err != nil {
 					t.Fatalf("prepare before %s rotation: %v", rotatingOwner, err)
 				}
@@ -2764,7 +2766,7 @@ func TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce(t *t
 	}
 	invocation := tools.Invocation{ConversationID: "create-proposal", TurnID: "turn-1", ProviderCallID: "call-1", ToolID: tools.CreateFileID, Arguments: arguments}
 	destination := "openai/model-a/profile"
-	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination)
+	request, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination, "")
 	if err != nil {
 		t.Fatalf("prepare proposal: %v", err)
 	}
@@ -2799,7 +2801,7 @@ func TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce(t *t
 		t.Fatal(err)
 	}
 	invocation.ProviderCallID = "call-2"
-	if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination); err == nil {
+	if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination, ""); err == nil {
 		t.Fatal("existing destination was offered for approval")
 	}
 	if got, err := os.ReadFile(target); err != nil || string(got) != "incumbent" {
@@ -2814,7 +2816,7 @@ func TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination); !errors.Is(err, ErrCoverageMissing) {
+	if _, err := service.PrepareFilesystemCreation(context.Background(), invocation, destination, ""); !errors.Is(err, ErrCoverageMissing) {
 		t.Fatalf("absent reserved protected route was offered: %v", err)
 	}
 }
@@ -2896,6 +2898,255 @@ func TestCreationRuntimeServiceCompositionReachesBoundedWorkerWithoutPublishingO
 	}
 	if !launcher.joined || strings.Join(launcher.events, ",") != "launch,ready,stage,terminate,wait" {
 		t.Fatalf("worker retirement/order: joined=%t events=%v", launcher.joined, launcher.events)
+	}
+}
+
+func TestCreationApprovalDiffIdentifiesEmptyFileCreation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "empty.txt")
+	diff := creationApprovalDiff(target, "openai/model-a/profile", nil)
+	for _, expected := range []string{
+		"Create " + target + " (0 bytes) for openai/model-a/profile",
+		"--- /dev/null",
+		"+++ " + target,
+	} {
+		if !strings.Contains(diff, expected) {
+			t.Errorf("empty-file approval diff omitted %q: %q", expected, diff)
+		}
+	}
+	lines := strings.Split(diff, "\n")
+	if len(lines) != 4 || lines[3] != "" {
+		t.Fatalf("empty-file approval diff has unexpected content lines: %q", diff)
+	}
+}
+
+func TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge(t *testing.T) {
+	if goruntime.GOARCH != "amd64" {
+		t.Skip("the startup-scope behavioral composition follows the measured amd64 profile")
+	}
+	root := t.TempDir()
+	nested := filepath.Join(root, "existing", "nested")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &filesystemCreationFixtureLauncher{}
+	service, err := newTestHostServiceWithLauncher(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher.service = service
+	service.captureStartupDirectory(root)
+	if state := service.CreationFoundationSnapshot().StartupScope.State; state != StartupScopeIdentityRetained {
+		t.Skipf("host filesystem does not meet the fixed-scope behavioral fixture prerequisite: %s", service.CreationFoundationSnapshot().StartupScope.Reason)
+	}
+
+	authStore := auth.Store{Path: filepath.Join(t.TempDir(), "auth.json"), Protection: service}
+	settingsStore := settings.Store{Path: filepath.Join(t.TempDir(), "settings.json"), Protection: service}
+	if err := authStore.RegisterProtection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.RegisterProtection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reserved := service.CreationFoundationSnapshot()
+	if !reserved.OwnerCoverageComplete {
+		t.Fatalf("trusted auth/settings reservations are not complete while their files are absent: %+v", reserved)
+	}
+	for _, owner := range reserved.Owners {
+		if owner.Disposition == CreationOwnerRequired && (owner.Routes == 0 || owner.Identities != 0) {
+			t.Fatalf("absent required owner was not represented as a reserved route: %+v", owner)
+		}
+	}
+	bridge := harnessui.NewApprovalBridge()
+	base := runtime.BundledConversationToolRuntimeConfig(bridge, runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+	}))
+	if _, ok := base.Registry.Lookup(tools.CreateFileID); ok {
+		t.Fatal("normal bundled composition registered creation")
+	}
+	config := runtime.WithBoundedCreationPrototype(base, service)
+	if config.Registry == nil {
+		t.Fatal("explicit test-only creation composition was not accepted")
+	}
+	config.ReadAdmission = service
+	config.RootHost = service
+
+	fp := &creationServiceProvider{input: tools.CreateFileInput{Path: "created.txt", Content: "first approved line\nsecond approved line\n"}}
+	fp.script = func(index int) (tools.CreateFileInput, error) {
+		if index == 0 || index == 2 || index == 4 {
+			return fp.input, nil
+		}
+		return tools.CreateFileInput{}, nil
+	}
+	providers, err := model.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := runtime.NewChatWithToolRuntime(providers, authStore, nil, config)
+	if err := chat.AddProfile(context.Background(), "profile", string(provider.OpenAI), "Fixture", "synthetic credential", nil); err != nil {
+		t.Fatal(err)
+	}
+	selection := chat.Discover(context.Background())
+	if len(selection.Models) == 0 {
+		t.Fatal("provider discovery returned no model")
+	}
+	if err := chat.Select(context.Background(), selection.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	normalConfig := runtime.BundledConversationToolRuntimeConfig(runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalDeny, "", nil
+	}), runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+	}))
+	normalConfig.RootHost = service
+	normalChat := runtime.NewChatWithToolRuntime(providers, authStore, nil, normalConfig)
+	normalModels := normalChat.Discover(context.Background())
+	if len(normalModels.Models) == 0 {
+		t.Fatal("normal composition provider discovery returned no model")
+	}
+	if err := normalChat.Select(context.Background(), normalModels.Models[0].Key(), false); err != nil {
+		t.Fatal(err)
+	}
+	normalStatus := normalChat.Snapshot().FilesystemCreationAvailability
+	if normalStatus.Available || normalStatus.State != "not_registered" || normalStatus.Scope.StartupDirectory != root || !normalStatus.Scope.OwnerCoverageComplete {
+		t.Fatalf("complete retained scope made normal creation appear enabled: %+v", normalStatus)
+	}
+	impl := service.impl.(*linuxImplementation)
+	impl.mu.Lock()
+	impl.creationPrototypeEnabled = true // test-only gate; never wired by cmd/harness
+	impl.mu.Unlock()
+	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	client := harnessui.Client{Chat: chat, ProfileStore: authStore, Approval: bridge}
+	defer func() {
+		normalChat.Close()
+		chat.Close()
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close host service: %v", err)
+		}
+	}()
+
+	initial := client.Snapshot()
+	if initial.WorkingDirectory != root || initial.FilesystemCreationAvailability.Scope.StartupDirectory != root {
+		t.Fatalf("startup scope and working directory are not separately visible: %+v", initial)
+	}
+	if !initial.FilesystemCreationAvailability.Available || !initial.FilesystemCreationAvailability.Scope.OwnerCoverageComplete {
+		t.Fatalf("eligible test composition did not report its gated availability: %+v", initial.FilesystemCreationAvailability)
+	}
+	if len(chat.ToolGrants()) != 0 {
+		t.Fatal("startup scope selection granted file access or write permission")
+	}
+	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	type sendResult struct {
+		turn frontend.Turn
+		err  error
+	}
+
+	outside := t.TempDir()
+	if err := client.ChangeWorkingDirectory(context.Background(), outside); err != nil {
+		t.Fatal(err)
+	}
+	afterNavigation := client.Snapshot()
+	if afterNavigation.WorkingDirectory != outside || afterNavigation.FilesystemCreationAvailability.Scope.StartupDirectory != root {
+		t.Fatalf("navigation changed fixed scope or did not change working directory: %+v", afterNavigation)
+	}
+	outsideDone := make(chan sendResult, 1)
+	go func() {
+		turn, sendErr := client.Send(sendCtx, "try creating from outside the fixed scope", nil)
+		outsideDone <- sendResult{turn: turn, err: sendErr}
+	}()
+	select {
+	case outsideResult := <-outsideDone:
+		if outsideResult.err != nil || outsideResult.turn.Outcome != provider.OutcomeCompleted || len(outsideResult.turn.ToolActivities) != 1 || outsideResult.turn.ToolActivities[0].Outcome == string(tools.OutcomeSucceeded) {
+			t.Fatalf("creation request navigated outside fixed scope: turn=%+v err=%v", outsideResult.turn, outsideResult.err)
+		}
+	case <-sendCtx.Done():
+		t.Fatalf("out-of-scope proposal did not refuse before approval: %v", sendCtx.Err())
+	}
+	select {
+	case event := <-client.ApprovalEvents():
+		t.Fatalf("out-of-scope creation reached approval: %+v", event)
+	default:
+	}
+	if _, err := os.Lstat(filepath.Join(nested, "created.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("out-of-scope proposal changed the startup scope: %v", err)
+	}
+	if err := client.ChangeWorkingDirectory(context.Background(), nested); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan sendResult, 1)
+	go func() {
+		turn, sendErr := client.Send(sendCtx, "propose a file that I will deny", nil)
+		done <- sendResult{turn: turn, err: sendErr}
+	}()
+	deniedEvent := <-client.ApprovalEvents()
+	if deniedEvent.Request == nil {
+		t.Fatal("host did not send the denied proposal to the UI")
+	}
+	if err := client.RespondApproval(frontend.ApprovalResponse{ID: deniedEvent.Request.ID, Choice: frontend.ApprovalDeny}); err != nil {
+		t.Fatalf("deny response: %v", err)
+	}
+	var denied sendResult
+	select {
+	case denied = <-done:
+	case <-sendCtx.Done():
+		t.Fatalf("denied proposal did not retire: %v", sendCtx.Err())
+	}
+	if denied.err != nil || denied.turn.Outcome != provider.OutcomeCompleted {
+		t.Fatalf("denied proposal turn=%+v err=%v", denied.turn, denied.err)
+	}
+	wantTarget := filepath.Join(nested, "created.txt")
+	if _, err := os.Lstat(wantTarget); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deny produced a file effect: %v", err)
+	}
+	if dismissed := <-client.ApprovalEvents(); dismissed.DismissedID != deniedEvent.Request.ID {
+		t.Fatalf("denied approval dismissal event=%+v", dismissed)
+	}
+	done = make(chan sendResult, 1)
+	go func() {
+		turn, sendErr := client.Send(sendCtx, "propose the file again for explicit review", nil)
+		done <- sendResult{turn: turn, err: sendErr}
+	}()
+
+	var request *frontend.ApprovalRequest
+	select {
+	case event := <-client.ApprovalEvents():
+		request = event.Request
+	case <-sendCtx.Done():
+		t.Fatalf("real host preparation did not reach the UI approval boundary: %v", sendCtx.Err())
+	}
+	if request == nil || request.ToolID != string(tools.CreateFileID) || request.Provider != string(provider.OpenAI) || request.Model != "model-a" || request.AuthProfile != "profile" || request.AllowConversation {
+		t.Fatalf("approval did not bind the exact provider destination and once semantics: request=%+v", request)
+	}
+	diff := request.Requirements[0].Description
+	for _, exact := range []string{wantTarget, "openai/model-a/profile", "--- /dev/null", "+++ " + wantTarget, "+first approved line", "+second approved line"} {
+		if !strings.Contains(diff, exact) {
+			t.Errorf("complete approval diff omitted %q: %s", exact, diff)
+		}
+	}
+	if request.Requirements[1].ResourceScope != wantTarget {
+		t.Fatalf("approval target=%q want=%q", request.Requirements[1].ResourceScope, wantTarget)
+	}
+	if _, err := os.Lstat(wantTarget); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target exists before once approval: %v", err)
+	}
+	if err := client.RespondApproval(frontend.ApprovalResponse{ID: request.ID, Choice: frontend.ApprovalOnce}); err != nil {
+		t.Fatalf("explicit once response: %v", err)
+	}
+	var result sendResult
+	select {
+	case result = <-done:
+	case <-sendCtx.Done():
+		t.Fatalf("approved host operation did not finish: %v", sendCtx.Err())
+	}
+	if result.err != nil || result.turn.Outcome != provider.OutcomeCompleted || len(result.turn.ToolActivities) != 1 || result.turn.ToolActivities[0].Outcome != string(tools.OutcomeSucceeded) {
+		t.Fatalf("approved creation turn=%+v err=%v worker events=%v", result.turn, result.err, launcher.events)
+	}
+	got, err := os.ReadFile(wantTarget)
+	if err != nil || string(got) != fp.input.Content {
+		t.Fatalf("created bytes=%q err=%v want=%q", got, err, fp.input.Content)
 	}
 }
 
@@ -3331,6 +3582,12 @@ type filesystemCreationFixtureLauncher struct {
 	releaseEffectResult chan struct{}
 }
 
+// CreationProfileAvailable is a test-only declaration for the behavioral
+// fixture. It does not establish native enforcement evidence.
+func (*filesystemCreationFixtureLauncher) CreationProfileAvailable() bool {
+	return goruntime.GOARCH == "amd64"
+}
+
 func (*filesystemCreationFixtureLauncher) Start(context.Context) (readbrokerstudy.SandboxWorker, error) {
 	return nil, readbrokerstudy.ErrUnavailable
 }
@@ -3643,7 +3900,7 @@ func (p *creationServiceProvider) StreamChat(_ context.Context, _ provider.ChatR
 	if callIndex == p.continuationFailureAt && p.continuationFailureAt > 0 {
 		return provider.Result{}, &provider.Error{Outcome: provider.OutcomeService}
 	}
-	if p.repeatCallID == "" && (p.script == nil && p.calls > 1 || p.script != nil && (callIndex == 1 || callIndex == 3)) {
+	if p.repeatCallID == "" && (p.script == nil && p.calls > 1 || p.script != nil && callIndex%2 == 1) {
 		message, _ := json.Marshal(map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "done"}}})
 		return provider.Result{Outcome: provider.OutcomeCompleted, Completion: provider.CompletionFinal, Text: "done", Native: []json.RawMessage{message}}, nil
 	}

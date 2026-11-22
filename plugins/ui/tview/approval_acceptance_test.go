@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,6 +330,82 @@ func TestReadApprovalConversationJourney(t *testing.T) {
 	}
 }
 
+func TestCreationApprovalShowsCompleteDiffAndDestinationInScrollablePanel(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "nested", "approved.txt")
+	lines := make([]string, 24)
+	var diff strings.Builder
+	for i := 1; i <= 24; i++ {
+		lines[i-1] = fmt.Sprintf("approved line %02d", i)
+	}
+	content := strings.Join(lines, "\n")
+	fmt.Fprintf(&diff, "Create %s (%d bytes) for openai/model-a/profile. Complete diff:\n--- /dev/null\n+++ %s", target, len(content), target)
+	for _, line := range lines {
+		fmt.Fprintf(&diff, "\n+%s", line)
+	}
+	request := &frontend.ApprovalRequest{
+		ID:              "creation-approval",
+		ToolID:          string(tools.CreateFileID),
+		ToolDescription: "apply_patch requested access",
+		Provider:        "openai", Model: "model-a", AuthProfile: "profile",
+		Requirements: []frontend.ApprovalRequirement{
+			{Kind: "action", ToolID: string(tools.CreateFileID), Operation: "write", Description: diff.String()},
+			{Kind: "resource", ToolID: string(tools.CreateFileID), Operation: "write", ResourceKind: "filesystem", ResourceScope: target, Description: "Create this exact target once"},
+		},
+	}
+	client := &clientStub{approvalEvents: make(chan frontend.ApprovalEvent, 1), approvalResponses: make(chan frontend.ApprovalResponse, 1)}
+	client.approvalEvents <- frontend.ApprovalEvent{Request: request}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(84, 20)
+	safe := &synchronizedSimulation{SimulationScreen: screen}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- (Plugin{screen: safe}).Run(ctx, client) }()
+	waitForScreen(t, safe, "Tool approval", "")
+	waitForScreen(t, safe, "Provider destination: openai", "")
+	waitForScreen(t, safe, "model model-a", "")
+	destinationDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(destinationDeadline) {
+		visible := strings.Join(strings.Fields(approvalDetailsOnScreen(safe)), "")
+		if strings.Contains(visible, "authenticationprofileprofile") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if visible := strings.Join(strings.Fields(approvalDetailsOnScreen(safe)), ""); !strings.Contains(visible, "authenticationprofileprofile") {
+		t.Fatalf("approval did not show the complete authentication destination: %q", visible)
+	}
+	press := func(key tcell.Key) {
+		screen.InjectKey(key, 0, tcell.ModNone)
+		time.Sleep(30 * time.Millisecond)
+	}
+	press(tcell.KeyEnd)
+	press(tcell.KeyEnd)
+	visibleBottom := strings.NewReplacer("\\\\", "\\").Replace(approvalDetailsOnScreen(safe))
+	visibleBottomCompact := strings.Join(strings.Fields(visibleBottom), "")
+	if !strings.Contains(visibleBottomCompact, "approvedline24") || !strings.Contains(visibleBottomCompact, strings.ReplaceAll(target, " ", "")) {
+		t.Fatalf("scrollable creation approval omitted the end of the complete diff or exact target: %q", visibleBottom)
+	}
+	press(tcell.KeyHome)
+	press(tcell.KeyPgDn)
+	visibleHeader := strings.Join(strings.Fields(approvalDetailsOnScreen(safe)), "")
+	if !strings.Contains(visibleHeader, "---/dev/null") || !strings.Contains(visibleHeader, "+++") {
+		t.Fatalf("scrolling omitted the creation diff header: %q", visibleHeader)
+	}
+	press(tcell.KeyPgDn)
+	visibleTop := strings.NewReplacer("\\\\", "\\").Replace(approvalDetailsOnScreen(safe))
+	visibleTopCompact := strings.Join(strings.Fields(visibleTop), "")
+	if !strings.Contains(visibleTopCompact, "approvedline01") {
+		t.Fatalf("scrolling to the beginning omitted the creation diff header/content: %q", visibleTop)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not stop after context cancellation")
+	}
+}
+
 func waitForExactTarget(t *testing.T, screen *synchronizedSimulation, target string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -364,7 +441,10 @@ func approvalDetailsOnScreen(screen *synchronizedSimulation) string {
 		rows[y] = row.String()
 	}
 	for titleRow, row := range rows {
-		title := strings.Index(row, "Review read approval")
+		title := strings.Index(row, "Review approval")
+		if title < 0 {
+			title = strings.Index(row, "Review read approval")
+		}
 		if title < 0 {
 			continue
 		}

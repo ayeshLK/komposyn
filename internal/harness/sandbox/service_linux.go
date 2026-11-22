@@ -77,6 +77,17 @@ type linuxImplementation struct {
 	selectedRootGeneration               uint64
 }
 
+func (impl *linuxImplementation) creationHostStatus() (ready, pending bool) {
+	if impl == nil {
+		return false, false
+	}
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
+	pending = impl.creationBarrier != nil || impl.pendingOwners.Load() != 0 || len(impl.blocked) != 0
+	ready = impl.creationPrototypeEnabled && !impl.closed && !pending
+	return ready, impl.creationBarrier != nil
+}
+
 type creationRootBinding struct {
 	root, conversation  string
 	target              string
@@ -1538,7 +1549,7 @@ func (s *Service) validateCreationOwnerProfile(scopeIdentity readbrokerstudy.Fil
 
 // PrepareFilesystemCreation is the explicit fixture-only runtime seam. The
 // normal cmd/harness composition never registers or wraps this operation.
-func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
+func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tools.Invocation, destination, workingDirectory string) (permissions.Request, error) {
 	if ctx == nil || s == nil || s.impl == nil || invocation.ToolID != tools.CreateFileID || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
 		return permissions.Request{}, ErrServiceClosed
 	}
@@ -1551,9 +1562,16 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 		s.rootMu.Unlock()
 		return permissions.Request{}, ErrCoverageMissing
 	}
-	workingDirectory, rootGeneration := s.rootPath, s.rootGeneration
+	startupDirectory, rootGeneration := s.rootPath, s.rootGeneration
 	s.rootMu.Unlock()
-	scope, scopeRoot, scopeIdentity, scopeGeneration, startupScope, err := s.creationScopeForInvocation(workingDirectory)
+	if workingDirectory == "" {
+		workingDirectory = startupDirectory
+	}
+	workingDirectory, err = runtime.CanonicalFilesystemRoot(ctx, workingDirectory)
+	if err != nil {
+		return permissions.Request{}, err
+	}
+	scope, scopeRoot, scopeIdentity, scopeGeneration, startupScope, err := s.creationScopeForInvocation(startupDirectory)
 	if err != nil {
 		return permissions.Request{}, err
 	}
@@ -1607,7 +1625,7 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 		{Kind: permissions.RequirementAction, Key: "create", ToolID: string(tools.CreateFileID), Description: diff, Operation: permissions.OperationWrite, ActionKey: "bounded-create-once"},
 		{Kind: permissions.RequirementResource, Key: "target", ToolID: string(tools.CreateFileID), Description: "Create this exact target once", Operation: permissions.OperationWrite, Resource: &permissions.ResourceRequest{Kind: permissions.ResourceFilesystem, Target: target, Operation: permissions.OperationWrite}},
 	}}
-	proposal := &serviceCreationProposal{invocation: invocation, request: request, input: input, parent: parent, parentIdentity: parentIdentity, root: workingDirectory, rootGeneration: rootGeneration, target: target, scopeRoot: scopeRoot, parentRelative: parentRelative, leaf: leaf, scopeGeneration: scopeGeneration, scopeIdentity: scopeIdentity, startupScope: startupScope, coverageRevision: coverageRevision, policyRevision: policyRevision, stageName: stageName}
+	proposal := &serviceCreationProposal{invocation: invocation, request: request, input: input, parent: parent, parentIdentity: parentIdentity, root: startupDirectory, rootGeneration: rootGeneration, target: target, scopeRoot: scopeRoot, parentRelative: parentRelative, leaf: leaf, scopeGeneration: scopeGeneration, scopeIdentity: scopeIdentity, startupScope: startupScope, coverageRevision: coverageRevision, policyRevision: policyRevision, stageName: stageName}
 	key := invocation.ConversationID + "\x00" + invocation.ProviderCallID
 	impl.mu.Lock()
 	if impl.closed || !impl.creationPrototypeEnabled || impl.creationBarrier != nil {

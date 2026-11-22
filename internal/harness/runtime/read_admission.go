@@ -137,7 +137,7 @@ type FilesystemSearchAvailability interface {
 // The host owns proposal identity, protected coverage, retained parent state,
 // barrier acquisition, worker execution and cleanup.
 type FilesystemCreationPrototypeHost interface {
-	PrepareFilesystemCreation(context.Context, tools.Invocation, string) (permissions.Request, error)
+	PrepareFilesystemCreation(context.Context, tools.Invocation, string, string) (permissions.Request, error)
 	PrepareApprovedFilesystemCreation(context.Context, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error)
 }
 
@@ -151,6 +151,10 @@ type FilesystemCreationProposalDiscarder interface {
 
 type filesystemCreationDestinationAuthorizer interface {
 	PrepareForDestination(context.Context, tools.Invocation, string) (permissions.Request, error)
+}
+
+type filesystemCreationWorkingDirectoryAuthorizer interface {
+	PrepareForDestinationAt(context.Context, tools.Invocation, string, string) (permissions.Request, error)
 }
 
 type filesystemReadExecutionAuthority struct {

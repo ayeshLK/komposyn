@@ -1,7 +1,7 @@
 # Temporary chat capability availability
 
-Evidence reviewed 2026-11-21. This matrix describes the bundled temporary
-chat routes and its current four capabilities. “Supported” describes the
+Evidence reviewed 2026-11-22. This matrix describes the bundled temporary
+chat routes and its current capabilities. “Supported” describes the
 provider protocol implementation and fixture-backed contract; it does not
 grant permission to execute a tool. Runtime availability also requires the
 host authorization, approval, and enforcement composition. No capability
@@ -47,6 +47,7 @@ filesystem access.
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `list_files` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement; live listing is not verified | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `search_files` | Conditional: trusted Linux amd64 Bubblewrap descriptor-bind profile, complete owner coverage, ext4 selected directory, and explicit once approval | Conditional under the same host and ext4 requirements for catalog-listed OAuth models; no live search-provider journey is claimed | Conditional under the same host and ext4 requirements; no live search-provider journey is claimed | Unimplemented route |
+| `apply_patch` creation | Unavailable: normal chat does not register it; the explicit test composition is not shipped | Unavailable: normal chat does not register it | Unavailable: normal chat does not register it | Unimplemented route |
 
 `list_files` is registered only when the Linux host has inspected the trusted
 Bubblewrap backend and composed the fixed worker. The runtime additionally
@@ -134,19 +135,25 @@ shipped-binary acceptance. See [the search design note](search-files-design.md)
 and [#318 completion matrix](issue-318-search-completion.md) for exact
 provenance and profile limits.
 
-`create_file` is not available in any provider route or production runtime.
-Issue #321's fixture-only prototype has a retained-parent proposal path, a
-synthetic complete-owner gate, a read barrier, and a fixed Linux worker using
-stage-plus-`RENAME_NOREPLACE`. A trusted-host run recorded 12/12 scoped native
-cases on Linux amd64/local ext4 with root-owned Bubblewrap 0.9.0 and
-`ro-bind-fd`; see the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md)
-for source, report, manifest and archive hashes. Runtime tests additionally
-cover read/list/search draining, delayed close/root retirement, exact content
-limits and unknown-outcome no-replay. This evidence does not establish
-production owner coverage, other filesystems/platforms, syscall interruption,
-or general same-user isolation. Separate enablement approval has not been
-recorded, and the production capability remains closed. See [the issue #321
-native acceptance procedure](issue-321-native-acceptance.md) and
+`apply_patch` creation remains unavailable in normal chat and all shipped
+provider routes. The bundled UI now reports the trusted startup directory
+separately from the navigable working directory and says creation is
+unavailable because the normal registry does not contain the capability. The
+test-only composition connects the retained-startup Service path to the
+existing runtime authorization and UI approval bridge; its behavioral test
+uses real auth/settings lifecycle registration and checks the exact target,
+multiline diff, provider/model/profile destination and approved bytes. A
+detached scope status is descriptive only and never supplies authority.
+
+The earlier native run recorded 12/12 scoped cases at source
+`dbfd90974f0979832a9abc60e32aeb3c87399840` on Linux amd64/local ext4 with
+root-owned Bubblewrap 0.9.0 and `ro-bind-fd`; it predates the fixed startup
+scope and runtime/UI integration and does not establish those claims. New
+trusted-host startup-scope native evidence, integrated lifecycle review and
+separate explicit enablement remain required. Other filesystems/platforms,
+syscall interruption and general same-user isolation remain unsupported or
+unestablished. See the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md),
+[native acceptance procedure](issue-321-native-acceptance.md), and
 [creation integration protocol](creation-integration-protocol.md).
 The accepted scope/owner-coverage design is recorded in
 [ADR-0009](../adr/0009-startup-directory-creation-scope.md): use the fixed CLI

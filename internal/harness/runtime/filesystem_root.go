@@ -66,6 +66,29 @@ type FilesystemRootHost interface {
 	BackendStatus() (available bool, detail string)
 }
 
+// FixedCreationScopeStatus is detached, descriptive state for the directory
+// captured by trusted CLI startup. It is safe for local UI presentation only;
+// it contains no handle and is never an authorization input.
+type FixedCreationScopeStatus struct {
+	StartupDirectory      string
+	State                 string
+	Generation            uint64
+	OwnerCoverageComplete bool
+	HostReady             bool
+	Reason                string
+}
+
+// FixedCreationScopeStatusHost exposes a local status view of the retained
+// startup scope. Implementations must not treat reads of this view as grants.
+type FixedCreationScopeStatusHost interface {
+	FixedCreationScopeStatus() FixedCreationScopeStatus
+}
+
+type FilesystemCreationAvailability struct {
+	CapabilityAvailability
+	Scope FixedCreationScopeStatus
+}
+
 // FilesystemRootStatus contains only detached UI-safe state. BackendAvailable
 // means host inspection found the candidate backend; it does not mean a worker
 // has enforced policy or that reads are enabled.
