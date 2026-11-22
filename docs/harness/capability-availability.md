@@ -148,9 +148,13 @@ or general same-user isolation. Separate enablement approval has not been
 recorded, and the production capability remains closed. See [the issue #321
 native acceptance procedure](issue-321-native-acceptance.md) and
 [creation integration protocol](creation-integration-protocol.md).
-The next proposed scope/owner-coverage decision is documented in
-[ADR-0009](../adr/0009-proposed-host-managed-creation-scope.md); it is not
-accepted and does not change this unavailable status.
+The accepted scope/owner-coverage design is recorded in
+[ADR-0009](../adr/0009-startup-directory-creation-scope.md): use the fixed CLI
+startup directory and existing subdirectories, with required coverage for
+components actually instantiated by the running chat. Ordinary existing
+project content does not require a scope-wide inventory. This design still
+needs gated implementation, new scope-specific evidence and a separate
+enablement PR; creation remains unavailable.
 
 ## Runtime and UI reasons
 
