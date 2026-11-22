@@ -262,16 +262,105 @@ func TestCreationFoundationUsesTrustedOwnersAndFixedStartupScope(t *testing.T) {
 	if !foundUnknown {
 		t.Fatalf("unknown owner was not surfaced in the snapshot: %+v", withUndeclaredOwner.Owners)
 	}
+}
+
+func TestCreationFoundationRejectsStaleCoordinatorOwnerAndRefreshes(t *testing.T) {
+	service, err := newTestHostServiceWithStartupDirectory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
+	for owner, class := range map[string]string{
+		auth.SensitiveOwnerAuth:     auth.SensitiveClassAuth,
+		auth.SensitiveOwnerSettings: auth.SensitiveClassSettings,
+	} {
+		if err := service.Protect(context.Background(), owner, class, filepath.Join(t.TempDir(), owner+".json"), nil); err != nil {
+			t.Fatalf("register %s owner: %v", owner, err)
+		}
+	}
+	baseline := service.CreationFoundationSnapshot()
+	if !baseline.OwnerCoverageComplete {
+		t.Fatalf("test precondition is not complete owner coverage: %+v", baseline)
+	}
+
+	impl := service.impl.(*linuxImplementation)
 	impl.mu.Lock()
-	priorAuthCoverage := impl.owners[auth.SensitiveOwnerAuth]
-	priorAuthCoverage.State = OwnerStale
-	priorAuthCoverage.Reason = "test stale registration revision"
-	impl.owners[auth.SensitiveOwnerAuth] = priorAuthCoverage
+	coordinator := impl.session
 	impl.mu.Unlock()
+	coordinatorBaseline := coordinator.CoverageSnapshot()
+	if !coordinatorBaseline.Complete {
+		t.Fatalf("authoritative coordinator precondition is incomplete: %+v", coordinatorBaseline)
+	}
+	// CoverageInventory currently has no recoverable stale state of its own.
+	// Exercise the host adapter with a coordinator-published stale snapshot after
+	// real registrations, then publish a newer complete snapshot for recovery.
+	// This keeps the tested status authoritative to Service.CoverageSnapshot
+	// without mutating linuxImplementation.owners behind that coordinator.
+	staleSnapshot := coordinatorBaseline
+	staleSnapshot.Revision++
+	staleSnapshot.Complete = false
+	staleSnapshot.Requirements = append([]readbrokerstudy.OwnerCoverage(nil), coordinatorBaseline.Requirements...)
+	foundAuth := false
+	for index := range staleSnapshot.Requirements {
+		owner := &staleSnapshot.Requirements[index]
+		if owner.Owner == auth.SensitiveOwnerAuth {
+			owner.Complete = false
+			owner.UnavailableReason = "authoritative owner revision is stale"
+			foundAuth = true
+		}
+	}
+	if !foundAuth {
+		t.Fatalf("auth missing from coordinator baseline: %+v", coordinatorBaseline)
+	}
+	override := &coverageSnapshotCoordinator{HostCoordinator: coordinator, snapshot: staleSnapshot}
+	impl.mu.Lock()
+	impl.session = override
+	impl.mu.Unlock()
+
+	staleCoverage := service.CoverageSnapshot()
+	assertOwnerState(t, staleCoverage, OwnerStale)
 	stale := service.CreationFoundationSnapshot()
 	if stale.OwnerCoverageComplete {
-		t.Fatal("stale owner registration was reported as current creation coverage")
+		t.Fatalf("stale authoritative owner coverage was accepted: %+v", stale)
 	}
+	assertCreationOwnerStatus(t, stale, auth.SensitiveOwnerAuth, OwnerStale)
+
+	refreshedSnapshot := coordinatorBaseline
+	refreshedSnapshot.Revision = staleSnapshot.Revision + 1
+	override.snapshot = refreshedSnapshot
+	refreshed := service.CreationFoundationSnapshot()
+	if !refreshed.OwnerCoverageComplete || refreshed.CoverageRevision <= stale.CoverageRevision {
+		t.Fatalf("successful authoritative refresh did not restore current coverage: stale=%+v refreshed=%+v", stale, refreshed)
+	}
+	assertCreationOwnerStatus(t, refreshed, auth.SensitiveOwnerAuth, OwnerRegistered)
+}
+
+type coverageSnapshotCoordinator struct {
+	readbrokerstudy.HostCoordinator
+	snapshot readbrokerstudy.CoverageSnapshot
+}
+
+func (c *coverageSnapshotCoordinator) CoverageSnapshot() readbrokerstudy.CoverageSnapshot {
+	snapshot := c.snapshot
+	snapshot.Requirements = append([]readbrokerstudy.OwnerCoverage(nil), c.snapshot.Requirements...)
+	return snapshot
+}
+
+func assertCreationOwnerStatus(t *testing.T, snapshot CreationFoundationSnapshot, owner string, want OwnerState) {
+	t.Helper()
+	for _, status := range snapshot.Owners {
+		if status.Owner == owner {
+			if status.State != want {
+				t.Fatalf("creation owner %q state=%q want=%q snapshot=%+v", owner, status.State, want, snapshot)
+			}
+			return
+		}
+	}
+	t.Fatalf("creation owner %q missing from snapshot: %+v", owner, snapshot)
 }
 
 func TestUnsupportedStartupCreationProfileDoesNotBlockHostStartup(t *testing.T) {
