@@ -512,6 +512,9 @@ func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
 	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
 		t.Fatal("real auth/settings owner lifecycle is not complete")
 	}
+	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: "native-nested", Root: f.root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal("select runtime lookup directory", err)
+	}
 	parent, err := os.Open(nested)
 	if err != nil {
 		t.Fatal("open nested evidence parent", err)
@@ -530,7 +533,7 @@ func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
 	if err != nil {
 		t.Fatal("prepare nested creation through service", err)
 	}
-	want := filepath.Join(nested, input.Path)
+	want := filepath.Join(f.root, filepath.FromSlash(input.Path))
 	if request.Requirements[1].Resource == nil || request.Requirements[1].Resource.Target != want {
 		t.Fatal("approval was not bound to the exact nested target")
 	}
