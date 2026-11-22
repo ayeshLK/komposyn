@@ -1894,14 +1894,27 @@ func TestBannerLayoutShowsCreationStatusAtWideAndNarrowWidths(t *testing.T) {
 		rows     int
 		wantRow  int
 		wantText string
+		client   *clientStub
 	}{
 		{name: "wide", width: 240, rows: expandedHeaderRows, wantRow: 4, wantText: "File creation unavailable"},
-		{name: "narrow", width: 50, rows: compactHeaderRows, wantRow: 3, wantText: "Creation: not registered"},
+		{name: "intermediate unavailable", width: 80, rows: compactHeaderRows, wantRow: 3, wantText: "Creation: not registered", client: &clientStub{
+			updatePlanAvailability:   ui.CapabilityAvailability{State: "no_model", Reason: "Select a model."},
+			requestInputAvailability: ui.CapabilityAvailability{State: "no_model", Reason: "Select a model."},
+			creationAvailability: ui.FilesystemCreationAvailability{
+				CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "File creation is unavailable."},
+				Scope:                  ui.FilesystemCreationScope{StartupDirectory: "/tmp/synthetic-startup", State: "identity-retained"},
+			},
+		}},
+		{name: "narrow", width: 50, rows: compactHeaderRows, wantRow: 3, wantText: "Create: not registered"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			header := tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
 			layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(header, expandedHeaderRows, 0, false)
-			u := &terminal{client: client, header: header, layout: layout}
+			testClient := client
+			if test.client != nil {
+				testClient = test.client
+			}
+			u := &terminal{client: testClient, header: header, layout: layout}
 			u.setTerminalWidth(test.width)
 
 			screen := tcell.NewSimulationScreen("UTF-8")

@@ -96,7 +96,7 @@ func (i *composerInput) SetChangedFunc(handler func(string)) *composerInput {
 }
 
 const usageWideThreshold = 100
-const compactHeaderWidth = 72
+const compactHeaderWidth = 100
 const compactHeaderRows = 4
 const expandedHeaderRows = 5
 
@@ -783,9 +783,13 @@ func (u *terminal) updateBanner() {
 		if u.terminalWidth <= compactHeaderWidth {
 			workingDirectory = compactHeaderPath(workingDirectory, 11)
 			creationScope = compactHeaderPath(creationScope, 11)
-			planDetail := compactHeaderCapabilityDetail(snapshot.UpdatePlanAvailability)
+			toolDetail := compactHeaderToolSummary(snapshot.UpdatePlanAvailability, snapshot.RequestInputAvailability)
 			creationDetail := compactHeaderCapabilityDetail(snapshot.FilesystemCreationAvailability.CapabilityAvailability)
-			u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working: %s · Scope: %s[-]\n[gray]Plan: %s · Creation: %s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(safeTerminalText(creationScope)), tv.Escape(planDetail), tv.Escape(creationDetail)))
+			creationLabel := "Creation:"
+			if u.terminalWidth <= 72 {
+				creationLabel = "Create:"
+			}
+			u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working: %s · Scope: %s[-]\n[gray]Tools: %s · %s %s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(safeTerminalText(creationScope)), tv.Escape(toolDetail), tv.Escape(creationLabel), tv.Escape(creationDetail)))
 			return
 		}
 		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
@@ -793,6 +797,15 @@ func (u *terminal) updateBanner() {
 	}
 	creationLabel := renderFilesystemCreationAvailability(snapshot.FilesystemCreationAvailability)
 	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]Creation scope: %s[-]\n[gray]%s[-] · [gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(safeTerminalText(creationScope)), tv.Escape(toolStatus), tv.Escape(creationLabel)))
+}
+
+func compactHeaderToolSummary(plan, input ui.CapabilityAvailability) string {
+	planDetail := compactHeaderCapabilityDetail(plan)
+	inputDetail := compactHeaderCapabilityDetail(input)
+	if planDetail == inputDetail {
+		return planDetail
+	}
+	return "mixed"
 }
 
 func renderToolAvailability(plan, input ui.CapabilityAvailability, terminalWidth int) string {

@@ -131,7 +131,7 @@ func TestIssue278OutsideReadApprovalUsesCurrentWorkingDirectoryThroughTerminal(t
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyEnter, 0)
-	waitForScreen(t, screen, "Working directory:", "")
+	waitForScreen(t, screen, "Working:", "")
 	if got := chat.Snapshot().WorkingDirectory; got != launchDirectory {
 		t.Fatalf("launch working directory=%q, want %q", got, launchDirectory)
 	}
