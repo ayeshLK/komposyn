@@ -67,7 +67,7 @@ func newCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve launch working directory: %w", err)
 			}
-			hostSandbox, err := sandbox.NewHostService("/usr/bin/bwrap")
+			hostSandbox, err := sandbox.NewHostServiceWithStartupDirectory("/usr/bin/bwrap", workingDirectory)
 			if err != nil {
 				return err
 			}

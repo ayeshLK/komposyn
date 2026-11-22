@@ -69,6 +69,7 @@ func (s *unsupportedImplementation) CoverageSnapshot() CoverageSnapshot {
 		Composition:         "komposyn-memory-chat",
 		Capability:          "linux-exact-file-typed-read",
 		UnknownRootDataGate: true,
+		RequiredOwners:      []string{auth.SensitiveOwnerAuth, auth.SensitiveOwnerSettings},
 		Owners: []OwnerCoverage{
 			{Owner: auth.SensitiveOwnerAuth, Class: auth.SensitiveClassAuth, State: OwnerUnsupported, Reason: "no supported platform registration backend"},
 			{Owner: auth.SensitiveOwnerSettings, Class: auth.SensitiveClassSettings, State: OwnerUnsupported, Reason: "no supported platform registration backend"},

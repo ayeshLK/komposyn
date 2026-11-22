@@ -18,11 +18,14 @@ package sandbox
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -66,7 +69,83 @@ type CoverageSnapshot struct {
 	Composition         string
 	Capability          string
 	UnknownRootDataGate bool
+	RequiredOwners      []string
 	Owners              []OwnerCoverage
+}
+
+// CreationOwnerDisposition records whether trusted composition instantiates a
+// sensitive owner. It is separate from registration state: a required owner
+// with an absent file still needs its effective route registered.
+type CreationOwnerDisposition string
+
+const (
+	CreationOwnerRequired        CreationOwnerDisposition = "required"
+	CreationOwnerNotInstantiated CreationOwnerDisposition = "trusted-not-instantiated"
+	CreationOwnerUnknown         CreationOwnerDisposition = "unknown"
+)
+
+// CreationOwnerStatus is a detached view of one owner in the fixed production
+// chat profile. It is informational and never grants filesystem authority.
+type CreationOwnerStatus struct {
+	Owner       string
+	Class       string
+	Disposition CreationOwnerDisposition
+	State       OwnerState
+	Routes      int
+	Identities  int
+	Reason      string
+}
+
+type StartupScopeState string
+
+const (
+	StartupScopeUnavailable      StartupScopeState = "unavailable"
+	StartupScopeIdentityDeferred StartupScopeState = "identity-validation-deferred"
+	StartupScopeClosed           StartupScopeState = "closed"
+)
+
+// StartupScopeSnapshot is a non-authorizing, path-free snapshot of the scope
+// captured by trusted CLI composition. The directory identity and movement
+// checks are deliberately not claimed by this foundation slice.
+type StartupScopeSnapshot struct {
+	RunBinding       string
+	Generation       uint64
+	State            StartupScopeState
+	CoverageRevision uint64
+	Reason           string
+}
+
+// CreationFoundationSnapshot describes trusted owner applicability and the
+// fixed startup-scope lifecycle. Complete owner coverage is not creation
+// eligibility: CapabilityRegistered remains false until a separate reviewed
+// enablement slice.
+type CreationFoundationSnapshot struct {
+	ProfileRevision       uint64
+	CoverageRevision      uint64
+	Owners                []CreationOwnerStatus
+	OwnerCoverageComplete bool
+	StartupScope          StartupScopeSnapshot
+	CapabilityRegistered  bool
+	Reason                string
+}
+
+type creationOwnerDeclaration struct {
+	owner, class string
+	disposition  CreationOwnerDisposition
+	reason       string
+}
+
+// This profile is fixed by cmd/harness's current composition: it constructs
+// auth.Store and settings.Store, but no Token Logger store or provider-source
+// ingestion component. New sensitive components must be added here as
+// required before that composition can report complete coverage.
+func productionChatCreationOwnerProfile() []creationOwnerDeclaration {
+	return []creationOwnerDeclaration{
+		{owner: auth.SensitiveOwnerAuth, class: auth.SensitiveClassAuth, disposition: CreationOwnerRequired},
+		{owner: auth.SensitiveOwnerSettings, class: auth.SensitiveClassSettings, disposition: CreationOwnerRequired},
+		{owner: "tokenlogger-store", class: "token_database", disposition: CreationOwnerNotInstantiated, reason: "trusted chat composition does not construct a Token Logger store"},
+		{owner: "provider-source", class: "provider_source", disposition: CreationOwnerNotInstantiated, reason: "trusted chat composition does not ingest provider sources"},
+	}
 }
 
 type implementation interface {
@@ -97,6 +176,9 @@ type Service struct {
 	rootGeneration     uint64
 	rootPath           string
 	rootPending        bool
+	startupScopeMu     sync.Mutex
+	startupScopePath   string
+	startupScope       StartupScopeSnapshot
 }
 
 var _ auth.SensitiveFileProtector = (*Service)(nil)
@@ -109,7 +191,54 @@ func NewHostService(bubblewrapPath string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{impl: impl}, nil
+	service := &Service{impl: impl}
+	service.startupScope = unavailableStartupScope("trusted startup directory was not supplied by CLI composition")
+	return service, nil
+}
+
+// NewHostServiceWithStartupDirectory captures the trusted launch directory
+// before runtime navigation can change it. It deliberately does not claim a
+// retained directory identity; that validation is a later implementation
+// slice, so the resulting scope remains unavailable for creation.
+func NewHostServiceWithStartupDirectory(bubblewrapPath, startupDirectory string) (*Service, error) {
+	impl, err := newHostImplementation(bubblewrapPath)
+	if err != nil {
+		return nil, err
+	}
+	service := &Service{impl: impl}
+	service.captureStartupDirectory(startupDirectory)
+	return service, nil
+}
+
+func unavailableStartupScope(reason string) StartupScopeSnapshot {
+	return StartupScopeSnapshot{Generation: 1, State: StartupScopeUnavailable, Reason: reason}
+}
+
+func (s *Service) captureStartupDirectory(path string) {
+	var binding [16]byte
+	if _, err := rand.Read(binding[:]); err != nil {
+		s.startupScope = unavailableStartupScope("startup run binding could not be initialized")
+		return
+	}
+	canonical, err := runtime.CanonicalFilesystemRoot(context.Background(), path)
+	if err != nil {
+		s.startupScope = unavailableStartupScope("trusted startup directory is unavailable")
+		return
+	}
+	s.startupScopePath = canonical
+	available, _ := s.impl.BackendStatus()
+	if !available {
+		s.startupScope = StartupScopeSnapshot{
+			RunBinding: hex.EncodeToString(binding[:]), Generation: 1,
+			State: StartupScopeUnavailable, Reason: "host filesystem enforcement profile is unavailable",
+		}
+		return
+	}
+	s.startupScope = StartupScopeSnapshot{
+		RunBinding: hex.EncodeToString(binding[:]), Generation: 1,
+		State:  StartupScopeIdentityDeferred,
+		Reason: "retained directory identity and movement validation are deferred",
+	}
 }
 
 // WorkerBootstrap handles only the fixed internal re-exec entry used by the
@@ -143,6 +272,12 @@ func (s *Service) Close(ctx context.Context) error {
 	s.rootConversationID = ""
 	s.rootGeneration++
 	s.rootMu.Unlock()
+	s.startupScopeMu.Lock()
+	s.startupScope.Generation++
+	s.startupScope.State = StartupScopeClosed
+	s.startupScope.Reason = "host service is closed"
+	s.startupScopePath = ""
+	s.startupScopeMu.Unlock()
 	var proposalErr error
 	if invalidator, ok := s.impl.(interface{ invalidateCreationProposals() error }); ok {
 		proposalErr = invalidator.invalidateCreationProposals()
@@ -262,6 +397,91 @@ func (s *Service) CoverageSnapshot() CoverageSnapshot {
 		return CoverageSnapshot{UnknownRootDataGate: true, Owners: []OwnerCoverage{{State: OwnerUnsupported, Reason: ErrServiceClosed.Error()}}}
 	}
 	return s.impl.CoverageSnapshot()
+}
+
+// CreationFoundationSnapshot returns detached owner/scope metadata for the
+// gated creation implementation. This snapshot is never consumed as a grant;
+// normal composition still does not register a creation capability.
+func (s *Service) CreationFoundationSnapshot() CreationFoundationSnapshot {
+	if s == nil || s.impl == nil {
+		return CreationFoundationSnapshot{
+			StartupScope:          unavailableStartupScope(ErrServiceClosed.Error()),
+			Reason:                "host service is unavailable",
+			CapabilityRegistered:  false,
+			OwnerCoverageComplete: false,
+		}
+	}
+	coverage := s.CoverageSnapshot()
+	registered := make(map[string]OwnerCoverage, len(coverage.Owners))
+	for _, owner := range coverage.Owners {
+		registered[owner.Owner] = owner
+	}
+	declarations := productionChatCreationOwnerProfile()
+	known := make(map[string]struct{}, len(declarations))
+	requiredByInventory := make(map[string]struct{}, len(coverage.RequiredOwners))
+	for _, owner := range coverage.RequiredOwners {
+		requiredByInventory[owner] = struct{}{}
+	}
+	result := CreationFoundationSnapshot{
+		ProfileRevision: 1, CoverageRevision: coverage.Revision,
+		OwnerCoverageComplete: true, CapabilityRegistered: false,
+		Reason: "production creation remains disabled pending scope identity enforcement, evidence, and separate enablement",
+	}
+	for _, declaration := range declarations {
+		known[declaration.owner] = struct{}{}
+		status := CreationOwnerStatus{
+			Owner: declaration.owner, Class: declaration.class,
+			Disposition: declaration.disposition, Reason: declaration.reason,
+		}
+		if declaration.disposition == CreationOwnerRequired {
+			owner, ok := registered[declaration.owner]
+			_, inventoryRequiresOwner := requiredByInventory[declaration.owner]
+			if ok {
+				status.State, status.Routes, status.Identities, status.Reason = owner.State, owner.Routes, owner.Identities, owner.Reason
+			}
+			if !ok || status.State != OwnerRegistered || status.Routes == 0 || len(coverage.RequiredOwners) > 0 && !inventoryRequiresOwner {
+				result.OwnerCoverageComplete = false
+				if status.Reason == "" {
+					status.Reason = "required owner has no registered effective route"
+				}
+			}
+		} else {
+			if _, required := requiredByInventory[declaration.owner]; required {
+				status.Disposition = CreationOwnerUnknown
+				status.State = OwnerRequired
+				status.Reason = "trusted composition requires this owner but the creation profile declares it not instantiated"
+				result.OwnerCoverageComplete = false
+			} else {
+				status.State = OwnerAbsent
+			}
+		}
+		result.Owners = append(result.Owners, status)
+	}
+	for _, owner := range coverage.Owners {
+		if owner.Owner == "unknown-root-data" {
+			continue // This remains a separate read/discovery authorizer gate.
+		}
+		if _, ok := known[owner.Owner]; !ok {
+			result.OwnerCoverageComplete = false
+			result.Owners = append(result.Owners, CreationOwnerStatus{
+				Owner: owner.Owner, Class: owner.Class, Disposition: CreationOwnerUnknown,
+				State: owner.State, Routes: owner.Routes, Identities: owner.Identities,
+				Reason: "sensitive owner is not declared by the trusted production chat profile",
+			})
+		}
+	}
+	s.startupScopeMu.Lock()
+	result.StartupScope = s.startupScope
+	result.StartupScope.CoverageRevision = coverage.Revision
+	if result.StartupScope.State == StartupScopeClosed {
+		result.OwnerCoverageComplete = false
+		result.Reason = "host service is closed"
+	}
+	s.startupScopeMu.Unlock()
+	slices.SortFunc(result.Owners, func(left, right CreationOwnerStatus) int {
+		return strings.Compare(left.Owner, right.Owner)
+	})
+	return result
 }
 
 func (s *Service) BackendStatus() (bool, string) {

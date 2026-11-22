@@ -38,9 +38,13 @@ project content without inventorying or classifying every entry. This
 supersedes the earlier creation-only unknown-root requirement to attest all
 selected-root data; it leaves read/discovery authorization unchanged. The
 synthetic complete-owner manifest remains fixture evidence only. The typed
-production owner profile, startup identity capture, nested-parent handling and
-new native scope evidence must be implemented before separate model-facing
-enablement review.
+production owner-profile snapshot now records auth/settings as required and
+Token Logger/provider-source ingestion as trusted not-instantiated declarations
+for the current composition. The host captures the launch directory binding
+before runtime navigation, but reports retained identity/movement validation
+as deferred. Nested-parent handling, startup identity enforcement and new
+native scope evidence remain required before separate model-facing enablement
+review. See the [owner-profile foundation](issue-321-owner-profile.md).
 
 ## Proposed typed creation and approval path
 
