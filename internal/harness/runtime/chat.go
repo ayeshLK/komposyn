@@ -54,18 +54,19 @@ type Turn struct {
 	At                 time.Time
 }
 type Snapshot struct {
-	Selected                   *model.Model
-	Turns                      []Turn
-	Usage                      []ModelUsage
-	Active                     bool
-	ActiveRequestID            string
-	ToolActivities             []ToolActivity
-	Plan                       []tools.PlanStep
-	FilesystemRoot             FilesystemRootStatus
-	UpdatePlanAvailability     CapabilityAvailability
-	RequestInputAvailability   CapabilityAvailability
-	FilesystemReadAvailability FilesystemReadAvailability
-	WorkingDirectory           string
+	Selected                       *model.Model
+	Turns                          []Turn
+	Usage                          []ModelUsage
+	Active                         bool
+	ActiveRequestID                string
+	ToolActivities                 []ToolActivity
+	Plan                           []tools.PlanStep
+	FilesystemRoot                 FilesystemRootStatus
+	UpdatePlanAvailability         CapabilityAvailability
+	RequestInputAvailability       CapabilityAvailability
+	FilesystemReadAvailability     FilesystemReadAvailability
+	FilesystemCreationAvailability FilesystemCreationAvailability
+	WorkingDirectory               string
 }
 type CapabilityAvailability struct {
 	Available bool
@@ -475,11 +476,72 @@ func (c *Chat) Snapshot() Snapshot {
 	activeRequestID := c.activeRequestID
 	c.mu.Unlock()
 	return Snapshot{Selected: selected, Turns: turns, Usage: usage, Active: active, ActiveRequestID: activeRequestID, ToolActivities: activities, Plan: plan,
-		FilesystemRoot:             filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost),
-		UpdatePlanAvailability:     conversationToolAvailability(selected, providers, toolRuntime, tools.UpdatePlanID),
-		RequestInputAvailability:   conversationToolAvailability(selected, providers, toolRuntime, tools.RequestUserInputID),
-		FilesystemReadAvailability: filesystemReadAvailability(selected, providers, toolRuntime, workingDirectory, rootGeneration, rootAck, rootHost),
-		WorkingDirectory:           workingDirectory}
+		FilesystemRoot:                 filesystemRootStatus(rootPath, rootGeneration, rootAck, rootHost),
+		UpdatePlanAvailability:         conversationToolAvailability(selected, providers, toolRuntime, tools.UpdatePlanID),
+		RequestInputAvailability:       conversationToolAvailability(selected, providers, toolRuntime, tools.RequestUserInputID),
+		FilesystemReadAvailability:     filesystemReadAvailability(selected, providers, toolRuntime, workingDirectory, rootGeneration, rootAck, rootHost),
+		FilesystemCreationAvailability: filesystemCreationAvailability(selected, providers, toolRuntime, rootHost),
+		WorkingDirectory:               workingDirectory}
+}
+
+func filesystemCreationAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, rootHost FilesystemRootHost) FilesystemCreationAvailability {
+	var status FilesystemCreationAvailability
+	if host, ok := rootHost.(FixedCreationScopeStatusHost); ok {
+		status.Scope = host.FixedCreationScopeStatus()
+	}
+	if runtime == nil || runtime.registry == nil {
+		status.State = "not_registered"
+		status.Reason = "File creation is unavailable because this chat does not register the creation capability."
+		return status
+	}
+	if _, ok := runtime.registry.Lookup(tools.CreateFileID); !ok {
+		status.State = "not_registered"
+		status.Reason = "File creation is unavailable because this chat does not register the creation capability."
+		return status
+	}
+	if selected == nil {
+		status.State = "no_model"
+		status.Reason = "Select a model with /model to check the test composition's creation route."
+		return status
+	}
+	support, routeState, routeReason := selectedRouteToolSupport(selected, providers)
+	if support != provider.SupportSupported {
+		status.State, status.Reason = routeState, routeReason
+		return status
+	}
+	if status.Scope.State == "moved-or-replaced" {
+		status.State = "startup_scope_moved"
+		status.Reason = "The startup creation directory moved or was replaced. Creation stays disabled for this run; restart KompoSyn in the intended directory."
+		return status
+	}
+	if status.Scope.State != "identity-retained" {
+		status.State = "scope_unavailable"
+		status.Reason = status.Scope.Reason
+		if status.Reason == "" {
+			status.Reason = "A trusted startup creation directory is unavailable."
+		}
+		return status
+	}
+	if !status.Scope.OwnerCoverageComplete {
+		status.State = "coverage_incomplete"
+		status.Reason = status.Scope.Reason
+		if status.Reason == "" {
+			status.Reason = "Required auth/settings protection coverage is incomplete or pending."
+		}
+		return status
+	}
+	if !status.Scope.HostReady {
+		status.State = "host_unavailable"
+		status.Reason = status.Scope.Reason
+		if status.Reason == "" {
+			status.Reason = "The creation host profile or cleanup state is not ready."
+		}
+		return status
+	}
+	status.Available = true
+	status.State = "available"
+	status.Reason = "The test-only composition can propose one new file beneath the fixed startup directory; each exact target and complete change requires explicit once approval."
+	return status
 }
 
 func conversationToolAvailability(selected *model.Model, providers *model.Registry, runtime *toolRuntime, id tools.ID) CapabilityAvailability {

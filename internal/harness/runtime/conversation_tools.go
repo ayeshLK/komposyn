@@ -266,10 +266,14 @@ func (a filesystemCreationPrototypeAuthorizer) Prepare(ctx context.Context, invo
 }
 
 func (a filesystemCreationPrototypeAuthorizer) PrepareForDestination(ctx context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
+	return a.PrepareForDestinationAt(ctx, invocation, destination, "")
+}
+
+func (a filesystemCreationPrototypeAuthorizer) PrepareForDestinationAt(ctx context.Context, invocation tools.Invocation, destination, workingDirectory string) (permissions.Request, error) {
 	if invocation.ToolID != tools.CreateFileID {
 		return a.next.Prepare(ctx, invocation)
 	}
-	request, err := a.host.PrepareFilesystemCreation(ctx, cloneInvocation(invocation), destination)
+	request, err := a.host.PrepareFilesystemCreation(ctx, cloneInvocation(invocation), destination, workingDirectory)
 	if err != nil {
 		return permissions.Request{}, err
 	}

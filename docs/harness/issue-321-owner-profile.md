@@ -36,8 +36,11 @@ required owner as not instantiated makes coverage incomplete.
 
 `Service.CreationFoundationSnapshot` returns detached owner counts and states,
 profile/coverage revisions, startup run binding and safe availability reasons.
-It exposes no path, descriptor or filesystem capability. It is informational:
-no runtime operation consumes it as permission, and it cannot enable a tool.
+It exposes no path, descriptor or filesystem capability. The separate
+`FixedCreationScopeStatus` runtime contract carries the trusted startup path
+only to the local UI, together with lifecycle/readiness state; it is detached
+and is not consumed as permission. No provider request or diagnostic receives
+this display path.
 Creation registration remains absent even when auth and settings coverage is
 complete. Existing read/discovery admission and its unknown-root gate are
 unchanged; ordinary project entries are not inventoried by this profile. This
@@ -47,7 +50,11 @@ revalidates the exact scope and parent before execution. It does not register
 the model-facing tool or enable production creation.
 
 The preparation prototype has a separate package-private test gate that
-normal composition never sets. For retained startup scopes, owner eligibility
+normal composition never sets. Normal `cmd/harness` now captures the launch
+directory through `NewHostServiceWithStartupDirectory` before navigation is
+initialized. The UI reports the fixed startup scope separately from the
+working directory, and reports creation unavailable while the production
+registry omits the schema. For retained startup scopes, owner eligibility
 comes from the live coordinator's complete auth/settings requirements,
 service lifecycle state, and matching policy registrations, including
 reserved absent routes. Token Logger and provider-source coverage is not
@@ -65,9 +72,19 @@ detection. Runtime/service tests exercise replacement, restoration, nested
 targets, stale parents, refusal before dispatch, and existing owner lifecycle
 behavior.
 
-Still deferred are new trusted-host native evidence for startup-scope creation
-and movement, broader filesystems and launch profiles, production creation
-registration, and separate explicit model-facing enablement. The fixture
-tests establish control flow, not native filesystem enforcement. Historical
-fixture/native evidence does not establish these new claims. Creation remains
-unavailable in the normal CLI composition.
+The test-only runtime composition connects the real Service proposal and
+worker-supervision path through runtime authorization and the existing UI
+approval bridge. Its behavioral test verifies the exact nested target,
+complete multiline diff, provider/model/profile destination, explicit once
+response and resulting bytes while using actual auth/settings registration,
+including an absent reserved settings route. Existing tview approval handling
+remains scrollable for long details; this fixture integration does not claim a
+new native run.
+
+Still deferred are trusted-host native evidence for startup-scope creation and
+movement, broader filesystems and launch profiles, production creation
+registration, integrated lifecycle review of every stale/cancel/interruption
+case, and separate explicit model-facing enablement. Fixture tests establish
+control flow, not native filesystem enforcement. Historical fixture/native
+evidence does not establish these new claims. Creation remains unavailable in
+the normal CLI composition.

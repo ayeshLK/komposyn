@@ -45,12 +45,15 @@ type creationRuntimeFixture struct {
 	executionErr      error
 }
 
-func (h *creationRuntimeFixture) PrepareFilesystemCreation(_ context.Context, invocation tools.Invocation, destination string) (permissions.Request, error) {
+func (h *creationRuntimeFixture) PrepareFilesystemCreation(_ context.Context, invocation tools.Invocation, destination, workingDirectory string) (permissions.Request, error) {
 	input, err := tools.ParseCreateFile(invocation.Arguments)
 	if err != nil {
 		return permissions.Request{}, err
 	}
-	target := filepath.Join(h.root, filepath.FromSlash(input.Path))
+	if workingDirectory == "" {
+		workingDirectory = h.root
+	}
+	target := filepath.Join(workingDirectory, filepath.FromSlash(input.Path))
 	bindingBytes, err := json.Marshal(struct {
 		ConversationID string
 		CallID         string
@@ -208,7 +211,7 @@ func TestCreationPrototypeRequiresExplicitCompositionAndOnceApproval(t *testing.
 		}
 	}
 	requests := fp.captured()
-	if len(requests) < 1 || !strings.Contains(requests[0].Instructions, "creation prototype") || strings.Contains(requests[0].Instructions, "No filesystem write") {
+	if len(requests) < 1 || !strings.Contains(requests[0].Instructions, "trusted fixed startup directory") || strings.Contains(requests[0].Instructions, "No filesystem write") {
 		t.Fatalf("provider instructions do not match the explicitly composed capability: %+v", requests)
 	}
 }

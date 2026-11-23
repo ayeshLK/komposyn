@@ -98,7 +98,7 @@ func TestIssue277ChangeDirectoryKeepsChatContextAndResolvesFutureRead(t *testing
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyTab, 0)
 	press(tcell.KeyEnter, 0)
-	waitForScreen(t, screen, "Working directory: ", "")
+	waitForScreen(t, screen, "Working: ", "")
 	typeText("/cd ")
 	press(tcell.KeyEnter, 0)
 	waitForScreen(t, screen, "Usage: /cd <path>", "")

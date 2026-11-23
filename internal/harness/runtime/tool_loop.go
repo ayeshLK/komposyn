@@ -449,10 +449,18 @@ func sameAuthorizationBinding(a, b permissions.Request) bool {
 	return a.ConversationID == b.ConversationID && a.CallID == b.CallID && a.Binding != "" && a.Binding == b.Binding
 }
 
-func (r *toolRuntime) authorize(ctx context.Context, invocation tools.Invocation, destination string) (permissions.Request, permissions.Decision, error) {
+func (r *toolRuntime) authorize(ctx context.Context, invocation tools.Invocation, destination, workingDirectory string) (permissions.Request, permissions.Decision, error) {
 	var request permissions.Request
 	var err error
-	if authorizer, ok := r.authorizer.(filesystemCreationDestinationAuthorizer); ok {
+	if invocation.ToolID == tools.CreateFileID {
+		if authorizer, ok := r.authorizer.(filesystemCreationWorkingDirectoryAuthorizer); ok {
+			request, err = authorizer.PrepareForDestinationAt(ctx, cloneInvocation(invocation), destination, workingDirectory)
+		} else if authorizer, ok := r.authorizer.(filesystemCreationDestinationAuthorizer); ok {
+			request, err = authorizer.PrepareForDestination(ctx, cloneInvocation(invocation), destination)
+		} else {
+			request, err = r.authorizer.Prepare(ctx, cloneInvocation(invocation))
+		}
+	} else if authorizer, ok := r.authorizer.(filesystemCreationDestinationAuthorizer); ok {
 		request, err = authorizer.PrepareForDestination(ctx, cloneInvocation(invocation), destination)
 	} else {
 		request, err = r.authorizer.Prepare(ctx, cloneInvocation(invocation))
@@ -757,7 +765,7 @@ func (c *Chat) runToolLoop(ctx context.Context, generation uint64, selection mod
 				instructions += " Do not claim filesystem, shell, web, or other unavailable capabilities."
 			}
 			if _, hasCreation := definitionByID(requestTools, tools.CreateFileID); hasCreation {
-				instructions += " apply_patch is an explicitly enabled disposable creation prototype: it can create one new UTF-8 text file beneath the trusted fixture scope after explicit once approval of the exact target and complete content. It cannot edit, overwrite, append, merge, rename, delete, or create directories. Existing destinations are refused. Scope selection grants no access; never provide or infer scope, identity, digest, or generation fields."
+				instructions += " apply_patch can propose one new UTF-8 text file beneath the trusted fixed startup directory after explicit once approval of the exact target and complete content. The scope is fixed for this CLI run; /cd changes relative-path lookup only, and conversation reset does not recapture it. It cannot edit, overwrite, append, merge, rename, delete, or create directories. Existing destinations are refused. Starting in or navigating to a directory grants no access or write permission. Never provide or infer scope, identity, digest, or generation fields."
 			} else if _, hasRead := definitionByID(requestTools, tools.ReadFileID); hasRead {
 				instructions += " No filesystem write, rename, deletion, shell, or web capability is available."
 			}
@@ -1067,7 +1075,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 	if err := tool.ValidateArguments(arguments); err != nil {
 		return notExecuted("tool arguments are invalid")
 	}
-	request, decision, err := r.authorize(ctx, invocation, destination)
+	request, decision, err := r.authorize(ctx, invocation, destination, workingDirectory)
 	if err != nil || !lifecycleCurrent() {
 		return notExecuted("tool authorization requirements could not be prepared")
 	}
@@ -1153,7 +1161,7 @@ func (r *toolRuntime) executeOne(ctx context.Context, conversationID, turnID str
 		update("finished")
 		return fixedToolResult(call.CallID, tools.OutcomeNotExecuted, activity.Message, maxBytes), activity, "", true, nil
 	}
-	prepared, freshDecision, err := r.authorize(ctx, invocation, destination)
+	prepared, freshDecision, err := r.authorize(ctx, invocation, destination, workingDirectory)
 	if err != nil || !sameAuthorizationBinding(request, prepared) || !freshDecision.Ready() || freshDecision.Revision != expectedRevision {
 		return notExecuted("tool authorization changed before execution")
 	}

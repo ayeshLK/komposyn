@@ -29,6 +29,7 @@ import (
 	modelprovider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/ui"
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	tv "github.com/rivo/tview"
 )
 
@@ -96,6 +97,9 @@ func (i *composerInput) SetChangedFunc(handler func(string)) *composerInput {
 }
 
 const usageWideThreshold = 100
+const compactHeaderWidth = 100
+const compactHeaderRows = 4
+const expandedHeaderRows = 5
 
 type credentialOperation struct {
 	ctx     context.Context
@@ -240,7 +244,7 @@ func (p Plugin) Run(parent context.Context, client ui.Client) error {
 	u.commands = supportedCommands()
 	u.input = newComposerInput().SetChangedFunc(func(text string) { u.refreshCommandSuggestions(text) })
 	u.composer = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.commandList, 0, 0, false).AddItem(u.usageCompact, 0, 0, false).AddItem(u.input, 4, 0, true)
-	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, 4, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
+	u.layout = tv.NewFlex().SetDirection(tv.FlexRow).AddItem(u.header, expandedHeaderRows, 0, false).AddItem(u.planPane, 0, 0, false).AddItem(u.body, 0, 1, false).AddItem(u.composer, 0, 1, true).AddItem(u.footer, 1, 0, false)
 	u.layout.SetBorder(true).SetTitle(" KompoSyn · Temporary Chat ")
 	u.updateBanner()
 	u.updateUsage()
@@ -772,10 +776,37 @@ func (u *terminal) updateBanner() {
 		readLabel += " · " + reason
 	}
 	toolStatus := renderToolAvailability(snapshot.UpdatePlanAvailability, snapshot.RequestInputAvailability, u.terminalWidth)
-	if u.terminalWidth > 0 {
-		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
+	creationScope := snapshot.FilesystemCreationAvailability.Scope.StartupDirectory
+	if creationScope == "" {
+		creationScope = "unavailable"
 	}
-	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(toolStatus)))
+	if u.terminalWidth > 0 {
+		if u.terminalWidth <= compactHeaderWidth {
+			workingDirectory = compactHeaderPath(workingDirectory, 11)
+			creationScope = compactHeaderPath(creationScope, 11)
+			toolDetail := compactHeaderToolSummary(snapshot.UpdatePlanAvailability, snapshot.RequestInputAvailability)
+			creationDetail := compactHeaderCapabilityDetail(snapshot.FilesystemCreationAvailability.CapabilityAvailability)
+			creationLabel := "Creation:"
+			if u.terminalWidth <= 72 {
+				creationLabel = "Create:"
+			}
+			u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working: %s · Scope: %s[-]\n[gray]Tools: %s · %s %s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(safeTerminalText(creationScope)), tv.Escape(toolDetail), tv.Escape(creationLabel), tv.Escape(creationDetail)))
+			return
+		}
+		workingDirectory = compactHeaderPath(workingDirectory, u.terminalWidth-21)
+		creationScope = compactHeaderPath(creationScope, u.terminalWidth-20)
+	}
+	creationLabel := renderFilesystemCreationAvailability(snapshot.FilesystemCreationAvailability)
+	u.header.SetText(fmt.Sprintf("[white::b]KompoSyn[-:-:-]  [gray]v%s[-]  ·  [white]%s[-]\n[gray]%s[-]\n[gray]Working directory: %s[-]\n[gray]Creation scope: %s[-]\n[gray]%s[-] · [gray]%s[-]", tv.Escape(version), tv.Escape(modelName), tv.Escape(readLabel), tv.Escape(safeTerminalText(workingDirectory)), tv.Escape(safeTerminalText(creationScope)), tv.Escape(toolStatus), tv.Escape(creationLabel)))
+}
+
+func compactHeaderToolSummary(plan, input ui.CapabilityAvailability) string {
+	planDetail := compactHeaderCapabilityDetail(plan)
+	inputDetail := compactHeaderCapabilityDetail(input)
+	if planDetail == inputDetail {
+		return planDetail
+	}
+	return "mixed"
 }
 
 func renderToolAvailability(plan, input ui.CapabilityAvailability, terminalWidth int) string {
@@ -815,6 +846,14 @@ func compactHeaderCapabilityDetail(status ui.CapabilityAvailability) string {
 		return "no model"
 	case "not_implemented":
 		return "not in build"
+	case "not_registered":
+		return "not registered"
+	case "scope_unavailable":
+		return "scope unavailable"
+	case "coverage_incomplete":
+		return "coverage incomplete"
+	case "startup_scope_moved":
+		return "restart required"
 	}
 	return "unavailable"
 }
@@ -855,15 +894,16 @@ func compactAvailabilityReason(state, reason string) string {
 	}
 }
 
-func compactHeaderPath(path string, maxRunes int) string {
-	if maxRunes < 5 || len([]rune(path)) <= maxRunes {
+func compactHeaderPath(path string, maxCells int) string {
+	if maxCells < 5 || runewidth.StringWidth(path) <= maxCells {
 		return path
 	}
-	runes := []rune(path)
-	keep := maxRunes - 1
-	left := keep / 2
-	right := keep - left
-	return string(runes[:left]) + "…" + string(runes[len(runes)-right:])
+	remaining := maxCells - runewidth.StringWidth("…")
+	leftCells := remaining / 2
+	rightCells := remaining - leftCells
+	left := runewidth.Truncate(path, leftCells, "")
+	right := runewidth.TruncatePrefix(path, rightCells, "")
+	return left + "…" + right
 }
 
 func renderCapabilityAvailability(name string, status ui.CapabilityAvailability) string {
@@ -890,6 +930,16 @@ func renderFilesystemReadAvailability(status ui.FilesystemReadAvailability) stri
 		return "File reading unavailable · availability has not been inspected."
 	}
 	return "File reading unavailable · " + safeTerminalText(status.Reason)
+}
+
+func renderFilesystemCreationAvailability(status ui.FilesystemCreationAvailability) string {
+	if status.Available {
+		return "File creation available · explicit once approval required"
+	}
+	if status.Reason == "" {
+		return "File creation unavailable · capability is not enabled"
+	}
+	return "File creation unavailable · " + safeTerminalText(status.Reason)
 }
 
 func renderPlan(steps []ui.PlanStep) string {
@@ -1085,6 +1135,13 @@ func (u *terminal) setTerminalWidth(width int) {
 	wide := width >= usageWideThreshold
 	u.terminalWidth = width
 	u.updateBanner()
+	if u.layout != nil && u.header != nil {
+		headerRows := expandedHeaderRows
+		if width > 0 && width <= compactHeaderWidth {
+			headerRows = compactHeaderRows
+		}
+		u.layout.ResizeItem(u.header, headerRows, 0)
+	}
 	if u.body == nil || u.usagePane == nil {
 		return
 	}
@@ -1294,9 +1351,14 @@ func (u *terminal) runCommand(text string) {
 	case "help":
 		snapshot := u.client.Snapshot()
 		readStatus := renderFilesystemReadAvailability(snapshot.FilesystemReadAvailability)
+		creationStatus := renderFilesystemCreationAvailability(snapshot.FilesystemCreationAvailability)
+		creationScope := snapshot.FilesystemCreationAvailability.Scope.StartupDirectory
+		if creationScope == "" {
+			creationScope = "unavailable"
+		}
 		planStatus := renderCapabilityAvailability("update_plan", snapshot.UpdatePlanAvailability)
 		inputStatus := renderCapabilityAvailability("request_user_input", snapshot.RequestInputAvailability)
-		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nFile reading: " + readStatus + " Each read needs once approval; approved contents may be sent to the provider and may recur.\nTool availability: " + planStatus + "; " + inputStatus + ". No write/delete/shell.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\nThe launch directory is the working directory for relative file requests. Use /cd <path>; selecting a directory grants no read permission.\n")
+		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nFile reading: " + readStatus + " Each read needs once approval; approved contents may be sent to the provider and may recur.\n" + creationStatus + "\nCreation scope: " + safeTerminalText(creationScope) + " (fixed at launch; /cd and conversation reset do not change it).\nTool availability: " + planStatus + "; " + inputStatus + ". No write/delete/shell capability is registered in normal chat.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\nThe working directory resolves relative paths. Selecting or displaying a directory grants no file access or write permission.\n")
 	case "working-directory":
 		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cd"))
 		if path == "" {

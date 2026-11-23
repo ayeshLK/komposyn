@@ -1,6 +1,18 @@
 # Creation integration protocol proposal (#321)
 
-**Status:** the bounded disposable-fixture prototype has lifecycle behavior evidence following merged PRs [#343](https://github.com/ayeshLK/komposyn/pull/343), [#344](https://github.com/ayeshLK/komposyn/pull/344), and [#345](https://github.com/ayeshLK/komposyn/pull/345), plus a trusted-host scoped native acceptance run. Runtime tests cover admitted read/list/search drain through actual creation staging, delayed close/root retirement, final-validation owner arbitration, post-effect stale-result suppression, exact content limits, and no replay on continuation or unknown outcomes. The search lifecycle also defers joined-operation completion until snapshot cleanup and evidence updates finish. See the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md) for evidence hashes and limits. The normal `cmd/harness` composition still does not register creation. Production owner coverage and separate enablement approval remain outstanding; creation remains unavailable to normal users. Issues #267, #315, #321 and #322 remain open.
+## Implementation update — 2026-11-22
+
+The normal `cmd/harness` composition captures the trusted startup directory and
+the local UI reports it separately from the navigable working directory.
+Production creation remains unregistered and unavailable. The explicit
+test-only composition now carries a real sandbox Service proposal through the
+existing runtime once-approval and UI bridge; the approval presents exact
+target, complete diff, and provider/model/auth-profile destination. The
+`CreationHost` signatures below remain design vocabulary, not exported
+production interfaces. Fixture evidence does not establish native enforcement
+for this integrated revision; see the [lifecycle record](issue-321-lifecycle-acceptance.md).
+
+**Status:** ADR-0009's first three implementation slices now capture and enforce a fixed startup scope, expose detached local UI status, and connect the test-only creation proposal through the real sandbox Service, runtime once authorization, and existing approval bridge. The normal `cmd/harness` registry and provider instructions still omit creation. New UI/runtime/service tests cover separate scope/navigation status, actual auth/settings lifecycle registrations, exact nested target, complete diff and destination display, denial without effect, explicit once success, and exact output bytes. The historical scoped native run predates startup-scope integration and does not prove it; trusted-host evidence for these changes and separate explicit enablement remain gates. Issues #267, #315, #321 and #322 remain open.
 
 The companion [mechanism proposal](creation-mechanism-proposal.md) selects a stage file plus `renameat2(RENAME_NOREPLACE)`. This document records how the fixture prototype joins the existing runtime, UI, provider and read-admission composition. The mechanism passed the recorded scoped Linux native cases, but arbitrary production scopes remain unavailable and no production creation capability is enabled.
 

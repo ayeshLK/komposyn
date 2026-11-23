@@ -184,7 +184,11 @@ func (c Client) Snapshot() ui.Snapshot {
 		UpdatePlanAvailability:     ui.CapabilityAvailability{Available: s.UpdatePlanAvailability.Available, State: s.UpdatePlanAvailability.State, Reason: s.UpdatePlanAvailability.Reason},
 		RequestInputAvailability:   ui.CapabilityAvailability{Available: s.RequestInputAvailability.Available, State: s.RequestInputAvailability.State, Reason: s.RequestInputAvailability.Reason},
 		FilesystemReadAvailability: ui.FilesystemReadAvailability{Available: s.FilesystemReadAvailability.Available, State: s.FilesystemReadAvailability.State, Reason: s.FilesystemReadAvailability.Reason},
-		WorkingDirectory:           s.WorkingDirectory}
+		FilesystemCreationAvailability: ui.FilesystemCreationAvailability{
+			CapabilityAvailability: ui.CapabilityAvailability{Available: s.FilesystemCreationAvailability.Available, State: s.FilesystemCreationAvailability.State, Reason: s.FilesystemCreationAvailability.Reason},
+			Scope:                  ui.FilesystemCreationScope{StartupDirectory: s.FilesystemCreationAvailability.Scope.StartupDirectory, State: s.FilesystemCreationAvailability.Scope.State, Generation: s.FilesystemCreationAvailability.Scope.Generation, OwnerCoverageComplete: s.FilesystemCreationAvailability.Scope.OwnerCoverageComplete, HostReady: s.FilesystemCreationAvailability.Scope.HostReady, Reason: s.FilesystemCreationAvailability.Scope.Reason},
+		},
+		WorkingDirectory: s.WorkingDirectory}
 	for _, step := range s.Plan {
 		out.Plan = append(out.Plan, ui.PlanStep{Step: step.Step, Status: string(step.Status)})
 	}

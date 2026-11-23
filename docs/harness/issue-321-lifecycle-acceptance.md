@@ -2,6 +2,34 @@
 
 This record tracks behavioral lifecycle evidence separately from native filesystem evidence and production enablement. The normal `cmd/harness` composition does not register creation. Startup-scope preparation and terminal movement behavior now have focused behavioral coverage; new trusted-host native evidence for those claims and separate production enablement remain outstanding.
 
+## Fixed-scope runtime and UI integration
+
+The normal CLI captures the trusted launch directory through
+`NewHostServiceWithStartupDirectory` before runtime navigation. Runtime snapshots
+carry a detached fixed-scope status to the UI separately from
+`WorkingDirectory`; `/cd` and conversation reset do not recapture it. The local
+header and `/help` identify both values and explain that normal creation is
+unavailable because its schema is not registered. The fixed path is not added
+to provider instructions, requests, or diagnostics.
+
+`TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge` composes the
+test-only schema with the real sandbox Service, retained startup descriptor,
+host proposal and preparation path, actual auth/settings owner registrations,
+runtime once authorization, and the existing UI `ApprovalBridge`. The settings
+route is reserved while absent; auth is then populated through its registered
+store path. It checks the exact nested target, complete multiline/trailing
+newline diff, provider/model/auth-profile destination, no conversation grant,
+no effect before approval, one explicit once response, and exact resulting
+bytes. Its worker adapter is deterministic behavioral evidence; it does not
+establish Bubblewrap or kernel enforcement.
+
+The availability view distinguishes tool registration from retained-scope and
+owner readiness. A complete scope cannot make normal chat available: absence
+of the creation schema remains the dominant `not_registered` state. The
+private prototype gate is never set by production composition. Scope status is
+informational and the Service repeats all authorization and generation checks
+at preparation, dispatch, and publication.
+
 ## Behavioral evidence
 
 Focused tests use the real composed sandbox service and runtime seam where applicable. They cover:

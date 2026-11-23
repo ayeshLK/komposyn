@@ -173,21 +173,22 @@ type readAdmissionImplementation interface {
 // constructor fixes the production profile; callers cannot submit owner
 // applicability or a generic-read completeness assertion.
 type Service struct {
-	impl                 implementation
-	rootMu               sync.Mutex
-	rootClosed           bool
-	rootConversationID   string
-	rootGeneration       uint64
-	rootPath             string
-	rootPending          bool
-	startupScopeMu       sync.Mutex
-	startupScopePath     string
-	startupScopeRoot     *os.File
-	startupScopeInfo     os.FileInfo
-	startupScopeIdentity readbrokerstudy.FileIdentity
-	startupScopeMountID  uint64
-	startupScopeCaptured bool
-	startupScope         StartupScopeSnapshot
+	impl                    implementation
+	rootMu                  sync.Mutex
+	rootClosed              bool
+	rootConversationID      string
+	rootGeneration          uint64
+	rootPath                string
+	rootPending             bool
+	startupScopeMu          sync.Mutex
+	startupScopePath        string
+	startupScopeDisplayPath string
+	startupScopeRoot        *os.File
+	startupScopeInfo        os.FileInfo
+	startupScopeIdentity    readbrokerstudy.FileIdentity
+	startupScopeMountID     uint64
+	startupScopeCaptured    bool
+	startupScope            StartupScopeSnapshot
 }
 
 type startupScopeBackend interface {
@@ -197,10 +198,15 @@ type startupScopeBackend interface {
 	creationStartupMountID(int) (uint64, error)
 }
 
+type creationStatusImplementation interface {
+	creationHostStatus() (ready, pending bool)
+}
+
 var _ auth.SensitiveFileProtector = (*Service)(nil)
 var _ runtime.ToolPreparer = (*Service)(nil)
 var _ runtime.FilesystemRootHost = (*Service)(nil)
 var _ runtime.FilesystemReadAdmissionHost = (*Service)(nil)
+var _ runtime.FixedCreationScopeStatusHost = (*Service)(nil)
 
 func NewHostService(bubblewrapPath string) (*Service, error) {
 	impl, err := newHostImplementation(bubblewrapPath)
@@ -248,6 +254,11 @@ func (s *Service) captureStartupDirectory(path string) {
 		s.setStartupScopeUnavailable("trusted startup directory is unavailable")
 		return
 	}
+	s.startupScopeMu.Lock()
+	if s.startupScopeDisplayPath == "" {
+		s.startupScopeDisplayPath = canonical
+	}
+	s.startupScopeMu.Unlock()
 	available, _ := s.impl.BackendStatus()
 	if !available {
 		s.setStartupScopeSnapshot(StartupScopeSnapshot{
@@ -291,6 +302,57 @@ func (s *Service) captureStartupDirectory(path string) {
 		Reason: "startup directory identity is retained; creation remains unavailable until separate enablement",
 	}
 	s.startupScopeMu.Unlock()
+}
+
+// FixedCreationScopeStatus returns a detached local-UI view of the trusted
+// startup scope and current host readiness. It never grants authority; each
+// operation still goes through proposal preparation and host revalidation.
+func (s *Service) FixedCreationScopeStatus() runtime.FixedCreationScopeStatus {
+	if s == nil || s.impl == nil {
+		return runtime.FixedCreationScopeStatus{State: string(StartupScopeUnavailable), Reason: ErrServiceClosed.Error()}
+	}
+	foundation := s.CreationFoundationSnapshot()
+	s.startupScopeMu.Lock()
+	startupDirectory := s.startupScopeDisplayPath
+	s.startupScopeMu.Unlock()
+	status := runtime.FixedCreationScopeStatus{
+		StartupDirectory:      startupDirectory,
+		State:                 string(foundation.StartupScope.State),
+		Generation:            foundation.StartupScope.Generation,
+		OwnerCoverageComplete: foundation.OwnerCoverageComplete,
+		Reason:                foundation.StartupScope.Reason,
+	}
+	impl, ok := s.impl.(creationStatusImplementation)
+	if !ok {
+		if status.Reason == "" {
+			status.Reason = foundation.Reason
+		}
+		return status
+	}
+	var barrierPending bool
+	status.HostReady, barrierPending = impl.creationHostStatus()
+	if !foundation.OwnerCoverageComplete {
+		for _, owner := range foundation.Owners {
+			if owner.Disposition == CreationOwnerRequired && (owner.State != OwnerRegistered || owner.Reason != "") {
+				if owner.Reason != "" {
+					status.Reason = owner.Reason
+				} else {
+					status.Reason = "required auth/settings protection coverage is incomplete"
+				}
+				break
+			}
+		}
+	}
+	if barrierPending {
+		status.HostReady = false
+		status.Reason = "creation work or cleanup is still pending"
+	} else if !status.HostReady && status.State == string(StartupScopeIdentityRetained) && status.OwnerCoverageComplete && status.Reason == "" {
+		status.Reason = "the creation prototype gate is closed in this composition"
+	}
+	if !status.OwnerCoverageComplete && status.Reason == "" {
+		status.Reason = foundation.Reason
+	}
+	return status
 }
 
 func (s *Service) setStartupScopeUnavailable(reason string) {
@@ -342,6 +404,7 @@ func (s *Service) Close(ctx context.Context) error {
 	s.startupScope.State = StartupScopeClosed
 	s.startupScope.Reason = "host service is closed"
 	s.startupScopePath = ""
+	s.startupScopeDisplayPath = ""
 	s.startupScopeMu.Unlock()
 	var proposalErr error
 	if invalidator, ok := s.impl.(interface{ invalidateCreationProposals() error }); ok {

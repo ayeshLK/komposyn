@@ -123,6 +123,10 @@ directory; `~` expands to your home directory. Paths with spaces and Unicode
 are accepted as written. A directory change preserves the current
 conversation and does not grant read permission. The working directory only
 provides relative-path context; it does not set the read-eligibility boundary.
+The terminal also shows the trusted launch directory as a separate, fixed
+creation scope. `/cd` and conversation reset do not change that scope. This is
+informational only: normal chat does not register or advertise file creation,
+and selecting or displaying a directory grants no access or write permission.
 Outside targets still pass the host's protected-object, mount, file-type, size
 and exact-object checks, and the trusted backend must be available.
 

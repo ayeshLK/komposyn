@@ -24,6 +24,7 @@ import (
 	modelprovider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/ui"
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	tv "github.com/rivo/tview"
 )
 
@@ -54,6 +55,7 @@ type clientStub struct {
 	updatePlanAvailability   ui.CapabilityAvailability
 	requestInputAvailability ui.CapabilityAvailability
 	readAvailability         ui.FilesystemReadAvailability
+	creationAvailability     ui.FilesystemCreationAvailability
 	workingDirectory         string
 	workingDirectoryHook     func(context.Context, string) error
 	revoked                  []string
@@ -174,7 +176,7 @@ func (c *clientStub) Snapshot() ui.Snapshot {
 	c.mu.Lock()
 	hook := c.snapshotHook
 	c.snapshotHook = nil
-	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), ToolActivities: append([]ui.ToolActivity(nil), c.toolActivities...), UpdatePlanAvailability: c.updatePlanAvailability, RequestInputAvailability: c.requestInputAvailability, FilesystemReadAvailability: c.readAvailability, WorkingDirectory: c.workingDirectory}
+	snapshot := ui.Snapshot{Selected: c.selected, Turns: append([]ui.Turn(nil), c.turns...), Usage: append([]ui.ModelUsage(nil), c.usage...), Version: c.version, Plan: append([]ui.PlanStep(nil), c.plan...), ToolActivities: append([]ui.ToolActivity(nil), c.toolActivities...), UpdatePlanAvailability: c.updatePlanAvailability, RequestInputAvailability: c.requestInputAvailability, FilesystemReadAvailability: c.readAvailability, FilesystemCreationAvailability: c.creationAvailability, WorkingDirectory: c.workingDirectory}
 	c.mu.Unlock()
 	if hook != nil {
 		return hook()
@@ -1096,7 +1098,7 @@ func TestSlashSuggestionsKeyboardWorkflowDoesNotSubmitCommands(t *testing.T) {
 	press(tcell.KeyDown, 0) // highlight /help
 	press(tcell.KeyTab, 0)  // complete, do not submit
 	press(tcell.KeyEnter, 0)
-	waitForScreen(t, safeScreen, "launch directory is the working directory", "")
+	waitForScreen(t, safeScreen, "The working directory resolves relative paths", "")
 	select {
 	case got := <-sent:
 		t.Fatalf("slash command was sent to provider as %q", got)
@@ -1659,6 +1661,22 @@ func TestWorkingDirectoryIsVisibleAndFilesystemRootCommandIsRemoved(t *testing.T
 	}
 }
 
+func TestBannerSeparatesFixedCreationScopeFromWorkingDirectory(t *testing.T) {
+	client := &clientStub{
+		workingDirectory: "/tmp/project/subdir",
+		creationAvailability: ui.FilesystemCreationAvailability{
+			CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "File creation is unavailable because this chat does not register the creation capability."},
+			Scope:                  ui.FilesystemCreationScope{StartupDirectory: "/tmp/project", State: "identity-retained", Generation: 1, OwnerCoverageComplete: true},
+		},
+	}
+	u := &terminal{client: client, header: tv.NewTextView()}
+	u.updateBanner()
+	got := u.header.GetText(false)
+	if !strings.Contains(got, "Working directory: /tmp/project/subdir") || !strings.Contains(got, "Creation scope: /tmp/project") || !strings.Contains(got, "File creation unavailable") {
+		t.Fatalf("banner conflated navigation, fixed scope, or unavailable state: %q", got)
+	}
+}
+
 func TestCompactCountUsesIntegerRounding(t *testing.T) {
 	for value, want := range map[int64]string{999: "999", 1000: "1K", 1499: "1.5K", 1200: "1.2K", 999999: "1M", 2500000: "2.5M", 999950000: "1B", 2500000000: "2.5B", 9007199254740993: "9007199.3B"} {
 		if got := compactCount(value); got != want {
@@ -1806,8 +1824,11 @@ func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
 	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") || !strings.Contains(got, "File reading unavailable") || !strings.Contains(got, "update_plan unavailable") || !strings.Contains(got, "request_user_input unavailable") {
 		t.Fatalf("initial banner = %q", got)
 	}
-	if got := compactHeaderPath("/tmp/long-working-directory/launch/nested", 24); len([]rune(got)) > 24 || !strings.Contains(got, "…") {
+	if got := compactHeaderPath("/tmp/long-working-directory/launch/nested", 24); runewidth.StringWidth(got) > 24 || !strings.Contains(got, "…") {
 		t.Fatalf("compact working directory = %q", got)
+	}
+	if got := compactHeaderPath("/tmp/日本語日本語日本語日本語", 11); runewidth.StringWidth(got) > 11 || !strings.Contains(got, "…") {
+		t.Fatalf("compact wide-character path = %q (%d display cells)", got, runewidth.StringWidth(got))
 	}
 	client.selected = &model
 	client.readAvailability = ui.FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads require explicit once approval."}
@@ -1860,16 +1881,89 @@ func TestNarrowBannerKeepsCapabilityReasonVisible(t *testing.T) {
 	}
 }
 
+func TestBannerLayoutShowsCreationStatusAtWideAndNarrowWidths(t *testing.T) {
+	client := &clientStub{
+		readAvailability:         ui.FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads require explicit once approval."},
+		updatePlanAvailability:   ui.CapabilityAvailability{Available: true, State: "available"},
+		requestInputAvailability: ui.CapabilityAvailability{Available: true, State: "available"},
+		creationAvailability: ui.FilesystemCreationAvailability{
+			CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "The creation capability is not registered."},
+			Scope:                  ui.FilesystemCreationScope{StartupDirectory: "/tmp/synthetic-startup", State: "identity-retained"},
+		},
+		workingDirectory: "/tmp/synthetic-working-directory",
+	}
+	for _, test := range []struct {
+		name     string
+		width    int
+		rows     int
+		wantRow  int
+		wantText string
+		client   *clientStub
+	}{
+		{name: "wide", width: 240, rows: expandedHeaderRows, wantRow: 4, wantText: "File creation unavailable"},
+		{name: "intermediate unavailable", width: 80, rows: compactHeaderRows, wantRow: 3, wantText: "Creation: not registered", client: &clientStub{
+			updatePlanAvailability:   ui.CapabilityAvailability{State: "no_model", Reason: "Select a model."},
+			requestInputAvailability: ui.CapabilityAvailability{State: "no_model", Reason: "Select a model."},
+			creationAvailability: ui.FilesystemCreationAvailability{
+				CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "File creation is unavailable."},
+				Scope:                  ui.FilesystemCreationScope{StartupDirectory: "/tmp/synthetic-startup", State: "identity-retained"},
+			},
+		}},
+		{name: "narrow wide-character paths", width: 50, rows: compactHeaderRows, wantRow: 3, wantText: "Create: not registered", client: &clientStub{
+			workingDirectory:         "/tmp/日本語日本語日本語日本語",
+			updatePlanAvailability:   ui.CapabilityAvailability{State: "no_model", Reason: "Select a model."},
+			requestInputAvailability: ui.CapabilityAvailability{State: "no_model", Reason: "Select a model."},
+			creationAvailability: ui.FilesystemCreationAvailability{
+				CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "File creation is unavailable."},
+				Scope:                  ui.FilesystemCreationScope{StartupDirectory: "/tmp/日本語日本語日本語日本語", State: "identity-retained"},
+			},
+		}},
+		{name: "narrow", width: 50, rows: compactHeaderRows, wantRow: 3, wantText: "Create: not registered"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			header := tv.NewTextView().SetDynamicColors(true).SetTextAlign(tv.AlignLeft)
+			layout := tv.NewFlex().SetDirection(tv.FlexRow).AddItem(header, expandedHeaderRows, 0, false)
+			testClient := client
+			if test.client != nil {
+				testClient = test.client
+			}
+			u := &terminal{client: testClient, header: header, layout: layout}
+			u.setTerminalWidth(test.width)
+
+			screen := tcell.NewSimulationScreen("UTF-8")
+			if err := screen.Init(); err != nil {
+				t.Fatal(err)
+			}
+			screen.SetSize(test.width, test.rows)
+			layout.SetRect(0, 0, test.width, test.rows)
+			layout.Draw(screen)
+			screen.Show()
+			cells, width, _ := screen.GetContents()
+			var row strings.Builder
+			for x := 0; x < width; x++ {
+				cell := cells[test.wantRow*width+x]
+				if len(cell.Runes) > 0 {
+					row.WriteString(string(cell.Runes))
+				}
+			}
+			if got := row.String(); !strings.Contains(got, test.wantText) {
+				t.Fatalf("creation status is clipped from rendered %s banner row %d: %q", test.name, test.wantRow, got)
+			}
+		})
+	}
+}
+
 func TestHelpShowsFullAvailabilityReasons(t *testing.T) {
 	client := &clientStub{
 		readAvailability:         ui.FilesystemReadAvailability{State: "no_model", Reason: "Select a model with /model to check file-reading support."},
 		updatePlanAvailability:   ui.CapabilityAvailability{State: "unknown_route", Reason: "Tool protocol support is unverified."},
 		requestInputAvailability: ui.CapabilityAvailability{State: "enforcement_unavailable", Reason: "Host authorization is not configured."},
+		creationAvailability:     ui.FilesystemCreationAvailability{CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "File creation remains unavailable in normal chat."}, Scope: ui.FilesystemCreationScope{StartupDirectory: "/tmp/synthetic-launch", State: "identity-retained"}},
 	}
 	u := &terminal{client: client, output: newTranscriptView(), input: newComposerInput(), commands: supportedCommands()}
 	u.runCommand("/help")
 	got := u.transcript[0].text
-	for _, reason := range []string{"Select a model with /model to check file-reading support.", "Tool protocol support is unverified.", "Host authorization is not configured."} {
+	for _, reason := range []string{"Select a model with /model to check file-reading support.", "Tool protocol support is unverified.", "Host authorization is not configured.", "File creation remains unavailable in normal chat.", "/tmp/synthetic-launch"} {
 		if !strings.Contains(got, reason) {
 			t.Errorf("help missing availability reason %q: %q", reason, got)
 		}

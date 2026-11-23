@@ -72,7 +72,7 @@ var createFileSchema = json.RawMessage(`{"type":"object","properties":{"path":{"
 func CreateFileDefinition() Definition {
 	return Definition{
 		ID:          CreateFileID,
-		Description: "Prototype only: create one UTF-8 text file beneath an explicitly selected existing scope after review of the complete file. Existing destinations are refused; editing, overwrite, append, merge, rename, deletion, and directory creation are unavailable.",
+		Description: "Create one UTF-8 text file beneath the trusted fixed startup directory after review of the complete file. Existing destinations are refused; editing, overwrite, append, merge, rename, deletion, and directory creation are unavailable.",
 		InputSchema: append(json.RawMessage(nil), createFileSchema...),
 		MaxInput:    MaxCreateFileInputBytes,
 	}
