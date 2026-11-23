@@ -24,6 +24,7 @@ import (
 	modelprovider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/ui"
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	tv "github.com/rivo/tview"
 )
 
@@ -1823,8 +1824,11 @@ func TestBannerVersionSelectionAndResponsiveUsage(t *testing.T) {
 	if got := u.header.GetText(true); !strings.Contains(got, "KompoSyn") || !strings.Contains(got, "v0.11.0") || !strings.Contains(got, "No model selected") || !strings.Contains(got, "File reading unavailable") || !strings.Contains(got, "update_plan unavailable") || !strings.Contains(got, "request_user_input unavailable") {
 		t.Fatalf("initial banner = %q", got)
 	}
-	if got := compactHeaderPath("/tmp/long-working-directory/launch/nested", 24); len([]rune(got)) > 24 || !strings.Contains(got, "…") {
+	if got := compactHeaderPath("/tmp/long-working-directory/launch/nested", 24); runewidth.StringWidth(got) > 24 || !strings.Contains(got, "…") {
 		t.Fatalf("compact working directory = %q", got)
+	}
+	if got := compactHeaderPath("/tmp/日本語日本語日本語日本語", 11); runewidth.StringWidth(got) > 11 || !strings.Contains(got, "…") {
+		t.Fatalf("compact wide-character path = %q (%d display cells)", got, runewidth.StringWidth(got))
 	}
 	client.selected = &model
 	client.readAvailability = ui.FilesystemReadAvailability{Available: true, State: "available", Reason: "Exact-file reads require explicit once approval."}
@@ -1903,6 +1907,15 @@ func TestBannerLayoutShowsCreationStatusAtWideAndNarrowWidths(t *testing.T) {
 			creationAvailability: ui.FilesystemCreationAvailability{
 				CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "File creation is unavailable."},
 				Scope:                  ui.FilesystemCreationScope{StartupDirectory: "/tmp/synthetic-startup", State: "identity-retained"},
+			},
+		}},
+		{name: "narrow wide-character paths", width: 50, rows: compactHeaderRows, wantRow: 3, wantText: "Create: not registered", client: &clientStub{
+			workingDirectory:         "/tmp/日本語日本語日本語日本語",
+			updatePlanAvailability:   ui.CapabilityAvailability{State: "no_model", Reason: "Select a model."},
+			requestInputAvailability: ui.CapabilityAvailability{State: "no_model", Reason: "Select a model."},
+			creationAvailability: ui.FilesystemCreationAvailability{
+				CapabilityAvailability: ui.CapabilityAvailability{State: "not_registered", Reason: "File creation is unavailable."},
+				Scope:                  ui.FilesystemCreationScope{StartupDirectory: "/tmp/日本語日本語日本語日本語", State: "identity-retained"},
 			},
 		}},
 		{name: "narrow", width: 50, rows: compactHeaderRows, wantRow: 3, wantText: "Create: not registered"},

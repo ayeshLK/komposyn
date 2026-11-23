@@ -29,6 +29,7 @@ import (
 	modelprovider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/ui"
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	tv "github.com/rivo/tview"
 )
 
@@ -893,15 +894,16 @@ func compactAvailabilityReason(state, reason string) string {
 	}
 }
 
-func compactHeaderPath(path string, maxRunes int) string {
-	if maxRunes < 5 || len([]rune(path)) <= maxRunes {
+func compactHeaderPath(path string, maxCells int) string {
+	if maxCells < 5 || runewidth.StringWidth(path) <= maxCells {
 		return path
 	}
-	runes := []rune(path)
-	keep := maxRunes - 1
-	left := keep / 2
-	right := keep - left
-	return string(runes[:left]) + "…" + string(runes[len(runes)-right:])
+	remaining := maxCells - runewidth.StringWidth("…")
+	leftCells := remaining / 2
+	rightCells := remaining - leftCells
+	left := runewidth.Truncate(path, leftCells, "")
+	right := runewidth.TruncatePrefix(path, rightCells, "")
+	return left + "…" + right
 }
 
 func renderCapabilityAvailability(name string, status ui.CapabilityAvailability) string {
