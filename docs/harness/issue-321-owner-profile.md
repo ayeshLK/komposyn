@@ -84,7 +84,10 @@ new native run.
 Still deferred are trusted-host native evidence for startup-scope creation and
 movement, broader filesystems and launch profiles, production creation
 registration, integrated lifecycle review of every stale/cancel/interruption
-case, and separate explicit model-facing enablement. Fixture tests establish
-control flow, not native filesystem enforcement. Historical fixture/native
-evidence does not establish these new claims. Creation remains unavailable in
-the normal CLI composition.
+case, and separate explicit model-facing enablement. The acceptance follow-up
+adds an exact-candidate test overlay for nested-parent substitution, scope and
+target refusals, startup movement at the post-release checkpoint, and a
+conditional pre-existing mount-boundary fixture. These source scenarios have
+not been run on a trusted host. Fixture tests establish control flow, not native
+filesystem enforcement. Historical fixture/native evidence does not establish
+these new claims. Creation remains unavailable in the normal CLI composition.

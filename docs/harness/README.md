@@ -156,9 +156,11 @@ path. The disposable prototype has behavioral lifecycle evidence recorded in
 scoped native evidence. The accepted [startup-directory creation scope decision](../adr/0009-startup-directory-creation-scope.md)
 selects the fixed CLI startup directory and existing subdirectories, with
 composition-owned protected-resource coverage and per-file once approval.
-That scope and coverage design still require gated implementation and new
-native evidence before a separate enablement PR. The normal chat composition
-does not expose creation.
+The gated owner/scope implementation is merged in PRs #352–#354. The current
+acceptance follow-up adds exact-candidate native scenarios, but they have not
+yet been run on a trusted host. The normal chat composition still does not
+expose creation; trusted-host evidence review and a separate explicit
+enablement PR remain required.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).

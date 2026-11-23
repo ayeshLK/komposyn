@@ -165,8 +165,12 @@ identity, nested existing parents, protected-owner ancestry, and terminal
 movement for creation proposals. It applies only to the trusted Linux ext4
 profile with the operation-specific descriptor-bind worker profile. These
 changes are not model-facing: creation remains unregistered and unavailable.
-New trusted-host evidence for these claims and separate enablement approval
-remain outstanding. See the [owner-profile foundation](issue-321-owner-profile.md)
+The acceptance follow-up adds candidate-only native cases for nested-parent
+substitution, invalid-target/scope refusal, startup movement after publication
+release, and a real mount boundary when an operator already has a suitable
+private fixture. Those cases have not been run on a trusted host; source
+presence and Go/race checks do not establish native enforcement. Separate
+enablement approval remains outstanding. See the [owner-profile foundation](issue-321-owner-profile.md)
 and [native acceptance procedure](issue-321-native-acceptance.md).
 
 ## Runtime and UI reasons

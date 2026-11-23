@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import platform
 import re
 from pathlib import Path
 import shutil
@@ -22,6 +23,9 @@ EXPECTED = ['TestNativeActorModeDispatch', 'TestNativeShippedGenericReadGate', '
             'TestNativeServicePostCaptureRevocation', 'TestNativeServiceAuthRotationJoinsHeldWorker',
             'TestNativeServiceBoundedCreation', 'TestNativeServiceCreationUsesRetainedParentAfterIndependentMove',
             'TestNativeServiceNestedCreationUsesStartupScope', 'TestNativeServiceStartupRootMovementIsTerminal',
+            'TestNativeServiceNestedParentSubstitutionRefusesPreparedProposal',
+            'TestNativeServiceScopeAndTargetRefusalsPreserveFixtures', 'TestNativeServiceMountBoundaryRefusal',
+            'TestNativeServiceStartupRootMovementAfterPublicationRelease',
             'TestNativeServiceRootChangeWhileHeld','TestNativeServiceCancellationWhileHeld',
             'TestNativeServiceShutdownRetryWhileHeld']
 
@@ -39,6 +43,8 @@ def main():
     parser.add_argument('--bwrap', type=Path, default=Path('/usr/bin/bwrap'))
     parser.add_argument('--scratch-dir', type=Path, default=Path('/tmp'),
         help='existing writable directory on the filesystem used for disposable fixtures and result bundle')
+    parser.add_argument('--mount-scope', type=Path, default=None,
+        help='optional existing private directory beneath scratch-dir with an already-mounted child; the test never creates or changes mounts')
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('Run on a normal Linux host; do not use sudo.')
@@ -49,6 +55,19 @@ def main():
     scratch_dir=args.scratch_dir.resolve()
     if not scratch_dir.is_dir() or not os.access(scratch_dir, os.W_OK | os.X_OK):
         parser.error('--scratch-dir must be an existing writable directory')
+    mount_scope = None
+    if args.mount_scope is not None:
+        if not args.mount_scope.is_absolute():
+            parser.error('--mount-scope must be an absolute path')
+        try:
+            mount_scope = args.mount_scope.resolve(strict=True)
+            mount_scope.relative_to(scratch_dir)
+            mount_stat = os.lstat(args.mount_scope)
+        except (OSError, ValueError):
+            parser.error('--mount-scope must be an existing directory beneath --scratch-dir')
+        if (mount_scope == scratch_dir or not os.path.isdir(mount_scope) or os.path.islink(args.mount_scope) or
+                mount_stat.st_uid != os.getuid() or mount_stat.st_mode & 0o077):
+            parser.error('--mount-scope must be a private real directory owned by the current user')
     if not shutil.which('go') or not shutil.which('git'):
         parser.error('Go and Git must be installed')
     os.umask(0o077)
@@ -65,12 +84,14 @@ def main():
     records = out/'native-records'; records.mkdir()
     source = work/'source'; source.mkdir()
     fixture_tmp = work/'fixtures'; fixture_tmp.mkdir()
-    manifest = {'schema_version':1, 'harness_revision':2, 'source_commit':revision, 'test_overlay':True,
+    manifest = {'schema_version':1, 'harness_revision':3, 'source_commit':revision, 'test_overlay':True,
         'runner_sha256':digest(Path(__file__)), 'overlay_sha256':digest(overlay),
+        'expected_cases':EXPECTED,
         'python_version':sys.version.split()[0],
         'run_time_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'scope':'PR #243 service fixtures and bounded #321 creation worker; no production creation enablement/provider network',
         'scratch_directory_configured':True,
+        'mount_scope_supplied':mount_scope is not None,
         'stages':{}, 'status':'incomplete', 'work_retained':True}
     clean = True
     exit_code = 1
@@ -104,11 +125,15 @@ def main():
         os.environ['TMPDIR']=str(fixture_tmp)
         os.environ['KOMPOSYN_NATIVE_RECORDS']=str(records)
         os.environ['KOMPOSYN_NATIVE_BWRAP']=str(args.bwrap)
+        os.environ.pop('KOMPOSYN_NATIVE_MOUNT_SCOPE', None)
+        if mount_scope is not None:
+            os.environ['KOMPOSYN_NATIVE_MOUNT_SCOPE']=str(mount_scope)
         os.environ.setdefault('GOCACHE',str(work/'go-cache'))
         os.environ['CGO_ENABLED']='0'
         os.environ['GOWORK']='off'
         manifest['go_version']=subprocess.check_output(['go','version'],text=True,timeout=30).strip()
         manifest['kernel']=os.uname().release
+        manifest['architecture']=platform.machine()
         manifest['uid']=os.getuid()
         def stage(name,argv,timeout):
             value=capture.run_capture(argv,timeout,2*1024*1024,str(out/(name+'.stdout.log')),str(out/(name+'.stderr.log')),str(source))
@@ -121,24 +146,38 @@ def main():
             print(name+': '+('completed' if ok else 'failed/incomplete'),flush=True)
             return ok
         # Unit/coordinator checks remain a separately labelled evidence stage.
-        unit_ok=stage('unit-checks',['go','test','-json','-count=1','-timeout=90s','-run','^Test(HostComposition|FailedOwner|PreparationRefusal|CancellationAfterPreparation|UnconfirmedPreparation|ChatCloseContext|StartupScopeMovement|CreationResolvesNested|StartupRootMoveAtPublication|ClassifyFromRetainedDirectory)','./internal/harness/sandbox','./internal/harness/readbrokerstudy','./internal/harness/runtime'],180)
+        unit_ok=stage('unit-checks',['go','test','-tags=komposyn_stage6_study','-json','-count=1','-timeout=90s','-run','^Test(HostComposition|FailedOwner|PreparationRefusal|CancellationAfterPreparation|UnconfirmedPreparation|ChatCloseContext|StartupScopeMovement|CreationResolvesNested|StartupRootMoveAtPublication|ClassifyFromRetainedDirectory)','./internal/harness/sandbox','./internal/harness/readbrokerstudy','./internal/harness/runtime'],180)
         binary=work/'native-service-tests'
-        build_ok=stage('build-native',['go','test','-c','-buildvcs=false','-o',str(binary),'./internal/harness/sandbox'],300)
+        build_ok=stage('build-native',['go','test','-tags=komposyn_stage6_study','-c','-buildvcs=false','-o',str(binary),'./internal/harness/sandbox'],300)
         if build_ok:
             manifest['native_binary_sha256']=digest(binary)
             run_ok=stage('native',[str(binary),'-test.v','-test.count=1','-test.timeout=240s','-test.run=^TestNative'],270)
             rows=[]
             for case in EXPECTED:
                 path=records/(case+'.json')
-                rows.append(json.loads(path.read_text()) if path.exists() else {'case':case,'status':'missing','cleanup_confirmed':False})
+                try:
+                    row=json.loads(path.read_text()) if path.exists() else {'case':case,'status':'missing','cleanup_confirmed':False}
+                except (OSError, json.JSONDecodeError):
+                    row={'case':case,'status':'invalid_record','cleanup_confirmed':False}
+                if row.get('case') != case:
+                    row['status']='case_identity_mismatch'
+                if row.get('status') == 'unavailable' and not row.get('unavailable_reason'):
+                    row['status']='unavailability_unexplained'
+                rows.append(row)
+            record_names={p.name for p in records.glob('*.json')}
+            expected_names={case+'.json' for case in EXPECTED}
+            inventory_exact=(len(set(EXPECTED)) == len(EXPECTED) and
+                record_names == expected_names and len(rows) == len(EXPECTED))
             write_json(out/'native-report.json',{'source_commit':revision,'overlay_sha256':digest(overlay),'cases':rows,
+                'expected_cases':EXPECTED,'case_inventory_exact':inventory_exact,
                 'limitations':['Test-only fixture authorizer rebinding; generic reads remain blocked in shipped service.',
                     'No external provider request; private coordinator publication only.',
                     'Native fixed-worker cases do not establish all enablement gates, sealed-copy modes, arbitrary descendants, unknown data policy, or all platform guarantees.',
                     'Existing unit tests are not counted as native worker enforcement evidence.']})
-            if unit_ok and run_ok and all(r['status']=='measured_pass' and r['cleanup_confirmed'] for r in rows):
+            records_valid=inventory_exact and all(r.get('cleanup_confirmed') is True and r.get('status') in ('measured_pass','unavailable') for r in rows)
+            if unit_ok and run_ok and records_valid and all(r['status']=='measured_pass' for r in rows):
                 manifest['status']='scoped_native_pass';exit_code=0
-            elif run_ok and any(r['status']=='unavailable' for r in rows) and all(r['status'] in ['measured_pass','unavailable'] for r in rows) and unit_ok:
+            elif run_ok and records_valid and any(r['status']=='unavailable' for r in rows) and unit_ok:
                 manifest['status']='native_unavailable';exit_code=2
             else:
                 manifest['status']='failed_or_incomplete'
@@ -162,8 +201,10 @@ def main():
             # Do not remove resources while process cleanup remains unconfirmed.
             print('Cleanup incomplete; synthetic work retained at '+str(work),file=sys.stderr)
             manifest['status']='cleanup_incomplete';exit_code=1
+        manifest['exit_code']=exit_code
         write_json(out/'manifest.json',manifest)
         summary=['Status: '+manifest['status'],'Source: '+revision,
+            'Exit code: '+str(exit_code),
             'Test overlay SHA-256: '+manifest['overlay_sha256'],
             'This is scoped service fixture evidence, not tool enablement.',
             'Review native-report.json, native-records and capture cleanup status.']

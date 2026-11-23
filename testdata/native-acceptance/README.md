@@ -9,28 +9,30 @@ The hash-pinned runner and test overlay are kept together in
 - `run-native-acceptance.py`
 - `native_acceptance_linux_test.go`
 
-The runner includes four #321 creation cases. It composes the real host service
-with the real Bubblewrap worker. The earlier bounded-worker cases use the
-synthetic complete owner manifest used by fixtures; the new startup-scope
-cases use actual auth/settings owner registrations and a separate internal
-test-only preparation gate. The suite publishes a synthetic file, checks exact
-bytes and mode `0600`, verifies stage cleanup and worker join, and confirms an
-existing target is not replaced. It also injects a host-side independent actor
-after the service's final target observation and immediately before the
-worker's publication request, then checks that `RENAME_NOREPLACE` preserves
-the actor's file and removes the stage. This measures one deterministic residual-race
-checkpoint, not every possible syscall interleaving. The second case starts a
-separate same-UID fixed-purpose actor process that moves the synthetic parent
-directory and creates a substitute at the old pathname immediately before
-worker staging. It records actor PID/UID, the retained and substitute parent
-identity hashes, the mount ID/filesystem, stage disposition and worker join.
-The actor has no shell or arbitrary command interface and shares the host mount
-namespace. Additional cases capture the service's fixed startup scope, publish
-beneath an existing nested parent, and move/replace the startup path with a
-fixed same-UID actor. They verify that movement is detected before worker
-launch and remains terminal after the original object is restored. These are
-new candidate cases and have not yet been run on a trusted host. The study does
-not use a provider, enable the production tool, or authorize arbitrary roots.
+The startup-scope #321 cases compose the real host Service, actual auth/settings
+registrations, the retained startup descriptor and the real Bubblewrap worker
+behind a package-private test-only gate. Earlier bounded-worker cases retain
+their synthetic complete owner manifest. All cases use only synthetic file
+content. They verify exact bytes/mode, no-replace collision behavior, stage
+disposition and joined workers.
+Fixed same-UID actors test retained-parent movement, stale nested-parent
+substitution before approval release, startup-root movement before worker
+launch, and startup-root movement immediately before worker publication.
+The latter records a known success through the retained object after the final
+observation, followed by a terminal refusal for later proposals; it demonstrates
+ADR-0008's accepted residual race rather than strict live-pathname containment.
+The refusal matrix establishes a valid nested baseline before checking ordinary
+content, direct/nested escapes, outside navigation, missing/non-directory
+parents, symlinked parent/leaf paths, collisions, and an absent protected auth
+route. It verifies unchanged sentinels, no worker launch for refusals, and no
+leftover private stage. It does not use a provider or enable production tools.
+
+Mount crossing is measured only if the disposable scope already contains a
+real nested mount. The runner does not create or alter mounts. Without such a
+boundary the case is recorded `unavailable` with its exact prerequisite; an
+unavailable case prevents an aggregate native pass. The report also preserves
+the prior synthetic worker cases and their historical claims separately from
+the current startup-scope acceptance.
 
 From the candidate checkout, use the exact candidate commit and an existing
 scratch directory on local ext4. The issue-specific procedure is documented
@@ -45,13 +47,18 @@ scripts/native-acceptance/run-native-acceptance.sh \
   --scratch-dir /path/to/writable/ext4/scratch
 ```
 
+If an already-existing private directory beneath that scratch directory
+contains a nested mount which you are authorized to inspect without changing,
+add `--mount-scope /absolute/path/to/that/directory`. The optional mount case
+then tests the real boundary. Do not create or alter mounts for this study.
+
 The command reads only the selected committed revision into its own temporary
 source tree. It does not modify or clean the checkout. `--revision` is
 required, so a run cannot silently fall back to an old runner baseline.
 
 The script reads a Git archive of that exact commit. If it is absent locally, it fetches the commit from the public repository into a disposable scratch repository. It never checks out, fetches into, edits or cleans your actual worktree.
 
-Builds and native tests use an isolated source directory with one **test-only overlay**. The archive identifies the source commit, source archive hash, overlay hash, runner hash, exact committed capture helper hash and native test binary hash separately. It does not falsely claim the overlay is committed code. A normal host run can take several minutes for the first build.
+Builds and native tests use an isolated source directory with one **test-only overlay**. The archive identifies the source commit, source archive hash, overlay hash, runner hash, exact committed capture helper hash and native test binary hash separately. It does not falsely claim the overlay is committed code. `manifest.json` records the expected case names; `native-report.json` must contain exactly one record per expected case, no extras, and an explicit reason for every unavailable case. Missing, malformed, duplicate/mismatched, failed, unavailable or cleanup-incomplete records cannot produce `scoped_native_pass`. A normal host run can take several minutes for the first build.
 
 ## Cases and boundaries
 

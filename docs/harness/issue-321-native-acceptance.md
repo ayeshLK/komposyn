@@ -146,6 +146,57 @@ This evidence remains limited to the fixed worker and tested host/profile; it
 does not enable production creation or establish other filesystems, launch
 modes, platforms, or arbitrary descendants.
 
+## Fixed startup-scope candidate under review
+
+The PR #354 baseline and accepted ADR-0009 require new evidence for the fixed
+startup directory, owner-backed composition, nested-parent behavior, and
+startup-root movement. The current follow-up adds those cases to the isolated
+native overlay and tightens result accounting; it does not change production
+worker enforcement or register the creation tool. No trusted-host report for
+this exact candidate has been recorded yet. The local development host's
+Bubblewrap was observed as `nobody:nogroup` mode `0755` (version 0.9.0), which
+fails the trusted-backend requirement; no ownership or permission change was
+made.
+
+The added candidate cases are:
+
+- `TestNativeServiceNestedParentSubstitutionRefusesPreparedProposal`: a fixed
+  same-UID actor moves an existing nested parent and replaces its old route
+  after preparation but before approved preparation. The report includes
+  before/moved/substitute identity hashes, actor PID/UID, no-effect checks,
+  stage disposition, and worker count.
+- `TestNativeServiceScopeAndTargetRefusalsPreserveFixtures`: performs a valid
+  nested creation first, then checks direct/nested escapes, navigation outside
+  the fixed scope, absent and non-directory parents, symlinked parent/leaf,
+  file/directory collisions, and an absent protected auth route. It checks the
+  outside sentinel, absence of unintended effects, no worker launch for
+  refusals, and no private stage.
+- `TestNativeServiceMountBoundaryRefusal`: uses `--mount-scope` only when the
+  operator already has a private directory beneath the chosen scratch root
+  that contains a real nested mount. It records distinct observed mount IDs,
+  establishes an eligible direct-child proposal without executing it, then
+  checks refusal under the nested mount. No mount is created or changed. If no
+  boundary is available, the record is `unavailable` with the exact missing
+  prerequisite; that is not a pass.
+- `TestNativeServiceStartupRootMovementAfterPublicationRelease`: an independent
+  fixed actor moves/replaces the startup path immediately before the real
+  worker's publish request, after final validation and publication release.
+  The test records the known effect under the retained object, verifies it was
+  not redirected to the replacement, joins worker and actor, restores the
+  original object, and confirms future proposals remain terminally refused.
+  This is a selected observation of ADR-0008's residual race, not strict
+  pathname containment or rollback.
+
+The existing nested-publication and pre-worker startup-movement cases are in the
+same candidate inventory. These tests use the actual Service, retained
+startup descriptor, actual auth/settings stores and real native worker. Their
+source presence and local Go compilation are not native enforcement evidence.
+The exact test names are captured in the committed runner's
+`manifest.json`; aggregate success requires exactly one valid record per
+expected name, confirmed cleanup, and `measured_pass` for every case. Any
+unavailable, missing, malformed, failed, extra, or cleanup-incomplete record
+prevents `scoped_native_pass`.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).
@@ -161,7 +212,7 @@ Do not change Bubblewrap ownership or permissions, install privileged
 components, or run as root to make a host pass. If a prerequisite fails, stop
 and report it as unavailable.
 
-## Steps
+## Exact-candidate operator steps
 
 1. Clone the repository and enter it:
 
@@ -170,18 +221,19 @@ and report it as unavailable.
    cd komposyn
    ```
 
-2. Fetch the candidate branch and check out the exact candidate commit supplied
-   with this request. Replace `<candidate-commit>` with its full 40-character
-   SHA:
+2. Fetch the PR branch and check out the exact full 40-character head SHA
+   supplied in the PR handoff. Set the two values from that handoff:
 
    ```sh
-   git fetch origin <candidate-branch>
-   git checkout --detach <candidate-commit>
-   git rev-parse HEAD
+   CANDIDATE_BRANCH='feat/issue321-acceptance-evidence-closeout'
+   CANDIDATE_SHA='<full 40-character PR head SHA>'
+   git fetch origin "$CANDIDATE_BRANCH"
+   git checkout --detach "$CANDIDATE_SHA"
+   test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
    ```
 
-   Confirm that `git rev-parse HEAD` prints the same SHA. Do not run against a
-   different commit.
+   If that equality check fails, stop. Do not run a nearby branch tip or older
+   commit.
 
 3. Confirm the toolchain and host identity:
 
@@ -196,26 +248,35 @@ and report it as unavailable.
    Bubblewrap must be owned by `root` and mode must not allow group or other
    writes. Stop if not.
 
-4. Select an existing writable directory on local ext4. For example, if
-   `/mnt/ext4` is already an ext4 mount and you own it:
+4. Choose an existing writable directory that you control on local ext4. Set
+   `SCRATCH_DIR` to that actual directory; do not copy an example host path:
 
    ```sh
-   findmnt -T /mnt/ext4 -o TARGET,FSTYPE,OPTIONS
-   mkdir -m 700 -p /mnt/ext4/komposyn-issue321
+   SCRATCH_DIR='/absolute/path/to/your/existing/ext4/scratch'
+   test -d "$SCRATCH_DIR" && test -w "$SCRATCH_DIR" && test -x "$SCRATCH_DIR"
+   findmnt -T "$SCRATCH_DIR" -o TARGET,FSTYPE,OPTIONS
+   test "$(findmnt -n -o FSTYPE -T "$SCRATCH_DIR")" = ext4
    ```
 
-   `findmnt` must report `ext4`. Use a directory you are authorized to write;
-   do not mount or reconfigure a filesystem for this test.
+   If any check fails, stop. Do not mount or reconfigure a filesystem for this
+   test.
 
 5. Run the acceptance runner from the checked-out candidate:
 
    ```sh
    scripts/native-acceptance/run-native-acceptance.sh \
      --repo "$PWD" \
-     --revision "$(git rev-parse HEAD)" \
+     --revision "$CANDIDATE_SHA" \
      --bwrap /usr/bin/bwrap \
-     --scratch-dir /mnt/ext4/komposyn-issue321
+     --scratch-dir "$SCRATCH_DIR"
    ```
+
+   Only add `--mount-scope "$MOUNT_SCOPE"` if you already have a private,
+   current-user-owned directory beneath `SCRATCH_DIR` with a real nested mount
+   that you are authorized to inspect without changing. Set `MOUNT_SCOPE` to
+   that existing directory. The test will not create, move, or modify mounts.
+   Without it, the mount-boundary case records unavailable and the runner
+   exits `2` rather than reporting an aggregate pass.
 
    The runner uses a temporary source archive and test overlay, without
    modifying the checkout. It runs selected unit checks, builds the native
@@ -226,27 +287,31 @@ and report it as unavailable.
    directory at its former path; it verifies creation is relative to the
    retained parent descriptor. Both reports include the actual filesystem
    type and mount ID observed from retained descriptors. The candidate adds
-   `TestNativeServiceNestedCreationUsesStartupScope` and
-   `TestNativeServiceStartupRootMovementIsTerminal`; these test nested
-   publication beneath the fixed startup scope and terminal refusal after the
-   startup directory is moved/replaced/restored. They require a fresh trusted
-   host run and are not covered by the historical records above.
+   the per-case records named in `manifest.json`, including
+   `TestNativeServiceNestedParentSubstitutionRefusesPreparedProposal`,
+   `TestNativeServiceScopeAndTargetRefusalsPreserveFixtures`,
+   `TestNativeServiceMountBoundaryRefusal`, and
+   `TestNativeServiceStartupRootMovementAfterPublicationRelease`. Expected
+   case names come from the candidate manifest; do not assume a fixed case
+   count.
 
 6. Read the `Results archive: ...` path printed by the runner. Inspect
    `summary.txt`, `manifest.json`, `native-report.json`, the
-   `TestNativeServiceBoundedCreation`,
-   `TestNativeServiceCreationUsesRetainedParentAfterIndependentMove`,
-   `TestNativeServiceNestedCreationUsesStartupScope`, and
-   `TestNativeServiceStartupRootMovementIsTerminal` records, and `SHA256SUMS`.
-   Send back the
-   archive path and the command's exit status.
+   source/runner/overlay/binary hashes, every expected case record, the
+   `case_inventory_exact` value, the aggregate status, cleanup fields, and
+   `SHA256SUMS`. Check that the recorded kernel, architecture, UID, Go version,
+   Bubblewrap trust/version/bind mode, and filesystem/mount evidence match the
+   requested profile. Keep the archive unchanged and send back its path, the
+   external archive SHA-256 sidecar value, and the command's exit status.
 
 ## Result interpretation
 
 - Exit `0` means the selected unit/build stages and all recorded native cases
   passed for this host, mount and measured Bubblewrap mode.
 - Exit `2` means the runner completed its earlier stages but native execution
-  was unavailable. This is not a pass.
+  was unavailable or at least one expected case was explicitly unavailable.
+  This is not a pass. An unavailable mount case names the missing pre-existing
+  mount fixture needed for that evidence.
 - Exit `1` means a test failed or evidence/cleanup was incomplete. Send the
   bundle without rerunning or deleting retained work.
 

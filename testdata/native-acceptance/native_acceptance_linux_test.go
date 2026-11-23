@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,6 +34,7 @@ import (
 	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	rb "github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
@@ -63,47 +65,56 @@ func init() {
 }
 
 type nativeRecord struct {
-	FirstUpdateCleanupPending        bool                  `json:"first_update_cleanup_pending"`
-	FirstRefusalPreservedDestination bool                  `json:"first_refusal_preserved_destination"`
-	FreshRetrySucceeded              bool                  `json:"fresh_retry_succeeded"`
-	FreshRetryDistinctObject         bool                  `json:"fresh_retry_distinct_object"`
-	RootTransitionCleanupPending     bool                  `json:"root_transition_cleanup_pending"`
-	FreshReadAfterRootChange         bool                  `json:"fresh_read_after_root_change"`
-	FailureKind                      string                `json:"failure_kind,omitempty"`
-	EmptyReplacementObserved         bool                  `json:"empty_replacement_observed"`
-	WorkerJoinedBeforeOwnerWrite     bool                  `json:"worker_joined_before_owner_write"`
-	RetiredAliasRefused              bool                  `json:"retired_alias_refused"`
-	VerifiedReturnedBytes            bool                  `json:"verified_returned_bytes"`
-	CreationVerifiedBytes            bool                  `json:"creation_verified_bytes,omitempty"`
-	CreationVerifiedMode             bool                  `json:"creation_verified_mode,omitempty"`
-	CreationStageAbsent              bool                  `json:"creation_stage_absent,omitempty"`
-	CreationLateCollisionRefused     bool                  `json:"creation_late_collision_refused,omitempty"`
-	CreationLateStageAbsent          bool                  `json:"creation_late_stage_absent,omitempty"`
-	CreationFilesystem               string                `json:"creation_filesystem,omitempty"`
-	CreationMountID                  uint64                `json:"creation_mount_id,omitempty"`
-	CreationFailureDetail            string                `json:"creation_failure_detail,omitempty"`
-	CreationParentMovePublished      bool                  `json:"creation_parent_move_published_to_retained_object,omitempty"`
-	CreationParentMoveFilesystem     string                `json:"creation_parent_move_filesystem,omitempty"`
-	CreationParentMoveMountID        uint64                `json:"creation_parent_move_mount_id,omitempty"`
-	CreationActorPID                 int                   `json:"creation_actor_pid,omitempty"`
-	CreationActorUID                 int                   `json:"creation_actor_uid,omitempty"`
-	CreationActorExecution           string                `json:"creation_actor_execution,omitempty"`
-	CreationParentIdentitySHA256     string                `json:"creation_parent_identity_sha256,omitempty"`
-	CreationMovedIdentitySHA256      string                `json:"creation_moved_identity_sha256,omitempty"`
-	CreationSubstituteIdentitySHA256 string                `json:"creation_substitute_identity_sha256,omitempty"`
-	CreationNestedPublished          bool                  `json:"creation_nested_published,omitempty"`
-	CreationStartupFilesystem        string                `json:"creation_startup_filesystem,omitempty"`
-	CreationStartupMountID           uint64                `json:"creation_startup_mount_id,omitempty"`
-	StartupMoveActorPID              int                   `json:"startup_move_actor_pid,omitempty"`
-	StartupMoveActorUID              int                   `json:"startup_move_actor_uid,omitempty"`
-	StartupMoveDetected              bool                  `json:"startup_move_detected,omitempty"`
-	StartupMoveTerminalAfterRestore  bool                  `json:"startup_move_terminal_after_restore,omitempty"`
-	Case                             string                `json:"case"`
-	Status                           string                `json:"status"`
-	CleanupConfirmed                 bool                  `json:"cleanup_confirmed"`
-	Backend                          *rb.BackendInspection `json:"backend,omitempty"`
-	Evidence                         []rb.ReadEvidence     `json:"evidence,omitempty"`
-	Limitations                      []string              `json:"limitations"`
+	FirstUpdateCleanupPending               bool                  `json:"first_update_cleanup_pending"`
+	FirstRefusalPreservedDestination        bool                  `json:"first_refusal_preserved_destination"`
+	FreshRetrySucceeded                     bool                  `json:"fresh_retry_succeeded"`
+	FreshRetryDistinctObject                bool                  `json:"fresh_retry_distinct_object"`
+	RootTransitionCleanupPending            bool                  `json:"root_transition_cleanup_pending"`
+	FreshReadAfterRootChange                bool                  `json:"fresh_read_after_root_change"`
+	FailureKind                             string                `json:"failure_kind,omitempty"`
+	EmptyReplacementObserved                bool                  `json:"empty_replacement_observed"`
+	WorkerJoinedBeforeOwnerWrite            bool                  `json:"worker_joined_before_owner_write"`
+	RetiredAliasRefused                     bool                  `json:"retired_alias_refused"`
+	VerifiedReturnedBytes                   bool                  `json:"verified_returned_bytes"`
+	CreationVerifiedBytes                   bool                  `json:"creation_verified_bytes,omitempty"`
+	CreationVerifiedMode                    bool                  `json:"creation_verified_mode,omitempty"`
+	CreationStageAbsent                     bool                  `json:"creation_stage_absent,omitempty"`
+	CreationLateCollisionRefused            bool                  `json:"creation_late_collision_refused,omitempty"`
+	CreationLateStageAbsent                 bool                  `json:"creation_late_stage_absent,omitempty"`
+	CreationFilesystem                      string                `json:"creation_filesystem,omitempty"`
+	CreationMountID                         uint64                `json:"creation_mount_id,omitempty"`
+	CreationFailureDetail                   string                `json:"creation_failure_detail,omitempty"`
+	CreationParentMovePublished             bool                  `json:"creation_parent_move_published_to_retained_object,omitempty"`
+	CreationParentMoveFilesystem            string                `json:"creation_parent_move_filesystem,omitempty"`
+	CreationParentMoveMountID               uint64                `json:"creation_parent_move_mount_id,omitempty"`
+	CreationActorPID                        int                   `json:"creation_actor_pid,omitempty"`
+	CreationActorUID                        int                   `json:"creation_actor_uid,omitempty"`
+	CreationActorExecution                  string                `json:"creation_actor_execution,omitempty"`
+	CreationParentIdentitySHA256            string                `json:"creation_parent_identity_sha256,omitempty"`
+	CreationMovedIdentitySHA256             string                `json:"creation_moved_identity_sha256,omitempty"`
+	CreationSubstituteIdentitySHA256        string                `json:"creation_substitute_identity_sha256,omitempty"`
+	CreationNestedPublished                 bool                  `json:"creation_nested_published,omitempty"`
+	CreationNestedParentSubstitutionRefused bool                  `json:"creation_nested_parent_substitution_refused,omitempty"`
+	CreationInvalidTargetMatrixRefused      bool                  `json:"creation_invalid_target_matrix_refused,omitempty"`
+	CreationMountBoundaryRefused            bool                  `json:"creation_mount_boundary_refused,omitempty"`
+	CreationMountBoundaryUnavailableReason  string                `json:"creation_mount_boundary_unavailable_reason,omitempty"`
+	StartupMoveAfterReleasePublished        bool                  `json:"startup_move_after_release_published,omitempty"`
+	StartupMoveAfterReleaseOutcome          string                `json:"startup_move_after_release_outcome,omitempty"`
+	StartupMoveAfterReleaseActorPID         int                   `json:"startup_move_after_release_actor_pid,omitempty"`
+	StartupMoveAfterReleaseActorUID         int                   `json:"startup_move_after_release_actor_uid,omitempty"`
+	UnavailableReason                       string                `json:"unavailable_reason,omitempty"`
+	CreationStartupFilesystem               string                `json:"creation_startup_filesystem,omitempty"`
+	CreationStartupMountID                  uint64                `json:"creation_startup_mount_id,omitempty"`
+	StartupMoveActorPID                     int                   `json:"startup_move_actor_pid,omitempty"`
+	StartupMoveActorUID                     int                   `json:"startup_move_actor_uid,omitempty"`
+	StartupMoveDetected                     bool                  `json:"startup_move_detected,omitempty"`
+	StartupMoveTerminalAfterRestore         bool                  `json:"startup_move_terminal_after_restore,omitempty"`
+	Case                                    string                `json:"case"`
+	Status                                  string                `json:"status"`
+	CleanupConfirmed                        bool                  `json:"cleanup_confirmed"`
+	Backend                                 *rb.BackendInspection `json:"backend,omitempty"`
+	Evidence                                []rb.ReadEvidence     `json:"evidence,omitempty"`
+	Limitations                             []string              `json:"limitations"`
 }
 
 func nativeReport(t *testing.T) *nativeRecord {
@@ -112,6 +123,8 @@ func nativeReport(t *testing.T) *nativeRecord {
 	t.Cleanup(func() {
 		if t.Failed() {
 			r.Status = "failed"
+		} else if t.Skipped() && r.Status == "measured_pass" {
+			r.Status = "skipped_without_disposition"
 		}
 		if dir := os.Getenv("KOMPOSYN_NATIVE_RECORDS"); dir != "" {
 			b, err := json.MarshalIndent(r, "", "  ")
@@ -199,11 +212,15 @@ func newNativeFixture(t *testing.T, r *nativeRecord) *nativeFixture {
 	if backend == "" {
 		backend = "/usr/bin/bwrap"
 	}
-	inspection := rb.InspectBubblewrap(backend)
+	inspection := rb.InspectBubblewrapForStage6(backend, rb.BindModeDescriptor)
 	inspection.Path = "<configured-backend>"
 	r.Backend = &inspection
-	if !inspection.Trusted || inspection.Error != "" {
+	if !inspection.Trusted || inspection.Error != "" || inspection.BindMode != rb.BindModeDescriptor {
 		r.Status = "unavailable"
+		r.UnavailableReason = "configured Bubblewrap failed the trust check or bounded backend probe"
+		if inspection.Trusted && inspection.Error == "" && inspection.BindMode != rb.BindModeDescriptor {
+			r.UnavailableReason = "configured Bubblewrap and worker source do not support the measured descriptor bind mode"
+		}
 		r.CleanupConfirmed = true
 		t.Skip("trusted native backend unavailable; see evidence")
 	}
@@ -211,9 +228,10 @@ func newNativeFixture(t *testing.T, r *nativeRecord) *nativeFixture {
 	if err != nil {
 		t.Fatal("could not identify test worker")
 	}
-	launcher, err := rb.NewWorkerLauncherWithCapabilityHold(backend, exe)
+	launcher, err := rb.NewWorkerLauncherForStage6(backend, exe, rb.BindModeDescriptor, true)
 	if err != nil {
 		r.Status = "unavailable"
+		r.UnavailableReason = "trusted Bubblewrap worker launcher could not be created"
 		r.CleanupConfirmed = true
 		t.Skip("native launcher unavailable")
 	}
@@ -281,6 +299,79 @@ func newNativeFixture(t *testing.T, r *nativeRecord) *nativeFixture {
 	}
 	return f
 }
+
+func setupNativeStartupScope(t *testing.T, f *nativeFixture, r *nativeRecord, conversation string) {
+	setupNativeStartupScopeAt(t, f, r, conversation, f.root)
+}
+
+func setupNativeStartupScopeAt(t *testing.T, f *nativeFixture, r *nativeRecord, conversation, scopeRoot string) {
+	t.Helper()
+	f.service.captureStartupDirectory(scopeRoot)
+	if f.service.CreationFoundationSnapshot().StartupScope.State != StartupScopeIdentityRetained {
+		r.Status = "unavailable"
+		r.UnavailableReason = "host cannot retain the startup-directory identity required by this profile"
+		r.CleanupConfirmed = true
+		t.Skip("the host cannot retain the native startup-directory identity")
+	}
+	scope, err := os.Open(scopeRoot)
+	if err != nil {
+		t.Fatal("open retained startup scope for filesystem evidence", err)
+	}
+	filesystem, mountID := creationFilesystemEvidence(t, scope)
+	_ = scope.Close()
+	r.CreationStartupFilesystem = filesystem
+	r.CreationStartupMountID = mountID
+	if filesystem != "ext4" {
+		r.Status = "unavailable"
+		r.UnavailableReason = "startup scope is not on the supported ext4 filesystem"
+		r.CleanupConfirmed = true
+		t.Skip(r.UnavailableReason)
+	}
+	enableCreationPrototypeForTest(f.service)
+	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
+		t.Fatal("actual auth/settings owner lifecycle coverage is incomplete")
+	}
+	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: conversation, Root: scopeRoot, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+		t.Fatal("select fixed-scope relative lookup root", err)
+	}
+}
+
+func nativeCreationInvocation(t *testing.T, conversation, callID, path, content string) tools.Invocation {
+	t.Helper()
+	arguments, err := json.Marshal(tools.CreateFileInput{Path: path, Content: content})
+	if err != nil {
+		t.Fatal("encode synthetic creation request", err)
+	}
+	return tools.Invocation{ConversationID: conversation, TurnID: "turn", ProviderCallID: callID, ToolID: tools.CreateFileID, Arguments: arguments}
+}
+
+func prepareNativeCreation(t *testing.T, f *nativeFixture, invocation tools.Invocation, workingDirectory string) permissions.Request {
+	t.Helper()
+	request, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile", workingDirectory)
+	if err != nil {
+		t.Fatalf("prepare native creation %q: %v", invocation.ProviderCallID, err)
+	}
+	return request
+}
+
+func assertNoNativeCreationStages(t *testing.T, roots ...string) {
+	t.Helper()
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if strings.HasPrefix(entry.Name(), ".komposyn-stage-") {
+				return fmt.Errorf("unexpected private creation stage remains")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("inspect fixture stage disposition: %v", err)
+		}
+	}
+}
+
 func (f *nativeFixture) read(t *testing.T, id, target string) rb.WorkerResult {
 	t.Helper()
 	if err := f.grants.ApproveOnce(id); err != nil {
@@ -503,18 +594,7 @@ func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
 	if err := os.MkdirAll(nested, 0700); err != nil {
 		t.Fatal("create existing nested parent", err)
 	}
-	f.service.captureStartupDirectory(f.root)
-	if f.service.CreationFoundationSnapshot().StartupScope.State != StartupScopeIdentityRetained {
-		r.Status = "unavailable"
-		t.Skip("trusted startup identity profile unavailable")
-	}
-	enableCreationPrototypeForTest(f.service)
-	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
-		t.Fatal("real auth/settings owner lifecycle is not complete")
-	}
-	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: "native-nested", Root: f.root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
-		t.Fatal("select runtime lookup directory", err)
-	}
+	setupNativeStartupScope(t, f, r, "native-nested")
 	parent, err := os.Open(nested)
 	if err != nil {
 		t.Fatal("open nested evidence parent", err)
@@ -559,18 +639,7 @@ func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
 func TestNativeServiceStartupRootMovementIsTerminal(t *testing.T) {
 	r := nativeReport(t)
 	f := newNativeFixture(t, r)
-	f.service.captureStartupDirectory(f.root)
-	if f.service.CreationFoundationSnapshot().StartupScope.State != StartupScopeIdentityRetained {
-		r.Status = "unavailable"
-		t.Skip("trusted startup identity profile unavailable")
-	}
-	enableCreationPrototypeForTest(f.service)
-	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
-		t.Fatal("real auth/settings owner lifecycle is not complete")
-	}
-	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: "native-root-move", Root: f.root, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
-		t.Fatal("select runtime lookup directory", err)
-	}
+	setupNativeStartupScope(t, f, r, "native-root-move")
 	input := tools.CreateFileInput{Path: "never-created.txt", Content: "synthetic movement refusal"}
 	arguments, err := json.Marshal(input)
 	if err != nil {
@@ -587,6 +656,11 @@ func TestNativeServiceStartupRootMovementIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal("start independent startup-root actor", err)
 	}
+	defer func() {
+		if err := actor.Close(); err != nil {
+			t.Errorf("join startup-root actor after test: %v", err)
+		}
+	}()
 	r.StartupMoveActorPID = actor.PID()
 	r.StartupMoveActorUID = os.Geteuid()
 	if !actor.Ready() {
@@ -619,6 +693,386 @@ func TestNativeServiceStartupRootMovementIsTerminal(t *testing.T) {
 		t.Fatalf("restored root cleared terminal movement state: %v", err)
 	}
 	r.StartupMoveTerminalAfterRestore = true
+}
+
+func TestNativeServiceNestedParentSubstitutionRefusesPreparedProposal(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	nested := filepath.Join(f.root, "existing", "nested")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal("create existing nested parent", err)
+	}
+	setupNativeStartupScope(t, f, r, "native-nested-substitution")
+	invocation := nativeCreationInvocation(t, "native-nested-substitution", "stale-parent-call", "existing/nested/stale.txt", "must not publish")
+	request := prepareNativeCreation(t, f, invocation, f.root)
+	r.CreationParentIdentitySHA256 = creationIdentityHash(t, nested)
+	actor, err := rb.NewNativeActor(nativeContext(t), os.Args[0], f.root, rb.NativeActorMoveAndReplaceDirectory, "existing/nested", "existing/moved")
+	if err != nil {
+		t.Fatal("start independent same-UID nested-parent actor", err)
+	}
+	defer func() {
+		if err := actor.Close(); err != nil {
+			t.Errorf("join nested-parent actor after test: %v", err)
+		}
+	}()
+	r.CreationActorPID = actor.PID()
+	r.CreationActorUID = os.Geteuid()
+	r.CreationActorExecution = "separate same-UID process; fixed nested-directory move and replacement; no shell"
+	if !actor.Ready() {
+		t.Fatal("nested-parent actor did not report READY")
+	}
+	if err := actor.Run(nativeContext(t)); err != nil {
+		t.Fatal("move retained nested parent and create substitute", err)
+	}
+	if err := actor.Close(); err != nil || !actor.Joined() {
+		t.Fatalf("nested-parent actor cleanup: err=%v joined=%t", err, actor.Joined())
+	}
+	moved := filepath.Join(f.root, "existing", "moved")
+	substitute := nested
+	r.CreationMovedIdentitySHA256 = creationIdentityHash(t, moved)
+	r.CreationSubstituteIdentitySHA256 = creationIdentityHash(t, substitute)
+	prepared, err := f.service.PrepareApprovedFilesystemCreation(nativeContext(t), invocation, request, 1)
+	if err == nil {
+		_ = prepared.Close(context.Background())
+		t.Fatal("changed nested parent reused the approved proposal")
+	}
+	if !errors.Is(err, runtime.ErrFilesystemRootStale) {
+		t.Fatalf("nested-parent replacement returned %v; want stale proposal", err)
+	}
+	for _, target := range []string{filepath.Join(moved, "stale.txt"), filepath.Join(substitute, "stale.txt")} {
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale proposal created %q: %v", target, err)
+		}
+	}
+	if f.tracked.workerCount() != 0 {
+		t.Fatal("nested-parent conflict launched a worker before fresh preparation")
+	}
+	assertNoNativeCreationStages(t, f.root)
+	if f.service.CreationFoundationSnapshot().StartupScope.State != StartupScopeIdentityRetained {
+		t.Fatal("nested-parent conflict incorrectly made the whole startup scope terminal")
+	}
+	r.CreationNestedParentSubstitutionRefused = true
+}
+
+func TestNativeServiceScopeAndTargetRefusalsPreserveFixtures(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	nested := filepath.Join(f.root, "existing", "nested")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal("create ordinary nested project content", err)
+	}
+	outside := f.root + "-outside"
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal("create outside sentinel directory", err)
+	}
+	defer os.RemoveAll(outside)
+	sentinel := []byte("outside sentinel must remain unchanged\n")
+	sentinelPath := filepath.Join(outside, "sentinel.txt")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatal("create outside sentinel", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(f.root, "parent-link")); err != nil {
+		t.Fatal("create synthetic symlinked parent", err)
+	}
+	if err := os.Symlink(sentinelPath, filepath.Join(f.root, "leaf-link")); err != nil {
+		t.Fatal("create synthetic symlinked leaf", err)
+	}
+	authPath, err := f.auth.EffectivePath()
+	if err != nil {
+		t.Fatal("resolve synthetic protected auth route", err)
+	}
+	settingsPath, err := f.settings.EffectivePath()
+	if err != nil {
+		t.Fatal("resolve synthetic protected settings route", err)
+	}
+	authAlias := filepath.Join(f.root, "auth-hardlink-alias")
+	settingsAlias := filepath.Join(f.root, "settings-hardlink-alias")
+	if err := os.Link(authPath, authAlias); err != nil {
+		t.Fatal("create synthetic auth hard-link alias", err)
+	}
+	if err := os.Link(settingsPath, settingsAlias); err != nil {
+		t.Fatal("create synthetic settings hard-link alias", err)
+	}
+	authAliasBefore, err := os.ReadFile(authAlias)
+	if err != nil {
+		t.Fatal("read synthetic auth alias for unchanged-byte comparison", err)
+	}
+	settingsAliasBefore, err := os.ReadFile(settingsAlias)
+	if err != nil {
+		t.Fatal("read synthetic settings alias for unchanged-byte comparison", err)
+	}
+	if err := os.Remove(authPath); err != nil {
+		t.Fatal("make protected auth route absent while retaining its owner registration", err)
+	}
+	protectedRelative, err := filepath.Rel(f.root, authPath)
+	if err != nil || filepath.IsAbs(protectedRelative) || strings.HasPrefix(protectedRelative, ".."+string(filepath.Separator)) {
+		t.Fatal("synthetic protected route is not inside the disposable startup scope")
+	}
+	setupNativeStartupScope(t, f, r, "native-invalid-targets")
+
+	// A valid nested operation establishes that unrelated existing project
+	// content does not disable the scope before refusal cases are attempted.
+	baseline := nativeCreationInvocation(t, "native-invalid-targets", "valid-baseline", "existing/nested/baseline.txt", "valid nested baseline\n")
+	request := prepareNativeCreation(t, f, baseline, f.root)
+	prepared, err := f.service.PrepareApprovedFilesystemCreation(nativeContext(t), baseline, request, 1)
+	if err != nil {
+		t.Fatal("prepare valid nested baseline", err)
+	}
+	result, executeErr := prepared.Execute(nativeContext(t))
+	closeErr := prepared.Close(context.Background())
+	if executeErr != nil || closeErr != nil || result.Outcome != tools.OutcomeSucceeded {
+		t.Fatalf("valid nested baseline outcome=%q execute=%v close=%v", result.Outcome, executeErr, closeErr)
+	}
+	if got, err := os.ReadFile(filepath.Join(nested, "baseline.txt")); err != nil || string(got) != "valid nested baseline\n" {
+		t.Fatalf("ordinary-content baseline bytes=%q err=%v", got, err)
+	}
+	workersBeforeRefusals := f.tracked.workerCount()
+
+	cases := []struct {
+		name, path, workingDirectory string
+	}{
+		{name: "direct scope escape", path: "../" + filepath.Base(outside) + "/direct.txt", workingDirectory: f.root},
+		{name: "nested scope escape", path: "existing/nested/../../../" + filepath.Base(outside) + "/nested.txt", workingDirectory: f.root},
+		{name: "navigation outside fixed scope", path: "navigated-outside.txt", workingDirectory: outside},
+		{name: "missing nested parent", path: "missing/new.txt", workingDirectory: f.root},
+		{name: "non-directory nested parent", path: "ordinary.txt/new.txt", workingDirectory: f.root},
+		{name: "symlinked parent", path: "parent-link/new.txt", workingDirectory: f.root},
+		{name: "symlinked leaf", path: "leaf-link", workingDirectory: f.root},
+		{name: "existing file collision", path: "ordinary.txt", workingDirectory: f.root},
+		{name: "existing directory collision", path: "existing", workingDirectory: f.root},
+		{name: "auth hard-link alias collision", path: filepath.Base(authAlias), workingDirectory: f.root},
+		{name: "settings hard-link alias collision", path: filepath.Base(settingsAlias), workingDirectory: f.root},
+		{name: "absent protected owner route", path: filepath.ToSlash(protectedRelative), workingDirectory: f.root},
+	}
+	for i, test := range cases {
+		invocation := nativeCreationInvocation(t, "native-invalid-targets", fmt.Sprintf("refusal-%d", i), test.path, "must remain unapplied")
+		_, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile", test.workingDirectory)
+		if err == nil {
+			if discardErr := f.service.DiscardFilesystemCreationProposal(context.Background(), invocation); discardErr != nil {
+				t.Fatalf("discard unexpectedly eligible %s proposal: %v", test.name, discardErr)
+			}
+			t.Errorf("%s was offered for approval", test.name)
+		}
+	}
+	if f.tracked.workerCount() != workersBeforeRefusals {
+		t.Fatal("a refused scope/target launched a worker")
+	}
+	if got, err := os.ReadFile(sentinelPath); err != nil || !bytes.Equal(got, sentinel) {
+		t.Fatalf("outside symlink sentinel changed: %q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(authAlias); err != nil || !bytes.Equal(got, authAliasBefore) {
+		t.Fatal("auth hard-link alias changed during refused creation")
+	}
+	if got, err := os.ReadFile(settingsAlias); err != nil || !bytes.Equal(got, settingsAliasBefore) {
+		t.Fatal("settings hard-link alias changed during refused creation")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "direct.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("direct scope escape created an outside target: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "nested.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nested scope escape created an outside target: %v", err)
+	}
+	assertNoNativeCreationStages(t, f.root, outside)
+	if !f.tracked.allJoined() {
+		t.Fatal("baseline creation worker did not join")
+	}
+	r.CreationInvalidTargetMatrixRefused = true
+}
+
+func TestNativeServiceMountBoundaryRefusal(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	scopeRoot := os.Getenv("KOMPOSYN_NATIVE_MOUNT_SCOPE")
+	if scopeRoot == "" {
+		r.Status = "unavailable"
+		r.CreationMountBoundaryUnavailableReason = "no operator-designated private scratch directory with an already-existing nested mount was supplied; creating or changing mounts is outside this task"
+		r.UnavailableReason = r.CreationMountBoundaryUnavailableReason
+		r.CleanupConfirmed = true
+		t.Skip(r.CreationMountBoundaryUnavailableReason)
+	}
+	scopeRoot, err := filepath.Abs(scopeRoot)
+	if err != nil || filepath.Clean(scopeRoot) != scopeRoot {
+		t.Fatal("configured mount-scope path must be absolute and clean")
+	}
+	info, err := os.Lstat(scopeRoot)
+	var stat *syscall.Stat_t
+	statOK := false
+	if info != nil {
+		stat, statOK = info.Sys().(*syscall.Stat_t)
+	}
+	if err != nil || info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 || !statOK || int(stat.Uid) != os.Geteuid() {
+		t.Fatal("configured mount scope must be an existing private real directory owned by the current user")
+	}
+	setupNativeStartupScopeAt(t, f, r, "native-mount-boundary", scopeRoot)
+	scope, err := os.Open(scopeRoot)
+	if err != nil {
+		t.Fatal("open configured startup scope")
+	}
+	filesystem, scopeMountID := creationFilesystemEvidence(t, scope)
+	_ = scope.Close()
+	r.CreationStartupFilesystem = filesystem
+	r.CreationStartupMountID = scopeMountID
+	if filesystem != "ext4" {
+		r.Status = "unavailable"
+		r.CreationMountBoundaryUnavailableReason = "operator-designated scope is not on the supported ext4 filesystem"
+		r.UnavailableReason = r.CreationMountBoundaryUnavailableReason
+		r.CleanupConfirmed = true
+		t.Skip(r.CreationMountBoundaryUnavailableReason)
+	}
+	mountID, relative, found := mountBoundaryBelow(t, scopeRoot)
+	if !found {
+		r.Status = "unavailable"
+		r.CreationMountBoundaryUnavailableReason = "operator-designated startup scope contains no pre-existing nested mount; creating or changing a mount is outside this task"
+		r.UnavailableReason = r.CreationMountBoundaryUnavailableReason
+		r.CleanupConfirmed = true
+		t.Skip(r.CreationMountBoundaryUnavailableReason)
+	}
+	if mountID == scopeMountID {
+		t.Fatal("nested mount evidence did not identify a distinct mount ID")
+	}
+	r.CreationMountID = mountID
+	// A valid direct-child proposal proves this exact scope and owner profile
+	// are eligible before the real mount-crossing path is attempted.
+	baseline := nativeCreationInvocation(t, "native-mount-boundary", "mount-baseline", "native-baseline-not-written.txt", "synthetic eligible baseline")
+	_ = prepareNativeCreation(t, f, baseline, scopeRoot)
+	if err := f.service.DiscardFilesystemCreationProposal(context.Background(), baseline); err != nil {
+		t.Fatal("discard no-effect mount-profile baseline proposal", err)
+	}
+	invocation := nativeCreationInvocation(t, "native-mount-boundary", "mount-crossing", filepath.ToSlash(filepath.Join(relative, "must-not-exist.txt")), "must not cross a mount")
+	if _, err := f.service.PrepareFilesystemCreation(nativeContext(t), invocation, "fixture/model/profile", scopeRoot); err == nil {
+		t.Fatal("target beneath an existing nested mount was offered for approval")
+	}
+	if f.tracked.workerCount() != 0 {
+		t.Fatal("mount-crossing refusal launched a worker")
+	}
+	target := filepath.Join(scopeRoot, relative, "must-not-exist.txt")
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mount-crossing refusal created a target: %v", err)
+	}
+	assertNoNativeDirectStages(t, scopeRoot)
+	r.CreationMountBoundaryRefused = true
+}
+
+func assertNoNativeDirectStages(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal("inspect direct disposable scope entries", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".komposyn-stage-") {
+			t.Fatal("unexpected private creation stage remains in the scope root")
+		}
+	}
+}
+
+func mountBoundaryBelow(t *testing.T, root string) (uint64, string, bool) {
+	t.Helper()
+	mountInfo, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		t.Fatal("read kernel mount table for fixture boundary", err)
+	}
+	type candidate struct {
+		id       uint64
+		relative string
+		depth    int
+	}
+	var candidates []candidate
+	for _, line := range strings.Split(string(mountInfo), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		var id uint64
+		if _, err := fmt.Sscan(fields[0], &id); err != nil || id == 0 {
+			continue
+		}
+		mountPath := strings.NewReplacer("\\040", " ", "\\011", "\t", "\\012", "\n", "\\134", "\\").Replace(fields[4])
+		relative, err := filepath.Rel(root, mountPath)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			continue
+		}
+		info, err := os.Stat(mountPath)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		candidates = append(candidates, candidate{id: id, relative: relative, depth: strings.Count(relative, string(filepath.Separator))})
+	}
+	if len(candidates) == 0 {
+		return 0, "", false
+	}
+	slices.SortFunc(candidates, func(a, b candidate) int { return a.depth - b.depth })
+	return candidates[0].id, candidates[0].relative, true
+}
+
+func TestNativeServiceStartupRootMovementAfterPublicationRelease(t *testing.T) {
+	r := nativeReport(t)
+	f := newNativeFixture(t, r)
+	setupNativeStartupScope(t, f, r, "native-root-after-release")
+	invocation := nativeCreationInvocation(t, "native-root-after-release", "after-release-call", "after-release.txt", "published after final observation\n")
+	request := prepareNativeCreation(t, f, invocation, f.root)
+	prepared, err := f.service.PrepareApprovedFilesystemCreation(nativeContext(t), invocation, request, 1)
+	if err != nil {
+		t.Fatal("prepare once-approved startup-scope creation", err)
+	}
+	actorRoot := filepath.Dir(f.root)
+	movedName := "moved-" + filepath.Base(f.root)
+	movedRoot := filepath.Join(actorRoot, movedName)
+	actor, err := rb.NewNativeActor(nativeContext(t), os.Args[0], actorRoot, rb.NativeActorMoveAndReplaceDirectory, filepath.Base(f.root), movedName)
+	if err != nil {
+		t.Fatal("start independent startup-root actor", err)
+	}
+	defer func() {
+		if err := actor.Close(); err != nil {
+			t.Errorf("join post-release startup actor: %v", err)
+		}
+		if _, err := os.Lstat(movedRoot); err == nil {
+			_ = os.RemoveAll(movedRoot)
+		}
+	}()
+	r.StartupMoveAfterReleaseActorPID = actor.PID()
+	r.StartupMoveAfterReleaseActorUID = os.Geteuid()
+	if !actor.Ready() {
+		t.Fatal("post-release startup actor did not report READY")
+	}
+	f.tracked.mu.Lock()
+	f.tracked.beforeCreationPublish = func() error { return actor.Run(nativeContext(t)) }
+	f.tracked.mu.Unlock()
+	result, executeErr := prepared.Execute(nativeContext(t))
+	f.tracked.mu.Lock()
+	f.tracked.beforeCreationPublish = nil
+	f.tracked.mu.Unlock()
+	closeErr := prepared.Close(context.Background())
+	if executeErr != nil || closeErr != nil || result.Outcome != tools.OutcomeSucceeded || !actor.TransitionCompleted() || !actor.Joined() || !f.tracked.allJoined() {
+		t.Fatalf("after-release result=%q execute=%v close=%v actor_changed=%t actor_joined=%t workers_joined=%t", result.Outcome, executeErr, closeErr, actor.TransitionCompleted(), actor.Joined(), f.tracked.allJoined())
+	}
+	r.StartupMoveAfterReleaseOutcome = string(result.Outcome)
+	if got, err := os.ReadFile(filepath.Join(movedRoot, "after-release.txt")); err != nil || string(got) != "published after final observation\n" {
+		t.Fatalf("retained-object effect bytes=%q err=%v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(f.root, "after-release.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("effect was redirected to startup-path substitute: %v", err)
+	}
+	// Restore the retained object to its original pathname, then confirm that
+	// restoration cannot clear the terminal movement latch.
+	if err := os.Remove(f.root); err != nil {
+		t.Fatal("remove empty startup-path substitute", err)
+	}
+	if err := os.Rename(movedRoot, f.root); err != nil {
+		t.Fatal("restore original startup directory identity", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(f.root, "after-release.txt")); err != nil || string(got) != "published after final observation\n" {
+		t.Fatalf("restored retained object effect bytes=%q err=%v", got, err)
+	}
+	if f.service.CreationFoundationSnapshot().StartupScope.State != StartupScopeMoved {
+		t.Fatal("startup movement after release was not latched")
+	}
+	future := nativeCreationInvocation(t, "native-root-after-release", "future-after-restore", "future.txt", "no replay")
+	if _, err := f.service.PrepareFilesystemCreation(nativeContext(t), future, "fixture/model/profile", f.root); !errors.Is(err, ErrStartupScopeMoved) {
+		t.Fatalf("restored startup identity allowed future creation: %v", err)
+	}
+	assertNoNativeCreationStages(t, f.root)
+	r.StartupMoveAfterReleasePublished = true
 }
 
 func parentInfo(t *testing.T, parent *os.File) os.FileInfo {
@@ -1067,6 +1521,12 @@ func (l *nativeTrackedLauncher) allJoined() bool {
 		}
 	}
 	return true
+}
+
+func (l *nativeTrackedLauncher) workerCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.workers)
 }
 
 func (l *nativeTrackedLauncher) lastFailureDetail() string {
