@@ -234,6 +234,52 @@ unavailable and have maintainers decide whether that limitation blocks the
 separate enablement proposal. The 17 measured cases do not enable production
 creation.
 
+## Follow-up attempt after PR #356
+
+The first run with `--mount-scope` supplied used source
+`c58bb7a0980c0e791a1523b1a8a082954a0a04e0` and stopped during fixture setup:
+the mount test selected a different root at the same coordinator generation.
+Its archive, `komposyn-composition-native-results.rsfqnqtk.tar.gz`, has SHA-256
+`c52fc7db79d44c3e67f0b870c4494ca5fa526f0d67d6f6c4e516929fd525f2d1`. All 18
+records were present and cleanup was confirmed, but the mount assertion was not
+reached. The aggregate was `failed_or_incomplete` (exit 1). This failed attempt
+is diagnostic only.
+
+PR #356 corrected the test fixture generation; it changed no production
+admission or enforcement. The exact corrected source
+`34be8c54fa7ebb5a355ce8c8ccbc6fc89f818f7b` was then run with a scope supplied.
+The runner reached mount discovery, found no pre-existing nested mount beneath
+the designated scope, and recorded the case unavailable. This run confirms the
+fixture setup correction but does not measure mount refusal.
+
+- Archive: `komposyn-composition-native-results.9i8_bm_2.tar.gz`
+- Archive SHA-256: `71413926f5ff0deec77548702aafe3d45337fd088aa7e8d1f475d4af8fea4fb9`
+- Source archive SHA-256: `9e070aba92f9543abbd7232c654f23e001a03ab058bba8558c80046eb27742e2`
+- Runner SHA-256: `57643610ed88716f205ecf9ac6d657d0b3fe19f732992c48730a35fa1ce57bc9`
+- Overlay SHA-256: `9da0e55bb8421c2ca4b962cf88193dfbc82fa4a323a49177e14dee44ae6e1ef2`
+- Native binary SHA-256: `2320be9b3bcd7b4e728a02f817f185e13a1242e14bd8fb41e236540356ff4bb1`
+- Environment: Go 1.26.11, Linux `7.0.0-42-generic`, amd64, regular UID 1000,
+  trusted root-owned Bubblewrap 0.9.0 mode `0755`, `ro-bind-fd`; the scope is
+  ext4 mount ID 33. No nested mount ID was observed.
+- Inventory and cleanup: all 18 expected records occurred exactly once;
+  cleanup was confirmed for every case, captured processes were reaped, and
+  temporary runner work was removed.
+- Outcomes: 17 `measured_pass`; `TestNativeServiceMountBoundaryRefusal` is
+  `unavailable` because the supplied scope had no pre-existing nested mount.
+  Build, unit-check, and native stages completed, but the aggregate is
+  `native_unavailable` (exit 2), not a pass.
+- Manifest SHA-256:
+  `4b7bdca4ae3ad4d82b2618cf544d965687936f38ef1a9b5261c56b926da66168`
+- Native report SHA-256:
+  `34e6f4a27b4fb6e3b42c772102e879358559be46783f131588d0c30eaabb7240`
+
+The external archive sidecar and all 32 internal `SHA256SUMS` entries were
+verified. The archive remains with the operator and is not committed. The
+mount-boundary claim remains unmeasured; no mount was created or changed.
+This documentation update follows measured source `34be8c54fa7ebb5a355ce8c8ccbc6fc89f818f7b`;
+the runner, overlay, and enforcement paths are unchanged between that source
+and this documentation revision.
+
 ## Host requirements
 
 - Linux amd64, running as your regular user (not root or `sudo`).
