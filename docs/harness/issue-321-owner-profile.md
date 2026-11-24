@@ -78,16 +78,20 @@ approval bridge. Its behavioral test verifies the exact nested target,
 complete multiline diff, provider/model/profile destination, explicit once
 response and resulting bytes while using actual auth/settings registration,
 including an absent reserved settings route. Existing tview approval handling
-remains scrollable for long details; this fixture integration does not claim a
-new native run.
+remains scrollable for long details. Those UI tests are behavioral; the
+recorded native run below validates Service-level acceptance only, not UI
+presentation or a live provider.
 
-Still deferred are trusted-host native evidence for startup-scope creation and
-movement, broader filesystems and launch profiles, production creation
+The exact PR #355 candidate now has trusted-host native evidence for
+startup-scope creation/movement, nested-parent substitution, and the target
+refusal matrix on Linux amd64/ext4 with Bubblewrap `ro-bind-fd`. Seventeen cases
+measured pass; the real mount-boundary case remains unavailable because no
+pre-existing nested mount fixture was supplied. See the
+[recorded run](issue-321-native-acceptance.md#recorded-exact-candidate-run).
+Still deferred are that mount-boundary evidence or an explicit maintainer
+disposition, broader filesystems and launch profiles, production creation
 registration, integrated lifecycle review of every stale/cancel/interruption
-case, and separate explicit model-facing enablement. The acceptance follow-up
-adds an exact-candidate test overlay for nested-parent substitution, scope and
-target refusals, startup movement at the post-release checkpoint, and a
-conditional pre-existing mount-boundary fixture. These source scenarios have
-not been run on a trusted host. Fixture tests establish control flow, not native
-filesystem enforcement. Historical fixture/native evidence does not establish
-these new claims. Creation remains unavailable in the normal CLI composition.
+case, and separate explicit model-facing enablement. Fixture tests establish
+control flow, not native filesystem enforcement. Historical fixture/native
+evidence does not establish these new claims. Creation remains unavailable in
+the normal CLI composition.

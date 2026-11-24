@@ -150,13 +150,13 @@ modes, platforms, or arbitrary descendants.
 
 The PR #354 baseline and accepted ADR-0009 require new evidence for the fixed
 startup directory, owner-backed composition, nested-parent behavior, and
-startup-root movement. The current follow-up adds those cases to the isolated
-native overlay and tightens result accounting; it does not change production
-worker enforcement or register the creation tool. No trusted-host report for
-this exact candidate has been recorded yet. The local development host's
-Bubblewrap was observed as `nobody:nogroup` mode `0755` (version 0.9.0), which
-fails the trusted-backend requirement; no ownership or permission change was
-made.
+startup-root movement. The follow-up adds those cases to the isolated native
+overlay and tightens result accounting; it does not change production worker
+enforcement or register the creation tool. A trusted-host run of the exact
+candidate is recorded below: 17 cases measured pass and the mount-boundary
+case is unavailable because no existing nested mount fixture was supplied.
+The runner correctly classified the aggregate as `native_unavailable` (exit
+2), not a pass.
 
 The added candidate cases are:
 
@@ -189,13 +189,50 @@ The added candidate cases are:
 
 The existing nested-publication and pre-worker startup-movement cases are in the
 same candidate inventory. These tests use the actual Service, retained
-startup descriptor, actual auth/settings stores and real native worker. Their
-source presence and local Go compilation are not native enforcement evidence.
-The exact test names are captured in the committed runner's
-`manifest.json`; aggregate success requires exactly one valid record per
-expected name, confirmed cleanup, and `measured_pass` for every case. Any
-unavailable, missing, malformed, failed, extra, or cleanup-incomplete record
-prevents `scoped_native_pass`.
+startup descriptor, actual auth/settings stores and real native worker. Source
+presence and local Go compilation alone are not native enforcement evidence;
+the measured outcomes below are from the exact candidate run. The committed
+runner requires exactly one valid record per expected name and confirmed
+cleanup. Any unavailable, missing, malformed, failed, extra, or
+cleanup-incomplete record prevents `scoped_native_pass`.
+
+## Recorded exact-candidate run
+
+Operator-provided archive: `komposyn-composition-native-results.3xkcq4fd.tar.gz`
+
+- Archive SHA-256: `de52a8fbbc250f354716ee7047978e289d792fea65c78b35cabd8f23f0b56416`
+- Source commit: `d9d0dfc3230c0bb05e48f981b562ec66e133d1be`
+- Source archive SHA-256: `6f767e5b5a913f4694e70ffc4e712bf1b6b366ef9bfe2e32eabdd6e9fb10b3df`
+- Runner SHA-256: `57643610ed88716f205ecf9ac6d657d0b3fe19f732992c48730a35fa1ce57bc9`
+- Overlay SHA-256: `bb7d9d3531ece3fdb2b4014330a10c1883a2f8ac6f367948e7f166350a1cd8e3`
+- Native binary SHA-256: `cd30ada35e9aa976b7e8ba0fdb3c79c2dfd1ed4d9f5a0c450ead3f4516bddeae`
+- Environment: Go 1.26.11, Linux `7.0.0-42-generic`, amd64, regular UID 1000,
+  trusted root-owned Bubblewrap 0.9.0 mode `0755`, descriptor bind mode
+  `ro-bind-fd`, ext4 startup scope mount ID 33.
+- Inventory: all 18 expected records present exactly once; cleanup confirmed
+  for every record and all captured processes were reaped.
+- Outcomes: 17 `measured_pass`; `TestNativeServiceMountBoundaryRefusal` is
+  `unavailable` because `--mount-scope` was not supplied and no pre-existing
+  nested mount fixture was available. The report names this missing
+  prerequisite. The runner exited `2` with `native_unavailable`.
+- Manifest SHA-256: `a8ab652121c05ff2a7e32d71539297f599f55e12f1223210abe0d53d193e93c5`
+- Native report SHA-256: `c8b18e0ad0704f7c5351af6fab81ee1d47a9463d6bf62a18b0e6a8c1c8fb4a15`
+
+The measured cases include nested publication, stale nested-parent
+substitution refusal, the scope/target refusal matrix, terminal startup-root
+movement, and the selected after-release residual-race checkpoint. The latter
+published successfully through the retained object and remained terminal for
+future proposals after restoration. This is the ADR-0008 residual race, not
+strict live-pathname containment or rollback. The archive's internal
+`SHA256SUMS` entries were verified. The archive itself is retained at the
+operator-provided location and is not committed to the repository.
+
+The mount-boundary claim remains unmeasured. If an authorized, private existing
+nested mount fixture becomes available under the chosen scratch directory,
+rerun the exact candidate with `--mount-scope`; otherwise keep the case
+unavailable and have maintainers decide whether that limitation blocks the
+separate enablement proposal. The 17 measured cases do not enable production
+creation.
 
 ## Host requirements
 
