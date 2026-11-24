@@ -331,7 +331,15 @@ func setupNativeStartupScopeAt(t *testing.T, f *nativeFixture, r *nativeRecord, 
 	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
 		t.Fatal("actual auth/settings owner lifecycle coverage is incomplete")
 	}
-	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: conversation, Root: scopeRoot, Generation: 1, Reason: runtime.FilesystemRootSelected}); err != nil {
+	// newNativeFixture preselects its temporary root at coordinator generation
+	// 1. Selecting a distinct external mount-test scope must advance that
+	// generation or the coordinator correctly rejects the same-generation
+	// root replacement as a policy change.
+	rootGeneration := uint64(1)
+	if scopeRoot != f.root {
+		rootGeneration = 2
+	}
+	if err := f.service.InvalidateFilesystemRoot(nativeContext(t), runtime.FilesystemRootTransition{ConversationID: conversation, Root: scopeRoot, Generation: rootGeneration, Reason: runtime.FilesystemRootSelected}); err != nil {
 		t.Fatal("select fixed-scope relative lookup root", err)
 	}
 }
