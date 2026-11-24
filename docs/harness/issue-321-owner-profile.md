@@ -82,12 +82,13 @@ remains scrollable for long details. Those UI tests are behavioral; the
 recorded native run below validates Service-level acceptance only, not UI
 presentation or a live provider.
 
-The exact PR #355 candidate now has trusted-host native evidence for
-startup-scope creation/movement, nested-parent substitution, and the target
-refusal matrix on Linux amd64/ext4 with Bubblewrap `ro-bind-fd`. Seventeen cases
-measured pass; the real mount-boundary case remains unavailable because no
-pre-existing nested mount fixture was supplied. See the
-[recorded run](issue-321-native-acceptance.md#recorded-exact-candidate-run).
+The PR #355 candidate has trusted-host native evidence for startup-scope
+creation/movement, nested-parent substitution, and the target refusal matrix
+on Linux amd64/ext4 with Bubblewrap `ro-bind-fd`. A corrected exact-candidate
+rerun after PR #356 recorded 17 measured passes; the supplied ext4 scope
+contained no pre-existing nested mount, so the mount-boundary case remains
+unavailable. See the [PR #355 run](issue-321-native-acceptance.md#recorded-exact-candidate-run)
+and [follow-up attempt](issue-321-native-acceptance.md#follow-up-attempt-after-pr-356).
 Still deferred are that mount-boundary evidence or an explicit maintainer
 disposition, broader filesystems and launch profiles, production creation
 registration, integrated lifecycle review of every stale/cancel/interruption

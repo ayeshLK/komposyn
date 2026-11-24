@@ -158,11 +158,12 @@ selects the fixed CLI startup directory and existing subdirectories, with
 composition-owned protected-resource coverage and per-file once approval.
 The gated owner/scope implementation is merged in PRs #352–#354. The PR #355
 candidate has 17 measured native cases on trusted Linux amd64/ext4 with
-Bubblewrap `ro-bind-fd`; its real mount-boundary case is unavailable because
-no existing nested mount fixture was supplied, so the aggregate is not a
-native pass. The normal chat composition still does not expose creation;
-maintainer review of the evidence and separate explicit enablement remain
-required.
+Bubblewrap `ro-bind-fd`. After PR #356 corrected the mount fixture's root
+generation, an exact-candidate rerun again measured 17 passes; the supplied
+scope had no pre-existing nested mount, leaving that case unavailable and the
+aggregate `native_unavailable`. The normal chat composition still does not
+expose creation; mount-boundary evidence and separate explicit enablement
+remain outstanding.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
