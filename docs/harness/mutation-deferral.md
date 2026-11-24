@@ -9,12 +9,13 @@ the shipping composition seam and maintainer review before merge. Existing
 released builds remain unchanged. Editing continues under its independent
 deferred contract.
 
-**Evidence update — 2026-11-21:** the disposable creation prototype now has
+**Historical evidence update — 2026-11-21:** the disposable creation prototype had
 selected runtime lifecycle tests and a trusted-host native run with 12/12
 scoped cases on its recorded Linux amd64/local-ext4/Bubblewrap profile. These
-results close those prototype evidence steps only. Production owner coverage,
-broader platform/filesystem support and explicit model-facing enablement remain
-open; neither creation nor editing is available in normal composition. See
+results closed those prototype evidence steps only. At that point, production
+owner coverage, broader platform/filesystem support and explicit model-facing
+enablement remained open; neither creation nor editing was available in normal
+composition. See
 the [issue #321 lifecycle acceptance record](issue-321-lifecycle-acceptance.md)
 for provenance and limits.
 
@@ -23,13 +24,15 @@ accepted for the creation concurrency/approval boundary only. The
 [runtime-file-object contract](runtime-file-object-saves.md) accepts a residual
 external-write race. PR #344 merged the [mechanism proposal](creation-mechanism-proposal.md)
 as a proposal, and the [integration protocol](creation-integration-protocol.md)
-records the separately authorized bounded fixture prototype and its partial
-implementation. Neither design nor fixture evidence enables mutation;
-production scope coverage remains unresolved. This record preserves the prior
-deferral and historical research.
+records the bounded fixture prototype and its partial implementation. At that
+stage, neither design nor fixture evidence enabled mutation and production
+scope coverage remained unresolved. This record preserves the prior deferral
+and historical research.
 
 Status: **planning record for the near-term deferral; #315's current-delivery
-section tracks its publication and review state**.
+section tracks its publication and review state.** Merged master still omits
+creation. The current unmerged change proposes profile-gated registration and
+requires exact-candidate native acceptance and maintainer review.
 
 Editing implementation remains deferred under its existing authority
 contract. Creation has an accepted concurrency/approval boundary, a bounded
@@ -50,12 +53,12 @@ not a proof that all unprivileged mutation is impossible or that privileged
 enforcement is the only possible future solution.
 
 Issues #267, #321 and #322 remain open as unfinished contract and enablement
-gates. Their native research dependencies are resolved; that does not meet the
-independent positive-evidence and explicit model-facing enablement conditions.
-Creation and editing remain unavailable in normal composition. The disposable
-creation fixture prototype is separately authorized; this deferral does not
-authorize production enablement, privileged setup, relaxed permission or
-host-policy change.
+gates. Their earlier native research dependencies are resolved; that does not
+establish the current candidate's native activation path or meet the separate
+maintainer-review gate. On merged master, creation and editing remain
+unavailable in normal composition. The unmerged change proposes creation only
+on its documented profile; editing stays deferred. This record does not
+authorize privileged setup, relaxed permission or host-policy change.
 
 ## Conditions for resuming mutation work
 

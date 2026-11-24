@@ -67,20 +67,21 @@ machine-wide scan, transcript scan, ignore rule, path-prefix rule or approval
 can substitute for missing applicable owner coverage or override a known
 protected resource.
 
-The current implementation still has **no generally eligible creation scope**.
-ADR-0009 selects the CLI startup directory, fixed for that run, including
-existing subdirectories. Its accepted eligibility rule allows ordinary existing
-project content without inventorying or classifying every entry. This
-supersedes the earlier creation-only unknown-root requirement to attest all
-selected-root data; it leaves read/discovery authorization unchanged. The
-synthetic complete-owner manifest remains fixture evidence only. The typed
-production owner-profile snapshot now records auth/settings as required and
-Token Logger/provider-source ingestion as trusted not-instantiated declarations
-for the current composition. The host captures the launch directory binding
-before runtime navigation, but reports retained identity/movement validation
-as deferred. Nested-parent handling, startup identity enforcement and new
-native scope evidence remain required before separate model-facing enablement
-review. See the [owner-profile foundation](issue-321-owner-profile.md).
+The current profile supports only a fixed CLI startup directory on the
+measured Linux amd64/ext4/descriptor-bind host; it does not provide a generally
+eligible scope across hosts or filesystems. ADR-0009 selects the CLI startup
+directory, fixed for that run, including existing subdirectories. Its accepted
+eligibility rule allows ordinary existing project content without inventorying
+or classifying every entry. This supersedes the earlier creation-only
+unknown-root requirement to attest all selected-root data; read/discovery
+authorization remains unchanged. The synthetic complete-owner manifest remains
+fixture evidence only. The typed production owner profile records auth/settings
+as required and Token Logger/provider-source ingestion as trusted
+not-instantiated declarations for the current composition. The unmerged
+enablement change uses the Service's retained-identity checks for schema
+registration; live identity, owner coverage, and cleanup checks remain at each
+operation boundary. The exact shipping activation path still requires native
+acceptance before merge. See the [owner-profile foundation](issue-321-owner-profile.md).
 
 ## Proposed typed creation and approval path
 

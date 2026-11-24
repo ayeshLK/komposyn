@@ -1358,7 +1358,7 @@ func (u *terminal) runCommand(text string) {
 		}
 		planStatus := renderCapabilityAvailability("update_plan", snapshot.UpdatePlanAvailability)
 		inputStatus := renderCapabilityAvailability("request_user_input", snapshot.RequestInputAvailability)
-		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nFile reading: " + readStatus + " Each read needs once approval; approved contents may be sent to the provider and may recur.\n" + creationStatus + "\nCreation scope: " + safeTerminalText(creationScope) + " (fixed at launch; /cd and conversation reset do not change it).\nTool availability: " + planStatus + "; " + inputStatus + ". No write/delete/shell capability is registered in normal chat.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\nThe working directory resolves relative paths. Selecting or displaying a directory grants no file access or write permission.\n")
+		u.write("Commands: /model /cd <path> /help /cancel /exit /permissions /plan /copy\nFile reading: " + readStatus + " Each read needs once approval; approved contents may be sent to the provider and may recur.\n" + creationStatus + "\nCreation scope: " + safeTerminalText(creationScope) + " (fixed at launch; /cd and conversation reset do not change it).\nTool availability: " + planStatus + "; " + inputStatus + ". Editing, deletion, rename, and shell capabilities are not registered.\nKeys: Up/Down history; Ctrl+L clear; Ctrl+U usage; Ctrl+C copy/cancel; Esc selection.\nThe working directory resolves relative paths. Selecting or displaying a directory grants no file access or write permission.\n")
 	case "working-directory":
 		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cd"))
 		if path == "" {
