@@ -23,9 +23,10 @@ protocol completion, the fixed directory transition, and child cleanup. The
 remaining native service cases still require the trusted host prerequisites
 documented in [the #321 acceptance guide](../../docs/harness/issue-321-native-acceptance.md).
 
-Runner SHA-256:
-`c6b44530e473e1de6089deae402968391251196df10ed7f2dc1847b8bc7c27b0`.
-Overlay SHA-256:
-`e61b66665dde953113b3b5f0df17f6238bffa543494acf9471dba0e84b636f14`.
+Current runner SHA-256:
+`57643610ed88716f205ecf9ac6d657d0b3fe19f732992c48730a35fa1ce57bc9`.
+Current overlay SHA-256:
+`bb7d9d3531ece3fdb2b4014330a10c1883a2f8ac6f367948e7f166350a1cd8e3`.
+The test bundle also records these hashes from the exact reviewed candidate.
 The tracked host-independent results are in
 [`docs/harness/read-broker-composition-native-acceptance.md`](../../docs/harness/read-broker-composition-native-acceptance.md).

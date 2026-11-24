@@ -165,9 +165,14 @@ identity, nested existing parents, protected-owner ancestry, and terminal
 movement for creation proposals. It applies only to the trusted Linux ext4
 profile with the operation-specific descriptor-bind worker profile. These
 changes are not model-facing: creation remains unregistered and unavailable.
-New trusted-host evidence for these claims and separate enablement approval
-remain outstanding. See the [owner-profile foundation](issue-321-owner-profile.md)
-and [native acceptance procedure](issue-321-native-acceptance.md).
+The exact PR #355 candidate was run on a trusted Linux amd64/ext4 host with
+Bubblewrap 0.9.0 using `ro-bind-fd`: 17 of 18 native cases measured pass. The
+mount-boundary case is unavailable because no pre-existing nested mount
+fixture was supplied; the aggregate runner status is `native_unavailable`,
+not a pass. Source presence and Go/race checks alone do not establish native
+enforcement. Separate enablement approval remains outstanding. See the
+[owner-profile foundation](issue-321-owner-profile.md) and
+[native acceptance record](issue-321-native-acceptance.md#recorded-exact-candidate-run).
 
 ## Runtime and UI reasons
 
