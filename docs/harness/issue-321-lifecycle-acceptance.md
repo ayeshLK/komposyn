@@ -1,6 +1,6 @@
 # Issue #321 creation lifecycle acceptance
 
-This record tracks behavioral lifecycle evidence separately from native filesystem evidence and production enablement. The normal `cmd/harness` composition does not register creation. Startup-scope preparation and terminal movement behavior have focused behavioral coverage. The PR #355 source has 17 measured native cases and one unavailable mount-boundary case. After PR #356 corrected the mount fixture's root generation, an exact-candidate rerun again recorded 17 measured cases and one unavailable mount-boundary case because the supplied scope contained no nested mount. Both aggregates are `native_unavailable`, not passes. Separate production enablement remains outstanding.
+This record tracks behavioral lifecycle evidence separately from native filesystem evidence and production enablement. The normal `cmd/harness` composition does not register creation. Startup-scope preparation and terminal movement behavior have focused behavioral coverage. The historical PR #355 and PR #356 runs each had 17 measured cases and an unavailable mount-boundary case; those results remain `native_unavailable`, not passes. A later exact-current-master run measured all 18 cases, including mount-boundary refusal on a real nested bind mount, as passes. Separate production enablement remains outstanding.
 
 ## Fixed-scope runtime and UI integration
 
@@ -62,14 +62,16 @@ cleanup and final evidence updates inside the operation lifetime.
 
 ### ADR-0009 claim-by-claim disposition
 
-The PR #355 native run tested exact candidate
+The historical PR #355 native run tested exact candidate
 `d9d0dfc3230c0bb05e48f981b562ec66e133d1be` on Linux amd64/ext4 with trusted
 Bubblewrap descriptor binding (`ro-bind-fd`). Seventeen of 18 records are
 `measured_pass`; the mount-boundary case is `unavailable`. The corrected
 follow-up run at `34be8c54fa7ebb5a355ce8c8ccbc6fc89f818f7b` supplied a scope,
-but that scope had no pre-existing nested mount, so the same case remains
-unavailable. Both aggregate results are `native_unavailable` (exit 2), not
-passes. Full provenance and hashes are in the [native acceptance record](issue-321-native-acceptance.md#recorded-exact-candidate-run) and its [PR #356 follow-up](issue-321-native-acceptance.md#follow-up-attempt-after-pr-356).
+but that scope had no pre-existing nested mount, so that case was also
+unavailable. Those historical aggregates are `native_unavailable` (exit 2),
+not passes. The later exact-current-master run measured all 18 cases as passes;
+see the [native acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up)
+for its provenance and hashes.
 
 | Contract / observable claim | Behavioral evidence and seam | Native case / checkpoint / profile | Disposition and remaining action |
 | --- | --- | --- | --- |
@@ -79,7 +81,7 @@ passes. Full provenance and hashes are in the [native acceptance record](issue-3
 | Exact once approval binds target, bytes/diff, and provider/model/profile destination; changed arguments cannot reuse it. | `TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge`, `TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce`, runtime once/denial/cancellation tests, UI approval bridge. | `TestNativeServiceNestedCreationUsesStartupScope` drives Service preparation and approved preparation; it measured pass but does not exercise UI presentation or a live provider. | Behavioral/UI-provider boundary and native host Service case measured. A live provider is outside scope and not required. |
 | Nested parent replacement or movement before approval release invalidates that operation and cannot silently rebind; it does not terminally disable an otherwise unchanged startup scope. | `TestCreationResolvesNestedTargetFromFixedStartupScopeAndRejectsChangedParent`. | `TestNativeServiceNestedParentSubstitutionRefusesPreparedProposal` measured pass: fixed same-UID actor moves the retained parent and creates a substitute between preparation and approved preparation; no effect/stage/worker, identity hashes recorded, actor joined. | Behavioral and native checkpoint measured pass for the recorded profile. This does not establish every scheduling interleaving. |
 | Direct/nested escape, outside navigation, symlinked components/leaves, missing/non-directory parents, collisions, protected target routes refuse before approval/worker; ordinary existing content remains usable. | `TestCreationPreparationRejectsUnsupportedTargetsBeforeApproval` and the valid nested proposal tests at the Service seam. | `TestNativeServiceScopeAndTargetRefusalsPreserveFixtures` measured pass after a valid nested baseline; checks the refusal matrix, absent protected route, unchanged outside sentinel, no extra worker, and no stage. | Behavioral and native evidence measured for the recorded profile. |
-| Mount crossing is refused by descriptor-relative resolution. | Existing behavioral target preparation tests do not establish a real mount boundary. | `TestNativeServiceMountBoundaryRefusal` requires an operator-designated private ext4 scope containing a pre-existing nested mount and records distinct mount IDs. The PR #355 run had no scope; the corrected PR #356 candidate supplied a scope but found no nested mount beneath it. | Not measured. Do not substitute a pathname-prefix check or synthetic error. Run only with an authorized existing nested-mount fixture; otherwise maintainers must decide whether this limitation blocks the separate enablement proposal. |
+| Mount crossing is refused by descriptor-relative resolution. | Existing behavioral target preparation tests do not establish a real mount boundary. | `TestNativeServiceMountBoundaryRefusal` measured pass on source `c0af7cda7bbbce3de289367af9e468ea8bea73df` with an authorized private ext4 scope and a real nested bind mount; it recorded distinct mount IDs 33 and 157. The direct-child proposal was prepared and discarded without execution; the crossing proposal was refused before worker launch, with no target or private stage. | Measured for the exact Linux amd64/ext4 and Bubblewrap `ro-bind-fd` profile. This does not enable creation or establish other filesystems, profiles or platforms. See the [native evidence record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up). |
 | Detectable startup-root move/replacement before worker launch is terminal even after restoration; an already released effect is classified truthfully under ADR-0008's residual race. | `TestStartupScopeMovementIsTerminalAfterReplacementAndRestore`, `TestStartupRootMoveAtPublicationCheckpointAbortsPreparedCreation`; deterministic fake-worker Service execution. | `TestNativeServiceStartupRootMovementIsTerminal` and `TestNativeServiceStartupRootMovementAfterPublicationRelease` measured pass: actor move/replace/restore, retained-object publication at the named after-release checkpoint, and terminal future refusal. | Named pre-worker and after-release checkpoints measured. Do not claim strict live-pathname containment, rollback, or exhaustive race coverage. |
 | Cancellation, drain/join, cleanup ownership, uncertain outcomes, stale publication and no automatic replay remain intact. | `TestCreationBarrierWaitsForRuntimeAdmittedReadWorkerToJoin`, `TestCreationBarrierDrainsRuntimeAdmittedDirectoryWorkers`, `TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked`, `TestCreationCompletionLossAfterPublicationIsUnknownAndNeverReplayed`, `TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall`, plus close/root transition tests. Real Service/runtime/provider seam with controlled worker timing. | Native held-worker read cases measured pass for process retirement; the creation stage worker has no native syscall interruption case. Startup actor scenarios record join and stage disposition. | Behavioral lifecycle tested at named checkpoints, not exhaustive scheduling. Native creation syscall interruption is unproven and explicitly deferred; do not expand this PR into a new enforcement project. |
 | Initial profile refuses unsupported backend/profile and does not widen model-facing capability. | `TestUnsupportedStartupCreationProfileDoesNotBlockHostStartup`, `TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate`, normal command composition tests. | The measured records identify trusted Bubblewrap 0.9.0 using `ro-bind-fd` on Linux amd64/ext4. | This exact host profile measured. Other backends, bind modes, filesystems, platforms, and all production enablement gates remain unestablished; creation remains unregistered. |
@@ -120,12 +122,25 @@ interleavings:
 
 ## Native evidence and limits
 
-The earlier accepted run at source `39279e93080a2306f5ed1a702bd83ab852eb1055` remains historical. The intervening `native_unavailable` run at `e7c5fbd884682916602a23a9909c0f81938d3f4e` is also preserved in its original record and is not treated as a pass. The corrected #356 mount-boundary attempt at `34be8c54fa7ebb5a355ce8c8ccbc6fc89f818f7b` likewise remains `native_unavailable`: setup reached mount discovery, but the supplied scope contained no nested mount. It is recorded separately in the [native acceptance record](issue-321-native-acceptance.md#follow-up-attempt-after-pr-356).
+The earlier accepted run at source `39279e93080a2306f5ed1a702bd83ab852eb1055` remains historical. The intervening `native_unavailable` run at `e7c5fbd884682916602a23a9909c0f81938d3f4e` and corrected #356 run at `34be8c54fa7ebb5a355ce8c8ccbc6fc89f818f7b` are also preserved as unavailable historical results. The latter reached mount discovery but its supplied scope contained no nested mount. The new measured result is recorded separately in the [native acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up).
 
 The later trusted-host run tested source `dbfd90974f0979832a9abc60e32aeb3c87399840` and recorded 12/12 `scoped_native_pass`. Environment: Go 1.26.11, Linux 7.0.0-42-generic amd64, regular UID 1000, trusted root-owned Bubblewrap 0.9.0, `ro-bind-fd`, local ext4 (mount ID 33). Archive SHA-256 `3d76449b95ba037db17d46b3404d36f398d993cd0af3c940904857be305236dc`; manifest SHA-256 `1822336d698e55d533cc71a3a54738885e99fdaff64b81b0cb51e9c3173d9a02`; report SHA-256 `ac66529ef8a9a8e562505c5964d080d01aeb040122be804fabe86959b82f7ce6`. The supplied archive is `komposyn-composition-native-results.ah0j_t7n.tar.gz` (and the preceding run is `komposyn-composition-native-results.y0n88dnv.tar.gz`). This run predates the coordinator completion-ordering guard added in this branch. The guard prevents a joined-worker waiter from publishing completion while caller-owned search snapshot cleanup and evidence updates are still running. The run remains evidence for the unchanged worker enforcement, worker image, native protocol and measured host profile; it does not exercise or prove the new coordinator ordering. The new lifecycle and coordinator cases are covered by behavioral tests and the Go race suite. They do not widen the native claim.
 
 Remaining gaps include syscall-level interruption behavior, exhaustive owner/cancellation timing, service-wide production owner coverage, and broader hosts/filesystems/platforms. The Go tests add runtime control-flow evidence; they do not widen the native claim.
 
+The exact-current-master follow-up at `c0af7cda7bbbce3de289367af9e468ea8bea73df`
+measured 18/18 native cases as `scoped_native_pass`, including the nested
+mount-boundary refusal. Its archive SHA-256 is
+`00a4ffccd3c4acf156faae120a863e04ffc1a74f185702b4f1e0acafc6077f59`, manifest
+SHA-256 is `53aad50556c103fb2e2bda2b0ea4dbc47d6f77061b3bc597e69f531cd7cd2f23`,
+and report SHA-256 is
+`f378d34c3b87bad6691c3979e42e0c318a0b5e28a871c2dfd130694d867ff2f1`. The
+recorded environment is Go 1.26.11, Linux `7.0.0-42-generic` amd64, regular UID
+1000, trusted root-owned Bubblewrap 0.9.0 with `ro-bind-fd`, and ext4 startup
+scope mount ID 33 with nested mount ID 157. It establishes this one measured
+host/profile only. It does not establish production owner coverage, broader
+profiles/platforms, syscall interruption behavior, or model-facing enablement.
+
 ## Enablement boundary
 
-No production capability is enabled. The accepted prototype remains synthetic and fixture-only. The scoped native profile evidence does not establish production owner coverage or maintainer enablement approval. Issues #267, #315, #321 and #322 remain open pending their separate closeout criteria.
+No production capability is enabled. The accepted prototype remains synthetic and fixture-only. The scoped native evidence now includes a measured mount-boundary refusal for one host profile; it does not establish production owner coverage or maintainer enablement approval. Issues #267, #315, #321 and #322 remain open pending their separate closeout criteria.

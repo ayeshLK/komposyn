@@ -84,15 +84,15 @@ presentation or a live provider.
 
 The PR #355 candidate has trusted-host native evidence for startup-scope
 creation/movement, nested-parent substitution, and the target refusal matrix
-on Linux amd64/ext4 with Bubblewrap `ro-bind-fd`. A corrected exact-candidate
-rerun after PR #356 recorded 17 measured passes; the supplied ext4 scope
-contained no pre-existing nested mount, so the mount-boundary case remains
-unavailable. See the [PR #355 run](issue-321-native-acceptance.md#recorded-exact-candidate-run)
-and [follow-up attempt](issue-321-native-acceptance.md#follow-up-attempt-after-pr-356).
-Still deferred are that mount-boundary evidence or an explicit maintainer
-disposition, broader filesystems and launch profiles, production creation
-registration, integrated lifecycle review of every stale/cancel/interruption
-case, and separate explicit model-facing enablement. Fixture tests establish
-control flow, not native filesystem enforcement. Historical fixture/native
-evidence does not establish these new claims. Creation remains unavailable in
-the normal CLI composition.
+on Linux amd64/ext4 with BubbleWrap `ro-bind-fd`. Its original run and the
+corrected PR #356 run each recorded 17 measured passes with an unavailable
+mount-boundary case; those outcomes remain historical. A later exact-current-
+master run at `c0af7cda7bbbce3de289367af9e468ea8bea73df` measured 18/18 cases,
+including mount-boundary refusal across real ext4 mount IDs 33 and 157. Its
+archive SHA-256 is `00a4ffccd3c4acf156faae120a863e04ffc1a74f185702b4f1e0acafc6077f59`.
+See the [native acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up)
+for complete provenance and limits. Broader filesystems and launch profiles,
+production creation registration, integrated lifecycle review of every
+stale/cancel/interruption case, and separate explicit model-facing enablement
+remain deferred. Fixture tests establish control flow, not native filesystem
+enforcement. Creation remains unavailable in the normal CLI composition.

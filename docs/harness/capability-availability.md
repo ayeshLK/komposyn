@@ -147,12 +147,16 @@ detached scope status is descriptive only and never supplies authority.
 
 The earlier native run recorded 12/12 scoped cases at source
 `dbfd90974f0979832a9abc60e32aeb3c87399840` on Linux amd64/local ext4 with
-root-owned Bubblewrap 0.9.0 and `ro-bind-fd`; it predates the fixed startup
-scope and runtime/UI integration and does not establish those claims. New
-trusted-host startup-scope native evidence, integrated lifecycle review and
-separate explicit enablement remain required. Other filesystems/platforms,
-syscall interruption and general same-user isolation remain unsupported or
-unestablished. See the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md),
+root-owned BubbleWrap 0.9.0 and `ro-bind-fd`; it predates the fixed startup
+scope and runtime/UI integration and does not establish those claims. A later
+trusted-host run at `c0af7cda7bbbce3de289367af9e468ea8bea73df` measured 18/18
+native cases, including a real nested-mount refusal, on Linux amd64/ext4 with
+trusted BubbleWrap 0.9.0 and `ro-bind-fd`. This remains fixture evidence for
+that host profile, not production owner coverage or enablement. Integrated
+lifecycle review and separate explicit enablement remain required. Other
+filesystems/platforms, syscall interruption and general same-user isolation
+remain unsupported or unestablished. See the
+[lifecycle acceptance record](issue-321-lifecycle-acceptance.md),
 [native acceptance procedure](issue-321-native-acceptance.md), and
 [creation integration protocol](creation-integration-protocol.md).
 The accepted scope/owner-coverage design is recorded in
@@ -165,16 +169,16 @@ identity, nested existing parents, protected-owner ancestry, and terminal
 movement for creation proposals. It applies only to the trusted Linux ext4
 profile with the operation-specific descriptor-bind worker profile. These
 changes are not model-facing: creation remains unregistered and unavailable.
-The PR #355 candidate was run on a trusted Linux amd64/ext4 host with Bubblewrap
-0.9.0 using `ro-bind-fd`: 17 of 18 native cases measured pass. After PR #356
-fixed the mount fixture's root generation, a run against exact source
-`34be8c54fa7ebb5a355ce8c8ccbc6fc89f818f7b` again measured 17 cases pass; the
-supplied scope contained no pre-existing nested mount, so the mount-boundary
-case remained unavailable. The aggregate is `native_unavailable`, not a pass.
-Source presence and Go/race checks alone do not establish native enforcement.
-Separate enablement approval remains outstanding. See the
+The PR #355 candidate was run on a trusted Linux amd64/ext4 host with BubbleWrap
+0.9.0 using `ro-bind-fd`: its original run and the corrected PR #356 follow-up
+each measured 17 of 18 cases, with the mount-boundary case unavailable. A
+later exact source `c0af7cda7bbbce3de289367af9e468ea8bea73df` run measured all
+18 cases as passes, including refusal across a real nested mount (scope mount
+ID 33, nested mount ID 157). The aggregate was `scoped_native_pass`. Source
+presence and Go/race checks alone do not establish native enforcement. Separate
+enablement approval remains outstanding. See the
 [owner-profile foundation](issue-321-owner-profile.md) and
-[native acceptance record](issue-321-native-acceptance.md#follow-up-attempt-after-pr-356).
+[native acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up).
 
 ## Runtime and UI reasons
 

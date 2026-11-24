@@ -227,12 +227,9 @@ strict live-pathname containment or rollback. The archive's internal
 `SHA256SUMS` entries were verified. The archive itself is retained at the
 operator-provided location and is not committed to the repository.
 
-The mount-boundary claim remains unmeasured. If an authorized, private existing
-nested mount fixture becomes available under the chosen scratch directory,
-rerun the exact candidate with `--mount-scope`; otherwise keep the case
-unavailable and have maintainers decide whether that limitation blocks the
-separate enablement proposal. The 17 measured cases do not enable production
-creation.
+At this historical run, the mount-boundary claim remained unmeasured. The
+17 measured cases did not enable production creation. The later measured
+mount-boundary result is recorded separately below.
 
 ## Follow-up attempt after PR #356
 
@@ -274,11 +271,56 @@ fixture setup correction but does not measure mount refusal.
   `34e6f4a27b4fb6e3b42c772102e879358559be46783f131588d0c30eaabb7240`
 
 The external archive sidecar and all 32 internal `SHA256SUMS` entries were
-verified. The archive remains with the operator and is not committed. The
-mount-boundary claim remains unmeasured; no mount was created or changed.
+verified. The archive remains with the operator and is not committed. That run
+did not measure the mount boundary; no mount was created or changed.
 This documentation update follows measured source `34be8c54fa7ebb5a355ce8c8ccbc6fc89f818f7b`;
 the runner, overlay, and enforcement paths are unchanged between that source
 and this documentation revision.
+
+## Nested mount-boundary follow-up
+
+The exact current-master source `c0af7cda7bbbce3de289367af9e468ea8bea73df`
+was run with an authorized private ext4 scope containing a real nested bind
+mount. This resolves the previously unavailable mount-boundary measurement
+for this candidate and measured host profile; it does not enable production
+creation.
+
+- Archive basename: `komposyn-composition-native-results.kgkmkzfx.tar.gz`
+- Archive SHA-256: `00a4ffccd3c4acf156faae120a863e04ffc1a74f185702b4f1e0acafc6077f59`
+- Manifest SHA-256: `53aad50556c103fb2e2bda2b0ea4dbc47d6f77061b3bc597e69f531cd7cd2f23`
+- Native report SHA-256: `f378d34c3b87bad6691c3979e42e0c318a0b5e28a871c2dfd130694d867ff2f1`
+- Source archive SHA-256: `a7b80eec9323236a475939fdcec3cc81a3af32757f7f530525f06f76ce331906`
+- Runner SHA-256: `57643610ed88716f205ecf9ac6d657d0b3fe19f732992c48730a35fa1ce57bc9`
+- Overlay SHA-256: `9da0e55bb8421c2ca4b962cf88193dfbc82fa4a323a49177e14dee44ae6e1ef2`
+- Native binary SHA-256: `171db6baf066805c80bdef80317653fd724f6a48bb8ffad8f3dc111cb5a331d9`
+- Environment: Go 1.26.11, Linux `7.0.0-42-generic`, amd64, regular UID 1000,
+  trusted root-owned Bubblewrap 0.9.0 mode `0755`, measured `ro-bind-fd` mode.
+- Filesystem evidence: startup scope on ext4 mount ID 33; nested mount ID 157.
+  The IDs were distinct in the measured host mount namespace.
+- Command: `scripts/native-acceptance/run-native-acceptance.sh --repo "$PWD"
+  --revision c0af7cda7bbbce3de289367af9e468ea8bea73df --bwrap /usr/bin/bwrap
+  --scratch-dir "$SCRATCH_DIR" --mount-scope "$MOUNT_SCOPE"`; exit status `0`.
+- Inventory and outcome: all 18 expected cases appeared exactly once and were
+  `measured_pass`; `case_inventory_exact` was true. Unit checks, native build,
+  native execution, process joining and temporary-work cleanup completed.
+  The aggregate status was `scoped_native_pass` and `work_retained` was false.
+- Mount case: `TestNativeServiceMountBoundaryRefusal` was `measured_pass` with
+  `creation_mount_boundary_refused=true`. Its direct-child eligibility proposal
+  was prepared and discarded without execution; the nested-mount target was
+  refused before approval/worker launch, no target appeared, and no private
+  stage remained. The case cleanup was confirmed.
+- Verification: the external archive SHA-256 sidecar matched, and all 32
+  internal `SHA256SUMS` entries verified. The raw archive is retained by the
+  operator and is not committed.
+
+This records only the fixed worker and test fixture on the measured Linux
+amd64/ext4/Bubblewrap profile. It does not establish other filesystems,
+architectures, bind modes or platforms; exhaustive worker/actor schedules;
+interrupted syscalls; production owner coverage; or model-facing enablement.
+The runner, overlay, native worker and enforcement source in this run are the
+same as at `c0af7cda7bbbce3de289367af9e468ea8bea73df`; this PR changes records
+only. Creation remains unregistered and unavailable pending separate explicit
+enablement review.
 
 ## Host requirements
 
