@@ -4,9 +4,13 @@ This record preserves bounded native runs against their exact source commits.
 Merged master `f79e754b1cba327aaeda78964e9672b4c50f88ce` still omits creation
 from normal composition. The current unmerged enablement change proposes
 profile-gated schema registration and adds a native assertion to
-`TestNativeServiceNestedCreationUsesStartupScope`. Its exact-candidate run is
-pending; the historical 18/18 archive below does not establish that activation
-path. Native tests use synthetic files and make no provider requests.
+`TestNativeServiceNestedCreationUsesStartupScope`. The exact-candidate run
+measured that registration and creation case as passing, with 17 of 18 cases
+passing overall and the nested-mount case unavailable because no pre-existing
+nested mount was present. Its aggregate is `native_unavailable`, not a pass;
+details and hashes are recorded below. The historical 18/18 archive does not
+establish the new activation path. Native tests use synthetic files and make
+no provider requests.
 
 ## Recorded native run
 
@@ -322,8 +326,9 @@ interrupted syscalls; production owner coverage; or model-facing enablement.
 The runner, overlay, native worker and enforcement source in this run are the
 same as at `c0af7cda7bbbce3de289367af9e468ea8bea73df`; the PR that recorded it
 changed records only. The current unmerged enablement change modifies
-composition and requires its own exact-candidate native run and maintainer
-review.
+composition, so this historical archive alone does not establish its activation
+path. The exact-candidate activation result is recorded below; maintainer
+review remains required.
 
 ## Host requirements
 
@@ -449,3 +454,31 @@ timings, external isolation during approval, all Linux filesystems, or
 non-Linux behavior. The design accepts residual external changes during
 approval and between observation and effect. No native result authorizes
 production enablement; a separate maintainer decision is required.
+
+## Shipping-composition candidate run (2026-11-24)
+
+Source commit `2a576e5b38eb6e71caca1f56084b014212c8f16a` is the exact code
+candidate on PR #359. The run completed build and selected unit-check stages,
+recorded exactly 18 expected cases, and confirmed cleanup. Seventeen cases
+measured pass. `TestNativeServiceNestedCreationUsesStartupScope` recorded
+`creation_schema_registered: true` and measured the creation path through the
+same profile-gated runtime composition used by `cmd/harness`. The sole
+unavailable case was `TestNativeServiceMountBoundaryRefusal`: the supplied
+startup scope contained no pre-existing nested mount. The runner correctly
+reported `native_unavailable` with exit 2; this is not a full acceptance pass.
+
+Environment: Go 1.26.11, Linux `7.0.0-42-generic` amd64, regular UID 1000,
+Python 3.12.3, trusted root-owned Bubblewrap 0.9.0 using `ro-bind-fd`, local
+ext4 startup scope mount ID 33. No work or descendants were retained. The
+archive is `/home/ayesh/projects/samples/komposyn-ext4/native-scratch/komposyn-composition-native-results.cug_cfkt.tar.gz`
+(SHA-256 `ff79d95066342d961f0a57a903ecaf579208e37c58ba870d42e8e39b7a029144`);
+manifest SHA-256 `7e71e00ad5c25d233c3acbabe66771f7ea1153d201f99c8d9394aa5cee53c99d`;
+report SHA-256 `4a438850959910600595a026e8c54c97e3b2716915f589d0fafbf2d2f199d63e`;
+source archive SHA-256 `429a047314fa9d484919fa096f526e3da560d8d020eb12d1246b7eee9f15628c`;
+test overlay SHA-256 `ceed4a057503007e624c0f8d9009a88a174624543e48e773a9764f5129a6569d`;
+runner SHA-256 `30a84298523eaa3bbcbacba98680d249e9e36594f6d4cd83647df6be5c7fb841`;
+native test binary SHA-256 `c1de427e7373e31be83444d0903c0bb35b188523ec04e5e518c8a2377a1e42e9`.
+Every archive member listed in `SHA256SUMS` verified. A full aggregate still
+requires rerunning with an authorized, pre-existing nested-mount fixture; the
+runner must not create or modify mounts. The later documentation-only follow-up
+on PR #359 leaves the measured source unchanged.

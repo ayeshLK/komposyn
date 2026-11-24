@@ -2,7 +2,10 @@
 
 **Status:** owner/scope foundation is merged; creation-only shipping
 registration is proposed by the current unmerged enablement change and remains
-pending exact-candidate native acceptance and maintainer review.
+pending completion of the native acceptance aggregate and maintainer review.
+The exact candidate measured shipping schema registration and native creation
+as passing; its mount-boundary case was unavailable because no pre-existing
+nested mount was supplied. See the [candidate run record](issue-321-native-acceptance.md#shipping-composition-candidate-run-2026-11-24).
 
 The trusted `cmd/harness` composition passes the launch directory to the host
 sandbox before initializing the runtime's navigable working directory. The
@@ -92,9 +95,10 @@ master run at `c0af7cda7bbbce3de289367af9e468ea8bea73df` measured 18/18 cases,
 including mount-boundary refusal across real ext4 mount IDs 33 and 157. Its
 archive SHA-256 is `00a4ffccd3c4acf156faae120a863e04ffc1a74f185702b4f1e0acafc6077f59`.
 See the [native acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up)
-for complete provenance and limits. Broader filesystems and launch profiles,
-production creation registration, integrated lifecycle review of every
-stale/cancel/interruption case. The new shipping registration path still needs
-fresh native acceptance; fixture tests establish control flow, not native
-filesystem enforcement. Until the enablement change is reviewed and merged,
-released CLI builds continue to omit creation.
+for complete provenance and limits. The exact PR #359 candidate's shipping
+registration and creation case measured pass; its full run remains
+`native_unavailable` because the nested-mount prerequisite was absent. Broader
+filesystems and launch profiles, and integrated lifecycle review of every
+stale/cancel/interruption case remain unestablished. Fixture tests establish
+control flow, not native filesystem enforcement. Until the enablement change is
+reviewed and merged, released CLI builds continue to omit creation.

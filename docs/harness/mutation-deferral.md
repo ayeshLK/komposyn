@@ -4,10 +4,12 @@
 wires creation through the shipping CLI composition for Linux amd64, trusted
 Bubblewrap descriptor binding, and a retained local ext4 startup scope. The
 accepted owner, approval, and lifecycle checks remain authoritative. This
-change needs an exact-candidate native run that exercises registration through
-the shipping composition seam and maintainer review before merge. Existing
-released builds remain unchanged. Editing continues under its independent
-deferred contract.
+exact candidate exercised registration through the shipping composition seam;
+17 of 18 native cases measured pass and the mount-boundary case was unavailable
+without a pre-existing nested mount. The aggregate remains
+`native_unavailable`; completion of the acceptance gate and maintainer review
+remain before merge. Existing released builds remain unchanged. Editing
+continues under its independent deferred contract.
 
 **Historical evidence update — 2026-11-21:** the disposable creation prototype had
 selected runtime lifecycle tests and a trusted-host native run with 12/12
@@ -31,15 +33,18 @@ and historical research.
 
 Status: **planning record for the near-term deferral; #315's current-delivery
 section tracks its publication and review state.** Merged master still omits
-creation. The current unmerged change proposes profile-gated registration and
-requires exact-candidate native acceptance and maintainer review.
+creation. The current unmerged change proposes profile-gated registration; the
+exact candidate activation case passed native measurement, while the aggregate
+remains unavailable for the missing mount-boundary fixture. Acceptance and
+maintainer review remain open.
 
 Editing implementation remains deferred under its existing authority
 contract. Creation has an accepted concurrency/approval boundary, a bounded
 stage-plus-no-replace fixture prototype, and scoped positive native evidence;
 its mechanism and evidence are in [creation mechanism design](creation-mechanism-proposal.md).
-Editing has no positive native mechanism evidence. Neither operation has
-separate model-facing enablement. Discovery remains delivered within its documented support profiles:
+Editing has no positive native mechanism evidence. On merged master, neither
+operation has separate model-facing enablement; this branch proposes creation
+registration and remains unmerged. Discovery remains delivered within its documented support profiles:
 nonrecursive listing and recursive/filter listing on their recorded Linux
 profiles, and literal search on its recorded Linux amd64 ext4 profile.
 

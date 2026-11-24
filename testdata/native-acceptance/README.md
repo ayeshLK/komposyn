@@ -80,6 +80,15 @@ No provider network request is made. “Publication” here means the coordinato
 
 ## Results
 
+The exact PR #359 candidate (`2a576e5b38eb6e71caca1f56084b014212c8f16a`)
+recorded 17 of 18 cases as `measured_pass`. The shipping
+`TestNativeServiceNestedCreationUsesStartupScope` case confirmed
+`creation_schema_registered: true`. The mount-boundary case was unavailable
+because the designated scope had no pre-existing nested mount, so the aggregate
+was `native_unavailable` (exit 2), not a pass. See the [native acceptance
+record](../../docs/harness/issue-321-native-acceptance.md#shipping-composition-candidate-run-2026-11-24)
+for the archive and hashes.
+
 The runner prints a path such as:
 
 ```text

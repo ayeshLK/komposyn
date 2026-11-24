@@ -11,9 +11,12 @@ profile-gated runtime composition. `apply_patch` registration is limited to
 Linux amd64, trusted Bubblewrap `ro-bind-fd`, and a retained local ext4 startup
 scope. Live auth/settings coverage, scope identity, owner/policy revisions,
 approval binding, and cleanup remain Service checks at each boundary. The
-recorded 18/18 native archive predates this activation path; the new path needs
-an exact-candidate native run and maintainer review before merge. Existing
-released binaries remain unchanged until merge and release.
+exact PR #359 candidate measured the shipping registration and native creation
+case as passing. Its aggregate remains `native_unavailable` because the
+mount-boundary case lacked a pre-existing nested mount; the earlier 18/18
+archive supports that unchanged worker boundary on its recorded profile but is
+not the candidate aggregate. Maintainer review remains required before merge.
+Existing released binaries remain unchanged until merge and release.
 
 The implementation status below records the earlier PR #354 integration, before
 the current enablement proposal. Its test-only composition carried a real
@@ -32,8 +35,9 @@ that revision, normal `cmd/harness` omitted creation. UI/runtime/service tests
 covered scope/navigation, auth/settings lifecycle, exact target/diff/destination,
 denial, once approval, and exact output bytes. Its native evidence predates that
 startup-scope integration. The current unmerged enablement proposal above
-updates the composition status but still requires exact-candidate native
-acceptance and maintainer review. Issues #267, #315, #321 and #322 remain open.
+updates the composition status; its activation case measured pass, while the
+incomplete native aggregate and maintainer review remain. Issues #267, #315,
+#321 and #322 remain open.
 
 The companion [mechanism proposal](creation-mechanism-proposal.md) records the
 stage file plus `renameat2(RENAME_NOREPLACE)` mechanism. Arbitrary filesystems,
@@ -44,7 +48,7 @@ and its current activation state are described above.
 
 The Linux sandbox composition currently has one `linuxImplementation` mutex, an `ownerUpdateMu`, a protected-owner `revision`, auth/settings owner states, a `blocked` owner map, and a read coordinator. `Protect` serializes owner changes, advances the revision, blocks the owner, invalidates conversation state and read admissions, registers the new owner identity/routes, and then completes or leaves coverage pending. It is an owner-rotation operation, not a transient-stage operation. Calling it for a stage after consuming the create receipt would invalidate that save's captured state and could make a drain wait on its own operation.
 
-Read admission parses the requested read/list/search operation, checks service and auth/settings state, begins an admission in the coordinator, waits for its receipt, then rechecks service and coverage revision. Preparation rechecks again. Execution and publication have runtime authority claims and worker lifecycle state. The Linux implementation's creation barrier now drains active read workers through `ActiveReadDrainer` while preserving completed captures and existing generations. This remains a fixture-only creation path: `cmd/harness` does not register a creation schema or effect path.
+Read admission parses the requested read/list/search operation, checks service and auth/settings state, begins an admission in the coordinator, waits for its receipt, then rechecks service and coverage revision. Preparation rechecks again. Execution and publication have runtime authority claims and worker lifecycle state. The Linux implementation's creation barrier now drains active read workers through `ActiveReadDrainer` while preserving completed captures and existing generations. On merged master PR #354 this remained a fixture-only creation path. The current unmerged change wires `cmd/harness` to the profile-gated creation schema and effect path; its exact-candidate activation case measured pass, while the aggregate native run remains `native_unavailable` because the mount-boundary fixture was absent.
 
 The trusted composition's declared owners are:
 

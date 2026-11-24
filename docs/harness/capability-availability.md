@@ -157,10 +157,13 @@ remain unavailable.
 Behavioral coverage composes the actual sandbox Service with the existing
 runtime authorization and UI approval bridge, using real auth/settings
 lifecycle registration and checking exact target, multiline diff,
-provider/model/profile destination, and approved bytes. The newly wired
-shipping activation path still requires a fresh native run on the supported
-profile; the recorded 18/18 run below predates this composition change. A
-detached scope status is descriptive only and never supplies authority.
+provider/model/profile destination, and approved bytes. The exact PR #359
+candidate measured its shipping activation and native Service creation case as
+pass. Its aggregate was `native_unavailable` (17 measured passes, one
+mount-boundary case unavailable because the supplied scope had no pre-existing
+nested mount). The earlier 18/18 run below establishes that boundary for its
+recorded source/profile but does not convert this candidate's aggregate into a
+pass. A detached scope status is descriptive only and never supplies authority.
 
 The earlier native run recorded 12/12 scoped cases at source
 `dbfd90974f0979832a9abc60e32aeb3c87399840` on Linux amd64/local ext4 with
@@ -193,9 +196,10 @@ each measured 17 of 18 cases, with the mount-boundary case unavailable. A
 later exact source `c0af7cda7bbbce3de289367af9e468ea8bea73df` run measured all
 18 cases as passes, including refusal across a real nested mount (scope mount
 ID 33, nested mount ID 157). The aggregate was `scoped_native_pass`. Source
-presence and Go/race checks alone do not establish native enforcement. A fresh
-native run must exercise the newly wired shipping activation path before this
-change is ready to merge. See the
+presence and Go/race checks alone do not establish native enforcement. The
+newly wired activation path has now been exercised natively on the recorded
+profile; the aggregate still needs the unavailable mount-boundary case to
+measure pass before this change is ready to merge. See the
 [owner-profile foundation](issue-321-owner-profile.md) and
 [native acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up).
 
