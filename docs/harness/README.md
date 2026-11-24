@@ -161,9 +161,12 @@ candidate has 17 measured native cases on trusted Linux amd64/ext4 with
 Bubblewrap `ro-bind-fd`. After PR #356 corrected the mount fixture's root
 generation, an exact-candidate rerun again measured 17 passes; the supplied
 scope had no pre-existing nested mount, leaving that case unavailable and the
-aggregate `native_unavailable`. The normal chat composition still does not
-expose creation; mount-boundary evidence and separate explicit enablement
-remain outstanding.
+aggregate `native_unavailable`. A follow-up on exact current-master source
+`c0af7cda7bbbce3de289367af9e468ea8bea73df` measured all 18 cases passing,
+including refusal at a real nested-mount boundary; see the [issue #321 native
+acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up).
+The normal chat composition still does not expose creation, and separate
+explicit creation-enablement approval remains outstanding.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
