@@ -143,10 +143,7 @@ func newCommand() *cobra.Command {
 			}
 			approvalBridge := harnessui.NewApprovalBridge()
 			clarificationBridge := harnessui.NewClarificationBridge()
-			toolRuntime := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approvalBridge, clarificationBridge, hostSandbox)
-			toolRuntime.Preparer = hostSandbox
-			toolRuntime.ReadAdmission = hostSandbox
-			toolRuntime.RootHost = hostSandbox
+			toolRuntime := runtime.BundledConversationToolRuntimeConfigWithFilesystemCreation(approvalBridge, clarificationBridge, hostSandbox)
 			chat := runtime.NewChatWithToolRuntime(registry, profileStore, authRegistry, toolRuntime)
 			if err := chat.InitializeWorkingDirectory(cmd.Context(), workingDirectory); err != nil {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

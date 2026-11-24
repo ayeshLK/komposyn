@@ -67,12 +67,13 @@ type CreateFileInput struct {
 
 var createFileSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048},"content":{"type":"string","maxLength":65536}},"required":["path","content"],"additionalProperties":false}`)
 
-// CreateFileDefinition describes a fixed-purpose, creation-only prototype.
-// Production composition intentionally does not register it.
+// CreateFileDefinition describes the fixed-purpose, creation-only subset of
+// apply_patch. Trusted runtime composition registers it only for eligible host
+// and startup-scope profiles.
 func CreateFileDefinition() Definition {
 	return Definition{
 		ID:          CreateFileID,
-		Description: "Create one UTF-8 text file beneath the trusted fixed startup directory after review of the complete file. Existing destinations are refused; editing, overwrite, append, merge, rename, deletion, and directory creation are unavailable.",
+		Description: "Create exactly one new UTF-8 regular text file of at most 64 KiB beneath the trusted fixed startup directory using an existing parent; empty content is allowed. The complete file is shown for explicit once approval. Existing destinations are refused; editing, overwrite, append, merge, rename, deletion, and directory creation are unavailable.",
 		InputSchema: append(json.RawMessage(nil), createFileSchema...),
 		MaxInput:    MaxCreateFileInputBytes,
 	}
@@ -160,9 +161,9 @@ func ListFilesDefinition() Definition {
 
 func ListFilesDefinitionWithOptions(optionsAvailable bool) Definition {
 	if !optionsAvailable {
-		return Definition{ID: ListFilesID, Description: "List names in one directory only (nonrecursive). Hidden entries, ignored entries, and .git are excluded. Every request needs explicit once approval naming the directory and selected provider destination. Symlinks are not followed. Results include an incomplete flag when a bound is reached. Names and counts may be sensitive. Changing the working directory grants no listing permission. Search, recursion, filtering, and filesystem changes are unavailable.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048}},"required":["path"],"additionalProperties":false}`), MaxInput: MaxListFilesInputBytes}
+		return Definition{ID: ListFilesID, Description: "List names in one directory only (nonrecursive). Hidden entries, ignored entries, and .git are excluded. Every request needs explicit once approval naming the directory and selected provider destination. Symlinks are not followed. Results include an incomplete flag when a bound is reached. Names and counts may be sensitive. Changing the working directory grants no listing permission. This operation does not change files; creation, where registered, uses the separate apply_patch approval.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":2048}},"required":["path"],"additionalProperties":false}`), MaxInput: MaxListFilesInputBytes}
 	}
-	return Definition{ID: ListFilesID, Description: "List names beneath one directory. Defaults are nonrecursive and exclude hidden and ignored entries. Explicitly request recursion, hidden or ignored entries, and basename glob filters; filters do not limit traversal. .git is always excluded. Every request needs explicit once approval showing the directory, all effective options, and selected provider destination. Symlinks are not followed and mount boundaries are not crossed. Results include an incomplete flag when a bound is reached. Names and counts may be sensitive. Changing the working directory grants no listing permission. Search and filesystem changes are unavailable.", InputSchema: append(json.RawMessage(nil), listFilesSchema...), MaxInput: MaxListFilesInputBytes}
+	return Definition{ID: ListFilesID, Description: "List names beneath one directory. Defaults are nonrecursive and exclude hidden and ignored entries. Explicitly request recursion, hidden or ignored entries, and basename glob filters; filters do not limit traversal. .git is always excluded. Every request needs explicit once approval showing the directory, all effective options, and selected provider destination. Symlinks are not followed and mount boundaries are not crossed. Results include an incomplete flag when a bound is reached. Names and counts may be sensitive. Changing the working directory grants no listing permission. This operation does not change files; creation, where registered, uses the separate apply_patch approval.", InputSchema: append(json.RawMessage(nil), listFilesSchema...), MaxInput: MaxListFilesInputBytes}
 }
 
 // ParseListFiles strictly validates the bounded discovery request.
@@ -224,7 +225,7 @@ var searchFilesSchema = json.RawMessage(`{"type":"object","properties":{"path":{
 func SearchFilesDefinition() Definition {
 	return Definition{
 		ID:          SearchFilesID,
-		Description: "Search one approved directory on ext4 for a nonempty, case-sensitive literal query, one line at a time. Requests targeting other filesystems are refused before approval. Defaults are nonrecursive and exclude hidden and ignored entries; .git and protected resources are always excluded. Explicitly request recursion, hidden or ignored entries, and basename glob filters; filters do not limit traversal. Only UTF-8 regular files up to 64 KiB are searched. Each request needs explicit once approval showing the exact directory, literal query, all effective options, and selected provider/model/profile destination. Results are bounded and identify incomplete coverage; an incomplete search must not be treated as an exhaustive no-match result. Matching content is sensitive and may recur in this conversation. Starting in a directory or approving a listing grants no search permission. No regex, shell, or filesystem changes.",
+		Description: "Search one approved directory on ext4 for a nonempty, case-sensitive literal query, one line at a time. Requests targeting other filesystems are refused before approval. Defaults are nonrecursive and exclude hidden and ignored entries; .git and protected resources are always excluded. Explicitly request recursion, hidden or ignored entries, and basename glob filters; filters do not limit traversal. Only UTF-8 regular files up to 64 KiB are searched. Each request needs explicit once approval showing the exact directory, literal query, all effective options, and selected provider/model/profile destination. Results are bounded and identify incomplete coverage; an incomplete search must not be treated as an exhaustive no-match result. Matching content is sensitive and may recur in this conversation. Starting in a directory or approving a listing grants no search permission. No regex or shell; creation, where registered, uses a separate apply_patch approval.",
 		InputSchema: append(json.RawMessage(nil), searchFilesSchema...),
 		MaxInput:    MaxSearchFilesInputBytes,
 	}

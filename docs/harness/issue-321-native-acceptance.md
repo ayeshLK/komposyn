@@ -1,10 +1,12 @@
 # Issue #321 native creation acceptance
 
-This run tests a bounded, disposable fixture against one exact source commit.
-It is not production enablement: the normal chat composition still does not
-register creation, grant creation scope, or advertise its schema. The test uses
-synthetic auth/settings/provider-source/Token Logger owner coverage and only
-synthetic files. It makes no provider requests.
+This record preserves bounded native runs against their exact source commits.
+Merged master `f79e754b1cba327aaeda78964e9672b4c50f88ce` still omits creation
+from normal composition. The current unmerged enablement change proposes
+profile-gated schema registration and adds a native assertion to
+`TestNativeServiceNestedCreationUsesStartupScope`. Its exact-candidate run is
+pending; the historical 18/18 archive below does not establish that activation
+path. Native tests use synthetic files and make no provider requests.
 
 ## Recorded native run
 
@@ -318,9 +320,10 @@ amd64/ext4/Bubblewrap profile. It does not establish other filesystems,
 architectures, bind modes or platforms; exhaustive worker/actor schedules;
 interrupted syscalls; production owner coverage; or model-facing enablement.
 The runner, overlay, native worker and enforcement source in this run are the
-same as at `c0af7cda7bbbce3de289367af9e468ea8bea73df`; this PR changes records
-only. Creation remains unregistered and unavailable pending separate explicit
-enablement review.
+same as at `c0af7cda7bbbce3de289367af9e468ea8bea73df`; the PR that recorded it
+changed records only. The current unmerged enablement change modifies
+composition and requires its own exact-candidate native run and maintainer
+review.
 
 ## Host requirements
 

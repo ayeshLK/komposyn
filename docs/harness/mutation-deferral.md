@@ -1,5 +1,14 @@
 # Near-term mutation implementation deferral
 
+**Current creation status — 2026-11-24:** an unmerged enablement change now
+wires creation through the shipping CLI composition for Linux amd64, trusted
+Bubblewrap descriptor binding, and a retained local ext4 startup scope. The
+accepted owner, approval, and lifecycle checks remain authoritative. This
+change needs an exact-candidate native run that exercises registration through
+the shipping composition seam and maintainer review before merge. Existing
+released builds remain unchanged. Editing continues under its independent
+deferred contract.
+
 **Evidence update — 2026-11-21:** the disposable creation prototype now has
 selected runtime lifecycle tests and a trusted-host native run with 12/12
 scoped cases on its recorded Linux amd64/local-ext4/Bubblewrap profile. These

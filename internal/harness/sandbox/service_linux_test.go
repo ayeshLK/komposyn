@@ -614,7 +614,7 @@ func TestRetainedStartupPreparationUsesCurrentAuthSettingsOwners(t *testing.T) {
 func enableCreationPrototypeForTest(service *Service) {
 	impl := service.impl.(*linuxImplementation)
 	impl.mu.Lock()
-	impl.creationPrototypeEnabled = true
+	impl.creationFixtureEnabled = true
 	impl.mu.Unlock()
 }
 
@@ -732,6 +732,85 @@ func TestUnsupportedStartupCreationProfileDoesNotBlockHostStartup(t *testing.T) 
 	closed := service.CreationFoundationSnapshot()
 	if closed.StartupScope.State != StartupScopeClosed || closed.OwnerCoverageComplete || closed.CapabilityRegistered {
 		t.Fatalf("closed service exposed current creation coverage: %+v", closed)
+	}
+}
+
+func TestShippingCreationCompositionUsesServiceEligibilityAndKeepsChatTools(t *testing.T) {
+	clarification := runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+	})
+	approval := runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		return permissions.ApprovalDeny, "", nil
+	})
+	startup := t.TempDir()
+	service, err := NewHostServiceWithStartupDirectory(filepath.Join(t.TempDir(), "missing-bubblewrap"), startup)
+	if err != nil {
+		t.Fatalf("unsupported profile made chat composition fail: %v", err)
+	}
+	defer func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close unsupported service: %v", err)
+		}
+	}()
+	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemCreation(approval, clarification, service)
+	if config.Registry == nil {
+		t.Fatal("missing creation backend invalidated ordinary chat tools")
+	}
+	if _, ok := config.Registry.Lookup(tools.UpdatePlanID); !ok {
+		t.Fatal("ordinary conversation tool was removed with unsupported creation")
+	}
+	if _, ok := config.Registry.Lookup(tools.CreateFileID); ok {
+		t.Fatal("unsupported backend registered creation")
+	}
+	if service.CreationCapabilityRegistrationAvailable() {
+		t.Fatal("missing Bubblewrap was considered eligible for creation registration")
+	}
+
+	fixture, err := newTestHostServiceWithLauncher(&testCreationWorkerLauncher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureTestStartupScope(t, fixture, startup)
+	defer func() {
+		if err := fixture.Close(context.Background()); err != nil {
+			t.Errorf("close supported-profile fixture: %v", err)
+		}
+	}()
+	if !fixture.CreationCapabilityRegistrationAvailable() {
+		t.Fatal("eligible retained ext4 scope did not allow schema registration")
+	}
+	foundation := fixture.CreationFoundationSnapshot()
+	if foundation.OwnerCoverageComplete {
+		t.Fatal("unregistered auth/settings owners were treated as complete")
+	}
+	registered := runtime.BundledConversationToolRuntimeConfigWithFilesystemCreation(approval, clarification, fixture)
+	if _, ok := registered.Registry.Lookup(tools.CreateFileID); !ok {
+		t.Fatal("eligible host profile did not register the creation schema")
+	}
+	if err := fixture.InvalidateFilesystemRoot(context.Background(), runtime.FilesystemRootTransition{
+		ConversationID: "shipping-profile", Root: startup, Generation: 1, Reason: runtime.FilesystemRootSelected,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(tools.CreateFileInput{Path: "not-created.txt", Content: "coverage is incomplete"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tools.Invocation{ConversationID: "shipping-profile", TurnID: "turn", ProviderCallID: "call", ToolID: tools.CreateFileID, Arguments: arguments}
+	if _, err := fixture.PrepareFilesystemCreation(context.Background(), invocation, "openai/model/profile", startup); !errors.Is(err, ErrCoverageMissing) {
+		t.Fatalf("registered schema bypassed missing live owner coverage: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(startup, "not-created.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("incomplete owner coverage created a target: %v", err)
+	}
+	if err := fixture.Protect(context.Background(), auth.SensitiveOwnerAuth, auth.SensitiveClassAuth, filepath.Join(startup, ".auth.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.Protect(context.Background(), auth.SensitiveOwnerSettings, auth.SensitiveClassSettings, filepath.Join(startup, ".settings.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !fixture.CreationFoundationSnapshot().OwnerCoverageComplete {
+		t.Fatal("real Service auth/settings registrations did not complete current owner coverage")
 	}
 }
 
@@ -2961,11 +3040,13 @@ func TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge(t *testing.T)
 		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
 	}))
 	if _, ok := base.Registry.Lookup(tools.CreateFileID); ok {
-		t.Fatal("normal bundled composition registered creation")
+		t.Fatal("base text-only composition unexpectedly registered creation")
 	}
-	config := runtime.WithBoundedCreationPrototype(base, service)
+	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemCreation(bridge, runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+	}), service)
 	if config.Registry == nil {
-		t.Fatal("explicit test-only creation composition was not accepted")
+		t.Fatal("trusted eligible Service did not register the creation composition")
 	}
 	config.ReadAdmission = service
 	config.RootHost = service
@@ -3010,10 +3091,6 @@ func TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge(t *testing.T)
 	if normalStatus.Available || normalStatus.State != "not_registered" || normalStatus.Scope.StartupDirectory != root || !normalStatus.Scope.OwnerCoverageComplete {
 		t.Fatalf("complete retained scope made normal creation appear enabled: %+v", normalStatus)
 	}
-	impl := service.impl.(*linuxImplementation)
-	impl.mu.Lock()
-	impl.creationPrototypeEnabled = true // test-only gate; never wired by cmd/harness
-	impl.mu.Unlock()
 	if err := chat.InitializeWorkingDirectory(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
@@ -4028,7 +4105,7 @@ func installSyntheticCreationManifest(t *testing.T, service *Service, root strin
 		entries[owner.name] = manifest
 	}
 	impl.mu.Lock()
-	impl.creationPrototypeEnabled = true
+	impl.creationFixtureEnabled = true
 	impl.owners["tokenlogger-store"] = OwnerCoverage{Owner: "tokenlogger-store", Class: "token_database", State: OwnerRegistered, Routes: 5, Identities: 5, Evidence: "synthetic creation fixture"}
 	impl.owners["provider-source"] = OwnerCoverage{Owner: "provider-source", Class: "provider_source", State: OwnerRegistered, Routes: 1, Identities: 1, Evidence: "synthetic creation fixture"}
 	impl.creationManifest = &syntheticCreationOwnerManifest{

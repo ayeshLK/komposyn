@@ -23,6 +23,9 @@ import (
 	"sync"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	"github.com/ayeshLK/komposyn/internal/harness/permissions"
+	harnessruntime "github.com/ayeshLK/komposyn/internal/harness/runtime"
+	"github.com/ayeshLK/komposyn/plugins/tools"
 )
 
 type unsupportedImplementation struct {
@@ -103,6 +106,18 @@ func (s *unsupportedImplementation) PrepareGenericRead(ctx context.Context, _, _
 		return ErrServiceClosed
 	}
 	return errors.Join(ErrUnknownRootData, errors.New("sandboxed typed reads are supported only on Linux"))
+}
+
+func (*Service) PrepareFilesystemCreation(context.Context, tools.Invocation, string, string) (permissions.Request, error) {
+	return permissions.Request{}, errors.New("file creation is unavailable on this platform")
+}
+
+func (*Service) PrepareApprovedFilesystemCreation(context.Context, tools.Invocation, permissions.Request, uint64) (harnessruntime.ToolPreparation, error) {
+	return nil, errors.New("file creation is unavailable on this platform")
+}
+
+func (*Service) DiscardFilesystemCreationProposal(context.Context, tools.Invocation) error {
+	return nil
 }
 
 var _ implementation = (*unsupportedImplementation)(nil)

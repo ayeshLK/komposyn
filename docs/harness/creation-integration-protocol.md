@@ -4,17 +4,41 @@
 
 The normal `cmd/harness` composition captures the trusted startup directory and
 the local UI reports it separately from the navigable working directory.
-Production creation remains unregistered and unavailable. The explicit
-test-only composition now carries a real sandbox Service proposal through the
-existing runtime once-approval and UI bridge; the approval presents exact
-target, complete diff, and provider/model/auth-profile destination. The
-`CreationHost` signatures below remain design vocabulary, not exported
-production interfaces. Fixture evidence does not establish native enforcement
-for this integrated revision; see the [lifecycle record](issue-321-lifecycle-acceptance.md).
+## Shipping activation proposal — 2026-11-24
 
-**Status:** ADR-0009's first three implementation slices now capture and enforce a fixed startup scope, expose detached local UI status, and connect the test-only creation proposal through the real sandbox Service, runtime once authorization, and existing approval bridge. The normal `cmd/harness` registry and provider instructions still omit creation. New UI/runtime/service tests cover separate scope/navigation status, actual auth/settings lifecycle registrations, exact nested target, complete diff and destination display, denial without effect, explicit once success, and exact output bytes. The historical scoped native run predates startup-scope integration and does not prove it; trusted-host evidence for these changes and separate explicit enablement remain gates. Issues #267, #315, #321 and #322 remain open.
+The current unmerged enablement change wires the normal CLI through the
+profile-gated runtime composition. `apply_patch` registration is limited to
+Linux amd64, trusted Bubblewrap `ro-bind-fd`, and a retained local ext4 startup
+scope. Live auth/settings coverage, scope identity, owner/policy revisions,
+approval binding, and cleanup remain Service checks at each boundary. The
+recorded 18/18 native archive predates this activation path; the new path needs
+an exact-candidate native run and maintainer review before merge. Existing
+released binaries remain unchanged until merge and release.
 
-The companion [mechanism proposal](creation-mechanism-proposal.md) selects a stage file plus `renameat2(RENAME_NOREPLACE)`. This document records how the fixture prototype joins the existing runtime, UI, provider and read-admission composition. The mechanism passed the recorded scoped Linux native cases, but arbitrary production scopes remain unavailable and no production creation capability is enabled.
+The implementation status below records the earlier PR #354 integration, before
+the current enablement proposal. Its test-only composition carried a real
+sandbox Service proposal through runtime once-approval and the UI bridge; the
+approval presented exact target, complete diff, and provider/model/auth-profile
+destination. The `CreationHost` signatures below remain historical design
+vocabulary, not exported production interfaces. Fixture evidence did not
+establish native enforcement for that integrated revision; see the
+[lifecycle record](issue-321-lifecycle-acceptance.md).
+
+**Historical status after PR #354 (2026-11-22):** ADR-0009's first three
+implementation slices captured and enforced fixed startup scope, exposed
+detached local UI status, and connected the test-only creation proposal through
+the real sandbox Service, runtime once authorization, and approval bridge. At
+that revision, normal `cmd/harness` omitted creation. UI/runtime/service tests
+covered scope/navigation, auth/settings lifecycle, exact target/diff/destination,
+denial, once approval, and exact output bytes. Its native evidence predates that
+startup-scope integration. The current unmerged enablement proposal above
+updates the composition status but still requires exact-candidate native
+acceptance and maintainer review. Issues #267, #315, #321 and #322 remain open.
+
+The companion [mechanism proposal](creation-mechanism-proposal.md) records the
+stage file plus `renameat2(RENAME_NOREPLACE)` mechanism. Arbitrary filesystems,
+platforms, and scope changes remain unsupported; the bounded initial profile
+and its current activation state are described above.
 
 ## Source facts and coverage boundary
 

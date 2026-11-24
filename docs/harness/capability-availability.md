@@ -1,12 +1,18 @@
 # Temporary chat capability availability
 
-Evidence reviewed 2026-11-22. This matrix describes the bundled temporary
+Evidence reviewed 2026-11-24. This matrix describes the bundled temporary
 chat routes and its current capabilities. “Supported” describes the
 provider protocol implementation and fixture-backed contract; it does not
 grant permission to execute a tool. Runtime availability also requires the
 host authorization, approval, and enforcement composition. No capability
 selection changes the provider, profile, authentication method, or billing
 route.
+
+The `apply_patch` rows describe the unmerged creation-enablement change in
+this source branch. Existing released builds still omit it until the change is
+reviewed and merged. The branch registers only file creation on the supported
+Linux amd64/local ext4/trusted Bubblewrap `ro-bind-fd` profile; it does not
+enable editing or other mutations.
 
 The parity policy is that KompoSyn capabilities are offered across provider
 and supported subscription or authentication methods unless a provider imposes
@@ -47,7 +53,7 @@ filesystem access.
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `list_files` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement; live listing is not verified | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `search_files` | Conditional: trusted Linux amd64 Bubblewrap descriptor-bind profile, complete owner coverage, ext4 selected directory, and explicit once approval | Conditional under the same host and ext4 requirements for catalog-listed OAuth models; no live search-provider journey is claimed | Conditional under the same host and ext4 requirements; no live search-provider journey is claimed | Unimplemented route |
-| `apply_patch` creation | Unavailable: normal chat does not register it; the explicit test composition is not shipped | Unavailable: normal chat does not register it | Unavailable: normal chat does not register it | Unimplemented route |
+| `apply_patch` creation | Proposed by this unmerged change: supported Linux amd64/ext4/descriptor-bind profile, supported client-tool route, complete live owner coverage, and explicit once approval | Proposed under the same host profile for catalog-listed OAuth models; creation has no live provider journey evidence | Proposed under the same host profile and route requirements; creation has no live provider journey evidence | Unimplemented route |
 
 `list_files` is registered only when the Linux host has inspected the trusted
 Bubblewrap backend and composed the fixed worker. The runtime additionally
@@ -135,14 +141,25 @@ shipped-binary acceptance. See [the search design note](search-files-design.md)
 and [#318 completion matrix](issue-318-search-completion.md) for exact
 provenance and profile limits.
 
-`apply_patch` creation remains unavailable in normal chat and all shipped
-provider routes. The bundled UI now reports the trusted startup directory
-separately from the navigable working directory and says creation is
-unavailable because the normal registry does not contain the capability. The
-test-only composition connects the retained-startup Service path to the
-existing runtime authorization and UI approval bridge; its behavioral test
-uses real auth/settings lifecycle registration and checks the exact target,
-multiline diff, provider/model/profile destination and approved bytes. A
+The unmerged enablement change in this branch connects the retained-startup
+Service to normal CLI runtime composition. Registration requires Linux amd64,
+trusted Bubblewrap using measured `ro-bind-fd`, and a retained local ext4
+startup scope. A supported provider route is still required. Registration is
+only schema availability: live auth/settings owner coverage, current scope,
+policy revisions, and cleanup state are revalidated at preparation, dispatch,
+and publication. Tool registration does not authorize a save. Each request
+creates one UTF-8 regular text file (up to 64 KiB) under an existing in-scope
+parent, shows the exact target, complete contents/diff, and provider
+destination, and requires explicit once approval. Existing destinations are
+refused; editing, overwrite, append, rename, deletion, and directory creation
+remain unavailable.
+
+Behavioral coverage composes the actual sandbox Service with the existing
+runtime authorization and UI approval bridge, using real auth/settings
+lifecycle registration and checking exact target, multiline diff,
+provider/model/profile destination, and approved bytes. The newly wired
+shipping activation path still requires a fresh native run on the supported
+profile; the recorded 18/18 run below predates this composition change. A
 detached scope status is descriptive only and never supplies authority.
 
 The earlier native run recorded 12/12 scoped cases at source
@@ -151,9 +168,8 @@ root-owned BubbleWrap 0.9.0 and `ro-bind-fd`; it predates the fixed startup
 scope and runtime/UI integration and does not establish those claims. A later
 trusted-host run at `c0af7cda7bbbce3de289367af9e468ea8bea73df` measured 18/18
 native cases, including a real nested-mount refusal, on Linux amd64/ext4 with
-trusted BubbleWrap 0.9.0 and `ro-bind-fd`. This remains fixture evidence for
-that host profile, not production owner coverage or enablement. Integrated
-lifecycle review and separate explicit enablement remain required. Other
+trusted BubbleWrap 0.9.0 and `ro-bind-fd`. This remains evidence for that recorded source/profile and does not exercise
+this branch's shipping activation path. Other
 filesystems/platforms, syscall interruption and general same-user isolation
 remain unsupported or unestablished. See the
 [lifecycle acceptance record](issue-321-lifecycle-acceptance.md),
@@ -166,17 +182,20 @@ components actually instantiated by the running chat. Ordinary existing
 project content does not require a scope-wide inventory. The gated owner
 profile now retains a startup directory descriptor and checks fixed-scope
 identity, nested existing parents, protected-owner ancestry, and terminal
-movement for creation proposals. It applies only to the trusted Linux ext4
-profile with the operation-specific descriptor-bind worker profile. These
-changes are not model-facing: creation remains unregistered and unavailable.
+movement for creation proposals. The unmerged enablement change on this branch
+uses those checks to gate schema registration to the trusted Linux amd64/ext4
+profile with the operation-specific descriptor-bind worker. Owner coverage,
+scope identity, and cleanup are still checked live; registration grants no
+write authority. This branch is a review proposal, not a released capability.
 The PR #355 candidate was run on a trusted Linux amd64/ext4 host with BubbleWrap
 0.9.0 using `ro-bind-fd`: its original run and the corrected PR #356 follow-up
 each measured 17 of 18 cases, with the mount-boundary case unavailable. A
 later exact source `c0af7cda7bbbce3de289367af9e468ea8bea73df` run measured all
 18 cases as passes, including refusal across a real nested mount (scope mount
 ID 33, nested mount ID 157). The aggregate was `scoped_native_pass`. Source
-presence and Go/race checks alone do not establish native enforcement. Separate
-enablement approval remains outstanding. See the
+presence and Go/race checks alone do not establish native enforcement. A fresh
+native run must exercise the newly wired shipping activation path before this
+change is ready to merge. See the
 [owner-profile foundation](issue-321-owner-profile.md) and
 [native acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up).
 

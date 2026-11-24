@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Ayesh Almeida
 # SPDX-License-Identifier: Apache-2.0
-"""Bounded isolated native acceptance of the #243 service plus a test-only overlay."""
+"""Bounded isolated native acceptance of sandbox services and #321 creation activation."""
 import argparse
 import hashlib
 import importlib.util
@@ -161,6 +161,8 @@ def main():
                     row={'case':case,'status':'invalid_record','cleanup_confirmed':False}
                 if row.get('case') != case:
                     row['status']='case_identity_mismatch'
+                if case == 'TestNativeServiceNestedCreationUsesStartupScope' and row.get('creation_schema_registered') is not True and row.get('status') == 'measured_pass':
+                    row['status']='shipping_creation_schema_not_registered'
                 if row.get('status') == 'unavailable' and not row.get('unavailable_reason'):
                     row['status']='unavailability_unexplained'
                 rows.append(row)
@@ -172,7 +174,7 @@ def main():
                 'expected_cases':EXPECTED,'case_inventory_exact':inventory_exact,
                 'limitations':['Test-only fixture authorizer rebinding; generic reads remain blocked in shipped service.',
                     'No external provider request; private coordinator publication only.',
-                    'Native fixed-worker cases do not establish all enablement gates, sealed-copy modes, arbitrary descendants, unknown data policy, or all platform guarantees.',
+                    'Native fixed-worker cases include profile-gated apply_patch schema registration but do not establish live provider/UI behavior, sealed-copy modes, arbitrary descendants, unknown data policy, or all platform guarantees.',
                     'Existing unit tests are not counted as native worker enforcement evidence.']})
             records_valid=inventory_exact and all(r.get('cleanup_confirmed') is True and r.get('status') in ('measured_pass','unavailable') for r in rows)
             if unit_ok and run_ok and records_valid and all(r['status']=='measured_pass' for r in rows):
@@ -206,7 +208,7 @@ def main():
         summary=['Status: '+manifest['status'],'Source: '+revision,
             'Exit code: '+str(exit_code),
             'Test overlay SHA-256: '+manifest['overlay_sha256'],
-            'This is scoped service fixture evidence, not tool enablement.',
+            'This measures the profile-gated runtime registration path and native Service effects on one host profile; maintainer review and release remain separate.',
             'Review native-report.json, native-records and capture cleanup status.']
         (out/'summary.txt').write_text('\n'.join(summary)+'\n')
         (out/'SHA256SUMS').write_text(''.join(digest(p)+'  '+str(p.relative_to(out))+'\n' for p in sorted(out.rglob('*')) if p.is_file()))

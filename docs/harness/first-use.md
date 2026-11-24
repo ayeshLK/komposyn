@@ -10,7 +10,10 @@ These instructions target released **v0.16.0** (commit
 `82edf9621d2fb5768338e23af51e57dac7e6e47e`). Start with the
 [installation guide](../installation.md), then return here. This is an
 experimental terminal experience, with in-memory conversations rather than a
-mature coding assistant. Editing, shell commands, and web tools are unavailable.
+mature coding assistant. Released v0.16.0 does not expose file creation; the
+unmerged issue #321 enablement change proposes one-file creation only for
+Linux amd64 with trusted Bubblewrap descriptor binding and a local ext4 launch
+directory. Editing, shell commands, and web tools are unavailable.
 
 ![Staged v0.16.0 terminal demonstration: text exchange, update_plan approval, and a three-step temporary plan. Synthetic ChatGPT OAuth profile on Linux amd64; no provider contacted.](demo/first-use.png)
 

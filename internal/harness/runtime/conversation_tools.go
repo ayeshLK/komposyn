@@ -183,6 +183,22 @@ func BundledConversationToolRuntimeConfigWithFilesystemRead(approval ToolApprova
 	return bundledConversationToolRuntimeConfig(approval, clarification, host, host)
 }
 
+// BundledConversationToolRuntimeConfigWithFilesystemCreation composes the
+// shipping CLI's read tools and the creation-only apply_patch schema from its
+// trusted sandbox Service. The Service decides whether the measured host and
+// startup-scope profile permits registration; live owner/scope/cleanup checks
+// remain at operation boundaries.
+func BundledConversationToolRuntimeConfigWithFilesystemCreation(approval ToolApprovalInteraction, clarification ToolClarificationInteraction, host FilesystemCreationCompositionHost) ToolRuntimeConfig {
+	config := BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, host)
+	if host == nil {
+		return config
+	}
+	config.Preparer = host
+	config.ReadAdmission = host
+	config.RootHost = host
+	return WithBoundedFilesystemCreation(config, host)
+}
+
 func bundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clarification ToolClarificationInteraction, readHost FilesystemReadAdmissionHost, rootHost FilesystemRootHost) ToolRuntimeConfig {
 	plans := NewConversationPlans()
 	registry := tools.NewRegistry()
@@ -232,15 +248,28 @@ func bundledConversationToolRuntimeConfig(approval ToolApprovalInteraction, clar
 	}
 }
 
-// WithBoundedCreationPrototype adds the creation-only apply_patch schema to an
-// explicitly supplied fixture composition. It is intentionally not called by
-// cmd/harness. The host must construct an exact once-approval request and only
-// return a preparation that owns the retained proposal and its cleanup.
+// WithBoundedFilesystemCreation adds the creation-only apply_patch schema when
+// the trusted Service has inspected the measured backend and retained an
+// eligible startup scope. Owner coverage and current readiness remain live
+// Service checks at preparation, dispatch, and publication.
+func WithBoundedFilesystemCreation(config ToolRuntimeConfig, host FilesystemCreationCompositionHost) ToolRuntimeConfig {
+	if host == nil || !host.CreationCapabilityRegistrationAvailable() {
+		return config
+	}
+	return withBoundedFilesystemCreation(config, host)
+}
+
+// WithBoundedCreationPrototype remains an explicit fixture-only wrapper for
+// lifecycle tests. Shipping CLI composition uses WithBoundedFilesystemCreation.
 func WithBoundedCreationPrototype(config ToolRuntimeConfig, host FilesystemCreationPrototypeHost) ToolRuntimeConfig {
+	return withBoundedFilesystemCreation(config, host)
+}
+
+func withBoundedFilesystemCreation(config ToolRuntimeConfig, host FilesystemCreationHost) ToolRuntimeConfig {
 	if host == nil || config.Registry == nil || config.Authorizer == nil || config.Enforcer == nil || config.Approval == nil {
 		return ToolRuntimeConfig{}
 	}
-	if config.Registry.Register(createFilePrototypeTool{}) != nil {
+	if config.Registry.Register(createFileTool{}) != nil {
 		return ToolRuntimeConfig{}
 	}
 	config.Authorizer = filesystemCreationPrototypeAuthorizer{next: config.Authorizer, host: host}
@@ -250,7 +279,7 @@ func WithBoundedCreationPrototype(config ToolRuntimeConfig, host FilesystemCreat
 
 type filesystemCreationPrototypeAuthorizer struct {
 	next ToolAuthorizer
-	host FilesystemCreationPrototypeHost
+	host FilesystemCreationHost
 }
 
 func (a filesystemCreationPrototypeAuthorizer) DiscardFilesystemCreationProposal(ctx context.Context, invocation tools.Invocation) error {
@@ -303,7 +332,7 @@ func (a filesystemCreationPrototypeAuthorizer) PrepareForDestinationAt(ctx conte
 
 type filesystemCreationPrototypePreparer struct {
 	next ToolPreparer
-	host FilesystemCreationPrototypeHost
+	host FilesystemCreationHost
 }
 
 func (p filesystemCreationPrototypePreparer) Prepares(id tools.ID) bool {
@@ -312,8 +341,8 @@ func (p filesystemCreationPrototypePreparer) Prepares(id tools.ID) bool {
 
 func (p filesystemCreationPrototypePreparer) PrepareTool(ctx context.Context, tool tools.Tool, invocation tools.Invocation, request permissions.Request, revision uint64) (ToolPreparation, error) {
 	if invocation.ToolID == tools.CreateFileID {
-		if _, ok := tool.(createFilePrototypeTool); !ok {
-			return nil, errors.New("creation prototype tool identity mismatch")
+		if _, ok := tool.(createFileTool); !ok {
+			return nil, errors.New("creation tool identity mismatch")
 		}
 		return p.host.PrepareApprovedFilesystemCreation(ctx, cloneInvocation(invocation), clonePermissionRequest(request), revision)
 	}
@@ -323,14 +352,14 @@ func (p filesystemCreationPrototypePreparer) PrepareTool(ctx context.Context, to
 	return p.next.PrepareTool(ctx, tool, cloneInvocation(invocation), clonePermissionRequest(request), revision)
 }
 
-type createFilePrototypeTool struct{}
+type createFileTool struct{}
 
-func (createFilePrototypeTool) Definition() tools.Definition { return tools.CreateFileDefinition() }
-func (createFilePrototypeTool) ValidateArguments(raw json.RawMessage) error {
+func (createFileTool) Definition() tools.Definition { return tools.CreateFileDefinition() }
+func (createFileTool) ValidateArguments(raw json.RawMessage) error {
 	_, err := tools.ParseCreateFile(raw)
 	return err
 }
-func (createFilePrototypeTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
+func (createFileTool) Execute(_ context.Context, invocation tools.Invocation) tools.Result {
 	return tools.Result{ProviderCallID: invocation.ProviderCallID, Outcome: tools.OutcomeNotExecuted, ErrorCode: "creation_dispatch_requires_host_preparation"}
 }
 

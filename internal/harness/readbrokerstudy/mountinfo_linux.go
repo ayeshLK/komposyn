@@ -50,9 +50,9 @@ func validateExt4SearchDirectory(fd int) error {
 	return nil
 }
 
-// ValidateCreationDirectoryDescriptor restricts the disposable creation
-// prototype to Linux amd64 on a descriptor whose mountinfo entry identifies
-// ext4. The statfs magic alone is ambiguous across ext filesystems.
+// ValidateCreationDirectoryDescriptor restricts creation to Linux amd64 on a
+// descriptor whose mountinfo entry identifies ext4. The statfs magic alone is
+// ambiguous across ext filesystems.
 func ValidateCreationDirectoryDescriptor(fd int) error {
 	if runtime.GOARCH != "amd64" || validateExt4SearchDirectory(fd) != nil {
 		return ErrUnsupportedFilesystem

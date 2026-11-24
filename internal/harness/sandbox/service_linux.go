@@ -66,10 +66,12 @@ type linuxImplementation struct {
 	creationBarrier         *creationBarrierLease
 	creationBarrierSequence uint64
 	creationManifest        *syntheticCreationOwnerManifest
-	// creationPrototypeEnabled is an internal fixture gate. Production chat
-	// composition never enables the unregistered creation operation.
-	creationPrototypeEnabled bool
-	creationProposals        map[string]*serviceCreationProposal
+	// creationShippingRegistered is set only after trusted launcher inspection
+	// and retained startup-scope validation establish the measured profile.
+	// creationFixtureEnabled remains an independent in-package test gate.
+	creationShippingRegistered bool
+	creationFixtureEnabled     bool
+	creationProposals          map[string]*serviceCreationProposal
 	// creationBeforePublicationReleaseHook is a deterministic in-package test checkpoint.
 	creationBeforePublicationReleaseHook func()
 	selectedRoot                         string
@@ -84,8 +86,28 @@ func (impl *linuxImplementation) creationHostStatus() (ready, pending bool) {
 	impl.mu.Lock()
 	defer impl.mu.Unlock()
 	pending = impl.creationBarrier != nil || impl.pendingOwners.Load() != 0 || len(impl.blocked) != 0
-	ready = impl.creationPrototypeEnabled && !impl.closed && !pending
+	ready = (impl.creationShippingRegistered || impl.creationFixtureEnabled) && !impl.closed && !pending
 	return ready, impl.creationBarrier != nil
+}
+
+func (impl *linuxImplementation) creationCapabilityRegistrationAvailable() bool {
+	if impl == nil {
+		return false
+	}
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
+	return impl.creationShippingRegistered && !impl.closed && impl.backendErr == nil && impl.session != nil && impl.launcher != nil
+}
+
+func (impl *linuxImplementation) registerCreationShippingProfile() {
+	if impl == nil {
+		return
+	}
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
+	if !impl.closed && impl.backendErr == nil && impl.launcher != nil && impl.session != nil {
+		impl.creationShippingRegistered = true
+	}
 }
 
 type creationRootBinding struct {
@@ -1482,7 +1504,8 @@ func (s *Service) validateCreationOwnerProfile(scopeIdentity readbrokerstudy.Fil
 		return ErrCoverageMissing
 	}
 	impl.mu.Lock()
-	enabled, closed := impl.creationPrototypeEnabled, impl.closed
+	enabled := impl.creationShippingRegistered || impl.creationFixtureEnabled
+	closed := impl.closed
 	manifest := impl.creationManifest
 	session, inventory, registry := impl.session, impl.inventory, impl.registry
 	blockedOwners := len(impl.blocked)
@@ -1547,8 +1570,9 @@ func (s *Service) validateCreationOwnerProfile(scopeIdentity readbrokerstudy.Fil
 	return nil
 }
 
-// PrepareFilesystemCreation is the explicit fixture-only runtime seam. The
-// normal cmd/harness composition never registers or wraps this operation.
+// PrepareFilesystemCreation binds one requested file and provider destination
+// to current scope and owner state. It returns approval details only; no effect
+// begins until the runtime consumes the explicit once decision.
 func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tools.Invocation, destination, workingDirectory string) (permissions.Request, error) {
 	if ctx == nil || s == nil || s.impl == nil || invocation.ToolID != tools.CreateFileID || invocation.ConversationID == "" || invocation.ProviderCallID == "" {
 		return permissions.Request{}, ErrServiceClosed
@@ -1628,7 +1652,7 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 	proposal := &serviceCreationProposal{invocation: invocation, request: request, input: input, parent: parent, parentIdentity: parentIdentity, root: startupDirectory, rootGeneration: rootGeneration, target: target, scopeRoot: scopeRoot, parentRelative: parentRelative, leaf: leaf, scopeGeneration: scopeGeneration, scopeIdentity: scopeIdentity, startupScope: startupScope, coverageRevision: coverageRevision, policyRevision: policyRevision, stageName: stageName}
 	key := invocation.ConversationID + "\x00" + invocation.ProviderCallID
 	impl.mu.Lock()
-	if impl.closed || !impl.creationPrototypeEnabled || impl.creationBarrier != nil {
+	if impl.closed || !(impl.creationShippingRegistered || impl.creationFixtureEnabled) || impl.creationBarrier != nil {
 		impl.mu.Unlock()
 		return permissions.Request{}, ErrCoverageMissing
 	}
@@ -1646,7 +1670,7 @@ func (s *Service) PrepareFilesystemCreation(ctx context.Context, invocation tool
 		}
 	}
 	impl.mu.Lock()
-	if impl.closed || !impl.creationPrototypeEnabled || impl.creationBarrier != nil || impl.creationProposals[key] != nil {
+	if impl.closed || !(impl.creationShippingRegistered || impl.creationFixtureEnabled) || impl.creationBarrier != nil || impl.creationProposals[key] != nil {
 		impl.mu.Unlock()
 		return permissions.Request{}, runtime.ErrFilesystemRootStale
 	}
@@ -1829,7 +1853,7 @@ func (s *linuxImplementation) syntheticCreationManifestEligible(parent readbroke
 		return false
 	}
 	s.mu.Lock()
-	prototypeEnabled := s.creationPrototypeEnabled
+	fixtureEnabled := s.creationFixtureEnabled
 	manifest := s.creationManifest
 	registry, inventory := s.registry, s.inventory
 	owners := make(map[string]OwnerCoverage, len(s.owners))
@@ -1838,7 +1862,7 @@ func (s *linuxImplementation) syntheticCreationManifestEligible(parent readbroke
 	}
 	closed := s.closed
 	s.mu.Unlock()
-	if !prototypeEnabled || closed || manifest == nil || !manifest.scopeComplete || manifest.scopeParent != parent || registry == nil || inventory == nil {
+	if !fixtureEnabled || closed || manifest == nil || !manifest.scopeComplete || manifest.scopeParent != parent || registry == nil || inventory == nil {
 		return false
 	}
 	policy := registry.View()

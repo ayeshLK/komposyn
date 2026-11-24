@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Package sandbox composes the experimental chat's host-owned protected-file
-// lifecycle with the fixed Linux read worker. It exposes no filesystem tool.
+// lifecycle with fixed Linux read and bounded creation workers. Tool schemas
+// remain in runtime composition and every operation is host-authorized.
 package sandbox
 
 import (
@@ -120,9 +121,9 @@ type StartupScopeSnapshot struct {
 }
 
 // CreationFoundationSnapshot describes trusted owner applicability and the
-// fixed startup-scope lifecycle. Complete owner coverage is not creation
-// eligibility: CapabilityRegistered remains false until a separate reviewed
-// enablement slice.
+// fixed startup-scope lifecycle. CapabilityRegistered reports only the
+// inspected host/scope profile; owner coverage and current readiness remain
+// separate live authorization checks.
 type CreationFoundationSnapshot struct {
 	ProfileRevision       uint64
 	CoverageRevision      uint64
@@ -200,6 +201,11 @@ type startupScopeBackend interface {
 
 type creationStatusImplementation interface {
 	creationHostStatus() (ready, pending bool)
+}
+
+type creationRegistrationImplementation interface {
+	creationCapabilityRegistrationAvailable() bool
+	registerCreationShippingProfile()
 }
 
 var _ auth.SensitiveFileProtector = (*Service)(nil)
@@ -299,9 +305,12 @@ func (s *Service) captureStartupDirectory(path string) {
 	s.startupScope = StartupScopeSnapshot{
 		RunBinding: hex.EncodeToString(binding[:]), Generation: 1,
 		State:  StartupScopeIdentityRetained,
-		Reason: "startup directory identity is retained; creation remains unavailable until separate enablement",
+		Reason: "startup directory identity is retained for the supported creation profile",
 	}
 	s.startupScopeMu.Unlock()
+	if registrar, ok := s.impl.(creationRegistrationImplementation); ok {
+		registrar.registerCreationShippingProfile()
+	}
 }
 
 // FixedCreationScopeStatus returns a detached local-UI view of the trusted
@@ -347,7 +356,7 @@ func (s *Service) FixedCreationScopeStatus() runtime.FixedCreationScopeStatus {
 		status.HostReady = false
 		status.Reason = "creation work or cleanup is still pending"
 	} else if !status.HostReady && status.State == string(StartupScopeIdentityRetained) && status.OwnerCoverageComplete && status.Reason == "" {
-		status.Reason = "the creation prototype gate is closed in this composition"
+		status.Reason = "creation host readiness or worker cleanup is unavailable"
 	}
 	if !status.OwnerCoverageComplete && status.Reason == "" {
 		status.Reason = foundation.Reason
@@ -539,8 +548,8 @@ func (s *Service) CoverageSnapshot() CoverageSnapshot {
 }
 
 // CreationFoundationSnapshot returns detached owner/scope metadata for the
-// gated creation implementation. This snapshot is never consumed as a grant;
-// normal composition still does not register a creation capability.
+// creation implementation. This snapshot is never consumed as a grant;
+// current owners, scope, and cleanup are revalidated at every operation.
 func (s *Service) CreationFoundationSnapshot() CreationFoundationSnapshot {
 	if s == nil || s.impl == nil {
 		return CreationFoundationSnapshot{
@@ -561,10 +570,18 @@ func (s *Service) CreationFoundationSnapshot() CreationFoundationSnapshot {
 	for _, owner := range coverage.RequiredOwners {
 		requiredByInventory[owner] = struct{}{}
 	}
+	registrationAvailable := false
+	if capability, ok := s.impl.(creationRegistrationImplementation); ok {
+		registrationAvailable = capability.creationCapabilityRegistrationAvailable()
+	}
 	result := CreationFoundationSnapshot{
 		ProfileRevision: 1, CoverageRevision: coverage.Revision,
-		OwnerCoverageComplete: true, CapabilityRegistered: false,
-		Reason: "normal composition remains unregistered; separate reviewed evidence and enablement are required",
+		OwnerCoverageComplete: true, CapabilityRegistered: registrationAvailable,
+	}
+	if registrationAvailable {
+		result.Reason = "creation is registered for the inspected Linux amd64/ext4 descriptor-bind profile; request eligibility remains subject to live scope, owner, and cleanup checks"
+	} else {
+		result.Reason = "the startup scope or inspected host does not match the supported creation profile"
 	}
 	for _, declaration := range declarations {
 		known[declaration.owner] = struct{}{}
@@ -630,6 +647,24 @@ func (s *Service) BackendStatus() (bool, string) {
 		return false, ErrServiceClosed.Error()
 	}
 	return s.impl.BackendStatus()
+}
+
+// CreationCapabilityRegistrationAvailable reports whether this trusted
+// Service captured an eligible Linux amd64/ext4 startup scope using the
+// inspected Bubblewrap descriptor-bind worker profile. It controls schema
+// registration only; owner coverage, scope identity, and cleanup readiness
+// remain authoritative at preparation, dispatch, and publication.
+func (s *Service) CreationCapabilityRegistrationAvailable() bool {
+	if s == nil || s.impl == nil {
+		return false
+	}
+	capability, ok := s.impl.(creationRegistrationImplementation)
+	if !ok || !capability.creationCapabilityRegistrationAvailable() {
+		return false
+	}
+	s.startupScopeMu.Lock()
+	defer s.startupScopeMu.Unlock()
+	return s.startupScope.State == StartupScopeIdentityRetained && s.startupScopeRoot != nil
 }
 
 // DirectoryListingAvailable reports whether this host service has the

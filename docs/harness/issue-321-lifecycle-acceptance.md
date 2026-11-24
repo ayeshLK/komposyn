@@ -1,6 +1,6 @@
 # Issue #321 creation lifecycle acceptance
 
-This record tracks behavioral lifecycle evidence separately from native filesystem evidence and production enablement. The normal `cmd/harness` composition does not register creation. Startup-scope preparation and terminal movement behavior have focused behavioral coverage. The historical PR #355 and PR #356 runs each had 17 measured cases and an unavailable mount-boundary case; those results remain `native_unavailable`, not passes. A later exact-current-master run measured all 18 cases, including mount-boundary refusal on a real nested bind mount, as passes. Separate production enablement remains outstanding.
+This record tracks behavioral lifecycle evidence separately from native filesystem evidence and production enablement. Merged master `f79e754b1cba327aaeda78964e9672b4c50f88ce` does not register creation. This unmerged change proposes the shipping CLI wiring, gated to the measured host/startup profile. Startup-scope preparation and terminal movement behavior have focused behavioral coverage. The historical PR #355 and PR #356 runs each had 17 measured cases and an unavailable mount-boundary case; those results remain `native_unavailable`, not passes. A later exact-current-master run measured all 18 cases, including mount-boundary refusal on a real nested bind mount, as passes. That run predates shipping activation and does not prove the changed composition.
 
 ## Fixed-scope runtime and UI integration
 
@@ -8,12 +8,14 @@ The normal CLI captures the trusted launch directory through
 `NewHostServiceWithStartupDirectory` before runtime navigation. Runtime snapshots
 carry a detached fixed-scope status to the UI separately from
 `WorkingDirectory`; `/cd` and conversation reset do not recapture it. The local
-header and `/help` identify both values and explain that normal creation is
-unavailable because its schema is not registered. The fixed path is not added
-to provider instructions, requests, or diagnostics.
+header and `/help` identify both values. This change proposes schema
+registration only when the trusted Service has inspected the Linux amd64,
+Bubblewrap `ro-bind-fd`, retained local ext4 profile; unsupported profiles
+continue to report creation unavailable. The fixed path is not added to
+provider instructions, requests, or diagnostics.
 
 `TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge` composes the
-test-only schema with the real sandbox Service, retained startup descriptor,
+profile-gated schema with the real sandbox Service, retained startup descriptor,
 host proposal and preparation path, actual auth/settings owner registrations,
 runtime once authorization, and the existing UI `ApprovalBridge`. The settings
 route is reserved while absent; auth is then populated through its registered
@@ -24,11 +26,12 @@ bytes. Its worker adapter is deterministic behavioral evidence; it does not
 establish Bubblewrap or kernel enforcement.
 
 The availability view distinguishes tool registration from retained-scope and
-owner readiness. A complete scope cannot make normal chat available: absence
-of the creation schema remains the dominant `not_registered` state. The
-private prototype gate is never set by production composition. Scope status is
-informational and the Service repeats all authorization and generation checks
-at preparation, dispatch, and publication.
+owner readiness. Schema registration is profile-derived, while incomplete
+owner coverage, root movement, closure, or cleanup still makes the capability
+unavailable. The separate private fixture gate and synthetic manifest are not
+used by shipping composition. Scope status is informational and the Service
+repeats all authorization and generation checks at preparation, dispatch, and
+publication.
 
 ## Behavioral evidence
 
@@ -75,7 +78,7 @@ for its provenance and hashes.
 
 | Contract / observable claim | Behavioral evidence and seam | Native case / checkpoint / profile | Disposition and remaining action |
 | --- | --- | --- | --- |
-| Fixed launch scope survives `/cd` and conversation reset; scope selection is not authority; exact reads keep their independent rules. | `TestCreationStatusKeepsTrustedStartupScopeSeparateFromNavigation`, `TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge`, `TestBannerSeparatesFixedCreationScopeFromWorkingDirectory`; runtime snapshot, real Service/runtime/UI bridge and rendered tview. | `TestNativeServiceStartupRootMovementIsTerminal` and `TestNativeServiceStartupRootMovementAfterPublicationRelease` measured pass on the profile above. Navigation/reset remain behavioral claims, not native claims. | Native movement checkpoints measured pass; after-release records the allowed retained-object effect and terminal later refusal. Keep creation unregistered pending separate enablement. |
+| Fixed launch scope survives `/cd` and conversation reset; scope selection is not authority; exact reads keep their independent rules. | `TestCreationStatusKeepsTrustedStartupScopeSeparateFromNavigation`, `TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge`, `TestBannerSeparatesFixedCreationScopeFromWorkingDirectory`; runtime snapshot, real Service/runtime/UI bridge and rendered tview. | `TestNativeServiceStartupRootMovementIsTerminal` and `TestNativeServiceStartupRootMovementAfterPublicationRelease` measured pass on the profile above. Navigation/reset remain behavioral claims, not native claims. | Native movement checkpoints measured pass; after-release records the allowed retained-object effect and terminal later refusal. The new shipping activation path still needs an exact-candidate native run. |
 | Ordinary project entries do not require a whole-tree census; existing nested parents resolve beneath the retained scope. | `TestCreationResolvesNestedTargetFromFixedStartupScopeAndRejectsChangedParent`, `TestCreationPreparationRejectsUnsupportedTargetsBeforeApproval`, real sandbox Service. | `TestNativeServiceNestedCreationUsesStartupScope` measured pass and records ext4/mount ID. | Implemented and behaviorally/native tested for the recorded profile; broader filesystems and profiles remain unestablished. |
 | Applicable protected routes, identities, aliases, designated ancestors, and required owner coverage remain enforced; absent auth/settings routes remain covered by trusted lifecycle registration. | `TestHostCompositionRegistersIndependentAuthAndSettingsRoutes` (default paths and independent auth/settings overrides), `TestCreationFoundationUsesTrustedOwnersAndFixedStartupScope` (required auth/settings plus not-instantiated Token Logger/provider-source owners and absent reserved routes), `TestRetainedStartupPreparationUsesCurrentAuthSettingsOwners` (present and absent route preparation plus auth/settings rotation), `TestCreationFoundationRejectsStaleCoordinatorOwnerAndRefreshes`, `TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce`, and owner transition tests. | `TestNativeServiceScopeAndTargetRefusalsPreserveFixtures`, `TestNativeServiceProtectedRoutesAndAliases`, `TestNativeServiceRotationJoinsHeldWorker`, and `TestNativeServiceAuthRotationJoinsHeldWorker` measured pass using actual auth/settings lifecycle. The absent auth route is refused; hard-link alias destinations are occupied collisions, proving no replacement, not a separate identity-classification reason. | Behavioral and listed native cases measured pass. Historical synthetic four-owner evidence remains distinct and is not composition coverage. |
 | Exact once approval binds target, bytes/diff, and provider/model/profile destination; changed arguments cannot reuse it. | `TestFixedStartupScopeCreationUsesRealServiceAndApprovalBridge`, `TestServiceCreationProposalBindsScopeContentDestinationAndConsumesOnce`, runtime once/denial/cancellation tests, UI approval bridge. | `TestNativeServiceNestedCreationUsesStartupScope` drives Service preparation and approved preparation; it measured pass but does not exercise UI presentation or a live provider. | Behavioral/UI-provider boundary and native host Service case measured. A live provider is outside scope and not required. |
@@ -84,7 +87,7 @@ for its provenance and hashes.
 | Mount crossing is refused by descriptor-relative resolution. | Existing behavioral target preparation tests do not establish a real mount boundary. | `TestNativeServiceMountBoundaryRefusal` measured pass on source `c0af7cda7bbbce3de289367af9e468ea8bea73df` with an authorized private ext4 scope and a real nested bind mount; it recorded distinct mount IDs 33 and 157. The direct-child proposal was prepared and discarded without execution; the crossing proposal was refused before worker launch, with no target or private stage. | Measured for the exact Linux amd64/ext4 and Bubblewrap `ro-bind-fd` profile. This does not enable creation or establish other filesystems, profiles or platforms. See the [native evidence record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up). |
 | Detectable startup-root move/replacement before worker launch is terminal even after restoration; an already released effect is classified truthfully under ADR-0008's residual race. | `TestStartupScopeMovementIsTerminalAfterReplacementAndRestore`, `TestStartupRootMoveAtPublicationCheckpointAbortsPreparedCreation`; deterministic fake-worker Service execution. | `TestNativeServiceStartupRootMovementIsTerminal` and `TestNativeServiceStartupRootMovementAfterPublicationRelease` measured pass: actor move/replace/restore, retained-object publication at the named after-release checkpoint, and terminal future refusal. | Named pre-worker and after-release checkpoints measured. Do not claim strict live-pathname containment, rollback, or exhaustive race coverage. |
 | Cancellation, drain/join, cleanup ownership, uncertain outcomes, stale publication and no automatic replay remain intact. | `TestCreationBarrierWaitsForRuntimeAdmittedReadWorkerToJoin`, `TestCreationBarrierDrainsRuntimeAdmittedDirectoryWorkers`, `TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked`, `TestCreationCompletionLossAfterPublicationIsUnknownAndNeverReplayed`, `TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall`, plus close/root transition tests. Real Service/runtime/provider seam with controlled worker timing. | Native held-worker read cases measured pass for process retirement; the creation stage worker has no native syscall interruption case. Startup actor scenarios record join and stage disposition. | Behavioral lifecycle tested at named checkpoints, not exhaustive scheduling. Native creation syscall interruption is unproven and explicitly deferred; do not expand this PR into a new enforcement project. |
-| Initial profile refuses unsupported backend/profile and does not widen model-facing capability. | `TestUnsupportedStartupCreationProfileDoesNotBlockHostStartup`, `TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate`, normal command composition tests. | The measured records identify trusted Bubblewrap 0.9.0 using `ro-bind-fd` on Linux amd64/ext4. | This exact host profile measured. Other backends, bind modes, filesystems, platforms, and all production enablement gates remain unestablished; creation remains unregistered. |
+| Initial profile refuses unsupported backend/profile and does not widen model-facing capability. | `TestShippingCreationCompositionUsesServiceEligibilityAndKeepsChatTools`, `TestUnsupportedStartupCreationProfileDoesNotBlockHostStartup`, `TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate`, and the shipping runtime composition helper. | Historical records identify trusted Bubblewrap 0.9.0 using `ro-bind-fd` on Linux amd64/ext4; they do not exercise the new activation path. | Other backends, bind modes, filesystems, and platforms remain unavailable. Fresh native acceptance must exercise shipping activation before this PR is ready to merge. |
 
 The historical 12/12 run at `dbfd90974f0979832a9abc60e32aeb3c87399840`
 predates PRs #352–#354 and this overlay. It is evidence only for its recorded
@@ -143,4 +146,9 @@ profiles/platforms, syscall interruption behavior, or model-facing enablement.
 
 ## Enablement boundary
 
-No production capability is enabled. The accepted prototype remains synthetic and fixture-only. The scoped native evidence now includes a measured mount-boundary refusal for one host profile; it does not establish production owner coverage or maintainer enablement approval. Issues #267, #315, #321 and #322 remain open pending their separate closeout criteria.
+This unmerged change proposes the first production-composition registration of
+creation. The recorded 18/18 native run supports the unchanged worker and
+enforcement path for its measured host profile, but it does not measure this
+new activation path. The enablement PR must remain draft until an exact
+candidate native run exercises that path and maintainer review is complete.
+Issues #267, #315, #321 and #322 remain open pending their separate criteria.

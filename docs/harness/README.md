@@ -125,10 +125,14 @@ conversation and does not grant read permission. The working directory only
 provides relative-path context; it does not set the read-eligibility boundary.
 The terminal also shows the trusted launch directory as a separate, fixed
 creation scope. `/cd` and conversation reset do not change that scope. This is
-informational only: normal chat does not register or advertise file creation,
-and selecting or displaying a directory grants no access or write permission.
-Outside targets still pass the host's protected-object, mount, file-type, size
-and exact-object checks, and the trusted backend must be available.
+informational only; selecting or displaying a directory grants no access or
+write permission. The unmerged enablement change on this branch proposes
+registering creation only for Linux amd64 with a retained local ext4 startup
+scope and trusted Bubblewrap `ro-bind-fd` worker profile. Registration does not
+establish current owner, scope, or cleanup readiness; the Service checks those
+again for each operation. Released builds remain unavailable until this change
+passes review and is merged. Existing reads keep their independent target and
+approval rules.
 
 Mutation design is tracked separately in
 [issue #267](https://github.com/ayeshLK/komposyn/issues/267).
@@ -137,8 +141,9 @@ are recorded in the [existing-file edit feasibility study](file-lease-revision-b
 The scoped negative research disposition for existing-file editing was
 accepted when #320 closed on 2026-11-19 after PR #340. See the [#320 closeout
 record](issue-320-closeout.md). Editing remains deferred under its existing
-authority contract; creation has an accepted boundary but no accepted
-mechanism. See the [mutation deferral and resumption conditions](mutation-deferral.md).
+authority contract. Creation has an accepted boundary and a reviewed bounded
+stage/no-replace mechanism; shipping composition enablement is proposed in the
+current unmerged change. See the [mutation deferral and resumption conditions](mutation-deferral.md).
 Discovery remains delivered in its supported profiles. Editing remains unavailable; #321/#322's
 independent positive-evidence and explicit enablement gates remain unsatisfied,
 while #267 and #315 remain open.
@@ -147,9 +152,8 @@ The [runtime file object and approved-save decision](runtime-file-object-saves.m
 records the accepted creation boundary from merged PR #343: coordinate runtime
 objects, request save-time approval and require fresh decisions for detected
 conflicts, with an explicit residual external-write race. The
-[creation mechanism proposal](creation-mechanism-proposal.md) names a Linux
-stage-plus-no-replace candidate. PR #344 merged that proposal without accepting
-it as implementation-ready. The [creation integration protocol](creation-integration-protocol.md)
+[creation mechanism proposal](creation-mechanism-proposal.md) records the Linux
+stage-plus-no-replace mechanism accepted through PRs #346–#349. The [creation integration protocol](creation-integration-protocol.md)
 specifies a proposed read barrier, owner-coverage contract and typed approval
 path. The disposable prototype has behavioral lifecycle evidence recorded in
 [issue-321 lifecycle acceptance](issue-321-lifecycle-acceptance.md) and historical
@@ -165,8 +169,10 @@ aggregate `native_unavailable`. A follow-up on exact current-master source
 `c0af7cda7bbbce3de289367af9e468ea8bea73df` measured all 18 cases passing,
 including refusal at a real nested-mount boundary; see the [issue #321 native
 acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up).
-The normal chat composition still does not expose creation, and separate
-explicit creation-enablement approval remains outstanding.
+This source change wires normal chat to register creation only on the measured
+host/startup profile. The exact activation path still needs native acceptance;
+the implementation PR remains unmerged and requires maintainer review before
+any release can expose it. Creation stays unavailable on every other profile.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
