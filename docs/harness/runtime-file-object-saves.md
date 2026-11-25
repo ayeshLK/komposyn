@@ -1,10 +1,12 @@
 # Runtime file objects and approved saves
 
-Status: accepted creation-boundary decision; no save implementation or native
-acceptance exists. PR #343 merged on 2026-11-19. The mechanism is specified
-separately in the [creation mechanism proposal](creation-mechanism-proposal.md)
-and [integration protocol proposal](creation-integration-protocol.md); neither
-is mechanism acceptance or prototype authorization. See
+Status: accepted creation-boundary decision. PR #343 merged on 2026-11-19.
+**Post-merge implementation:** PR #359 later delivered the creation mechanism
+and profile-gated composition in source for Linux amd64/local ext4 with trusted
+Bubblewrap `ro-bind-fd`; the exact candidate's scoped native acceptance is
+recorded in [#321 native acceptance](issue-321-native-acceptance.md). This
+document remains the boundary decision, not the implementation record, and the
+merge does not imply a new tagged binary release. See
 [ADR-0008](../adr/0008-propose-runtime-file-objects-and-approved-saves.md).
 
 ## Intended boundary
@@ -128,11 +130,12 @@ publication algorithm. The next creation implementation proposal must name:
 - Which guarantees the primitive enforces atomically and which conflicts are
   observations only; no digest check may be called an atomic revision guard.
 
-After PR review, reconcile the affected creation issue contracts and review a
-concrete creation mechanism. Prototype authorization, accepted native and
-runtime/UI/provider results, and explicit model-facing enablement remain
-separate gates. No separate identity, privileged helper or host-policy change
-is selected or authorized. Creation remains unavailable in the meantime.
+At the time this decision was recorded, review of the concrete creation
+mechanism, prototype authorization, evidence, and explicit model-facing
+enablement remained separate gates. Those creation gates were later completed
+through PR #359. No separate identity, privileged helper or host-policy change
+was selected or authorized. Editing remains unavailable under its independent
+contract.
 
 ## Required evidence for the revised contract
 

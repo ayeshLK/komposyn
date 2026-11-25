@@ -40,8 +40,12 @@ client tools. Centralized action and exact conversation-resource authorization
 is required. The separately reviewed [read-focused milestone](harness/issue-215-completion-tracking.md)
 also enables a conditional Linux exact-file `read_file` capability with trusted
 backend inspection and target-specific once approval. Selecting a working
-directory changes relative-path resolution without granting file access.
-Filesystem mutation, process, web, and image tools remain unavailable.
+directory changes relative-path resolution without granting file access. PR
+#359 separately delivers one-file creation in source for Linux amd64/local
+ext4 with trusted Bubblewrap `ro-bind-fd`, subject to live owner/scope/policy
+checks and once approval. Distributed binaries include it only when built from
+a release containing the merge. Editing, other filesystem mutations, process,
+web, and image tools remain unavailable.
 This milestone does not add projects, sessions, persistent tasks, or
 persistent conversations. The sidecar is a token-logger
 integration contract, not a general KompoSyn plugin protocol. The project does

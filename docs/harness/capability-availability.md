@@ -1,6 +1,6 @@
 # Temporary chat capability availability
 
-Evidence reviewed 2026-11-24. This matrix describes the bundled temporary
+Evidence reviewed 2026-11-25. This matrix describes the bundled temporary
 chat routes and its current capabilities. “Supported” describes the
 provider protocol implementation and fixture-backed contract; it does not
 grant permission to execute a tool. Runtime availability also requires the
@@ -8,11 +8,12 @@ host authorization, approval, and enforcement composition. No capability
 selection changes the provider, profile, authentication method, or billing
 route.
 
-The `apply_patch` rows describe the unmerged creation-enablement change in
-this source branch. Existing released builds still omit it until the change is
-reviewed and merged. The branch registers only file creation on the supported
-Linux amd64/local ext4/trusted Bubblewrap `ro-bind-fd` profile; it does not
-enable editing or other mutations.
+The `apply_patch` rows describe the creation capability delivered to the
+experimental CLI source by merged PR #359 (`32ae327bd44e4581fbf65933f7f5b02afb9ad67c`).
+A build from this source can register creation only on the supported Linux
+amd64/local ext4/trusted Bubblewrap `ro-bind-fd` profile; this does not mean
+every distributed binary contains the change. A release must include the
+merge. Creation does not enable editing or other mutations.
 
 The parity policy is that KompoSyn capabilities are offered across provider
 and supported subscription or authentication methods unless a provider imposes
@@ -53,7 +54,7 @@ filesystem access.
 | `read_file` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement. Operator-reported exact-file live journey passed on one account/model and Linux host. | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `list_files` | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Conditional: catalog-listed OAuth model plus trusted Linux backend and complete host enforcement; live listing is not verified | Conditional: supported client-tool route plus trusted Linux backend and complete host enforcement | Unimplemented route |
 | `search_files` | Conditional: trusted Linux amd64 Bubblewrap descriptor-bind profile, complete owner coverage, ext4 selected directory, and explicit once approval | Conditional under the same host and ext4 requirements for catalog-listed OAuth models; no live search-provider journey is claimed | Conditional under the same host and ext4 requirements; no live search-provider journey is claimed | Unimplemented route |
-| `apply_patch` creation | Proposed by this unmerged change: supported Linux amd64/ext4/descriptor-bind profile, supported client-tool route, complete live owner coverage, and explicit once approval | Proposed under the same host profile for catalog-listed OAuth models; creation has no live provider journey evidence | Proposed under the same host profile and route requirements; creation has no live provider journey evidence | Unimplemented route |
+| `apply_patch` creation | Available in merged source on supported Linux amd64/ext4/descriptor-bind profile when a supported client-tool route, live owner coverage, and explicit once approval are present; no live provider journey is claimed | Available in merged source under the same host checks for catalog-listed OAuth models; no live creation-provider journey is claimed | Available in merged source under the same host checks and route requirements; no live creation-provider journey is claimed | Unimplemented route |
 
 `list_files` is registered only when the Linux host has inspected the trusted
 Bubblewrap backend and composed the fixed worker. The runtime additionally
@@ -141,16 +142,17 @@ shipped-binary acceptance. See [the search design note](search-files-design.md)
 and [#318 completion matrix](issue-318-search-completion.md) for exact
 provenance and profile limits.
 
-The unmerged enablement change in this branch connects the retained-startup
-Service to normal CLI runtime composition. Registration requires Linux amd64,
+Merged PR #359 connects the retained-startup Service to normal CLI runtime
+composition. Source registration requires Linux amd64,
 trusted Bubblewrap using measured `ro-bind-fd`, and a retained local ext4
 startup scope. A supported provider route is still required. Registration is
 only schema availability: live auth/settings owner coverage, current scope,
 policy revisions, and cleanup state are revalidated at preparation, dispatch,
 and publication. Tool registration does not authorize a save. Each request
-creates one UTF-8 regular text file (up to 64 KiB) under an existing in-scope
-parent, shows the exact target, complete contents/diff, and provider
-destination, and requires explicit once approval. Existing destinations are
+creates one UTF-8 regular text file (up to 64 KiB, including empty content)
+under an existing in-scope parent, shows the exact target, complete
+contents/diff, and provider destination, and requires explicit once approval.
+Existing destinations are
 refused; editing, overwrite, append, rename, deletion, and directory creation
 remain unavailable.
 
@@ -186,11 +188,12 @@ components actually instantiated by the running chat. Ordinary existing
 project content does not require a scope-wide inventory. The gated owner
 profile now retains a startup directory descriptor and checks fixed-scope
 identity, nested existing parents, protected-owner ancestry, and terminal
-movement for creation proposals. The unmerged enablement change on this branch
-uses those checks to gate schema registration to the trusted Linux amd64/ext4
-profile with the operation-specific descriptor-bind worker. Owner coverage,
-scope identity, and cleanup are still checked live; registration grants no
-write authority. This branch is a review proposal, not a released capability.
+movement for creation proposals. Merged PR #359 uses those checks to gate
+schema registration to the trusted Linux amd64/ext4 profile with the
+operation-specific descriptor-bind worker. Owner coverage, scope identity,
+and cleanup are still checked live; registration grants no write authority.
+This is available in source builds that include the merge, not necessarily in
+every released binary.
 The PR #355 candidate was run on a trusted Linux amd64/ext4 host with BubbleWrap
 0.9.0 using `ro-bind-fd`: its original run and the corrected PR #356 follow-up
 each measured 17 of 18 cases, with the mount-boundary case unavailable. A
@@ -199,9 +202,10 @@ later exact source `c0af7cda7bbbce3de289367af9e468ea8bea73df` run measured all
 ID 33, nested mount ID 157). The aggregate was `scoped_native_pass`. Source
 presence and Go/race checks alone do not establish native enforcement. The
 newly wired activation path has now been exercised natively on the recorded
-profile. The exact PR #359 candidate has now measured the shipping path and
-mount-boundary case as passing on that profile; maintainer review remains
-before merge. See the [owner-profile foundation](issue-321-owner-profile.md)
+profile. The exact PR #359 candidate measured the shipping path and
+mount-boundary case as passing on that profile. PR #359 has since merged; this
+historical native evidence remains tied to its recorded source revision. See
+the [owner-profile foundation](issue-321-owner-profile.md)
 and [native acceptance record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25).
 
 ## Runtime and UI reasons

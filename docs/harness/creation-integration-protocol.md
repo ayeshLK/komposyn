@@ -1,25 +1,25 @@
-# Creation integration protocol proposal (#321)
+# Creation integration protocol (#321)
 
 ## Implementation update — 2026-11-22
 
 The normal `cmd/harness` composition captures the trusted startup directory and
 the local UI reports it separately from the navigable working directory.
-## Shipping activation proposal — 2026-11-24
+## Shipping activation — merged 2026-11-25
 
-The current unmerged enablement change wires the normal CLI through the
-profile-gated runtime composition. `apply_patch` registration is limited to
-Linux amd64, trusted Bubblewrap `ro-bind-fd`, and a retained local ext4 startup
-scope. Live auth/settings coverage, scope identity, owner/policy revisions,
-approval binding, and cleanup remain Service checks at each boundary. The
-exact PR #359 candidate now has a complete `scoped_native_pass`: all 18 cases
-measured pass, including mount-boundary refusal with a real nested bind mount
-(ext4 scope mount ID 33, nested mount ID 157). The first candidate run remains
-preserved as a partial historical result; the follow-up used the same source,
-runner, and test overlay. Maintainer review remains required before merge.
-Existing released binaries remain unchanged until merge and release.
+PR #359 merged as `32ae327bd44e4581fbf65933f7f5b02afb9ad67c` and wires the
+normal CLI through profile-gated runtime composition. Source builds containing
+the merge register `apply_patch` only on Linux amd64, trusted Bubblewrap
+`ro-bind-fd`, and a retained local ext4 startup scope. Live auth/settings
+coverage, scope identity, owner/policy revisions, approval binding, and cleanup
+remain Service checks at each boundary. The exact candidate's
+`scoped_native_pass` measured all 18 cases, including mount-boundary refusal
+with a real nested bind mount (ext4 scope mount ID 33, nested mount ID 157).
+The first candidate run remains a partial historical result; the follow-up
+used the same source, runner, and test overlay. This is source delivery, not a
+new tagged binary release. Other profiles remain unavailable.
 
 The implementation status below records the earlier PR #354 integration, before
-the current enablement proposal. Its test-only composition carried a real
+the later shipping enablement. Its test-only composition carried a real
 sandbox Service proposal through runtime once-approval and the UI bridge; the
 approval presented exact target, complete diff, and provider/model/auth-profile
 destination. The `CreationHost` signatures below remain historical design
@@ -34,10 +34,11 @@ the real sandbox Service, runtime once authorization, and approval bridge. At
 that revision, normal `cmd/harness` omitted creation. UI/runtime/service tests
 covered scope/navigation, auth/settings lifecycle, exact target/diff/destination,
 denial, once approval, and exact output bytes. Its native evidence predates that
-startup-scope integration. The current unmerged enablement proposal above
-updates the composition status. Its exact-candidate activation case and full
-18-case native aggregate measured pass on the recorded profile; maintainer
-review remains before merge. Issues #267, #315, #321 and #322 remain open.
+startup-scope integration. At that time, enablement remained pending. PR #359
+later completed and merged the activation, with its exact-candidate activation
+case and full 18-case native aggregate measured pass on the recorded profile.
+#321 is closed as delivered in source; #315, #322 and #267 remain open for
+independent editing and mutation criteria.
 
 The companion [mechanism proposal](creation-mechanism-proposal.md) records the
 stage file plus `renameat2(RENAME_NOREPLACE)` mechanism. Arbitrary filesystems,
@@ -48,7 +49,7 @@ and its current activation state are described above.
 
 The Linux sandbox composition currently has one `linuxImplementation` mutex, an `ownerUpdateMu`, a protected-owner `revision`, auth/settings owner states, a `blocked` owner map, and a read coordinator. `Protect` serializes owner changes, advances the revision, blocks the owner, invalidates conversation state and read admissions, registers the new owner identity/routes, and then completes or leaves coverage pending. It is an owner-rotation operation, not a transient-stage operation. Calling it for a stage after consuming the create receipt would invalidate that save's captured state and could make a drain wait on its own operation.
 
-Read admission parses the requested read/list/search operation, checks service and auth/settings state, begins an admission in the coordinator, waits for its receipt, then rechecks service and coverage revision. Preparation rechecks again. Execution and publication have runtime authority claims and worker lifecycle state. The Linux implementation's creation barrier now drains active read workers through `ActiveReadDrainer` while preserving completed captures and existing generations. On merged master PR #354 this remained a fixture-only creation path. The current unmerged change wires `cmd/harness` to the profile-gated creation schema and effect path. The exact-candidate native follow-up measured all 18 cases as `scoped_native_pass`, including the mount-boundary case. The initial partial run remains historical evidence; see the [native acceptance record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25).
+Read admission parses the requested read/list/search operation, checks service and auth/settings state, begins an admission in the coordinator, waits for its receipt, then rechecks service and coverage revision. Preparation rechecks again. Execution and publication have runtime authority claims and worker lifecycle state. The Linux implementation's creation barrier now drains active read workers through `ActiveReadDrainer` while preserving completed captures and existing generations. PR #354's fixture-only state is historical; merged PR #359 wires `cmd/harness` to the profile-gated creation schema and effect path. The exact-candidate native follow-up measured all 18 cases as `scoped_native_pass`, including the mount-boundary case. The initial partial run remains historical evidence; see the [native acceptance record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25).
 
 The trusted composition's declared owners are:
 
@@ -57,8 +58,8 @@ The trusted composition's declared owners are:
 | Auth store | Required; `cmd/harness` wires `auth.Store` to `Service.Protect` before load | Current effective route and registered protected identity after successful registration/rotation | Required owner must be registered and stable at preparation and effect. |
 | Settings store | Required; independently wired to `Service.Protect` before load | Current effective settings route and registered identity | Same requirement as auth; auth-file relocation does not relocate settings. |
 | Token Logger store | Absent in this chat composition; trusted dependency graph does not open/own a Token Logger Store | Only that this composition does not own that store | It says nothing about arbitrary SQLite databases under a user-selected directory. Such data remains unclassified. |
-| Provider source | Unsupported; no source identity/open lifecycle is registered in chat composition | No route/identity completeness | Any scope whose eligibility depends on excluding provider-owned sources is unavailable. |
-| Unknown root data | Unsupported; `ErrUnknownRootData` remains the host authorizer result | No generic user-tree completeness | Arbitrary selected scopes cannot currently be declared complete. |
+| Provider source | Trusted composition declares ingestion not instantiated in this chat | No provider-source files are opened or owned by this chat | This declaration does not classify arbitrary project content. If ingestion is composed later, its real owner lifecycle must be registered. |
+| Ordinary project entries | Not inventoried as protected-owner declarations | No whole-tree or machine-wide census is performed | Existing ordinary content is permitted; a requested target, parent chain, known protected resource, and applicable owner coverage are checked. Unknown applicable owner coverage refuses creation. |
 
 An empty registration list or absent path is not proof of coverage for an
 applicable required owner. The accepted creation-only contract in
@@ -81,14 +82,14 @@ unknown-root requirement to attest all selected-root data; read/discovery
 authorization remains unchanged. The synthetic complete-owner manifest remains
 fixture evidence only. The typed production owner profile records auth/settings
 as required and Token Logger/provider-source ingestion as trusted
-not-instantiated declarations for the current composition. The unmerged
-enablement change uses the Service's retained-identity checks for schema
-registration; live identity, owner coverage, and cleanup checks remain at each
-operation boundary. Native acceptance for the exact shipping activation path
-is complete on the recorded profile; the unmerged proposal still requires
-maintainer review. See the [owner-profile foundation](issue-321-owner-profile.md).
+not-instantiated declarations for the current composition. Merged PR #359 uses
+the Service's retained-identity checks for schema registration; live identity,
+owner coverage, and cleanup checks remain at each operation boundary. Native
+acceptance for the exact shipping activation path is complete on the recorded
+profile. This source-level availability does not imply every distributed
+binary includes the change. See the [owner-profile foundation](issue-321-owner-profile.md).
 
-## Proposed typed creation and approval path
+## Creation and approval path
 
 The intended path reuses the existing composition seam rather than adding a provider-facing filesystem executor:
 
@@ -100,7 +101,7 @@ The intended path reuses the existing composition seam rather than adding a prov
 6. Host acquires the service-wide create effect lease, final-checks route, parent identity, owner manifest/generations and absent leaf, stages exact bytes, and publishes only using the reviewed no-replace primitive. The host returns a typed outcome, never a writable capability or descriptor to runtime/provider.
 7. Runtime records one-shot completion before continuation. It publishes only while the originating conversation/provider destination remains current. Continuation failure, lost result or service restart never replays an effect.
 
-Proposed interfaces (not implemented):
+Historical interface sketch (not the production API):
 
 ```go
 type CreationRequest struct {
@@ -130,7 +131,7 @@ Production signatures should prefer opaque typed values over string identities. 
 
 Use a create-owned barrier distinct from `Protect`, owner registration and coverage generations. A simple first design is service-wide: it pauses all new read, listing and search admissions, even outside the selected scope, for the short stage/publication window. This avoids alias, bind-alias and namespace-move gaps in path-scoped gating. It is a latency cost, not broader authority. Basic reads reopen only after the conditions below.
 
-Proposed states are `open`, `closing`, `draining`, `active`, `retiring`, and `blocked`. One opaque barrier token identifies the create request. The barrier mutex protects only barrier/admission bookkeeping. It never spans UI/provider callbacks, worker waits, cancellation joins or filesystem calls.
+Barrier states are `open`, `closing`, `draining`, `active`, `retiring`, and `blocked`. One opaque barrier token identifies the create request. The barrier mutex protects only barrier/admission bookkeeping. It never spans UI/provider callbacks, worker waits, cancellation joins or filesystem calls.
 
 1. After explicit once approval, runtime marks the proposal queued and consumes the receipt once. It asks host to acquire the effect lease. Under the host coordinator's short state lock, host verifies no other effect or barrier owns the service, sets `closing`, and atomically rejects new read/list/search admissions before any stage entry is created. The lock is then released. This ordering protects discovery names/counts as well as contents.
 2. Host marks pre-existing, not-yet-dispatched read admissions stale and closes their coordinator references. It cancels active readers/listings/searches that could observe the selected parent/scope and waits for each worker and its descriptors to join. No stage is created until this drain is complete. A prepared but unclaimed request must fail its next authority claim; it cannot launch after the barrier closes.
@@ -206,20 +207,28 @@ The worker/helper reports `not_executed` only when publication is known not to h
 
 ## Evidence and readiness
 
-| Blocker / claim | Protocol resolution | Still required before readiness |
+| Claim | Protocol resolution | Recorded evidence and remaining limits |
 | --- | --- | --- |
-| Stage visibility during read/list/search | Service-wide admission barrier closes before stage creation; runtime-admitted read/list/search workers are drained, search content join is held, prepared work is invalidated and completed captures retain their read binding. See lifecycle acceptance record. | Behavioral cases pass; trusted-host scoped native acceptance is recorded. Injected workers establish coordination behavior, not native cancellation of arbitrary syscall schedules. |
-| Stage self-registration invalidating its receipt | Temporary exclusion uses barrier-local token/identity and does not call `Protect` or advance owner/policy/coverage generations. | Implement and prove one-consumer receipt binding remains unchanged through stage lifecycle. |
-| Drain, cancellation, close and uncertain cleanup | Explicit `blocked` state retains gate and cleanup ownership; bounded join timeout and lost completion are classified unknown without reopening. Close and root transition are tested during delayed retirement. | Selected behavioral cases pass; exhaustive scheduling and syscall interruption remain unproven. Scoped native acceptance is recorded. |
-| Protected owner coverage | ADR-0009 requires a trusted manifest for applicable composed owners, distinguishing uninstantiated, required, pending, stale, retired and unsupported states. Ordinary project entries do not require a whole-scope census. | Implement the accepted startup-scope and composition-owned coverage contract; known protection and incomplete applicable-owner checks still fail closed. |
-| Auth/settings rotation ordering | Shared coordinator linearizes owner pending against stage-entry and publication-release permits; after-release ordering and delayed root retirement are covered behaviorally. | Selected cases pass; every transition checkpoint is not exhaustively enumerated. Scoped native acceptance does not establish production owner coverage. |
-| Creation approval path | Typed runtime receipt binds exact bytes, target, parent, destination and generations; one-consumer queue; no prompt under effect lock; fresh approval on detected conflict. | Add create-specific UI/runtime/provider integration and verify exact rendering, stale arguments and no replay. |
-| Stage-and-rename mechanism | Candidate has a single no-replace publication point; external races remain accepted. | Prototype authorization is separate; then native Linux amd64/ext4 evidence and reviewed implementation are required. |
+| Stage visibility during read/list/search | Service-wide admission barrier closes before stage creation; runtime-admitted read/list/search workers are drained, search content join is held, prepared work is invalidated and completed captures retain their read binding. | Behavioral lifecycle coverage and scoped native acceptance are recorded. Injected workers establish coordination behavior, not native cancellation of arbitrary syscall schedules. |
+| Stage self-registration invalidating its receipt | Temporary exclusion uses barrier-local token/identity and does not call `Protect` or advance owner/policy/coverage generations. | Receipt binding and one-consumer behavior are covered by existing tests; exhaustive interleavings are not claimed. |
+| Drain, cancellation, close and uncertain cleanup | Explicit `blocked` state retains gate and cleanup ownership; bounded join timeout and lost completion are classified unknown without reopening. Close and root transition are tested during delayed retirement. | Selected behavioral cases and scoped native acceptance are recorded. Exhaustive scheduling and syscall interruption remain unproven. |
+| Protected owner coverage | ADR-0009 requires a trusted manifest for applicable composed owners, distinguishing uninstantiated, required, pending, stale, retired and unsupported states. Ordinary project entries do not require a whole-scope census. | Implemented for the current chat composition's auth/settings owners; Token Logger/provider ingestion are trusted-not-instantiated. Unknown applicable coverage fails closed; no whole-tree inventory is claimed. |
+| Auth/settings rotation ordering | Shared coordinator linearizes owner pending against stage-entry and publication-release permits; after-release ordering and delayed root retirement are covered behaviorally. | Selected behavioral and native cases pass; every transition checkpoint is not exhaustively enumerated. |
+| Creation approval path | Runtime receipt binds exact bytes, target, parent, destination and generations; one-consumer queue; no prompt under effect lock; fresh approval on detected conflict. | Implemented through the Service/runtime/UI/provider seams. No live provider creation journey is claimed. |
+| Stage-and-rename mechanism | The reviewed mechanism has one no-replace publication point; external races remain accepted. | Merged and natively measured for Linux amd64/local ext4 with trusted Bubblewrap `ro-bind-fd`; other profiles remain unavailable. |
 
 Behavioral evidence should use the real composed sandbox Service and runtime/UI/provider seam. Cases include eligible/ineligible profile/schema and instructions, unsupported argument rejection, basic reads unchanged, same-profile admission and execution, exact approval/destination, argument-binding rejection, alias and root/policy/owner changes, protected alias filtering, incomplete owner refusal before approval/worker, closed service, cancellation, stale publication, private metadata stripping and descriptor cleanup. Creation-specific deterministic cases also cover active/queued reads, completed capture publication, barrier before visible stage, an owner transition after final filesystem validation but before publication-release arbitration, both owner-transition-wins and release-wins orderings, cancellation after release but before syscall, owner rotation at each transition, failure to join, double execution, collision at publication, parent moves, exact bytes/limits, continuation failure/no replay and external mutation after final check.
 
 Native evidence is required for actual stage visibility, no-replace collision behavior, filesystem/kernel support, identity/cleanup and independent-actor residual races. Behavioral tests establish runtime/UI/provider composition and ordering only; ordinary tests and Go race tests do not prove native filesystem enforcement. Use synthetic disposable files and independent actors through the existing harness. Stop on missing coverage, unsupported primitive behavior, an unjoined worker or any need to change the accepted threat boundary. Current Go fixtures cover parsing, the opt-in runtime/UI approval path, service proposal binding/once consumption, active read/list/search drain, delayed close/root retirement, completed-capture handoff, cleanup/join uncertainty, owner ordering after publication release, content and serialized-argument limits, continuation failure/no replay, unknown-outcome stop, and worker protocol behavior. The trusted-host native run passed 12/12 scoped cases with the real Bubblewrap worker, including bounded creation and a parent-move/substitution actor case; provenance and profile limits are recorded in the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md). Interrupted syscall outcomes and exhaustive transition schedules remain unproven.
 
-## Prototype progress and remaining boundary
+## Prototype history and current boundary
 
-The assignment authorizes the non-model-facing disposable prototype. The service now has a retained-parent proposal path, a test-fixture owner-manifest gate, a service-wide barrier, owner-ordered permits and a fixed create-worker protocol with stage abort/no-replace publication. Behavioral lifecycle and trusted-host scoped native evidence are recorded separately. Production scope coverage and explicit model-facing enablement remain separate gates.
+The non-model-facing disposable prototype preceded production integration. It
+introduced a retained-parent proposal path, test-fixture owner-manifest gate,
+service-wide barrier, owner-ordered permits, and fixed create-worker protocol
+with stage abort/no-replace publication. Behavioral lifecycle and trusted-host
+scoped native evidence are recorded separately. Merged PR #359 later completed
+production scope coverage and the separately reviewed model-facing enablement
+for the documented profile; this source merge does not imply binary release
+publication. Live checks remain authoritative, and other profiles remain
+unavailable.

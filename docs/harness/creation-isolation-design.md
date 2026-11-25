@@ -1,8 +1,10 @@
 # Creation isolation design decision (#319)
 
-Status: research design agreed by the maintainer on 2026-11-18. The mechanism
-remains unproven. The next task is the Gate A feasibility study below;
-implementation and model-facing enablement remain separate work.
+Historical status at decision time (2026-11-18): the mechanism was unproven,
+and the next task was the Gate A feasibility study below. Implementation and
+model-facing enablement were separate follow-up work; PR #359 later delivered
+creation in source under a separately reviewed mechanism and profile, as noted
+below.
 
 The architectural tradeoff is recorded in
 [ADR-0005](../adr/0005-investigate-creation-broker-with-protected-authority-chain.md).
@@ -11,7 +13,9 @@ The architectural tradeoff is recorded in
 closed on 2026-11-19 as negative research after PR #338 merged; see the
 [accepted closeout](issue-319-closeout.md). The design and research gates below
 record the earlier agreement, not a new instruction to restart that candidate.
-Creation remains unavailable and #321's positive-evidence gate is unsatisfied.
+The Gate A outcome remains valid for that candidate. PR #359 later delivered
+creation in source through a separately reviewed mechanism and supported
+profile; this report does not describe that later implementation.
 
 ## Agreed direction
 

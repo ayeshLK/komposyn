@@ -1,9 +1,12 @@
 # Issue #321 production owner-profile foundation
 
-**Status:** owner/scope foundation is merged; creation-only shipping
-registration is proposed by the current unmerged enablement change. The exact
-candidate has completed native acceptance with all 18 cases passing, including
-mount-boundary refusal; maintainer review remains before merge. See the
+**Current status — 2026-11-25:** owner/scope foundation and creation-only
+shipping registration are merged in PR #359 at
+`32ae327bd44e4581fbf65933f7f5b02afb9ad67c`. Source builds containing this
+merge can register creation only on the measured Linux amd64/local
+ext4/trusted Bubblewrap `ro-bind-fd` profile. The exact candidate recorded all
+18 native cases passing, including mount-boundary refusal. Distributed binary
+availability depends on whether a release includes this merge. See the
 [candidate run record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25).
 
 The trusted `cmd/harness` composition passes the launch directory to the host
@@ -14,7 +17,7 @@ only when the active trusted Linux creation profile and ext4 check succeed.
 original path stops naming that object, the service latches a terminal moved
 state, invalidates proposals, and drains affected creation work. Restoring the
 old pathname does not restore eligibility. Unsupported profiles keep this
-future capability unavailable without changing ordinary text-chat startup.
+creation capability unavailable without changing ordinary text-chat startup.
 
 The typed creation-owner profile follows the current trusted composition:
 
@@ -45,19 +48,20 @@ only to the local UI, together with lifecycle/readiness state; it is detached
 and is not consumed as permission. No provider request or diagnostic receives
 this display path.
 Existing read/discovery admission and its unknown-root gate are unchanged;
-ordinary project entries are not inventoried by this profile. The unmerged
-enablement change registers the model-facing creation schema only after the
-trusted Service validates the inspected Linux amd64/descriptor-bind host and
-retained ext4 startup directory. That registration is separate from live
+ordinary project entries are not inventoried by this profile. Merged PR #359
+registers the model-facing creation schema only after the trusted Service
+validates the inspected Linux amd64/descriptor-bind host and retained ext4
+startup directory. That registration is separate from live
 owner/scope/cleanup readiness and grants no authority. Fixture proposals still
 use a separate private gate and synthetic manifest; they are not accepted as
 production owner coverage.
 
 Normal `cmd/harness` captures the launch directory through
 `NewHostServiceWithStartupDirectory` before navigation is initialized. The
-unmerged change routes tool composition through the Service's profile-derived
-registration gate. The UI reports the fixed startup scope separately from the
-working directory and reports current readiness independently. For retained
+merged composition routes tool composition through the Service's
+profile-derived registration gate. The UI reports the fixed startup scope
+separately from the working directory and reports current readiness
+independently. For retained
 startup scopes, owner eligibility comes from the live coordinator's complete
 auth/settings requirements, service lifecycle state, and matching policy
 registrations, including reserved absent routes. Token Logger and
