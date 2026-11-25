@@ -379,17 +379,22 @@ func TestCreationApprovalShowsCompleteDiffAndDestinationInScrollablePanel(t *tes
 		screen.InjectKey(key, 0, tcell.ModNone)
 		time.Sleep(30 * time.Millisecond)
 	}
-	scrollUntilVisible := func(expected string) string {
-		deadline := time.Now().Add(3 * time.Second)
+	scrollUntilVisible := func(expected ...string) string {
+		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			visible := approvalDetailsOnScreen(safe)
-			if strings.Contains(strings.Join(strings.Fields(visible), ""), expected) {
+			compact := strings.Join(strings.Fields(visible), "")
+			allVisible := true
+			for _, part := range expected {
+				allVisible = allVisible && strings.Contains(compact, part)
+			}
+			if allVisible {
 				return visible
 			}
-			press(tcell.KeyPgDn)
+			press(tcell.KeyDown)
 		}
 		visible := approvalDetailsOnScreen(safe)
-		t.Fatalf("approval detail %q did not become visible while scrolling: %q", expected, visible)
+		t.Fatalf("approval details %q did not become visible while scrolling: %q", expected, visible)
 		return ""
 	}
 	press(tcell.KeyEnd)
@@ -403,7 +408,7 @@ func TestCreationApprovalShowsCompleteDiffAndDestinationInScrollablePanel(t *tes
 	}
 	press(tcell.KeyHome)
 	waitForApprovalDetailsAbsent(t, safe, "approvedline24")
-	visibleHeader := strings.Join(strings.Fields(scrollUntilVisible("---/dev/null")), "")
+	visibleHeader := strings.Join(strings.Fields(scrollUntilVisible("---/dev/null", "+++")), "")
 	if !strings.Contains(visibleHeader, "---/dev/null") || !strings.Contains(visibleHeader, "+++") {
 		t.Fatalf("scrolling omitted the creation diff header: %q", visibleHeader)
 	}
