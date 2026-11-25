@@ -40,8 +40,9 @@ requires `CAP_SYS_ADMIN`. The handler is registered independently of the
 ordinary user/security handlers. This behavior is visible in the pinned
 [Linux v7.0 ext4 trusted-xattr handler](https://github.com/torvalds/linux/blob/028ef9c96e96197026887c0f092424679298aae8/fs/ext4/xattr_trusted.c)
 and [Linux `listxattr(2)` documentation](https://man7.org/linux/man-pages/man2/listxattr.2.html).
-The ext4 superblock xattr feature bit only indicates that xattrs have been
-used; it does not establish per-file absence or visibility ([pinned ext4
+The ext4 superblock xattr feature bit cannot establish per-file xattr absence
+or visibility; it may be set when the filesystem is formatted ([e2fsprogs
+`mke2fs.conf`, v1.47.3](https://github.com/tytso/e2fsprogs/blob/v1.47.3/misc/mke2fs.conf.in#L1-L3), [pinned ext4
 implementation](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/fs/ext4/xattr.c#L842-L861)).
 
 For any future profile, checks must be bound to the retained target and repeated
@@ -69,7 +70,7 @@ real project files.
 | Candidate | Metadata eligibility | Destination exists at publication? | Namespace effects | Cleanup and outcome classification |
 |---|---|---|---|---|
 | `renameat2(..., 0)` (named same-directory stage) | Fails on ordinary ext4 for hidden/unhandled metadata; stage inheritance is also unproven. | **No.** A target removed after final observation is replaced by the stage, creating a name. Linux documents zero flags as ordinary rename; the pinned VFS follows its create path when destination lookup is absent ([`renameat2(2)`](https://man7.org/linux/man-pages/man2/rename.2.html), [Linux v6.12 `namei.c`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/fs/namei.c#L4908-L4926)). | Replaces the directory entry with the stage object; old open handles/hard links still refer to old object. Cannot satisfy required existing-at-effect condition under the accepted race. | Stage cleanup by name has no expected-inode operand; check-then-`unlinkat` can delete a substituted entry. Lost/released outcome is unknown absent positive evidence. Never offer creation or replay on uncertainty. **Set aside.** |
-| `renameat2(..., RENAME_EXCHANGE)` | Same metadata failure. | **Yes**, both names must exist per Linux [`renameat2(2)`](https://man7.org/linux/man-pages/man2/rename.2.html). | Atomically swaps both entries; types may differ. A late directory, symlink or other entry is moved to the stage name. The syscall has no expected-inode operands; displaced user entry is not the attempt-owned stage and cannot be presumed disposable ([Linux v6.12 locked VFS lookup](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/fs/namei.c#L5104-L5138), [ext4 exchange](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/fs/ext4/namei.c#L4115-L4153)). | Cleanup would need to distinguish the displaced target from the attempt-owned stage under races; no approved disposition exists for moving/deleting the displaced entry. `ENOENT` can refer to either operand and by itself does not establish destination-specific absence. Only a joined worker plus reliable no-publication evidence and local confirmation of the missing destination may offer separate full-content creation review or cancel. Unknown means neither offer nor replay. **Blocked.** |
+| `renameat2(..., RENAME_EXCHANGE)` | Same metadata failure. | **Yes**, both names must exist per Linux [`renameat2(2)`](https://man7.org/linux/man-pages/man2/rename.2.html). | Atomically swaps both entries; types may differ. A late directory, symlink or other entry, including a protected entry, can move to the stage name. The syscall has no expected-inode operands. Any exchange proposal must check protection for both operands and account for the displaced entry's disposition; the attempt-stage cleanup rule does not cover it ([Linux v6.12 locked VFS lookup](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/fs/namei.c#L5104-L5138), [ext4 exchange](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/fs/ext4/namei.c#L4115-L4153)). | Cleanup would need to distinguish the displaced target from the attempt-owned stage under races; no approved disposition exists for moving/deleting the displaced entry. `ENOENT` can refer to either operand and by itself does not establish destination-specific absence. Only a joined worker plus reliable no-publication evidence and local confirmation of the missing destination may offer separate creation review or cancel. Review creation uses existing complete-content once approval and no-replace publication; if the destination reappears, the creation attempt must fail on collision without overwriting it. Unknown means neither offer nor replay. **Blocked.** |
 | `O_TMPFILE` + link then replacement | Same target metadata failure; anonymous inode does not prove metadata completeness. | Final replacement still has the plain-rename vacancy race; linking itself cannot overwrite an existing destination ([Linux `link(2)`](https://man7.org/linux/man-pages/man2/link.2.html)). | Needs a named stage for replacement; it therefore does not avoid the publication gap, and relabels the cleanup stage rather than eliminating cleanup after linking. | Anonymous pre-link cleanup is descriptor-based, but after linking named-stage substitution concerns return. Link failure / lost worker requires phase evidence; uncertain publication has no creation prompt or replay. **Does not resolve gates.** |
 | In-place write / advisory lock or lease | Does not establish metadata preservation or protect aliases; may change bytes before failure. | Not an entry-replacement primitive; still acts on an object that can be concurrently changed. | Reintroduces partial writes and the exact-object/revision-at-effect assumptions already screened in #320. | Partial/interrupted write is not safely classifiable as no effect; no replay on uncertainty. **Do not revive under this contract.** |
 
@@ -96,36 +97,53 @@ If a candidate passes that design review, prototype verification should use
 the existing Service/runtime/UI seams and fixed worker with disposable files
 and independently checkpointed same-user actors. Record exact observables:
 
-- target removed between final observation and release: publication refuses;
-  if no effect is positively established and target is absent, show only the
-  local separate-creation-review-or-cancel choice;
-- target replaced with regular file, symlink, directory, hard link, or
-  protected owner before release: exact documented namespace outcome, no
-  unintended following, preservation of displaced entries, and fresh read/
-  approval on detected conflict;
 - target bytes, metadata, parent, startup root, owner coverage or policy changed
-  before release: no publication and fresh approved read/proposal/approval;
-- change after final observation: record the actual entry/object and report
-  the accepted residual race without claiming revision-at-effect locking;
+  and detected by final observation: no publication and fresh approved
+  read/proposal/approval;
+- in-process invalidation racing publication release: the Service barrier
+  serializes it so invalidation observed first aborts publication, while a
+  release recorded first proceeds under the accepted residual race;
+- external target removal/replacement after final observation: record the
+  actual entry/object and report the accepted residual race without claiming
+  revision-at-effect locking. The chosen primitive must still meet the
+  publication-time existing-destination requirement; ordinary rename fails
+  this case because it can install into the vacant name;
+- if the target is confirmed missing and non-publication is positively
+  established, offer only local review of separate creation or cancel.
+  Review creation uses the existing complete-content once approval and
+  no-replace publication; if the name reappears before creation publishes,
+  report the collision and do not overwrite it;
+- target replaced with regular file, symlink, directory, hard link, or
+  protected owner: exact documented namespace outcome, no unintended
+  following, protection checks on all affected entries, preservation of
+  displaced entries, and fresh read/approval on detected conflict;
 - hidden xattr, ACL/default ACL, security label, UID/GID, special bit, link
   count, inode flag, unknown mask, stage inheritance or unstable enumeration:
   refuse with no metadata stripped or silently lost;
 - stage-name substitution during refusal/cancellation cleanup: substituted
   entry remains untouched; leftover is reported locally, and affected edit
   admission remains blocked;
-- worker killed, response lost, revocation, cancellation, reset, sync error,
-  or provider continuation failure around release: joined lifecycle and exact
-  `not_executed`/failure/unknown classification; no creation offer or effect
-  replay unless no publication is positively established;
-- successful replacement: exact approved bytes at the entry, truthful cleanup
-  and sync status, old open handle remains on old object; no durability or
-  rollback claim.
+- worker killed, response lost, sync error or cancellation around release:
+  joined lifecycle and exact `not_executed`/failure/unknown classification;
+  uncertain effect gets no creation offer or replay;
+- revocation, reset or loss of authorization: end inspection and retry; drain
+  work and report any unresolved outcome without replay;
+- provider continuation failure: never replay an effect that may have
+  completed;
+- any permitted retry requires positively established no-publication,
+  continued authority, fresh target/metadata/scope/owner revalidation, safe
+  stage handling, and at most one internal continuation under the same
+  consumed receipt; it is not a second dispatch;
+- successful replacement: confirm the attempt-owned replacement object's
+  identity at the target and its exact approved bytes, with truthful cleanup
+  and sync status; old open handle remains on old object. Make no durability
+  or rollback claim.
 
 Until then there is no candidate to prototype. This packet is source-only and
 does not authorize a prototype, native acceptance, or editing enablement.
 
 ## Primary references and revisions
 
-- [Linux `renameat2(2)`](https://man7.org/linux/man-pages/man2/rename.2.html), [Linux `listxattr(2)`](https://man7.org/linux/man-pages/man2/listxattr.2.html), [Linux `acl(5)`](https://man7.org/linux/man-pages/man5/acl.5.html), [Linux `xattr(7)`](https://man7.org/linux/man-pages/man7/xattr.7.html), [Linux inode flags](https://man7.org/linux/man-pages/man2/ioctl_iflags.2.html), and [Linux `link(2)`](https://man7.org/linux/man-pages/man2/link.2.html) (man-pages 6.11, the documentation revision cited by the merged proposal).
+- Linux man-pages [`rename(2)`](https://man7.org/linux/man-pages/man2/rename.2.html), [`listxattr(2)`](https://man7.org/linux/man-pages/man2/listxattr.2.html), [`acl(5)`](https://man7.org/linux/man-pages/man5/acl.5.html), [`xattr(7)`](https://man7.org/linux/man-pages/man7/xattr.7.html), [inode flags](https://man7.org/linux/man-pages/man2/ioctl_iflags.2.html), and [`link(2)`](https://man7.org/linux/man-pages/man2/link.2.html), current pages identified as man-pages 6.19 when checked on 2026-11-25. The merged proposal also cited the archived man-pages 6.11 manual; these live links are not asserted to be that revision.
 - Linux source commit [`adc218676eef25575469234709c2d87185ca223a`](https://github.com/torvalds/linux/commit/adc218676eef25575469234709c2d87185ca223a) (v6.12 tree paths for VFS rename/unlink, ext4 rename/xattr handling); the ext4 trusted handler was additionally checked at v7.0 commit [`028ef9c96e96197026887c0f092424679298aae8`](https://github.com/torvalds/linux/commit/028ef9c96e96197026887c0f092424679298aae8), as cited in the maintainer decision.
 - [ADR-0010 and merged mechanism proposal](https://github.com/ayeshLK/komposyn/commit/a80a8af297c7c5c978d6cb7a9ec98be1a35401de); [maintainer decision](https://github.com/ayeshLK/komposyn/issues/322#issuecomment-7162364764); [#320 closeout](https://github.com/ayeshLK/komposyn/blob/615e32c02874561acb2694b0ec6e7187b0e8a5ae/docs/harness/issue-320-closeout.md).
