@@ -77,6 +77,7 @@ type nativeRecord struct {
 	RetiredAliasRefused                     bool                  `json:"retired_alias_refused"`
 	VerifiedReturnedBytes                   bool                  `json:"verified_returned_bytes"`
 	CreationVerifiedBytes                   bool                  `json:"creation_verified_bytes,omitempty"`
+	CreationSchemaRegistered                bool                  `json:"creation_schema_registered,omitempty"`
 	CreationVerifiedMode                    bool                  `json:"creation_verified_mode,omitempty"`
 	CreationStageAbsent                     bool                  `json:"creation_stage_absent,omitempty"`
 	CreationLateCollisionRefused            bool                  `json:"creation_late_collision_refused,omitempty"`
@@ -327,7 +328,6 @@ func setupNativeStartupScopeAt(t *testing.T, f *nativeFixture, r *nativeRecord, 
 		r.CleanupConfirmed = true
 		t.Skip(r.UnavailableReason)
 	}
-	enableCreationPrototypeForTest(f.service)
 	if !f.service.CreationFoundationSnapshot().OwnerCoverageComplete {
 		t.Fatal("actual auth/settings owner lifecycle coverage is incomplete")
 	}
@@ -603,6 +603,22 @@ func TestNativeServiceNestedCreationUsesStartupScope(t *testing.T) {
 		t.Fatal("create existing nested parent", err)
 	}
 	setupNativeStartupScope(t, f, r, "native-nested")
+	toolRuntime := runtime.BundledConversationToolRuntimeConfigWithFilesystemCreation(
+		runtime.ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+			return permissions.ApprovalDeny, "", nil
+		}),
+		runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+			return runtime.ClarificationResponse{}, errors.New("synthetic clarification is unavailable")
+		}),
+		f.service,
+	)
+	if toolRuntime.Registry == nil {
+		t.Fatal("shipping runtime composition was unavailable")
+	}
+	if _, registered := toolRuntime.Registry.Lookup(tools.CreateFileID); !registered {
+		t.Fatal("eligible trusted Service did not register apply_patch through shipping composition")
+	}
+	r.CreationSchemaRegistered = true
 	parent, err := os.Open(nested)
 	if err != nil {
 		t.Fatal("open nested evidence parent", err)

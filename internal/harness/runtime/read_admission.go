@@ -131,14 +131,29 @@ type FilesystemSearchAvailability interface {
 	SearchFilesAvailable() bool
 }
 
-// FilesystemCreationPrototypeHost is an explicit, non-production composition
-// seam for a fixed-purpose creation fixture. The caller must opt in by
-// wrapping a ToolRuntimeConfig; normal cmd/harness composition never does so.
+// FilesystemCreationHost is the host-owned portion of bounded file creation.
 // The host owns proposal identity, protected coverage, retained parent state,
 // barrier acquisition, worker execution and cleanup.
-type FilesystemCreationPrototypeHost interface {
+type FilesystemCreationHost interface {
 	PrepareFilesystemCreation(context.Context, tools.Invocation, string, string) (permissions.Request, error)
 	PrepareApprovedFilesystemCreation(context.Context, tools.Invocation, permissions.Request, uint64) (ToolPreparation, error)
+}
+
+// FilesystemCreationPrototypeHost is retained for fixture-backed lifecycle
+// tests. Shipping composition uses FilesystemCreationHost together with the
+// Service-owned profile registration gate.
+type FilesystemCreationPrototypeHost = FilesystemCreationHost
+
+// FilesystemCreationCompositionHost exposes only whether the trusted Service
+// supports schema registration for its inspected host and retained scope. It
+// does not assert current owner coverage or authorize an operation.
+type FilesystemCreationCompositionHost interface {
+	FilesystemReadCompositionHost
+	FilesystemCreationHost
+	ToolPreparer
+	FilesystemReadAdmissionHost
+	FilesystemRootHost
+	CreationCapabilityRegistrationAvailable() bool
 }
 
 // FilesystemCreationProposalDiscarder lets the runtime release a retained

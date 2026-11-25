@@ -1,7 +1,10 @@
 # Issue #321 production owner-profile foundation
 
-**Status:** first gated implementation slice; production creation remains
-unavailable and unregistered.
+**Status:** owner/scope foundation is merged; creation-only shipping
+registration is proposed by the current unmerged enablement change. The exact
+candidate has completed native acceptance with all 18 cases passing, including
+mount-boundary refusal; maintainer review remains before merge. See the
+[candidate run record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25).
 
 The trusted `cmd/harness` composition passes the launch directory to the host
 sandbox before initializing the runtime's navigable working directory. The
@@ -41,26 +44,26 @@ It exposes no path, descriptor or filesystem capability. The separate
 only to the local UI, together with lifecycle/readiness state; it is detached
 and is not consumed as permission. No provider request or diagnostic receives
 this display path.
-Creation registration remains absent even when auth and settings coverage is
-complete. Existing read/discovery admission and its unknown-root gate are
-unchanged; ordinary project entries are not inventoried by this profile. This
-slice permits fixture proposals to resolve existing nested parents beneath
-the retained startup descriptor, checks their protected-owner ancestry, and
-revalidates the exact scope and parent before execution. It does not register
-the model-facing tool or enable production creation.
+Existing read/discovery admission and its unknown-root gate are unchanged;
+ordinary project entries are not inventoried by this profile. The unmerged
+enablement change registers the model-facing creation schema only after the
+trusted Service validates the inspected Linux amd64/descriptor-bind host and
+retained ext4 startup directory. That registration is separate from live
+owner/scope/cleanup readiness and grants no authority. Fixture proposals still
+use a separate private gate and synthetic manifest; they are not accepted as
+production owner coverage.
 
-The preparation prototype has a separate package-private test gate that
-normal composition never sets. Normal `cmd/harness` now captures the launch
-directory through `NewHostServiceWithStartupDirectory` before navigation is
-initialized. The UI reports the fixed startup scope separately from the
-working directory, and reports creation unavailable while the production
-registry omits the schema. For retained startup scopes, owner eligibility
-comes from the live coordinator's complete auth/settings requirements,
-service lifecycle state, and matching policy registrations, including
-reserved absent routes. Token Logger and provider-source coverage is not
-fabricated: those components remain trusted-not-instantiated in this chat.
-The synthetic four-owner manifest remains confined to earlier fixture cases
-and is not required to exercise the retained-startup owner profile.
+Normal `cmd/harness` captures the launch directory through
+`NewHostServiceWithStartupDirectory` before navigation is initialized. The
+unmerged change routes tool composition through the Service's profile-derived
+registration gate. The UI reports the fixed startup scope separately from the
+working directory and reports current readiness independently. For retained
+startup scopes, owner eligibility comes from the live coordinator's complete
+auth/settings requirements, service lifecycle state, and matching policy
+registrations, including reserved absent routes. Token Logger and
+provider-source coverage is not fabricated: those components remain
+trusted-not-instantiated in this chat. The synthetic four-owner manifest
+remains confined to earlier fixture cases and is not production coverage.
 
 ## Established and deferred
 
@@ -91,8 +94,10 @@ master run at `c0af7cda7bbbce3de289367af9e468ea8bea73df` measured 18/18 cases,
 including mount-boundary refusal across real ext4 mount IDs 33 and 157. Its
 archive SHA-256 is `00a4ffccd3c4acf156faae120a863e04ffc1a74f185702b4f1e0acafc6077f59`.
 See the [native acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up)
-for complete provenance and limits. Broader filesystems and launch profiles,
-production creation registration, integrated lifecycle review of every
-stale/cancel/interruption case, and separate explicit model-facing enablement
-remain deferred. Fixture tests establish control flow, not native filesystem
-enforcement. Creation remains unavailable in the normal CLI composition.
+for historical provenance and limits. The exact PR #359 candidate measured
+all 18 cases as `scoped_native_pass` on the recorded Linux/ext4/Bubblewrap
+profile. Broader filesystems and launch profiles, and integrated lifecycle
+review of every stale/cancel/interruption case remain unestablished. Fixture
+tests establish control flow, not native filesystem enforcement. Until the
+enablement change is reviewed and merged, released CLI builds continue to omit
+creation.

@@ -23,6 +23,12 @@ protocol completion, the fixed directory transition, and child cleanup. The
 remaining native service cases still require the trusted host prerequisites
 documented in [the #321 acceptance guide](../../docs/harness/issue-321-native-acceptance.md).
 
+If only the nested-mount case is unavailable, use
+[`run-mount-boundary-acceptance.sh`](run-mount-boundary-acceptance.sh) to create
+a disposable private fixture, run the suite unprivileged, and unmount only the
+bind mount created by that helper. It asks before mounting; see its `--help`
+output for the complete operations and prerequisites.
+
 Current runner SHA-256:
 `57643610ed88716f205ecf9ac6d657d0b3fe19f732992c48730a35fa1ce57bc9`.
 Current overlay SHA-256:

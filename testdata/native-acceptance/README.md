@@ -10,11 +10,14 @@ The hash-pinned runner and test overlay are kept together in
 - `native_acceptance_linux_test.go`
 
 The startup-scope #321 cases compose the real host Service, actual auth/settings
-registrations, the retained startup descriptor and the real Bubblewrap worker
-behind a package-private test-only gate. Earlier bounded-worker cases retain
-their synthetic complete owner manifest. All cases use only synthetic file
-content. They verify exact bytes/mode, no-replace collision behavior, stage
-disposition and joined workers.
+registrations, the retained startup descriptor and the real Bubblewrap worker.
+`TestNativeServiceNestedCreationUsesStartupScope` also calls the same
+profile-gated runtime composition helper used by `cmd/harness` and asserts that
+the eligible Service registers `apply_patch` before executing the native
+creation path. Earlier bounded-worker cases retain their separate synthetic
+complete owner manifest. All cases use only synthetic file content. They
+verify exact bytes/mode, no-replace collision behavior, stage disposition and
+joined workers.
 Fixed same-UID actors test retained-parent movement, stale nested-parent
 substitution before approval release, startup-root movement before worker
 launch, and startup-root movement immediately before worker publication.
@@ -25,7 +28,9 @@ The refusal matrix establishes a valid nested baseline before checking ordinary
 content, direct/nested escapes, outside navigation, missing/non-directory
 parents, symlinked parent/leaf paths, collisions, and an absent protected auth
 route. It verifies unchanged sentinels, no worker launch for refusals, and no
-leftover private stage. It does not use a provider or enable production tools.
+leftover private stage. The overlay does not run the shipping CLI binary or
+contact a provider; behavioral Service/runtime/UI tests cover the rest of the
+approval path.
 
 Mount crossing is measured only if the disposable scope already contains a
 real nested mount. The runner does not create or alter mounts. Without such a
@@ -50,7 +55,23 @@ scripts/native-acceptance/run-native-acceptance.sh \
 If an already-existing private directory beneath that scratch directory
 contains a nested mount which you are authorized to inspect without changing,
 add `--mount-scope /absolute/path/to/that/directory`. The optional mount case
-then tests the real boundary. Do not create or alter mounts for this study.
+then tests the real boundary. The runner itself never creates or alters mounts.
+
+If you have authorization to provision a disposable nested bind mount, the
+companion helper performs the setup, runner invocation, and exact unmount in
+one command:
+
+```sh
+scripts/native-acceptance/run-mount-boundary-acceptance.sh \
+  --repo "$PWD" \
+  --revision "$(git rev-parse HEAD)" \
+  --scratch-dir /path/to/writable/ext4/scratch
+```
+
+It creates private fixture directories beneath scratch, prompts before
+mounting, uses `sudo` only for the bind mount and its exact unmount, and runs
+the runner as the current user. The results archive stays in scratch. If
+unmount fails, the helper preserves the fixture and prints its path.
 
 The command reads only the selected committed revision into its own temporary
 source tree. It does not modify or clean the checkout. `--revision` is
@@ -71,9 +92,18 @@ Builds and native tests use an isolated source directory with one **test-only ov
 - Root change while a worker is held must first return cleanup_pending; after the old read settles, a fresh invocation under the new root must succeed. Cancellation while held must join without reading or publishing. Shutdown is forced to report incomplete cleanup at the held-operation boundary, then a fresh shutdown retry must drain it. This deterministic coordination case is not a natural kernel-hang test.
 - Separately labelled existing unit tests cover independent path overrides, pending-coverage recovery, runtime preparation/grant ordering, data suppression and bounded shutdown/retry. They are not counted as native enforcement.
 
-No provider network request is made. “Publication” here means the coordinator's private result sink, not a live selected LLM. The suite does not establish the unknown-file policy, filesystem tool enablement, all Bubblewrap modes, all platforms, every resource limit, arbitrary descendants, natural unjoinable processes, or all missing issue #215 gates. It does not simulate a kernel hang or claim native proof of incomplete-cleanup cases covered only by unit tests. The #321 cases cover stage, sync, no-replace publication, exact bytes and mode, incumbent preservation, one deterministic independent-actor mutation after final observation, retained-parent movement/substitution, cleanup, and join on the actual tested filesystem and selected Bubblewrap bind mode. Interrupted write/sync/close/publication syscalls and other independent-actor timings remain unestablished. Deterministic injected protocol failures in the behavioral suite are not native syscall interruption evidence.
+No provider network request is made. “Publication” here means the coordinator's private result sink, not a live selected LLM. The suite does not establish the unknown-file policy, live provider behavior, all Bubblewrap modes, all platforms, every resource limit, arbitrary descendants, natural unjoinable processes, or all missing issue #215 gates. The nested creation case proves profile-gated schema registration and Service effect behavior on the measured host, but it does not replace maintainer review or establish support beyond that profile. It does not simulate a kernel hang or claim native proof of incomplete-cleanup cases covered only by unit tests. The #321 cases cover stage, sync, no-replace publication, exact bytes and mode, incumbent preservation, one deterministic independent-actor mutation after final observation, retained-parent movement/substitution, cleanup, and join on the actual tested filesystem and selected Bubblewrap bind mode. Interrupted write/sync/close/publication syscalls and other independent-actor timings remain unestablished. Deterministic injected protocol failures in the behavioral suite are not native syscall interruption evidence.
 
 ## Results
+
+The exact PR #359 candidate (`2a576e5b38eb6e71caca1f56084b014212c8f16a`)
+recorded 17 of 18 cases as `measured_pass`. The shipping
+`TestNativeServiceNestedCreationUsesStartupScope` case confirmed
+`creation_schema_registered: true`. The mount-boundary case was unavailable
+because the designated scope had no pre-existing nested mount, so the aggregate
+was `native_unavailable` (exit 2), not a pass. See the [native acceptance
+record](../../docs/harness/issue-321-native-acceptance.md#shipping-composition-candidate-run-2026-11-24)
+for the archive and hashes.
 
 The runner prints a path such as:
 

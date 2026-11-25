@@ -1,10 +1,16 @@
 # Issue #321 native creation acceptance
 
-This run tests a bounded, disposable fixture against one exact source commit.
-It is not production enablement: the normal chat composition still does not
-register creation, grant creation scope, or advertise its schema. The test uses
-synthetic auth/settings/provider-source/Token Logger owner coverage and only
-synthetic files. It makes no provider requests.
+This record preserves bounded native runs against their exact source commits.
+Merged master `f79e754b1cba327aaeda78964e9672b4c50f88ce` omits creation from
+normal composition. The unmerged enablement change proposes profile-gated
+schema registration and adds a native assertion to
+`TestNativeServiceNestedCreationUsesStartupScope`. Its exact-candidate native
+suite now records all 18 cases as `measured_pass`, including the creation mount
+boundary refusal. The first run was partial; a later run supplied a disposable
+nested bind mount and completed the aggregate. This evidence is limited to its
+recorded source and host profile; it does not replace review or establish other
+filesystems, launch modes, platforms, or arbitrary descendants. Native tests
+use synthetic files and make no provider requests.
 
 ## Recorded native run
 
@@ -146,17 +152,17 @@ This evidence remains limited to the fixed worker and tested host/profile; it
 does not enable production creation or establish other filesystems, launch
 modes, platforms, or arbitrary descendants.
 
-## Fixed startup-scope candidate under review
+## Fixed startup-scope candidate and mount-boundary follow-up
 
 The PR #354 baseline and accepted ADR-0009 require new evidence for the fixed
 startup directory, owner-backed composition, nested-parent behavior, and
 startup-root movement. The follow-up adds those cases to the isolated native
 overlay and tightens result accounting; it does not change production worker
-enforcement or register the creation tool. A trusted-host run of the exact
-candidate is recorded below: 17 cases measured pass and the mount-boundary
-case is unavailable because no existing nested mount fixture was supplied.
-The runner correctly classified the aggregate as `native_unavailable` (exit
-2), not a pass.
+enforcement or register the creation tool. The first exact-candidate run was
+partial: 17 cases measured pass and the mount-boundary case was unavailable
+because no nested-mount fixture was supplied. The runner correctly classified
+that run as `native_unavailable` (exit 2); the complete follow-up is recorded
+in the shipping-composition candidate section below.
 
 The added candidate cases are:
 
@@ -318,9 +324,11 @@ amd64/ext4/Bubblewrap profile. It does not establish other filesystems,
 architectures, bind modes or platforms; exhaustive worker/actor schedules;
 interrupted syscalls; production owner coverage; or model-facing enablement.
 The runner, overlay, native worker and enforcement source in this run are the
-same as at `c0af7cda7bbbce3de289367af9e468ea8bea73df`; this PR changes records
-only. Creation remains unregistered and unavailable pending separate explicit
-enablement review.
+same as at `c0af7cda7bbbce3de289367af9e468ea8bea73df`; the PR that recorded it
+changed records only. The current unmerged enablement change modifies
+composition, so this historical archive alone does not establish its activation
+path. The exact-candidate activation result is recorded below; maintainer
+review remains required.
 
 ## Host requirements
 
@@ -446,3 +454,70 @@ timings, external isolation during approval, all Linux filesystems, or
 non-Linux behavior. The design accepts residual external changes during
 approval and between observation and effect. No native result authorizes
 production enablement; a separate maintainer decision is required.
+
+## Shipping-composition candidate run (2026-11-24)
+
+Source commit `2a576e5b38eb6e71caca1f56084b014212c8f16a` is the exact code
+candidate on PR #359. The run completed build and selected unit-check stages,
+recorded exactly 18 expected cases, and confirmed cleanup. Seventeen cases
+measured pass. `TestNativeServiceNestedCreationUsesStartupScope` recorded
+`creation_schema_registered: true` and measured the creation path through the
+same profile-gated runtime composition used by `cmd/harness`. The sole
+unavailable case was `TestNativeServiceMountBoundaryRefusal`: the supplied
+startup scope contained no pre-existing nested mount. The runner correctly
+reported `native_unavailable` with exit 2; this is not a full acceptance pass.
+
+Environment: Go 1.26.11, Linux `7.0.0-42-generic` amd64, regular UID 1000,
+Python 3.12.3, trusted root-owned Bubblewrap 0.9.0 using `ro-bind-fd`, local
+ext4 startup scope mount ID 33. No work or descendants were retained. The
+archive is `/home/ayesh/projects/samples/komposyn-ext4/native-scratch/komposyn-composition-native-results.cug_cfkt.tar.gz`
+(SHA-256 `ff79d95066342d961f0a57a903ecaf579208e37c58ba870d42e8e39b7a029144`);
+manifest SHA-256 `7e71e00ad5c25d233c3acbabe66771f7ea1153d201f99c8d9394aa5cee53c99d`;
+report SHA-256 `4a438850959910600595a026e8c54c97e3b2716915f589d0fafbf2d2f199d63e`;
+source archive SHA-256 `429a047314fa9d484919fa096f526e3da560d8d020eb12d1246b7eee9f15628c`;
+test overlay SHA-256 `ceed4a057503007e624c0f8d9009a88a174624543e48e773a9764f5129a6569d`;
+runner SHA-256 `30a84298523eaa3bbcbacba98680d249e9e36594f6d4cd83647df6be5c7fb841`;
+native test binary SHA-256 `c1de427e7373e31be83444d0903c0bb35b188523ec04e5e518c8a2377a1e42e9`.
+Every archive member listed in `SHA256SUMS` verified. This first run did not
+include a nested-mount fixture, so its aggregate is partial. The later follow-up
+below supplied a disposable nested bind mount; the runner itself still does not
+create or modify mounts. The helper and documentation commits on PR #359 do not
+change the measured source, runner, or overlay.
+
+### Shipping-composition candidate mount-boundary follow-up (2026-11-25)
+
+The operator-provided rerun used the same exact candidate source and test
+overlay, now with the mount-boundary fixture provisioned by
+[`run-mount-boundary-acceptance.sh`](../../scripts/native-acceptance/run-mount-boundary-acceptance.sh).
+
+- Archive:
+  `/home/ayesh/projects/samples/komposyn-ext4/native-scratch/komposyn-composition-native-results.gvemwmwg.tar.gz`
+- Archive SHA-256: `c090193a3143c7dbe9caffa7038d67b1bcb7244d0a2ffe2f9507680f48d9b6d0`
+- Manifest SHA-256: `83a8555084cb7457d856bd2f849cb1e5917f8560124d0a9505233f0c5b7d41fd`
+- Native report SHA-256: `e9c019700bcf4a1ab681cfa87d92bf30c51299c72f6a0af98ddaffb7f3812f58`
+- Source commit and source archive hash are unchanged from the first run:
+  `2a576e5b38eb6e71caca1f56084b014212c8f16a` and
+  `429a047314fa9d484919fa096f526e3da560d8d020eb12d1246b7eee9f15628c`.
+- Runner SHA-256:
+  `30a84298523eaa3bbcbacba98680d249e9e36594f6d4cd83647df6be5c7fb841`.
+- Overlay SHA-256:
+  `ceed4a057503007e624c0f8d9009a88a174624543e48e773a9764f5129a6569d`.
+- Native test binary SHA-256:
+  `af4f323a2fa554cabd80d88f51ac429c450f654e8b206199f601954618a36376`.
+- Environment: Go 1.26.11, Linux `7.0.0-42-generic` amd64, regular UID 1000,
+  Python 3.12.3, trusted root-owned Bubblewrap 0.9.0 using `ro-bind-fd`, and
+  ext4 startup scope mount ID 33.
+- Outcome: all 18 expected native records measured pass, including
+  `TestNativeServiceMountBoundaryRefusal`; unit, build, and native stages
+  exited 0. Every record confirmed cleanup, all captured processes were reaped,
+  and no work was retained. Aggregate: `scoped_native_pass` (exit 0).
+- The mount-boundary record observed scope mount ID 33 and nested mount ID 157,
+  confirmed ext4, and refused the nested target without worker launch or
+  creation. This establishes only the recorded filesystem and enforcement
+  profile; it does not broaden the production support claim.
+- The archive sidecar and all internal `SHA256SUMS` entries were verified. The
+  archive remains at the operator-provided location and is not committed.
+
+The prior unavailable case is preserved as historical provenance; this
+follow-up supersedes it for the exact candidate aggregate. No production source,
+acceptance overlay, or runner behavior changed between the two runs.

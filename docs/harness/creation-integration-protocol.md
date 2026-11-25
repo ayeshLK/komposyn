@@ -4,23 +4,51 @@
 
 The normal `cmd/harness` composition captures the trusted startup directory and
 the local UI reports it separately from the navigable working directory.
-Production creation remains unregistered and unavailable. The explicit
-test-only composition now carries a real sandbox Service proposal through the
-existing runtime once-approval and UI bridge; the approval presents exact
-target, complete diff, and provider/model/auth-profile destination. The
-`CreationHost` signatures below remain design vocabulary, not exported
-production interfaces. Fixture evidence does not establish native enforcement
-for this integrated revision; see the [lifecycle record](issue-321-lifecycle-acceptance.md).
+## Shipping activation proposal — 2026-11-24
 
-**Status:** ADR-0009's first three implementation slices now capture and enforce a fixed startup scope, expose detached local UI status, and connect the test-only creation proposal through the real sandbox Service, runtime once authorization, and existing approval bridge. The normal `cmd/harness` registry and provider instructions still omit creation. New UI/runtime/service tests cover separate scope/navigation status, actual auth/settings lifecycle registrations, exact nested target, complete diff and destination display, denial without effect, explicit once success, and exact output bytes. The historical scoped native run predates startup-scope integration and does not prove it; trusted-host evidence for these changes and separate explicit enablement remain gates. Issues #267, #315, #321 and #322 remain open.
+The current unmerged enablement change wires the normal CLI through the
+profile-gated runtime composition. `apply_patch` registration is limited to
+Linux amd64, trusted Bubblewrap `ro-bind-fd`, and a retained local ext4 startup
+scope. Live auth/settings coverage, scope identity, owner/policy revisions,
+approval binding, and cleanup remain Service checks at each boundary. The
+exact PR #359 candidate now has a complete `scoped_native_pass`: all 18 cases
+measured pass, including mount-boundary refusal with a real nested bind mount
+(ext4 scope mount ID 33, nested mount ID 157). The first candidate run remains
+preserved as a partial historical result; the follow-up used the same source,
+runner, and test overlay. Maintainer review remains required before merge.
+Existing released binaries remain unchanged until merge and release.
 
-The companion [mechanism proposal](creation-mechanism-proposal.md) selects a stage file plus `renameat2(RENAME_NOREPLACE)`. This document records how the fixture prototype joins the existing runtime, UI, provider and read-admission composition. The mechanism passed the recorded scoped Linux native cases, but arbitrary production scopes remain unavailable and no production creation capability is enabled.
+The implementation status below records the earlier PR #354 integration, before
+the current enablement proposal. Its test-only composition carried a real
+sandbox Service proposal through runtime once-approval and the UI bridge; the
+approval presented exact target, complete diff, and provider/model/auth-profile
+destination. The `CreationHost` signatures below remain historical design
+vocabulary, not exported production interfaces. Fixture evidence did not
+establish native enforcement for that integrated revision; see the
+[lifecycle record](issue-321-lifecycle-acceptance.md).
+
+**Historical status after PR #354 (2026-11-22):** ADR-0009's first three
+implementation slices captured and enforced fixed startup scope, exposed
+detached local UI status, and connected the test-only creation proposal through
+the real sandbox Service, runtime once authorization, and approval bridge. At
+that revision, normal `cmd/harness` omitted creation. UI/runtime/service tests
+covered scope/navigation, auth/settings lifecycle, exact target/diff/destination,
+denial, once approval, and exact output bytes. Its native evidence predates that
+startup-scope integration. The current unmerged enablement proposal above
+updates the composition status. Its exact-candidate activation case and full
+18-case native aggregate measured pass on the recorded profile; maintainer
+review remains before merge. Issues #267, #315, #321 and #322 remain open.
+
+The companion [mechanism proposal](creation-mechanism-proposal.md) records the
+stage file plus `renameat2(RENAME_NOREPLACE)` mechanism. Arbitrary filesystems,
+platforms, and scope changes remain unsupported; the bounded initial profile
+and its current activation state are described above.
 
 ## Source facts and coverage boundary
 
 The Linux sandbox composition currently has one `linuxImplementation` mutex, an `ownerUpdateMu`, a protected-owner `revision`, auth/settings owner states, a `blocked` owner map, and a read coordinator. `Protect` serializes owner changes, advances the revision, blocks the owner, invalidates conversation state and read admissions, registers the new owner identity/routes, and then completes or leaves coverage pending. It is an owner-rotation operation, not a transient-stage operation. Calling it for a stage after consuming the create receipt would invalidate that save's captured state and could make a drain wait on its own operation.
 
-Read admission parses the requested read/list/search operation, checks service and auth/settings state, begins an admission in the coordinator, waits for its receipt, then rechecks service and coverage revision. Preparation rechecks again. Execution and publication have runtime authority claims and worker lifecycle state. The Linux implementation's creation barrier now drains active read workers through `ActiveReadDrainer` while preserving completed captures and existing generations. This remains a fixture-only creation path: `cmd/harness` does not register a creation schema or effect path.
+Read admission parses the requested read/list/search operation, checks service and auth/settings state, begins an admission in the coordinator, waits for its receipt, then rechecks service and coverage revision. Preparation rechecks again. Execution and publication have runtime authority claims and worker lifecycle state. The Linux implementation's creation barrier now drains active read workers through `ActiveReadDrainer` while preserving completed captures and existing generations. On merged master PR #354 this remained a fixture-only creation path. The current unmerged change wires `cmd/harness` to the profile-gated creation schema and effect path. The exact-candidate native follow-up measured all 18 cases as `scoped_native_pass`, including the mount-boundary case. The initial partial run remains historical evidence; see the [native acceptance record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25).
 
 The trusted composition's declared owners are:
 
@@ -43,20 +71,22 @@ machine-wide scan, transcript scan, ignore rule, path-prefix rule or approval
 can substitute for missing applicable owner coverage or override a known
 protected resource.
 
-The current implementation still has **no generally eligible creation scope**.
-ADR-0009 selects the CLI startup directory, fixed for that run, including
-existing subdirectories. Its accepted eligibility rule allows ordinary existing
-project content without inventorying or classifying every entry. This
-supersedes the earlier creation-only unknown-root requirement to attest all
-selected-root data; it leaves read/discovery authorization unchanged. The
-synthetic complete-owner manifest remains fixture evidence only. The typed
-production owner-profile snapshot now records auth/settings as required and
-Token Logger/provider-source ingestion as trusted not-instantiated declarations
-for the current composition. The host captures the launch directory binding
-before runtime navigation, but reports retained identity/movement validation
-as deferred. Nested-parent handling, startup identity enforcement and new
-native scope evidence remain required before separate model-facing enablement
-review. See the [owner-profile foundation](issue-321-owner-profile.md).
+The current profile supports only a fixed CLI startup directory on the
+measured Linux amd64/ext4/descriptor-bind host; it does not provide a generally
+eligible scope across hosts or filesystems. ADR-0009 selects the CLI startup
+directory, fixed for that run, including existing subdirectories. Its accepted
+eligibility rule allows ordinary existing project content without inventorying
+or classifying every entry. This supersedes the earlier creation-only
+unknown-root requirement to attest all selected-root data; read/discovery
+authorization remains unchanged. The synthetic complete-owner manifest remains
+fixture evidence only. The typed production owner profile records auth/settings
+as required and Token Logger/provider-source ingestion as trusted
+not-instantiated declarations for the current composition. The unmerged
+enablement change uses the Service's retained-identity checks for schema
+registration; live identity, owner coverage, and cleanup checks remain at each
+operation boundary. Native acceptance for the exact shipping activation path
+is complete on the recorded profile; the unmerged proposal still requires
+maintainer review. See the [owner-profile foundation](issue-321-owner-profile.md).
 
 ## Proposed typed creation and approval path
 

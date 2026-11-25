@@ -491,17 +491,17 @@ func filesystemCreationAvailability(selected *model.Model, providers *model.Regi
 	}
 	if runtime == nil || runtime.registry == nil {
 		status.State = "not_registered"
-		status.Reason = "File creation is unavailable because this chat does not register the creation capability."
+		status.Reason = "File creation is unavailable because the runtime has no trusted creation composition."
 		return status
 	}
 	if _, ok := runtime.registry.Lookup(tools.CreateFileID); !ok {
 		status.State = "not_registered"
-		status.Reason = "File creation is unavailable because this chat does not register the creation capability."
+		status.Reason = "File creation is unavailable because this host or startup directory is outside the supported creation profile."
 		return status
 	}
 	if selected == nil {
 		status.State = "no_model"
-		status.Reason = "Select a model with /model to check the test composition's creation route."
+		status.Reason = "Select a model with /model to check creation route support."
 		return status
 	}
 	support, routeState, routeReason := selectedRouteToolSupport(selected, providers)
@@ -540,7 +540,7 @@ func filesystemCreationAvailability(selected *model.Model, providers *model.Regi
 	}
 	status.Available = true
 	status.State = "available"
-	status.Reason = "The test-only composition can propose one new file beneath the fixed startup directory; each exact target and complete change requires explicit once approval."
+	status.Reason = "This supported host profile can propose one new file beneath the fixed startup directory; each exact target and complete change requires explicit once approval."
 	return status
 }
 
