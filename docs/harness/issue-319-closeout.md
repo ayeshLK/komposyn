@@ -5,9 +5,16 @@ Status: **accepted negative research disposition; issue closed**.
 2026-11-19 at 03:41:01 UTC, following the merge of
 [PR #338](https://github.com/ayeshLK/komposyn/pull/338) at
 `52fe3bec9a6a25cf017f3c7c47229046fb85b1c2`. This closes research for the
-mechanisms examined, while creation remains unavailable. The closure resolves
-#321's native GitHub dependency on #319; #321's separate positive-evidence and
-explicit enablement gate remains unsatisfied. Umbrella #315 remains open.
+mechanisms examined. At that time, creation remained unavailable and #321's
+separate positive-evidence and explicit enablement gate remained unsatisfied;
+umbrella #315 remained open.
+
+**Later disposition:** these statements describe the status when #319 closed
+and remain accurate for its investigated candidates. PR #359 later delivered
+creation in source under a separately reviewed mechanism, scope, owner-coverage
+contract, native evidence, and explicit enablement decision. See the current
+[#321 native acceptance record](issue-321-native-acceptance.md). #315 remains
+open for editing and its independent criteria.
 
 ## Disposition
 

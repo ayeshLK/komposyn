@@ -1,6 +1,6 @@
 # Issue #321 creation lifecycle acceptance
 
-This record tracks behavioral lifecycle evidence separately from native filesystem evidence and production enablement. Merged master `f79e754b1cba327aaeda78964e9672b4c50f88ce` does not register creation. PR #359 proposes the shipping CLI wiring, gated to the measured host/startup profile. Startup-scope preparation and terminal movement behavior have focused behavioral coverage. The historical PR #355 and PR #356 runs each had 17 measured cases and an unavailable mount-boundary case; those results remain `native_unavailable`, not passes. The PR #359 exact-candidate follow-up measured all 18 cases, including the shipping registration path and mount-boundary refusal on a real nested bind mount, as `scoped_native_pass`. Maintainer review remains before merge.
+This record tracks behavioral lifecycle evidence separately from native filesystem evidence. PR #359 merged as `32ae327bd44e4581fbf65933f7f5b02afb9ad67c`, delivering profile-gated creation registration to source builds of the experimental CLI. Startup-scope preparation and terminal movement behavior have focused behavioral coverage. The historical PR #355 and PR #356 runs each had 17 measured cases and an unavailable mount-boundary case; those results remain `native_unavailable`, not passes. The exact PR #359 candidate follow-up measured all 18 cases, including the shipping registration path and mount-boundary refusal on a real nested bind mount, as `scoped_native_pass`. Other profiles remain unavailable, and binary release availability is separate from source merge.
 
 ## Fixed-scope runtime and UI integration
 
@@ -8,8 +8,8 @@ The normal CLI captures the trusted launch directory through
 `NewHostServiceWithStartupDirectory` before runtime navigation. Runtime snapshots
 carry a detached fixed-scope status to the UI separately from
 `WorkingDirectory`; `/cd` and conversation reset do not recapture it. The local
-header and `/help` identify both values. This change proposes schema
-registration only when the trusted Service has inspected the Linux amd64,
+header and `/help` identify both values. Merged source registers the schema
+only when the trusted Service has inspected the Linux amd64,
 Bubblewrap `ro-bind-fd`, retained local ext4 profile; unsupported profiles
 continue to report creation unavailable. The fixed path is not added to
 provider instructions, requests, or diagnostics.
@@ -87,7 +87,7 @@ for its provenance and hashes.
 | Mount crossing is refused by descriptor-relative resolution. | Existing behavioral target preparation tests do not establish a real mount boundary. | `TestNativeServiceMountBoundaryRefusal` measured pass on the exact PR #359 candidate source `2a576e5b38eb6e71caca1f56084b014212c8f16a` with an ext4 scope and real nested bind mount; it recorded distinct mount IDs 33 and 157. The direct-child proposal was prepared and discarded without execution; the crossing proposal was refused before worker launch, with no target or private stage. | Measured for the exact Linux amd64/ext4 and Bubblewrap `ro-bind-fd` profile. This does not establish other filesystems, profiles or platforms. See the [candidate evidence record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25). |
 | Detectable startup-root move/replacement before worker launch is terminal even after restoration; an already released effect is classified truthfully under ADR-0008's residual race. | `TestStartupScopeMovementIsTerminalAfterReplacementAndRestore`, `TestStartupRootMoveAtPublicationCheckpointAbortsPreparedCreation`; deterministic fake-worker Service execution. | `TestNativeServiceStartupRootMovementIsTerminal` and `TestNativeServiceStartupRootMovementAfterPublicationRelease` measured pass: actor move/replace/restore, retained-object publication at the named after-release checkpoint, and terminal future refusal. | Named pre-worker and after-release checkpoints measured. Do not claim strict live-pathname containment, rollback, or exhaustive race coverage. |
 | Cancellation, drain/join, cleanup ownership, uncertain outcomes, stale publication and no automatic replay remain intact. | `TestCreationBarrierWaitsForRuntimeAdmittedReadWorkerToJoin`, `TestCreationBarrierDrainsRuntimeAdmittedDirectoryWorkers`, `TestCreationDelayedJoinReturnsUnknownAndKeepsAdmissionBlocked`, `TestCreationCompletionLossAfterPublicationIsUnknownAndNeverReplayed`, `TestComposedCreationOwnerChangeAfterEffectSuppressesResultAndRejectsDuplicateCall`, plus close/root transition tests. Real Service/runtime/provider seam with controlled worker timing. | Native held-worker read cases measured pass for process retirement; the creation stage worker has no native syscall interruption case. Startup actor scenarios record join and stage disposition. | Behavioral lifecycle tested at named checkpoints, not exhaustive scheduling. Native creation syscall interruption is unproven and explicitly deferred; do not expand this PR into a new enforcement project. |
-| Initial profile refuses unsupported backend/profile and does not widen model-facing capability. | `TestShippingCreationCompositionUsesServiceEligibilityAndKeepsChatTools`, `TestUnsupportedStartupCreationProfileDoesNotBlockHostStartup`, `TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate`, and the shipping runtime composition helper. | The exact PR #359 candidate measured the new activation path on Linux amd64/ext4 with trusted Bubblewrap 0.9.0 using `ro-bind-fd`. | Other backends, bind modes, filesystems, and platforms remain unavailable. Native acceptance is complete for the recorded profile; maintainer review remains before merge. |
+| Initial profile refuses unsupported backend/profile and does not widen model-facing capability. | `TestShippingCreationCompositionUsesServiceEligibilityAndKeepsChatTools`, `TestUnsupportedStartupCreationProfileDoesNotBlockHostStartup`, `TestHostCompositionCannotActivateDeferredOwnerOrBypassUnknownGate`, and the shipping runtime composition helper. | The exact PR #359 candidate measured the activation path on Linux amd64/ext4 with trusted Bubblewrap 0.9.0 using `ro-bind-fd`. | Other backends, bind modes, filesystems, and platforms remain unavailable. Native acceptance is complete for the recorded profile; live readiness checks remain authoritative. |
 
 The historical 12/12 run at `dbfd90974f0979832a9abc60e32aeb3c87399840`
 predates PRs #352–#354 and this overlay. It is evidence only for its recorded
@@ -146,9 +146,9 @@ profiles/platforms, syscall interruption behavior, or model-facing enablement.
 
 ## Enablement boundary
 
-This unmerged change proposes the first production-composition registration of
-creation. The recorded 18/18 native run supports the unchanged worker and
-enforcement path for its measured host profile, but it does not measure this
-new activation path. The enablement PR must remain draft until an exact
-candidate native run exercises that path and maintainer review is complete.
-Issues #267, #315, #321 and #322 remain open pending their separate criteria.
+PR #359 delivered the first production-composition registration of creation
+in source. Its exact candidate's 18/18 native run exercised that activation
+path on the measured host profile; historical runs remain tied to their own
+revisions and outcomes. This does not imply that a new tagged binary release
+was published. #321 is closed as delivered in source. #315, #322 and #267
+remain open for their separate editing and mutation criteria.

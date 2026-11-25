@@ -12,11 +12,21 @@ every project entry. Exact once approval, containment checks, applicable
 protected-owner coverage and atomic refusal of existing destinations remain
 required.
 
-This accepts the design and ordered delivery plan, not model-facing
-enablement. Implementation must land through reviewed PRs with creation
-disabled, followed by new evidence and a separate enablement PR. The current
-normal `cmd/harness` composition still does not expose creation. This changes
-no standalone `komposyn-lg` ownership or editing, rename or delete contract.
+This accepted the design and ordered delivery plan; at decision time it did
+not itself enable model-facing creation. Implementation and evidence were
+subsequently delivered through reviewed PRs, followed by the separate
+enablement review in PR #359.
+
+## Post-merge implementation status — 2026-11-25
+
+PR #359 merged the profile-gated creation composition at
+`32ae327bd44e4581fbf65933f7f5b02afb9ad67c`. Creation is available to source
+builds containing that merge only on Linux amd64/local ext4 with trusted
+Bubblewrap using measured `ro-bind-fd`, and only while live owner, scope,
+policy, service, and cleanup checks pass. This is source delivery, not a claim
+that a new tagged binary release was published. The accepted startup scope,
+owner coverage, exact once approval, and residual-race boundaries below remain
+unchanged. Editing, rename, and delete are outside this decision.
 
 ## Accepted decisions
 
@@ -176,9 +186,9 @@ records behavioral/race coverage separately.
    native evidence for the exact candidate and scope claims above. Preserve
    unavailable/failed results and supported-profile limits honestly.
 5. Present a separate enablement PR for explicit maintainer approval after
-   evidence review. Issues #267, #315, #321 and #322 remain open against their
-   own remaining criteria; editing and unrelated rename/delete work are not
-   enabled by this design.
+   evidence review. This ordered plan was completed through PR #359; issues
+   #267, #315 and #322 remain open against their independent criteria. Editing
+   and unrelated rename/delete work are not enabled by this design.
 
 Implementation interfaces, bounded path-processing details and test
 checkpoints must be reviewed in those slices. This decision authorizes that

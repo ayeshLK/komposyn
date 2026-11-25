@@ -90,9 +90,11 @@ The bytes are sent to that provider and may recur in the same valid conversation
 approval does not permit a second read. Choosing or changing the working
 directory grants no read access.
 Auth/settings protected identities remain denied;
-provider-source reads, unavailable backends, unsupported routes, mutation, and
-shell remain unavailable. Stage 6 native evidence is limited to the recorded
-Linux amd64/Bubblewrap 0.9.0 environment; it is not production-provider or
+provider-source reads, unavailable backends, and unsupported routes remain
+unavailable. Creation is separately gated to its measured profile; editing,
+other mutations, and shell remain unavailable. Stage 6 native evidence is
+limited to the recorded Linux amd64/Bubblewrap 0.9.0 environment; it is not
+production-provider or
 cross-platform acceptance. The launch directory is shown as the working
 directory and is the base for relative read requests; it does not grant read
 permission. Scoped native acceptance for outside-working-directory reads is
@@ -126,13 +128,16 @@ provides relative-path context; it does not set the read-eligibility boundary.
 The terminal also shows the trusted launch directory as a separate, fixed
 creation scope. `/cd` and conversation reset do not change that scope. This is
 informational only; selecting or displaying a directory grants no access or
-write permission. The unmerged enablement change on this branch proposes
-registering creation only for Linux amd64 with a retained local ext4 startup
-scope and trusted Bubblewrap `ro-bind-fd` worker profile. Registration does not
-establish current owner, scope, or cleanup readiness; the Service checks those
-again for each operation. Released builds remain unavailable until this change
-passes review and is merged. Existing reads keep their independent target and
-approval rules.
+write permission. Creation is registered by the merged source only for Linux
+amd64 with a retained local ext4 startup scope and trusted Bubblewrap
+`ro-bind-fd` worker profile. A source build from merged master can expose it
+when the selected provider route supports client tools and host/profile checks
+pass. Registration
+does not establish current owner, scope, or cleanup readiness; the Service
+checks those again for each operation. Distributed binaries contain creation
+only when built from a release that includes the merge; merge alone does not
+publish a release. Existing reads keep their independent target and approval
+rules.
 
 Mutation design is tracked separately in
 [issue #267](https://github.com/ayeshLK/komposyn/issues/267).
@@ -141,12 +146,12 @@ are recorded in the [existing-file edit feasibility study](file-lease-revision-b
 The scoped negative research disposition for existing-file editing was
 accepted when #320 closed on 2026-11-19 after PR #340. See the [#320 closeout
 record](issue-320-closeout.md). Editing remains deferred under its existing
-authority contract. Creation has an accepted boundary and a reviewed bounded
-stage/no-replace mechanism; shipping composition enablement is proposed in the
-current unmerged change. See the [mutation deferral and resumption conditions](mutation-deferral.md).
-Discovery remains delivered in its supported profiles. Editing remains unavailable; #321/#322's
-independent positive-evidence and explicit enablement gates remain unsatisfied,
-while #267 and #315 remain open.
+authority contract. Creation has an accepted boundary and reviewed bounded
+stage/no-replace mechanism, and PR #359 merged the profile-gated shipping
+composition. See the [mutation deferral and resumption conditions](mutation-deferral.md).
+Discovery remains delivered in its supported profiles. Editing remains
+unavailable: #322 has no accepted positive mechanism, while #267 and #315
+remain open for their independent criteria.
 
 The [runtime file object and approved-save decision](runtime-file-object-saves.md)
 records the accepted creation boundary from merged PR #343: coordinate runtime
@@ -154,8 +159,9 @@ objects, request save-time approval and require fresh decisions for detected
 conflicts, with an explicit residual external-write race. The
 [creation mechanism proposal](creation-mechanism-proposal.md) records the Linux
 stage-plus-no-replace mechanism accepted through PRs #346–#349. The [creation integration protocol](creation-integration-protocol.md)
-specifies a proposed read barrier, owner-coverage contract and typed approval
-path. The disposable prototype has behavioral lifecycle evidence recorded in
+records the read barrier, owner-coverage contract, and typed approval path
+implemented and enabled on the supported profile through PR #359. The earlier
+disposable prototype has behavioral lifecycle evidence recorded in
 [issue-321 lifecycle acceptance](issue-321-lifecycle-acceptance.md) and historical
 scoped native evidence. The accepted [startup-directory creation scope decision](../adr/0009-startup-directory-creation-scope.md)
 selects the fixed CLI startup directory and existing subdirectories, with
@@ -170,11 +176,13 @@ aggregate `native_unavailable`. A follow-up on exact current-master source
 including refusal at a real nested-mount boundary; see the [issue #321 native
 acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up).
 PR #359 wires normal chat to register creation only on the measured
-host/startup profile. Its exact activation path now has complete native
-acceptance: all 18 cases passed, including mount-boundary refusal. The complete [exact-candidate native record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25)
-preserves the full provenance and profile limits. The PR remains unmerged and
-requires maintainer review before any release can expose it. Creation stays
-unavailable on every other profile.
+host/startup profile. Its exact activation path has complete native acceptance:
+all 18 cases passed, including mount-boundary refusal. The complete
+[exact-candidate native record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25)
+preserves the full provenance and profile limits. PR #359 merged as
+`32ae327bd44e4581fbf65933f7f5b02afb9ad67c`; this is source delivery, not a
+new binary release. Creation remains unavailable on other profiles and when
+live owner, scope, policy, service, or cleanup checks fail.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
@@ -196,7 +204,8 @@ unknown-data refusal boundary and staged typed-read path are described in the
 auth/settings lifecycle and pre-consumption admission seam are implemented in
 the [composition admission and sandbox service](composition-admission-sandbox-service.md).
 Generic filesystem access remains closed except for the separately gated,
-once-approved exact-file and bounded directory-listing capabilities.
+once-approved exact-file, bounded directory-listing, and profile-gated
+single-file creation capabilities.
 The reviewed #243 native service-fixture result, its provenance, and the
 checkout-safe reproduction runner are recorded in
 [composition native acceptance](read-broker-composition-native-acceptance.md)
@@ -208,7 +217,8 @@ amd64 with Bubblewrap's measured `ro-bind-fd` worker-image bind mode, successful
 fixed-worker composition, and a supported client-tool route. Other architectures
 and bind modes remain unavailable. Every listing requires once approval for the
 exact directory, effective options, and provider destination. Broad reads,
-mutation, and shell remain unavailable.
+editing and other mutations, and shell remain unavailable. Creation is a
+separate once-approved capability limited to the supported profile below.
 
 The issue #316 `list_files` capability lists one selected directory level,
 with hidden and `.git` names omitted, bounded
@@ -372,8 +382,12 @@ Responses route support these tools. Runtime can select only OAuth models
 returned by that account's catalog; the live cycle below covers one account
 and model. When the trusted Linux read backend is
 available, supported routes may additionally advertise `read_file` as described
-above. No filesystem mutation, process, or network tools are available. OpenAI
-requests set `store: false`; Anthropic requests use Messages. OpenAI API-key
+above. One-file creation is separately available in merged source only on
+Linux amd64/local ext4 with trusted Bubblewrap `ro-bind-fd` and passing live
+owner, scope, policy, service and cleanup checks; tagged binary availability is
+separate. See the [creation lifecycle and evidence record](issue-321-lifecycle-acceptance.md).
+Editing, process, and network tools remain unavailable. OpenAI requests set
+`store: false`; Anthropic requests use Messages. OpenAI API-key
 requests retain the configured output-token bound and encrypted reasoning
 continuation. The ChatGPT plan route follows the current SIWC preview subset:
 it sends the required full input array with `store: false` and `stream: true`,
@@ -532,8 +546,9 @@ plans, grants, and activity exist only in memory. The two bundled conversation
 tools are always available on supported routes. The host-backed `read_file`,
 `list_files`, and `search_files` capabilities are conditional on their reviewed
 Linux enforcement profiles and require separate once approval per invocation.
-Search additionally requires an ext4 target directory. Filesystem mutation,
-process, web, and image tools remain unavailable. See the
+Search additionally requires an ext4 target directory. Creation is separately
+conditional on its measured profile and once approval; editing, other
+filesystem mutations, process, web, and image tools remain unavailable. See the
 [capability availability guide](capability-availability.md) for profile limits.
 
 The first keyboard event after a dialog appears is consumed to prevent a
@@ -614,7 +629,8 @@ trusted Bubblewrap profile and complete host-owned lifecycle. Search is
 restricted to the measured Linux amd64 descriptor-bind profile and ext4 target
 directories. These tools follow the approved opened-object contract; concurrent
 namespace changes mean it does not promise strict live pathname containment.
-Filesystem mutation and shell remain unavailable.
+Creation is separately available only on its measured profile; editing, other
+filesystem mutations, and shell remain unavailable.
 See the [filesystem enforcement foundation](filesystem-enforcement-foundation.md)
 and [enablement policy and evidence](filesystem-enablement-policy.md) for
 guarantees, counterexamples, protected-path policy proposals, root-selection
@@ -632,15 +648,18 @@ creation-broker startup and confinement investigation. Its synthetic
 pre-protection descriptor control found that a proc-fd opened before a
 dumpability transition remains usable afterward; the capture host was
 ineligible for Yama mode 2/3 acceptance. Creation remains unavailable, and no
-Gate B work is authorized by that report.
+Gate B work is authorized by that report. This describes the #319 investigation
+only; a different reviewed creation mechanism and supported-profile activation
+were delivered later in PR #359.
 The [accepted #319 research closeout](issue-319-closeout.md) consolidates the
 direct-create, `O_TMPFILE`, and Gate A counterexamples without claiming that
 all unprivileged creation is impossible. The independent [initial #320 editing
 design](issue-320-editing-design.md) records why current file-lease evidence
-does not provide revision-bound edit authority. Issue #319 is closed as negative
-research; #320 is closed as scoped negative editing research. Creation and editing
-remain unavailable, and #321's positive-evidence gate is unsatisfied despite
-resolution of its native dependency on #319. The decision records are
+does not provide revision-bound edit authority. Issue #319 is closed as
+negative research; #320 is closed as scoped negative editing research. The
+creation conclusions apply to those candidates at their measured revisions;
+PR #359 later delivered creation in source for its documented profile. Editing
+remains unavailable under #322 and ADR-0007. The decision records are
 [accepted ADR-0006](../adr/0006-proposed-negative-closeout-for-tested-file-creation-candidates.md)
 and [accepted ADR-0007 contract](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md).
 
@@ -663,9 +682,9 @@ The [owner inventory and admission note](read-broker-owner-inventory.md)
 records the Token Logger/provider lifecycle gaps and explains why a complete
 synthetic fixture profile does not establish production coverage.
 The [issue #321 production owner-profile foundation](issue-321-owner-profile.md)
-records the fixed trusted chat owner declarations and startup-scope snapshot;
-the scope identity and movement checks remain deferred and creation is not
-registered.
+records the fixed trusted chat owner declarations and startup-scope snapshot.
+PR #359 merged the profile-gated creation registration in source; live scope
+identity and movement checks remain authoritative for each operation.
 
 ## Native study prerequisite
 

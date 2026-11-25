@@ -1,6 +1,20 @@
-# Proposed one-file creation mechanism
+# One-file creation mechanism proposal
 
-**Status:** the bounded disposable-fixture prototype and selected lifecycle
+**Current status after PR #359:** profile-gated one-file creation registration
+is delivered in merged source for Linux amd64 on local ext4 with trusted
+Bubblewrap `ro-bind-fd`, subject to live owner, scope, policy, service and
+cleanup checks. This source availability does not itself publish a tagged
+binary release. Other profiles and editing existing files remain unavailable.
+See the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md) for
+the shipping composition and exact-candidate evidence. The proposal below is
+preserved as the design and evidence record that preceded that merge. Unless
+explicitly identified as a remaining limitation, its implementation gaps,
+production-composition status and “next design” references describe the
+pre-merge state and are historical.
+
+## Historical proposal status before PR #359
+
+The bounded disposable-fixture prototype and selected lifecycle
 acceptance are implemented. The Linux service consumes its barrier and
 owner-ordered stage/publication permits through a retained-parent creation
 path. An operation-specific worker protocol stages exact bytes and publishes
@@ -11,17 +25,18 @@ Bubblewrap creation case for a disposable ext4 fixture, exact bytes/mode,
 no-replace incumbent preservation, stage cleanup and worker join. A trusted
 host recorded 12/12 scoped native cases; provenance, test profile and remaining
 gaps are tracked in the [lifecycle acceptance record](issue-321-lifecycle-acceptance.md). This
-does not create a supported mutation profile or model-facing capability.
-Normal production composition remains closed.
+did not at that point create a supported mutation profile or model-facing
+capability. Normal production composition was then closed.
 
-The accepted [startup-directory scope decision](../adr/0009-startup-directory-creation-scope.md)
-now defines the next production design: fixed startup scope, existing nested
-parents and composition-owned protected-resource coverage. It supersedes the
+At the time, the accepted [startup-directory scope decision](../adr/0009-startup-directory-creation-scope.md)
+defined the next production design: fixed startup scope, existing nested
+parents and composition-owned protected-resource coverage. It superseded the
 earlier creation-only requirement to classify all selected-root data. The
-current fixture mechanism and its native evidence do not establish that new
-scope contract; gated implementation and new evidence precede separate
-enablement. Other statements below about unresolved production coverage refer
-to implementation/evidence, not an undecided scope product choice.
+fixture mechanism and native evidence available at that time did not establish
+the new scope contract; gated implementation and new evidence preceded
+separate enablement. PR #359 later delivered that profile-gated composition.
+Other statements below about unresolved production coverage refer to the
+state at the time this proposal was written, not current source availability.
 
 This is a creation-only revision. It accepts external filesystem changes
 during approval and between the last check and publication. Approval is not a

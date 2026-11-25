@@ -1,9 +1,13 @@
 # One-file creation feasibility study (#319)
 
-**Status: research only; creation stays unavailable.** This study does not add
-or register a chat tool, production authorization, mutation-scope UI, or an
-`apply_patch` implementation. The worker is a fixed synthetic experiment, not
-a creation executor.
+**Historical status:** this study records the #319 feasibility work and does
+not itself add a chat tool, production authorization, mutation-scope UI, or an
+`apply_patch` implementation. Its worker is a fixed synthetic experiment, not
+a creation executor. PR #359 later delivered creation in source through a
+separately reviewed mechanism and owner/scope profile; see the current
+[capability availability](capability-availability.md) and [#321 native
+acceptance](issue-321-native-acceptance.md). The negative results below remain
+valid for the exact candidates and contracts they measured.
 
 ## Operation contract
 
@@ -326,9 +330,11 @@ the preflight.
 ## Disposition
 
 **Subsequent closeout:** issue #319 closed on 2026-11-19 as negative research
-after PR #338 merged. The [accepted closeout](issue-319-closeout.md) records the
-current disposition; the study-time next steps below remain historical.
-Creation stays unavailable, and #321's positive-evidence gate is unsatisfied.
+after PR #338 merged. The [accepted closeout](issue-319-closeout.md) records
+that candidate-specific disposition; the study-time next steps below remain
+historical. PR #359 later delivered creation in source under a separately
+reviewed contract and supported profile. That later delivery does not change
+the observations or outcomes recorded here.
 
 **The tested O_TMPFILE candidate is rejected for a same-user host threat
 profile.** On the trusted ext4 host, a same-user actor used host procfs to

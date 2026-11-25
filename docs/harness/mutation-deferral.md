@@ -1,14 +1,14 @@
 # Near-term mutation implementation deferral
 
-**Current creation status — 2026-11-25:** PR #359 proposes creation through the
-shipping CLI composition for Linux amd64, trusted BubbleWrap descriptor
-binding, and a retained local ext4 startup scope. The accepted owner, approval,
-and lifecycle checks remain authoritative. The exact candidate's native
-follow-up measured all 18 cases as `scoped_native_pass`, including the
+**Current status — 2026-11-25:** PR #359 merged as
+`32ae327bd44e4581fbf65933f7f5b02afb9ad67c`, delivering creation registration
+to source builds of the shipping CLI for Linux amd64, trusted BubbleWrap
+`ro-bind-fd`, and a retained local ext4 startup scope. Accepted owner,
+approval, and lifecycle checks remain authoritative. The exact candidate's
+native follow-up measured all 18 cases as `scoped_native_pass`, including the
 mount-boundary case. The [native record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25)
-contains its provenance and limits. Maintainer review remains before merge;
-released builds remain unchanged. Editing continues under its independent
-deferred contract.
+contains its provenance and limits. Merge did not itself publish a new tagged
+binary release. Editing continues under its independent deferred contract.
 
 **Historical evidence update — 2026-11-21:** the disposable creation prototype had
 selected runtime lifecycle tests and a trusted-host native run with 12/12
@@ -30,38 +30,36 @@ stage, neither design nor fixture evidence enabled mutation and production
 scope coverage remained unresolved. This record preserves the prior deferral
 and historical research.
 
-Status: **planning record for the near-term deferral; #315's current-delivery
-section tracks its publication and review state.** Merged master still omits
-creation. The unmerged PR #359 proposes profile-gated registration; its exact
-candidate native suite is complete for the recorded profile. Maintainer review
-remains before merge.
+**Historical planning status:** this record originally documented the
+pre-enablement deferral. Its current creation disposition is now recorded in
+the status at the top of this page; earlier observations below remain scoped
+to their named revisions and decisions.
 
 Editing implementation remains deferred under its existing authority
 contract. Creation has an accepted concurrency/approval boundary, a bounded
-stage-plus-no-replace fixture prototype, and scoped positive native evidence;
-its mechanism and evidence are in [creation mechanism design](creation-mechanism-proposal.md).
-Editing has no positive native mechanism evidence. On merged master, neither
-operation has separate model-facing enablement; this branch proposes creation
-registration and remains unmerged. Discovery remains delivered within its documented support profiles:
+stage-plus-no-replace mechanism, scoped positive native evidence, and the
+separately reviewed profile-gated registration merged in PR #359. Its mechanism
+and evidence are in [creation mechanism design](creation-mechanism-proposal.md).
+Editing has no positive native mechanism evidence and remains unavailable.
+Discovery remains delivered within its documented support profiles:
 nonrecursive listing and recursive/filter listing on their recorded Linux
 profiles, and literal search on its recorded Linux amd64 ext4 profile.
 
-The creation and editing user stories in umbrella issue #315 remain
-undelivered. Issue #315 is partially delivered and remains open; this planning
-record does not convert the original milestone into a discovery-only scope.
+The creation story in umbrella issue #315 is delivered in source; the editing
+story remains undelivered. Issue #315 remains open and is not a discovery-only
+scope.
 The accepted research records are [creation #319](issue-319-closeout.md) and
 [editing #320](issue-320-closeout.md). They reject or leave unresolved only the
 candidates and categories stated in those records. This scheduling choice is
 not a proof that all unprivileged mutation is impossible or that privileged
 enforcement is the only possible future solution.
 
-Issues #267, #321 and #322 remain open as unfinished contract and enablement
-gates. Their earlier native research dependencies are resolved; that does not
-establish the current candidate's native activation path or meet the separate
-maintainer-review gate. On merged master, creation and editing remain
-unavailable in normal composition. The unmerged change proposes creation only
-on its documented profile; editing stays deferred. This record does not
-authorize privileged setup, relaxed permission or host-policy change.
+Issue #321 is closed as delivered in source. Issues #267 and #322 remain open
+for independent mutation/editing criteria. The exact-candidate native record
+establishes creation only for its measured Linux amd64/ext4/Bubblewrap profile;
+other filesystems, launch modes, and platforms remain unavailable. Editing
+stays deferred. This record does not authorize privileged setup, relaxed
+permission or host-policy change.
 
 ## Conditions for resuming mutation work
 
@@ -122,12 +120,13 @@ prerequisites for reconsidering creation or editing.
 ## Current records
 
 - [Umbrella milestone #315](https://github.com/ayeshLK/komposyn/issues/315) is
-  partially delivered and open; its original specification remains in force.
+  partially delivered and open; creation is delivered in source, editing is
+  not, and its original specification remains in force.
 - [Mutation authority contract #267](https://github.com/ayeshLK/komposyn/issues/267)
   remains open.
-- [Creation gate #321](https://github.com/ayeshLK/komposyn/issues/321) and
-  [editing gate #322](https://github.com/ayeshLK/komposyn/issues/322) remain
-  open with positive-evidence and explicit enablement requirements unsatisfied.
+- [Creation gate #321](https://github.com/ayeshLK/komposyn/issues/321) is
+  closed as delivered in source. [Editing gate #322](https://github.com/ayeshLK/komposyn/issues/322)
+  remains open without an accepted positive mechanism.
 - Discovery delivery is recorded in [#317 acceptance](issue-317-completion-tracking.md)
   and [#318 acceptance](issue-318-search-completion.md).
 - The detailed creation and editing evidence remains in the linked #319/#320

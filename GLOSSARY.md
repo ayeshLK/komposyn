@@ -34,10 +34,13 @@ A directory bounding eligible lookups under a directory-scoped read policy.
 Selecting it does not grant permission to read files.
 _Avoid_: Working directory, blanket read permission.
 
-## Proposed experimental chat saving
+## Experimental chat creation and saving
 
-These terms describe the accepted creation boundary and proposed mechanism,
-not an available capability.
+One-file creation is available in merged source only on supported Linux amd64
+hosts using local ext4 and trusted Bubblewrap `ro-bind-fd`, subject to live
+owner, scope, policy, service and cleanup checks. Binary distribution requires
+a tagged release. Editing existing files remains unavailable. These terms
+describe the creation boundary; they do not grant authority by themselves.
 
 **Runtime file object**:
 The conversation-local representation of one intended file, its observed

@@ -29,8 +29,13 @@ their state in memory. The separately reviewed Linux `read_file` capability
 requires trusted backend inspection, an explicit root, retained exact-object
 admission and target-specific once approval. Its [read-focused acceptance](harness/issue-215-completion-tracking.md)
 is scoped to the recorded native profiles. Filesystem mutation, process, web,
-and image tools remain unavailable. These milestones do not establish a
-general harness runtime or plugin API.
+and image tools remain unavailable, except for the separately bounded
+one-file creation capability delivered in source by PR #359. Creation is
+eligible only on supported Linux amd64 hosts using local ext4 and trusted
+Bubblewrap `ro-bind-fd`, and only while live owner, scope, policy, service and
+cleanup checks pass. A merged source capability does not mean a tagged binary
+release is available. Editing existing files remains unavailable. These
+milestones do not establish a general harness runtime or plugin API.
 
 ```mermaid
 flowchart LR

@@ -1,16 +1,15 @@
 # Issue #321 native creation acceptance
 
 This record preserves bounded native runs against their exact source commits.
-Merged master `f79e754b1cba327aaeda78964e9672b4c50f88ce` omits creation from
-normal composition. The unmerged enablement change proposes profile-gated
-schema registration and adds a native assertion to
-`TestNativeServiceNestedCreationUsesStartupScope`. Its exact-candidate native
-suite now records all 18 cases as `measured_pass`, including the creation mount
-boundary refusal. The first run was partial; a later run supplied a disposable
-nested bind mount and completed the aggregate. This evidence is limited to its
-recorded source and host profile; it does not replace review or establish other
-filesystems, launch modes, platforms, or arbitrary descendants. Native tests
-use synthetic files and make no provider requests.
+PR #359 merged as `32ae327bd44e4581fbf65933f7f5b02afb9ad67c`, enabling
+profile-gated creation registration in the experimental CLI source. The exact
+candidate native suite recorded all 18 cases as `measured_pass`, including the
+creation mount-boundary refusal. The first run was partial; a later run
+supplied a disposable nested bind mount and completed the aggregate. This
+evidence applies to its recorded source and host profile only; it does not
+establish other filesystems, launch modes, platforms, or arbitrary descendants.
+Native tests use synthetic files and make no provider requests. Merge did not
+publish a new tagged binary release.
 
 ## Recorded native run
 
@@ -34,17 +33,19 @@ join. Unit checks, native build, native execution, and cleanup completed; no
 work was retained. The per-case creation record SHA-256 is
 `baf7151e28388d5296103784225096ae2432b55595c904365b98440102062645`.
 
-This establishes only the fixed worker and test fixture on that host, ext4
-mount, and measured Bubblewrap mode. It does not establish production owner
-coverage, shipped tool availability, other launch modes or filesystems, other
-platforms, or model-facing creation authorization. Separate explicit
-maintainer review remains required before any production enablement.
+This historical run establishes only the fixed worker and test fixture on that
+host, ext4 mount, and measured Bubblewrap mode. It does not establish production
+owner coverage, the shipping activation path, other launch modes or filesystems,
+other platforms, or model-facing creation authorization at its recorded
+revision. The later exact-candidate activation record below supplies the
+activation evidence for the merged source; neither record implies a released
+binary contains the change.
 
 ## Native actor dispatch follow-up
 
 The later baseline run used merged PR #347 source commit
-`480f37a06b467455281f05c0f8d2ebeb55a63017`. Its retained archive was
-`/tmp/komposyn-native-scratch.ZPKDWe/komposyn-composition-native-results.64hbmz2u.tar.gz`
+`480f37a06b467455281f05c0f8d2ebeb55a63017`. Its retained archive basename is
+`komposyn-composition-native-results.64hbmz2u.tar.gz`
 (archive SHA-256
 `d52b448a1e1e3248055516a849f757561e0bbedf64ae214785c531c313edb037`). The
 manifest SHA-256 was
@@ -80,8 +81,8 @@ not convert the failed baseline into a pass, prove the full native suite, or
 change any production enablement decision.
 
 The candidate runner completed on source commit
-`8f0fde4cd580159e9433fe10c5711d2ae7101886`. Its archive is
-`/tmp/komposyn-composition-native-results.23cx7fjs.tar.gz` (SHA-256
+`8f0fde4cd580159e9433fe10c5711d2ae7101886`. Its archive basename is
+`komposyn-composition-native-results.23cx7fjs.tar.gz` (SHA-256
 `fd1a4e269e9ce98a1eed3675832fae9e635298e1f29f0289a83cabe9e1711b37`), manifest
 SHA-256 `2cdced99f2757edb33571c6607c4d10bd65cf69814e74e994ec91adf94ae5233`,
 and native report SHA-256
@@ -325,10 +326,9 @@ architectures, bind modes or platforms; exhaustive worker/actor schedules;
 interrupted syscalls; production owner coverage; or model-facing enablement.
 The runner, overlay, native worker and enforcement source in this run are the
 same as at `c0af7cda7bbbce3de289367af9e468ea8bea73df`; the PR that recorded it
-changed records only. The current unmerged enablement change modifies
-composition, so this historical archive alone does not establish its activation
-path. The exact-candidate activation result is recorded below; maintainer
-review remains required.
+changed records only. This historical archive alone does not establish the
+activation path added later by PR #359. The exact-candidate activation result
+is recorded below.
 
 ## Host requirements
 
@@ -470,7 +470,7 @@ reported `native_unavailable` with exit 2; this is not a full acceptance pass.
 Environment: Go 1.26.11, Linux `7.0.0-42-generic` amd64, regular UID 1000,
 Python 3.12.3, trusted root-owned Bubblewrap 0.9.0 using `ro-bind-fd`, local
 ext4 startup scope mount ID 33. No work or descendants were retained. The
-archive is `/home/ayesh/projects/samples/komposyn-ext4/native-scratch/komposyn-composition-native-results.cug_cfkt.tar.gz`
+archive basename is `komposyn-composition-native-results.cug_cfkt.tar.gz`
 (SHA-256 `ff79d95066342d961f0a57a903ecaf579208e37c58ba870d42e8e39b7a029144`);
 manifest SHA-256 `7e71e00ad5c25d233c3acbabe66771f7ea1153d201f99c8d9394aa5cee53c99d`;
 report SHA-256 `4a438850959910600595a026e8c54c97e3b2716915f589d0fafbf2d2f199d63e`;
@@ -490,8 +490,7 @@ The operator-provided rerun used the same exact candidate source and test
 overlay, now with the mount-boundary fixture provisioned by
 [`run-mount-boundary-acceptance.sh`](../../scripts/native-acceptance/run-mount-boundary-acceptance.sh).
 
-- Archive:
-  `/home/ayesh/projects/samples/komposyn-ext4/native-scratch/komposyn-composition-native-results.gvemwmwg.tar.gz`
+- Archive basename: `komposyn-composition-native-results.gvemwmwg.tar.gz`
 - Archive SHA-256: `c090193a3143c7dbe9caffa7038d67b1bcb7244d0a2ffe2f9507680f48d9b6d0`
 - Manifest SHA-256: `83a8555084cb7457d856bd2f849cb1e5917f8560124d0a9505233f0c5b7d41fd`
 - Native report SHA-256: `e9c019700bcf4a1ab681cfa87d92bf30c51299c72f6a0af98ddaffb7f3812f58`
