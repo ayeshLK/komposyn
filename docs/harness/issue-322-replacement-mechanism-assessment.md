@@ -103,11 +103,14 @@ and independently checkpointed same-user actors. Record exact observables:
 - in-process invalidation racing publication release: the Service barrier
   serializes it so invalidation observed first aborts publication, while a
   release recorded first proceeds under the accepted residual race;
-- external target removal/replacement after final observation: record the
-  actual entry/object and report the accepted residual race without claiming
-  revision-at-effect locking. The chosen primitive must still meet the
-  publication-time existing-destination requirement; ordinary rename fails
-  this case because it can install into the vacant name;
+- external target removal after final observation: publication must refuse
+  because the destination is absent at effect time. If the worker is joined,
+  non-publication is positively established, and the target is confirmed
+  missing, offer only local review of separate creation or cancel;
+- external target replacement after final observation: record the actual
+  entry/object and report the accepted residual race without claiming
+  revision-at-effect locking. A late replacement can be affected under that
+  accepted race, so preserve/account for its namespace and owner consequences;
 - if the target is confirmed missing and non-publication is positively
   established, offer only local review of separate creation or cancel.
   Review creation uses the existing complete-content once approval and
