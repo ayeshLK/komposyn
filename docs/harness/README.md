@@ -158,6 +158,12 @@ record](../adr/0010-propose-approved-entry-replacement-for-file-editing.md)
 supersedes only ADR-0007's exact-object and strict revision-at-effect
 requirements; it selects no mechanism or supported profile.
 
+The [editing mechanism proposal](editing-replacement-mechanism-proposal.md)
+compares concrete replacement primitives and specifies a candidate protocol,
+metadata/cleanup proof gaps, completion inspection and one bounded internal
+retry. It remains design-only; editing is unavailable and no prototype is
+authorized by that proposal.
+
 The [runtime file object and approved-save decision](runtime-file-object-saves.md)
 records the accepted creation boundary from merged PR #343: coordinate runtime
 objects, request save-time approval and require fresh decisions for detected
