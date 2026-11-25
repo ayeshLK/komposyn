@@ -100,22 +100,28 @@ and independently checkpointed same-user actors. Record exact observables:
 - target bytes, metadata, parent, startup root, owner coverage or policy changed
   and detected by final observation: no publication and fresh approved
   read/proposal/approval;
+- startup-root movement or replacement detected at any point: invalidate
+  pending edits and disable editing for the rest of the run, even if the root
+  is restored. A fresh read/proposal in that run does not restore eligibility;
+  restart is required to establish a new scope;
 - in-process invalidation racing publication release: the Service barrier
   serializes it so invalidation observed first aborts publication, while a
-  release recorded first proceeds under the accepted residual race;
+  release recorded first may publish. Test cancellation, worker drain/join,
+  outcome classification and stale-result suppression separately; do not
+  conflate these with the external filesystem race;
 - external target removal after final observation: publication must refuse
-  because the destination is absent at effect time. If the worker is joined,
+  because the destination is absent at effect time. Offer local review of
+  separate creation or cancel only when the worker is joined,
   non-publication is positively established, and the target is confirmed
-  missing, offer only local review of separate creation or cancel;
+  missing;
+- if the separately approved creation destination reappears before publish,
+  no-replace publication reports a collision and does not overwrite it;
 - external target replacement after final observation: record the actual
   entry/object and report the accepted residual race without claiming
   revision-at-effect locking. A late replacement can be affected under that
   accepted race, so preserve/account for its namespace and owner consequences;
-- if the target is confirmed missing and non-publication is positively
-  established, offer only local review of separate creation or cancel.
-  Review creation uses the existing complete-content once approval and
-  no-replace publication; if the name reappears before creation publishes,
-  report the collision and do not overwrite it;
+- choosing Review creation uses the existing complete-content once approval
+  and no-replace publication; collision behavior is covered above;
 - target replaced with regular file, symlink, directory, hard link, or
   protected owner: exact documented namespace outcome, no unintended
   following, protection checks on all affected entries, preservation of
@@ -133,20 +139,24 @@ and independently checkpointed same-user actors. Record exact observables:
   work and report any unresolved outcome without replay;
 - provider continuation failure: never replay an effect that may have
   completed;
-- any permitted retry requires positively established no-publication,
-  continued authority, fresh target/metadata/scope/owner revalidation, safe
-  stage handling, and at most one internal continuation under the same
-  consumed receipt; it is not a second dispatch;
-- successful replacement: confirm the attempt-owned replacement object's
-  identity at the target and its exact approved bytes, with truthful cleanup
-  and sync status; old open handle remains on old object. Make no durability
-  or rollback claim.
+- lost completion with still-valid authority: authorized local inspection that
+  confirms the attempt-owned replacement object's identity at the target and
+  its exact approved bytes classifies the replacement as confirmed; report
+  cleanup/sync status separately. Otherwise classify the effect as unknown;
+- sync failure after confirmed replacement: report the replacement as
+  completed and the sync failure separately; do not undo or replay it;
+- any permitted retry requires trustworthy execution evidence of
+  non-publication **and** authorized local inspection confirming the approved
+  base and metadata remain unchanged, plus continued authority, fresh
+  scope/owner/policy revalidation and safe stage handling. Permit at most one
+  internal continuation under the same consumed receipt, not a second
+  dispatch.
 
 Until then there is no candidate to prototype. This packet is source-only and
 does not authorize a prototype, native acceptance, or editing enablement.
 
 ## Primary references and revisions
 
-- Linux man-pages [`rename(2)`](https://man7.org/linux/man-pages/man2/rename.2.html), [`listxattr(2)`](https://man7.org/linux/man-pages/man2/listxattr.2.html), [`acl(5)`](https://man7.org/linux/man-pages/man5/acl.5.html), [`xattr(7)`](https://man7.org/linux/man-pages/man7/xattr.7.html), [inode flags](https://man7.org/linux/man-pages/man2/ioctl_iflags.2.html), and [`link(2)`](https://man7.org/linux/man-pages/man2/link.2.html), current pages identified as man-pages 6.19 when checked on 2026-11-25. The merged proposal also cited the archived man-pages 6.11 manual; these live links are not asserted to be that revision.
+- Linux man-pages [`rename(2)`](https://man7.org/linux/man-pages/man2/rename.2.html), [`listxattr(2)`](https://man7.org/linux/man-pages/man2/listxattr.2.html), [`xattr(7)`](https://man7.org/linux/man-pages/man7/xattr.7.html), and [`link(2)`](https://man7.org/linux/man-pages/man2/link.2.html) identify as man-pages 6.19 in the versions checked on 2026-11-25. The linked [`acl(5)`](https://man7.org/linux/man-pages/man5/acl.5.html) identifies the separate Linux ACL project (June 5, 2026); [`ioctl_iflags(2)`](https://man7.org/linux/man-pages/man2/ioctl_iflags.2.html) is labeled unreleased. The merged proposal links live man7.org pages; no archived 6.11 manual is attributed to it here.
 - Linux source commit [`adc218676eef25575469234709c2d87185ca223a`](https://github.com/torvalds/linux/commit/adc218676eef25575469234709c2d87185ca223a) (v6.12 tree paths for VFS rename/unlink, ext4 rename/xattr handling); the ext4 trusted handler was additionally checked at v7.0 commit [`028ef9c96e96197026887c0f092424679298aae8`](https://github.com/torvalds/linux/commit/028ef9c96e96197026887c0f092424679298aae8), as cited in the maintainer decision.
 - [ADR-0010 and merged mechanism proposal](https://github.com/ayeshLK/komposyn/commit/a80a8af297c7c5c978d6cb7a9ec98be1a35401de); [maintainer decision](https://github.com/ayeshLK/komposyn/issues/322#issuecomment-7162364764); [#320 closeout](https://github.com/ayeshLK/komposyn/blob/615e32c02874561acb2694b0ec6e7187b0e8a5ae/docs/harness/issue-320-closeout.md).
