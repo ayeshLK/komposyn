@@ -35,7 +35,10 @@ eligible only on supported Linux amd64 hosts using local ext4 and trusted
 Bubblewrap `ro-bind-fd`, and only while live owner, scope, policy, service and
 cleanup checks pass. A merged source capability does not mean a tagged binary
 release is available. Editing existing files remains unavailable. These
-milestones do not establish a general harness runtime or plugin API.
+milestones do not establish a general harness runtime or plugin API. The
+editing boundary is under separate review in
+[ADR-0010](adr/0010-propose-approved-entry-replacement-for-file-editing.md);
+no editing mechanism or profile has passed acceptance.
 
 ```mermaid
 flowchart LR

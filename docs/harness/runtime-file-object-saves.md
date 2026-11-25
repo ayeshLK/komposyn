@@ -41,6 +41,11 @@ vocabulary may inform its future design, but this creation decision does not sup
 [ADR-0007](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md)
 or meet #322's gate. No operation is enabled by this proposal.
 
+The separate [editing-boundary ADR](../adr/0010-propose-approved-entry-replacement-for-file-editing.md)
+records the selected direction to replace the approved directory entry and
+accept a post-observation external race. It does not alter this creation
+decision. No editing mechanism or capability is established.
+
 ## File object and ownership
 
 - The host owns the object's identity, observed baseline, proposed bytes and
