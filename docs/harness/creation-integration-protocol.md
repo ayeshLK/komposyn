@@ -35,9 +35,9 @@ that revision, normal `cmd/harness` omitted creation. UI/runtime/service tests
 covered scope/navigation, auth/settings lifecycle, exact target/diff/destination,
 denial, once approval, and exact output bytes. Its native evidence predates that
 startup-scope integration. The current unmerged enablement proposal above
-updates the composition status; its activation case measured pass, while the
-incomplete native aggregate and maintainer review remain. Issues #267, #315,
-#321 and #322 remain open.
+updates the composition status. Its exact-candidate activation case and full
+18-case native aggregate measured pass on the recorded profile; maintainer
+review remains before merge. Issues #267, #315, #321 and #322 remain open.
 
 The companion [mechanism proposal](creation-mechanism-proposal.md) records the
 stage file plus `renameat2(RENAME_NOREPLACE)` mechanism. Arbitrary filesystems,
