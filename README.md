@@ -110,7 +110,7 @@ experimental and role-specific, with implementations explicitly bundled in
 the executable. General third-party plugin loading, a universal plugin API,
 and a marketplace are proposed direction, not current features. See the
 [capability availability guide](docs/harness/capability-availability.md) for
-the supported profile and readiness conditions. The proposed [editing
+the supported profile and readiness conditions. The accepted [editing
 boundary](docs/adr/0010-propose-approved-entry-replacement-for-file-editing.md)
 remains separate and does not enable an editing capability.
 

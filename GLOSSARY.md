@@ -52,7 +52,7 @@ _Avoid_: Working directory, blanket read permission.
 One-file creation is available in merged source only on supported Linux amd64
 hosts using local ext4 and trusted Bubblewrap `ro-bind-fd`, subject to live
 owner, scope, policy, service and cleanup checks. Binary distribution requires
-a tagged release. Editing existing files remains unavailable; its proposed
+a tagged release. Editing existing files remains unavailable; its accepted
 design boundary does not establish a mechanism or capability. These terms do
 not grant authority by themselves.
 

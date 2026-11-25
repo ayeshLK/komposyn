@@ -35,8 +35,8 @@ pre-enablement deferral. Its current creation disposition is now recorded in
 the status at the top of this page; earlier observations below remain scoped
 to their named revisions and decisions.
 
-Editing remains unavailable. The maintainer-selected editing boundary is
-recorded for review in [proposed ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md):
+Editing remains unavailable. [ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md)
+records the accepted editing boundary:
 prepared directory-entry replacement, a fresh approved read after detected
 conflicts, and an accepted residual external race after final observation.
 This changes the editing design direction only; implementation remains
@@ -71,18 +71,18 @@ permission or host-policy change.
 For creation, the runtime-file-object boundary is accepted and the
 stage-plus-no-replace candidate has been exercised in a disposable fixture and
 the recorded native profile.
-Editing has no accepted replacement mechanism or supported profile. ADR-0007
-remains current pending acceptance of the proposed ADR-0010; if accepted, its
-specific effect-identity and residual-race changes govern editing design only.
+Editing has no accepted replacement mechanism or supported profile. ADR-0010
+supersedes ADR-0007's specific editing effect-identity and revision-at-effect
+requirements; it does not change ADR-0007's other retained boundaries.
 A general request to make patching safe is not a candidate. For either operation, cover
 these matters for the operation under consideration:
 
 1. **Authority and effect.** For creation, bind the exact retained parent and
    absent leaf. For editing, retain host-owned authority from a prior approved
    read and bind the exact proposed change to the prepared directory entry and
-   reviewed base under the proposed ADR-0010 boundary. Identify the replacement
+   reviewed base under the accepted ADR-0010 boundary. Identify the replacement
    primitive and bounded operation-specific worker; the residual race after
-   final observation remains accepted only for editing if that ADR is accepted.
+   final observation remains accepted only for editing under that ADR.
 2. **Independent actors and protected objects.** Test same-user actors,
    existing writable handles and mappings where relevant, late aliases,
    namespace changes, and protected-owner discovery, rotation and lifecycle.

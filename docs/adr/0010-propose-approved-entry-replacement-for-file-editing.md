@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Use approved directory-entry replacement for bounded file editing
@@ -17,13 +17,13 @@ model-facing capability. Editing remains unavailable.
 
 ## Status and scope
 
-The maintainer accepted this editing boundary for design review. The ADR is
-proposed for repository review and supersedes the applicable editing
-requirements in [ADR-0007](0007-proposed-exact-revision-bound-file-editing-contract.md)
-only when this record is accepted. In particular, it replaces the requirement
-that the effect modify the exact mounted object and enforce the exact read
-revision at the effect point. It does not change historical #320 results or
-the independent creation, rename and delete contracts in #267.
+The maintainer accepted this editing boundary. This ADR supersedes the
+applicable editing requirements in
+[ADR-0007](0007-proposed-exact-revision-bound-file-editing-contract.md): it
+replaces the requirement that the effect modify the exact mounted object and
+enforce the exact read revision at the effect point. It does not change
+historical #320 results or the independent creation, rename and delete
+contracts in #267.
 
 No replacement mechanism, filesystem profile or proof that this boundary can
 be enforced has been accepted. PR #359 creation behavior and its Linux

@@ -109,10 +109,10 @@ be represented as strict live-pathname containment through external races.
 the non-creation requirements of issue #267 remain unchanged.
 
 The startup directory is also the selected editing-scope direction recorded
-in [proposed ADR-0010](0010-propose-approved-entry-replacement-for-file-editing.md).
-That editing record separately changes the conflict/effect contract under
-review; it does not change this creation decision, implement editing, or enable
-an editing tool.
+in [ADR-0010](0010-propose-approved-entry-replacement-for-file-editing.md).
+That editing record separately changes the conflict/effect contract; it does
+not change this creation decision, implement editing, or enable an editing
+tool.
 
 ## Ownership and lifecycle requirements
 

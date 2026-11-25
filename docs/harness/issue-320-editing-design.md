@@ -11,10 +11,10 @@ unavailable, and #322's positive-evidence and explicit enablement gate remains
 unsatisfied. #267 and umbrella #315 remain open.
 
 **Historical contract note:** this investigation records the editing contract
-and candidate results as they stood under ADR-0007. The maintainer-selected
-replacement boundary and accepted external race are recorded for review in
-[proposed ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md).
-If accepted, it supersedes only the exact-mounted-object and strict
+and candidate results as they stood under ADR-0007. The accepted replacement
+boundary and external race are recorded in
+[ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md).
+It supersedes only the exact-mounted-object and strict
 revision-at-effect requirements for editing. The candidate findings below
 remain scoped to the original contract and are not changed retroactively.
 Editing remains unavailable; no replacement primitive or editing profile is
@@ -203,10 +203,10 @@ integration:
 
 The accepted closeout closes #320 only as a scoped negative result. At that
 time it selected no new kernel/filesystem or deployment boundary and did not
-change #267's mounted-object contract. The later proposed ADR-0010 records a
-separate editing boundary for review. A concrete mechanism and supported
-profile still need design and evidence review before a prototype; no executor,
-UI or apply-patch prototype is authorized. Editing remains unavailable.
+change #267's mounted-object contract. ADR-0010 records a later accepted
+editing boundary. A concrete mechanism and supported profile still need design
+and evidence review before a prototype; no executor, UI or apply-patch
+prototype is authorized. Editing remains unavailable.
 
 ## Current tracker state (2026-11-19)
 

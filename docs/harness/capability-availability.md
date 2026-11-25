@@ -15,10 +15,9 @@ amd64/local ext4/trusted Bubblewrap `ro-bind-fd` profile; this does not mean
 every distributed binary contains the change. A release must include the
 merge. Creation does not enable editing or other mutations.
 
-Editing remains unavailable. Its proposed design boundary is recorded in
+Editing remains unavailable. Its accepted design boundary is recorded in
 [ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md);
-that proposal does not establish a mechanism, profile or model-facing
-capability.
+it does not establish a mechanism, profile or model-facing capability.
 
 The parity policy is that KompoSyn capabilities are offered across provider
 and supported subscription or authentication methods unless a provider imposes
