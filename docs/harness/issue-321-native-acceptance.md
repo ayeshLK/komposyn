@@ -158,11 +158,11 @@ The PR #354 baseline and accepted ADR-0009 require new evidence for the fixed
 startup directory, owner-backed composition, nested-parent behavior, and
 startup-root movement. The follow-up adds those cases to the isolated native
 overlay and tightens result accounting; it does not change production worker
-enforcement or register the creation tool. A trusted-host run of the exact
-candidate is recorded below: 17 cases measured pass and the mount-boundary
-case is unavailable because no existing nested mount fixture was supplied.
-The runner correctly classified the aggregate as `native_unavailable` (exit
-2), not a pass.
+enforcement or register the creation tool. The first exact-candidate run was
+partial: 17 cases measured pass and the mount-boundary case was unavailable
+because no nested-mount fixture was supplied. The runner correctly classified
+that run as `native_unavailable` (exit 2); the complete follow-up is recorded
+in the shipping-composition candidate section below.
 
 The added candidate cases are:
 

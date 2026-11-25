@@ -11,11 +11,11 @@ profile-gated runtime composition. `apply_patch` registration is limited to
 Linux amd64, trusted Bubblewrap `ro-bind-fd`, and a retained local ext4 startup
 scope. Live auth/settings coverage, scope identity, owner/policy revisions,
 approval binding, and cleanup remain Service checks at each boundary. The
-exact PR #359 candidate measured the shipping registration and native creation
-case as passing. Its aggregate remains `native_unavailable` because the
-mount-boundary case lacked a pre-existing nested mount; the earlier 18/18
-archive supports that unchanged worker boundary on its recorded profile but is
-not the candidate aggregate. Maintainer review remains required before merge.
+exact PR #359 candidate now has a complete `scoped_native_pass`: all 18 cases
+measured pass, including mount-boundary refusal with a real nested bind mount
+(ext4 scope mount ID 33, nested mount ID 157). The first candidate run remains
+preserved as a partial historical result; the follow-up used the same source,
+runner, and test overlay. Maintainer review remains required before merge.
 Existing released binaries remain unchanged until merge and release.
 
 The implementation status below records the earlier PR #354 integration, before
@@ -48,7 +48,7 @@ and its current activation state are described above.
 
 The Linux sandbox composition currently has one `linuxImplementation` mutex, an `ownerUpdateMu`, a protected-owner `revision`, auth/settings owner states, a `blocked` owner map, and a read coordinator. `Protect` serializes owner changes, advances the revision, blocks the owner, invalidates conversation state and read admissions, registers the new owner identity/routes, and then completes or leaves coverage pending. It is an owner-rotation operation, not a transient-stage operation. Calling it for a stage after consuming the create receipt would invalidate that save's captured state and could make a drain wait on its own operation.
 
-Read admission parses the requested read/list/search operation, checks service and auth/settings state, begins an admission in the coordinator, waits for its receipt, then rechecks service and coverage revision. Preparation rechecks again. Execution and publication have runtime authority claims and worker lifecycle state. The Linux implementation's creation barrier now drains active read workers through `ActiveReadDrainer` while preserving completed captures and existing generations. On merged master PR #354 this remained a fixture-only creation path. The current unmerged change wires `cmd/harness` to the profile-gated creation schema and effect path; its exact-candidate activation case measured pass, while the aggregate native run remains `native_unavailable` because the mount-boundary fixture was absent.
+Read admission parses the requested read/list/search operation, checks service and auth/settings state, begins an admission in the coordinator, waits for its receipt, then rechecks service and coverage revision. Preparation rechecks again. Execution and publication have runtime authority claims and worker lifecycle state. The Linux implementation's creation barrier now drains active read workers through `ActiveReadDrainer` while preserving completed captures and existing generations. On merged master PR #354 this remained a fixture-only creation path. The current unmerged change wires `cmd/harness` to the profile-gated creation schema and effect path. The exact-candidate native follow-up measured all 18 cases as `scoped_native_pass`, including the mount-boundary case. The initial partial run remains historical evidence; see the [native acceptance record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25).
 
 The trusted composition's declared owners are:
 
@@ -84,8 +84,9 @@ as required and Token Logger/provider-source ingestion as trusted
 not-instantiated declarations for the current composition. The unmerged
 enablement change uses the Service's retained-identity checks for schema
 registration; live identity, owner coverage, and cleanup checks remain at each
-operation boundary. The exact shipping activation path still requires native
-acceptance before merge. See the [owner-profile foundation](issue-321-owner-profile.md).
+operation boundary. Native acceptance for the exact shipping activation path
+is complete on the recorded profile; the unmerged proposal still requires
+maintainer review. See the [owner-profile foundation](issue-321-owner-profile.md).
 
 ## Proposed typed creation and approval path
 

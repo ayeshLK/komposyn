@@ -1,15 +1,14 @@
 # Near-term mutation implementation deferral
 
-**Current creation status — 2026-11-24:** an unmerged enablement change now
-wires creation through the shipping CLI composition for Linux amd64, trusted
-Bubblewrap descriptor binding, and a retained local ext4 startup scope. The
-accepted owner, approval, and lifecycle checks remain authoritative. This
-exact candidate exercised registration through the shipping composition seam;
-17 of 18 native cases measured pass and the mount-boundary case was unavailable
-without a pre-existing nested mount. The aggregate remains
-`native_unavailable`; completion of the acceptance gate and maintainer review
-remain before merge. Existing released builds remain unchanged. Editing
-continues under its independent deferred contract.
+**Current creation status — 2026-11-25:** PR #359 proposes creation through the
+shipping CLI composition for Linux amd64, trusted BubbleWrap descriptor
+binding, and a retained local ext4 startup scope. The accepted owner, approval,
+and lifecycle checks remain authoritative. The exact candidate's native
+follow-up measured all 18 cases as `scoped_native_pass`, including the
+mount-boundary case. The [native record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25)
+contains its provenance and limits. Maintainer review remains before merge;
+released builds remain unchanged. Editing continues under its independent
+deferred contract.
 
 **Historical evidence update — 2026-11-21:** the disposable creation prototype had
 selected runtime lifecycle tests and a trusted-host native run with 12/12
@@ -33,10 +32,9 @@ and historical research.
 
 Status: **planning record for the near-term deferral; #315's current-delivery
 section tracks its publication and review state.** Merged master still omits
-creation. The current unmerged change proposes profile-gated registration; the
-exact candidate activation case passed native measurement, while the aggregate
-remains unavailable for the missing mount-boundary fixture. Acceptance and
-maintainer review remain open.
+creation. The unmerged PR #359 proposes profile-gated registration; its exact
+candidate native suite is complete for the recorded profile. Maintainer review
+remains before merge.
 
 Editing implementation remains deferred under its existing authority
 contract. Creation has an accepted concurrency/approval boundary, a bounded

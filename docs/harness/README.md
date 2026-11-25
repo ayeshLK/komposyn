@@ -169,10 +169,12 @@ aggregate `native_unavailable`. A follow-up on exact current-master source
 `c0af7cda7bbbce3de289367af9e468ea8bea73df` measured all 18 cases passing,
 including refusal at a real nested-mount boundary; see the [issue #321 native
 acceptance record](issue-321-native-acceptance.md#nested-mount-boundary-follow-up).
-This source change wires normal chat to register creation only on the measured
-host/startup profile. The exact activation path still needs native acceptance;
-the implementation PR remains unmerged and requires maintainer review before
-any release can expose it. Creation stays unavailable on every other profile.
+PR #359 wires normal chat to register creation only on the measured
+host/startup profile. Its exact activation path now has complete native
+acceptance: all 18 cases passed, including mount-boundary refusal. The complete [exact-candidate native record](issue-321-native-acceptance.md#shipping-composition-candidate-mount-boundary-follow-up-2026-11-25)
+preserves the full provenance and profile limits. The PR remains unmerged and
+requires maintainer review before any release can expose it. Creation stays
+unavailable on every other profile.
 
 The experimental named SQLite VFS read-only probe and its writable/SHM
 limitations are documented in the [named VFS feasibility prototype](sqlite-named-vfs-prototype.md).
