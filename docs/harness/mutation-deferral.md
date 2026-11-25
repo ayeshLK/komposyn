@@ -45,6 +45,12 @@ accepted concurrency/approval boundary, a bounded
 stage-plus-no-replace mechanism, scoped positive native evidence, and the
 separately reviewed profile-gated registration merged in PR #359. Its mechanism
 and evidence are in [creation mechanism design](creation-mechanism-proposal.md).
+
+The [editing replacement mechanism proposal](editing-replacement-mechanism-proposal.md)
+names a staged descriptor-relative candidate for review, including metadata,
+completion/retry and named-stage cleanup gates. No editing prototype or
+mechanism acceptance follows from that proposal.
+
 Editing has no positive native mechanism evidence and remains unavailable.
 Discovery remains delivered within its documented support profiles:
 nonrecursive listing and recursive/filter listing on their recorded Linux

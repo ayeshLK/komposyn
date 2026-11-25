@@ -226,6 +226,10 @@ not claim any is implemented:
 
 ## Ordered follow-up and gates
 
+The [staged replacement mechanism proposal](../harness/editing-replacement-mechanism-proposal.md)
+names a concrete candidate, phase protocol and proof gaps for review. It does
+not accept a primitive, authorize a prototype or change editing availability.
+
 The initial investigation target is Linux amd64/local ext4 with the current
 trusted Bubblewrap host composition. This is a target for study, not an
 accepted editing profile. Other profiles must refuse initially. Do not add or
