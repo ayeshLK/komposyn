@@ -382,8 +382,12 @@ Responses route support these tools. Runtime can select only OAuth models
 returned by that account's catalog; the live cycle below covers one account
 and model. When the trusted Linux read backend is
 available, supported routes may additionally advertise `read_file` as described
-above. No filesystem mutation, process, or network tools are available. OpenAI
-requests set `store: false`; Anthropic requests use Messages. OpenAI API-key
+above. One-file creation is separately available in merged source only on
+Linux amd64/local ext4 with trusted Bubblewrap `ro-bind-fd` and passing live
+owner, scope, policy, service and cleanup checks; tagged binary availability is
+separate. See the [creation lifecycle and evidence record](issue-321-lifecycle-acceptance.md).
+Editing, process, and network tools remain unavailable. OpenAI requests set
+`store: false`; Anthropic requests use Messages. OpenAI API-key
 requests retain the configured output-token bound and encrypted reasoning
 continuation. The ChatGPT plan route follows the current SIWC preview subset:
 it sends the required full input array with `store: false` and `stream: true`,

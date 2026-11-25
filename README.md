@@ -100,11 +100,17 @@ and **Provider destination**; selecting a working directory grants no read acces
 Use only synthetic content for the [optional file trial](docs/harness/first-use.md#4-optionally-disclose-one-synthetic-linux-file).
 Native evidence remains limited to recorded Linux amd64/Bubblewrap profiles.
 
-File mutation, shell execution, web/image tools, MCP, persistent conversations,
-projects, sessions, and persistent tasks are unavailable. Provider and UI
-contracts are experimental and role-specific, with implementations explicitly
-bundled in the executable. General third-party plugin loading, a universal
-plugin API, and a marketplace are proposed direction, not current features.
+One-file creation is conditionally available in merged source for supported
+Linux amd64 hosts using local ext4 and trusted Bubblewrap `ro-bind-fd`, subject
+to live owner, scope, policy, service and cleanup checks. A source merge does
+not itself publish a tagged binary release. Editing existing files, shell
+execution, web/image tools, MCP, persistent conversations, projects, sessions,
+and persistent tasks remain unavailable. Provider and UI contracts are
+experimental and role-specific, with implementations explicitly bundled in
+the executable. General third-party plugin loading, a universal plugin API,
+and a marketplace are proposed direction, not current features. See the
+[capability availability guide](docs/harness/capability-availability.md) for
+the supported profile and readiness conditions.
 
 ## Token Logger
 
