@@ -1,16 +1,16 @@
 # Issue #321 native creation acceptance
 
 This record preserves bounded native runs against their exact source commits.
-Merged master `f79e754b1cba327aaeda78964e9672b4c50f88ce` still omits creation
-from normal composition. The current unmerged enablement change proposes
-profile-gated schema registration and adds a native assertion to
-`TestNativeServiceNestedCreationUsesStartupScope`. The exact-candidate run
-measured that registration and creation case as passing, with 17 of 18 cases
-passing overall and the nested-mount case unavailable because no pre-existing
-nested mount was present. Its aggregate is `native_unavailable`, not a pass;
-details and hashes are recorded below. The historical 18/18 archive does not
-establish the new activation path. Native tests use synthetic files and make
-no provider requests.
+Merged master `f79e754b1cba327aaeda78964e9672b4c50f88ce` omits creation from
+normal composition. The unmerged enablement change proposes profile-gated
+schema registration and adds a native assertion to
+`TestNativeServiceNestedCreationUsesStartupScope`. Its exact-candidate native
+suite now records all 18 cases as `measured_pass`, including the creation mount
+boundary refusal. The first run was partial; a later run supplied a disposable
+nested bind mount and completed the aggregate. This evidence is limited to its
+recorded source and host profile; it does not replace review or establish other
+filesystems, launch modes, platforms, or arbitrary descendants. Native tests
+use synthetic files and make no provider requests.
 
 ## Recorded native run
 
@@ -152,7 +152,7 @@ This evidence remains limited to the fixed worker and tested host/profile; it
 does not enable production creation or establish other filesystems, launch
 modes, platforms, or arbitrary descendants.
 
-## Fixed startup-scope candidate under review
+## Fixed startup-scope candidate and mount-boundary follow-up
 
 The PR #354 baseline and accepted ADR-0009 require new evidence for the fixed
 startup directory, owner-backed composition, nested-parent behavior, and
@@ -478,7 +478,46 @@ source archive SHA-256 `429a047314fa9d484919fa096f526e3da560d8d020eb12d1246b7eee
 test overlay SHA-256 `ceed4a057503007e624c0f8d9009a88a174624543e48e773a9764f5129a6569d`;
 runner SHA-256 `30a84298523eaa3bbcbacba98680d249e9e36594f6d4cd83647df6be5c7fb841`;
 native test binary SHA-256 `c1de427e7373e31be83444d0903c0bb35b188523ec04e5e518c8a2377a1e42e9`.
-Every archive member listed in `SHA256SUMS` verified. A full aggregate still
-requires rerunning with an authorized, pre-existing nested-mount fixture; the
-runner must not create or modify mounts. The later documentation-only follow-up
-on PR #359 leaves the measured source unchanged.
+Every archive member listed in `SHA256SUMS` verified. This first run did not
+include a nested-mount fixture, so its aggregate is partial. The later follow-up
+below supplied a disposable nested bind mount; the runner itself still does not
+create or modify mounts. The helper and documentation commits on PR #359 do not
+change the measured source, runner, or overlay.
+
+### Shipping-composition candidate mount-boundary follow-up (2026-11-25)
+
+The operator-provided rerun used the same exact candidate source and test
+overlay, now with the mount-boundary fixture provisioned by
+[`run-mount-boundary-acceptance.sh`](../../scripts/native-acceptance/run-mount-boundary-acceptance.sh).
+
+- Archive:
+  `/home/ayesh/projects/samples/komposyn-ext4/native-scratch/komposyn-composition-native-results.gvemwmwg.tar.gz`
+- Archive SHA-256: `c090193a3143c7dbe9caffa7038d67b1bcb7244d0a2ffe2f9507680f48d9b6d0`
+- Manifest SHA-256: `83a8555084cb7457d856bd2f849cb1e5917f8560124d0a9505233f0c5b7d41fd`
+- Native report SHA-256: `e9c019700bcf4a1ab681cfa87d92bf30c51299c72f6a0af98ddaffb7f3812f58`
+- Source commit and source archive hash are unchanged from the first run:
+  `2a576e5b38eb6e71caca1f56084b014212c8f16a` and
+  `429a047314fa9d484919fa096f526e3da560d8d020eb12d1246b7eee9f15628c`.
+- Runner SHA-256:
+  `30a84298523eaa3bbcbacba98680d249e9e36594f6d4cd83647df6be5c7fb841`.
+- Overlay SHA-256:
+  `ceed4a057503007e624c0f8d9009a88a174624543e48e773a9764f5129a6569d`.
+- Native test binary SHA-256:
+  `af4f323a2fa554cabd80d88f51ac429c450f654e8b206199f601954618a36376`.
+- Environment: Go 1.26.11, Linux `7.0.0-42-generic` amd64, regular UID 1000,
+  Python 3.12.3, trusted root-owned Bubblewrap 0.9.0 using `ro-bind-fd`, and
+  ext4 startup scope mount ID 33.
+- Outcome: all 18 expected native records measured pass, including
+  `TestNativeServiceMountBoundaryRefusal`; unit, build, and native stages
+  exited 0. Every record confirmed cleanup, all captured processes were reaped,
+  and no work was retained. Aggregate: `scoped_native_pass` (exit 0).
+- The mount-boundary record observed scope mount ID 33 and nested mount ID 157,
+  confirmed ext4, and refused the nested target without worker launch or
+  creation. This establishes only the recorded filesystem and enforcement
+  profile; it does not broaden the production support claim.
+- The archive sidecar and all internal `SHA256SUMS` entries were verified. The
+  archive remains at the operator-provided location and is not committed.
+
+The prior unavailable case is preserved as historical provenance; this
+follow-up supersedes it for the exact candidate aggregate. No production source,
+acceptance overlay, or runner behavior changed between the two runs.
