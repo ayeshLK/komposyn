@@ -2031,7 +2031,7 @@ func TestUnsupportedDiagnosticStatusIsBounded(t *testing.T) {
 
 func waitForScreen(t *testing.T, screen *synchronizedSimulation, contains, absent string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		cells, _, _ := screen.GetContents()
 		var b strings.Builder

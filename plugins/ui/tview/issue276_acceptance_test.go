@@ -89,6 +89,7 @@ func TestIssue276LaunchRelativeReadJourneyThroughTerminalRuntimeAndProvider(t *t
 	for _, r := range "Read README.md and explain it" {
 		press(tcell.KeyRune, r)
 	}
+	waitForScreen(t, screen, "Read README.md and explain it", "")
 	press(tcell.KeyEnter, 0)
 	target := filepath.Join(root, "README.md")
 	waitForScreen(t, screen, target, "")
