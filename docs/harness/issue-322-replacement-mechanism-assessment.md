@@ -97,7 +97,7 @@ If a candidate passes that design review, prototype verification should use
 the existing Service/runtime/UI seams and fixed worker with disposable files
 and independently checkpointed same-user actors. Record exact observables:
 
-- target bytes, metadata, parent, startup root, owner coverage or policy changed
+- target bytes, metadata, parent, owner coverage or policy changed
   and detected by final observation: no publication and fresh approved
   read/proposal/approval;
 - startup-root movement or replacement detected at any point: invalidate
@@ -133,12 +133,13 @@ and independently checkpointed same-user actors. Record exact observables:
   entry remains untouched; leftover is reported locally, and affected edit
   admission remains blocked;
 - worker killed, response lost, sync error or cancellation around release:
-  joined lifecycle and exact `not_executed`/failure/unknown classification;
-  uncertain effect gets no creation offer or replay;
+  join the worker, then classify the effect as confirmed replacement,
+  `not_executed`, partial, failed or unknown from trustworthy execution
+  evidence and any permitted authorized inspection. Report cleanup and sync
+  outcomes separately; uncertain effect gets no creation offer or replay;
 - revocation, reset or loss of authorization: end inspection and retry; drain
   work and report any unresolved outcome without replay;
-- provider continuation failure: never replay an effect that may have
-  completed;
+- provider continuation failure: never trigger effect replay;
 - lost completion with still-valid authority: authorized local inspection that
   confirms the attempt-owned replacement object's identity at the target and
   its exact approved bytes classifies the replacement as confirmed; report
