@@ -55,7 +55,23 @@ scripts/native-acceptance/run-native-acceptance.sh \
 If an already-existing private directory beneath that scratch directory
 contains a nested mount which you are authorized to inspect without changing,
 add `--mount-scope /absolute/path/to/that/directory`. The optional mount case
-then tests the real boundary. Do not create or alter mounts for this study.
+then tests the real boundary. The runner itself never creates or alters mounts.
+
+If you have authorization to provision a disposable nested bind mount, the
+companion helper performs the setup, runner invocation, and exact unmount in
+one command:
+
+```sh
+scripts/native-acceptance/run-mount-boundary-acceptance.sh \
+  --repo "$PWD" \
+  --revision "$(git rev-parse HEAD)" \
+  --scratch-dir /path/to/writable/ext4/scratch
+```
+
+It creates private fixture directories beneath scratch, prompts before
+mounting, uses `sudo` only for the bind mount and its exact unmount, and runs
+the runner as the current user. The results archive stays in scratch. If
+unmount fails, the helper preserves the fixture and prints its path.
 
 The command reads only the selected committed revision into its own temporary
 source tree. It does not modify or clean the checkout. `--revision` is
