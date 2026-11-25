@@ -23,6 +23,12 @@ reviewed implementation mechanism. ADR-0007's editing contract remains in
 force. Accepting this boundary alone did not enable a tool; separate mechanism,
 evidence, owner/scope, and enablement reviews followed.
 
+The separate [ADR-0010](0010-propose-approved-entry-replacement-for-file-editing.md)
+records an accepted editing design boundary. It does not change this
+creation-only decision or enable editing. It supersedes the relevant ADR-0007
+clauses for editing; no concrete editing mechanism or profile has passed
+acceptance.
+
 ## Post-merge implementation status — 2026-11-25
 
 PR #359 merged the profile-gated creation composition at

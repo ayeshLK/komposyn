@@ -46,6 +46,9 @@ ext4 with trusted Bubblewrap `ro-bind-fd`, subject to live owner/scope/policy
 checks and once approval. Distributed binaries include it only when built from
 a release containing the merge. Editing, other filesystem mutations, process,
 web, and image tools remain unavailable.
+The accepted editing boundary in
+[ADR-0010](adr/0010-propose-approved-entry-replacement-for-file-editing.md)
+does not establish an editing mechanism or change current availability.
 This milestone does not add projects, sessions, persistent tasks, or
 persistent conversations. The sidecar is a token-logger
 integration contract, not a general KompoSyn plugin protocol. The project does

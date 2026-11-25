@@ -9,6 +9,13 @@ candidates examined under #267's existing mounted-object contract. It does not
 claim that all unprivileged editing is impossible, enable mutation, close #267
 or #315, or satisfy #322's positive-evidence gate.
 
+The results below remain historical findings under the contract then recorded
+in ADR-0007. [ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md)
+records the later accepted editing design boundary; it does not reinterpret
+the scoped negative result, supply positive mechanism evidence or enable
+editing. It supersedes only the editing requirements concerning same-mounted-
+object mutation and strict revision-at-effect.
+
 ## Accepted disposition
 
 Issue #320 permits either a reviewed candidate or a concrete infeasibility
@@ -180,17 +187,15 @@ inherited handles, and identify and measure its own controls.
 | Candidate | Evidence class | Assessment under the retained contract |
 | --- | --- | --- |
 | In-place write through a retained FD, optionally guarded by `F_SETLEASE` | The lease rows above are direct host-kernel observations from fixed synthetic files and same-user actors, outside Bubblewrap. No edit operation was run. | **Reject this candidate on current evidence.** Leases can refuse acquisition for the tested pre-existing FD/mapping states, but do not provide a prior-read revision transaction; late link creation succeeded while the lease was held. A digest check followed by a write still leaves an unclosed concurrent-writer boundary. Break, forced removal, unknown outcomes and approval-chain synchronization are unresolved. |
-| Write a replacement inode and rename it over the approved pathname | No editing-specific native run. The rejection follows Linux `rename(2)` and hard-link object semantics: rename changes the directory entry; other hard links and open descriptors to the old inode remain attached to that object. | **Reject under #267's mounted-object contract.** The pathname would name a different inode after replacement, while the approved object remains unchanged through its other name/descriptor. A directory-entry-at-effect contract would be a material, separate maintainer decision; this task does not make it. See [`rename(2)`](https://man7.org/linux/man-pages/man2/rename.2.html) and [`link(2)`](https://man7.org/linux/man-pages/man2/link.2.html). This is a documented-semantics rejection, not an observed race result. |
-| Kernel/filesystem-mediated conditional edit | No concrete API or implementation was selected; no experiment tested this category. | **Unresolved, not experimentally disproved.** A future proposal must name a concrete effect primitive and trust/deployment boundary, then demonstrate exact mounted-object and revision binding, alias refusal, protected-owner/revocation behavior, truthful outcomes and trusted approval release. No privileged component, BPF/LSM load, host identity or host-policy change is accepted or authorized here. Do not assume privileged enforcement is the only possible future solution. |
+| Write a replacement inode and rename it over the approved pathname | No editing-specific native run. The rejection follows Linux `rename(2)` and hard-link object semantics: rename changes the directory entry; other hard links and open descriptors to the old inode remain attached to that object. | **Reject under #267's mounted-object contract as it stood at closeout.** The pathname would name a different inode after replacement, while the approved object remains unchanged through its other name/descriptor. A directory-entry-at-effect contract was outside #320's scope; the later [ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md) records that separate design boundary. See [`rename(2)`](https://man7.org/linux/man-pages/man2/rename.2.html) and [`link(2)`](https://man7.org/linux/man-pages/man2/link.2.html). This is a documented-semantics rejection, not an observed race result. |
+| Kernel/filesystem-mediated conditional edit | No concrete API or implementation was selected; no experiment tested this category. | **Unresolved, not experimentally disproved.** Under the contract at #320 closeout, a future proposal needed a concrete effect primitive and trust/deployment boundary, then evidence for exact mounted-object and revision binding, alias refusal, protected-owner/revocation behavior, truthful outcomes and trusted approval release. ADR-0010 later changes only the editing authority boundary; it accepts no privileged component, BPF/LSM load, host identity or host-policy change. Do not assume privileged enforcement is the only possible future solution. |
 
 Other mechanisms were not exhaustively inventoried or disproved. This closeout
-rejects only the candidate paths assessed above and records why no currently
-reviewed path meets the contract. Future alternatives are decisions for
-separate review, not selected designs or permission to prototype: investigate
-a concrete unprivileged effect primitive; assess a specific kernel/filesystem
-or deployment boundary; or explicitly revisit the authority contract. Any
-proposal that changes mounted-object semantics must return for an independent
-decision before implementation.
+rejects only the candidate paths assessed above and records why no path then
+reviewed met the contract. At closeout, alternatives required a separate
+authority decision before implementation. ADR-0010 records the later selected
+editing boundary; a concrete replacement mechanism, profile and prototype
+still require their own design and evidence gates.
 
 ## #320 acceptance-criterion reconciliation
 
@@ -210,6 +215,11 @@ decision before implementation.
 “Negative research” here is the disposition of specified candidates, not a
 claim that every positive acceptance scenario passed. Unexecuted cases remain
 unmeasured and must not be checked off as successful enforcement.
+
+The criterion table above records applicability and evidence at #320 closeout.
+ADR-0010 supersedes only the editing contract's exact-object and strict
+revision-at-effect clauses; it supplies no positive mechanism evidence and
+does not revise the historical dispositions.
 
 ## Subsequent tracker disposition
 

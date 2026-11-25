@@ -108,6 +108,12 @@ be represented as strict live-pathname containment through external races.
 [ADR-0007](0007-proposed-exact-revision-bound-file-editing-contract.md) and
 the non-creation requirements of issue #267 remain unchanged.
 
+The startup directory is also the selected editing-scope direction recorded
+in [ADR-0010](0010-propose-approved-entry-replacement-for-file-editing.md).
+That editing record separately changes the conflict/effect contract; it does
+not change this creation decision, implement editing, or enable an editing
+tool.
+
 ## Ownership and lifecycle requirements
 
 | Component | Responsibility |

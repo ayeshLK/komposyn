@@ -145,13 +145,18 @@ The source-level `F_SETLEASE(F_WRLCK)` candidate observations and their limits
 are recorded in the [existing-file edit feasibility study](file-lease-revision-binding-study.md).
 The scoped negative research disposition for existing-file editing was
 accepted when #320 closed on 2026-11-19 after PR #340. See the [#320 closeout
-record](issue-320-closeout.md). Editing remains deferred under its existing
-authority contract. Creation has an accepted boundary and reviewed bounded
+record](issue-320-closeout.md). Editing remains deferred with no accepted
+replacement mechanism. Its accepted design boundary is recorded in
+[ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md).
+Creation has an accepted boundary and reviewed bounded
 stage/no-replace mechanism, and PR #359 merged the profile-gated shipping
 composition. See the [mutation deferral and resumption conditions](mutation-deferral.md).
 Discovery remains delivered in its supported profiles. Editing remains
 unavailable: #322 has no accepted positive mechanism, while #267 and #315
-remain open for their independent criteria.
+remain open for their independent criteria. The accepted [editing boundary
+record](../adr/0010-propose-approved-entry-replacement-for-file-editing.md)
+supersedes only ADR-0007's exact-object and strict revision-at-effect
+requirements; it selects no mechanism or supported profile.
 
 The [runtime file object and approved-save decision](runtime-file-object-saves.md)
 records the accepted creation boundary from merged PR #343: coordinate runtime
@@ -659,9 +664,11 @@ does not provide revision-bound edit authority. Issue #319 is closed as
 negative research; #320 is closed as scoped negative editing research. The
 creation conclusions apply to those candidates at their measured revisions;
 PR #359 later delivered creation in source for its documented profile. Editing
-remains unavailable under #322 and ADR-0007. The decision records are
-[accepted ADR-0006](../adr/0006-proposed-negative-closeout-for-tested-file-creation-candidates.md)
-and [accepted ADR-0007 contract](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md).
+remains unavailable under #322. The [editing-boundary ADR](../adr/0010-propose-approved-entry-replacement-for-file-editing.md)
+supersedes ADR-0007's exact-object and strict revision-at-effect requirements;
+it selects no mechanism or enablement. The decision records are [accepted
+ADR-0006](../adr/0006-proposed-negative-closeout-for-tested-file-creation-candidates.md)
+and [ADR-0007](../adr/0007-proposed-exact-revision-bound-file-editing-contract.md).
 
 The [brokered read feasibility harness](read-broker-feasibility.md) provides an
 experimental host-owned protected-object registry and fixed Bubblewrap worker.

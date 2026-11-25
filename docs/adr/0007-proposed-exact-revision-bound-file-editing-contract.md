@@ -12,6 +12,13 @@ is not authority. The examined unprivileged candidates do not establish atomic
 revision-bound effects, so no mechanism, editing profile, prototype, privileged
 setup or model-facing capability is accepted. Editing remains unavailable.
 
+The accepted [ADR-0010](0010-propose-approved-entry-replacement-for-file-editing.md)
+supersedes only this ADR's requirement to modify the exact mounted object and
+enforce the approved content revision at the effect point. The prior
+approved-read authority, exact diff approval, protected-owner, scope,
+lifecycle and independent evidence requirements remain. ADR-0010 selects no
+concrete replacement mechanism and enables no capability.
+
 Issue #320 closed on 2026-11-19 after PR #340 merged; its
 [native dependency from #322](https://github.com/ayeshLK/komposyn/issues/322)
 is resolved, but #322's positive-evidence and explicit enablement gate remains

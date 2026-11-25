@@ -35,8 +35,13 @@ pre-enablement deferral. Its current creation disposition is now recorded in
 the status at the top of this page; earlier observations below remain scoped
 to their named revisions and decisions.
 
-Editing implementation remains deferred under its existing authority
-contract. Creation has an accepted concurrency/approval boundary, a bounded
+Editing remains unavailable. [ADR-0010](../adr/0010-propose-approved-entry-replacement-for-file-editing.md)
+records the accepted editing boundary:
+prepared directory-entry replacement, a fresh approved read after detected
+conflicts, and an accepted residual external race after final observation.
+This changes the editing design direction only; implementation remains
+deferred and no mechanism/profile has positive evidence. Creation has an
+accepted concurrency/approval boundary, a bounded
 stage-plus-no-replace mechanism, scoped positive native evidence, and the
 separately reviewed profile-gated registration merged in PR #359. Its mechanism
 and evidence are in [creation mechanism design](creation-mechanism-proposal.md).
@@ -66,15 +71,18 @@ permission or host-policy change.
 For creation, the runtime-file-object boundary is accepted and the
 stage-plus-no-replace candidate has been exercised in a disposable fixture and
 the recorded native profile.
-Editing has no
-accepted mechanism or contract change and remains gated by ADR-0007. A general
-request to make patching safe is not a candidate. For either operation, cover
+Editing has no accepted replacement mechanism or supported profile. ADR-0010
+supersedes ADR-0007's specific editing effect-identity and revision-at-effect
+requirements; it does not change ADR-0007's other retained boundaries.
+A general request to make patching safe is not a candidate. For either operation, cover
 these matters for the operation under consideration:
 
 1. **Authority and effect.** For creation, bind the exact retained parent and
-   absent leaf. For editing, bind the exact mounted object and content revision
-   from a prior approved read. Identify the effect primitive and the bounded,
-   operation-specific worker that applies it.
+   absent leaf. For editing, retain host-owned authority from a prior approved
+   read and bind the exact proposed change to the prepared directory entry and
+   reviewed base under the accepted ADR-0010 boundary. Identify the replacement
+   primitive and bounded operation-specific worker; the residual race after
+   final observation remains accepted only for editing under that ADR.
 2. **Independent actors and protected objects.** Test same-user actors,
    existing writable handles and mappings where relevant, late aliases,
    namespace changes, and protected-owner discovery, rotation and lifecycle.

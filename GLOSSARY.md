@@ -19,6 +19,19 @@ The user's permission for one read of an identified file for the displayed
 provider destination. It does not authorize another file or a second read.
 _Avoid_: Folder access, blanket read permission.
 
+**Edit approval**:
+The user's once authorization for one exact proposed change to an existing
+read target, with the complete diff and provider destination displayed. It does
+not grant blanket write permission or prevent later external changes.
+_Avoid_: Write grant, permanent edit permission.
+
+**Edit conflict**:
+A detected change to an edit proposal's approved-read base or target metadata.
+It requires a fresh approved read, new proposal and new edit approval; it does
+not authorize automatic rebasing.
+_Avoid_: Merge opportunity, force overwrite.
+_Avoid_: Write grant, permanent edit permission.
+
 **Provider destination**:
 The provider, model and authentication profile to which an approved read result
 may be disclosed.
@@ -34,13 +47,14 @@ A directory bounding eligible lookups under a directory-scoped read policy.
 Selecting it does not grant permission to read files.
 _Avoid_: Working directory, blanket read permission.
 
-## Experimental chat creation and saving
+## Experimental chat file changes
 
 One-file creation is available in merged source only on supported Linux amd64
 hosts using local ext4 and trusted Bubblewrap `ro-bind-fd`, subject to live
 owner, scope, policy, service and cleanup checks. Binary distribution requires
-a tagged release. Editing existing files remains unavailable. These terms
-describe the creation boundary; they do not grant authority by themselves.
+a tagged release. Editing existing files remains unavailable; its accepted
+design boundary does not establish a mechanism or capability. These terms do
+not grant authority by themselves.
 
 **Runtime file object**:
 The conversation-local representation of one intended file, its observed
