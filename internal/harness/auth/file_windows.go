@@ -268,6 +268,16 @@ func writeAtomicProtected(ctx context.Context, path string, doc any, beforeWrite
 	if err := windows.MoveFileEx(src, dst, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
 		return pathFreeOperationError("replace credential file", err)
 	}
+	// Reapply protection after replacement. Windows may retain the destination's
+	// ACL rather than the temporary file's descriptor when replacing an existing
+	// file, so the protected-DACL invariant must be established on the published
+	// path before another store operation can read it.
+	if err := setOwnerOnlyACL(path, false); err != nil {
+		return pathFreeOperationError("protect replaced credential file", err)
+	}
+	if err := verifyOwnerOnlyACL(path); err != nil {
+		return pathFreeOperationError("verify replaced credential file permissions", err)
+	}
 	return nil
 }
 
