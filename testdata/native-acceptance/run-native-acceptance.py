@@ -20,6 +20,7 @@ import time
 
 EXPECTED = ['TestNativeActorModeDispatch', 'TestNativeShippedGenericReadGate', 'TestNativeServicePositiveRead',
             'TestNativeServiceProtectedRoutesAndAliases', 'TestNativeServiceRotationJoinsHeldWorker',
+            'TestNativeServiceMetadataFIEMAP',
             'TestNativeServicePostCaptureRevocation', 'TestNativeServiceAuthRotationJoinsHeldWorker',
             'TestNativeServiceBoundedCreation', 'TestNativeServiceCreationUsesRetainedParentAfterIndependentMove',
             'TestNativeServiceNestedCreationUsesStartupScope', 'TestNativeServiceStartupRootMovementIsTerminal',
@@ -84,12 +85,12 @@ def main():
     records = out/'native-records'; records.mkdir()
     source = work/'source'; source.mkdir()
     fixture_tmp = work/'fixtures'; fixture_tmp.mkdir()
-    manifest = {'schema_version':1, 'harness_revision':3, 'source_commit':revision, 'test_overlay':True,
+    manifest = {'schema_version':1, 'harness_revision':4, 'source_commit':revision, 'test_overlay':True,
         'runner_sha256':digest(Path(__file__)), 'overlay_sha256':digest(overlay),
         'expected_cases':EXPECTED,
         'python_version':sys.version.split()[0],
         'run_time_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'scope':'PR #243 service fixtures and bounded #321 creation worker; no production creation enablement/provider network',
+        'scope':'PR #243 service fixtures bounded #321 creation worker and #322 metadata-only probe; no production creation enablement/provider network',
         'scratch_directory_configured':True,
         'mount_scope_supplied':mount_scope is not None,
         'stages':{}, 'status':'incomplete', 'work_retained':True}
@@ -146,7 +147,7 @@ def main():
             print(name+': '+('completed' if ok else 'failed/incomplete'),flush=True)
             return ok
         # Unit/coordinator checks remain a separately labelled evidence stage.
-        unit_ok=stage('unit-checks',['go','test','-tags=komposyn_stage6_study','-json','-count=1','-timeout=90s','-run','^Test(HostComposition|FailedOwner|PreparationRefusal|CancellationAfterPreparation|UnconfirmedPreparation|ChatCloseContext|StartupScopeMovement|CreationResolvesNested|StartupRootMoveAtPublication|ClassifyFromRetainedDirectory)','./internal/harness/sandbox','./internal/harness/readbrokerstudy','./internal/harness/runtime'],180)
+        unit_ok=stage('unit-checks',['go','test','-tags=komposyn_stage6_study','-json','-count=1','-timeout=90s','-run','^Test(MetadataFIEMAPProbe|HostComposition|FailedOwner|PreparationRefusal|CancellationAfterPreparation|UnconfirmedPreparation|ChatCloseContext|StartupScopeMovement|CreationResolvesNested|StartupRootMoveAtPublication|ClassifyFromRetainedDirectory)','./internal/harness/sandbox','./internal/harness/readbrokerstudy','./internal/harness/runtime'],180)
         binary=work/'native-service-tests'
         build_ok=stage('build-native',['go','test','-tags=komposyn_stage6_study','-c','-buildvcs=false','-o',str(binary),'./internal/harness/sandbox'],300)
         if build_ok:

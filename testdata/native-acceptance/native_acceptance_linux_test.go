@@ -20,18 +20,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
@@ -65,6 +68,8 @@ func init() {
 }
 
 type nativeRecord struct {
+	MetadataChecks []nativeMetadataObservation `json:"metadata_checks,omitempty"`
+
 	FirstUpdateCleanupPending               bool                  `json:"first_update_cleanup_pending"`
 	FirstRefusalPreservedDestination        bool                  `json:"first_refusal_preserved_destination"`
 	FreshRetrySucceeded                     bool                  `json:"fresh_retry_succeeded"`
@@ -209,6 +214,11 @@ type nativeFixture struct {
 
 func newNativeFixture(t *testing.T, r *nativeRecord) *nativeFixture {
 	t.Helper()
+	return newNativeFixtureWithBroker(t, r, nil)
+}
+
+func newNativeFixtureWithBroker(t *testing.T, r *nativeRecord, wrap func(rb.ReadBroker) rb.ReadBroker) *nativeFixture {
+	t.Helper()
 	backend := os.Getenv("KOMPOSYN_NATIVE_BWRAP")
 	if backend == "" {
 		backend = "/usr/bin/bwrap"
@@ -253,7 +263,11 @@ func newNativeFixture(t *testing.T, r *nativeRecord) *nativeFixture {
 	// coordinator. Both use the service's real registry and composition inventory.
 	// The original idle coordinator owns no unique OS resources.
 	grants := rb.NewOnceGrantFixture()
-	session, err := rb.NewHostCoordinator(registry, rb.NewBroker(registry), tracked, grants, impl.inventory)
+	broker := rb.NewBroker(registry)
+	if wrap != nil {
+		broker = wrap(broker)
+	}
+	session, err := rb.NewHostCoordinator(registry, broker, tracked, grants, impl.inventory)
 	if err != nil {
 		impl.Close(context.Background())
 		t.Fatal("fixture coordinator creation failed")
@@ -1728,5 +1742,310 @@ func nativeErrorKind(err error) string {
 		return "inventory_incomplete"
 	default:
 		return "unexpected_error"
+	}
+}
+
+const (
+	nativeMetadataAttribute = "user.komposyn_probe"
+	// _IOWR('f', 11, struct fiemap) and FIEMAP_FLAG_XATTR on Linux amd64.
+	nativeFIEMAPRequest = 0xc020660b
+	nativeFIEMAPXattr   = 2
+)
+
+type nativeFIEMAPHeader struct {
+	Start, Length uint64
+	Flags, Mapped uint32
+	Capacity      uint32
+	Reserved      uint32
+}
+
+func nativeXattrExtentCount(file *os.File) (uint32, error) {
+	request := nativeFIEMAPHeader{Length: ^uint64(0), Flags: nativeFIEMAPXattr}
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, file.Fd(), nativeFIEMAPRequest, uintptr(unsafe.Pointer(&request)))
+	stdruntime.KeepAlive(file)
+	if errno != 0 {
+		return 0, errno
+	}
+	if request.Start != 0 || request.Length != ^uint64(0) || request.Flags != 0 || request.Capacity != 0 || request.Reserved != 0 {
+		return 0, errors.New("unexpected count-only FIEMAP response")
+	}
+	return request.Mapped, nil
+}
+
+type nativeMetadataObservation struct {
+	Case    string  `json:"case"`
+	Phase   string  `json:"phase"`
+	Count   *uint32 `json:"fiemap_count,omitempty"`
+	Outcome string  `json:"outcome"`
+}
+
+type nativeMetadataBroker struct {
+	rb.ReadBroker
+	check func(string, rb.PreparedRead) error
+}
+
+func (b *nativeMetadataBroker) PrepareRead(root, target string, generation rb.GenerationSet) (rb.PreparedRead, error) {
+	prepared, err := b.ReadBroker.PrepareRead(root, target, generation)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.check("prepare", prepared); err != nil {
+		return nil, errors.Join(err, prepared.Close())
+	}
+	return prepared, nil
+}
+
+func (b *nativeMetadataBroker) Revalidate(prepared rb.PreparedRead) error {
+	if err := b.ReadBroker.Revalidate(prepared); err != nil {
+		return err
+	}
+	return b.check("revalidate", prepared)
+}
+
+func nativeMetadataCount(impl *linuxImplementation, prepared rb.PreparedRead, mountID uint64, count func(*os.File) (uint32, error)) (uint32, error) {
+	file, err := prepared.DuplicateForWorker()
+	if err != nil {
+		return 0, err
+	}
+	mapped, err := nativeMetadataCountOnFD(impl, file, prepared.Identity(), mountID, count)
+	return mapped, errors.Join(err, file.Close())
+}
+
+func nativeMetadataCountOnFD(impl *linuxImplementation, file *os.File, identity rb.FileIdentity, mountID uint64, count func(*os.File) (uint32, error)) (uint32, error) {
+	fd := int(file.Fd())
+	var info unix.Stat_t
+	if err := unix.Fstat(fd, &info); err != nil {
+		return 0, err
+	}
+	if info.Mode&unix.S_IFMT != unix.S_IFREG || identityFromUnixStat(&info) != identity {
+		return 0, rb.ErrStaleReceipt
+	}
+	actualMount, err := impl.creationStartupMountID(fd)
+	if err != nil {
+		return 0, err
+	}
+	if actualMount != mountID {
+		return 0, rb.ErrStaleReceipt
+	}
+	return count(file)
+}
+
+func TestNativeServiceMetadataFIEMAP(t *testing.T) {
+	r := nativeReport(t)
+	r.Limitations = []string{
+		"Test-only host preflight on the Service broker's retained descriptor; no editing, write release or tool registration.",
+		"The allowed control runs the existing read worker on synthetic bytes. Refused cases release no file descriptor.",
+		"The denied ioctl is injected. The late attribute is set at a deterministic in-process checkpoint.",
+		"Hidden attributes, EA-inode storage and security labels are outside this integration case.",
+	}
+	if stdruntime.GOARCH != "amd64" {
+		r.Status, r.UnavailableReason = "unavailable", "count-only fixture requires Linux amd64"
+		r.CleanupConfirmed = true
+		t.Skip(r.UnavailableReason)
+	}
+	var active string
+	var mountID uint64
+	var impl *linuxImplementation
+	f := newNativeFixtureWithBroker(t, r, func(delegate rb.ReadBroker) rb.ReadBroker {
+		return &nativeMetadataBroker{ReadBroker: delegate, check: func(phase string, prepared rb.PreparedRead) error {
+			count := nativeXattrExtentCount
+			if active == "ioctl_denied" {
+				count = func(*os.File) (uint32, error) { return 0, unix.EACCES }
+			}
+			expectedMountID := mountID
+			if active == "wrong_mount" {
+				expectedMountID = 0 // Inject a mismatched scope against the real descriptor mount.
+			}
+			mapped, err := nativeMetadataCount(impl, prepared, expectedMountID, count)
+			observation := nativeMetadataObservation{Case: active, Phase: phase}
+			switch {
+			case err != nil:
+				observation.Outcome = "unverifiable"
+			case mapped > 0:
+				observation.Outcome, observation.Count = "xattrs_present", &mapped
+				err = rb.ErrUnavailable
+			default:
+				observation.Outcome, observation.Count = "zero_count", &mapped
+			}
+			r.MetadataChecks = append(r.MetadataChecks, observation)
+			return err
+		}}
+	})
+	impl = f.impl
+	root, err := os.Open(f.root)
+	if err != nil {
+		t.Fatal("open synthetic mount scope:", err)
+	}
+	filesystem, id := creationFilesystemEvidence(t, root)
+	if err := root.Close(); err != nil {
+		t.Fatal("close synthetic mount scope:", err)
+	}
+	if filesystem != "ext4" {
+		r.Status, r.UnavailableReason = "unavailable", "metadata fixture requires local ext4"
+		t.Skip(r.UnavailableReason)
+	}
+	mountID = id
+
+	active = "clean"
+	clean := f.read(t, active, f.target)
+	if clean.Outcome != rb.ReadSucceeded || !bytes.Equal(clean.Bytes, []byte("synthetic-native-read-control")) ||
+		f.grants.ConsumptionCount(active) != 1 || !f.tracked.allJoined() || len(r.MetadataChecks) < 2 {
+		t.Fatal("clean control did not pass both host metadata checks and the existing read lifecycle")
+	}
+	for _, observation := range r.MetadataChecks {
+		if observation.Outcome != "zero_count" || observation.Count == nil || *observation.Count != 0 {
+			t.Fatal("clean control lacked a verified zero count")
+		}
+	}
+	if r.MetadataChecks[0].Phase != "prepare" || r.MetadataChecks[len(r.MetadataChecks)-1].Phase != "revalidate" {
+		t.Fatal("clean control did not reach final revalidation")
+	}
+
+	refuse := func(name, target, phase, outcome string) {
+		t.Helper()
+		active = name
+		beforeChecks, beforeWorkers := len(r.MetadataChecks), f.tracked.workerCount()
+		beforePublications := len(f.impl.session.PublishedResults())
+		result := f.read(t, name, target)
+		if result.Outcome != rb.ReadNotExecuted || len(result.Bytes) != 0 ||
+			len(f.impl.session.PublishedResults()) != beforePublications {
+			t.Fatalf("%s: refused fixture reached result publication", name)
+		}
+		if phase == "" {
+			if len(r.MetadataChecks) != beforeChecks || f.tracked.workerCount() != beforeWorkers || f.grants.ConsumptionCount(name) != 0 {
+				t.Fatalf("%s: a nonregular fixture reached metadata admission", name)
+			}
+			return
+		}
+		if len(r.MetadataChecks) <= beforeChecks {
+			t.Fatalf("%s: missing metadata observation", name)
+		}
+		last := r.MetadataChecks[len(r.MetadataChecks)-1]
+		if last.Case != name || last.Phase != phase || last.Outcome != outcome {
+			t.Fatalf("%s: unexpected metadata refusal %+v", name, last)
+		}
+		if phase == "prepare" && (f.tracked.workerCount() != beforeWorkers || f.grants.ConsumptionCount(name) != 0) {
+			t.Fatalf("%s: preparation refusal consumed approval or launched a worker", name)
+		}
+		if phase == "revalidate" {
+			evidence := lastNativeEvidence(t, f)
+			if !evidence.WorkerStarted || !evidence.WorkerJoined || evidence.CapabilitySent || evidence.ReadStarted || evidence.Published {
+				t.Fatal("late metadata refusal did not join before descriptor handoff")
+			}
+		}
+	}
+
+	refuse("ioctl_denied", f.target, "prepare", "unverifiable")
+	refuse("wrong_mount", f.target, "prepare", "unverifiable")
+	refuse("directory", f.root, "", "")
+	if err := unix.Setxattr(f.target, nativeMetadataAttribute, []byte("fixture"), unix.XATTR_CREATE); err != nil {
+		t.Fatal("prepare visible xattr fixture:", err)
+	}
+	refuse("visible_xattr", f.target, "prepare", "xattrs_present")
+	if err := unix.Removexattr(f.target, nativeMetadataAttribute); err != nil {
+		t.Fatal("restore clean fixture:", err)
+	}
+
+	stage := nativeMetadataACLStage(t, f.root)
+	refuse("inherited_acl", stage, "prepare", "xattrs_present")
+
+	f.impl.session.SetCheckpointHook(func(checkpoint rb.Checkpoint) error {
+		if checkpoint == rb.CheckpointBeforeHandoff {
+			return unix.Setxattr(f.target, nativeMetadataAttribute, []byte("late fixture"), unix.XATTR_CREATE)
+		}
+		return nil
+	})
+	t.Cleanup(func() { f.impl.session.SetCheckpointHook(nil) })
+	refuse("late_xattr", f.target, "revalidate", "xattrs_present")
+}
+
+// Use the Linux POSIX ACL xattr format to keep the overlay independent of setfacl.
+func nativeMetadataACLStage(t *testing.T, root string) string {
+	t.Helper()
+	parent := filepath.Join(root, "metadata-acl")
+	if err := os.Mkdir(parent, 0700); err != nil {
+		t.Fatal("create synthetic ACL parent:", err)
+	}
+	acl := binary.LittleEndian.AppendUint32(nil, 2) // POSIX_ACL_XATTR_VERSION
+	for _, entry := range []struct {
+		tag, permissions uint16
+		id               uint32
+	}{
+		{0x01, 7, ^uint32(0)},           // ACL_USER_OBJ
+		{0x02, 4, uint32(os.Geteuid())}, // ACL_USER
+		{0x04, 0, ^uint32(0)},           // ACL_GROUP_OBJ
+		{0x10, 4, ^uint32(0)},           // ACL_MASK
+		{0x20, 0, ^uint32(0)},           // ACL_OTHER
+	} {
+		acl = binary.LittleEndian.AppendUint16(acl, entry.tag)
+		acl = binary.LittleEndian.AppendUint16(acl, entry.permissions)
+		acl = binary.LittleEndian.AppendUint32(acl, entry.id)
+	}
+	if err := unix.Setxattr(parent, "system.posix_acl_default", acl, unix.XATTR_CREATE); err != nil {
+		t.Fatal("prepare synthetic default ACL:", err)
+	}
+	stage := filepath.Join(parent, "metadata-stage")
+	if err := os.WriteFile(stage, []byte("synthetic stage"), 0600); err != nil {
+		t.Fatal("create unpublishable metadata stage fixture:", err)
+	}
+	info, err := os.Stat(stage)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("inherited ACL fixture did not retain mode 0600")
+	}
+	if n, err := unix.Getxattr(stage, "system.posix_acl_access", nil); err != nil || n <= 0 {
+		t.Fatal("stage did not inherit an access ACL")
+	}
+	return stage
+}
+
+// This direct probe runs even when the trusted Bubblewrap backend is unavailable.
+func TestMetadataFIEMAPProbe(t *testing.T) {
+	if stdruntime.GOARCH != "amd64" {
+		t.Skip("count-only fixture requires Linux amd64")
+	}
+	root := t.TempDir()
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filesystem, mountID := creationFilesystemEvidence(t, directory)
+	if err := directory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if filesystem != "ext4" {
+		t.Skip("metadata fixture requires ext4")
+	}
+	stage := nativeMetadataACLStage(t, root)
+	file, err := os.Open(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	count, err := nativeXattrExtentCount(file)
+	if err != nil || count == 0 {
+		t.Fatalf("inherited access ACL: count=%d error=%v", count, err)
+	}
+
+	fd, err := unix.Open(stage, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := os.NewFile(uintptr(fd), "metadata-acl-path")
+	defer path.Close()
+	if _, err := nativeXattrExtentCount(path); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("O_PATH ioctl error=%v, want EBADF", err)
+	}
+
+	var info unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &info); err != nil {
+		t.Fatal(err)
+	}
+	impl := &linuxImplementation{}
+	count, err = nativeMetadataCountOnFD(impl, file, identityFromUnixStat(&info), mountID, nativeXattrExtentCount)
+	if err != nil || count == 0 {
+		t.Fatalf("verified file observation: count=%d error=%v", count, err)
+	}
+	if _, err := nativeMetadataCountOnFD(impl, file, identityFromUnixStat(&info), 0, nativeXattrExtentCount); !errors.Is(err, rb.ErrStaleReceipt) {
+		t.Fatalf("mismatched mount error=%v, want refusal", err)
 	}
 }
