@@ -32,6 +32,20 @@ leftover private stage. The overlay does not run the shipping CLI binary or
 contact a provider; behavioral Service/runtime/UI tests cover the rest of the
 approval path.
 
+The #322 metadata-only case runs a fixed count-only FIEMAP query in the host
+test overlay on a duplicate of the broker's retained regular-file descriptor.
+It verifies that the descriptor matches the broker identity and the ext4
+scratch mount. On a clean fixture the existing read worker finishes and joins.
+A visible xattr, an inherited access ACL, an injected ioctl denial and a
+mismatched mount refuse before worker launch or once-approval consumption. The
+directory case refuses in the existing broker. An xattr added at the in-process
+pre-handoff checkpoint makes final revalidation refuse and join the worker
+before it receives the file descriptor. The direct probe also checks the
+real ioctl error on an `O_PATH` descriptor. The report keeps injected errors
+separate from filesystem observations. Hidden attributes, EA-inode storage,
+security labels and independent actors are outside this overlay case. Editing
+and publication of replacements remain unavailable.
+
 Mount crossing is measured only if the disposable scope already contains a
 real nested mount. The runner does not create or alter mounts. Without such a
 boundary the case is recorded `unavailable` with its exact prerequisite; an

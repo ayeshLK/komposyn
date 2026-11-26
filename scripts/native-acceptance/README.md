@@ -5,16 +5,17 @@ Run from a normal Linux terminal, as a regular user, from any directory:
 ```sh
 /path/to/komposyn/scripts/native-acceptance/run-native-acceptance.sh \
   --repo /path/to/komposyn \
-  --revision d43a7dd7005ae6ccc8102936d00bd2920bbd9fcf \
+  --revision "$(git -C /path/to/komposyn rev-parse HEAD)" \
   --bwrap /usr/bin/bwrap
 ```
 
-The wrapper runs the byte-preserved harness revision 2 under
+The wrapper runs the native harness from the same checkout under
 [`testdata/native-acceptance/`](../../testdata/native-acceptance/README.md).
 The Go overlay is kept there because Go intentionally excludes `testdata`
 trees from `go test ./...`; the fixture is injected only into the runner's
 temporary source archive. This keeps the native acceptance tests out of the
-normal package test suite and shipped executable.
+normal package test suite and shipped executable. Use the runner from the
+checkout whose native test bundle you intend to measure.
 
 The runner includes `TestNativeActorModeDispatch`, a process-level check that
 uses the compiled acceptance test binary as its fixed actor executable. This
@@ -30,9 +31,9 @@ bind mount created by that helper. It asks before mounting; see its `--help`
 output for the complete operations and prerequisites.
 
 Current runner SHA-256:
-`57643610ed88716f205ecf9ac6d657d0b3fe19f732992c48730a35fa1ce57bc9`.
+`365e9476bb4977e9b3a3b56915bbe99402cbedce1728a3c57a668fd682e1fa45`.
 Current overlay SHA-256:
-`bb7d9d3531ece3fdb2b4014330a10c1883a2f8ac6f367948e7f166350a1cd8e3`.
+`bca92ac947cc01a8fa89fd504d2fa503d9f98a9025b9ac20712d1cf5041f08c4`.
 The test bundle also records these hashes from the exact reviewed candidate.
 The tracked host-independent results are in
 [`docs/harness/read-broker-composition-native-acceptance.md`](../../docs/harness/read-broker-composition-native-acceptance.md).
