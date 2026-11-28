@@ -38,7 +38,7 @@ def digest(path):
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
 
-def mount_details(path):
+def mount_filesystem(path):
     target = str(path.resolve())
     best = None
     try:
@@ -50,10 +50,8 @@ def mount_details(path):
                 if best is None or len(mountpoint) > len(best[0]):
                     best = (mountpoint, fields[separator + 1])
     except (OSError, ValueError, IndexError):
-        return {'filesystem': 'unavailable', 'mountpoint': 'unavailable'}
-    if best is None:
-        return {'filesystem': 'unavailable', 'mountpoint': 'unavailable'}
-    return {'filesystem': best[1], 'mountpoint': best[0]}
+        return 'unavailable'
+    return best[1] if best else 'unavailable'
 
 def lsm_profile():
     try:
@@ -115,6 +113,7 @@ def main():
     records = out/'native-records'; records.mkdir()
     source = work/'source'; source.mkdir()
     fixture_tmp = work/'fixtures'; fixture_tmp.mkdir()
+    scratch_filesystem = mount_filesystem(scratch_dir)
     manifest = {'schema_version':1, 'harness_revision':4, 'source_commit':revision, 'test_overlay':True,
         'runner_sha256':digest(Path(__file__)), 'overlay_sha256':digest(overlay),
         'expected_cases':EXPECTED,
@@ -123,10 +122,10 @@ def main():
         'scope':'PR #243 service fixtures bounded #321 creation worker, #322 metadata-only probe, and #322 test-only native rewrite acceptance; no production rewrite tool registration/provider network',
         'selected_case':args.case,
         'scratch_directory_configured':True,
-        'scratch_filesystem':mount_details(scratch_dir)['filesystem'],
-        'scratch_mountpoint':mount_details(scratch_dir)['mountpoint'],
+        'scratch_filesystem':scratch_filesystem,
+        'scratch_mountpoint':'<scratch-mount>' if scratch_filesystem != 'unavailable' else 'unavailable',
         'lsm_profile':lsm_profile(),
-        'bubblewrap_path':str(args.bwrap),
+        'bubblewrap_path':'<configured-backend>',
         'bubblewrap_metadata':{},
         'mount_scope_supplied':mount_scope is not None,
         'stages':{}, 'status':'incomplete', 'work_retained':True}

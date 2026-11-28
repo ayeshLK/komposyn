@@ -142,7 +142,7 @@ Results archive: /tmp/komposyn-composition-native-results.XXXXXXXX.tar.gz
 
 Share that archive path for review. It includes:
 
-- `manifest.json`: provenance, stage results, cleanup status and aggregate classification.
+- `manifest.json`: provenance, stage results, cleanup status and aggregate classification. It reports the scratch filesystem and backend metadata, using placeholders for host paths.
 - `native-report.json` and `native-records/`: per-case status, backend mode/trust, worker/probe evidence and rotation observations.
 - Bounded unit/build/native logs and capture metadata.
 - The exact test overlay and capture helper as text.

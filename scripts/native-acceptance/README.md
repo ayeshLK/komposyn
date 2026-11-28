@@ -31,7 +31,7 @@ bind mount created by that helper. It asks before mounting; see its `--help`
 output for the complete operations and prerequisites.
 
 Current runner SHA-256:
-`8bd84f33c014fff6f159fcfd4fb8605b09e91db26b6394228503ee6ac1c106c3`.
+`1ab42c2213a0e16836e62310efec78dceb4594f5c8dbc2e1467e14e2ec97593c`.
 Current overlay SHA-256:
 `25066911d13592181d5d55c89d43b51a45a901c121ea93f2338a39f98f6ed60e`.
 The test bundle also records these hashes from the exact reviewed candidate.
