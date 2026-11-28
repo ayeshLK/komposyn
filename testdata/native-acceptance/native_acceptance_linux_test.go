@@ -2084,9 +2084,6 @@ func TestNativeRewritePrototypeComposedReadAndApprovedRewrite(t *testing.T) {
 	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, f.service)
 	config.EnableRewritePrototype = true
 	chat := runtime.NewChatWithToolRuntime(providers, f.auth, nil, config)
-	if err := chat.AddProfile(nativeContext(t), "rewrite-profile", string(provider.OpenAI), "Fixture", "synthetic-only", nil); err != nil {
-		t.Fatal("add scripted provider profile", err)
-	}
 	selection := chat.Discover(nativeContext(t))
 	if len(selection.Models) != 1 {
 		t.Fatal("scripted provider model was unavailable")
