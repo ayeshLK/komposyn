@@ -2010,11 +2010,11 @@ func TestNativeRewritePrototypeComposedReadAndApprovedRewrite(t *testing.T) {
 
 	const (
 		callID = "rewrite-approved-read"
-		suffix = "REMOVE-ME\n"
+		suffix = " REMOVE-ME"
 		xattr  = "user.komposyn_rewrite_probe"
 	)
-	base := "synthetic rewrite acceptance\n" + suffix
-	replacement := "synthetic rewrite\n"
+	base := "synthetic rewrite acceptance" + suffix
+	replacement := "synthetic rewrite"
 	f.target = filepath.Join(f.root, "rewrite-fixture.txt")
 	if err := os.WriteFile(f.target, []byte(base), 0600); err != nil {
 		t.Fatal("seed rewrite fixture", err)
@@ -2104,9 +2104,10 @@ func TestNativeRewritePrototypeComposedReadAndApprovedRewrite(t *testing.T) {
 		t.Fatalf("initial read was not approved exactly once: approvals=%d", approvalCount)
 	}
 	readEvidence := lastNativeEvidence(t, f)
-	if !readEvidence.WorkerStarted || !readEvidence.WorkerJoined || !readEvidence.Published {
+	if readEvidence.Outcome != rb.ReadSucceeded || !readEvidence.WorkerStarted || !readEvidence.WorkerJoined {
 		t.Fatal("composed read did not use and join the actual native read worker")
 	}
+	r.VerifiedReturnedBytes = true
 	result, rewriteErr := chat.RunRewritePrototype(nativeContext(t), runtime.RewritePrototypeRequest{
 		ReadCallID: callID, Destination: destination, Base: base, Content: replacement,
 	})

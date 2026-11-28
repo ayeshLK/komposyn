@@ -33,7 +33,7 @@ output for the complete operations and prerequisites.
 Current runner SHA-256:
 `8bd84f33c014fff6f159fcfd4fb8605b09e91db26b6394228503ee6ac1c106c3`.
 Current overlay SHA-256:
-`b3a13f7d70343c3094390db8cb83072a7b7b89824b9283b3e03f6e8ae3ee021f`.
+`25066911d13592181d5d55c89d43b51a45a901c121ea93f2338a39f98f6ed60e`.
 The test bundle also records these hashes from the exact reviewed candidate.
 The tracked host-independent results are in
 [`docs/harness/read-broker-composition-native-acceptance.md`](../../docs/harness/read-broker-composition-native-acceptance.md).
