@@ -2039,7 +2039,7 @@ func runtimeAdmission(metadata readbrokerstudy.AdmissionMetadata) runtime.Filesy
 		Operation: string(metadata.Operation),
 		Reference: metadata.Reference, ServiceID: metadata.ServiceID, ConversationID: metadata.ConversationID, TurnID: metadata.TurnID, CallID: metadata.CallID,
 		Root: metadata.Root, Deadline: metadata.Deadline, AdmissionBinding: fmt.Sprintf("%x", metadata.Binding[:]), Target: metadata.Target,
-		Class: string(metadata.Class), Identity: fmt.Sprintf("%d:%d:%d", metadata.Identity.Device, metadata.Identity.Inode, metadata.Identity.Type),
+		Class: string(metadata.Class), RewriteRevision: metadata.RewriteRevision, Identity: fmt.Sprintf("%d:%d:%d", metadata.Identity.Device, metadata.Identity.Inode, metadata.Identity.Type),
 		RootGeneration: metadata.RootGeneration, PolicyRevision: metadata.Generations.Policy,
 		CoverageRevision: metadata.Generations.Inventory, Destination: metadata.Destination,
 		Listing: tools.ListFilesInput{Recursive: metadata.Listing.Recursive, IncludeHidden: metadata.Listing.IncludeHidden, IncludeIgnored: metadata.Listing.IncludeIgnored, NameGlobs: append([]string(nil), metadata.Listing.NameGlobs...)},

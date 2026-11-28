@@ -340,6 +340,9 @@ func (s *fixtureSession) finishAdmissionLookup(record *admissionRecord, prepared
 			lookupErr = ErrDirectoryCoverage
 		} else {
 			record.metadata.Identity = prepared.Identity()
+			if read, ok := prepared.(*preparedRead); ok && class == ClassOrdinary && record.request.Operation == AdmissionReadFile {
+				record.metadata.RewriteRevision = rewriteReadRevision(read)
+			}
 			record.metadata.Class = class
 			digest, digestErr := admissionDigest(record.metadata)
 			if digestErr != nil {
@@ -368,22 +371,23 @@ func (s *fixtureSession) finishAdmissionLookup(record *admissionRecord, prepared
 
 func admissionDigest(metadata AdmissionMetadata) ([32]byte, error) {
 	canonical, err := json.Marshal(struct {
-		Operation      AdmissionOperation
-		ServiceID      string
-		ConversationID string
-		TurnID         string
-		CallID         string
-		Root           string
-		Target         string
-		RootGeneration uint64
-		Deadline       time.Time
-		Destination    string
-		Listing        ListingOptions
-		SearchQuery    string
-		Identity       FileIdentity
-		Class          ResourceClass
-		Generations    GenerationSet
-	}{metadata.Operation, metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Listing, metadata.SearchQuery, metadata.Identity, metadata.Class, metadata.Generations})
+		Operation       AdmissionOperation
+		ServiceID       string
+		ConversationID  string
+		TurnID          string
+		CallID          string
+		Root            string
+		Target          string
+		RootGeneration  uint64
+		Deadline        time.Time
+		Destination     string
+		Listing         ListingOptions
+		SearchQuery     string
+		Identity        FileIdentity
+		RewriteRevision string
+		Class           ResourceClass
+		Generations     GenerationSet
+	}{metadata.Operation, metadata.ServiceID, metadata.ConversationID, metadata.TurnID, metadata.CallID, metadata.Root, metadata.Target, metadata.RootGeneration, metadata.Deadline, metadata.Destination, metadata.Listing, metadata.SearchQuery, metadata.Identity, metadata.RewriteRevision, metadata.Class, metadata.Generations})
 	if err != nil {
 		return [32]byte{}, err
 	}

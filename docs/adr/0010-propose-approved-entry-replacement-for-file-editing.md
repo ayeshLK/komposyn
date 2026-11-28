@@ -30,8 +30,29 @@ be enforced has been accepted. PR #359 creation behavior and its Linux
 amd64/local-ext4/Bubblewrap evidence do not satisfy editing requirements.
 Issue #320 remains a scoped negative result for the mechanisms and contract it
 examined; this ADR neither claims that all other mechanisms fail nor
-retroactively changes those measurements. No editing prototype, privileged
-component or model-facing tool is authorized.
+retroactively changes those measurements. No staged replacement prototype,
+privileged component or model-facing tool is authorized.
+
+### Bounded in-place prototype investigation (2026-11-28)
+
+The local prototype may implement an in-place rewrite through a retained
+descriptor for the approved file. Immediately before the host releases the
+worker to begin writing, it checks that the approved name still identifies
+that file. If the name is missing, has been renamed away, or identifies a
+different file, the attempt aborts before content mutation. Once that check
+passes, the worker writes through the same retained descriptor. If another process moves or unlinks the name after the check, the
+write still affects the retained inode. Report a detected path change
+separately from the write outcome. A write or truncate interruption may
+leave partial contents, and readers may observe intermediate bytes. The
+prototype makes no atomic-write, rollback, or crash-durability promise and
+must classify confirmed, no-effect, partial, and unknown outcomes without
+replay.
+
+This scoped investigation does not approve the mechanism, establish its
+metadata or worker-authority guarantees, register a model-facing capability,
+enable editing in normal composition, or constitute release approval. The
+operation remains unavailable unless a separate review accepts its evidence
+and explicitly decides enablement. Unsupported or unverified cases refuse.
 
 ## Decision
 
@@ -225,6 +246,11 @@ not claim any is implemented:
   target, not an accepted profile. Other profiles refuse initially.
 
 ## Ordered follow-up and gates
+
+The replacement research steps below apply to staged replacement. The
+[bounded in-place prototype](#bounded-in-place-prototype-investigation-2026-11-28)
+has its own effect and final validation. Both paths require separate
+maintainer approval before model-facing enablement.
 
 The [staged replacement mechanism proposal](../harness/editing-replacement-mechanism-proposal.md)
 names a concrete candidate, phase protocol and proof gaps for review. It does

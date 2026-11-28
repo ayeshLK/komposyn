@@ -766,6 +766,7 @@ type sandboxWorker struct {
 	released       bool
 	finished       bool
 	creationStaged bool
+	rewriteHeld    bool
 	stageName      string
 	stageLeaf      string
 	stageIdentity  FileIdentity
@@ -820,7 +821,7 @@ func (l *workerLauncher) StartForOperation(ctx context.Context, operation Admiss
 	if operation == "" {
 		operation = AdmissionReadFile
 	}
-	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent && operation != AdmissionCreateFile {
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent && operation != AdmissionCreateFile && operation != AdmissionRewritePrototype {
 		return nil, fmt.Errorf("%w: unsupported worker operation", ErrUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
@@ -1802,23 +1803,22 @@ func installWorkerSeccompProfile(fd int) (AdmissionOperation, error) {
 		}
 		offset += count
 	}
-	expectedRead, readErr := workerSeccompFilterBytesForOperation(AdmissionReadFile)
-	expectedListing, listingErr := workerSeccompFilterBytesForOperation(AdmissionListDirectory)
-	expectedSearch, searchErr := workerSeccompFilterBytesForOperation(AdmissionSearchFiles)
-	expectedSearchContent, contentErr := workerSeccompFilterBytesForOperation(AdmissionSearchContent)
-	expectedCreation, creationErr := workerSeccompFilterBytesForOperation(AdmissionCreateFile)
-	if readErr != nil || listingErr != nil || searchErr != nil || contentErr != nil || creationErr != nil || !bytes.Equal(data, expectedRead) && !bytes.Equal(data, expectedListing) && !bytes.Equal(data, expectedSearch) && !bytes.Equal(data, expectedSearchContent) && !bytes.Equal(data, expectedCreation) {
-		return "", ErrProtocol
+	var operation AdmissionOperation
+	for _, candidate := range []AdmissionOperation{
+		AdmissionReadFile, AdmissionListDirectory, AdmissionSearchFiles,
+		AdmissionSearchContent, AdmissionCreateFile, AdmissionRewritePrototype,
+	} {
+		expected, err := workerSeccompFilterBytesForOperation(candidate)
+		if err != nil {
+			return "", ErrProtocol
+		}
+		if bytes.Equal(data, expected) {
+			operation = candidate
+			break
+		}
 	}
-	operation := AdmissionReadFile
-	if bytes.Equal(data, expectedListing) {
-		operation = AdmissionListDirectory
-	} else if bytes.Equal(data, expectedSearch) {
-		operation = AdmissionSearchFiles
-	} else if bytes.Equal(data, expectedSearchContent) {
-		operation = AdmissionSearchContent
-	} else if bytes.Equal(data, expectedCreation) {
-		operation = AdmissionCreateFile
+	if operation == "" {
+		return "", ErrProtocol
 	}
 	filters := make([]unix.SockFilter, len(data)/unix.SizeofSockFilter)
 	for index := range filters {
@@ -1928,6 +1928,8 @@ func receiveAndRead(control int, holdCapability bool, operation AdmissionOperati
 	packetSize := 4096
 	if operation == AdmissionCreateFile {
 		packetSize = maxCreationPacketBytes
+	} else if operation == AdmissionRewritePrototype {
+		packetSize = 1 + 20 + MaxReadBytes
 	}
 	packet := make([]byte, packetSize)
 	// Linux limits one SCM_RIGHTS message to SCM_MAX_FD (253). Receive enough
@@ -1981,6 +1983,12 @@ func receiveAndRead(control int, holdCapability bool, operation AdmissionOperati
 				}
 			}
 			result = listTransferredDirectory(control, capability, packet[1:1+20], holdCapability, options, operation)
+		case frameRewriteInput:
+			if operation != AdmissionRewritePrototype {
+				_ = unix.Close(capability)
+				return sendRefusal(control)
+			}
+			result = rewriteTransferredFile(control, capability, packet[1:21], packet[21:n])
 		case frameCreateInput:
 			if operation != AdmissionCreateFile {
 				_ = unix.Close(capability)

@@ -166,11 +166,12 @@ func (options ListingOptions) Clone() ListingOptions {
 type AdmissionOperation string
 
 const (
-	AdmissionReadFile      AdmissionOperation = "read_file"
-	AdmissionListDirectory AdmissionOperation = "list_files"
-	AdmissionSearchFiles   AdmissionOperation = "search_files"
-	AdmissionSearchContent AdmissionOperation = "search_content"
-	AdmissionCreateFile    AdmissionOperation = "create_file"
+	AdmissionReadFile         AdmissionOperation = "read_file"
+	AdmissionListDirectory    AdmissionOperation = "list_files"
+	AdmissionSearchFiles      AdmissionOperation = "search_files"
+	AdmissionSearchContent    AdmissionOperation = "search_content"
+	AdmissionCreateFile       AdmissionOperation = "create_file"
+	AdmissionRewritePrototype AdmissionOperation = "rewrite_prototype"
 )
 
 // CreationOutcome is deliberately separate from read outcomes. Unknown means
@@ -234,23 +235,24 @@ type BoundedCreationWorker interface {
 // AdmissionMetadata is detached disclosure metadata. The opaque reference is
 // host-created and is validated against the owning coordinator's record map.
 type AdmissionMetadata struct {
-	Operation      AdmissionOperation
-	Reference      *AdmissionReference
-	ServiceID      string
-	ConversationID string
-	TurnID         string
-	CallID         string
-	Root           string
-	Target         string
-	RootGeneration uint64
-	Deadline       time.Time
-	Destination    string
-	Identity       FileIdentity
-	Listing        ListingOptions
-	SearchQuery    string
-	Class          ResourceClass
-	Generations    GenerationSet
-	Binding        [32]byte
+	Operation       AdmissionOperation
+	Reference       *AdmissionReference
+	ServiceID       string
+	ConversationID  string
+	TurnID          string
+	CallID          string
+	Root            string
+	Target          string
+	RootGeneration  uint64
+	Deadline        time.Time
+	Destination     string
+	Identity        FileIdentity
+	RewriteRevision string
+	Listing         ListingOptions
+	SearchQuery     string
+	Class           ResourceClass
+	Generations     GenerationSet
+	Binding         [32]byte
 }
 
 // AdmissionReference cannot be constructed outside this package. Its random

@@ -47,6 +47,7 @@ type FilesystemReadAdmission struct {
 	Target           string
 	Class            string
 	Identity         string
+	RewriteRevision  string
 	RootGeneration   uint64
 	PolicyRevision   uint64
 	CoverageRevision uint64
