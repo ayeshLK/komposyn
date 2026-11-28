@@ -69,7 +69,6 @@ type admissionRecord struct {
 	prepared   PreparedRead
 	operation  *readOperation
 	lookupDone chan struct{}
-	lookupErr  error
 	retired    bool
 	closeErr   error
 }
@@ -271,6 +270,10 @@ func (s *fixtureSession) WaitAdmission(ctx context.Context, reference *Admission
 		return AdmissionMetadata{}, err
 	}
 	s.mu.Lock()
+	if err := reference.lookupErr; err != nil {
+		s.mu.Unlock()
+		return AdmissionMetadata{}, err
+	}
 	record := s.admissions[reference.id]
 	if record == nil || record.ref != reference {
 		s.mu.Unlock()
@@ -281,22 +284,24 @@ func (s *fixtureSession) WaitAdmission(ctx context.Context, reference *Admission
 	select {
 	case <-record.lookupDone:
 	case <-lifetime.Done():
-		s.mu.Lock()
-		record.retired = true
-		record.state = admissionRetiring
-		s.mu.Unlock()
-		return AdmissionMetadata{}, lifetime.Err()
 	case <-ctx.Done():
-		s.mu.Lock()
-		record.retired = true
-		record.state = admissionRetiring
-		record.cancel()
-		s.mu.Unlock()
-		return AdmissionMetadata{}, ctx.Err()
 	}
 
 	s.mu.Lock()
-	if err := record.lookupErr; err != nil {
+	if err := ctx.Err(); err != nil {
+		if s.admissions[reference.id] == record && record.cancel != nil {
+			record.retired = true
+			record.state = admissionRetiring
+			record.cancel()
+		}
+		s.mu.Unlock()
+		return AdmissionMetadata{}, err
+	}
+	if err := reference.lookupErr; err != nil {
+		s.mu.Unlock()
+		return AdmissionMetadata{}, err
+	}
+	if err := lifetime.Err(); err != nil {
 		s.mu.Unlock()
 		return AdmissionMetadata{}, err
 	}
@@ -360,7 +365,9 @@ func (s *fixtureSession) finishAdmissionLookup(record *admissionRecord, prepared
 	if record.state != admissionPendingApproval && prepared != nil {
 		record.prepared = prepared
 	}
-	record.lookupErr = lookupErr
+	if current {
+		record.ref.lookupErr = lookupErr
+	}
 	close(record.lookupDone)
 	retire := record.retired || lookupErr != nil
 	s.mu.Unlock()

@@ -114,6 +114,30 @@ func TestRetainedAdmissionRequiresCurrentRootAndOwnerCoverage(t *testing.T) {
 	}
 }
 
+func TestWaitAdmissionReportsUnsupportedFilesystemAfterRetirement(t *testing.T) {
+	root := t.TempDir()
+	session := newSessionFixture(t, root).session.(*fixtureSession)
+	ctx := context.Background()
+	request := AdmissionRequest{
+		Operation: AdmissionSearchFiles, ConversationID: "conversation", TurnID: "turn", CallID: "search",
+		Root: root, Target: "/proc", RootGeneration: 1, Destination: "provider/model/profile", SearchQuery: "fixture",
+	}
+	ref, err := session.BeginAdmission(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for session.admissionCount() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("failed search admission did not retire")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := session.WaitAdmission(ctx, ref); !errors.Is(err, ErrUnsupportedFilesystem) {
+		t.Fatalf("search lookup after retirement returned %v, want %v", err, ErrUnsupportedFilesystem)
+	}
+}
+
 func TestAdmissionCancellationAndDeadlineRemainEffectiveAfterLookup(t *testing.T) {
 	for _, test := range []struct {
 		name    string
