@@ -21,6 +21,7 @@
 package readbrokerstudy
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -265,4 +266,81 @@ func testWorkerSeccompRuntimeAndProcessRules(t *testing.T) {
 		}
 	}
 	_, _ = unix.Write(1, []byte("THREADS_OK_PROCESS_CLONE_DENIED\n"))
+}
+
+func TestRewritePrototypeSeccompWorker(t *testing.T) {
+	const childEnv = "KOMPOSYN_REWRITE_PROTOTYPE_SECCOMP_CHILD=1"
+	for _, item := range os.Environ() {
+		if item == childEnv {
+			operation, err := installWorkerSeccompProfile(3)
+			if err != nil || operation != AdmissionRewritePrototype {
+				t.Fatalf("rewrite filter not installed: %q, %v", operation, err)
+			}
+			how := &unix.OpenHow{Flags: unix.O_RDONLY}
+			if _, err := unix.Openat2(unix.AT_FDCWD, "/", how); err != unix.EPERM {
+				t.Fatalf("worker path open error = %v", err)
+			}
+			os.Exit(receiveAndRead(4, false, operation))
+		}
+	}
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte("long original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	identity, err := identityFromFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter, err := workerSeccompFilterForOperation(AdmissionRewritePrototype)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer filter.Close()
+	defer os.Remove(filter.Name())
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := os.NewFile(uintptr(pair[0]), "rewrite-test-host")
+	defer host.Close()
+	child := os.NewFile(uintptr(pair[1]), "rewrite-test-child")
+	defer child.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), workerWaitDelay*10)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRewritePrototypeSeccompWorker$")
+	cmd.Env = append(os.Environ(), childEnv)
+	cmd.ExtraFiles = []*os.File{filter, child}
+	var output strings.Builder
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	_ = child.Close()
+	worker := &sandboxWorker{control: host, operation: AdmissionRewritePrototype, ready: true}
+	if err := worker.HoldRewrite(ctx, file, identity, []byte("short")); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.ReleaseRewrite(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := worker.WaitRewrite(ctx); err != nil || got != RewriteComplete {
+		t.Fatalf("rewrite outcome %v, %v", got, err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("filtered worker exited %v: %s", err, output.String())
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "short" {
+		t.Fatalf("final bytes %q, %v", got, err)
+	}
 }

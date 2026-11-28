@@ -110,14 +110,17 @@ func (f ToolApprovalFunc) Review(ctx context.Context, pending permissions.Pendin
 }
 
 type ToolRuntimeConfig struct {
-	Registry      *tools.Registry
-	Authorizer    ToolAuthorizer
-	Enforcer      ToolEnforcer
-	Preparer      ToolPreparer
-	ReadAdmission FilesystemReadAdmissionHost
-	RootHost      FilesystemRootHost
-	Approval      ToolApprovalInteraction
-	Clarification ToolClarificationInteraction
+	// EnableRewritePrototype enables an explicit local experiment entry point.
+	// It does not register a model-facing tool.
+	EnableRewritePrototype bool
+	Registry               *tools.Registry
+	Authorizer             ToolAuthorizer
+	Enforcer               ToolEnforcer
+	Preparer               ToolPreparer
+	ReadAdmission          FilesystemReadAdmissionHost
+	RootHost               FilesystemRootHost
+	Approval               ToolApprovalInteraction
+	Clarification          ToolClarificationInteraction
 	// Grants is copied into runtime-owned state during composition; callers
 	// cannot keep a mutation handle to the live store.
 	Grants *permissions.MemoryStore
@@ -126,6 +129,8 @@ type ToolRuntimeConfig struct {
 }
 
 type toolRuntime struct {
+	rewritePrototypeEnabled  bool
+	rewritePrototypeRead     privateReadCaptureRecord
 	readAuthorityMu          sync.Mutex
 	readAuthorityEpoch       uint64
 	readAuthorities          map[string]readAuthorityRecord
@@ -335,7 +340,8 @@ func newToolRuntime(config ToolRuntimeConfig) *toolRuntime {
 	}
 	evaluator := permissions.Evaluator{Rules: clonePermissionRules(config.Rules), Grants: config.Grants}
 	runtime := &toolRuntime{
-		registry: config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer, readAdmission: config.ReadAdmission, rootHost: config.RootHost,
+		rewritePrototypeEnabled: config.EnableRewritePrototype,
+		registry:                config.Registry, authorizer: config.Authorizer, enforcer: config.Enforcer, preparer: config.Preparer, readAdmission: config.ReadAdmission, rootHost: config.RootHost,
 		approval: config.Approval, clarification: config.Clarification, grants: config.Grants, plans: config.Plans, evaluator: evaluator,
 		coordinator: permissions.NewCoordinator(evaluator, config.Grants), readAuthorities: make(map[string]readAuthorityRecord), readInvocationClaims: make(map[string]struct{}), privateReadCaptures: make(map[string]privateReadCaptureRecord),
 		readContinuations: make(map[string]readContinuationRecord),

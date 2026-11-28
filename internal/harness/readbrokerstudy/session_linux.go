@@ -1504,3 +1504,8 @@ func (s *fixtureSession) ActiveOperationCount() int {
 	defer s.mu.Unlock()
 	return len(s.active)
 }
+
+// RewritePrototypeServiceID binds a prior read to the same session's service.
+func (s *fixtureSession) RewritePrototypeServiceID() string {
+	return s.serviceID
+}

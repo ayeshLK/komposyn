@@ -92,6 +92,10 @@ type PrivateReadCapture struct {
 }
 
 type privateReadCaptureRecord struct {
+	rewriteRevision     string
+	operation           string
+	target              string
+	root                string
 	conversationID      string
 	turnID              string
 	callID              string
@@ -247,6 +251,7 @@ func (r *toolRuntime) stagePrivateReadCaptureLocked(reference *ReadExecutionRefe
 		return nil, err
 	}
 	capture := privateReadCaptureRecord{
+		operation: admission.Operation, target: admission.Target, root: admission.Root, rewriteRevision: admission.RewriteRevision,
 		conversationID: admission.ConversationID, turnID: admission.TurnID, callID: admission.CallID,
 		serviceID: admission.ServiceID, admission: admission.AdmissionBinding,
 		authorization: result.AuthorizationBinding, identity: admission.Identity,
@@ -639,6 +644,7 @@ func (r *toolRuntime) invalidateReadAuthorityLocked() {
 }
 
 func (r *toolRuntime) clearReadAuthoritiesLocked() {
+	r.clearRewritePrototypeRead()
 	for _, authority := range r.readAuthorities {
 		r.discardAuthorityCaptureLocked(authority)
 	}
@@ -891,6 +897,7 @@ func (r *toolRuntime) publishReadCapturesLocked(conversationID, destination stri
 	}
 	// Batch validation is complete before ownership or bytes are changed.
 	for _, item := range validated {
+		r.retainRewritePrototypeRead(item.record)
 		continuation.identities = append(continuation.identities, item.record.identity)
 		continuation.classes = append(continuation.classes, item.record.class)
 		continuation.serviceIDs = append(continuation.serviceIDs, item.record.serviceID)

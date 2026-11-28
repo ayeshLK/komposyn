@@ -144,7 +144,7 @@ func workerSeccompFilterBytesForOperation(operation AdmissionOperation) ([]byte,
 	if operation == "" {
 		operation = AdmissionReadFile
 	}
-	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent && operation != AdmissionCreateFile {
+	if operation != AdmissionReadFile && operation != AdmissionListDirectory && operation != AdmissionSearchFiles && operation != AdmissionSearchContent && operation != AdmissionCreateFile && operation != AdmissionRewritePrototype {
 		return nil, fmt.Errorf("unsupported worker seccomp operation %q", operation)
 	}
 	arch, err := workerAuditArch(runtime.GOARCH)
@@ -264,6 +264,11 @@ func workerDeniedSyscallsForOperation(operation AdmissionOperation) []uint32 {
 		// A one-file writer does not enumerate directories or lock memory.
 		// These denials keep its traversal surface narrower than listing.
 		denied = append(denied, unix.SYS_GETDENTS64, unix.SYS_MLOCK, unix.SYS_MLOCK2, unix.SYS_MUNLOCK, unix.SYS_MUNLOCKALL)
+	}
+	if operation == AdmissionRewritePrototype {
+		denied = append(denied, unix.SYS_GETDENTS64, unix.SYS_RENAMEAT, unix.SYS_RENAMEAT2,
+			unix.SYS_UNLINKAT, unix.SYS_LINKAT, unix.SYS_SYMLINKAT, unix.SYS_TRUNCATE,
+			unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER)
 	}
 	return append(denied, workerArchDeniedSyscalls()...)
 }
