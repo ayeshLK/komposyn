@@ -213,15 +213,18 @@ func (s *Service) executeRewritePrototype(ctx context.Context, binding creationR
 	lease.worker = worker
 	impl.mu.Unlock()
 	stopped := false
-	stop := func() error {
+	stop := func() (bool, error) {
 		if stopped {
-			return nil
+			return joined, nil
 		}
 		stopped = true
-		return stopRewriteWorker(worker, &joined)
+		var err error
+		joined, err = stopRewriteWorker(worker)
+		return joined, err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, stop())
+		_, err := stop()
+		resultErr = errors.Join(resultErr, err)
 	}()
 	if err := worker.Ready(lease.ctx); err != nil {
 		return result, err
@@ -295,11 +298,9 @@ func (s *Service) executeRewritePrototype(ctx context.Context, binding creationR
 		}
 		return result, err
 	}
-	result.outcome, err = editor.WaitRewrite(lease.ctx)
-	joinErr := stop()
+	result.outcome, err = waitAndStopRewriteWorker(lease.ctx, editor, stop)
 	if !joined {
-		result.outcome = readbrokerstudy.RewriteUnknown
-		return result, errors.Join(err, joinErr)
+		return result, err
 	}
 	result.pathErr = checkName()
 	if result.outcome == readbrokerstudy.RewriteComplete {
@@ -314,10 +315,19 @@ func (s *Service) executeRewritePrototype(ctx context.Context, binding creationR
 			err = errors.Join(err, verifyErr)
 		}
 	}
-	return result, errors.Join(err, joinErr)
+	return result, err
 }
 
-func stopRewriteWorker(worker readbrokerstudy.SandboxWorker, joined *bool) error {
+func waitAndStopRewriteWorker(ctx context.Context, editor readbrokerstudy.RewritePrototypeWorker, stop func() (bool, error)) (readbrokerstudy.RewriteOutcome, error) {
+	outcome, waitErr := editor.WaitRewrite(ctx)
+	joined, stopErr := stop()
+	if !joined {
+		outcome = readbrokerstudy.RewriteUnknown
+	}
+	return outcome, errors.Join(waitErr, stopErr)
+}
+
+func stopRewriteWorker(worker readbrokerstudy.SandboxWorker) (bool, error) {
 	terminateErr := worker.Terminate()
 	done := make(chan error, 1)
 	go func() { done <- worker.Wait() }()
@@ -325,13 +335,12 @@ func stopRewriteWorker(worker readbrokerstudy.SandboxWorker, joined *bool) error
 	defer timer.Stop()
 	select {
 	case <-done:
-		*joined = worker.Joined()
-		if !*joined {
-			return errors.Join(terminateErr, readbrokerstudy.ErrCleanupPending)
+		if !worker.Joined() {
+			return false, errors.Join(terminateErr, readbrokerstudy.ErrCleanupPending)
 		}
-		return terminateErr
+		return true, terminateErr
 	case <-timer.C:
-		return errors.Join(terminateErr, readbrokerstudy.ErrCleanupPending)
+		return false, errors.Join(terminateErr, readbrokerstudy.ErrCleanupPending)
 	}
 }
 

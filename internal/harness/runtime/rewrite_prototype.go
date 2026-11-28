@@ -40,17 +40,35 @@ type RewritePrototypeRequest struct {
 
 // RunRewritePrototype is a local opt-in for the isolated prototype. It uses
 // the normal approval interaction and has no provider tool definition.
-func (c *Chat) RunRewritePrototype(ctx context.Context, request RewritePrototypeRequest) (tools.Result, error) {
-	c.mu.Lock()
-	r, conversation, active := c.toolRuntime, c.conversationID, c.active
-	c.mu.Unlock()
-	if r == nil || !r.rewritePrototypeEnabled || active {
-		return tools.Result{Outcome: tools.OutcomeNotExecuted}, errReadAuthorityInvalid
+func (c *Chat) RunRewritePrototype(parent context.Context, request RewritePrototypeRequest) (tools.Result, error) {
+	refused := tools.Result{Outcome: tools.OutcomeNotExecuted}
+	if parent == nil {
+		return refused, errReadAuthorityInvalid
 	}
 	attempt, err := newReadAuthorityID()
 	if err != nil {
-		return tools.Result{Outcome: tools.OutcomeNotExecuted}, err
+		return refused, err
 	}
+
+	c.mu.Lock()
+	r, conversation := c.toolRuntime, c.conversationID
+	if c.closed || r == nil || !r.rewritePrototypeEnabled {
+		c.mu.Unlock()
+		return refused, errReadAuthorityInvalid
+	}
+	if c.active || c.credentialBusy {
+		c.mu.Unlock()
+		return refused, ErrRequestActive
+	}
+	profile := ""
+	if c.selected != nil {
+		profile = c.selected.ProfileID
+	}
+	ctx, cancel := context.WithCancel(parent)
+	_, _, finish := c.reserveChatOperationLocked(cancel, profile)
+	c.mu.Unlock()
+	defer finish()
+
 	return r.runRewritePrototype(ctx, conversation, attempt, attempt, request.ReadCallID, request.Destination, request.Base, request.Content)
 }
 
@@ -216,7 +234,16 @@ func (r *toolRuntime) runRewritePrototype(ctx context.Context, conversation, tur
 	}
 	result, err := host.ExecuteApprovedRewritePrototype(ctx, approved)
 	if currentErr := approved.withCurrent(func() error { return nil }); currentErr != nil {
-		return tools.Result{Outcome: tools.OutcomeUnknown, ErrorCode: "rewrite_result_stale"}, errors.Join(err, currentErr)
+		// Retain a proven partial effect as a status only. The invalidated
+		// attempt cannot publish target details or claim verified completion.
+		retired := tools.Result{Outcome: tools.OutcomeUnknown, ErrorCode: "rewrite_result_stale"}
+		switch result.Outcome {
+		case tools.OutcomePartial:
+			retired = tools.Result{Outcome: tools.OutcomePartial, ErrorCode: "rewrite_partial"}
+		case tools.OutcomeNotExecuted:
+			retired = refused
+		}
+		return retired, errors.Join(err, ctx.Err(), currentErr)
 	}
 	return result, err
 }

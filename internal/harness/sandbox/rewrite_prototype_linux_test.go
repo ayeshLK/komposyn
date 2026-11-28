@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
 	"github.com/ayeshLK/komposyn/internal/harness/model"
@@ -163,5 +164,61 @@ func TestRewritePrototypeComposedReadAndApprovalRefuseRenamedTarget(t *testing.T
 	}
 	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("original name should remain missing: %v", err)
+	}
+}
+
+type canceledRewriteFixtureWorker struct {
+	readbrokerstudy.SandboxWorker
+	readbrokerstudy.RewritePrototypeWorker
+	waiting    chan struct{}
+	terminated bool
+	joined     bool
+	result     readbrokerstudy.RewriteOutcome
+}
+
+func (w *canceledRewriteFixtureWorker) WaitRewrite(ctx context.Context) (readbrokerstudy.RewriteOutcome, error) {
+	close(w.waiting)
+	<-ctx.Done()
+	return w.result, ctx.Err()
+}
+
+func (w *canceledRewriteFixtureWorker) Terminate() error {
+	w.terminated = true
+	return nil
+}
+
+func (w *canceledRewriteFixtureWorker) Wait() error {
+	w.joined = w.terminated
+	return nil
+}
+
+func (w *canceledRewriteFixtureWorker) Joined() bool { return w.joined }
+
+func TestRewritePrototypeStopsAndJoinsCanceledReleasedWorker(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		outcome readbrokerstudy.RewriteOutcome
+	}{
+		{name: "missing effect receipt", outcome: readbrokerstudy.RewriteUnknown},
+		{name: "known partial effect", outcome: readbrokerstudy.RewritePartial},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			worker := &canceledRewriteFixtureWorker{waiting: make(chan struct{}), result: test.outcome}
+			go func() {
+				select {
+				case <-worker.waiting:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+			got, err := waitAndStopRewriteWorker(ctx, worker, func() (bool, error) {
+				return stopRewriteWorker(worker)
+			})
+			if !errors.Is(err, context.Canceled) || got != test.outcome || !worker.terminated || !worker.joined {
+				t.Fatalf("canceled worker outcome=%v err=%v terminated=%t joined=%t", got, err, worker.terminated, worker.joined)
+			}
+		})
 	}
 }

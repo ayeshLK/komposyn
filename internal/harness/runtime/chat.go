@@ -863,6 +863,34 @@ func (c *Chat) Cancel() {
 	}
 }
 
+// reserveChatOperationLocked gives a caller exclusive use of the active chat
+// slot until it completes, including any effect cleanup.
+func (c *Chat) reserveChatOperationLocked(cancel context.CancelFunc, profile string) (uint64, string, func()) {
+	generation := c.sequence.Add(1)
+	requestID := fmt.Sprintf("chat-%d", generation)
+	done := make(chan struct{})
+	c.generation = generation
+	c.active = true
+	c.activeRequestID = requestID
+	c.activeDone = done
+	c.activeToolActivities = nil
+	c.activeProfile = profile
+	c.cancel = cancel
+	return generation, requestID, func() {
+		cancel()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.activeDone == done {
+			c.active = false
+			c.activeRequestID = ""
+			c.activeProfile = ""
+			c.cancel = nil
+			c.activeDone = nil
+		}
+		close(done)
+	}
+}
+
 func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string)) (Turn, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
@@ -895,16 +923,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 		cancel()
 		return Turn{}, ErrNoSuchModel
 	}
-	generation := c.sequence.Add(1)
-	c.generation = generation
-	c.active = true
-	requestID := fmt.Sprintf("chat-%d", generation)
-	c.activeRequestID = requestID
-	activeDone := make(chan struct{})
-	c.activeDone = activeDone
-	c.activeToolActivities = nil
-	c.activeProfile = selection.ProfileID
-	c.cancel = cancel
+	generation, requestID, finish := c.reserveChatOperationLocked(cancel, selection.ProfileID)
 	if c.historySensitive && !c.readContinuationCurrentLocked(c.conversationID, selection, c.historyReadEpoch) {
 		c.retireReadHistoryLocked()
 	}
@@ -918,21 +937,7 @@ func (c *Chat) Send(parent context.Context, prompt string, onDelta func(string))
 	history = append(history, provider.Message{Role: provider.RoleUser, Text: prompt})
 	conversationID, conversationIDErr := c.conversationID, c.conversationIDErr
 	c.mu.Unlock()
-	defer func() {
-		cancel()
-		c.mu.Lock()
-		if c.generation == generation {
-			c.active = false
-			c.activeRequestID = ""
-			c.activeProfile = ""
-			c.cancel = nil
-			if c.activeDone == activeDone {
-				c.activeDone = nil
-			}
-		}
-		close(activeDone)
-		c.mu.Unlock()
-	}()
+	defer finish()
 
 	finishError := func() {
 		c.mu.Lock()

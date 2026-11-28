@@ -28,11 +28,11 @@ import (
 
 type rewriteApprovalTestHost struct {
 	FilesystemReadAdmissionHost
-	execute func(*ApprovedRewritePrototype) (tools.Result, error)
+	execute func(context.Context, *ApprovedRewritePrototype) (tools.Result, error)
 }
 
-func (h rewriteApprovalTestHost) ExecuteApprovedRewritePrototype(_ context.Context, approved *ApprovedRewritePrototype) (tools.Result, error) {
-	return h.execute(approved)
+func (h rewriteApprovalTestHost) ExecuteApprovedRewritePrototype(ctx context.Context, approved *ApprovedRewritePrototype) (tools.Result, error) {
+	return h.execute(ctx, approved)
 }
 
 func TestRewritePrototypeApprovalBindsAndConsumesCompleteEdit(t *testing.T) {
@@ -75,7 +75,7 @@ func TestRewritePrototypeApprovalBindsAndConsumesCompleteEdit(t *testing.T) {
 				return test.choice, "", nil
 			})
 			calls := 0
-			r.readAdmission = rewriteApprovalTestHost{execute: func(approved *ApprovedRewritePrototype) (tools.Result, error) {
+			r.readAdmission = rewriteApprovalTestHost{execute: func(_ context.Context, approved *ApprovedRewritePrototype) (tools.Result, error) {
 				input, release, err := approved.Claim()
 				if err != nil {
 					t.Fatal(err)
@@ -103,6 +103,72 @@ func TestRewritePrototypeApprovalBindsAndConsumesCompleteEdit(t *testing.T) {
 				if _, err := r.runRewritePrototype(ctx, "conversation", "turn", "save-again", "read-call", "provider", base, "after\n"); !errors.Is(err, errReadAuthorityInvalid) {
 					t.Fatalf("prior read receipt should be spent: %v", err)
 				}
+			}
+		})
+	}
+}
+
+func TestRewritePrototypeChatCancelAfterRelease(t *testing.T) {
+	for _, outcome := range []tools.Outcome{tools.OutcomePartial, tools.OutcomeUnknown} {
+		t.Run(string(outcome), func(t *testing.T) {
+			r := syntheticAuthorityRuntime()
+			r.rewritePrototypeEnabled = true
+			root := t.TempDir()
+			r.retainRewritePrototypeRead(privateReadCaptureRecord{
+				operation: string(tools.ReadFileID), rewriteRevision: "revision",
+				target: filepath.Join(root, "file"), root: root, destination: "provider",
+				conversationID: "conversation", callID: "read-call", identity: "1:2:32768",
+				admission: "admission", serviceID: "service", expires: time.Now().Add(time.Minute),
+				bytes: []byte("before"),
+			})
+			t.Cleanup(r.invalidateReadAuthority)
+			r.approval = ToolApprovalFunc(func(context.Context, permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+				return permissions.ApprovalOnce, "", nil
+			})
+			chat := &Chat{toolRuntime: r, conversationID: "conversation"}
+			req := RewritePrototypeRequest{ReadCallID: "read-call", Destination: "provider", Base: "before", Content: "after"}
+			var done chan struct{}
+			releases := 0
+			r.readAdmission = rewriteApprovalTestHost{execute: func(ctx context.Context, approved *ApprovedRewritePrototype) (tools.Result, error) {
+				chat.mu.Lock()
+				active := chat.active
+				done = chat.activeDone
+				chat.mu.Unlock()
+				if !active || done == nil {
+					t.Fatal("rewrite did not reserve the active chat operation")
+				}
+				if _, err := chat.RunRewritePrototype(ctx, req); !errors.Is(err, ErrRequestActive) {
+					t.Fatalf("concurrent rewrite was not refused: %v", err)
+				}
+				_, release, err := approved.Claim()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := release(func() error { releases++; return nil }); err != nil {
+					t.Fatal(err)
+				}
+				chat.Cancel()
+				if !errors.Is(ctx.Err(), context.Canceled) {
+					t.Fatal("chat cancellation did not reach the released rewrite")
+				}
+				select {
+				case <-done:
+					t.Fatal("chat operation finished before the host returned")
+				default:
+				}
+				return tools.Result{Outcome: outcome, Content: []tools.Content{{Kind: tools.ContentText, Text: "stale detail"}}}, ctx.Err()
+			}}
+			result, err := chat.RunRewritePrototype(context.Background(), req)
+			if !errors.Is(err, context.Canceled) || result.Outcome != outcome || len(result.Content) != 0 {
+				t.Fatalf("canceled result = %+v, %v", result, err)
+			}
+			select {
+			case <-done:
+			default:
+				t.Fatal("chat completion was not signaled after the host returned")
+			}
+			if _, err := chat.RunRewritePrototype(context.Background(), req); !errors.Is(err, errReadAuthorityInvalid) || releases != 1 {
+				t.Fatalf("canceled rewrite replayed: releases=%d, err=%v", releases, err)
 			}
 		})
 	}
