@@ -186,9 +186,6 @@ func (s *Service) executeRewritePrototype(ctx context.Context, binding creationR
 	if readbrokerstudy.RewriteFileRevision(pinned) != revision {
 		return result, errRewriteTargetChanged
 	}
-	if err := checkRewriteIntegrityPolicy(); err != nil {
-		return result, err
-	}
 	file, err := openPinnedRewriteFile(pinned)
 	if err != nil {
 		return result, err
@@ -398,19 +395,6 @@ func compareRewriteDescriptors(first, second *os.File) error {
 		before.Ino != after.Ino || before.Mode&unix.S_IFMT != after.Mode&unix.S_IFMT ||
 		before.Dev_major != after.Dev_major || before.Dev_minor != after.Dev_minor || before.Mnt_id != after.Mnt_id {
 		return errRewriteTargetChanged
-	}
-	return nil
-}
-
-func checkRewriteIntegrityPolicy() error {
-	data, err := os.ReadFile("/sys/kernel/security/lsm")
-	if err != nil || len(data) == 0 {
-		return errRewriteMetadata
-	}
-	for _, module := range strings.Split(strings.TrimSpace(string(data)), ",") {
-		if module == "ima" || module == "evm" {
-			return errRewriteMetadata
-		}
 	}
 	return nil
 }

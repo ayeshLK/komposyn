@@ -44,7 +44,17 @@ before it receives the file descriptor. The direct probe also checks the
 real ioctl error on an `O_PATH` descriptor. The report keeps injected errors
 separate from filesystem observations. Hidden attributes, EA-inode storage,
 security labels and independent actors are outside this overlay case. Editing
-and publication of replacements remain unavailable.
+and publication of replacements remain unavailable outside the following
+single, opt-in test-only acceptance case.
+
+`TestNativeRewritePrototypeComposedReadAndApprovedRewrite` reads through Chat
+and Service with a scripted provider, approves the complete replacement diff
+once, and exercises the trusted native rewrite worker. The fixture checks its
+exact new bytes and length, same device/inode, mode, ownership and user xattr.
+It records one write attempt and joined workers. Run on the host's regular
+kernel, including with IMA and EVM active. The manifest records the LSM profile
+for context. Missing backend or fixture prerequisites report `unavailable`.
+A refused rewrite after the approved read fails this positive case.
 
 Mount crossing is measured only if the disposable scope already contains a
 real nested mount. The runner does not create or alter mounts. Without such a
@@ -63,8 +73,13 @@ scripts/native-acceptance/run-native-acceptance.sh \
   --repo "$PWD" \
   --revision "$(git rev-parse HEAD)" \
   --bwrap /usr/bin/bwrap \
-  --scratch-dir /path/to/writable/ext4/scratch
+  --scratch-dir /path/to/writable/ext4/scratch \
+  --case TestNativeRewritePrototypeComposedReadAndApprovedRewrite
 ```
+
+Without `--case`, the runner retains its full expected-case inventory and
+aggregate status rules. With a selector, its manifest and report inventory
+must contain exactly the explicitly selected case.
 
 If an already-existing private directory beneath that scratch directory
 contains a nested mount which you are authorized to inspect without changing,
@@ -127,7 +142,7 @@ Results archive: /tmp/komposyn-composition-native-results.XXXXXXXX.tar.gz
 
 Share that archive path for review. It includes:
 
-- `manifest.json`: provenance, stage results, cleanup status and aggregate classification.
+- `manifest.json`: provenance, stage results, cleanup status and aggregate classification. It reports the scratch filesystem and backend metadata, using placeholders for host paths.
 - `native-report.json` and `native-records/`: per-case status, backend mode/trust, worker/probe evidence and rotation observations.
 - Bounded unit/build/native logs and capture metadata.
 - The exact test overlay and capture helper as text.

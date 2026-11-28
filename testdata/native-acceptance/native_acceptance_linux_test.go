@@ -37,10 +37,12 @@ import (
 	"unsafe"
 
 	"github.com/ayeshLK/komposyn/internal/harness/auth"
+	"github.com/ayeshLK/komposyn/internal/harness/model"
 	"github.com/ayeshLK/komposyn/internal/harness/permissions"
 	rb "github.com/ayeshLK/komposyn/internal/harness/readbrokerstudy"
 	"github.com/ayeshLK/komposyn/internal/harness/runtime"
 	"github.com/ayeshLK/komposyn/internal/harness/settings"
+	provider "github.com/ayeshLK/komposyn/plugins/model-provider"
 	"github.com/ayeshLK/komposyn/plugins/tools"
 	"golang.org/x/sys/unix"
 )
@@ -109,6 +111,28 @@ type nativeRecord struct {
 	StartupMoveAfterReleaseActorPID         int                   `json:"startup_move_after_release_actor_pid,omitempty"`
 	StartupMoveAfterReleaseActorUID         int                   `json:"startup_move_after_release_actor_uid,omitempty"`
 	UnavailableReason                       string                `json:"unavailable_reason,omitempty"`
+	RewriteVerifiedSuccess                  bool                  `json:"rewrite_verified_success,omitempty"`
+	RewriteWorkerJoined                     bool                  `json:"rewrite_worker_joined,omitempty"`
+	RewriteFixtureCleanupConfirmed          bool                  `json:"rewrite_fixture_cleanup_confirmed,omitempty"`
+	RewriteApprovedDiff                     string                `json:"rewrite_approved_diff,omitempty"`
+	RewriteDiffSHA256                       string                `json:"rewrite_diff_sha256,omitempty"`
+	RewriteRefusalCode                      string                `json:"rewrite_refusal_code,omitempty"`
+	RewriteInitialBytes                     string                `json:"rewrite_initial_bytes,omitempty"`
+	RewriteInitialLength                    int                   `json:"rewrite_initial_length,omitempty"`
+	RewriteInitialDevice                    uint64                `json:"rewrite_initial_device,omitempty"`
+	RewriteInitialInode                     uint64                `json:"rewrite_initial_inode,omitempty"`
+	RewriteInitialMode                      uint32                `json:"rewrite_initial_mode,omitempty"`
+	RewriteInitialUID                       uint32                `json:"rewrite_initial_uid,omitempty"`
+	RewriteInitialGID                       uint32                `json:"rewrite_initial_gid,omitempty"`
+	RewriteInitialXattr                     string                `json:"rewrite_initial_xattr,omitempty"`
+	RewriteFinalLength                      int                   `json:"rewrite_final_length,omitempty"`
+	RewriteFinalDevice                      uint64                `json:"rewrite_final_device,omitempty"`
+	RewriteFinalInode                       uint64                `json:"rewrite_final_inode,omitempty"`
+	RewriteFinalMode                        uint32                `json:"rewrite_final_mode,omitempty"`
+	RewriteFinalUID                         uint32                `json:"rewrite_final_uid,omitempty"`
+	RewriteFinalGID                         uint32                `json:"rewrite_final_gid,omitempty"`
+	RewriteFinalXattr                       string                `json:"rewrite_final_xattr,omitempty"`
+	RewriteWriteAttempts                    int                   `json:"rewrite_write_attempts,omitempty"`
 	CreationStartupFilesystem               string                `json:"creation_startup_filesystem,omitempty"`
 	CreationStartupMountID                  uint64                `json:"creation_startup_mount_id,omitempty"`
 	StartupMoveActorPID                     int                   `json:"startup_move_actor_pid,omitempty"`
@@ -1455,6 +1479,7 @@ type nativeTrackedLauncher struct {
 	mu                    sync.Mutex
 	delegate              rb.WorkerLauncher
 	workers               []rb.SandboxWorker
+	rewriteAttempts       int
 	beforeCreationStage   func() error
 	beforeCreationPublish func() error
 }
@@ -1482,10 +1507,19 @@ func (l *nativeTrackedLauncher) StartForOperation(ctx context.Context, operation
 			l.mu.Unlock()
 			return tracked, e
 		}
+		if operation == rb.AdmissionRewritePrototype {
+			l.rewriteAttempts++
+		}
 		l.workers = append(l.workers, w)
 		l.mu.Unlock()
 	}
 	return w, e
+}
+
+func (l *nativeTrackedLauncher) rewriteAttemptCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rewriteAttempts
 }
 func (l *nativeTrackedLauncher) CreationProfileAvailable() bool {
 	profile, ok := l.delegate.(interface{ CreationProfileAvailable() bool })
@@ -1957,6 +1991,180 @@ func TestNativeServiceMetadataFIEMAP(t *testing.T) {
 	})
 	t.Cleanup(func() { f.impl.session.SetCheckpointHook(nil) })
 	refuse("late_xattr", f.target, "revalidate", "xattrs_present")
+}
+
+func TestNativeRewritePrototypeComposedReadAndApprovedRewrite(t *testing.T) {
+	r := nativeReport(t)
+	r.Limitations = []string{
+		"One synthetic UTF-8 file, one retained approved edit and one reported host profile.",
+		"The provider is a scripted in-process fixture; no network request or production tool registration is used.",
+		"The write is performed only by the trusted Bubblewrap rewrite worker through the opt-in test runtime.",
+	}
+	if stdruntime.GOARCH != "amd64" {
+		r.Status, r.UnavailableReason = "unavailable", "rewrite prototype acceptance requires Linux amd64"
+		r.CleanupConfirmed = true
+		t.Skip(r.UnavailableReason)
+	}
+	f := newNativeFixture(t, r)
+	setupNativeStartupScope(t, f, r, "rewrite-acceptance")
+
+	const (
+		callID = "rewrite-approved-read"
+		suffix = " REMOVE-ME"
+		xattr  = "user.komposyn_rewrite_probe"
+	)
+	base := "synthetic rewrite acceptance" + suffix
+	replacement := "synthetic rewrite"
+	f.target = filepath.Join(f.root, "rewrite-fixture.txt")
+	if err := os.WriteFile(f.target, []byte(base), 0600); err != nil {
+		t.Fatal("seed rewrite fixture", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(f.target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("remove synthetic rewrite fixture")
+			return
+		}
+		if _, err := os.Lstat(f.target); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("synthetic rewrite fixture remained after cleanup")
+			return
+		}
+		r.RewriteFixtureCleanupConfirmed = true
+	})
+	if err := unix.Setxattr(f.target, xattr, []byte("disposable-probe"), unix.XATTR_CREATE); err != nil {
+		r.Status, r.UnavailableReason = "unavailable", "fixture filesystem does not support the required user xattr: "+err.Error()
+		t.Skip(r.UnavailableReason)
+	}
+	var initial unix.Stat_t
+	if err := unix.Stat(f.target, &initial); err != nil {
+		t.Fatal("stat initial rewrite fixture", err)
+	}
+	initialXattr := make([]byte, 128)
+	n, err := unix.Getxattr(f.target, xattr, initialXattr)
+	if err != nil {
+		t.Fatal("read initial rewrite xattr", err)
+	}
+	initialXattr = initialXattr[:n]
+	r.RewriteInitialBytes = base
+	r.RewriteInitialLength = len(base)
+	r.RewriteInitialDevice = uint64(initial.Dev)
+	r.RewriteInitialInode = initial.Ino
+	r.RewriteInitialMode = initial.Mode & 07777
+	r.RewriteInitialUID, r.RewriteInitialGID = initial.Uid, initial.Gid
+	r.RewriteInitialXattr = string(initialXattr)
+
+	fixture := &creationBarrierCaptureProvider{path: f.target, callID: callID, want: base, barrierRetired: true}
+	providers, err := model.NewRegistry(fixture)
+	if err != nil {
+		t.Fatal("create scripted provider registry", err)
+	}
+	approvalCount := 0
+	destination := ""
+	saveDiff := ""
+	approval := runtime.ToolApprovalFunc(func(_ context.Context, pending permissions.PendingApproval) (permissions.ApprovalChoice, string, error) {
+		approvalCount++
+		if approvalCount == 1 {
+			destination = pending.Request.Destination
+			if destination == "" {
+				return permissions.ApprovalCancel, "", errors.New("read approval had no destination")
+			}
+			return permissions.ApprovalOnce, "", nil
+		}
+		if approvalCount != 2 || pending.Request.Destination != destination || len(pending.Request.Requirements) < 1 {
+			return permissions.ApprovalCancel, "", errors.New("rewrite approval did not bind the original destination")
+		}
+		saveDiff = pending.Request.Requirements[0].Description
+		if !strings.Contains(saveDiff, base) || !strings.Contains(saveDiff, replacement) {
+			return permissions.ApprovalCancel, "", errors.New("save approval omitted the complete replacement diff")
+		}
+		return permissions.ApprovalOnce, "", nil
+	})
+	clarification := runtime.ToolClarificationFunc(func(context.Context, runtime.ClarificationRequest) (runtime.ClarificationResponse, error) {
+		return runtime.ClarificationResponse{}, errors.New("unexpected clarification")
+	})
+	config := runtime.BundledConversationToolRuntimeConfigWithFilesystemRead(approval, clarification, f.service)
+	config.EnableRewritePrototype = true
+	chat := runtime.NewChatWithToolRuntime(providers, f.auth, nil, config)
+	selection := chat.Discover(nativeContext(t))
+	if len(selection.Models) != 1 {
+		t.Fatal("scripted provider model was unavailable")
+	}
+	if err := chat.Select(nativeContext(t), selection.Models[0].Key(), false); err != nil {
+		t.Fatal("select scripted provider model", err)
+	}
+	if err := chat.SelectFilesystemRoot(nativeContext(t), f.root); err != nil {
+		t.Fatal("select rewrite fixture root", err)
+	}
+	t.Cleanup(chat.Close)
+
+	turn, err := chat.Send(nativeContext(t), "read the synthetic rewrite fixture", nil)
+	if err != nil || turn.Outcome != provider.OutcomeCompleted || len(turn.ToolActivities) != 1 || turn.ToolActivities[0].Outcome != tools.OutcomeSucceeded || !fixture.capturePublished || fixture.captureCount != 1 {
+		t.Fatalf("approved read did not reach fixture provider with original bytes: turn=%+v provider_received=%t err=%v", turn, fixture.capturePublished, err)
+	}
+	if approvalCount != 1 {
+		t.Fatalf("initial read was not approved exactly once: approvals=%d", approvalCount)
+	}
+	readEvidence := lastNativeEvidence(t, f)
+	if readEvidence.Outcome != rb.ReadSucceeded || !readEvidence.WorkerStarted || !readEvidence.WorkerJoined {
+		t.Fatal("composed read did not use and join the actual native read worker")
+	}
+	r.VerifiedReturnedBytes = true
+	result, rewriteErr := chat.RunRewritePrototype(nativeContext(t), runtime.RewritePrototypeRequest{
+		ReadCallID: callID, Destination: destination, Base: base, Content: replacement,
+	})
+	r.RewriteWriteAttempts = f.tracked.rewriteAttemptCount()
+	if approvalCount != 2 || saveDiff == "" {
+		t.Fatalf("complete save diff was not approved exactly once: approvals=%d", approvalCount)
+	}
+	diffHash := sha256.Sum256([]byte(saveDiff))
+	r.RewriteDiffSHA256 = hex.EncodeToString(diffHash[:])
+	r.RewriteApprovedDiff = strings.ReplaceAll(saveDiff, f.target, "<rewrite-fixture>")
+
+	if rewriteErr != nil || result.Outcome != tools.OutcomeSucceeded {
+		r.RewriteRefusalCode = result.ErrorCode
+		t.Fatalf("approved native rewrite failed: outcome=%s error_code=%s err=%v", result.Outcome, result.ErrorCode, rewriteErr)
+	}
+	if f.tracked.rewriteAttemptCount() != 1 || !f.tracked.allJoined() {
+		t.Fatalf("rewrite worker lifecycle attempts=%d all_joined=%t", f.tracked.rewriteAttemptCount(), f.tracked.allJoined())
+	}
+	r.RewriteWorkerJoined = true
+	if err := verifyRewriteFixture(t, f.target, []byte(replacement), initial, initialXattr, xattr); err != nil {
+		t.Fatal("verify rewritten fixture", err)
+	}
+	r.RewriteVerifiedSuccess = true
+	r.RewriteFinalLength = len(replacement)
+	var final unix.Stat_t
+	if err := unix.Stat(f.target, &final); err != nil {
+		t.Fatal("stat rewritten fixture", err)
+	}
+	r.RewriteFinalDevice, r.RewriteFinalInode = uint64(final.Dev), final.Ino
+	r.RewriteFinalMode, r.RewriteFinalUID, r.RewriteFinalGID = final.Mode&07777, final.Uid, final.Gid
+	finalXattr := make([]byte, 128)
+	n, err = unix.Getxattr(f.target, xattr, finalXattr)
+	if err != nil {
+		t.Fatal("read rewritten xattr", err)
+	}
+	r.RewriteFinalXattr = string(finalXattr[:n])
+}
+
+func verifyRewriteFixture(t *testing.T, path string, want []byte, initial unix.Stat_t, initialXattr []byte, xattr string) error {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) {
+		return fmt.Errorf("ordinary read got %q, error %v", got, err)
+	}
+	var final unix.Stat_t
+	if err := unix.Stat(path, &final); err != nil {
+		return err
+	}
+	if final.Dev != initial.Dev || final.Ino != initial.Ino || final.Mode&07777 != initial.Mode&07777 || final.Uid != initial.Uid || final.Gid != initial.Gid {
+		return errors.New("rewrite changed device/inode, mode, or ownership")
+	}
+	value := make([]byte, 128)
+	n, err := unix.Getxattr(path, xattr, value)
+	if err != nil || !bytes.Equal(value[:n], initialXattr) {
+		return fmt.Errorf("rewrite changed xattr, error %v", err)
+	}
+	return nil
 }
 
 // Use the Linux POSIX ACL xattr format to keep the overlay independent of setfacl.

@@ -261,6 +261,9 @@ type AdmissionMetadata struct {
 type AdmissionReference struct {
 	owner any
 	id    string
+	// The coordinator guards lookupErr so its caller can retrieve a refusal
+	// even after the failed admission and its resources have been retired.
+	lookupErr error
 }
 
 // AdmittedPreparation is a host-owned retained object after the runtime has

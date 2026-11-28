@@ -31,9 +31,9 @@ bind mount created by that helper. It asks before mounting; see its `--help`
 output for the complete operations and prerequisites.
 
 Current runner SHA-256:
-`365e9476bb4977e9b3a3b56915bbe99402cbedce1728a3c57a668fd682e1fa45`.
+`1ab42c2213a0e16836e62310efec78dceb4594f5c8dbc2e1467e14e2ec97593c`.
 Current overlay SHA-256:
-`bca92ac947cc01a8fa89fd504d2fa503d9f98a9025b9ac20712d1cf5041f08c4`.
+`25066911d13592181d5d55c89d43b51a45a901c121ea93f2338a39f98f6ed60e`.
 The test bundle also records these hashes from the exact reviewed candidate.
 The tracked host-independent results are in
 [`docs/harness/read-broker-composition-native-acceptance.md`](../../docs/harness/read-broker-composition-native-acceptance.md).
