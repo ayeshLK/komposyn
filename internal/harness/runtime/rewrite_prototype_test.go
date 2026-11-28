@@ -17,6 +17,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,10 +53,12 @@ func TestRewritePrototypeApprovalBindsAndConsumesCompleteEdit(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := syntheticAuthorityRuntime()
+			root := t.TempDir()
+			target := filepath.Join(root, "file")
 			r.rewritePrototypeEnabled = !test.disabled
 			r.retainRewritePrototypeRead(privateReadCaptureRecord{
 				operation: string(tools.ReadFileID), rewriteRevision: "observed-revision",
-				target: "/tree/file", root: "/tree", destination: "provider",
+				target: target, root: root, destination: "provider",
 				conversationID: "conversation", callID: "read-call", identity: "1:2:32768",
 				admission: "admission", serviceID: "service", expires: time.Now().Add(time.Minute),
 				bytes: []byte("before\n"),
@@ -77,7 +80,7 @@ func TestRewritePrototypeApprovalBindsAndConsumesCompleteEdit(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if input.Target != "/tree/file" || input.ServiceID != "service" || input.FileRevision != "observed-revision" ||
+				if input.Target != target || input.ServiceID != "service" || input.FileRevision != "observed-revision" ||
 					string(input.Base) != "before\n" || string(input.Content) != "after\n" {
 					t.Fatalf("wrong approved input: %+v", input)
 				}
