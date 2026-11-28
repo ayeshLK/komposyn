@@ -51,9 +51,10 @@ single, opt-in test-only acceptance case.
 and Service with a scripted provider, approves the complete replacement diff
 once, and exercises the trusted native rewrite worker. The fixture checks its
 exact new bytes and length, same device/inode, mode, ownership and user xattr.
-It records one write attempt and joined workers. A host refusal is reported as
-`unavailable` with the Service/backend prerequisite; it is not counted as
-native success.
+It records one write attempt and joined workers. Run on the host's regular
+kernel, including with IMA and EVM active. The manifest records the LSM profile
+for context. Missing backend or fixture prerequisites report `unavailable`.
+A refused rewrite after the approved read fails this positive case.
 
 Mount crossing is measured only if the disposable scope already contains a
 real nested mount. The runner does not create or alter mounts. Without such a

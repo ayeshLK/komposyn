@@ -48,6 +48,12 @@ prototype makes no atomic-write, rollback, or crash-durability promise and
 must classify confirmed, no-effect, partial, and unknown outcomes without
 replay.
 
+Use the creation path's existing startup scope for ordinary, user-owned
+regular files. Check eligibility on the target file. Active IMA or EVM on the
+host does not by itself prevent a rewrite. Files with integrity or capability
+attributes remain outside the prototype scope. The OS manages timestamps and
+integrity policy during the write.
+
 This scoped investigation does not approve the mechanism, establish its
 metadata or worker-authority guarantees, register a model-facing capability,
 enable editing in normal composition, or constitute release approval. The

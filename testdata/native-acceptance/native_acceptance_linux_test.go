@@ -2121,34 +2121,8 @@ func TestNativeRewritePrototypeComposedReadAndApprovedRewrite(t *testing.T) {
 	r.RewriteDiffSHA256 = hex.EncodeToString(diffHash[:])
 	r.RewriteApprovedDiff = strings.ReplaceAll(saveDiff, f.target, "<rewrite-fixture>")
 
-	// A policy refusal on active IMA/EVM is an unavailable host result. The
-	// attempt still traveled through the Service's eligibility gate after the
-	// real approved read; no rewrite worker may be launched in that profile.
-	lsm, lsmErr := os.ReadFile("/sys/kernel/security/lsm")
-	activeIntegrityPolicy := false
-	for _, name := range strings.Split(strings.TrimSpace(string(lsm)), ",") {
-		if name == "ima" || name == "evm" {
-			activeIntegrityPolicy = true
-		}
-	}
 	if rewriteErr != nil || result.Outcome != tools.OutcomeSucceeded {
 		r.RewriteRefusalCode = result.ErrorCode
-		if result.ErrorCode == "rewrite_metadata_unverified" && f.tracked.rewriteAttemptCount() == 0 &&
-			(activeIntegrityPolicy || lsmErr != nil || strings.TrimSpace(string(lsm)) == "") {
-			r.Status = "unavailable"
-			switch {
-			case activeIntegrityPolicy:
-				r.UnavailableReason = "Service refused rewrite because active IMA/EVM is present in /sys/kernel/security/lsm"
-			case lsmErr != nil:
-				r.UnavailableReason = "Service refused rewrite because /sys/kernel/security/lsm could not be read: " + lsmErr.Error()
-			default:
-				r.UnavailableReason = "Service refused rewrite because /sys/kernel/security/lsm is empty"
-			}
-			if err := verifyRewriteFixture(t, f.target, []byte(base), initial, initialXattr, xattr); err != nil {
-				t.Fatal("Service refusal changed the fixture", err)
-			}
-			return
-		}
 		t.Fatalf("approved native rewrite failed: outcome=%s error_code=%s err=%v", result.Outcome, result.ErrorCode, rewriteErr)
 	}
 	if f.tracked.rewriteAttemptCount() != 1 || !f.tracked.allJoined() {
