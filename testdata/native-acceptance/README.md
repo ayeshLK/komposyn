@@ -44,7 +44,16 @@ before it receives the file descriptor. The direct probe also checks the
 real ioctl error on an `O_PATH` descriptor. The report keeps injected errors
 separate from filesystem observations. Hidden attributes, EA-inode storage,
 security labels and independent actors are outside this overlay case. Editing
-and publication of replacements remain unavailable.
+and publication of replacements remain unavailable outside the following
+single, opt-in test-only acceptance case.
+
+`TestNativeRewritePrototypeComposedReadAndApprovedRewrite` reads through Chat
+and Service with a scripted provider, approves the complete replacement diff
+once, and exercises the trusted native rewrite worker. The fixture checks its
+exact new bytes and length, same device/inode, mode, ownership and user xattr.
+It records one write attempt and joined workers. A host refusal is reported as
+`unavailable` with the Service/backend prerequisite; it is not counted as
+native success.
 
 Mount crossing is measured only if the disposable scope already contains a
 real nested mount. The runner does not create or alter mounts. Without such a
@@ -63,8 +72,13 @@ scripts/native-acceptance/run-native-acceptance.sh \
   --repo "$PWD" \
   --revision "$(git rev-parse HEAD)" \
   --bwrap /usr/bin/bwrap \
-  --scratch-dir /path/to/writable/ext4/scratch
+  --scratch-dir /path/to/writable/ext4/scratch \
+  --case TestNativeRewritePrototypeComposedReadAndApprovedRewrite
 ```
+
+Without `--case`, the runner retains its full expected-case inventory and
+aggregate status rules. With a selector, its manifest and report inventory
+must contain exactly the explicitly selected case.
 
 If an already-existing private directory beneath that scratch directory
 contains a nested mount which you are authorized to inspect without changing,

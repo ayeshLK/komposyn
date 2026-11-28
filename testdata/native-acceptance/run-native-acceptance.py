@@ -18,7 +18,7 @@ import tarfile
 import tempfile
 import time
 
-EXPECTED = ['TestNativeActorModeDispatch', 'TestNativeShippedGenericReadGate', 'TestNativeServicePositiveRead',
+DEFAULT_EXPECTED = ['TestNativeActorModeDispatch', 'TestNativeShippedGenericReadGate', 'TestNativeServicePositiveRead',
             'TestNativeServiceProtectedRoutesAndAliases', 'TestNativeServiceRotationJoinsHeldWorker',
             'TestNativeServiceMetadataFIEMAP',
             'TestNativeServicePostCaptureRevocation', 'TestNativeServiceAuthRotationJoinsHeldWorker',
@@ -28,7 +28,8 @@ EXPECTED = ['TestNativeActorModeDispatch', 'TestNativeShippedGenericReadGate', '
             'TestNativeServiceScopeAndTargetRefusalsPreserveFixtures', 'TestNativeServiceMountBoundaryRefusal',
             'TestNativeServiceStartupRootMovementAfterPublicationRelease',
             'TestNativeServiceRootChangeWhileHeld','TestNativeServiceCancellationWhileHeld',
-            'TestNativeServiceShutdownRetryWhileHeld']
+            'TestNativeServiceShutdownRetryWhileHeld', 'TestNativeRewritePrototypeComposedReadAndApprovedRewrite']
+EXPECTED = list(DEFAULT_EXPECTED)
 
 def digest(path):
     with open(path, 'rb') as f:
@@ -37,7 +38,32 @@ def digest(path):
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
 
+def mount_details(path):
+    target = str(path.resolve())
+    best = None
+    try:
+        for line in Path('/proc/self/mountinfo').read_text().splitlines():
+            fields = line.split()
+            separator = fields.index('-')
+            mountpoint = fields[4].replace('\\040', ' ').replace('\\011', '\t').replace('\\134', '\\')
+            if target == mountpoint or target.startswith(mountpoint.rstrip('/') + '/'):
+                if best is None or len(mountpoint) > len(best[0]):
+                    best = (mountpoint, fields[separator + 1])
+    except (OSError, ValueError, IndexError):
+        return {'filesystem': 'unavailable', 'mountpoint': 'unavailable'}
+    if best is None:
+        return {'filesystem': 'unavailable', 'mountpoint': 'unavailable'}
+    return {'filesystem': best[1], 'mountpoint': best[0]}
+
+def lsm_profile():
+    try:
+        value = Path('/sys/kernel/security/lsm').read_text().strip()
+        return value if value else 'unavailable: /sys/kernel/security/lsm is empty'
+    except OSError as exc:
+        return 'unavailable: /sys/kernel/security/lsm could not be read (' + type(exc).__name__ + ')'
+
 def main():
+    global EXPECTED
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path.cwd())
     parser.add_argument('--revision', required=True, help='full source commit containing the candidate under test')
@@ -46,7 +72,11 @@ def main():
         help='existing writable directory on the filesystem used for disposable fixtures and result bundle')
     parser.add_argument('--mount-scope', type=Path, default=None,
         help='optional existing private directory beneath scratch-dir with an already-mounted child; the test never creates or changes mounts')
+    parser.add_argument('--case', choices=DEFAULT_EXPECTED,
+        help='run and report only this expected native case; without it, validate the full default inventory')
     args = parser.parse_args()
+    if args.case:
+        EXPECTED = [args.case]
     if sys.platform != 'linux':
         parser.error('Run on a normal Linux host; do not use sudo.')
     if os.geteuid()==0:
@@ -90,13 +120,27 @@ def main():
         'expected_cases':EXPECTED,
         'python_version':sys.version.split()[0],
         'run_time_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'scope':'PR #243 service fixtures bounded #321 creation worker and #322 metadata-only probe; no production creation enablement/provider network',
+        'scope':'PR #243 service fixtures bounded #321 creation worker, #322 metadata-only probe, and #322 test-only native rewrite acceptance; no production rewrite tool registration/provider network',
+        'selected_case':args.case,
         'scratch_directory_configured':True,
+        'scratch_filesystem':mount_details(scratch_dir)['filesystem'],
+        'scratch_mountpoint':mount_details(scratch_dir)['mountpoint'],
+        'lsm_profile':lsm_profile(),
+        'bubblewrap_path':str(args.bwrap),
+        'bubblewrap_metadata':{},
         'mount_scope_supplied':mount_scope is not None,
         'stages':{}, 'status':'incomplete', 'work_retained':True}
     clean = True
     exit_code = 1
     try:
+        try:
+            backend_stat = args.bwrap.stat()
+            manifest['bubblewrap_metadata'] = {'uid':backend_stat.st_uid, 'mode':oct(backend_stat.st_mode & 0o7777),
+                'version':'unavailable until the trusted-executable check passes',
+                'bind_mode':'unavailable until a trusted native worker is launched'}
+        except OSError:
+            manifest['bubblewrap_metadata'] = {'version':'unavailable: configured Bubblewrap path cannot be stated',
+                'bind_mode':'unavailable: no trusted native worker was launched'}
         archive_repo=args.repo
         exists=subprocess.run(['git','-C',str(archive_repo),'cat-file','-e',revision+'^{commit}'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15).returncode==0
         if not exists:
@@ -152,7 +196,8 @@ def main():
         build_ok=stage('build-native',['go','test','-tags=komposyn_stage6_study','-c','-buildvcs=false','-o',str(binary),'./internal/harness/sandbox'],300)
         if build_ok:
             manifest['native_binary_sha256']=digest(binary)
-            run_ok=stage('native',[str(binary),'-test.v','-test.count=1','-test.timeout=240s','-test.run=^TestNative'],270)
+            test_pattern='^'+re.escape(args.case)+'$' if args.case else '^TestNative'
+            run_ok=stage('native',[str(binary),'-test.v','-test.count=1','-test.timeout=240s','-test.run='+test_pattern],270)
             rows=[]
             for case in EXPECTED:
                 path=records/(case+'.json')
@@ -175,7 +220,7 @@ def main():
                 'expected_cases':EXPECTED,'case_inventory_exact':inventory_exact,
                 'limitations':['Test-only fixture authorizer rebinding; generic reads remain blocked in shipped service.',
                     'No external provider request; private coordinator publication only.',
-                    'Native fixed-worker cases include profile-gated apply_patch schema registration but do not establish live provider/UI behavior, sealed-copy modes, arbitrary descendants, unknown data policy, or all platform guarantees.',
+                    'Native fixed-worker cases include profile-gated apply_patch schema registration and one opt-in test-only rewrite path, but do not establish production rewrite registration, live provider/UI behavior, sealed-copy modes, arbitrary descendants, unknown data policy, or all platform guarantees.',
                     'Existing unit tests are not counted as native worker enforcement evidence.']})
             records_valid=inventory_exact and all(r.get('cleanup_confirmed') is True and r.get('status') in ('measured_pass','unavailable') for r in rows)
             if unit_ok and run_ok and records_valid and all(r['status']=='measured_pass' for r in rows):
